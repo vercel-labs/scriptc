@@ -4,7 +4,7 @@
 // symbol made on either side comes back as itself, and it works as a
 // symbol where it lands (typeof, String, description, a Map key, a Set
 // member, a property key of an object of either side).
-import { sym, kept, same, symInfo, keep, put, sameAs, same2, typedSym, tagged, readSym, writeSym, hasSym, symKeys, iterable, stream, Stream } from "symbol-pkg";
+import { sym, kept, same, symInfo, keep, put, sameAs, same2, typedSym, tagged, readSym, writeSym, hasSym, symKeys, readByName, hasByName, ownByName, bareObject, shadowedObject, iterable, stream, Stream } from "symbol-pkg";
 
 function t(label: string, f: () => unknown): void {
   try {
@@ -80,6 +80,23 @@ t("program object, island reads registered key", () => readSym(rec, Symbol.for("
 t("program object, island has", () => hasSym(rec, mine));
 t("program object, island lists", () => symKeys(rec));
 t("program object, island writes symbol key", () => { writeSym(rec, local, "island wrote"); return String(rec[local]); });
+
+// A registered key the island makes for itself, never sent across: the
+// registry makes it the program's key of the same name.
+const fresh: any = {};
+fresh[Symbol.for("vs.fresh")] = "native registered";
+t("program object, island reads a registered key it never held", () => readByName(fresh, "vs.fresh"));
+t("program object, island has a registered key it never held", () => hasByName(fresh, "vs.fresh"));
+t("program object, island own-checks a registered key it never held", () => ownByName(fresh, "vs.fresh"));
+
+// Own-property probes of an island object answer by their intrinsics, whatever
+// the object does with those names.
+const bare = bareObject() as any;
+t("null-proto island object, own", () => Object.prototype.hasOwnProperty.call(bare, Symbol.for("vs.bare")));
+t("null-proto island object, enumerable", () => Object.prototype.propertyIsEnumerable.call(bare, Symbol.for("vs.bare")));
+const shadowed = shadowedObject() as any;
+t("shadowed methods, own", () => Object.prototype.hasOwnProperty.call(shadowed, Symbol.for("vs.shadow")));
+t("shadowed methods, enumerable", () => Object.prototype.propertyIsEnumerable.call(shadowed, Symbol.for("vs.shadow")));
 t("island iterable in a program for-of", () => { const out: number[] = []; for (const x of iterable()) out.push(x); return out.join(","); });
 
 // The same crossings with the program's type saying `symbol`.

@@ -136,6 +136,10 @@ typedef struct ScrNiDynOps {
   ScrDyn *(*get)(ScrDyn *obj, ScrDyn *key);
   ScrDyn *(*get_str)(ScrDyn *obj, const char *key, size_t len);
   int (*has)(ScrDyn *obj, ScrDyn *key);
+  /* Object.hasOwn, and propertyIsEnumerable when `enumerable` is set, by
+   * Node's intrinsics: the object's own methods of those names may be
+   * shadowed or absent and decide nothing. */
+  int (*has_own)(ScrDyn *obj, ScrDyn *key, int enumerable);
   int (*delete_key)(ScrDyn *obj, ScrDyn *key);
   ScrDyn *(*own_keys)(ScrDyn *obj, int mode);
   ScrDyn *(*call)(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);

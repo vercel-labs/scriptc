@@ -1630,17 +1630,41 @@ uint32_t InfoId(const v8::PropertyCallbackInfo<T> &info) {
   return HolderId(info.HolderV2());
 }
 
+// Whether the symbol names the same key on both sides whether or not the
+// runtime was told of it: a Symbol.for symbol, whose registry key makes one
+// symbol per key, or a well-known one. Program code can name no other symbol
+// it did not send across, so the runtime cannot have a unique symbol this
+// side made.
+bool RuntimeSymbolKey(Isolate *isolate, Local<Context> context, Local<v8::Symbol> symbol) {
+  if (!PairHelpers(isolate, context)) return false;
+  Local<Value> argv[] = {symbol}, info;
+  TryCatch try_catch(isolate);
+  if (!g_symbol_info.Get(isolate)
+           ->Call(context, v8::Undefined(isolate), 1, argv)
+           .ToLocal(&info) ||
+      !info->IsArray())
+    return false;
+  Local<Value> kind;
+  if (!info.As<v8::Array>()->Get(context, 0).ToLocal(&kind) || !kind->IsUint32()) return false;
+  uint32_t value = kind.As<v8::Uint32>()->Value();
+  return value == SCR_NODE_SYMBOL_REGISTERED || value == SCR_NODE_SYMBOL_WELL_KNOWN;
+}
+
 // The key of a named interceptor, false for a key the runtime does not
-// answer. A symbol reaches the runtime only when the runtime holds the
-// native symbol paired with it: program code can name no other symbol, so a
-// property under one is island code's own and stays on the representative.
+// answer. A symbol reaches the runtime when it names the same key on both
+// sides, registered or well-known, or when the runtime holds the native
+// symbol paired with it; a property under any other symbol is island code's
+// own and stays on the representative.
 bool NameKey(Isolate *isolate, Local<Context> context, Local<v8::Name> name, ScrNodeValue *key) {
   if (!name->IsSymbol()) {
     FromV8(isolate, context, name, key);
     return true;
   }
   uint32_t known = Imported(isolate, name);
-  if (known == 0 || !g_host->holds(known)) return false;
+  if (known == 0 || !g_host->holds(known)) {
+    if (!RuntimeSymbolKey(isolate, context, name.As<v8::Symbol>())) return false;
+    if (known == 0) known = Import(isolate, name);
+  }
   std::memset(key, 0, sizeof *key);
   key->tag = SCR_NV_HANDLE;
   key->flags = SCR_NVF_SYMBOL;

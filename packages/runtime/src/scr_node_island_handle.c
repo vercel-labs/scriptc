@@ -1587,6 +1587,32 @@ int scr_ni_has(ScrDyn *obj, ScrDyn *key) { return nh_bool_op(NH_HAS, obj, key, "
 
 int scr_ni_delete(ScrDyn *obj, ScrDyn *key) { return nh_bool_op(NH_DEL, obj, key, "delete"); }
 
+/* The host's Object.hasOwn and Object.prototype.propertyIsEnumerable,
+ * loaded once. */
+static ScrDyn *nh_has_own_fn = NULL;
+static ScrDyn *nh_is_enumerable_fn = NULL;
+
+/* Whether an island object has an own property `key`, or an own enumerable
+ * one, answered by Node's intrinsics: the object's own method of either
+ * name is shadowed or absent on a null-prototype object, and it decides
+ * nothing either way. 1 or 0, -1 with the exception pending. */
+int scr_ni_has_own(ScrDyn *obj, ScrDyn *key, int enumerable) {
+  ScrDyn **slot = enumerable ? &nh_is_enumerable_fn : &nh_has_own_fn;
+  if (*slot == NULL) {
+    ScrStr *name = enumerable ? scr_str_new("scriptc:isEnumerable", 20)
+                              : scr_str_new("scriptc:hasOwn", 14);
+    *slot = nh_load(name, 0);
+    scr_str_release(name);
+    if (*slot == NULL) return -1;
+  }
+  ScrDyn *args[2] = {obj, key};
+  ScrDyn *answer = scr_ni_call(*slot, scr_dyn_undefined(), args, 2);
+  if (answer == NULL) return -1;
+  int found = answer->kind == SCR_DYN_BOOL && answer->v.b ? 1 : 0;
+  scr_dyn_release(answer);
+  return found;
+}
+
 /* Converts call arguments; NULL with an exception pending on failure. */
 static ScrNodeValue *nh_args(ScrDyn *const *args, size_t argc, ScrNodeValue *small, NhKeep *keep) {
   ScrNodeValue *values = argc <= 8 ? small : malloc(argc * sizeof *values);
@@ -2143,6 +2169,14 @@ static void nh_cleanup(void) {
     scr_dyn_release(nh_object_tag_fn);
     nh_object_tag_fn = NULL;
   }
+  if (nh_has_own_fn != NULL) {
+    scr_dyn_release(nh_has_own_fn);
+    nh_has_own_fn = NULL;
+  }
+  if (nh_is_enumerable_fn != NULL) {
+    scr_dyn_release(nh_is_enumerable_fn);
+    nh_is_enumerable_fn = NULL;
+  }
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
     nh_spread_fn = NULL;
@@ -2328,6 +2362,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .get = scr_ni_get,
     .get_str = scr_ni_get_str,
     .has = scr_ni_has,
+    .has_own = scr_ni_has_own,
     .delete_key = scr_ni_delete,
     .own_keys = scr_ni_own_keys,
     .call = scr_ni_call,

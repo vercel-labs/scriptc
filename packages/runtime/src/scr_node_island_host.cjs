@@ -290,6 +290,11 @@ const collectionSyncs = new WeakMap();
 // Symbol), the numbering of SCR_NODE_SYMBOL_*.
 const symbolFor = Symbol.for;
 const symbolKeyFor = Symbol.keyFor;
+// Own-property probes of an island object: the intrinsics, never the
+// object's own methods, which may be shadowed or absent (a null-prototype
+// object).
+const objectHasOwn = Object.hasOwn;
+const propertyIsEnumerable = Object.prototype.propertyIsEnumerable;
 const wellKnownNames = new Map();
 const wellKnownSymbols = new Map();
 for (const name of Object.getOwnPropertyNames(Symbol)) {
@@ -472,6 +477,9 @@ function load(path, esm) {
   if (path === "scriptc:spread") return (value) => [...value];
   if (path === "scriptc:clone") return (value) => structuredClone(value);
   if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
+  if (path === "scriptc:hasOwn") return (object, key) => objectHasOwn(object, key);
+  if (path === "scriptc:isEnumerable")
+    return (object, key) => propertyIsEnumerable.call(object, key);
   if (path === "scriptc:island-helpers") return islandHelpers;
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);

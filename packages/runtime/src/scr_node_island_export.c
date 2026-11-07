@@ -548,13 +548,14 @@ static bool ni_inherited_name(const ScrDyn *target, const ScrDyn *key) {
 }
 
 /* ── symbol keys ──────────────────────────────────────────────────────
- * The bridge sends a symbol key only for a symbol the program holds (the
- * native symbol paired with it is pinned): no program code can name any
- * other symbol, so a property under one of those is island code's own and
- * stays on the representative. For a symbol the program holds, the
- * program's object answers what it has under it; anything else is left to
- * the representative, where island code that tags the objects it is given
- * finds its own writes again. */
+ * The bridge sends a symbol key the program can name as well (a registered
+ * or well-known symbol, whether or not it has crossed) or one the runtime
+ * holds (the native symbol paired with it is pinned). No program code can
+ * name any other symbol, so a property under one of those is island code's
+ * own and stays on the representative. For a symbol the program can name,
+ * the program's object answers what it has under it; anything else is left
+ * to the representative, where island code that tags the objects it is
+ * given finds its own writes again. */
 
 /* The value of the symbol-keyed property `key` of an exported value (+1),
  * NULL when the program's object has none (*threw: an exception is

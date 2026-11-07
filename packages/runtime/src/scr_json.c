@@ -10907,17 +10907,14 @@ static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_ke
   }
 #ifdef SCR_NODE_ISLANDS
   /* A symbol key of an island object: Node answers `in`, and the own and
-   * enumerable probes through the object's own methods. */
+   * enumerable probes by its intrinsics, which a null-prototype object or
+   * one that shadows those names does not change. */
   if (scr_ni_dyn_handle(value) && scr_ni_dyn_ops != NULL) {
     bool found = false;
     if (mode == 0) {
       found = scr_ni_dyn_ops->has((ScrDyn *)value, key) == 1;
-    } else if (scr_ni_dyn_ops->call_method != NULL) {
-      const char *method = mode == 1 ? "hasOwnProperty" : "propertyIsEnumerable";
-      ScrDyn *args[1] = {key};
-      ScrDyn *answer = scr_ni_dyn_ops->call_method((ScrDyn *)value, method, strlen(method), args, 1);
-      found = answer != NULL && answer->kind == SCR_DYN_BOOL && answer->v.b;
-      scr_dyn_release(answer);
+    } else if (scr_ni_dyn_ops->has_own != NULL) {
+      found = scr_ni_dyn_ops->has_own((ScrDyn *)value, key, mode == 2) == 1;
     }
     scr_dyn_release(key);
     return found;

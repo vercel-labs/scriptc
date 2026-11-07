@@ -1127,48 +1127,6 @@ export function runtimeOptionalReceiverRead(
       "a runtime-optional capture whose narrowed value type is not representable",
     );
   }
-  if (narrowed.kind === "union") {
-    const classView = narrowStoredClassValue(lowerer, varRef(local.id, local.type, loc), narrowed);
-    if (classView) return classView;
-    // The checker may keep the receiver at the storage union unchanged
-    // (`string | undefined` on a JS `.match()` call). There is no
-    // sub-union to re-tag: preserve the value for the downstream
-    // nullable-receiver lowering, which performs the member-specific
-    // checked extraction. Refusing here deferred the whole statement to
-    // a runtime fence before that lowering could run.
-    if (typeEquals(local.type, narrowed)) {
-      return varRef(local.id, local.type, loc);
-    }
-    // A captured array element can itself be a union of records (for
-    // example Circle | Square). The optional storage union has one extra
-    // undefined arm; re-tag it to the checker-narrowed value union with a
-    // checked trap for that arm, then let union property lowering inspect
-    // the surviving record arms.
-    const helper = lowerer.narrowedRetagHelper(
-      narrowedNode,
-      local.type.unionId,
-      narrowed.unionId,
-      loc,
-    );
-    if (!helper) {
-      // Intersection-refined record arms read through their stored
-      // layout (the predicate `r is Route & { path: string }`).
-      const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
-      if (hosted) return hosted;
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "a runtime-optional capture whose narrowed union is not representable",
-      );
-    }
-    return {
-      kind: "call",
-      callee: helper,
-      args: [varRef(local.id, local.type, loc)],
-      type: narrowed,
-      loc,
-    };
-  }
   // An array hole in a slot with more than two arms fails the member
   // access with Node's TypeError before the checked extraction runs.
   const holeGuarded = (extracted: IrExpr): IrExpr => {
@@ -1198,6 +1156,85 @@ export function runtimeOptionalReceiverRead(
       loc,
     };
   };
+  if (narrowed.kind === "union") {
+    const classView = narrowStoredClassValue(lowerer, varRef(local.id, local.type, loc), narrowed);
+    if (classView) return classView;
+    // The checker may keep the receiver at the storage union unchanged
+    // (`string | undefined` on a JS `.match()` call). There is no
+    // sub-union to re-tag: preserve the value for the downstream
+    // nullable-receiver lowering, which performs the member-specific
+    // checked extraction. Refusing here deferred the whole statement to
+    // a runtime fence before that lowering could run.
+    if (typeEquals(local.type, narrowed)) {
+      return varRef(local.id, local.type, loc);
+    }
+    // A captured array element can itself be a union of records (for
+    // example Circle | Square). The optional storage union has one extra
+    // undefined arm; re-tag it to the checker-narrowed value union with a
+    // checked trap for that arm, then let union property lowering inspect
+    // the surviving record arms.
+    const helper = lowerer.narrowedRetagHelper(
+      narrowedNode,
+      local.type.unionId,
+      narrowed.unionId,
+      loc,
+    );
+    if (!helper) {
+      // Intersection-refined record arms read through their stored
+      // layout (the predicate `r is Route & { path: string }`).
+      const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
+      if (hosted) return hosted;
+      // The checker can also type the receiver WIDER than its storage. In
+      // a generic function a member receiver reads as the type parameter's
+      // constraint (`T extends A | B | C` reads as `A | B | C`), while an
+      // instantiation stores its own type argument (`A | undefined`).
+      // Nothing is narrowed there: every stored arm but the hidden
+      // undefined is an arm of the checker's union, so the read goes
+      // through the storage.
+      const stored = lowerer.unions.get(local.type.unionId)?.arms ?? [];
+      const hiddenTag = lowerer.armTag(local.type.unionId, UNDEFINED_T);
+      const widerView =
+        hiddenTag >= 0 &&
+        stored.length >= 2 &&
+        stored.every((arm, tag) => tag === hiddenTag || lowerer.armTag(narrowed.unionId, arm) >= 0);
+      const widened =
+        widerView && stored.length > 2
+          ? lowerer.unionRetagHelper(
+              local.type.unionId,
+              narrowed.unionId,
+              loc,
+              new Set([hiddenTag]),
+            )
+          : null;
+      if (!widerView || (stored.length > 2 && !widened)) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "a runtime-optional capture whose narrowed union is not representable",
+        );
+      }
+      // Several stored arms keep their tags in the checker's union; the
+      // undefined arm fails the member access with Node's TypeError. One
+      // stored arm takes the two-arm extraction below.
+      if (widened) {
+        return holeGuarded({
+          kind: "call",
+          callee: widened,
+          args: [varRef(local.id, local.type, loc)],
+          type: narrowed,
+          loc,
+        });
+      }
+    } else {
+      return {
+        kind: "call",
+        callee: helper,
+        args: [varRef(local.id, local.type, loc)],
+        type: narrowed,
+        loc,
+      };
+    }
+  }
   if (narrowed.kind === "object") {
     const view = checkedClassAssertion(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
     // Preserve the member-specific missing-value error on the two-arm

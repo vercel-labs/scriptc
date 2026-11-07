@@ -7496,9 +7496,9 @@ export class Lowerer {
   }
 
   /** The target export behind `const { member: local } = require("./x")`
-   * of a program module, by the member's name in that module's export
-   * table. Null when the binding is not such an element or the table does
-   * not name the member. */
+   * of a program module whose exports are a table, by the member's name in
+   * that table. Null when the binding is not such an element or the table
+   * does not name the member. */
   private requireDestructuredExportSymbolOf(binding: ts.Symbol): ts.Symbol | null {
     const element = binding.declarations.find(ts.isBindingElement);
     if (
@@ -7513,7 +7513,9 @@ export class Lowerer {
     if (!ts.isVariableDeclaration(declaration) || declaration.initializer === undefined)
       return null;
     const required = inlineProgramRequireOf(this, declaration.initializer);
-    if (required === null) return null;
+    // A module that exports one value whole keeps its members as
+    // properties of that value (cjsMemberAliasValueOf answers those).
+    if (required === null || !cjsNamespaceModule(this, required.dep)) return null;
     const property = element.propertyName;
     if (property !== undefined && !ts.isIdentifier(property) && !ts.isStringLiteralLike(property))
       return null;

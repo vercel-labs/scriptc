@@ -53,11 +53,12 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { resolveBuildCacheRoot } from "../backend/cache-root.js";
 import type { IrExpr, IrModule, IrStmt } from "../ir/ir.js";
 import { readProjectConfig } from "../project-config.js";
 import { effectGate } from "./effect-gate.js";
+import { probeCopy } from "./generated.js";
 import { packageDirOf } from "./origin.js";
 import { PROBE_RECORDER } from "./probe-recorder.js";
 
@@ -88,14 +89,11 @@ function isModuleInit(name: string): boolean {
 }
 
 /** A statement list as the statements control passes through in order:
- * blocks and guarded bodies opened up. */
+ * blocks nothing breaks out of opened up. */
 function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] {
   for (const s of stmts) {
-    if (s.kind === "block") flatStatements(s.body, out);
-    else if (s.kind === "tryCatch") {
-      flatStatements(s.tryBody, out);
-      if (s.finallyBody !== null) flatStatements(s.finallyBody, out);
-    } else out.push(s);
+    if (s.kind === "block" && s.labels === undefined) flatStatements(s.body, out);
+    else out.push(s);
   }
   return out;
 }
@@ -122,22 +120,65 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * suspended. Loads the walk does not reach (inside functions, dynamic
  * imports, conditions other than the ones below) keep IR order after it. */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
+  const { ordered } = evaluationWalk(mod);
+  if (ordered.length === 0) return calls;
+  const reached = new Set(ordered);
+  return [...ordered, ...calls.filter((c) => !reached.has(c))];
+}
+
+/** Whether `node` awaits anywhere inside. */
+function awaitsWithin(node: unknown): boolean {
+  if (node === null || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some(awaitsWithin);
+  const o = node as Record<string, unknown>;
+  if (o["kind"] === "awaitExpr" || o["kind"] === "awaitUnionExpr") return true;
+  if (o["kind"] === "intrinsic" && o["name"] === "module.await") return true;
+  for (const k in o) if (k !== "loc" && k !== "type" && awaitsWithin(o[k])) return true;
+  return false;
+}
+
+/** The walk of evaluationOrder: the loads it reaches, in order, and the
+ * ones among them the program reaches at one fixed point of its start, the
+ * same in every run (`fixed`): before anything awaited, outside every
+ * condition, in a module initializer that only the walk's own calls run.
+ * An initializer something else can call (a dynamic import, a `require`
+ * inside a function), or that such an initializer calls, may run earlier
+ * than the walk has it. */
+function evaluationWalk(mod: IrModule): {
+  ordered: DeferCall[];
+  fixed: Set<DeferCall>;
+  /** Why a load the walk reached is not in `fixed`. */
+  moving: Map<DeferCall, string>;
+} {
   const functions = new Map<string, IrModule["functions"][number]>();
   for (const fn of mod.functions) if (typeof fn.name === "string") functions.set(fn.name, fn);
   const entered = new Set<string>();
   const reached = new Set<DeferCall>();
   const ordered: DeferCall[] = [];
-  const suspended: { stmts: IrStmt[]; at: number }[] = [];
+  const suspended: { stmts: IrStmt[]; at: number; within: string; async: boolean }[] = [];
+  /** Per reached load: its initializer, and whether the walk came to it
+   * unconditionally and before any await. */
+  const sites = new Map<DeferCall, { within: string; conditional: boolean; late: boolean }>();
+  /** The initializer calls the walk evaluated, per initializer. */
+  const followed = new Map<string, number>();
+  let within = "";
+  /** Whether the function being walked is async: any of its statements
+   * may await, also where the walk does not look (awaitsWithin). */
+  let inAsync = false;
+  let conditions = 0;
+  let awaited = false;
   /** Evaluates what the walk follows of `e`; true when it awaits. */
   function evaluate(e: IrExpr): boolean {
     if (e.kind === "libCall" && e.fn === "nodeIsland.defer") {
       if (!reached.has(e)) {
         reached.add(e);
         ordered.push(e);
+        sites.set(e, { within, conditional: conditions > 0, late: awaited });
       }
       return false;
     }
     if (e.kind === "call" && isModuleInit(e.callee)) {
+      followed.set(e.callee, (followed.get(e.callee) ?? 0) + 1);
       enter(e.callee);
       return false;
     }
@@ -161,11 +202,28 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
       else if (s.kind === "if") {
         // The run-once guard returns on a revisit; a fork or worker root is
         // one branch of a selection.
+        conditions++;
         run(flatStatements(s.then), 0);
         if (s.else_ !== null) run(flatStatements(s.else_), 0);
+        conditions--;
+      } else if (s.kind === "tryCatch") {
+        // A guarded body whose handler throws again (a module's own
+        // evaluation record) is passed through like a block; under any
+        // other handler a statement may be skipped while later ones run.
+        const passes = s.catchBody === null || s.catchBody.at(-1)?.kind === "rethrow";
+        if (!passes) conditions++;
+        run(flatStatements(s.tryBody), 0);
+        if (!passes) conditions--;
+        if (s.finallyBody !== null) run(flatStatements(s.finallyBody), 0);
+      } else if (s.kind === "block") {
+        conditions++;
+        run(flatStatements(s.body), 0);
+        conditions--;
       } else if (s.kind === "return") return;
+      if (!awaits && inAsync && awaitsWithin(s)) awaits = true;
       if (awaits) {
-        suspended.push({ stmts, at: i + 1 });
+        suspended.push({ stmts, at: i + 1, within, async: inAsync });
+        awaited = true;
         return;
       }
     }
@@ -174,12 +232,75 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
     if (entered.has(name)) return;
     entered.add(name);
     const fn = functions.get(name);
-    if (fn !== undefined) run(flatStatements(fn.body), 0);
+    if (fn === undefined) return;
+    const outer = within;
+    const outerAsync = inAsync;
+    within = name;
+    inAsync = fn.async === true;
+    run(flatStatements(fn.body), 0);
+    within = outer;
+    inAsync = outerAsync;
   }
   if (typeof mod.entry === "string") enter(mod.entry);
-  for (let i = 0; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
-  if (ordered.length === 0) return calls;
-  return [...ordered, ...calls.filter((c) => !reached.has(c))];
+  for (let i = 0; i < suspended.length; i++) {
+    within = suspended[i]!.within;
+    inAsync = suspended[i]!.async;
+    run(suspended[i]!.stmts, suspended[i]!.at);
+  }
+  const fixed = new Set<DeferCall>();
+  const moving = new Map<DeferCall, string>();
+  if (ordered.length === 0) return { ordered, fixed, moving };
+  // Every mention of an initializer in the program, per initializer, and
+  // the initializers each function mentions.
+  const mentions = new Map<string, number>();
+  const callees = new Map<string, Set<string>>();
+  const seen = new Set<object>();
+  let scanning = "";
+  const scan = (v: unknown): void => {
+    if (typeof v === "string") {
+      if (isModuleInit(v) && functions.has(v)) {
+        mentions.set(v, (mentions.get(v) ?? 0) + 1);
+        callees.get(scanning)?.add(v);
+      }
+      return;
+    }
+    if (v === null || typeof v !== "object" || seen.has(v)) return;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      for (const x of v) scan(x);
+      return;
+    }
+    const o = v as Record<string, unknown>;
+    for (const k in o) if (k !== "loc" && k !== "type") scan(o[k]);
+  };
+  for (const fn of mod.functions) {
+    scanning = typeof fn.name === "string" ? fn.name : "";
+    callees.set(scanning, new Set());
+    const fields = fn as unknown as Record<string, unknown>;
+    for (const k in fields) if (k !== "name" && k !== "loc") scan(fields[k]);
+  }
+  // Initializers that can run where the walk does not have them, and the
+  // ones they call.
+  const early = new Set<string>();
+  const queue: string[] = [];
+  for (const [name, count] of mentions) if (count !== (followed.get(name) ?? 0)) queue.push(name);
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (early.has(name)) continue;
+    early.add(name);
+    for (const callee of callees.get(name) ?? []) queue.push(callee);
+  }
+  for (const [call, site] of sites) {
+    if (site.late) moving.set(call, "the program reaches it after an await");
+    else if (site.conditional) moving.set(call, "the program reaches it under a condition");
+    else if (early.has(site.within))
+      moving.set(
+        call,
+        "its module can also be loaded outside the static import graph (a dynamic import, or a require inside a function)",
+      );
+    else fixed.add(call);
+  }
+  return { ordered, fixed, moving };
 }
 
 function pathOf(call: DeferCall): string {
@@ -238,14 +359,48 @@ function hasDynamicLoads(mod: IrModule): boolean {
   return found;
 }
 
+/** The probe's copies of the tree's generated modules (generated.ts), in a
+ * fresh private directory: the modules sit nowhere on the build machine,
+ * and never in the user's source tree. By the module's place under the
+ * tree root. */
+function writeProbeCopies(tree: NonNullable<NonNullable<IrModule["nodeIsland"]>["modules"]>): {
+  dir: string;
+  copies: Map<string, string>;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-closed-"));
+  const copies = new Map<string, string>();
+  const texts = new Map<string, string>();
+  for (const file of tree.files) {
+    if (file.generated === undefined) continue;
+    const place = join(tree.root, ...file.path.split("/"));
+    copies.set(place, join(dir, basename(file.path)));
+    texts.set(place, file.generated);
+  }
+  for (const [place, text] of texts)
+    writeFileSync(
+      copies.get(place)!,
+      probeCopy(text, place, (other) => copies.get(other)),
+      { mode: 0o600 },
+    );
+  return { dir, copies };
+}
+
 export function finalizeDeferredIslands(
   mod: IrModule,
   entryPath: string,
   packDir: string | null,
-  probeModules: (packDir: string, modules: string[]) => ProbeOutput | string = runProbe,
+  probeModules: (
+    packDir: string,
+    modules: string[],
+    generated: string[],
+  ) => ProbeOutput | string = runProbe,
 ): DeferralDecision[] {
-  const calls = evaluationOrder(mod, deferCalls(mod));
-  if (calls.length === 0) return [];
+  const found = deferCalls(mod);
+  if (found.length === 0) return [];
+  const walk = evaluationWalk(mod);
+  const reached = new Set(walk.ordered);
+  const calls =
+    walk.ordered.length === 0 ? found : [...walk.ordered, ...found.filter((c) => !reached.has(c))];
   const dynamicLoads = hasDynamicLoads(mod);
   const decisions: DeferralDecision[] = [];
   const decide = (call: DeferCall, deferred: boolean, reason: string): void => {
@@ -260,9 +415,31 @@ export function finalizeDeferredIslands(
   }
   const config = readProjectConfig(entryPath);
   const publicEnv = new Set(config.nodeIslands.publicEnv);
+  const tree = mod.nodeIsland?.modules;
+  // Modules the build wrote (generated.ts), by their place under the tree
+  // root: the constants of the program whose initializers the island
+  // evaluates.
+  const generated = new Set<string>();
+  for (const file of tree?.files ?? [])
+    if (file.generated !== undefined) generated.add(join(tree!.root, ...file.path.split("/")));
   const candidates: { call: DeferCall; path: string; lazy: boolean; gate: string }[] = [];
   for (const call of calls) {
     const path = fileOf(mod, pathOf(call));
+    if (generated.has(path)) {
+      // A generated module computes from what earlier island code left
+      // behind, so its snapshot holds only where the program reaches it at
+      // the point of its start the probe evaluated it at (evaluationWalk).
+      // Anywhere else it evaluates at its position, and the probe leaves it
+      // out, so that no later module is probed after it.
+      if (walk.fixed.has(call)) candidates.push({ call, path, lazy: false, gate: "" });
+      else
+        decide(
+          call,
+          false,
+          `the program does not reach it at one fixed point of its start: ${walk.moving.get(call) ?? "no static import leads to it"}`,
+        );
+      continue;
+    }
     const pkg = packageDirOf(path);
     const evaluate = pkg === null ? "auto" : (config.packages.get(pkg.name)?.evaluate ?? "auto");
     if (evaluate === "eager") {
@@ -279,7 +456,19 @@ export function finalizeDeferredIslands(
   }
   let allDeferred = candidates.length === calls.length;
   if (candidates.length === 0) return decisions;
-  const probe = probeModules(packDir, [...new Set(candidates.map((c) => c.path))]);
+  // The probe loads a generated module from a copy (writeProbeCopies).
+  const scratch = generated.size > 0 && tree !== undefined ? writeProbeCopies(tree) : null;
+  const probed = (path: string): string => scratch?.copies.get(path) ?? path;
+  let probe: ProbeOutput | string;
+  try {
+    probe = probeModules(
+      packDir,
+      [...new Set(candidates.map((c) => probed(c.path)))],
+      scratch === null ? [] : [...scratch.copies.values()],
+    );
+  } finally {
+    if (scratch !== null) rmSync(scratch.dir, { recursive: true, force: true });
+  }
   if (typeof probe === "string") {
     for (const c of candidates) decide(c.call, false, probe);
     return decisions;
@@ -287,11 +476,12 @@ export function finalizeDeferredIslands(
   const packGuards = packGuardLines(packDir);
   // The shipped tree's files are the executable's own (the tree is checked
   // against its digests when it opens): only files outside it need guards.
-  const tree = mod.nodeIsland?.modules;
+  // The probe's copy of a generated module stands for the tree's file.
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
+  for (const copy of scratch?.copies.values() ?? []) shipped.add(copy);
   const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
   for (const c of candidates) {
-    const result = probe.results.find((r) => r.path === c.path);
+    const result = probe.results.find((r) => r.path === probed(c.path));
     const why = (() => {
       if (result === undefined) return "the probe did not load it";
       if (result.throws !== undefined) return `its evaluation throws: ${result.throws}`;
@@ -320,9 +510,11 @@ export function finalizeDeferredIslands(
     }
     const how = c.lazy
       ? `"evaluate": "lazy"`
-      : c.gate === ""
-        ? "static gate"
-        : `recorded load is deterministic (static gate: ${c.gate})`;
+      : generated.has(c.path)
+        ? "recorded evaluation is deterministic"
+        : c.gate === ""
+          ? "static gate"
+          : `recorded load is deterministic (static gate: ${c.gate})`;
     deferred.push({ call: c.call, result, why: how });
   }
   // Per-module evaluation once Node runs (no materialize-all at start):
@@ -330,8 +522,18 @@ export function finalizeDeferredIslands(
   // and the program loads no island module at a call site. Deferred
   // modules whose closures share files form one component, evaluated
   // together in import order.
+  //
+  // Not with generated modules: in this mode a module stays deferred
+  // while Node runs and its snapshot answers until it evaluates, but a
+  // generated module computes from island state that the program's calls
+  // since then have changed (`registry.add(x)` before `const n =
+  // registry.count()`). Evaluated when Node starts, a load that Node's
+  // start precedes evaluates at its position instead.
   const lazyMode =
-    allDeferred && !dynamicLoads && deferred.every((d) => d.result.mutations.length === 0);
+    allDeferred &&
+    !dynamicLoads &&
+    generated.size === 0 &&
+    deferred.every((d) => d.result.mutations.length === 0);
   const component = new Map<string, number>();
   if (lazyMode) {
     const parent = deferred.map((_, i) => i);
@@ -606,14 +808,14 @@ function probeHost(): { exe: string; bootstrap: string; kept: boolean } | string
   return `cannot build the probe host (${errors.join("; ")})`;
 }
 
-function runProbe(packDir: string, modules: string[]): ProbeOutput | string {
+function runProbe(packDir: string, modules: string[], generated: string[]): ProbeOutput | string {
   const host = probeHost();
   if (typeof host === "string") return host;
   const { exe, bootstrap, kept } = host;
   const stem = join(dirname(exe), `run.${process.pid}.${Date.now()}`);
   const input = `${stem}.in.json`;
   const output = `${stem}.out.json`;
-  writeFileSync(input, JSON.stringify({ modules }), { mode: 0o600 });
+  writeFileSync(input, JSON.stringify({ modules, generated }), { mode: 0o600 });
   let out: string;
   try {
     execFileSync(exe, [packDir, bootstrap, input, output], {

@@ -1088,8 +1088,10 @@ export function isRefCounted(t: IrType): boolean {
 export interface IrNodeIslandModules {
   root: string;
   /** `placeholder`: a program module the islands share, shipped as
-   * providedModulePlaceholder (node-islands/modules.ts), not its source. */
-  files: { path: string; size: number; sha256: string; placeholder?: true }[];
+   * providedModulePlaceholder (node-islands/modules.ts), not its source.
+   * `generated`: the text of a module the build wrote (node-islands/
+   * generated.ts); no file at `root` holds it. */
+  files: { path: string; size: number; sha256: string; placeholder?: true; generated?: string }[];
   links: { path: string; target: string }[];
   /** Where the executable finds the tree: absent when it carries the tree
    * itself, else a `$ORIGIN/` path (`--libnode=beside`). */

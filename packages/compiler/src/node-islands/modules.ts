@@ -40,6 +40,13 @@ import {
   trackedRealpath,
 } from "../frontend/input-tracker.js";
 import type { IrNodeIslandModules } from "../ir/ir.js";
+import {
+  generatedModuleName,
+  generatedModuleText,
+  generatedTreeFile,
+  generatedTreePath,
+  type GeneratedModule,
+} from "./generated.js";
 import { packageDirOf } from "./origin.js";
 
 export type NodeIslandModuleTree = IrNodeIslandModules;
@@ -178,6 +185,10 @@ export class NodeIslandModuleCollector {
   private readonly provided = new Set<string>();
   /** The problems addNamedData reported (isDataFileProblem). */
   private readonly dataProblems = new Set<string>();
+  /** Modules the build writes (addGenerated), by key. */
+  private readonly generated = new Map<string, GeneratedModule>();
+  /** Their tree paths, once tree() placed them. */
+  private readonly generatedPaths = new Map<string, string>();
 
   /** Whether `problem`, returned by add or addLoaded, is a data file the
    * build does not ship (addNamedData) rather than a module. */
@@ -222,6 +233,44 @@ export class NodeIslandModuleCollector {
     }
   }
 
+  /** Collects a module the build writes (generated.ts): the tree holds its
+   * text under GENERATED_DIRECTORY. The files it imports are loads of the
+   * program, collected by addLoaded. */
+  addGenerated(key: string, module: GeneratedModule): void {
+    this.generated.set(key, module);
+  }
+
+  /** The name a load gives the generated module `key` once tree() placed
+   * it, or null when `key` names none. */
+  generatedLoadPath(key: string): string | null {
+    const path = this.generatedPaths.get(key);
+    return path === undefined ? null : `./${path}`;
+  }
+
+  /** The tree's entries of the generated modules, placed under `root`. */
+  private generatedFiles(root: string): NodeIslandModuleFile[] {
+    const names = new Map<string, string>();
+    for (const [key, module] of this.generated)
+      names.set(key, generatedModuleName(portable(relative(root, module.source)), module.index));
+    const files: NodeIslandModuleFile[] = [];
+    for (const [key, module] of this.generated) {
+      const name = names.get(key)!;
+      const file = generatedTreeFile(root, name);
+      const specifiers = module.imports.map((entry) => {
+        const other = names.get(entry.target);
+        return other !== undefined
+          ? `./${other}`
+          : NodeIslandModuleCollector.relativeSpecifier(file, entry.target);
+      });
+      const text = generatedModuleText(module, specifiers);
+      const bytes = new TextEncoder().encode(text);
+      const path = generatedTreePath(name);
+      this.generatedPaths.set(key, path);
+      files.push({ path, size: bytes.length, sha256: sha256(bytes), generated: text });
+    }
+    return files;
+  }
+
   /** The collected tree, or null when no call loads a file. */
   tree(): NodeIslandModuleTree | null {
     if (this.files.size === 0 && this.links.size === 0) return null;
@@ -249,6 +298,11 @@ export class NodeIslandModuleCollector {
       const bytes = trackedReadBytes(file);
       if (bytes === null) continue;
       files.push({ path, size: bytes.length, sha256: sha256(bytes) });
+    }
+    if (this.generated.size > 0) {
+      // The manifest lists files in path order.
+      files.push(...this.generatedFiles(root));
+      files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     }
     const links: NodeIslandModuleLink[] = [...this.links]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -1026,6 +1080,7 @@ export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array 
     const path = join(modules.root, ...file.path.split("/"));
     let bytes: Uint8Array;
     if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
+    else if (file.generated !== undefined) bytes = new TextEncoder().encode(file.generated);
     else
       try {
         bytes = new Uint8Array(readFileSync(path));

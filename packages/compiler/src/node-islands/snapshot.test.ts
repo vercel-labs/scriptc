@@ -1,7 +1,9 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -287,5 +289,140 @@ describe("the order deferred loads are probed in", () => {
       ],
     };
     expect(paths(mod, [inFunction, reachedLoad])).toEqual(["reached", "in-function"]);
+  });
+});
+
+describe("generated island modules (closed-island-init.ts)", () => {
+  /** A project whose entry imports the package `dep` and then loads two
+   * generated modules: one at a fixed point of the program's start, one
+   * inside a function. The probe's stand-in records what it was given and
+   * answers a deterministic load for every module. */
+  function generatedProject() {
+    const root = scratch();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
+    mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "dep", "package.json"), '{ "name": "dep" }');
+    writeFileSync(join(root, "node_modules", "dep", "index.js"), "exports.make = () => ({});\n");
+    const text = (name: string) =>
+      `import dep from "../../node_modules/dep/index.js";\nexport const ${name} = dep.make();\n`;
+    const defer = (path: string) => ({
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: path },
+        { kind: "strLit", value: "" },
+      ],
+    });
+    const load = (call: unknown) => ({ kind: "assign", localId: "%g.island.0", value: call });
+    const dep = defer("./node_modules/dep/index.js");
+    const fixed = defer("./.scriptc/closed/main.0000000000.0.mjs");
+    const late = defer("./.scriptc/closed/main.0000000000.1.mjs");
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "helper", body: [load(late)] },
+        { name: "%init.0", body: [load(dep), load(fixed)] },
+        {
+          name: "%main",
+          body: [{ kind: "exprStmt", expr: { kind: "call", callee: "%init.0", args: [] } }],
+        },
+      ],
+      globals: [],
+      nodeIsland: {
+        libnode: "",
+        nodeVersion: "",
+        modules: {
+          root,
+          files: [
+            {
+              path: ".scriptc/closed/main.0000000000.0.mjs",
+              size: 0,
+              sha256: "",
+              generated: text("a"),
+            },
+            {
+              path: ".scriptc/closed/main.0000000000.1.mjs",
+              size: 0,
+              sha256: "",
+              generated: text("b"),
+            },
+            { path: "node_modules/dep/index.js", size: 0, sha256: "" },
+          ],
+          links: [],
+        },
+      },
+    } as unknown as IrModule;
+    const seen: { modules: string[]; generated: string[]; copy: string } = {
+      modules: [],
+      generated: [],
+      copy: "",
+    };
+    const decisions = finalizeDeferredIslands(
+      mod,
+      join(root, "main.ts"),
+      root,
+      (_pack, modules, generated) => {
+        seen.modules = modules;
+        seen.generated = generated;
+        seen.copy = readFileSync(modules[1]!, "utf8");
+        return {
+          results: modules.map((path, i) => ({
+            path,
+            root: i + 1,
+            inputs: [],
+            volatile: [],
+            effects: [],
+            mutations: [],
+            env: [],
+            tty: [],
+            files: [path, join(root, "node_modules", "dep", "index.js")],
+          })),
+          objects: {
+            "1": { f: 0, p: false, m: [] },
+            "2": { f: 0, p: false, m: [["a", { n: "7" }]] },
+          },
+        };
+      },
+    );
+    return { root, decisions, seen, dep, fixed, late };
+  }
+
+  test("are probed from copies outside the tree, in the program's order", () => {
+    const { root, seen } = generatedProject();
+    expect(seen.modules).toHaveLength(2);
+    expect(seen.modules[0]).toBe(join(root, "node_modules", "dep", "index.js"));
+    expect(seen.modules[1]!.startsWith(root)).toBe(false);
+    expect(seen.generated).toContain(seen.modules[1]);
+    expect(seen.copy).toBe(
+      `import dep from ${JSON.stringify(join(root, "node_modules", "dep", "index.js"))};\n` +
+        "export const a = dep.make();\n",
+    );
+    expect(existsSync(seen.modules[1]!)).toBe(false);
+  });
+
+  test("defer at a fixed point of the program's start, with no guard for the copy", () => {
+    const { decisions, fixed, seen } = generatedProject();
+    const decision = decisions.find((d) => d.path.endsWith("main.0000000000.0.mjs"))!;
+    expect(decision.deferred).toBe(true);
+    expect(decision.reason).toContain("recorded evaluation is deterministic");
+    const snapshot = (fixed.args[1] as { value: string }).value;
+    expect(snapshot).toContain("K 2 1:a n7");
+    expect(snapshot).not.toContain(seen.modules[1]!);
+  });
+
+  test("load where they stand when the program can reach them at another point", () => {
+    const { decisions, late } = generatedProject();
+    const decision = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
+    expect(decision.deferred).toBe(false);
+    expect(decision.reason).toContain("one fixed point of its start: no static import leads to it");
+    expect(late.fn).toBe("nodeIsland.require");
+  });
+
+  test("keep the program out of per-module mode", () => {
+    const { decisions, dep } = generatedProject();
+    expect(decisions.find((d) => d.path.endsWith("index.js"))!.reason).toContain(
+      "evaluated when Node starts",
+    );
+    expect((dep.args[1] as { value: string }).value).not.toMatch(/^M /m);
   });
 });

@@ -187,6 +187,8 @@ exports.probe = function probe(input) {
     return { o: id };
   };
 
+  // The modules the build wrote for the program's island-closed constants.
+  const generated = new Set(input.generated || []);
   // ── the recorder ──
   const inputs = [], volatile = [], effects = [], tty = new Map(), envKeys = new Map();
   const files = new Set();
@@ -196,8 +198,19 @@ exports.probe = function probe(input) {
   // the module cache keeps what such a file exported without it.
   let refused = null;
   const refusedBy = new Map();
+  // Evaluating one of the modules the build wrote for the program's
+  // island-closed constants (input.generated): the calls are the program's
+  // own, so the build does not perform what they would do to the machine.
+  // The first effect or input ends the evaluation instead (withheld).
+  let withholding = false;
+  let withheld = null;
   const note = (list, what) => {
-    if (recording && !internalCaller()) list.push(list === volatile ? what : what + " (" + lastCaller + ")");
+    if (!recording || internalCaller()) return;
+    list.push(list === volatile ? what : what + " (" + lastCaller + ")");
+    if (withholding && list !== volatile) {
+      if (withheld === null) withheld = what;
+      throw new Error("the build does not perform " + what + " for the program");
+    }
   };
   const undo = [];
   const wrapFn = (owner, key, list, label) => {
@@ -440,13 +453,17 @@ exports.probe = function probe(input) {
   // The probe evaluates installed packages only: a file outside every
   // node_modules directory is the program's own source (a program module,
   // or a project file a package requires), and its load throws before the
-  // file evaluates, so the module that asked for it stays eager.
+  // file evaluates, so the module that asked for it stays eager. The
+  // modules the build wrote for the program's island-closed constants
+  // (generated) are the exception: they hold calls into those packages
+  // with literal arguments and nothing else of the program, and what such
+  // a call would do to the machine is withheld (note).
   const hooks = Module.registerHooks({
     resolve(specifier, context, nextResolve) {
       const result = nextResolve(specifier, context);
       if (recording && typeof result.url === "string" && result.url.startsWith("file:")) {
         const file = require("node:url").fileURLToPath(result.url);
-        if (!/[\\/]node_modules[\\/]/.test(file)) {
+        if (!/[\\/]node_modules[\\/]/.test(file) && !generated.has(file)) {
           if (refused === null) refused = file;
           throw new Error("the build does not evaluate " + file + ", a file of the program");
         }
@@ -520,6 +537,8 @@ exports.probe = function probe(input) {
     loadPromises.clear();
     tty.clear(); envKeys.clear(); files.clear();
     refused = null;
+    withholding = generated.has(path);
+    withheld = null;
     files.add(path);
     currentFiles = files;
     currentPackageDir = null;
@@ -571,6 +590,11 @@ exports.probe = function probe(input) {
       tty: [...tty],
       files: [...files],
     };
+    if (withheld !== null && threw !== undefined) {
+      record.reason = "its evaluation has effects or reads inputs: " + withheld + ", which the build does not perform";
+      results.push(record);
+      continue;
+    }
     if (threw !== undefined) { record.throws = threw; results.push(record); continue; }
     if (!("o" in root)) { record.reason = "its value is not an object"; results.push(record); continue; }
     record.root = root.o;

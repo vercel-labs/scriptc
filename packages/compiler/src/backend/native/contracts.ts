@@ -153,6 +153,8 @@ export interface CcOptions {
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
+  /** A spawnSync capture read as a Buffer: compiles scr_child_capture.c. */
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
@@ -164,6 +166,9 @@ export interface CcOptions {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
+  /** Reflect.getPrototypeOf's primitive-target check: compiles
+   * scr_dyn_reflect_proto.c. */
+  reflectProtoTarget?: boolean;
   /** `delete` of a key a record's type does not declare: compiles
    * scr_record_source_delete.c. */
   recordSourceDelete?: boolean;

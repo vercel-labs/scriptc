@@ -1255,6 +1255,8 @@ void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
 /* Reflect.has's target check: Node's TypeError pending for a primitive. */
 void scr_dyn_reflect_has_target(const ScrDyn *target);
+/* Reflect.getPrototypeOf's target check: Node's TypeError for any primitive. */
+void scr_dyn_reflect_get_prototype_target(const ScrDyn *target);
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key);
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *key, bool strict);

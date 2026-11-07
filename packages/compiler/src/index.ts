@@ -37,7 +37,7 @@ import {
   type UnitStore,
 } from "./frontend/lowering/unit-reuse.js";
 import { commentOnlyReplay } from "./coverage/verdict-semantic.js";
-import { llvmRefusalDiag, targetRefusalDiag } from "./backend/target-diagnostics.js";
+import { llvmRefusalDiags, targetRefusalDiag } from "./backend/target-diagnostics.js";
 import type {
   CompileOptions,
   CompileSourceOptions,
@@ -1307,7 +1307,7 @@ async function prepareExecutableInput(
       });
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
-      return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
+      return { ok: false, diagnostics: llvmRefusalDiags(err, entryPath), sourceTexts };
     }
     timing("llvm-emit");
     if (outputKind === "llvm") {
@@ -1396,7 +1396,7 @@ async function prepareExecutableInput(
     });
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
-    return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
+    return { ok: false, diagnostics: llvmRefusalDiags(err, entryPath), sourceTexts };
   }
   timing("llvm-emit");
   await writeLlvmSource(llvmSourcePath, llvmSource);
@@ -3004,7 +3004,7 @@ async function compileLibraryTracked(
     timing("llvm-write");
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
-    return fail([llvmRefusalDiag(err, entryPath)]);
+    return fail(llvmRefusalDiags(err, entryPath));
   }
 
   let irPath: string | undefined;

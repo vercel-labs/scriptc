@@ -226,3 +226,71 @@ console.log(v.a);
   expect(views.partial(idOf("a"), idOf("a,b"))).toBe(false);
   expect(views.partialTargets.size).toBe(0);
 });
+
+/** The reasons planRecordViews declines the partial assertions of `source`. */
+async function declinedReasons(source: string): Promise<string[]> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-record-views-"));
+  try {
+    const entry = join(dir, "main.ts"),
+      outPath = join(dir, "main.ir.json");
+    await writeFile(entry, source);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod: IrModule = deserializeModule(await readFile(outPath, "utf8"));
+    const traced = computeTraced(mod).shapes;
+    return planRecordViews(mod, {
+      traced: (id) => traced.has(`record:${id}`),
+      excluded: () => false,
+    }).declinedPartials.map((site) => site.reason);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a partial assertion whose type gets a view is not declined", async () => {
+  expect(
+    await declinedReasons(`
+type Point = { x: number; y: number };
+const p = {} as Point;
+p.x = 1;
+p.y = 2;
+console.log(p.x + p.y);
+`),
+  ).toEqual([]);
+});
+
+test("a partial assertion to a type the program freezes is declined as frozen", async () => {
+  expect(
+    await declinedReasons(`
+type Point = { x: number; y: number };
+const p = {} as Point;
+p.x = 1;
+p.y = 2;
+const fixed: Point = { x: 0, y: 0 };
+console.log(p.x + p.y, Object.isFrozen(Object.freeze(fixed)));
+`),
+  ).toEqual(["frozen"]);
+});
+
+test("a partial literal that holds a function is declined as possibly cyclic", async () => {
+  expect(
+    await declinedReasons(`
+type Handler = { run: () => number; label: string };
+const h = { run: () => 41 } as Handler;
+h.label = "h";
+console.log(h.run(), h.label);
+`),
+  ).toEqual(["cyclic"]);
+});
+
+test("a declined partial assertion whose missing fields all admit undefined is not reported", async () => {
+  // The ordinary checked conversion reads undefined into an untyped field.
+  expect(
+    await declinedReasons(`
+type Loose = { tag: string; payload: unknown };
+const made = { tag: "t" } as Loose;
+const fixed: Loose = { tag: "f", payload: 1 };
+console.log(made.tag, Object.isFrozen(Object.freeze(fixed)));
+`),
+  ).toEqual([]);
+});

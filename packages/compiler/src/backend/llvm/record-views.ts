@@ -36,6 +36,7 @@ import {
   type IrModule,
   type IrRecordShape,
   type IrType,
+  type SrcLoc,
 } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import type { BlockBuilder } from "./blocks.js";
@@ -53,7 +54,31 @@ export interface RecordViews {
   readonly partialTargets: ReadonlySet<string>;
   /** Whether some partial source of view target `target` lacks `field`. */
   partialMissing(target: string, field: string): boolean;
+  /** The partial record assertions that get no view and whose checked
+   * conversion therefore cannot succeed: the literal leaves a field
+   * unwritten that cannot hold `undefined`. In source order. */
+  readonly declinedPartials: readonly DeclinedPartial[];
 }
+
+/** Why a partial record assertion's target cannot be a view of its literal. */
+export type PartialDeclineReason = "layout" | "frozen" | "cyclic" | "shared" | "holds";
+
+export interface DeclinedPartial {
+  readonly loc: SrcLoc;
+  readonly reason: PartialDeclineReason;
+}
+
+/** What each reason says about the asserted type, for the refusal's hint. */
+export const PARTIAL_DECLINE_TEXT: Record<PartialDeclineReason, string> = {
+  layout:
+    "the asserted type is a tuple, has an index signature or accessors, or its values keep more than one property order",
+  frozen: "values of the asserted type may be frozen in this program",
+  cyclic: "values of the asserted type may be part of a reference cycle",
+  shared:
+    "the asserted type is one arm of a union of object types, is published to another unit, or the program starts worker threads",
+  holds:
+    "the literal holds a value that may reference the asserted type (a function, a class instance, an untyped value or the type itself)",
+};
 
 /** The trap of an internal reader of a field a partial view's viewed record
  * lacks (a width copy, say): a source-level read of the field threw first. */
@@ -66,6 +91,7 @@ export const NO_RECORD_VIEWS: RecordViews = {
   partial: () => false,
   partialTargets: new Set(),
   partialMissing: () => false,
+  declinedPartials: [],
 };
 
 interface ViewOptions {
@@ -187,7 +213,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   const checked: IrType[] = [];
   const boxed: IrType[] = [];
   // (target B, source A) of a partial record assertion's checked cast.
-  const partialPairs: { target: string; source: string }[] = [];
+  const partialPairs: { target: string; source: string; loc: SrcLoc }[] = [];
   for (const fn of mod.functions)
     everyStmtList(fn.body, {
       stmt: () => true,
@@ -203,6 +229,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
             partialPairs.push({
               target: e.type.shapeId,
               source: e.value.value.type.shapeId,
+              loc: e.loc,
             });
         } else if (e.kind === "dynFrom" && e.liveRef === true) boxed.push(e.value.type);
         else if (e.kind === "libCall" && /^(transform|passthrough)\.(new|init)$/.test(e.fn)) {
@@ -242,16 +269,37 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   // view's capsule reference like any other. A pair whose source has every
   // target field is an ordinary full view and is already planned above.
   const partials = new Map<string, Set<string>>();
+  // Why a pair got no view (the first reason found).
+  const declined = new Map<string, PartialDeclineReason>();
+  const pairKey = (pair: { target: string; source: string }): string =>
+    `${pair.target}<${pair.source}`;
   for (const pair of partialPairs) {
     const target = shapes.get(pair.target);
     const source = shapes.get(pair.source);
+    if (!target || !source) continue;
+    if (covers(source, target)) continue;
+    const decline = (reason: PartialDeclineReason): void => {
+      if (!declined.has(pairKey(pair))) declined.set(pairKey(pair), reason);
+    };
     // The source of a partial pair may declare no field at all (an empty
     // literal asserted to a wider type): every target field is then the
     // view's to keep.
-    if (!target || !source || !plainShape(target) || !plainShape(source, true)) continue;
-    if (target.freezable === true || source.freezable === true) continue;
-    if (options.traced(pair.target) || options.excluded(pair.target)) continue;
-    if (covers(source, target)) continue;
+    if (!plainShape(target) || !plainShape(source, true)) {
+      decline("layout");
+      continue;
+    }
+    if (target.freezable === true || source.freezable === true) {
+      decline("frozen");
+      continue;
+    }
+    if (options.traced(pair.target)) {
+      decline("cyclic");
+      continue;
+    }
+    if (options.excluded(pair.target)) {
+      decline("shared");
+      continue;
+    }
     const list = sources.get(pair.target) ?? [];
     if (!list.includes(pair.source)) list.push(pair.source);
     sources.set(pair.target, list);
@@ -278,11 +326,31 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
       else sources.delete(id);
       const partial = partials.get(id);
       if (!partial) continue;
-      for (const source of [...partial]) if (!kept.includes(source)) partial.delete(source);
+      for (const source of [...partial]) {
+        if (kept.includes(source)) continue;
+        partial.delete(source);
+        declined.set(pairKey({ target: id, source }), "holds");
+      }
       if (partial.size === 0) partials.delete(id);
     }
   }
-  if (sources.size === 0) return NO_RECORD_VIEWS;
+  // A declined pair's conversion is the ordinary checked one, which reads
+  // every target field from the literal's capsule: it throws whenever the
+  // literal leaves out a field that cannot hold `undefined`.
+  const declinedPartials: DeclinedPartial[] = [];
+  for (const pair of partialPairs) {
+    const reason = declined.get(pairKey(pair));
+    if (reason === undefined) continue;
+    const written = new Set((shapes.get(pair.source)?.fields ?? []).map((field) => field.name));
+    const fails = (shapes.get(pair.target)?.fields ?? []).some(
+      (field) => !written.has(field.name) && !admitsUndefined(field.type, unions),
+    );
+    if (fails) declinedPartials.push({ loc: pair.loc, reason });
+  }
+  if (sources.size === 0)
+    return declinedPartials.length === 0
+      ? NO_RECORD_VIEWS
+      : { ...NO_RECORD_VIEWS, declinedPartials };
   const targets = new Set(sources.keys());
   // The target fields some partial source lacks: their presence test is a
   // runtime view probe, and their slot lookup traps.
@@ -303,7 +371,26 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
     partial: (target, source) => partials.get(target)?.has(source) === true,
     partialTargets: new Set(partials.keys()),
     partialMissing: (target, field) => missing.get(target)?.has(field) === true,
+    declinedPartials,
   };
+}
+
+/** Whether a checked conversion into `type` accepts `undefined`. */
+function admitsUndefined(
+  type: IrType,
+  unions: ReadonlyMap<string, { arms: readonly IrType[] }>,
+): boolean {
+  switch (type.kind) {
+    case "dyn":
+    case "jsval":
+    case "undefinedT":
+    case "void":
+      return true;
+    case "union":
+      return (unions.get(type.unionId)?.arms ?? []).some((arm) => admitsUndefined(arm, unions));
+    default:
+      return false;
+  }
 }
 
 /** Lines setting `dest` (i1) to whether the record `obj` of a view target

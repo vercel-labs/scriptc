@@ -88,12 +88,13 @@ export function fenceSpeculativeWasiFunctions(mod: IrModule): void {
  * coverage (the program is fine — this backend doesn't compile it yet);
  * the parenthesized kind tag is machine-readable for the differential
  * harness's histogram. */
-export function llvmRefusalDiag(err: LlvmUnsupportedError, entryPath: string): ScrDiagnostic {
-  return {
+export function llvmRefusalDiags(err: LlvmUnsupportedError, entryPath: string): ScrDiagnostic[] {
+  return [err, ...err.also].map((refusal) => ({
     code: "SC3001",
-    message: err.message,
-    loc: err.loc ?? { file: entryPath, start: 0, end: 0 },
-  };
+    message: refusal.message,
+    loc: refusal.loc ?? { file: entryPath, start: 0, end: 0 },
+    ...(refusal.hint === undefined ? {} : { hint: refusal.hint }),
+  }));
 }
 
 /** A valid program surface that the selected execution target cannot host.

@@ -407,6 +407,7 @@ import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from
 import { VirtualBorrows } from "./virtual-borrows.js";
 import {
   absentTrapLines,
+  PARTIAL_DECLINE_TEXT,
   planRecordViews,
   recordViewFieldPtr,
   recordViewTestLines,
@@ -2859,6 +2860,23 @@ export class LlEmitter {
       });
       this.shapeHost.recordViews = views;
       this.recordViewTargets = views.targets as Set<string>;
+      // A partial record assertion without a view would compile into a
+      // checked conversion that throws every time it runs: name it instead.
+      const refused = views.declinedPartials.map(
+        (site) =>
+          new LlvmUnsupportedError(
+            `partialRecordAssertion:${site.reason}`,
+            site.loc,
+            "this object literal leaves required properties of the asserted type unwritten, and " +
+              `${PARTIAL_DECLINE_TEXT[site.reason]}, so the object cannot be completed in place: ` +
+              "write every required property in the literal, or collect the properties in a " +
+              "Record<string, T> or Partial<T> value and assert that once it is complete",
+          ),
+      );
+      if (refused.length > 0) {
+        const first = refused[0]!;
+        throw new LlvmUnsupportedError(first.kind, first.loc, first.hint, refused.slice(1));
+      }
     }
     // Integer clones signal a stack overflow through their result. Worker
     // programs have them only as ELF executables, where the stack guard

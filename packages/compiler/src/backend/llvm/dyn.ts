@@ -1546,7 +1546,11 @@ export class LlDyn {
         let src = "%d";
         let srcOwned: string | null = null;
         if (shape.indexValue) {
-          const picked = this.objectSource(B, () => B.terminate(`ret i1 false`));
+          const picked = this.objectSource(
+            B,
+            () => B.terminate(`ret i1 false`),
+            this.declaredFieldTable(t.shapeId, shape),
+          );
           src = picked.source;
           srcOwned = picked.owned;
         }
@@ -2868,7 +2872,11 @@ export class LlDyn {
         let src = "%d";
         let srcOwned: string | null = null;
         if (shape.indexValue) {
-          const picked = this.objectSource(B, () => B.terminate(`ret ptr null`));
+          const picked = this.objectSource(
+            B,
+            () => B.terminate(`ret ptr null`),
+            this.declaredFieldTable(t.shapeId, shape),
+          );
           src = picked.source;
           srcOwned = picked.owned;
           requireKind(DYN_KIND.OBJ, "dcr", src);
@@ -3533,22 +3541,43 @@ export class LlDyn {
 
   /** The source an index-signature record captures: %d itself, or, for a
    * value an island made, a native object holding its own enumerable keys
-   * (`scr_dyn_island_object`). */
+   * (`scr_dyn_island_object`). The view leaves out the shape's declared
+   * fields, which the conversion reads as ordinary property reads, so a
+   * getter among them runs once. */
   private objectSource(
     B: BlockBuilder,
     pending: () => void,
+    declared: { names: string; lens: string; count: number } | undefined,
   ): { source: string; owned: string | null } {
-    return this.islandSource(B, "object", pending);
+    return this.islandSource(B, "object", pending, declared);
+  }
+
+  /** The declared field name table the island object view skips, or
+   * undefined when the shape declares none or the program has no islands
+   * (a build without them emits no table). */
+  private declaredFieldTable(
+    shapeId: string,
+    shape: IrRecordShape,
+  ): { names: string; lens: string; count: number } | undefined {
+    if (!this.islandReads() || shape.fields.length === 0) return undefined;
+    const table = this.recordNameTable(shapeId, shape);
+    return { names: table.names, lens: table.lens, count: shape.fields.length };
   }
 
   private islandSource(
     B: BlockBuilder,
     view: "array" | "object",
     pending: () => void,
+    declared?: { names: string; lens: string; count: number },
   ): { source: string; owned: string | null } {
     if (!this.islandReads()) return { source: "%d", owned: null };
     const fn = view === "array" ? "scr_dyn_island_array" : "scr_dyn_island_object";
-    this.host.declare(`declare ptr @${fn}(ptr)`);
+    const skip = view === "object" ? declared : undefined;
+    this.host.declare(
+      skip === undefined
+        ? `declare ptr @${fn}(ptr)`
+        : `declare ptr @${fn}(ptr, ptr, ptr, ${this.S})`,
+    );
     const island = this.isIslandValue(B);
     const lIsland = B.newLabel("dci.island");
     const lNative = B.newLabel("dci.native");
@@ -3559,7 +3588,11 @@ export class LlDyn {
     B.startBlock(lIsland);
     const made = B.tmp();
     const viewVal = B.tmp();
-    B.line(`${viewVal} = call ptr @${fn}(ptr %d)`);
+    B.line(
+      skip === undefined
+        ? `${viewVal} = call ptr @${fn}(ptr %d)`
+        : `${viewVal} = call ptr @${fn}(ptr %d, ptr ${skip.names}, ptr ${skip.lens}, ${this.S} ${skip.count})`,
+    );
     B.line(`${made} = icmp ne ptr ${viewVal}, null`);
     B.condBr(made, lMade, lNull);
     B.startBlock(lNull);

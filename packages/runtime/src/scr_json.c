@@ -18997,13 +18997,25 @@ ScrDyn *scr_dyn_island_array(ScrDyn *value) {
   return out;
 }
 
-ScrDyn *scr_dyn_island_object(ScrDyn *value) {
+ScrDyn *scr_dyn_island_object(ScrDyn *value, const char *const *names, const size_t *lens,
+                              size_t count) {
   if (scr_ni_dyn_ops == NULL) scr_trap("scriptc: island object conversion without Node islands\n");
   ScrDyn *keys = scr_ni_dyn_ops->own_keys(value, SCR_OBJWALK_KEYS);
   if (keys == NULL) return NULL;
   ScrDyn *out = scr_dyn_new_obj();
   for (size_t i = 0; i < keys->v.arr.len; i++) {
     const ScrDyn *key = keys->v.arr.items[i];
+    /* A declared field is read as an ordinary property read by the
+     * conversion itself, so the view leaves it out and its getter runs
+     * once, answering the caller's field read. */
+    bool declared = false;
+    for (size_t j = 0; j < count; j++) {
+      if (key->v.str->len == lens[j] && memcmp(key->v.str->data, names[j], lens[j]) == 0) {
+        declared = true;
+        break;
+      }
+    }
+    if (declared) continue;
     ScrDyn *member = scr_ni_dyn_ops->get(value, (ScrDyn *)key);
     if (member == NULL) {
       scr_dyn_release(out);

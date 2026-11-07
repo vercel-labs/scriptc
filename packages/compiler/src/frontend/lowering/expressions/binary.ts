@@ -28,6 +28,7 @@ import {
   canBoxFuncIntoDyn,
   isUnitType,
   typeEquals,
+  sortArms,
   typeKey,
 } from "../../../ir/ir.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
@@ -75,7 +76,7 @@ import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { lowerShortCircuitAssignment } from "./nullish-assignment.js";
 import { lowerEventObjectPropertyWrite } from "../lower-event-target.js";
 import { lowerFieldCompoundValue } from "./updates.js";
-import { expandoWritableTarget } from "../lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
@@ -89,6 +90,7 @@ import {
   lowerRuntimeConstructorIs,
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
+import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
 import { withUnitArm } from "../../type-mapper.js";
@@ -503,7 +505,7 @@ export function lowerNullishPair(
   ) {
     const arms = [...rest];
     if (!arms.some((arm) => typeEquals(arm, rightType))) arms.push(rightType);
-    arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    sortArms(arms);
     type = { kind: "union", unionId: lowerer.unions.intern(arms) };
     lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
   }
@@ -816,10 +818,14 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
   if (e.type.kind === "searchParams")
     return { kind: "libCall", fn: "sp.toString", args: [e], type: STRING, loc: e.loc };
   // String(date) / `${date}` / "" + date: Date's ToPrimitive prefers
-  // toString().
-  if (e.type.kind === "date")
+  // toString(), which the program may have replaced with an own property
+  // this typed path cannot see.
+  if (e.type.kind === "date") {
+    refuseShadowedImplicitReader(lowerer, node, e.type, "toString", "string conversion");
     return { kind: "libCall", fn: "date.toString", args: [e], type: STRING, loc: e.loc };
+  }
   if (e.type.kind === "regex") {
+    refuseShadowedImplicitReader(lowerer, node, e.type, "toString", "string conversion");
     return {
       kind: "regexIntrinsic",
       method: "toString",
@@ -1220,6 +1226,70 @@ function lowerNanCodedEquality(lowerer: Lowerer, expr: ts.BinaryExpression): IrE
   return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: BOOL, loc };
 }
 
+/** A JavaScript numeric operator with one BigInt operand and one other value
+ * (`1n + 1`, `6n & true`, `8n / "2"`), or `>>>` over two BigInts. TypeScript
+ * refuses each of these forms because it has no conversion for them, while
+ * JavaScript applies ToNumeric to both operands before the operation: a
+ * primitive operand throws the mixed-type TypeError, a primitive wrapper or a
+ * conversion hook yields its BigInt and the BigInt operation answers, and
+ * `>>>` has no BigInt form at all. The checked-dynamic operator applies that
+ * order, and `dynCheck` keeps the operator's own BigInt result type. A pair of
+ * BigInt operands of any other operator keeps the static BigInt arms below, so
+ * a program that compiles today keeps its IR, and so does every other operator
+ * (a comparison keeps its `bigint.cmpNumber`/`dyn.compare` arm). */
+function lowerBigIntOperandOperator(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  op: ts.SyntaxKind,
+  left: IrExpr,
+  right: IrExpr,
+): IrExpr | null {
+  const arithmetic =
+    op === ts.SyntaxKind.MinusToken ||
+    op === ts.SyntaxKind.AsteriskToken ||
+    op === ts.SyntaxKind.SlashToken ||
+    op === ts.SyntaxKind.PercentToken ||
+    op === ts.SyntaxKind.AsteriskAsteriskToken;
+  const bitwise =
+    op === ts.SyntaxKind.AmpersandToken ||
+    op === ts.SyntaxKind.BarToken ||
+    op === ts.SyntaxKind.CaretToken ||
+    op === ts.SyntaxKind.LessThanLessThanToken ||
+    op === ts.SyntaxKind.GreaterThanGreaterThanToken ||
+    op === ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken;
+  if (op !== ts.SyntaxKind.PlusToken && !arithmetic && !bitwise) return null;
+  const bigintLeft = left.type.kind === "bigint";
+  const bigintRight = right.type.kind === "bigint";
+  if (!bigintLeft && !bigintRight) return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  const unsignedShift = op === ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken;
+  if (!unsignedShift && bigintLeft === bigintRight) return null;
+  // A partner the arms below already answer keeps its IR: `dyn` reaches the
+  // checked-dynamic operator, and `1n + "x"` concatenates through the static
+  // string arm. Only the pieces TypeScript refused need this path.
+  const other = bigintLeft ? right : left;
+  if (other.type.kind === "dyn") return null;
+  if (op === ts.SyntaxKind.PlusToken && other.type.kind === "string") return null;
+  const loc = locOf(expr);
+  const l = lowerer.coerceToExpected(left, DYN);
+  const r = lowerer.coerceToExpected(right, DYN);
+  if (l.type.kind !== "dyn" || r.type.kind !== "dyn") return null;
+  const args = [l, r];
+  // A partner may reach ToPrimitive as a string, where `+` concatenates
+  // (`1n + {}` is "1[object Object]"), so the sum keeps the operator's own
+  // untyped JavaScript result.
+  if (op === ts.SyntaxKind.PlusToken)
+    return { kind: "libCall", fn: "dyn.add", args, type: DYN, loc };
+  const value: IrExpr = {
+    kind: "libCall",
+    fn: arithmetic ? "dyn.arithmetic" : "dyn.bitwise",
+    args: [...args, { kind: "strLit", value: ts.tokenToString(op) ?? "?", type: STRING, loc }],
+    type: DYN,
+    loc,
+  };
+  return { kind: "dynCheck", value, type: BIGINT_T, loc };
+}
+
 export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
   const loc = locOf(expr);
   const op = expr.operatorToken.kind;
@@ -1306,9 +1376,10 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !(ts.isPropertyAccessExpression(expr.left) && expr.left.questionDotToken)
     ) {
-      const target =
-        expandoWritableTarget(lowerer, expr.left) ??
-        (ts.isPropertyAccessExpression(expr.left) ? nsWritableTarget(lowerer, expr.left) : null);
+      fenceReadonlyExpandoWrite(lowerer, expr.left);
+      const target = ts.isPropertyAccessExpression(expr.left)
+        ? nsWritableTarget(lowerer, expr.left)
+        : null;
       if (target) {
         const value = lowerCompoundValueToTarget(lowerer, expr, indexedCompound, target);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
@@ -1369,16 +1440,18 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       }
     }
     // Member targets whose storage IS a module global — namespace
-    // members (`N.x`) and expando function members (`Foo.baz`): the
-    // same assignExpr, since the "member" is a variable.
+    // members (`N.x`): the same assignExpr, since the "member" is a
+    // variable. Expando function members (`Foo.baz`) are callable-member
+    // table data and lower with every other callable member.
     if (
       op === ts.SyntaxKind.EqualsToken &&
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !(ts.isPropertyAccessExpression(expr.left) && expr.left.questionDotToken)
     ) {
-      const target =
-        expandoWritableTarget(lowerer, expr.left) ??
-        (ts.isPropertyAccessExpression(expr.left) ? nsWritableTarget(lowerer, expr.left) : null);
+      fenceReadonlyExpandoWrite(lowerer, expr.left);
+      const target = ts.isPropertyAccessExpression(expr.left)
+        ? nsWritableTarget(lowerer, expr.left)
+        : null;
       if (target) {
         const value = lowerer.lowerExprExpecting(expr.right, target.type);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
@@ -1585,6 +1658,15 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         )
           hold(target.argumentExpression, "%assignKey");
         const result = hold(expr.right, "%assignValue");
+        // A parenthesized RHS is the same expression: the chained
+        // whole-export lowering strips the parens to find the value it
+        // assigns, so the evaluated result stands for the inner node too —
+        // the value is evaluated once, as in Node.
+        {
+          let inner: ts.Expression = expr.right;
+          while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+          if (inner !== expr.right) overrides.push({ node: inner, value: result });
+        }
         stmts.push(
           lowerer.withExpressionOverrides(overrides, () => lowerer.lowerExprStatement(expr)),
         );
@@ -1614,6 +1696,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       deferredSlotOr(lowerer, lowerer.lowerExpr(expr.right)),
       op === ts.SyntaxKind.ExclamationEqualsToken,
       loc,
+      expr,
     );
     if (loose) return loose;
     lowerer.unsupported(
@@ -1738,6 +1821,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     if (right.type.kind === "caught")
       right = { kind: "caughtToDyn", value: right, type: DYN, loc: right.loc };
   }
+  const bigintOperand = lowerBigIntOperandOperator(lowerer, expr, op, left, right);
+  if (bigintOperand) return bigintOperand;
   if (left.type.kind === "dyn" || right.type.kind === "dyn") {
     // The narrowing unit comparisons ARE answerable on unknown: `v ===
     // undefined` / `v !== null` test the dyn node's kind directly, and
@@ -2495,6 +2580,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       // mutates the left Date (`a < (a.setTime(t), b)`) is seen: with such
       // a right operand, both Dates bind first and their times read after.
       if (left.type.kind === "date" && right.type.kind === "date") {
+        // The number hint reads valueOf, which the program may have replaced
+        // with an own property this typed path cannot see.
+        refuseShadowedImplicitReader(lowerer, expr, left.type, "valueOf", "comparison");
         const time = (d: IrExpr): IrExpr => ({
           kind: "libCall",
           fn: "date.getTime",
@@ -2716,7 +2804,7 @@ export function lowerStrictEquality(
           for (const arm of rightDef.arms) {
             if (!arms.some((candidate) => typeEquals(candidate, arm))) arms.push(arm);
           }
-          arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          sortArms(arms);
           const common: IrType & { kind: "union" } = {
             kind: "union",
             unionId: lowerer.unions.intern(arms),
@@ -3047,7 +3135,7 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
         for (const arm of [...rightArms, ...leftArms.filter(isUnitType)]) {
           byKey.set(typeKey(arm), arm);
         }
-        const arms = [...byKey.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+        const arms = sortArms([...byKey.values()]);
         if (arms.length > 1) {
           const source =
             right.type.kind === "union" ? lowerer.unions.get(right.type.unionId) : undefined;

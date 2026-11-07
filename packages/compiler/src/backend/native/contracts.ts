@@ -157,6 +157,10 @@ export interface CcOptions {
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
+  /** The keyed collections' prototype objects and member values, their
+   * constructors' adder lookup and the ES2025 Set compositions: compiles
+   * scr_dyn_collections.c. */
+  dynCollections?: boolean;
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
@@ -173,6 +177,9 @@ export interface CcOptions {
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
+  /** A program that builds a Blob or File: the SCR_WEB_BODIES build of
+   * scr_fetch.c, which sends the blob's bytes and its type as Content-Type. */
+  webBodies?: boolean;
   /** AbortController and AbortSignal: compiles scr_abort.c, unless the
    * program compiles the fetch unit, which has them. */
   abortSignal?: boolean;
@@ -212,6 +219,9 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_PROMISE_REJECT_DYN: the scr_async.c build with the reject closure
+   * a checked-dynamic promise reasons with. */
+  promiseRejectDyn?: boolean;
   /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
    * object model feature the program reaches (t262-da §J). */
   jsObjectModel?: boolean;

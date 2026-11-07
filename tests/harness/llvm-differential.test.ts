@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { runStep, type Track } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
@@ -104,6 +105,7 @@ async function runBinary(
   args: string[],
   cpuLevel?: string,
   extraEnv: Record<string, string> = {},
+  track?: Track,
 ): Promise<RunResult> {
   // Linux fork/exec race (observed on the sandbox lane): a sibling
   // worker's fork can inherit the freshly-linked binary's write fd across
@@ -118,6 +120,7 @@ async function runBinary(
       ...(cpuLevel === undefined && Object.keys(extraEnv).length === 0 ? {} : { env }),
     });
     pending.child.stdin?.end();
+    track?.(pending.child);
     try {
       const { stdout, stderr } = await pending;
       return { stdout, stderr, exitCode: 0 };
@@ -259,16 +262,15 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
-      const oracle = await runBinary(
-        process.execPath,
-        nodeOracleArgs(file),
-        undefined,
-        programEnv(file),
+      const oracle = await runStep(`${rel}: node oracle`, (track) =>
+        runBinary(process.execPath, nodeOracleArgs(file), undefined, programEnv(file), track),
       );
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);
       for (const optimization of optimizationModes) {
-        const result = await build(file, optimization);
+        const result = await runStep(`${rel}: compile (${optimization})`, () =>
+          build(file, optimization),
+        );
         if (!result.ok)
           throw new Error(
             `${rel} (${optimization}): ` +
@@ -277,8 +279,10 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
         expect(result.backend).toBe("llvm");
         expect(result.llvmPath.endsWith(".ll")).toBe(true);
         for (const level of cpuLevels) {
-          const actual = await runBinary(result.binaryPath, [], level, programEnv(file));
           const lane = level === undefined ? optimization : `${optimization} level ${level}`;
+          const actual = await runStep(`${rel}: run (${lane})`, (track) =>
+            runBinary(result.binaryPath, [], level, programEnv(file), track),
+          );
           expect(actual.stdout, `${lane} stdout`).toEqual(oracle.stdout);
           if (expectedExit === 0)
             expect(pidFree(file, comparableStderr(actual.stderr)), `${lane} stderr`).toEqual(

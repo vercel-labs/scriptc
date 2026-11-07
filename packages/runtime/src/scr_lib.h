@@ -53,6 +53,9 @@ const char *scr_lib_arg(int i);
 bool scr_lib_take_flag(const char *flag);
 /* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
 ScrArr *scr_process_exec_argv(void);
+/* process.allowedNodeEnvironmentFlags: one interned set of the option
+ * names the compatibility target accepts in NODE_OPTIONS (+1 per read). */
+ScrMap *scr_process_allowed_env_flags(void);
 /* Private self-reexec marker parsed and removed from process.argv by
  * scr_lib_init. False in an ordinary parent invocation. */
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,

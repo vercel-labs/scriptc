@@ -263,7 +263,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.fileHandle ||
       u.nativeFetch ||
       // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
-      u.opts.nodeIsland === true,
+      u.opts.nodeIsland === true ||
+      // t.waitFor polls a dyn condition and returns a dyn promise
+      // (scr_test.c's waitFor entry).
+      u.opts.nodeTest,
     "scr_async_dyn.c",
   ),
   // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
@@ -393,6 +396,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // The keyed collections' prototype objects, member values, their
+  // constructors' adder lookup and the ES2025 Set compositions.
+  unit((u) => u.opts.dynCollections === true, "scr_dyn_collections.c"),
   // for await over checked-dynamic values that may hold native streams.
   unit(
     (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
@@ -490,6 +496,8 @@ const RUNTIME_DEFINES: readonly {
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
+  // scr_async.c's reject closure for a checked-dynamic promise reason.
+  { define: "SCR_PROMISE_REJECT_DYN", when: (opts) => opts.promiseRejectDyn },
   // scr_node_builtin.c's dynamic global read throws for the plain Node
   // globals the native runtime does not implement; a program with a computed
   // global read or `… in globalThis` selects that build (host-globals.ts).
@@ -520,6 +528,9 @@ const RUNTIME_DEFINES: readonly {
   // bodies of its streams.
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
+  // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
+  // as Content-Type when the request sets none.
+  { define: "SCR_WEB_BODIES", when: (opts) => opts.webBodies },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
   // scr_child.c's spawnSync result keeps the spawn errno and argv so
   // `.error` answers Node's errnoException fields (errno, syscall, path,

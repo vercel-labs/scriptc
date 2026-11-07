@@ -67,6 +67,7 @@ export interface EarlyExecutableNativeFeatures {
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
+  promiseRejectDyn?: boolean;
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
   mutableBuffers: boolean;
@@ -101,11 +102,13 @@ export interface EarlyExecutableNativeFeatures {
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
   genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
+  webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;

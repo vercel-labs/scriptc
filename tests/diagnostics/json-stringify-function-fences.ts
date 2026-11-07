@@ -18,3 +18,28 @@ function narrow(wide: Wide): Narrow {
   return wide;
 }
 const linked = JSON.stringify(narrow({ id: 1, index: new Map() }));
+
+// Every source a narrowed copy can be linked to has to be serializable:
+// one that holds a class instance the runtime JSON traversal cannot write
+// is refused even when another source of the same type is fine.
+class Pattern {
+  source = /x/;
+}
+interface WithCallback {
+  key: number;
+  visit?: () => void;
+}
+interface WithPattern {
+  key: number;
+  pattern: Pattern;
+}
+interface Slim {
+  key: number;
+}
+function fromCallback(wide: WithCallback): Slim {
+  return wide;
+}
+function fromPattern(wide: WithPattern): Slim {
+  return wide;
+}
+const mixed = JSON.stringify([fromCallback({ key: 1 }), fromPattern({ key: 2, pattern: new Pattern() })]);

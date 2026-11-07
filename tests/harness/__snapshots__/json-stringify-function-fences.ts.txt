@@ -13,3 +13,12 @@ json-stringify-function-fences.ts:20:16 - error SC1090: JSON.stringify of '{ id:
   21 | 
 
   hint: serialize an object literal that names the properties to write
+
+json-stringify-function-fences.ts:45:15 - error SC1090: JSON.stringify of '{ key: number }' values converted from '{ key: number; pattern: Pattern }' (the value keeps its source object's other properties, and that type has members the JSON writer cannot serialize) is not supported yet
+
+  44 | }
+  45 | const mixed = JSON.stringify([fromCallback({ key: 1 }), fromPattern({ key: 2, pattern: new Pattern() })]);
+     |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  46 | 
+
+  hint: serialize an object literal that names the properties to write

@@ -515,6 +515,17 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
   }
   case SCR_NV_HANDLE: {
     ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
+    if (ref->flags & SCR_NVF_ERROR) {
+      /* An island error the program already holds as an error (it caught
+       * it, or took it as a callback's argument) is that error again
+       * however it arrives, so the round trip of an island error through
+       * the program and back is the identity, as a native error's is. */
+      ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
+      if (pinned != NULL) {
+        nh_ref_release(ref);
+        return scr_dyn_from_error(pinned);
+      }
+    }
     ScrDyn *d = (ref->flags & SCR_NVF_PROMISE) ? nh_promise_box(ref)
                                                 : scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
     nh_ref_release(ref);
@@ -738,10 +749,10 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   }
 }
 
-/* The nearest intrinsic class V8 has (subclasses included). */
+/* The nearest class the island has a constructor for: V8's intrinsic
+ * error classes and Node's DOMException (subclasses included). */
 static uint32_t nh_error_kind(const ScrError *e) {
   for (int k = 1; k <= SCR_ERR_AGGREGATE; k++) {
-    if (k == SCR_ERR_DOMEX) continue;
     if (scr_error_vts[k].pre <= e->vt->pre && e->vt->pre <= scr_error_vts[k].post)
       return (uint32_t)k;
   }
@@ -825,36 +836,20 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
       return true;
     }
     /* A native error crosses by reference, like every native object: its
-     * dyn node is an export, and the bridge keeps one V8 Error per export
-     * (made from the name, message, stack and code below the first time).
-     * That V8 Error crossing back is SCR_NV_EXPORT, so the program gets the
-     * error it threw: the same object, with its class and fields. What
-     * island code reads from the V8 Error and it does not hold, the export
-     * answers from the native error (scr_ni_host_export_get). */
-    ScrStr *name = e->name != NULL ? scr_str_retain(e->name) : scr_error_default_name(e);
-    ScrStr *message = e->message != NULL ? scr_str_retain(e->message) : scr_str_new("", 0);
-    ScrStr *stack = scr_error_stack(e);
-    nh_keep(keep, name, nh_str_release_v);
-    nh_keep(keep, message, nh_str_release_v);
-    if (stack != NULL) nh_keep(keep, stack, nh_str_release_v);
+     * dyn node is an export, and the bridge keeps one V8 Error per export,
+     * of the error's intrinsic class. That V8 Error crossing back is
+     * SCR_NV_EXPORT, so the program gets the error it threw: the same
+     * object, with its class and fields. The V8 Error's own properties are
+     * the native error's: the bridge asks the export which exist
+     * (SCR_NODE_EXPORT_OWN) and reads and writes each through it, so island
+     * code and the program read and write one set of values, `stack`
+     * among them (formatted only when one side reads it). An instance of a
+     * program class also answers its class's members there. */
     out->tag = SCR_NV_ERROR;
     out->flags = SCR_NVF_ERROR;
     out->u.error.export_id = scr_ni_export_id(v);
     out->u.error.kind = nh_error_kind(e);
-    out->u.error.name = name->data;
-    out->u.error.name_len = name->len;
-    out->u.error.message = message->data;
-    out->u.error.message_len = message->len;
-    if (stack != NULL) {
-      out->u.error.stack = stack->data;
-      out->u.error.stack_len = stack->len;
-    }
-    if (e->code != NULL) {
-      ScrStr *code = scr_str_retain(e->code);
-      nh_keep(keep, code, nh_str_release_v);
-      out->u.error.code = code->data;
-      out->u.error.code_len = code->len;
-    }
+    out->u.error.class_instance = v->kind == SCR_DYN_TYPED_REF;
     scr_error_release(e);
     return true;
   }

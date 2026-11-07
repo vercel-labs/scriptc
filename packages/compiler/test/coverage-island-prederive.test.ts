@@ -1,16 +1,14 @@
-// Coverage lowers a program with the island set a build would use, and it used
-// to learn that set the way a build did: a discovery lowering, reload of the
-// frontend with the packages the discovery refused, then a second lowering of
-// the whole program (frontend/analysis.ts's grownIslands retry). On a large
-// program that retry is the whole cost of the analysis — on pi the discovery
-// lowering and the retry lowering are ~35 min each.
-//
-// A value import of an installed package whose implementation the first load
-// did not put in the program is exactly the SC2013 refusal the discovery
-// lowering reports, so the module graph proves it before any lowering runs
-// (node-islands/graph-islands.ts). These tests pin the analysis side of that
-// decision with a stubbed island scan: the first lowering already carries the
-// proven island, the analysis reloads nothing, and it scans the program once.
+// Coverage lowers a program with the island set a build uses, and decides it
+// the way a build does: round by round, from what each lowering saw
+// (frontend/analysis.ts, node-islands/decide.ts and growth.ts). For a while
+// the analysis also seeded its set from the module graph alone, a value
+// import of an installed package the first load did not put in the program,
+// which a build did not do; the two then named different islands (a package
+// a build carries inside another island was an island of its own in the
+// report). These tests pin that the graph alone islands nothing in the
+// analysis, with a stubbed island scan, and what the scan says a load is:
+// the facts a decision made before lowering, for a build and the analysis
+// alike, would read.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,29 +133,21 @@ function run(
   return { lowerings, reloads, scans, sets };
 }
 
-test("coverage lowers once, with the island the module graph proves", () => {
+test("a package edge of the graph alone islands nothing, as in a build", () => {
+  // The scan holds an edge to a package the program never imports. A build
+  // islands a package for what its load or its lowering refuses, and this
+  // program refuses nothing, so the analysis lowers it once with no island
+  // and reloads nothing.
   const dir = program();
-  const counts = run(dir, { mode: "auto" }, scanWith(dir, "innerpkg"));
-  expect(counts.lowerings).toBe(1);
-  expect(counts.reloads).toBe(0);
-  // One scan answers every island question: the lowering set, the graph
-  // proof, and the final report.
-  expect(counts.scans).toBe(1);
-  expect(counts.sets).toEqual([["innerpkg"]]);
+  for (const loads of [true, false]) {
+    const counts = run(dir, { mode: "auto" }, scanWith(dir, "innerpkg", loads));
+    expect(counts.lowerings).toBe(1);
+    expect(counts.reloads).toBe(0);
+    expect(counts.sets).toEqual([null]);
+  }
 }, 600_000);
 
-test("a require() the analysis lowers decides its island too", () => {
-  // A require() in a function body or under a condition loads its package
-  // only when that code runs, so a build leaves it to its retry. The analysis
-  // lowers that site either way, so the same refusal is due and the discovery
-  // lowering carries the island (node-islands/graph-islands.ts's `deferred`).
-  const dir = program();
-  const counts = run(dir, { mode: "auto" }, scanWith(dir, "innerpkg", false));
-  expect(counts.lowerings).toBe(1);
-  expect(counts.sets).toEqual([["innerpkg"]]);
-}, 600_000);
-
-test("the graph decision leaves --node-islands=off alone", () => {
+test("--node-islands=off decides nothing", () => {
   const dir = program();
   const counts = run(dir, { mode: "off" }, scanWith(dir, "innerpkg"));
   expect(counts.lowerings).toBe(1);
@@ -167,10 +157,7 @@ test("the graph decision leaves --node-islands=off alone", () => {
 test("a require() a source binding shadows loads nothing", () => {
   // A parameter or a variable the file declares under the name `require`
   // shadows Node's loader: the call runs that value, so the package it names
-  // never loads. The analysis lowers every site, including the require() a
-  // build leaves to its retry, so an edge with loads:false from such a call
-  // reaches the deferred graph decision and islands an installed package the
-  // call never loads (node-islands/scan.ts).
+  // never loads, and the scan names no package for it (node-islands/scan.ts).
   const dir = pkgs({
     outerpkg: [
       "module.exports.double = function (n) { return n * 2; };\n",

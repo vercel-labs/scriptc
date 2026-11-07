@@ -24,10 +24,14 @@
  * on a string is no use of `Array.prototype.includes`, and a member a
  * program's own class implements is no use of a built-in's.
  *
- * The readers the runtime does serve from the object are not uses: a value
- * read of a member through `Array.prototype` or through an untyped value,
- * an iteration of an untyped value by for…of, array spread or `Array.from`,
- * and the adder a collection constructor calls. A use that runs before
+ * The readers the runtime does serve from the object are not uses. They are
+ * few, each is pinned by a corpus program (builtin-member-writes-unread*,
+ * js-array-prototype-method-getters, the collection constructor programs),
+ * and all but the last concern `Array.prototype`: a value read of its member
+ * through the prototype object or through an untyped value; its iterator
+ * read by for…of, array spread or `Array.from` over an untyped value (by
+ * `Array.from` in any JavaScript source); and the adder a collection
+ * constructor calls. A use that runs before
  * every write of the member is none either (`const original = Date.now`
  * in front of `Date.now = …`). A write nothing reads natively keeps the
  * lowering it has always had. */
@@ -401,8 +405,8 @@ function siteReads(lowerer: Lowerer, site: Site, write: BuiltinMemberWrite): str
     if (byClass === undefined) return null;
     const untyped = site.classes === null;
     const classes: Classes = DEEP_CONSTRUCTS.has(site.construct) ? null : site.classes;
-    // The runtime's untyped iteration reads the iterator from the object.
-    const servedKey = site.served && untyped && key === "@@iterator";
+    // The runtime's untyped iteration reads an array's iterator from the object.
+    const servedKey = site.served && untyped && key === "@@iterator" && owner === "Array.prototype";
     const reads = someClass(classes, (cls) => {
       const row = byClass.get(cls);
       if (row === undefined) return false;
@@ -424,6 +428,7 @@ function siteReads(lowerer: Lowerer, site: Site, write: BuiltinMemberWrite): str
       const served =
         site.callee === "Array.from" &&
         key === "@@iterator" &&
+        owner === "Array.prototype" &&
         (untyped || isJsSourceFile(ts.getSourceFileOfNode(site.node)));
       const classes: Classes = DEEP_KEYS.has(key) ? null : site.classes;
       reads =
@@ -449,9 +454,11 @@ function siteReads(lowerer: Lowerer, site: Site, write: BuiltinMemberWrite): str
       // alone; a value that holds the object is served by the runtime.
       reads = false;
     } else if (site.classes === null) {
-      // The runtime serves a value read through an untyped value from the
-      // object; a call through one reaches the built-in directly.
-      reads = site.called && !instanceHolds(owner, key);
+      // The runtime serves a value read of an array's member through an
+      // untyped value from the object; a call through an untyped value
+      // reaches the built-in directly.
+      const served = owner === "Array.prototype" && !site.called;
+      reads = !served && !instanceHolds(owner, key);
     } else reads = someClass(site.classes, (cls) => instanceReads(cls, owner, key));
     if (reads)
       return `the program ${verb} it at ${where}${NO_OBJECT}${noun} would not see the change`;
@@ -628,6 +635,8 @@ function collectSites(
   };
   ts.walkPreorder(sf, (n) => {
     if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
+      // A computed key is converted to a property key.
+      if (ts.isElementAccessExpression(n)) conversion("string", n.argumentExpression);
       const key = ts.isPropertyAccessExpression(n)
         ? ts.isIdentifier(n.name)
           ? n.name.text
@@ -716,16 +725,15 @@ function collectSites(
         conversion("number", n.right);
       } else if (op === ts.SyntaxKind.EqualsToken && ts.isArrayLiteralExpression(n.left))
         construct("iterate", n, n.right);
+      else if (op === ts.SyntaxKind.InKeyword) conversion("string", n.left);
     } else if (ts.isPrefixUnaryExpression(n)) {
-      const op = n.operator;
-      if (
-        op === ts.SyntaxKind.PlusToken ||
-        op === ts.SyntaxKind.MinusToken ||
-        op === ts.SyntaxKind.TildeToken
-      )
-        conversion("number", n.operand);
+      // `!` alone converts nothing.
+      if (n.operator !== ts.SyntaxKind.ExclamationToken) conversion("number", n.operand);
+    } else if (ts.isPostfixUnaryExpression(n)) {
+      conversion("number", n.operand);
     } else if (ts.isForOfStatement(n)) {
-      if (n.awaitModifier === undefined) construct("iterate", n, n.expression, true);
+      // for await falls back to the sync iterator, which no reader serves.
+      construct("iterate", n, n.expression, n.awaitModifier === undefined);
     } else if (ts.isSpreadElement(n)) {
       construct(
         "iterate",
@@ -752,7 +760,19 @@ function collectSites(
   });
 }
 
+/** The operators that convert their operands to numbers: arithmetic,
+ * bitwise, shifts, the relational comparisons, and the compound assignments
+ * of those (`+=` converts as `+` does, and the logical assignments convert
+ * nothing). */
 function isNumericOperator(op: ts.SyntaxKind): boolean {
+  if (
+    op === ts.SyntaxKind.BarBarEqualsToken ||
+    op === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
+    op === ts.SyntaxKind.QuestionQuestionEqualsToken
+  )
+    return false;
+  if (op >= ts.SyntaxKind.FirstCompoundAssignment && op <= ts.SyntaxKind.LastCompoundAssignment)
+    return true;
   return (
     op === ts.SyntaxKind.MinusToken ||
     op === ts.SyntaxKind.AsteriskToken ||
@@ -762,7 +782,13 @@ function isNumericOperator(op: ts.SyntaxKind): boolean {
     op === ts.SyntaxKind.LessThanToken ||
     op === ts.SyntaxKind.LessThanEqualsToken ||
     op === ts.SyntaxKind.GreaterThanToken ||
-    op === ts.SyntaxKind.GreaterThanEqualsToken
+    op === ts.SyntaxKind.GreaterThanEqualsToken ||
+    op === ts.SyntaxKind.AmpersandToken ||
+    op === ts.SyntaxKind.BarToken ||
+    op === ts.SyntaxKind.CaretToken ||
+    op === ts.SyntaxKind.LessThanLessThanToken ||
+    op === ts.SyntaxKind.GreaterThanGreaterThanToken ||
+    op === ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken
   );
 }
 

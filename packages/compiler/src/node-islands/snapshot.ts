@@ -114,11 +114,15 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  *
  * The walk follows the entry: each initializer's statements in order, into
  * another module's initializer where it is called (`%init.<n>`, once, as
- * the run-once guard has it). An initializer that awaits is left there and
- * taken up again after the code that called it, in the order of the
- * awaits, as module evaluation continues with later siblings while one is
- * suspended. Loads the walk does not reach (inside functions, dynamic
- * imports, conditions other than the ones below) keep IR order after it. */
+ * the run-once guard has it), and through a sequence (`seqExpr`): an inline
+ * require() lowers to the required module's %init ahead of its export read,
+ * both at the require's position. Any other expression is followed through
+ * what it holds, in the order it is written, so a load is reached where its
+ * expression is (`typeof require("pkg").name === "function"`). An
+ * initializer that awaits is left there and taken up again after the code
+ * that called it, in the order of the awaits, as module evaluation continues
+ * with later siblings while one is suspended. Loads the walk does not reach
+ * (inside functions, dynamic imports, loops) keep IR order after it. */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
   const { ordered } = evaluationWalk(mod);
   if (ordered.length === 0) return calls;
@@ -182,6 +186,12 @@ function evaluationWalk(mod: IrModule): {
       enter(e.callee);
       return false;
     }
+    if (e.kind === "seqExpr") {
+      // An inline require() lowers to the required module's %init ahead of
+      // the export read, both where the require is written.
+      for (const s of e.stmts) if (statement(s)) return true;
+      return evaluate(e.result);
+    }
     if (e.kind === "awaitExpr") {
       evaluate(e.value);
       return true;
@@ -190,36 +200,65 @@ function evaluationWalk(mod: IrModule): {
       for (const arg of e.args) evaluate(arg);
       return true;
     }
+    // Any other expression: what it holds, in the order it is written. A
+    // comparison, a member read, a `typeof`, a call's arguments: an inline
+    // require() inside any of them keeps its initializer there. An
+    // expression may evaluate only some of what it holds (`a ? b : c`,
+    // `a && b`), so a load inside one is not at a fixed point.
+    conditions++;
+    const awaits = inside(e);
+    conditions--;
+    return awaits;
+  }
+  /** Follows the expressions `node` holds (a sequence is the only
+   * expression that holds statements); true when one of them awaits. */
+  function inside(node: object): boolean {
+    let awaits = false;
+    const fields = node as Record<string, unknown>;
+    for (const key in fields) {
+      if (key === "loc" || key === "type") continue;
+      const value = fields[key];
+      for (const part of Array.isArray(value) ? value : [value]) {
+        if (part === null || typeof part !== "object") continue;
+        if (typeof (part as { kind?: unknown }).kind === "string") awaits = evaluate(part as IrExpr) || awaits;
+        else awaits = inside(part) || awaits;
+      }
+    }
+    return awaits;
+  }
+  /** Evaluates what the walk follows of `s`; true when it awaits. */
+  function statement(s: IrStmt): boolean {
+    if (s.kind === "exprStmt") return evaluate(s.expr);
+    if (s.kind === "assign") return evaluate(s.value);
+    if (s.kind === "varDecl") return s.init !== null && evaluate(s.init);
+    if (s.kind === "if") {
+      // The run-once guard returns on a revisit; a fork or worker root is
+      // one branch of a selection.
+      conditions++;
+      run(flatStatements(s.then), 0);
+      if (s.else_ !== null) run(flatStatements(s.else_), 0);
+      conditions--;
+    } else if (s.kind === "tryCatch") {
+      // A guarded body whose handler throws again (a module's own
+      // evaluation record) is passed through like a block; under any
+      // other handler a statement may be skipped while later ones run.
+      const passes = s.catchBody === null || s.catchBody.at(-1)?.kind === "rethrow";
+      if (!passes) conditions++;
+      run(flatStatements(s.tryBody), 0);
+      if (!passes) conditions--;
+      if (s.finallyBody !== null) run(flatStatements(s.finallyBody), 0);
+    } else if (s.kind === "block") {
+      conditions++;
+      run(flatStatements(s.body), 0);
+      conditions--;
+    }
     return false;
   }
   function run(stmts: IrStmt[], from: number): void {
     for (let i = from; i < stmts.length; i++) {
       const s = stmts[i]!;
-      let awaits = false;
-      if (s.kind === "exprStmt") awaits = evaluate(s.expr);
-      else if (s.kind === "assign") awaits = evaluate(s.value);
-      else if (s.kind === "varDecl") awaits = s.init !== null && evaluate(s.init);
-      else if (s.kind === "if") {
-        // The run-once guard returns on a revisit; a fork or worker root is
-        // one branch of a selection.
-        conditions++;
-        run(flatStatements(s.then), 0);
-        if (s.else_ !== null) run(flatStatements(s.else_), 0);
-        conditions--;
-      } else if (s.kind === "tryCatch") {
-        // A guarded body whose handler throws again (a module's own
-        // evaluation record) is passed through like a block; under any
-        // other handler a statement may be skipped while later ones run.
-        const passes = s.catchBody === null || s.catchBody.at(-1)?.kind === "rethrow";
-        if (!passes) conditions++;
-        run(flatStatements(s.tryBody), 0);
-        if (!passes) conditions--;
-        if (s.finallyBody !== null) run(flatStatements(s.finallyBody), 0);
-      } else if (s.kind === "block") {
-        conditions++;
-        run(flatStatements(s.body), 0);
-        conditions--;
-      } else if (s.kind === "return") return;
+      if (s.kind === "return") return;
+      let awaits = statement(s);
       if (!awaits && inAsync && awaitsWithin(s)) awaits = true;
       if (awaits) {
         suspended.push({ stmts, at: i + 1, within, async: inAsync });

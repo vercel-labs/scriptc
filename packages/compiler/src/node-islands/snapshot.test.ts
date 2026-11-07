@@ -233,6 +233,81 @@ describe("the order deferred loads are probed in", () => {
     expect(paths(mod, [b, a, c])).toEqual(["a", "b", "c"]);
   });
 
+  test("an inline require() is walked through the sequence it lowers to", () => {
+    // A top-level `require("./dep")` lowers to seqExpr([%init.1 call], read):
+    // the loads inside the required module come where the require is written,
+    // ahead of the ones the rest of the initializer reaches.
+    const required = defer("required");
+    const later = defer("later");
+    const require = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(required)] },
+        { name: "%main", body: [{ kind: "exprStmt", expr: require }, load(later)] },
+      ],
+    };
+    expect(paths(mod, [later, required])).toEqual(["required", "later"]);
+  });
+
+  test("an inline require() inside a string comparison is walked at its position", () => {
+    // `"x" === require("./a")` keeps the require's sequence inside the
+    // comparison's right operand, and `require("./b") < "y"` inside its left
+    // one. Both comparisons are evaluated where they are written, so the
+    // loads inside the required modules come ahead of the later statement's.
+    const requiredA = defer("requiredA");
+    const requiredB = defer("requiredB");
+    const later = defer("later");
+    const requireA = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const requireB = {
+      kind: "seqExpr",
+      stmts: [init("%init.2")],
+      result: { kind: "varRef", localId: "%g.island.1" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(requiredA)] },
+        { name: "%init.2", body: [load(requiredB)] },
+        {
+          name: "%main",
+          body: [
+            {
+              kind: "varDecl",
+              localId: "same",
+              init: {
+                kind: "strEq",
+                negated: false,
+                left: { kind: "strLit", value: "x" },
+                right: requireA,
+              },
+            },
+            {
+              kind: "varDecl",
+              localId: "before",
+              init: {
+                kind: "strCmp",
+                op: "lt",
+                left: requireB,
+                right: { kind: "strLit", value: "y" },
+              },
+            },
+            load(later),
+          ],
+        },
+      ],
+    };
+    expect(paths(mod, [later, requiredB, requiredA])).toEqual(["requiredA", "requiredB", "later"]);
+  });
+
   test("an initializer that awaits continues after the code that called it", () => {
     // dep awaits between its two loads; the importer starts its next
     // dependency before waiting for either.
@@ -275,6 +350,36 @@ describe("the order deferred loads are probed in", () => {
       "second",
       "own",
     ]);
+  });
+
+  test("a load inside an expression is reached where the expression is", () => {
+    // main.js: `const isA = require("a").name === "a";`, then `require("./dep")`
+    // (which requires "b"). The first load sits inside a member read inside
+    // a comparison inside a sequence expression.
+    const a = defer("a");
+    const b = defer("b");
+    const nested = {
+      kind: "bin",
+      op: "===",
+      left: {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: "m", init: a }],
+        result: { kind: "libCall", fn: "nodeIsland.get", args: [{ kind: "varRef", localId: "m" }] },
+      },
+      right: { kind: "strLit", value: "a" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.3", body: [load(b)] },
+        {
+          name: "%init.0",
+          body: [{ kind: "assign", localId: "%g.isA", value: nested }, init("%init.3")],
+        },
+        { name: "%main", body: [init("%init.0")] },
+      ],
+    };
+    expect(paths(mod, [b, a])).toEqual(["a", "b"]);
   });
 
   test("loads the walk does not reach keep the IR's order, after the others", () => {

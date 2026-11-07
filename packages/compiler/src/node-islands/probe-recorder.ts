@@ -44,6 +44,11 @@ const asyncHooks = require("node:async_hooks");
 const SELF = __filename;
 
 let lastCaller = "";
+// Every file of the current load whose code is on the stack of the call at
+// lastCaller's depth and below (the call, its requiring module, that
+// module's requiring module and so on): a read the call makes is the whole
+// chain's, since an importer exports what it read through its dependency.
+let lastFiles = [];
 // The closure of the module being loaded (files its load resolved), and
 // its package directory: code in other files (an earlier module that
 // wrapped a builtin, as graceful-fs wraps fs.closeSync) acts for its caller.
@@ -56,28 +61,45 @@ function frameFile(line) {
   if (f.startsWith("file://")) { try { f = require("node:url").fileURLToPath(f); } catch {} }
   return f;
 }
+// The module that asked for a file, from a resolve hook's context.
+function parentFile(context) {
+  const u = context === undefined || context === null ? undefined : context.parentURL;
+  if (typeof u !== "string" || !u.startsWith("file:")) return null;
+  try { return require("node:url").fileURLToPath(u); } catch { return null; }
+}
 // Whose call this is: walking out from the recorder's frames, the first
 // frame of the module loader (node:internal/modules/) makes it the
 // loader's (reading a module's files); the first frame of other code
 // (an island module, outside node:) makes it the module's. Other builtin
 // frames (console, streams, a public builtin calling its own exports) act
-// for their caller.
+// for their caller. Once the call is the module's, the frames below it,
+// past the loader frames between them, are the modules that required it.
 function internalCaller() {
   const limit = Error.stackTraceLimit;
   Error.stackTraceLimit = 64;
   const lines = new Error().stack.split("\n");
   Error.stackTraceLimit = limit;
+  lastFiles = [];
+  let mine = false;
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (line.includes(SELF)) continue;
-    if (line.includes("node:internal/modules/")) return true;
+    if (!mine) {
+      if (line.includes("node:internal/modules/")) return true;
+      if (/[( ]node:/.test(line)) continue;
+      const file = frameFile(line);
+      if (currentFiles !== null && file !== null && !currentFiles.has(file)) continue;
+      lastCaller = line.trim().replace(/^at /, "");
+      mine = true;
+      if (file !== null) lastFiles.push(file);
+      continue;
+    }
     if (/[( ]node:/.test(line)) continue;
     const file = frameFile(line);
-    if (currentFiles !== null && file !== null && !currentFiles.has(file)) continue;
-    lastCaller = line.trim().replace(/^at /, "");
-    return false;
+    if (file !== null && currentFiles !== null && currentFiles.has(file) && lastFiles.indexOf(file) < 0)
+      lastFiles.push(file);
   }
-  return true;
+  return !mine;
 }
 
 const fnToString = Function.prototype.toString;
@@ -259,9 +281,24 @@ exports.probe = function probe(input) {
     });
   };
   const realEnv = process.env;
+  // The environment keys each file's code read, kept across the probe's
+  // loads. A file the module cache hands to a later load was evaluated in
+  // an earlier one, and what it read then is in what it exports now, so its
+  // keys belong to every load that receives it.
+  const envFiles = new Map();
+  const saveEnvFile = (file, k) => {
+    if (file === null) return;
+    let keys = envFiles.get(file);
+    if (keys === undefined) envFiles.set(file, (keys = new Set()));
+    keys.add(k);
+  };
+  const noteEnv = (k, v) => {
+    if (!envKeys.has(k)) envKeys.set(k, v);
+    for (const f of lastFiles) saveEnvFile(f, k);
+  };
   const readKey = (t, k) => {
-    if (recording && typeof k === "string" && !envKeys.has(k) && !internalCaller())
-      envKeys.set(k, t[k] === undefined ? null : String(t[k]));
+    if (recording && typeof k === "string" && !internalCaller())
+      noteEnv(k, t[k] === undefined ? null : String(t[k]));
   };
   process.env = new Proxy(realEnv, {
     get(t, k) { readKey(t, k); return t[k]; },
@@ -348,7 +385,7 @@ exports.probe = function probe(input) {
       if (recording && !internalCaller()) {
         if (process.platform === "win32" || (k === "homedir" && realEnv.HOME === undefined))
           inputs.push("os." + k + "()");
-        else for (const key of keys) if (!envKeys.has(key)) envKeys.set(key, realEnv[key] === undefined ? null : String(realEnv[key]));
+        else for (const key of keys) noteEnv(key, realEnv[key] === undefined ? null : String(realEnv[key]));
       }
       return result;
     };
@@ -487,6 +524,20 @@ exports.probe = function probe(input) {
           throw new Error("the build does not evaluate " + file + ", a file of the program");
         }
         files.add(file);
+        // A file an earlier load of this probe evaluated comes from the
+        // module cache: its exports are what that load computed, its
+        // environment reads included, so those keys are this load's too,
+        // and the keys of the file that required it for the next one.
+        if (require.cache[file] !== undefined) {
+          const keys = envFiles.get(file);
+          if (keys !== undefined) {
+            const parent = parentFile(context);
+            for (const k of keys) {
+              if (!envKeys.has(k)) envKeys.set(k, realEnv[k] === undefined ? null : String(realEnv[k]));
+              saveEnvFile(parent, k);
+            }
+          }
+        }
       }
       return result;
     },
@@ -569,6 +620,9 @@ exports.probe = function probe(input) {
     recording = true;
     try { exportsValue = createRequire(path)(path); } catch (e) { threw = String((e && e.message) || e); }
     recording = false;
+    // What this load read is in what it exports: a later load that gets the
+    // file from the module cache inherits the keys.
+    for (const k of envKeys.keys()) saveEnvFile(path, k);
     // A load that catches the refusal evaluates a fallback the executable
     // never runs: its exports are not the module's, and neither are those of
     // a later load that reaches one of its files through the module cache.

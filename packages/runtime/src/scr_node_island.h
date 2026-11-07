@@ -188,10 +188,11 @@ typedef struct ScrNiDynOps {
    * hold, read from the V8 error (+1 in *out, NULL with the exception
    * pending when the read threw): own properties, its class's methods and
    * accessors, and `constructor`, its own realm's. 1 for an island error,
-   * 0 for any other. error_has is the `in` operator on the same error: 1,
-   * 0, or -1 for an error the runtime made itself. */
+   * 0 for any other. It has the place error_constructor had, which it
+   * replaces, so the entries behind it keep their offsets in the units
+   * every program links (error_has, below, is at the end for the same
+   * reason). */
   int (*error_get)(const struct ScrError *err, const char *key, size_t len, ScrDyn **out);
-  int (*error_has)(const struct ScrError *err, const char *key, size_t len);
   /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);
@@ -204,6 +205,15 @@ typedef struct ScrNiDynOps {
    * NULL when `root` is not such a root. A signature adapter over a view of
    * an island function boxes as the function itself through this. */
   ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
+  /* util.inspect of an island value (scr_ni_inspect). */
+  ScrStr *(*inspect)(const ScrDyn *value, double recurse, double depth);
+  /* Node's uncaught-exception report for an error island code threw
+   * (scr_ni_report_uncaught): true when it printed one. */
+  bool (*report_uncaught)(struct ScrError *error);
+  /* The `in` operator on an error island code threw, for what its native
+   * view does not hold (error_get reads the same): 1, 0, or -1 for an error
+   * the runtime made itself. */
+  int (*error_has)(const struct ScrError *err, const char *key, size_t len);
   /* A member of an island promise that a promise does not have itself (an
    * island class that extends Promise adds its own), read from the V8
    * promise (+1 in *out, NULL with the exception pending when the read
@@ -216,11 +226,6 @@ typedef struct ScrNiDynOps {
    * (a throw stays pending). 1 for the mirror of an island promise, 0 for
    * any other. */
   int (*promise_set)(const ScrDyn *promise, const char *key, size_t len, ScrDyn *value);
-  /* util.inspect of an island value (scr_ni_inspect). */
-  ScrStr *(*inspect)(const ScrDyn *value, double recurse, double depth);
-  /* Node's uncaught-exception report for an error island code threw
-   * (scr_ni_report_uncaught): true when it printed one. */
-  bool (*report_uncaught)(struct ScrError *error);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

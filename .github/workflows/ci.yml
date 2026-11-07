@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A merge queue group, once the repository turns the queue on: the tree that would become main, tested before
+  # it does. It runs what a push to main runs. Nothing starts such a run until then.
+  merge_group:
   # Nightly full macOS sweep. Pushes to main run no macOS jobs, and pull requests run them only when they change
   # darwin code (scripts/ci-lanes.mjs).
   schedule:
@@ -24,9 +27,9 @@ on:
         default: all
 
 concurrency:
-  # A new push to a pull request cancels its previous run. Every push to main runs to completion in a group of
-  # its own commit, so each merged commit gets a result (releases require a green run on their commit). The
-  # nightly sweep and manual runs neither cancel nor are cancelled by main pushes.
+  # A new push to a pull request cancels its previous run. Every push to main, and every merge queue group, runs
+  # to completion in a group of its own commit, so each merged commit gets a result (releases require a green run
+  # on their commit). The nightly sweep and manual runs neither cancel nor are cancelled by main pushes.
   group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -73,8 +76,9 @@ jobs:
           NODE
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
-  # request's diff, so a pull request cannot change its own selection). Pushes to main run every lane except macos
-  # and islands, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every lane.
+  # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
+  # every lane except macos and islands, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs
+  # run every lane.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -93,6 +97,9 @@ jobs:
       bootstrap: ${{ steps.lanes.outputs.bootstrap || 'false' }}
       profile: ${{ steps.lanes.outputs.profile || 'false' }}
       islands: ${{ steps.lanes.outputs.islands || 'false' }}
+      # The shards of the effects lane to run: all sixteen, or the one that a pull request changing compiler or
+      # runtime sources samples (scripts/ci-lanes.mjs).
+      effect_shards: ${{ steps.lanes.outputs.effect_shards || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
@@ -104,14 +111,15 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"; }
-          if [ "$EVENT" = push ]; then
+          if [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
             printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
           elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
-            node "$RUNNER_TEMP/ci-lanes.mjs" --base "$BASE" --head "$HEAD" --github-output
+            node "$RUNNER_TEMP/ci-lanes.mjs" --base "$BASE" --head "$HEAD" --pr "$PR" --github-output
           else
             echo "The base commit has no scripts/ci-lanes.mjs: every lane"
             every
@@ -346,7 +354,8 @@ jobs:
       fail-fast: false
       matrix:
         flavor: [plain, san]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        # All sixteen, or the one shard a sampled pull request runs.
+        shard: ${{ fromJSON(needs.lanes.outputs.effect_shards) }}
     env:
       # One compiler at a time leaves room for its 8 GiB heap, checker and
       # LLVM on a 16 GB runner. Parallelism comes from independent shards.
@@ -643,6 +652,16 @@ jobs:
   # committed one, as local builds do. It runs on the profile lane, which
   # follows compiler code, code generation and the native CLI build, where the
   # profile goes stale.
+  #
+  # The same build is held to the self-compile budget
+  # (scripts/self-compile-budget.mjs): the whole-program lowering passes the
+  # compiler takes over its own source, exactly, and the heap its frontend
+  # holds at the end of a pass against the budget and the heap limit. One
+  # construct in the compiler's source can make it lower itself again (#2918
+  # added two passes and 65% of the build's time), and this is the only build
+  # of the compiler's own source that every compiler change runs. Compile time
+  # itself is judged by the zero-cost gate, which has a baseline build to pair
+  # it with.
   native_profile:
     needs: [validation_scope, lanes]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.profile == 'true' }}
@@ -666,8 +685,8 @@ jobs:
         with:
           target: linux-x64-gnu
       - run: pnpm build
-      - name: Build the native compiler with the committed profile
-        run: pnpm build:native-compiler
+      - name: Build the native compiler with the committed profile, within the self-compile budget
+        run: node scripts/self-compile-budget.mjs --native-build
         env:
           SCRIPTC_NATIVE_PROFILE_CHECK: "1"
 
@@ -802,11 +821,16 @@ jobs:
   checker_identity:
     needs: [validation_scope, lanes]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
-    name: test (tsgo and tsc-ts give the same IR)
+    name: test (tsgo and tsc-ts give the same IR, ${{ matrix.optimization }})
     runs-on: ubuntu-24.04
-    # The two corpus compiles run back to back and take close to 30 minutes on a
-    # slow hosted runner, so a 30-minute limit cancels otherwise healthy runs.
-    timeout-minutes: 60
+    # The release and the dev corpus compiles do not depend on each other, so
+    # each has its own job: 15 minutes at the median and 20 on a slow hosted
+    # runner, where the two back to back took 31 and 41.
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        optimization: [release, dev]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -818,10 +842,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Corpus LLVM IR with tsgo and with tsc-ts (release)
-        run: pnpm test:checker-identity --optimization release
-      - name: Corpus LLVM IR with tsgo and with tsc-ts (dev)
-        run: pnpm test:checker-identity --optimization dev
+      - name: Corpus LLVM IR with tsgo and with tsc-ts (${{ matrix.optimization }})
+        run: pnpm test:checker-identity --optimization ${{ matrix.optimization }}
 
   llvm_artifacts_linux_x64:
     needs: [validation_scope, lanes, native_linux]

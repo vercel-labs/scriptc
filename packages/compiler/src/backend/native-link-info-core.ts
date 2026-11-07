@@ -131,6 +131,10 @@ export interface NativeLinkFeatures {
   childErrorFields?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  /** The executable carries debug sources (`--optimization dev` without
+   * `--strip`): its checked conversions report their failures
+   * (scr_conversion_trace.c). Absent (false) for every other build. */
+  conversionTrace?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;

@@ -150,7 +150,7 @@ function questionWithOptions(
   const type: IrType = { kind: "promise", inner: STRING };
   const queryType = query.dyn ? DYN : STRING;
   const name = `%rl.questionOptions${query.dyn ? "Dyn" : ""}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, type);
     lowerer.fnStack.push(context);
     try {

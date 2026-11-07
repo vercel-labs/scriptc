@@ -10779,7 +10779,7 @@ function refuseInheritedBuiltinCtorArgs(
  * non-iterable throws out of the constructor). */
 function aggregateErrorConstructor(lowerer: Lowerer, loc: SrcLoc): string {
   const name = "%aggregate.new";
-  if (lowerer.liftedFns.some((fn) => fn.name === name)) return name;
+  if (lowerer.liftedFnNamed(name) !== undefined) return name;
   const type: IrType = { kind: "object", className: "%AggregateError" };
   const context = newFnCtx(false, null, null, type);
   lowerer.fnStack.push(context);
@@ -12632,7 +12632,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           if (helper) {
             const loc = callee.loc;
             const name = `%new.callee:${unionT.unionId}`;
-            if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+            if (lowerer.liftedFnNamed(name) === undefined) {
               const undefinedTag = lowerer.armTag(unionT.unionId, UNDEFINED_T);
               const value: IrExpr = { kind: "varRef", localId: "value", type: unionT, loc };
               lowerer.liftedFns.push({

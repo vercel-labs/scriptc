@@ -2,6 +2,7 @@ import { join } from "node:path";
 import ts from "typescript";
 import { expect, test } from "vitest";
 import { boundedRun } from "../test262/execute.js";
+import { closeIslandRuleScanner, islandRuleMarker } from "../test262/island-marker.js";
 import {
   chapterOf,
   limitPerChapter,
@@ -459,7 +460,72 @@ test("reports keep exclusions, refusals, failures and passes separate", () => {
   ).toEqual({
     counts: { pass: 1, "compile-refusal": 1, fail: 1, excluded: 2 },
     exclusions: { "execution:sloppy": 2 },
+    islandRules: {
+      marked: {},
+      unmarked: { pass: 1, "compile-refusal": 1, fail: 1, excluded: 2 },
+      byRule: {},
+    },
   });
+});
+
+test("reports count island-rule variants beside the rest without removing them", () => {
+  const defineProperty = { rule: "R2.3", reason: "define-property" };
+  const summary = summarize([
+    { status: "pass", islandRule: null },
+    { status: "pass", islandRule: defineProperty },
+    { status: "fail", islandRule: defineProperty },
+    { status: "runtime-refusal", islandRule: { rule: "R2.4", reason: "with" } },
+    {
+      status: "excluded",
+      reason: "execution:sloppy",
+      islandRule: { rule: "R2.4", reason: "with" },
+    },
+  ]);
+  // The denominator keeps every variant, marked or not.
+  expect(summary.counts).toEqual({ pass: 2, fail: 1, "runtime-refusal": 1, excluded: 1 });
+  expect(summary.islandRules).toEqual({
+    marked: { pass: 1, fail: 1, "runtime-refusal": 1, excluded: 1 },
+    unmarked: { pass: 1 },
+    byRule: {
+      "R2.3 define-property": { pass: 1, fail: 1 },
+      "R2.4 with": { "runtime-refusal": 1, excluded: 1 },
+    },
+  });
+});
+
+test("the island-rule marker reads the test body as its variant runs it", () => {
+  try {
+    // No island construct.
+    expect(islandRuleMarker("assert.sameValue(1 + 1, 2);", "strict")).toBeNull();
+    // An object-model rule, in either mode.
+    const define = 'var o = {}; Object.defineProperty(o, "x", { value: 1 });';
+    expect(islandRuleMarker(define, "strict")).toEqual({ rule: "R2.3", reason: "define-property" });
+    expect(islandRuleMarker(define, "sloppy")).toEqual({ rule: "R2.3", reason: "define-property" });
+    // A sloppy-only construct marks the sloppy variant only: the strict
+    // variant of the same file is a different program.
+    const block = "{ function f() {} }\nf();";
+    expect(islandRuleMarker(block, "sloppy")).toEqual({
+      rule: "R2.4",
+      reason: "annexb-block-function",
+    });
+    expect(islandRuleMarker(block, "strict")).toBeNull();
+    // A runtime rule outranks an object-model rule that comes first.
+    expect(
+      islandRuleMarker(
+        'Object.defineProperty({}, "x", { value: 1 }); new Function("return 1");',
+        "strict",
+      ),
+    ).toEqual({ rule: "R1.1", reason: "code-from-string" });
+    // A syntax negative has no module to scan, whatever construct the
+    // parser's recovered tree holds: the test's metadata decides, because
+    // the parser does not throw on a syntax error.
+    const broken = 'Object.defineProperty({}, "x", { value: 1 }); var = ;';
+    expect(islandRuleMarker(broken, "strict", true)).toBeNull();
+    expect(islandRuleMarker(broken, "sloppy", true)).toBeNull();
+    expect(islandRuleMarker("var = ;", "strict", true)).toBeNull();
+  } finally {
+    closeIslandRuleScanner();
+  }
 });
 
 test("internal compiler failures cannot be classified as intentional refusals", () => {

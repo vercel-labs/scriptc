@@ -2038,15 +2038,15 @@ static const ScrNiDynOps nh_dyn_ops = {
     .to_primitive = scr_ni_to_primitive,
     .is_function = scr_ni_is_function,
     .error_get = nh_error_get,
-    .error_has = nh_error_has,
     .object_tag = nh_object_tag,
     .function_identity = nh_function_identity,
     .function_of_identity = nh_function_of_identity,
+    .inspect = scr_ni_inspect,
+    .report_uncaught = scr_ni_report_uncaught,
+    .error_has = nh_error_has,
     .promise_get = nh_promise_get,
     .promise_has = nh_promise_has,
     .promise_set = nh_promise_set,
-    .inspect = scr_ni_inspect,
-    .report_uncaught = scr_ni_report_uncaught,
 };
 
 __attribute__((constructor)) static void nh_install(void) {

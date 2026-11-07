@@ -4623,7 +4623,7 @@ function lowerDynReceiverMethodCall(
     const loc = locOf(call);
     const hasArgument = call.arguments.nodes.length === 1;
     const name = `%dyn.string.normalize:${hasArgument ? 1 : 0}`;
-    if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    if (lowerer.liftedFnNamed(name) === undefined) {
       const value = varRef("receiver", DYN, loc);
       const argument = varRef("form", DYN, loc);
       const form: IrExpr = {

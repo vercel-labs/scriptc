@@ -335,10 +335,15 @@ static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg) {
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", msg->data);
     _Exit(1);
   }
-  /* Node's error object for the message: errno, code and syscall, with
-   * the address and port of a failed bind or send and the hostname of a
-   * failed lookup. Every listener receives the same object. */
-  ScrError *system = scr_system_error_from_message(msg);
+  /* Node's error object for the message, as far as the error itself
+   * holds it: errno, code and syscall. Every listener receives the same
+   * object. The address and port (or hostname) Node also sets are
+   * properties of the error's untyped view; building that view here would
+   * link the dynamic object model into every program with a datagram
+   * socket, typed ones included, so an 'error' event does not carry them. */
+  const char *detail;
+  ScrError *system = scr_system_error_fields(msg, &detail);
+  (void)detail;
   ScrError *saved = scr_event_error_payload;
   if (system != NULL) scr_event_error_payload = system;
   ScrDgramL *snap;

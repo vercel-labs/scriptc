@@ -94,7 +94,7 @@ await new Promise((resolve) => {
     const second = dgram.createSocket("udp4");
     second.on("error", (e) => {
       show("dgram bind", e, port);
-      console.log(names(e), e.errno < 0, e.syscall, e.address, e.port === port);
+      console.log(e.errno < 0, e.syscall);
       second.close();
       first.close(() => resolve(undefined));
     });

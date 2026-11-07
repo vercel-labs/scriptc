@@ -123,6 +123,23 @@ static void *nh_pinned_obj(const ScrNodeRef *ref, int kind) {
   return NULL;
 }
 
+/* Whether nothing but the pin table holds the object of `pin`. A pinned
+ * error the program read as a dynamic value also has a view, and the
+ * error-view cache (scr_json.c) holds the error and the view until nothing
+ * else does. That pair is not a holder: counted as one, the table and the
+ * cache keep each other's entry for the rest of the run. */
+static bool nh_pin_unheld(const NhPin *pin) {
+  size_t rc = *(size_t *)pin->obj;
+  if (rc == 1) return true;
+  if (pin->kind != NH_PIN_ERROR || rc != 2) return false;
+  const ScrDyn *view = scr_errdyn_view_of(pin->obj);
+  if (view == NULL || view->kind != SCR_DYN_OBJ) return false;
+  /* The view's own entries may hold the view itself. */
+  size_t self = 0;
+  for (size_t i = 0; i < scr_dyn_obj_count(view); i++) self += scr_dyn_obj_value_at(view, i) == view;
+  return SCR_RC_COUNT(view) == 1 + self;
+}
+
 /* Releases every pin whose object only the table still holds. Releasing a
  * pin can free objects that held other pinned objects, so it repeats until
  * a pass frees nothing. */
@@ -131,8 +148,7 @@ static void nh_sweep(void) {
   while (freed) {
     freed = false;
     for (size_t i = 0; i < nh_npins;) {
-      size_t rc = *(size_t *)nh_pins[i].obj;
-      if (rc == 1) {
+      if (nh_pin_unheld(&nh_pins[i])) {
         NhPin pin = nh_pins[i];
         nh_pins[i] = nh_pins[--nh_npins];
         nh_pin_release_obj(&pin);
@@ -499,6 +515,17 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
   }
   case SCR_NV_HANDLE: {
     ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
+    if (ref->flags & SCR_NVF_ERROR) {
+      /* An island error the program already holds as an error (it caught
+       * it, or took it as a callback's argument) is that error again
+       * however it arrives, so the round trip of an island error through
+       * the program and back is the identity, as a native error's is. */
+      ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
+      if (pinned != NULL) {
+        nh_ref_release(ref);
+        return scr_dyn_from_error(pinned);
+      }
+    }
     ScrDyn *d = (ref->flags & SCR_NVF_PROMISE) ? nh_promise_box(ref)
                                                 : scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
     nh_ref_release(ref);
@@ -514,6 +541,27 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
   }
 }
 
+typedef struct {
+  uint32_t h;
+  ScrNodeErrorInfo *out;
+} NhErrorInfo;
+
+static void nh_error_info_job(void *p) {
+  NhErrorInfo *a = p;
+  scr_ni_bridge_loaded()->error_info(a->h, a->out);
+}
+
+/* The own name, message, stack and string code of island error `h`.
+ * Reading them runs JavaScript (any of them may be an accessor), so it
+ * runs on Node's stack like every operation. A thrown error is read after
+ * the operation that threw it returned to the program's stack, and V8 scans
+ * the stack it was entered on: a collection that started while it ran on
+ * the program's stack failed that scan's check. */
+static void nh_error_info(uint32_t h, ScrNodeErrorInfo *out) {
+  NhErrorInfo read = {h, out};
+  scr_ni_on_node_stack(nh_error_info_job, &read);
+}
+
 /* The ScrError of an island Error handle (+1): the one already pinned to
  * it, else a new one of the nearest intrinsic class, pinned. */
 static ScrError *nh_error_of(const ScrNodeValue *v) {
@@ -524,7 +572,7 @@ static ScrError *nh_error_of(const ScrNodeValue *v) {
     return scr_error_retain(pinned);
   }
   ScrNodeErrorInfo info;
-  nh_bridge()->error_info(ref->id, &info);
+  nh_error_info(ref->id, &info);
   ScrStr *message = nh_str(info.message ? info.message : "", info.message_len);
   ScrError *e = scr_error_new((int)info.kind, message);
   scr_str_release(message);
@@ -700,10 +748,10 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   }
 }
 
-/* The nearest intrinsic class V8 has (subclasses included). */
+/* The nearest class the island has a constructor for: V8's intrinsic
+ * error classes and Node's DOMException (subclasses included). */
 static uint32_t nh_error_kind(const ScrError *e) {
   for (int k = 1; k <= SCR_ERR_AGGREGATE; k++) {
-    if (k == SCR_ERR_DOMEX) continue;
     if (scr_error_vts[k].pre <= e->vt->pre && e->vt->pre <= scr_error_vts[k].post)
       return (uint32_t)k;
   }
@@ -787,36 +835,20 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
       return true;
     }
     /* A native error crosses by reference, like every native object: its
-     * dyn node is an export, and the bridge keeps one V8 Error per export
-     * (made from the name, message, stack and code below the first time).
-     * That V8 Error crossing back is SCR_NV_EXPORT, so the program gets the
-     * error it threw: the same object, with its class and fields. What
-     * island code reads from the V8 Error and it does not hold, the export
-     * answers from the native error (scr_ni_host_export_get). */
-    ScrStr *name = e->name != NULL ? scr_str_retain(e->name) : scr_error_default_name(e);
-    ScrStr *message = e->message != NULL ? scr_str_retain(e->message) : scr_str_new("", 0);
-    ScrStr *stack = scr_error_stack(e);
-    nh_keep(keep, name, nh_str_release_v);
-    nh_keep(keep, message, nh_str_release_v);
-    if (stack != NULL) nh_keep(keep, stack, nh_str_release_v);
+     * dyn node is an export, and the bridge keeps one V8 Error per export,
+     * of the error's intrinsic class. That V8 Error crossing back is
+     * SCR_NV_EXPORT, so the program gets the error it threw: the same
+     * object, with its class and fields. The V8 Error's own properties are
+     * the native error's: the bridge asks the export which exist
+     * (SCR_NODE_EXPORT_OWN) and reads and writes each through it, so island
+     * code and the program read and write one set of values, `stack`
+     * among them (formatted only when one side reads it). An instance of a
+     * program class also answers its class's members there. */
     out->tag = SCR_NV_ERROR;
     out->flags = SCR_NVF_ERROR;
     out->u.error.export_id = scr_ni_export_id(v);
     out->u.error.kind = nh_error_kind(e);
-    out->u.error.name = name->data;
-    out->u.error.name_len = name->len;
-    out->u.error.message = message->data;
-    out->u.error.message_len = message->len;
-    if (stack != NULL) {
-      out->u.error.stack = stack->data;
-      out->u.error.stack_len = stack->len;
-    }
-    if (e->code != NULL) {
-      ScrStr *code = scr_str_retain(e->code);
-      nh_keep(keep, code, nh_str_release_v);
-      out->u.error.code = code->data;
-      out->u.error.code_len = code->len;
-    }
+    out->u.error.class_instance = v->kind == SCR_DYN_TYPED_REF;
     scr_error_release(e);
     return true;
   }
@@ -1714,7 +1746,7 @@ bool scr_ni_report_uncaught(ScrError *error) {
   const ScrNodeBridge *bridge = scr_ni_bridge_loaded();
   if (ref == NULL || ref->id == 0 || bridge == NULL) return false;
   ScrNodeErrorInfo info;
-  bridge->error_info(ref->id, &info);
+  nh_error_info(ref->id, &info);
   if (info.stack == NULL) return false;
   if (info.arrow != NULL && info.arrow_len > 0) {
     fwrite(info.arrow, 1, info.arrow_len, stderr);

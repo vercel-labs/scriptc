@@ -2416,8 +2416,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.writeFileSyncFd",
     ],
     appendFileSync: ["fs.appendFileSyncBytes"],
-    // The fs stream members (bytesRead/bytesWritten, pending, path, close).
+    // The fs stream members (bytesRead/bytesWritten, pending, path, close),
+    // and the constructor's spelling for options that can hold a signal.
     createReadStream: [
+      "fs.createReadStreamSignal",
       "fs.fsStreamBytes",
       "fs.fsStreamPending",
       "fs.fsStreamPath",
@@ -2426,6 +2428,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.fsStreamCloseCb",
     ],
     createWriteStream: [
+      "fs.createWriteStreamSignal",
       "fs.fsStreamBytes",
       "fs.fsStreamPending",
       "fs.fsStreamPath",

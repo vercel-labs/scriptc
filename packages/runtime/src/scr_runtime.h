@@ -52,6 +52,7 @@
 #include "scr_os.h"
 #include "scr_dyn.h"
 #include "scr_json.h"
+#include "scr_record_source_get.h"
 #include "scr_event_target.h"
 #include "scr_blob.h"
 #include "scr_object.h"

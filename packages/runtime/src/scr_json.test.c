@@ -1,4 +1,5 @@
 #include "scr_runtime.h"
+#include "scr_record_source_get.h"
 #include <assert.h>
 #include <math.h>
 #include <stddef.h>
@@ -878,6 +879,59 @@ static void record_source_class_member(void) {
   scr_str_release(member);
 }
 
+static ScrDyn *getter_seven(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  return scr_dyn_new_num(7);
+}
+
+/* The read a record→record conversion uses for a field the source type does
+ * not declare: a data key answers the kept value (+1), a key the source
+ * lacks answers the undefined value, an accessor the kept source carries
+ * runs, and a record that keeps no source answers the undefined value too. */
+static void record_source_get(void) {
+  static const char *const names[] = {"label"};
+  static const size_t lens[] = {5};
+  size_t record[2] = {1, 0};
+  ScrDyn *source = scr_dyn_new_obj();
+  scr_dyn_obj_set(source, "label", 5, scr_dyn_new_num(1));
+  scr_dyn_obj_set(source, "count", 5, scr_dyn_new_num(2));
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "get", 3,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), getter_seven, 0, "", ""));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
+  ScrStr *name = scr_str_new("computed", 8);
+  ScrDyn *name_value = scr_dyn_new_str(name);
+  scr_dyn_release(scr_dyn_define_property(source, name_value, descriptor));
+  scr_dyn_release(name_value);
+  scr_dyn_release(descriptor);
+  scr_str_release(name);
+
+  scr_record_source_note(record, source, names, lens, 1);
+  assert(!scr_exc_pending() && scr_record_source_has(record));
+  ScrDyn *count = scr_record_source_get(record, "count", 5);
+  assert(count && count->kind == SCR_DYN_NUM && count->v.num == 2);
+  scr_dyn_release(count);
+  ScrDyn *computed = scr_record_source_get(record, "computed", 8);
+  assert(computed && computed->kind == SCR_DYN_NUM && computed->v.num == 7);
+  scr_dyn_release(computed);
+  /* A declared key holds a placeholder: the record is its source of truth. */
+  ScrDyn *declared = scr_record_source_get(record, "label", 5);
+  assert(declared && declared->kind == SCR_DYN_UNDEF);
+  scr_dyn_release(declared);
+  ScrDyn *missing = scr_record_source_get(record, "absent", 6);
+  assert(missing && missing->kind == SCR_DYN_UNDEF);
+  scr_dyn_release(missing);
+
+  scr_weak_dispose(record);
+  assert(!scr_record_source_has(record));
+  ScrDyn *none = scr_record_source_get(record, "count", 5);
+  assert(none && none->kind == SCR_DYN_UNDEF);
+  scr_dyn_release(none);
+  scr_dyn_release(source);
+}
+
 /* Freezing a record sets the frozen bit beside its count; an immortal
  * record keeps its word, which does not read as frozen. */
 static void record_frozen_bit(void) {
@@ -905,6 +959,7 @@ int main(void) {
   json_schema_special_names();
   json_schema_union_members();
   record_source_class_member();
+  record_source_get();
   /* Native Set boxes may own headerless scalar/string maps. Collecting an
    * enclosing cycle must neither trace those leaves nor skip their release. */
   for (int i = 0; i < 2000; i++) {

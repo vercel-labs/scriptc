@@ -80,6 +80,9 @@ export interface EarlyLibraryNativeFeatures {
   copying: boolean;
   textDecoderLegacy: boolean;
   bigintBytes: boolean;
+  /** The kept-source read of a record-to-record conversion
+   * (scr_record_source_get.c). Absent (false) otherwise. */
+  recordSourceGet?: boolean;
   /** The buffer views registry (scr_js_buffers.c) and the archive's
    * JavaScript object model build of its bytes and json units. */
   mutableBuffers: boolean;

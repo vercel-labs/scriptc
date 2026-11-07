@@ -10208,6 +10208,35 @@ export class Lowerer {
           (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
         );
       },
+      settledMayBeUndefined: (node) => {
+        // `Promise.all` resolves to an array or tuple of the entries'
+        // settled types. `(T | undefined)[]` stores T elements, so an
+        // undefined settled value is a fact of the result, not of its ABI.
+        const type = typeOrNull(node);
+        if (type === null) return true;
+        return panicSafe(() => {
+          const result = this.checker.getAwaitedType(type);
+          if (
+            result === undefined ||
+            !(this.checker.isArrayType(result) || this.checker.isTupleType(result))
+          )
+            return true;
+          return this.checker
+            .getTypeArguments(result as ts.TypeReference)
+            .some((element) =>
+              (element.isUnionType() ? ts.constituentTypes(element) : [element]).some(
+                (part) =>
+                  (part.flags &
+                    (ts.TypeFlags.Undefined |
+                      ts.TypeFlags.Void |
+                      ts.TypeFlags.Any |
+                      ts.TypeFlags.Unknown |
+                      ts.TypeFlags.TypeParameter)) !==
+                  0,
+              ),
+            );
+        }, true);
+      },
       callbackReturnsUndefined: (node) => {
         if (callbackReturnsOptional(node)) return true;
         // A callback the checker types as possibly returning undefined

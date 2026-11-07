@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import {
@@ -10,6 +11,9 @@ import {
   HEAP_PROBE_FLAGS,
   judgesSelfCompile,
   readBudget,
+  llvmFacts,
+  outputGrowthAllowance,
+  outputGrowthVerdict,
   selfCompileTrace,
   sourceCostAllowance,
   sourceCostVerdict,
@@ -287,4 +291,107 @@ test("every gate run that holds the self program judges the self-compile", () =>
   // The gate takes the decision from here, with no condition of its own.
   const gate = readFileSync(join(root, "scripts/zero-cost-gate.mjs"), "utf8");
   expect(gate).toContain("const checkCandidateSelf = judgesSelfCompile(sets, programs);");
+});
+
+test("an LLVM text is measured by its bytes, its functions and its dynamic-tier functions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-llvm-facts-"));
+  try {
+    const file = join(dir, "program.ll");
+    const text = [
+      "; ModuleID = 'program'",
+      "declare void @scr_runtime_abi_v1()",
+      'define internal fastcc double @"sc_f_%m1.area"(ptr %0) {',
+      "  ret double 0.0",
+      "}",
+      "define internal ptr @sc_dc_12(ptr %d, ptr %path) {",
+      "  ret ptr null",
+      "}",
+      "define internal i1 @sc_dm_3(ptr %d) {",
+      "  ret i1 true",
+      "}",
+      "define internal ptr @sc_bf__x25_dyn_class_keys_55aface2a090(ptr %0) {",
+      "  ; a line that only mentions define @sc_dc_99 does not define it",
+      "  ret ptr null",
+      "}",
+      "define i32 @main() {",
+      "  ret i32 0",
+      "}",
+      "",
+    ].join("\n");
+    writeFileSync(file, text);
+    expect(llvmFacts(file)).toEqual({ bytes: text.length, functions: 5, dynamicTier: 3 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the compiler's own LLVM may not grow far beyond its source", () => {
+  // Main at 2ac6be38c and at the next commit, aa86134742 (#2878), as llvmFacts reads the two
+  // builds: one memo added 428 lines and made the Lowerer a dynamic value.
+  const before = { bytes: 1_026_915_457, functions: 147_639, dynamicTier: 11_472 };
+  const after = { bytes: 1_053_426_853, functions: 157_103, dynamicTier: 16_043 };
+  const sourceRatio = 22_320_000 / 22_310_000;
+  const grown = outputGrowthVerdict({ candidate: after, baseline: before, sourceRatio });
+  expect(grown.lines).toEqual([
+    "its own source compiles to 1053426853 LLVM bytes, +2.6% over the baseline's source (+0.0% source bytes): OVER the 1% tolerance",
+    "its own source compiles to 157103 functions, +6.4% over the baseline's source (+0.0% source bytes): OVER the 1% tolerance",
+    "16043 of its functions belong to the dynamic tier (+4571 against the baseline's source): OVER the 5% tolerance",
+  ]);
+  expect(grown.failures).toHaveLength(3);
+  expect(grown.failures[1]).toMatch(
+    /\+6\.4% more functions than the baseline's \(147639 to 157103\)/,
+  );
+  expect(grown.failures[1]).toMatch(
+    /coverage packages\/compiler\/src\/native\/cli\.ts --explain-dynamic/,
+  );
+  expect(grown.failures[2]).toMatch(/from 11472 to 16043 functions \(\+39\.8%\)/);
+
+  // The most any ten commits of main added beyond their source in that fortnight: 0.79% of
+  // the functions.
+  const ordinary = outputGrowthVerdict({
+    candidate: { bytes: 1_003_000_000, functions: 150_790, dynamicTier: 10_040 },
+    baseline: { bytes: 1_000_000_000, functions: 150_000, dynamicTier: 10_000 },
+    sourceRatio: 1.004,
+  });
+  expect(ordinary.failures).toEqual([]);
+  // A change that adds 2% of source may add its 2% of functions.
+  expect(
+    outputGrowthVerdict({
+      candidate: { bytes: 1_020_000_000, functions: 153_000, dynamicTier: 10_000 },
+      baseline: { bytes: 1_000_000_000, functions: 150_000, dynamicTier: 10_000 },
+      sourceRatio: 1.02,
+    }).failures,
+  ).toEqual([]);
+  // A handful of new converters is not a finding, whatever share of a small tier they are.
+  expect(
+    outputGrowthVerdict({
+      candidate: { bytes: 1_000_000, functions: 1_000, dynamicTier: 90 },
+      baseline: { bytes: 1_000_000, functions: 1_000, dynamicTier: 10 },
+      sourceRatio: 1,
+    }).failures,
+  ).toEqual([]);
+  // A change that removes functions passes.
+  expect(
+    outputGrowthVerdict({ candidate: before, baseline: after, sourceRatio: 1 }).failures,
+  ).toEqual([]);
+
+  // The allowance belongs to the change that sets it and needs a reason.
+  const allowing = budget({
+    outputGrowthAllowance: { value: 40, reason: "the lowerer's context" },
+  });
+  expect(outputGrowthAllowance(allowing, budget())).toBe(0.4);
+  expect(outputGrowthAllowance(allowing, allowing)).toBe(0);
+  expect(
+    outputGrowthVerdict({ candidate: after, baseline: before, sourceRatio, allowance: 0.4 })
+      .failures,
+  ).toEqual([]);
+  const unexplained = budget({ outputGrowthAllowance: { value: 40, reason: "" } });
+  const trace = selfCompileTrace(
+    [lowering("reachable-emit"), heap("reachable-emit", 100)].join("\n"),
+  );
+  expect(
+    budgetVerdict({ budget: unexplained, previous: budget(), trace, bytes: 1_000_000 }).failures,
+  ).toContain(
+    "self-compile budget: outputGrowthAllowance needs a reason (scripts/self-compile-budget.json)",
+  );
 });

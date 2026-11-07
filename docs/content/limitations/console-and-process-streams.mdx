@@ -34,6 +34,12 @@ Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is f
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.
 A TypeScript `NodeJS.WritableStream` parameter that only receives `process.stdout` or `process.stderr` supports `write(string)`.
 When other streams flow into the same parameter, the process streams join them as `Writable` instances with the full writable surface.
+`process.stdout` and `process.stderr` also flow into a record type that declares only methods, such as `interface Sink { write(text: string): void }`.
+A call through the record runs the stream's current method with the stream as its receiver, so a program that replaces `process.stdout.write` reaches its replacement.
+The record is a separate value: it is not identical to the stream, and it exposes only the methods it declares.
+A record type that also declares a data member, such as `isTTY`, throws `SC2002`.
+An instance of a stream class such as `Writable` throws `SC2002` in a record type of methods as well.
+For those, pass an object literal that wraps the stream: `const sink: Sink = { write: (text: string) => { process.stdout.write(text); } }`.
 Under `@types/node`, `process.stdin` passed, stored or returned where `stream.Readable` is declared is one `Readable` over the process's input, and `process.stdout` and `process.stderr` where `stream.Writable` is declared are one `Writable` each.
 Every conversion answers the same stream, and a binding of the stream class compares identical to the process stream it was read from.
 The stdin stream receives each chunk once, beside any listener registered on `process.stdin` itself, and ends when the input ends.

@@ -1,6 +1,11 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { armedMaxBuffer, lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
+import {
+  armedMaxBuffer,
+  type ChildEvalStep,
+  lowerChildArgsArg,
+  withChildArgsCheck,
+} from "./child-process.js";
 import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -90,6 +95,9 @@ export function lowerExecSyncCall(
   let envPairs: IrExpr = emptyPairs;
   let timeout: IrExpr = numLit(0, loc);
   let maxBuffer: IrExpr | null = null;
+  // The options that are evaluated, as written, by the launch arguments
+  // each one becomes ("limit": the limit is not one of them).
+  const optionSteps: ChildEvalStep[] = [];
   let stdoutMode = 1;
   let stderrMode = 0;
   let stdinInherit = false;
@@ -229,6 +237,7 @@ export function lowerExecSyncCall(
             pairs: recordToEnvPairs(lowerer, (cs.props[0] as ts.PropertyAssignment).initializer),
             whenTrue: cs.whenTrue,
           };
+          optionSteps.push(6, 7);
           continue;
         }
         lowerer.noLowering(
@@ -261,6 +270,7 @@ export function lowerExecSyncCall(
         }
         case "cwd":
           cwd = lowerer.lowerExprExpecting(m.value, STRING);
+          optionSteps.push(5);
           break;
         case "input": {
           // string | undefined, Node's exact member semantics: the
@@ -273,6 +283,7 @@ export function lowerExecSyncCall(
             // `input: undefined` — Node treats the member as absent.
             break;
           }
+          optionSteps.push(3, 4);
           const it = lowerer.mapTypeOf(lowerer.typeOf(m.value));
           const uTag = it?.kind === "union" ? lowerer.armTag(it.unionId, UNDEFINED_T) : -1;
           const sTag = it?.kind === "union" ? lowerer.armTag(it.unionId, STRING) : -1;
@@ -326,6 +337,7 @@ export function lowerExecSyncCall(
         case "env": {
           hasEnv = boolLit(true, loc);
           envPairs = recordToEnvPairs(lowerer, m.value);
+          optionSteps.push(6, 7);
           // A later inline env member overrides an earlier conditional
           // spread (JS object-literal order); an earlier member stays
           // the spread's false-arm fallback.
@@ -334,12 +346,14 @@ export function lowerExecSyncCall(
         }
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
+          optionSteps.push(8);
           break;
         case "stdio":
           applyStdio(m.value);
           break;
         case "maxBuffer":
           maxBuffer = lowerer.lowerExprExpecting(m.value, F64);
+          optionSteps.push("limit");
           break;
         case "killSignal": {
           const t = lowerer.typeOf(m.value);
@@ -410,6 +424,7 @@ export function lowerExecSyncCall(
       shell ? 1 : 0,
       (a) => ({ cwd: a[5], envPairs: a[7], maxBuffer: armedMaxBuffer(maxBuffer, true) }),
       loc,
+      [0, 1, ...optionSteps],
     );
   if (condEnvSpread !== null) {
     // The conditional env spread: ONE cond evaluation picks between two

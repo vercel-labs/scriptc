@@ -1,6 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
+import { type ChildEvalStep, lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
 import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -90,6 +90,9 @@ export function lowerExecFileAsyncCall(
   let timeout: IrExpr = numLit(0, loc);
   // Node's default maxBuffer for exec and execFile.
   let maxBuffer: IrExpr = numLit(1024 * 1024, loc);
+  // The options that are evaluated, as written, by the helper argument
+  // each one becomes.
+  const optionSteps: ChildEvalStep[] = [];
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
       lowerer.noLowering(
@@ -128,6 +131,7 @@ export function lowerExecFileAsyncCall(
             type: envRecT,
             loc,
           };
+          optionSteps.push(3);
           continue;
         }
         lowerer.noLowering(
@@ -158,15 +162,19 @@ export function lowerExecFileAsyncCall(
         }
         case "cwd":
           cwd = lowerer.lowerExprExpecting(m.value, STRING);
+          optionSteps.push(2);
           break;
         case "env":
           env = envRec(true, recordToEnvPairs(lowerer, m.value));
+          optionSteps.push(3);
           break;
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
+          optionSteps.push(4);
           break;
         case "maxBuffer":
           maxBuffer = lowerer.lowerExprExpecting(m.value, F64);
+          optionSteps.push(5);
           break;
         case "windowsHide":
           lowerer.lowerExpr(m.value); // Node no-op on POSIX
@@ -225,6 +233,7 @@ export function lowerExecFileAsyncCall(
       };
     },
     loc,
+    [0, 1, ...optionSteps],
   );
 }
 

@@ -314,6 +314,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteEarlyHints",
   "http.validateHeaderName",
   "http.validateHeaderValue",
+  "http.setMaxIdleParsers",
+  // 'prefinish' on the HTTP/2 compatibility response is refused by name.
+  "http.resOnPrefinish",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
   "net.sockSetEncoding",

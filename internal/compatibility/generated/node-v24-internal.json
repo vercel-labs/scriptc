@@ -56027,16 +56027,22 @@
           "tests/corpus/2986-http-static-client-socket-finish.ts",
           "tests/corpus/2987-http-static-timeout-errors.ts",
           "tests/corpus/2988-http-static-client-abort.ts",
+          "tests/corpus/compat-http-client-connect.mjs",
+          "tests/corpus/compat-http-client-connect.ts",
           "tests/corpus/compat-http-interim-responses.mjs",
           "tests/corpus/compat-http-interim-responses.ts",
+          "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/compat-http-message-tail.ts",
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/http-server-client-error.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
+          "tests/diagnostics/compat-absent-http-members.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/server/cases/http-trailers/main.ts",
           "tests/fixtures/server/cases/http2-connect/main.ts",
@@ -56205,7 +56211,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.agent.createConnection",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -56228,7 +56237,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.agent.keepSocketAlive",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -56251,7 +56263,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.agent.reuseSocket",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -56404,7 +56419,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.maxTotalSockets",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -57073,7 +57091,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.maxHeadersCount",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -57355,8 +57376,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.'connect'",
+        "tests": [
+          "tests/corpus/compat-http-client-connect.ts",
+          "tests/corpus/compat-http-client-connect.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -57740,7 +57765,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.server",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -57817,7 +57845,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.maxHeadersCount",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -57868,7 +57899,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.maxRequestsPerSocket",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -58027,8 +58061,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.'clientError'",
+        "tests": [
+          "tests/corpus/http-server-client-error.ts",
+          "tests/corpus/compat-http-message-tail.ts",
+          "tests/corpus/compat-http-message-tail.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58129,7 +58168,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.'dropRequest'",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58677,7 +58719,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.response.writeInformation",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -59387,7 +59432,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.signal",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -59737,8 +59785,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.outgoingMessage.destroy",
+        "tests": [
+          "tests/corpus/2985-http-static-message-destroy.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -59996,7 +60047,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.outgoingMessage.setHeaders",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -60074,8 +60128,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.outgoingMessage.write",
+        "tests": [
+          "tests/corpus/compat-http-message-tail.ts",
+          "tests/corpus/compat-http-message-tail.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -60257,8 +60315,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.writableHighWaterMark",
+        "tests": [
+          "tests/corpus/compat-http-message-tail.ts",
+          "tests/corpus/compat-http-message-tail.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -60281,7 +60343,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.writableLength",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -60303,8 +60368,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.writableObjectMode",
+        "tests": [
+          "tests/corpus/compat-http-message-tail.ts",
+          "tests/corpus/compat-http-message-tail.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -60327,7 +60396,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.'drain'",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -60375,8 +60447,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.'prefinish'",
+        "tests": [
+          "tests/corpus/compat-http-message-tail.ts",
+          "tests/corpus/compat-http-message-tail.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -60616,8 +60692,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.http.setMaxIdleHTTPParsers",
+        "tests": [
+          "tests/corpus/compat-http-message-tail.ts",
+          "tests/corpus/compat-http-message-tail.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -60640,7 +60720,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "evidence": "compiler-feature:http.http.setGlobalProxyFromEnv",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65239,7 +65322,8 @@
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs"
+          "tests/corpus/net-socket-write-rejected.cjs",
+          "tests/diagnostics/compat-absent-http-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -65311,8 +65395,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:https"
+        "status": "partial",
+        "evidence": "compiler-feature:https.https.Server",
+        "tests": [
+          "tests/corpus/compat-http-server-tail.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65368,7 +65455,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:https"
+        "evidence": "compiler-feature:https.server",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65530,7 +65620,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:https"
+        "evidence": "compiler-feature:https.maxHeadersCount",
+        "tests": [
+          "tests/diagnostics/compat-absent-http-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

@@ -89,6 +89,24 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
             ) !== null
           )
             return { how: "checkedRetag", trappable };
+          // An arm that several destination arms hold, where no rule selects
+          // one: the value's own properties do. Asked only after the plan
+          // above declined, so a pair that converts keeps its helper.
+          if (
+            trappable.length < from.arms.length &&
+            planUnionRetag(
+              from,
+              to,
+              (id) => lowerer.shapes.get(id),
+              (s, d) => lowerer.widthLiftPlan(s, d),
+              new Set(trappable),
+              undefined,
+              undefined,
+              undefined,
+              true,
+            )?.some((arm) => arm.kind === "presence") === true
+          )
+            return { how: "checkedRetag", trappable, byPresence: true };
         }
       }
       return null;

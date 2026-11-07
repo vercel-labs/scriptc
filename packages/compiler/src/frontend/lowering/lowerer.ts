@@ -15530,8 +15530,9 @@ export class Lowerer {
     trappable?: ReadonlySet<number>,
     classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
     checked = false,
+    byPresence = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked, byPresence);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {

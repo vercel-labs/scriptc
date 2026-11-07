@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/asserted-method-param-union-arm.ts"
+ ],
+ "diags": []
+}

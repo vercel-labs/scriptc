@@ -83,3 +83,15 @@ if (!Error.stackTraceLimit) {
   };
   console.log("limit", Error.stackTraceLimit, typeof Array.prototype.lastIndexOf);
 }
+
+// A definition that only changes a member's attributes replaces nothing, in
+// the singular and in the plural form: the member is still called natively.
+Object.defineProperty(Math, "min", { writable: false });
+Object.defineProperties(Math, { max: { writable: false } });
+console.log(
+  "attributes",
+  Math.min(1, 2),
+  Math.max(1, 2),
+  Object.getOwnPropertyDescriptor(Math, "min").writable,
+  Object.getOwnPropertyDescriptor(Math, "max").writable,
+);

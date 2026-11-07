@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-chained-export-evaluated-once.cjs"
+ ],
+ "diags": []
+}

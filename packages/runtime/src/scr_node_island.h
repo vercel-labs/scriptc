@@ -86,6 +86,10 @@ void scr_process_off_exit_island(uint32_t listener);
  * Node. See scriptc-perf/results/ni-4/ABI.md. */
 ScrDyn *scr_ni_require(ScrStr *path);     /* require(absolute path): the exports */
 ScrPromise *scr_ni_import(ScrStr *path);  /* import(absolute path): the namespace */
+/* process.report, answered by the island — which is this same process, so
+ * the report's sharedObjects lists the binary's real libraries. Compiler
+ * builds that have no island keep the process.report refusal instead. */
+ScrDyn *scr_ni_process_report(void);
 ScrDyn *scr_ni_get(ScrDyn *obj, ScrDyn *key);
 ScrDyn *scr_ni_get_str(ScrDyn *obj, const char *key, size_t len);
 bool scr_ni_set(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
@@ -139,6 +143,11 @@ typedef struct ScrNiDynOps {
   int (*instance_of)(ScrDyn *value, ScrDyn *ctor);
   ScrDyn *(*to_primitive)(const ScrDyn *self, int hint);
   bool (*is_function)(const ScrDyn *value);
+  /* The `constructor` of an error island code threw, answered by V8 (+1 in
+   * *out): an error keeps its realm's constructor, so a native
+   * `e.constructor === TypeError` holds with the island's TypeError. 1 for
+   * an island error, 0 for any other. */
+  int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

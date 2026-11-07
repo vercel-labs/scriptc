@@ -5,6 +5,7 @@ import type { NativeOptimization } from "./backend/optimization.js";
 import type { NativeProfileMatch } from "./backend/native-profile.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
+import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import type { TierMode } from "./frontend/tier-analysis.js";
 import type { NodeIslandOptions } from "./node-islands/policy.js";
 
@@ -47,6 +48,13 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** Keep JavaScript-visible stdout in the runtime's 64 KiB buffer when fd 1
+   * is not a terminal, settling it when the buffer fills and at every point
+   * the runtime has to publish output (a stderr write, the event loop's
+   * sleep, a blocking stdin read, process.kill, process.exit, an uncaught
+   * exception, exit). A terminal keeps one submission per call. Executables
+   * only; the observable contract on a pipe or file is the opting build's. */
+  stdoutBuffering?: boolean;
   /** Where a program that calls into Node.js (@scriptc/node) loads Node
    * from: a libnode pack directory recorded into the executable, or
    * "beside" to copy the pack next to the executable. Default: the pack in
@@ -169,6 +177,15 @@ export interface CompileWarnings {
    * modules (absolute file paths). Reported again on an executable cache
    * hit, so a runner can tell an island result from a native one. */
   islands?: { packages: string[]; modules: string[] };
+  /** What the build's frontend pass lowered (lowerer.ts's coverage stats):
+   * statements attempted, statements that could not be lowered, functions
+   * whose signatures were skipped, and how many statements compile into
+   * dynamic-tier functions. The build measured these on the program it
+   * compiled, so a caller can assert its lowering quality without a second
+   * `analyze()` pass over the same program. Absent on an executable cache
+   * hit, which skips the frontend; `scriptc coverage` reports coverage from
+   * the analysis that always lowers. */
+  stats?: LowerStats;
 }
 
 export type CompileSourceResult =

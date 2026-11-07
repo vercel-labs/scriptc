@@ -11,8 +11,17 @@
  *            as source-anchored diagnostics (SC0004), and the ECMAScript
  *            early errors the checker does not model: a duplicated or
  *            `var`-colliding lexical declaration in a block or switch
- *            statement list (SC0005/SC0006) and a declaration where the
- *            grammar admits only a Statement (SC0007)
+ *            statement list (SC0005/SC0006), a declaration where the
+ *            grammar admits only a Statement (SC0007), an ImportCall
+ *            argument list the grammar does not allow (SC0008), a private
+ *            name with no declaring enclosing class (SC0009), an
+ *            assignment target that is not a variable or a property access
+ *            (SC0010), `await` used as an identifier where the grammar
+ *            makes it an operator (SC0011), `arguments` in a class field
+ *            initializer or static block (SC0012), a script-top-level
+ *            `using` declaration (SC0013), assignment to `eval` or
+ *            `arguments` in strict code (SC0014), and a catch parameter
+ *            the catch block redeclares (SC0015)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected
@@ -436,6 +445,22 @@ export function nodeIslandReaderStripDiag(
   };
 }
 
+/** SC8020 — native code reads a name that only an island module's sloppy
+ * implicit-global write creates: the global lives on Node's global object,
+ * which the native build does not have. */
+export function nodeIslandImplicitGlobalReadDiag(
+  name: string,
+  writerFile: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8020",
+    message: `'${name}' is created as an implicit global by ${writerFile}, which runs in a Node island; the native build has no global object, so this read cannot see it. Declare '${name}' in this module, or move the code that reads it into ${writerFile}.`,
+    loc,
+    hint: "a declared binding holds the same value in both tiers",
+  };
+}
+
 /** SC8020 — a stateful module the program compiles is duplicated across
  * the Node island boundary (an explicit "duplicate", or a form NI-6 cannot
  * share yet): each side has its own state. */
@@ -814,7 +839,7 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   SC1091: {
     feature: "writing an undeclared name in a JavaScript source",
     milestone: "later",
-    hint: "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)",
+    hint: "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
   },
   SC1100: {
     feature: "operations on 'unknown' values",
@@ -1172,6 +1197,23 @@ export function noLoweringDiag(
       (viaNodeTypes
         ? "the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)"
         : "the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)"),
+  };
+}
+
+/** A use of a Node 24 global the native runtime does not implement
+ * (host-globals.ts): constructing or calling its constructor value, or
+ * reading one of its members. A bare read compiles and answers the
+ * constructor (host-global-values.ts). Node has the class and its surface,
+ * so answering undefined or refusing to build the module would both
+ * diverge; the reason id lets a Node island run the module instead. */
+export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${name}' is a Node global that native code does not provide`,
+    loc,
+    milestone: "later",
+    hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
+    reason: "host-global",
   };
 }
 
@@ -1565,9 +1607,10 @@ export function libExportUnresolvedDiag(
     message: `library export '${exportName}' cannot be resolved: ${detail}`,
     loc,
     hint:
-      "the export map may only name function declarations exported directly by the profile's ONE entry module; " +
-      "when a function lives in another module, the entry module declares an exported wrapper function that " +
-      "forwards to it, such as export function handle(msg: string) { return realHandle(msg); }",
+      "the export map may only name exports of the profile's ONE entry module, and the entry module decides " +
+      'where the function lives: re-export it from another module (export { handle } from "./sdk/handler", ' +
+      'or export * from "./sdk/handler"), declare it there and export it through a list (export { handle }), ' +
+      "or declare a forwarding wrapper function",
   };
 }
 

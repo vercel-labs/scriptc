@@ -150,15 +150,60 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
-function helperFailureMessage(
-  stderr: string,
-  fallback: string,
-): { code?: string; message: string } {
+/** The error `execFile` rejects with when the helper does not exit zero. */
+interface HelperFailure {
+  message: string;
+  code?: number | string;
+  signal?: string | null;
+  stdout?: string;
+  stderr?: string;
+}
+
+/** How the child ended. A helper killed by a signal prints nothing at all, so
+ * the signal is the only description of the failure it leaves behind. */
+function helperEnding(failure: HelperFailure): string {
+  if (typeof failure.code === "number") return `exit status ${failure.code}`;
+  if (typeof failure.signal === "string" && failure.signal !== "")
+    return `signal ${failure.signal}`;
+  return "";
+}
+
+/** The command line `execFile` names, without the output it appends after it. */
+function helperCommand(failure: HelperFailure): string {
+  const newline = failure.message.indexOf("\n");
+  return newline === -1 ? failure.message : failure.message.slice(0, newline);
+}
+
+/** How much of the helper's own output a failure message carries. */
+const MAX_HELPER_FAILURE_OUTPUT = 2000;
+
+function helperFailureMessage(failure: HelperFailure): {
+  code?: string;
+  message: string;
+} {
+  const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
   const parsed = parseJsonObject(stderr.trim());
-  return {
-    ...(typeof parsed?.["code"] === "string" ? { code: parsed["code"] } : {}),
-    message: typeof parsed?.["message"] === "string" ? parsed["message"] : fallback,
-  };
+  if (typeof parsed?.["message"] === "string") {
+    return {
+      ...(typeof parsed["code"] === "string" ? { code: parsed["code"] } : {}),
+      message: parsed["message"],
+    };
+  }
+  // The helper did not report one of its structured diagnostics, so the child's
+  // exit status, signal and output are all the evidence there is: a loader,
+  // allocation or abort message names a cause that the command line alone does
+  // not. The diagnostic goes to stderr; stdout only carries a profile report,
+  // which a failing helper may still have written before it ended.
+  const printed = (
+    stderr.trim() !== "" ? stderr : typeof failure.stdout === "string" ? failure.stdout : ""
+  ).trim();
+  const ending = helperEnding(failure);
+  const status = ending === "" ? "" : ` (${ending})`;
+  const output =
+    printed === ""
+      ? ""
+      : `: ${printed.slice(0, MAX_HELPER_FAILURE_OUTPUT)}${printed.length > MAX_HELPER_FAILURE_OUTPUT ? "…" : ""}`;
+  return { message: `${helperCommand(failure)}${status}${output}` };
 }
 
 async function invoke(
@@ -172,9 +217,7 @@ async function invoke(
       windowsHide: true,
     });
   } catch (error) {
-    const failure = error as NodeJS.ErrnoException & { stderr?: string; stdout?: string };
-    const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
-    const parsed = helperFailureMessage(stderr, failure.message);
+    const parsed = helperFailureMessage(error as HelperFailure);
     throw new NativeCodegenError(
       "SC3004",
       `LLVM native helper failed${parsed.code === undefined ? "" : ` (${parsed.code})`}: ${parsed.message}`,
@@ -420,6 +463,29 @@ export async function mergeNativeProfiles(
     ...(sparse ? ["--sparse"] : []),
     ...inputPaths,
   ]);
+}
+
+/** The function names an indexed profile records: the functions a
+ * `--profile-use` build may copy for CPU dispatch. Null when the helper
+ * cannot report them (an older helper, an unreadable profile), and the
+ * build then copies every function whose loop x86-64-v3 widens. */
+export async function readProfileFunctionNames(profilePath: string): Promise<string[] | null> {
+  const target = nativeCodegenTarget();
+  if (target === null) return null;
+  try {
+    const helper = await resolveHelper(target);
+    const { stdout } = await invoke(helper.binaryPath, [
+      "profile-functions",
+      "--input",
+      profilePath,
+    ]);
+    const parsed = parseJsonObject(stdout.trim());
+    const functions = parsed?.["functions"];
+    if (parsed?.["ok"] !== true || !Array.isArray(functions)) return null;
+    return functions.filter((name): name is string => typeof name === "string");
+  } catch {
+    return null;
+  }
 }
 
 export async function emitNativeArtifact(

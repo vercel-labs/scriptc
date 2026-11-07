@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8782-async-iterable-generic-argument.ts"
+ ],
+ "diags": []
+}

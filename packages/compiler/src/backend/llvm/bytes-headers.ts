@@ -37,6 +37,11 @@ export function emitLoopBytesHeaders(
   loop: IrStmt,
   parameters: ReadonlySet<string>,
 ): BytesHeaderScope | null {
+  // A program whose JavaScript resizes, grows or detaches a buffer
+  // (IrModule.bytesHeadersMutable): the entry's header reads would outlive
+  // a call inside the loop that changed them, so every element access
+  // reloads its own header.
+  if (emitter.mod.bytesHeadersMutable === true) return null;
   const receivers = new Set<string>();
   const rebound = new Set<string>();
   const receiver = (e: IrExpr): void => {

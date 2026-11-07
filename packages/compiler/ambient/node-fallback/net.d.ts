@@ -209,6 +209,8 @@ declare module "net" {
     on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
+    /* http servers: a request the parser rejects, or a connection error */
+    on(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
     /* The WebSocket handover: fires INSTEAD of 'request' for
      * Connection: upgrade requests, with the raw socket + head bytes;
      * 'connect' is its twin for CONNECT requests (HTTP tunneling). */
@@ -233,6 +235,8 @@ declare module "net" {
     addListener(event: "drop", listener: (data?: DropArgument) => void): void;
     addListener(event: "timeout", listener: (socket: Socket) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
+    /* http servers: a request the parser rejects, or a connection error */
+    addListener(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
     addListener(
       event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
@@ -251,6 +255,8 @@ declare module "net" {
     once(event: "drop", listener: (data?: DropArgument) => void): void;
     once(event: "timeout", listener: (socket: Socket) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    /* http servers: a request the parser rejects, or a connection error */
+    once(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
     once(
       event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,

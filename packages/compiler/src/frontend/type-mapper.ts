@@ -2342,10 +2342,17 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // its own. A shape with no native mapping is then exactly the
     // checked-dynamic value — the same answer `unknown` gets — never the
     // package's story (there is no package value here to disagree with).
-    if (mapped === null && packageTypeIsData(type, ctx)) {
-      mapped = DYN;
-      contextResolutions++;
-    }
+    //
+    // The fallback reads the type's declarations and nothing of the binding
+    // context, so it is not a context resolution of its own: when the
+    // structural attempt consulted the context, that read counted itself,
+    // and when it did not, the type has this answer wherever it is mapped.
+    // Counting it kept every type that holds such a shape out of the memo:
+    // an SDK configuration type whose answer is the checked-dynamic value
+    // was mapped from scratch at each of its uses (pi's
+    // `BedrockRuntimeClientConfig`: forty mappings of half a second each in
+    // one function).
+    if (mapped === null && packageTypeIsData(type, ctx)) mapped = DYN;
     // Localized failure: a type that failed at a committed slot maps to its
     // lenient form. It counts as a context resolution so neither it nor a
     // type containing it is memoized: the strict form may map elsewhere.

@@ -16220,6 +16220,7 @@ export class Lowerer {
   private lowerReturnOf(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
+      this.refuseDroppedStaleReturn(node);
       let e = this.lowerExpr(node);
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
@@ -16262,6 +16263,22 @@ export class Lowerer {
       return { kind: "return", value: this.asyncReturnValueOf(node, e, expected), loc };
     }
     return { kind: "return", value: this.lowerReturnValue(node), loc };
+  }
+
+  /** A function returns nothing when the checker inferred its return type
+   * from a read it narrowed to `undefined`. A call may have stored a value
+   * there since (widenedType restored the read), and returning nothing
+   * would drop it; the caller's types were inferred from the same
+   * narrowing, so only a declared return type can carry the value. */
+  refuseDroppedStaleReturn(node: ts.Expression): void {
+    const stale = this.narrowing.restoredNothingRead(node);
+    if (stale === null) return;
+    this.unsupported(
+      "SC1090",
+      node,
+      `returning '${ts.getTextOfNode(stale)}' from a function whose return type TypeScript infers as 'undefined' (it types the read by the last assignment in this function, and a call made since can have assigned it from another function)`,
+      "declare the function's return type, so the result is the value stored at the return",
+    );
   }
 
   maybeNarrow(expr: IrExpr, node: ts.Node): IrExpr {

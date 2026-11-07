@@ -26,6 +26,10 @@ export function lowerStaticallyUndefinedArgument(
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   if ((lowerer.typeOf(expr).flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) === 0)
     return null;
+  // The checker typed the argument `undefined` from a narrowing that a call
+  // may have undone (`s.slice(done ? start : undefined)` with `start`
+  // assigned by a callback): the argument carries the stored value.
+  if (lowerer.narrowing.restoredNothingRead(expr) !== null) return null;
   // A caller may already have evaluated the entire argument (including a
   // void operand) before receiver coercion. Do not evaluate it again.
   const stabilized = lowerer.chainRecvByNode.get(node);

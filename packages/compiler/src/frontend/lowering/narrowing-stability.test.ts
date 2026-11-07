@@ -153,3 +153,78 @@ formatted({}, []);
 `);
   expect(thrownMessages(module, "formatted")).toEqual([]);
 });
+
+/** Whether a function's body reads the module-level binding `name`. */
+function readsGlobal(module: IrModule, fn: string, name: string): boolean {
+  const found = module.functions.find((f) => f.name === fn || f.name.endsWith(`.${fn}`));
+  if (!found) throw new Error(`no function ${fn}`);
+  let reads = false;
+  JSON.stringify(found.body, (_key, value: unknown) => {
+    const node = value as { kind?: string; localId?: string };
+    if (node?.kind === "varRef" && node.localId?.endsWith(`.${name}`)) reads = true;
+    return value;
+  });
+  return reads;
+}
+
+test("a narrowing to undefined that a call may have undone reads the stored value", async () => {
+  // TypeScript types `start` as `undefined` at both slices. In `stale` the
+  // closure ran since, so the argument is the binding; in `current` nothing
+  // ran since the assignment, so the argument is absent.
+  const module = await lower(`
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+function stale(): string {
+  start = undefined;
+  set();
+  return "abcd".slice(start);
+}
+function current(): string {
+  start = undefined;
+  return "abcd".slice(start);
+}
+console.log(stale(), current());
+`);
+  expect(readsGlobal(module, "stale", "start")).toBe(true);
+  expect(readsGlobal(module, "current", "start")).toBe(false);
+});
+
+test("a binding typed by flow alone reads as declared once another function may have assigned it", async () => {
+  // `let text;` is `undefined` to the checker until this function assigns it.
+  const module = await lower(`
+let text;
+let other;
+function assign(): void {
+  text = "t";
+  other = "o";
+}
+console.log("x".padStart(3, other));
+assign();
+console.log("x".padStart(3, text));
+`);
+  const init = module.functions.find((f) => f.name.startsWith("%init"))!.name;
+  expect(readsGlobal(module, init, "text")).toBe(true);
+  expect(readsGlobal(module, init, "other")).toBe(false);
+});
+
+test("a function inferred to return undefined from a stale narrowing is refused", async () => {
+  const source = (returnType: string): string => `
+let found: string | undefined = undefined;
+function search(): void {
+  found = "hit";
+}
+function result()${returnType} {
+  found = undefined;
+  search();
+  return found;
+}
+console.log(result());
+`;
+  await expect(lower(source(""))).rejects.toThrow(
+    /SC1090: returning 'found' from a function whose return type TypeScript infers as 'undefined'/,
+  );
+  const module = await lower(source(": string | undefined"));
+  expect(readsGlobal(module, "result", "found")).toBe(true);
+});

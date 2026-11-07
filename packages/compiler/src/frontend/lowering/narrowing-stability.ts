@@ -74,11 +74,43 @@ export class NarrowingStability {
     const position = widePosition(node);
     let result: ts.Type | null = null;
     try {
-      if (position !== null) result = this.computeWidened(node, position);
+      result = this.computeWidened(node, position);
     } finally {
       this.widened.set(node, result);
     }
     return result;
+  }
+
+  /** A read whose value `expression` can evaluate to (the expression
+   * itself, an arm of a conditional, an operand of `&&`, `||`, `??`, the
+   * right side of a comma or an assignment), that the checker types as
+   * nothing but `undefined` or `null` and widenedType restored to its
+   * declared type; or null. The checker computed the type of the whole
+   * expression, and of a function that returns it, from that narrowing, so
+   * a lowering that discards a value because its type is `undefined`
+   * consults this first. */
+  restoredNothingRead(expression: ts.Expression): ts.Expression | null {
+    if (this.files === null) return null;
+    const e = skipOuter(expression);
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
+      return this.widenedType(e) !== null && isNothing(this.lowerer.checker.getTypeAtLocation(e))
+        ? e
+        : null;
+    }
+    if (ts.isConditionalExpression(e))
+      return this.restoredNothingRead(e.whenTrue) ?? this.restoredNothingRead(e.whenFalse);
+    if (ts.isBinaryExpression(e)) {
+      switch (e.operatorToken.kind) {
+        case ts.SyntaxKind.AmpersandAmpersandToken:
+        case ts.SyntaxKind.BarBarToken:
+        case ts.SyntaxKind.QuestionQuestionToken:
+          return this.restoredNothingRead(e.left) ?? this.restoredNothingRead(e.right);
+        case ts.SyntaxKind.CommaToken:
+        case ts.SyntaxKind.EqualsToken:
+          return this.restoredNothingRead(e.right);
+      }
+    }
+    return null;
   }
 
   /** The checker narrows this reference below its declared type, and the
@@ -112,9 +144,13 @@ export class NarrowingStability {
 
   private computeWidened(
     node: ts.PropertyAccessExpression | ts.Identifier,
-    position: WidePosition,
+    position: WidePosition | null,
   ): ts.Type | null {
     const checker = this.lowerer.checker;
+    // A narrowing to nothing but `undefined` or `null` is restored in every
+    // position, so every read reaches the declared-type lookup; the other
+    // narrowings only in the positions that can take the declared type.
+    if (position === null && !this.mayReadNothing(node)) return null;
     let declared: ts.Type | null;
     if (ts.isPropertyAccessExpression(node)) {
       declared = this.declaredPropertyType(node);
@@ -126,6 +162,18 @@ export class NarrowingStability {
     if (declared === null) return null;
     const narrowedTs = checker.getTypeAtLocation(node);
     if (narrowedTs === declared) return null;
+    // A narrowing to nothing but `undefined` or `null` has no payload a
+    // checked read could validate: a lowering that takes the checker's word
+    // drops the read and continues with "absent" (`text.slice(start)` with
+    // `start` assigned by a callback slices from 0). When that narrowing may
+    // be stale the read has its declared type wherever it stands, so its
+    // consumer lowers for the value that is stored. The declared type of a
+    // binding the checker types by flow alone (`var re;`, which is
+    // `undefined` to it until the read's own function assigns it) is `any`,
+    // as the checker itself answers for a read from a nested function
+    // (`var re; compile(); scan(re)` passes the expression `compile` stored).
+    if (isNothing(narrowedTs)) return this.trusted(node) ? null : declared;
+    if (position === null) return null;
     const declaredIr = this.lowerer.mapTypeOf(declared);
     const narrowedIr = this.lowerer.mapTypeOf(narrowedTs);
     if (declaredIr === null || narrowedIr === null || typeEquals(declaredIr, narrowedIr))
@@ -173,6 +221,18 @@ export class NarrowingStability {
       }
     }
     return this.trusted(node) ? null : declared;
+  }
+
+  /** Whether the checker types this read as nothing but `undefined` or
+   * `null`. Asked for every identifier and property read outside the wide
+   * positions, so the write census answers by name first: a binding no code
+   * in its file assigns keeps whatever narrowing it has. */
+  private mayReadNothing(node: ts.PropertyAccessExpression | ts.Identifier): boolean {
+    if (ts.isIdentifier(node)) {
+      if (!this.writesIn(ts.getSourceFileOfNode(node)).has(node.text)) return false;
+      if (!isValueIdentifier(node)) return false;
+    }
+    return isNothing(this.lowerer.checker.getTypeAtLocation(node));
   }
 
   /** A read in a call or construction argument (directly or inside a literal
@@ -917,6 +977,13 @@ const INERT_CONSTRUCTORS = new Set([
   "BigInt64Array",
   "BigUint64Array",
 ]);
+
+/** `undefined`, `null`, `void`, or a union of only those. */
+function isNothing(type: ts.Type): boolean {
+  const nothing = ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void;
+  if (type.flags & nothing) return true;
+  return type.isUnionType() && ts.constituentTypes(type).every((part) => part.flags & nothing);
+}
 
 /** The receiver whose type widenedType reads for `node`: a property read in
  * a slot that accepts its declared type (an argument, a return, a typed

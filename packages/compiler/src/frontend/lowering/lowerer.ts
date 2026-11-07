@@ -2318,6 +2318,45 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
   return (ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name === undefined;
 }
 
+/** The name a property key gives an anonymous definition it initializes
+ * (V8's SetFunctionName): an identifier, quoted string or numeric key, and a
+ * computed key whose expression is a constant string. A numeric key names its
+ * canonical string key. Null for any other key, whose value keeps whatever
+ * name it was created with. */
+function propertyKeyName(name: ts.PropertyName, lowerer?: Lowerer): string | null {
+  if (ts.isComputedPropertyName(name)) return constantKeyName(name.expression, lowerer);
+  if (ts.isIdentifier(name)) return name.text;
+  if (ts.isStringLiteral(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return String(Number(name.text));
+  return null;
+}
+
+/** The string a computed property key evaluates to when the source pins it:
+ * a string, numeric or substitution-free template literal, or a `const`
+ * binding whose initializer is one. The key is evaluated before the
+ * definition it initializes, so a `const` key names the definition
+ * statically. Null when the value is a runtime fact. */
+function constantKeyName(expr: ts.Expression, lowerer?: Lowerer): string | null {
+  let key: ts.Expression = expr;
+  // Bound the walk through const aliases so a malformed chain cannot spin.
+  for (let hops = 0; hops < 8; hops++) {
+    while (ts.isParenthesizedExpression(key) || ts.isAsExpression(key)) key = key.expression;
+    if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+    if (ts.isNumericLiteral(key)) return String(Number(key.text));
+    if (lowerer === undefined || !ts.isIdentifier(key)) return null;
+    const declaration = lowerer.resolveValueSymbol(key)?.valueDeclaration;
+    if (
+      declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 ||
+      declaration.initializer === undefined
+    )
+      return null;
+    key = declaration.initializer;
+  }
+  return null;
+}
+
 /** The JavaScript identity (its `name` and its ExpectedArgumentCount
  * `length`) of the function value `expr` holds, resolved through the
  * checker: the call signature's own declaration, when that declaration is a
@@ -2478,7 +2517,37 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     n = value;
   }
   if (ts.isIdentifier(n)) return n.text;
-  if (ts.isPropertyAccessExpression(n)) return n.name.text;
+  if (ts.isPropertyAccessExpression(n)) {
+    // A property read names its value only when the property DEFINITION
+    // creates the function: a method (`{ m() {} }`) or an anonymous
+    // definition it initializes (`{ m: function () {} }`, V8's
+    // SetFunctionName from the property key). A property that HOLDS a
+    // function made somewhere else — a class field, `{ fn: chosen }` — was
+    // named where it was created, so the held value answers instead.
+    if (!js || lowerer === undefined) return n.name.text;
+    const declared = lowerer.checker.getSymbolAtLocation(n)?.valueDeclaration;
+    // A member this program does not create (`Math.max`) keeps the member
+    // spelling its adapter answers.
+    if (declared === undefined) return n.name.text;
+    const file = ts.getSourceFileOfNode(declared);
+    if (file.isDeclarationFile || !isJsSourceFile(file)) return n.name.text;
+    if (ts.isMethodDeclaration(declared)) {
+      return propertyKeyName(declared.name, lowerer);
+    }
+    if (ts.isPropertyAssignment(declared) || ts.isPropertyDeclaration(declared)) {
+      const keyName = propertyKeyName(declared.name, lowerer);
+      const initializer = declared.initializer;
+      if (initializer !== undefined && keyName !== null) {
+        let held: ts.Node = initializer;
+        while (ts.isParenthesizedExpression(held)) held = held.expression;
+        if (isAnonymousCallableDefinition(held)) return keyName;
+        return jsFuncNameOf(held, lowerer);
+      }
+    }
+    // Anything else a property can resolve to (a function declaration
+    // reached through a namespace, a getter) answers through its value.
+    return jsFuncNameOf(declared, lowerer);
+  }
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
   if (ts.isClassExpression(n) && n.name) return n.name.text;
   // A method's SetFunctionName is its property key (`class C { m() {} }`).
@@ -2495,8 +2564,15 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     if (p && ts.isBindingElement(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
-    if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
-      return p.name.text;
+    if (p && ts.isPropertyAssignment(p) && p.initializer === outer) {
+      if (ts.isIdentifier(p.name)) return p.name.text;
+      // A quoted, numeric or constant computed key names the definition it
+      // initializes the same way an identifier key does
+      // (`{ "m": function () {} }`, `const k = "m"; { [k]: function () {} }`).
+      if (js) {
+        const keyName = propertyKeyName(p.name, lowerer);
+        if (keyName !== null) return keyName;
+      }
     }
     // A default parameter names it (`function f(a = function () {})`), as
     // does an object-assignment shorthand (`({ a = function () {} } = o)`)
@@ -2538,14 +2614,9 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     // `class C { f = function () {} }`: a field initializer takes the field's
     // name, exactly like a variable initializer.
-    if (
-      js &&
-      p &&
-      ts.isPropertyDeclaration(p) &&
-      p.initializer === outer &&
-      ts.isIdentifier(p.name)
-    ) {
-      return p.name.text;
+    if (js && p && ts.isPropertyDeclaration(p) && p.initializer === outer) {
+      const keyName = propertyKeyName(p.name, lowerer);
+      if (keyName !== null) return keyName;
     }
   }
   return null;
@@ -18798,7 +18869,10 @@ export class Lowerer {
     if (expr.type.kind !== "func") return identity;
     if (!isJsSourceFile(ts.getSourceFileOfNode(node))) return identity;
     if (jsFuncValueOf(this, node) !== null) return identity;
-    return { ...identity, fnLengthFromValue: true };
+    // The static type names one of several functions, so neither the name
+    // nor the count it answered belongs to the value the box holds.
+    const { fnName: _staticName, ...rest } = identity;
+    return { ...rest, fnLengthFromValue: true };
   }
 
   isBuiltinCallableValue(expr: IrExpr): boolean {

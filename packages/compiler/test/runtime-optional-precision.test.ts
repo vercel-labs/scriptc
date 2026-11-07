@@ -230,7 +230,7 @@ console.log(later(0));
   expect(signature(module, "weigh")).toBe("weigh(Item|undefined): f64");
 });
 
-test("an unchanged captured parameter is borrowed and boxed only where a closure is built", async () => {
+test("an unchanged captured parameter is borrowed and copied where a closure is built", async () => {
   const module = await lower(`${ITEM}
 function heavier(item: Item, limits: number[]): boolean {
   if (limits.length === 0) return false;
@@ -248,10 +248,14 @@ console.log(heavier(new Item(3), []), heavier(new Item(3), [1]), replaced(new It
   const facts = analyzeCallLifetimes(new Map(module.functions.map((fn) => [fn.name, fn])));
   expect(facts.borrowed.get("heavier")?.has(0)).toBe(true);
   expect(facts.borrowed.get("replaced")?.has(0) ?? false).toBe(false);
-  const heavier = body(emitLlvmModule(module), "heavier");
-  expect(heavier.slice(0, heavier.indexOf("scr_closure_new"))).not.toContain("@scr_box_new");
-  // A path that built no environment skips the box release.
-  expect(heavier).toMatch(/icmp ne ptr %t\d+, null\n\s+br i1 %t\d+, label %lazy\.release/);
+  const llvm = emitLlvmModule(module);
+  // The closure holds its own reference to the item: no box on any path.
+  const heavier = body(llvm, "heavier");
+  expect(heavier).toContain("scr_closure_new_values");
+  expect(heavier).not.toContain("@scr_box_new");
+  expect(heavier).not.toContain("lazy.release");
+  // A rebound parameter keeps its box.
+  expect(body(llvm, "replaced")).toContain("@scr_box_new");
 });
 
 test("pop truncates union arrays and boxes nothing when its result is unused", async () => {

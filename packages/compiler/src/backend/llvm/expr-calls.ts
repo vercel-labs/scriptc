@@ -785,13 +785,27 @@ export function emitCallExpr(
       }
       // Lifted async lambdas enter through their spawn wrapper (which
       // takes sc_env first, like every lifted function).
-      host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
+      // An environment that holds values (value-captures.ts) has its boxes
+      // first, so `caps[]` and its count describe only those.
+      const layout = e.adapts === true ? null : host.valueCaptures.layout(e.fnName);
       const c = B.tmp();
-      B.line(
-        `${c} = call ptr @scr_closure_new(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${e.captures.length})`,
-      );
+      if (layout === null) {
+        host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
+        B.line(
+          `${c} = call ptr @scr_closure_new(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${e.captures.length})`,
+        );
+      } else {
+        const type = host.environmentType(layout);
+        host.declare(
+          `declare ptr @scr_closure_new_values(ptr, ${host.sizeType}, ptr, ${host.sizeType})`,
+        );
+        B.line(
+          `${c} = call ptr @scr_closure_new_values(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${layout.boxes}, ptr ${host.environmentValues(layout)}, ${host.sizeType} ptrtoint (ptr getelementptr (${type}, ptr null, i32 1) to ${host.sizeType}))`,
+        );
+      }
       const out = host.own({ name: c, type: e.type });
-      const functionKind = host.closureFunctionKind(target);
+      const functionKind =
+        host.closureFunctionKind(target) | (layout === null ? 0 : CLOSURE_KIND.VALUES);
       if (functionKind) {
         const kindPtr = B.tmp();
         B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
@@ -805,13 +819,19 @@ export function emitCallExpr(
         B.line(`store ptr @${mangleBorrowedFunction(e.fnName)}, ptr ${entry}`);
       }
       e.captures.forEach((localId, i) => {
+        const slot = layout?.slots[i];
+        if (slot !== undefined && slot.kind !== "box") {
+          host.storeEnvironmentValue(layout!, c, i, localId, true, e.loc);
+          return;
+        }
+        const index = slot?.index ?? i;
         const box = host.captureBox(localId);
         const retained = host.retainBox(box);
         const caps = B.tmp();
         const capp = B.tmp();
         B.line(`${caps} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 1 ; caps`);
         B.line(
-          `${capp} = getelementptr inbounds ptr, ptr ${caps}, ${host.sizeType} ${i} ; caps[${i}]`,
+          `${capp} = getelementptr inbounds ptr, ptr ${caps}, ${host.sizeType} ${index} ; caps[${index}]`,
         );
         B.line(`store ptr ${retained}, ptr ${capp}`);
         if (i === 0 && e.adapts === true) {

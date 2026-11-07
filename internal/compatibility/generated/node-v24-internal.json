@@ -33329,6 +33329,7 @@
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
           "tests/corpus/fs-dir-dispose.ts",
+          "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
@@ -41059,8 +41060,11 @@
       "anchor": "hpe_chunk_extensions_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.HPE_CHUNK_EXTENSIONS_OVERFLOW"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.HPE_CHUNK_EXTENSIONS_OVERFLOW",
+        "tests": [
+          "tests/corpus/http-parser-response-checks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41098,8 +41102,11 @@
       "anchor": "hpe_unexpected_content_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.HPE_UNEXPECTED_CONTENT_LENGTH"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.HPE_UNEXPECTED_CONTENT_LENGTH",
+        "tests": [
+          "tests/corpus/http-parser-response-checks.ts"
+        ]
       },
       "anchorSource": "exact"
     },

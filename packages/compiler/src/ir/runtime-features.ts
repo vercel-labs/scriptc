@@ -1541,6 +1541,10 @@ const RUNTIME_FEATURE_RULES = {
   /** createRequire's require and require.resolve with specifiers computed
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
+  /** An untyped path of a synchronous fs function in a JavaScript source
+   * (scr_fs_path_value.c): a unit of its own, so no other executable
+   * changes. */
+  fsPathValue: rule({ fns: ["dyn.validateFsPath"] }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({
     fns: [
@@ -2079,6 +2083,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBufferMembers: false,
     genReceiver: false,
     bufferPrototypeObject: false,
+    fsPathValue: false,
     builtinValues: false,
     computedRequire: false,
     symbol: false,

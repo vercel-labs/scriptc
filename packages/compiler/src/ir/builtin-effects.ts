@@ -96,6 +96,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.transcode",
   "buffer.slowBuffer",
   "cp.spawnDynamic",
+  "cp.checkArgs",
   "child.onDyn",
   "text.decoderEncoding",
   "strdec.encoding",
@@ -153,6 +154,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.realpathValue",
   "dyn.validateString",
   "dyn.validateStrings",
+  "dyn.validateFsPath",
   "path.resolveValue",
   "path.parseValue",
   "path.formatValue",
@@ -735,6 +737,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.toASCII",
   "punycode.toUnicode",
   "punycode.ucs2Encode",
+  // node:sea's asset readers always throw Node's coded error.
+  "sea.getAsset",
+  "sea.getRawAsset",
+  "sea.getAssetAsBlob",
+  "sea.getAssetKeys",
   // The base64 globals: atob/btoa throw the catchable DOMException
   // InvalidCharacterError on malformed input; the zero-argument form
   // always throws Node's TypeError [ERR_MISSING_ARGS].
@@ -1289,4 +1296,8 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.streamOptsChk",
   "net.connectOptsChk",
   "tls.caCertsChk",
+  "sea.getAsset",
+  "sea.getRawAsset",
+  "sea.getAssetAsBlob",
+  "sea.getAssetKeys",
 ]);

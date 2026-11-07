@@ -112,3 +112,65 @@ console.log(JSON.stringify(parts[0]), show(parts[0]!), held === parts[0]);
     expect(result.stdout.toString()).toBe('assigned\n{"type":"image","data":"y"} image:y true\n');
   },
 );
+
+// A source that keeps properties its type does not declare (it was grown
+// itself, or converted from an object with more keys) carries them outside
+// its fields. Object.assign copies them in Node; the per-field write cannot,
+// so the copy is refused where it runs instead of silently losing them. A
+// source whose kept view only records another key order has no extra key and
+// copies.
+test.skipIf(process.platform === "win32")(
+  "a growth source that keeps undeclared properties is refused, not truncated",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-assign-kept-source-"));
+    try {
+      const entry = join(dir, "main.ts");
+      writeFileSync(
+        entry,
+        `
+interface Box { a: number }
+interface Wide { a: number; y: number }
+function grow(target: Box, src: Wide): void { Object.assign(target, src); }
+function growWide(target: Wide, src: { z: number }): void { Object.assign(target, src); }
+function attempt(label: string, src: Wide): void {
+  const target: Box = JSON.parse('{"a":0}') as Box;
+  try {
+    grow(target, src);
+    console.log(label, JSON.stringify(target));
+  } catch (e) {
+    console.log(label, (e as { code?: string }).code, (e as Error).message, JSON.stringify(target));
+  }
+}
+const grown: Wide = JSON.parse('{"a":1,"y":2}') as Wide;
+growWide(grown, { z: 3 });
+attempt("grown", grown);
+attempt("parsed", JSON.parse('{"a":1,"y":2,"extra":"e"}') as Wide);
+attempt("reordered", JSON.parse('{"y":2,"a":1}') as Wide);
+attempt("literal", { a: 1, y: 2 });
+`,
+      );
+      const built = await compile(entry, {
+        outDir: dir,
+        outPath: join(dir, "program"),
+        sanitize: process.env["SCRIPTC_SAN"] === "1",
+      });
+      if (!built.ok) throw new Error(built.diagnostics.map((d) => d.message).join("\n"));
+      const result = spawnSync(built.binaryPath, [], { timeout: 30_000 });
+      const refused =
+        "SC2020 Object.assign from a record that holds properties its type does not declare is not supported yet: they would not be copied [SC2020]";
+      expect(result.status).toBe(0);
+      expect(result.stderr.toString()).toBe("");
+      expect(result.stdout.toString()).toBe(
+        [
+          `grown ${refused} {"a":0}`,
+          `parsed ${refused} {"a":0}`,
+          'reordered {"a":1,"y":2}',
+          'literal {"a":1,"y":2}',
+          "",
+        ].join("\n"),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);

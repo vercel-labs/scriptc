@@ -8605,6 +8605,69 @@ function recordAssignGrowHelper(
       );
     };
     const fields = sShape.fields.filter((f) => !f.name.startsWith("%"));
+    // A source that itself keeps properties its type does not declare (an
+    // earlier growth, or a checked conversion of an object with more keys)
+    // carries them outside these fields, and Object.assign copies them too.
+    // Nothing here can: the write below is one statement per declared key.
+    // Such a source is refused where the copy runs instead of losing them.
+    // Its live view lists every own key, so one more key than the declared
+    // fields that are present is a kept one; a view kept only for another
+    // key order has no extra key and copies as before.
+    if (recordMayKeepSource(lowerer, sT)) {
+      const present = fields
+        .map((f): IrExpr => {
+          const has = lowerer.recordFieldPresent(sRef, srcShapeId, f.name, loc);
+          return has.kind === "recordHas"
+            ? {
+                kind: "ternary",
+                cond: has,
+                then: numLit(1, loc),
+                else_: numLit(0, loc),
+                type: F64,
+                loc,
+              }
+            : numLit(1, loc);
+        })
+        .reduce((left, right): IrExpr => ({ kind: "bin", op: "+", left, right, type: F64, loc }));
+      const ownKeys: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.arrLen",
+        args: [
+          {
+            kind: "libCall",
+            fn: "dyn.objKeys",
+            args: [{ kind: "dynFrom", value: sRef, liveRef: true, type: DYN, loc }],
+            type: DYN,
+            loc,
+          },
+        ],
+        type: F64,
+        loc,
+      };
+      body.push({
+        kind: "if",
+        cond: recordSourceTest(sRef, loc),
+        then: [
+          {
+            kind: "if",
+            cond: { kind: "bin", op: "!==", left: ownKeys, right: present, type: BOOL, loc },
+            then: [
+              {
+                kind: "runtimeFence",
+                code: "SC2020",
+                message:
+                  "Object.assign from a record that holds properties its type does not declare is not supported yet: they would not be copied [SC2020]",
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      });
+    }
     // One walk per key order (see perKeyOrder), each writing the source's
     // keys in the order the source itself lists them, declared and added
     // alike: Object.assign is one [[Set]] per source key in that order, so

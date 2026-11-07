@@ -134,6 +134,7 @@ export function lowerDgramDnsModuleCall(
         );
       }
       lowerer.lowerExpr(arg); // side-effect order (a call producing the literal type)
+      lowerer.createsMemberTableHandles = true;
       return {
         kind: "libCall",
         fn: "dgram.createSocket",
@@ -220,6 +221,7 @@ export function lowerDgramDnsModuleCall(
         'the supported form is createSocket({ type: "udp4", reuseAddr? })',
       );
     }
+    lowerer.createsMemberTableHandles = true;
     return {
       kind: "libCall",
       fn: "dgram.createSocket",

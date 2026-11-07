@@ -3680,6 +3680,12 @@ function validateFunction(
         ) {
           err("dynTest bytesElem requires a valid bytes test", e.loc);
         }
+        if (
+          (e.test === "handle") !== (e.handleKind !== undefined) ||
+          (e.handleKind !== undefined && !DYN_HANDLE_KINDS.has(e.handleKind))
+        ) {
+          err("dynTest handleKind names a dyn handle kind, on a handle test only", e.loc);
+        }
         break;
       }
       case "dynKeyGet": {

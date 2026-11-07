@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "914939560c3e2086";
+export const IR_CODEC_LAYOUT = "63a3a3632168f1ce";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -161,7 +161,7 @@ const KEYS133: readonly string[] = ["kind","value","count","notIterableMessage",
 const KEYS134: readonly string[] = ["kind","key","optional","value","type","loc"];
 const KEYS135: readonly string[] = ["kind","fields","type","loc"];
 const KEYS136: readonly string[] = ["kind","left","right","negated","type","loc"];
-const KEYS137: readonly string[] = ["kind","test","bytesElem","negated","value","type","loc"];
+const KEYS137: readonly string[] = ["kind","test","bytesElem","handleKind","negated","value","type","loc"];
 const KEYS138: readonly string[] = ["kind","import","args","type","loc"];
 const KEYS139: readonly string[] = ["kind","unionId","type","loc"];
 const KEYS140: readonly string[] = ["kind","obj","className","field","type","loc"];
@@ -3186,6 +3186,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.str(v.bytesElem);
       }
+      if (v.handleKind === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.str(v.handleKind);
+      }
       if (v.negated === undefined) w.byte(0);
       else {
         w.byte(1);
@@ -4167,11 +4172,12 @@ function decIrExpr(r: IrReader): IrExpr {
     case 34: {
       const f0 = (r.str() as NonNullable<Extract<IrExpr, { kind: "dynTest" }>["test"]>);
       const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynTest>.bytesElem") === 0 ? undefined : (r.str() as NonNullable<Extract<IrExpr, { kind: "dynTest" }>["bytesElem"]>);
-      const f2 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynTest>.negated") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynTest" }>["negated"]>);
-      const f3 = decIrExpr(r);
-      const f4 = decIrType(r);
-      const f5 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "dynTest" }> = { kind: "dynTest", test: f0, ...(f1 !== undefined ? { bytesElem: f1 } : {}), ...(f2 !== undefined ? { negated: f2 } : {}), value: f3, type: f4, loc: f5 };
+      const f2 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynTest>.handleKind") === 0 ? undefined : (r.str() as NonNullable<Extract<IrExpr, { kind: "dynTest" }>["handleKind"]>);
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynTest>.negated") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynTest" }>["negated"]>);
+      const f4 = decIrExpr(r);
+      const f5 = decIrType(r);
+      const f6 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "dynTest" }> = { kind: "dynTest", test: f0, ...(f1 !== undefined ? { bytesElem: f1 } : {}), ...(f2 !== undefined ? { handleKind: f2 } : {}), ...(f3 !== undefined ? { negated: f3 } : {}), value: f4, type: f5, loc: f6 };
       return o;
     }
     case 35: {

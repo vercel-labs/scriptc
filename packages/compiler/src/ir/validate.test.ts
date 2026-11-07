@@ -1780,6 +1780,29 @@ test("typed-array brand tests serialize their element kind and reject misplaced 
   );
 });
 
+test("handle kind tests serialize their kind and reject a kind on another test", () => {
+  const expr: IrExpr = {
+    kind: "dynTest",
+    test: "handle",
+    handleKind: "dgramSocket",
+    value: { kind: "dynObjLit", type: DYN, loc },
+    type: BOOL,
+    loc,
+  };
+  const mod = expressionModule(expr, []);
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+  const misplaced = "in main: dynTest handleKind names a dyn handle kind, on a handle test only";
+  expr.handleKind = "record";
+  expect(validateModule(mod).map((d) => d.message)).toContain(misplaced);
+  expr.handleKind = "dgramSocket";
+  expr.test = "object";
+  expect(validateModule(mod).map((d) => d.message)).toContain(misplaced);
+  delete expr.handleKind;
+  expr.test = "handle";
+  expect(validateModule(mod).map((d) => d.message)).toContain(misplaced);
+});
+
 test("function result views preserve the parameter ABI and reject reversed covariance", () => {
   const source: IrType = {
     kind: "func",

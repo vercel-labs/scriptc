@@ -116,17 +116,22 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * require() lowers to the required module's %init ahead of its export read,
  * both at the require's position. Any other expression is followed through
  * what it holds, in the order it is written, so a load is reached where its
- * expression is (`typeof require("pkg").name === "function"`). An
+ * expression is (`typeof require("pkg").name === "function"`). A part of an
+ * expression that runs only when a condition holds (the right operand of
+ * `&&`, `||` or `??`, an arm of a `?:`, the body of an optional chain) is
+ * followed after the loads the walk reaches, in the order it is written: the
+ * program may not evaluate it, and ordering it ahead of the loads that do
+ * happen would let it take a shared file's effects from them. An
  * initializer that awaits is left there and taken up again after the code
  * that called it, in the order of the awaits, as module evaluation continues
  * with later siblings while one is suspended. Loads the walk does not reach
  * (inside functions, dynamic imports, loops) keep IR order after it.
  *
- * The walk is the order of a run in which every condition holds: both
- * branches of a selection and both operands of `&&` are followed, where
- * they are written. A run that skips one of those loads evaluates what it
- * shares with later ones in a later load; the decisions do not rest on the
- * order for that (sharedEffects). */
+ * The order is a best guess wherever the program has a choice: the
+ * conditional part of an expression is placed last, both branches of a
+ * selection where they are written. A run that takes the other way
+ * evaluates a file two loads share in the other load, so the decisions do
+ * not rest on the order for that (sharedEffects). */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
   const functions = new Map<string, IrModule["functions"][number]>();
   for (const fn of mod.functions) if (typeof fn.name === "string") functions.set(fn.name, fn);
@@ -134,6 +139,7 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
   const reached = new Set<DeferCall>();
   const ordered: DeferCall[] = [];
   const suspended: { stmts: IrStmt[]; at: number }[] = [];
+  const conditional: IrExpr[] = [];
   /** Evaluates what the walk follows of `e`; true when it awaits. */
   function evaluate(e: IrExpr): boolean {
     if (e.kind === "libCall" && e.fn === "nodeIsland.defer") {
@@ -160,6 +166,21 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
     if (e.kind === "intrinsic" && e.name === "module.await") {
       for (const arg of e.args) evaluate(arg);
       return true;
+    }
+    // A part that the program evaluates only when a condition holds is kept
+    // for after the loads the walk reaches: it may not run at all, and where
+    // it does it cannot be placed ahead of a load that always does.
+    if (e.kind === "logical" || e.kind === "nullish" || e.kind === "orDefault") {
+      conditional.push(e.right);
+      return evaluate(e.left);
+    }
+    if (e.kind === "ternary") {
+      conditional.push(e.then, e.else_);
+      return evaluate(e.cond);
+    }
+    if (e.kind === "optChain") {
+      conditional.push(e.body);
+      return evaluate(e.receiver);
     }
     // Any other expression: what it holds, in the order it is written. A
     // comparison, a member read, a `typeof`, a call's arguments: an inline
@@ -214,6 +235,9 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
   }
   if (typeof mod.entry === "string") enter(mod.entry);
   for (let i = 0; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
+  const resumed = suspended.length;
+  for (let i = 0; i < conditional.length; i++) evaluate(conditional[i]!);
+  for (let i = resumed; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
   if (ordered.length === 0) return calls;
   return [...ordered, ...calls.filter((c) => !reached.has(c))];
 }

@@ -368,9 +368,10 @@ function valueDeclaration(
 }
 
 /** The receiver of a member read, an element read or a method call, or
- * null. `element` is true for a read by a number (`values()[0]`): the value
- * is an element of what the receiver's declaration types. A read by any
- * other key (`record[name]`) is a member's. */
+ * null. `element` is true for a read of an array by a number
+ * (`values()[0]`): the value is an element of what the receiver's
+ * declaration types, the selector's `[]`. A read by any other key, or of
+ * an object with an index signature, is a member's. */
 function receiverOf(
   checker: ts.TypeChecker,
   node: ts.Node,
@@ -386,7 +387,9 @@ function receiverOf(
     const key = checker.getTypeAtLocation(inner.argumentExpression);
     return {
       receiver: inner.expression,
-      element: (key.flags & ts.TypeFlags.NumberLike) !== 0,
+      element:
+        (key.flags & ts.TypeFlags.NumberLike) !== 0 &&
+        checker.isArrayType(checker.getTypeAtLocation(inner.expression)),
     };
   }
   if (ts.isCallExpression(inner)) inner = inner.expression;

@@ -30,11 +30,9 @@ V8's adaptation of fdlibm, the code behind Node's Math.sin, Math.exp, Math.cbrt 
 - Commit: 3c8f3d68953955950074c41c6e4d999562ae82a7
 - License: MIT (see quickjs-ng/LICENSE)
 
-The QuickJS-ng engine is used only by the native compiler's isolated `comptime` evaluator. Compiled user programs never link it. The standalone regex and Unicode libraries from this tree still support native RegExp and string operations.
+The QuickJS-ng engine is used only by the compiler's `comptime` evaluator (`native/llvm-codegen/comptime`), which each LLVM helper package builds from this tree. Compiled user programs never link it. The standalone regex and Unicode libraries from this tree still support native RegExp and string operations.
 
 The tree is a plain snapshot of the upstream commit with directories the library build does not need removed (tests/, docs/, examples/, test262 fixtures, CI config, generator scripts). No vendored file is modified; to update, re-clone upstream at the new commit, delete its .git directory, apply the same trim, and update this file.
-
-The native runtime pack build produces `libscriptc-quickjs.a` for the compiler bootstrap. It is excluded from executable runtime-pack selection.
 
 ## zlib/
 

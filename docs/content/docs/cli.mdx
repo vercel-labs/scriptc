@@ -100,7 +100,7 @@ $ scriptc run --optimization dev hello.ts scriptc --strip
 hello, scriptc
 ```
 
-`run` exits with the program's exit code. SIGINT, SIGTERM and SIGHUP sent to `run` go to the program. When a signal kills the program, `run` exits with 128 plus the signal's number, and names the signal on stderr unless `run` itself was sent it. `run` prints the program's output only: the warnings and notes of a build appear with `scriptc build`.
+`run` exits with the program's exit code. SIGTERM and SIGHUP sent to `run` go to the program, and so does SIGINT when `run` has no terminal. With a terminal on its standard input, output or error, `run` does not pass a SIGINT on: the terminal's interrupt key already reaches the program together with `run`, and a second one would make a program that counts interrupts quit early. A SIGINT sent to `run` alone from another process is indistinguishable from that and is not passed on either, so send SIGTERM to stop a `run` that has a terminal. When a signal kills the program, `run` exits with 128 plus the signal's number, and names the signal on stderr unless `run` itself was sent it. `run` prints the program's output only: the warnings and notes of a build appear with `scriptc build`.
 
 ## scriptc coverage
 

@@ -17,6 +17,14 @@ function signalNumber(name: string): number {
  * stopping `scriptc run` stops the program, and scriptc then ends with the program's status. A
  * program that dies of any other signal is named on stderr, since nobody asked for that.
  *
+ * The one exception is SIGINT while a standard stream is a terminal. The terminal's interrupt
+ * key signals every process of the foreground group, the program included, and Node cannot tell
+ * that delivery from a SIGINT another process sent to scriptc alone. Handing every SIGINT on
+ * would give the program each interrupt key twice, which ends a program that treats the second
+ * one as "quit now"; so with a terminal no SIGINT is handed on, and one sent to scriptc alone
+ * stops nothing. SIGTERM is always handed on. (Without the listener that SIGINT would end
+ * scriptc and leave the program running.)
+ *
  * `startFailure` words the error for a program that could not be started. */
 export function runProgram(
   file: string,
@@ -25,7 +33,7 @@ export function runProgram(
 ): Promise<number> {
   return new Promise<number>((resolveExit) => {
     // A terminal sends its interrupt to every process in the foreground group, so the program
-    // already has that one; a SIGINT sent to scriptc alone is handed on.
+    // already has that one. Without a terminal a SIGINT reached scriptc alone and is handed on.
     const interruptIsShared = isatty(0) || isatty(1) || isatty(2);
     const asked: string[] = [];
     let child: ChildProcess | null = null;

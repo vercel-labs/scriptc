@@ -261,7 +261,9 @@ export function nodeIslandDataFileDiag(message: string, loc: SrcLoc): ScrDiagnos
 /** SC6001 — a value passed to (or declared as) a narrower record type is
  * copied field by field, and the program then writes through or compares
  * the copy: under Node it is the same object, so the write would be
- * visible to the original and `===` would be true. */
+ * visible to the original and `===` would be true. `dictionary`: the value
+ * is a dictionary that holds an existing object, converted to a dictionary
+ * type with another value type, which copies its entries. */
 export function widthCopyDivergenceDiag(
   sourceType: string,
   targetType: string,
@@ -269,6 +271,7 @@ export function widthCopyDivergenceDiag(
   useText: string,
   site: "call" | "declaration" | "cast" | "element",
   loc: SrcLoc,
+  dictionary?: true,
 ): ScrDiagnostic {
   const how =
     site === "call"
@@ -284,9 +287,13 @@ export function widthCopyDivergenceDiag(
       : `'${useText}' compares the copy, which is never the original object, while under Node it is the same object`;
   return {
     code: "SC6001",
-    message: `${how} copies the object (converting to a record type with other properties compiles as a field copy): ${effect}`,
+    message: dictionary
+      ? `${how} copies the object (converting to a dictionary type with another value type compiles as a copy of the entries): ${effect}`
+      : `${how} copies the object (converting to a record type with other properties compiles as a field copy): ${effect}`,
     loc,
-    hint: `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
+    hint: dictionary
+      ? `declare the parameter or binding with the value's own dictionary type ('${sourceType}')`
+      : `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
   };
 }
 

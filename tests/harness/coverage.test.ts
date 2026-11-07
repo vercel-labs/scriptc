@@ -114,6 +114,19 @@ test("record width copies report at every storing site", async () => {
   );
 });
 
+test("a dictionary that keeps identity reports its copy into another dictionary type", async () => {
+  const { coverage } = analyze(fixture("dictionary-copies.ts"));
+  expect(coverage.diagnostics).toEqual([]);
+  // Three sites copy: a value type with one more member that is written
+  // through, a wider union that is compared, and a parameter that writes.
+  // The same dictionary type spelled a second time is the same object and
+  // reports nothing.
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual(["SC6001", "SC6001", "SC6001"]);
+  await expect(report(fixture("dictionary-copies.ts"))).toMatchFileSnapshot(
+    "__snapshots__/coverage-dictionary-copies.txt",
+  );
+});
+
 test("ordinary code reports no divergence", () => {
   const { coverage } = analyze(fixture("no-divergences.ts"));
   expect(coverage.diagnostics).toEqual([]);

@@ -2105,6 +2105,28 @@ export class LlDyn {
     );
   }
 
+  /** `record.sourceAdd(rec, key, value)`: the record gains the own property
+   * `key`, in its kept source, after the shape's declared names. */
+  emitRecordSourceAdd(
+    B: BlockBuilder,
+    rec: string,
+    key: string,
+    keyLen: number,
+    value: string,
+    shapeId: string,
+  ): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(
+      `declare void @scr_record_source_add(ptr, ptr, ptr, ${host.sizeType}, ptr, ${host.sizeType}, ptr)`,
+    );
+    B.line(
+      `call void @scr_record_source_add(ptr ${rec}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length}, ptr ${host.cstr(key)}, ${host.sizeType} ${keyLen}, ptr ${value})`,
+    );
+  }
+
   /** The declared-name tables scr_record_source_note scans: parallel
    * constant arrays of field-name bytes and byte lengths in declaration
    * order (the order the record serializes), interned per shape. Internal

@@ -5062,6 +5062,48 @@ void scr_record_view_extra_set(void *view, const char *name, size_t name_len, Sc
   scr_dyn_obj_set(extras, name, name_len, value);
 }
 
+/* Object.assign's growth of a record whose type does not declare every
+ * source key (pi's bash.ts:437): `rec`, whose shape's declared names are
+ * `names` in the order the record serializes them, gains the own property
+ * `key` with `value`. The record's kept source lists the declared names
+ * first, in that order, then the properties these writes added in the order
+ * they were added — the own-key order of the one object Node has. A
+ * re-assigned key keeps its position, as [[Set]] does. A frozen record
+ * refuses the add with Node's TypeError. A record view keeps the property
+ * where a partial view's writes keep theirs. Borrows both. */
+void scr_record_source_add(void *rec, const char *const *names, const size_t *lens, size_t count,
+                           const char *key, size_t key_len, ScrDyn *value) {
+  if (!rec || !key || !value) return;
+  ScrRecordSource *entry = scr_record_source_slot(rec);
+  if (entry && entry->capsule) {
+    /* A view carries the frozen bit by construction; its record takes the
+     * property the way a partial view's writes do. */
+    ScrDyn *extras = scr_record_view_extras(rec, true);
+    if (extras) scr_dyn_obj_set(extras, key, key_len, scr_dyn_retain(value));
+    return;
+  }
+  if (scr_rc_frozen(rec)) {
+    /* The message names the key; the throw keeps its own copy, and the
+     * pending check at the caller unwinds. */
+    ScrStr *refused = scr_str_new(key, key_len);
+    scr_record_throw_frozen(refused, refused, 1);
+    scr_str_release(refused);
+    return;
+  }
+  ScrDyn *view = entry ? entry->view : NULL;
+  if (!view) {
+    view = scr_dyn_new_obj();
+    /* The declared names keep their places, holding placeholders: the
+     * record stays the source of truth for their values. */
+    for (size_t i = 0; i < count; i++)
+      scr_dyn_obj_set(view, names[i], lens[i], scr_dyn_retain(scr_dyn_undefined()));
+    ScrRecordSource probe = { rec, view, (const char *)names, (const char *)lens,
+                              sizeof *names, sizeof *lens, count };
+    scr_record_source_put(&probe);
+  }
+  scr_dyn_obj_set(view, key, key_len, scr_dyn_retain(value));
+}
+
 /* The address of field `position` of a value of a view target type, whose
  * own slot is at byte `offset` (the unoptimized builds' guard): the viewed
  * record's slot for a view, whose word is the frozen bit plus a count. */

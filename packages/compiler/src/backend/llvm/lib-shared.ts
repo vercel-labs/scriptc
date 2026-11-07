@@ -858,6 +858,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "record.sourceHas": "scr_record_source_has",
   // scr_record_source_delete.c, a gated unit.
   "record.sourceDelete": "scr_record_source_delete",
+  "record.sourceAdd": "scr_record_source_add",
   "record.sourceSpread": "scr_record_source_spread",
   "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",

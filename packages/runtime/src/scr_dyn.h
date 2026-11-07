@@ -1589,6 +1589,13 @@ void scr_record_source_spread(void *dst, const void *src, const char *const *nam
  * when it survives — a frozen or non-configurable property, which strict
  * code (`strict`) refuses with Node's TypeError instead. Borrows both. */
 bool scr_record_source_delete(void *rec, const char *key, size_t key_len, bool strict);
+/* Object.assign's growth of a record whose type does not declare every
+ * source key: adds (or replaces) the own property `key` with `value` in the
+ * record's kept source, whose declared names are `names` in the order the
+ * record serializes them. A frozen record refuses the add with Node's
+ * TypeError. Borrows both. */
+void scr_record_source_add(void *rec, const char *const *names, const size_t *lens,
+                           size_t count, const char *key, size_t key_len, ScrDyn *value);
 /* Object.freeze of a record a program may freeze: sets SCR_RC_FROZEN in its
  * rc word (immortal records are left as they are). */
 void scr_record_freeze(void *record);

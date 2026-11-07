@@ -33,6 +33,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.classMethodsOf",
   "nodeIsland.copyArrays",
   "nodeIsland.adoptThenable",
+  // A code that is not a safe integer throws, as process.setExitCode does.
+  "nodeIsland.setExitCode",
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",
   // Node's curve, key, point, encoding and format errors.

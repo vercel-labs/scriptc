@@ -33,9 +33,12 @@
  *
  * Process state is shared, not mirrored: island listeners for signals and
  * 'exit' join the runtime's registries (scr_events.c) at their position,
- * so the runtime keeps owning every signal disposition; the exit code
- * island code leaves in process.exitCode becomes the program's when the
- * loop ends; Node's process.exit runs the runtime's exit sequence.
+ * so the runtime keeps owning every signal disposition; the listeners of
+ * the events Node raises itself (uncaughtException, unhandledRejection,
+ * warning) are all on Node's `process`, native ones included, and
+ * process.exitCode is Node's property, which native code reads and writes
+ * (scr_node_island_events.c); Node's process.exit runs the runtime's exit
+ * sequence.
  *
  * Node's stack. V8 fixes an isolate's stack limit where it is created, and
  * calls into Node can come from any async fiber (512 KB stacks without a
@@ -1498,6 +1501,15 @@ static void ni_start(void) {
   ni_hosted.immediate_ref = &ni_h_immediate_ref;
   ni_hosted.checkpoint = &ni_h_checkpoint;
   scr_loop_host(&ni_hosted, since);
+  /* Node's `process` is the registry of the process events from here on,
+   * and process.exitCode its property (scr_node_island_events.c): the
+   * program's native listeners move over first, in their order, and a code
+   * the program already set goes with them. */
+  scr_process_events_to_node();
+  if (scr_process_has_exit_code()) {
+    double ignored;
+    (void)scr_ni_exit_code(true, scr_process_exit_code_or_zero(), &ignored);
+  }
   /* NI-7: deferred island modules evaluate now, before the operation that
    * needed Node, in their import order. */
   if (scr_ni_started_hook != NULL) scr_ni_started_hook();

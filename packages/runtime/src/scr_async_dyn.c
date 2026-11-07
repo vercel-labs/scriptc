@@ -368,6 +368,39 @@ static void scr_rej_remove(ScrRejListener *list, size_t *n, ScrDyn *fn) {
   }
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* A program with Node islands has one list of listeners for these events.
+ * Until Node is loaded it is the registries of this unit. Once Node is
+ * loaded it is Node's `process` (scr_node_island_events.c):
+ * scr_process_events_to_node moves the listeners there in their order, and
+ * from then on every registration, removal and prepend below goes to
+ * `process`, and errors, rejections and warnings are raised through it.
+ * The move waits for a dispatch of this unit that is in progress (Node
+ * started inside a listener): that dispatch finishes over the lists it
+ * began with. */
+static SCR_TL bool scr_pe_node = false;
+static SCR_TL bool scr_pe_wanted = false;
+static SCR_TL unsigned scr_pe_dispatching = 0;
+static void scr_pe_move_all(void);
+
+/* process.on (0), once (1), prependListener (2), removeListener (3) on
+ * Node's `process`; false while this unit's registries are the list. */
+static bool scr_pe_listen(int mode, const char *event, ScrDyn *fn) {
+  if (!scr_pe_node) return false;
+  scr_ni_process_listen(mode, event, fn);
+  return true;
+}
+#define SCR_PE_ENTER() (scr_pe_dispatching++)
+#define SCR_PE_LEAVE()                                           \
+  do {                                                           \
+    if (--scr_pe_dispatching == 0 && scr_pe_wanted) scr_pe_move_all(); \
+  } while (0)
+#else
+#define scr_pe_listen(mode, event, fn) false
+#define SCR_PE_ENTER() ((void)0)
+#define SCR_PE_LEAVE() ((void)0)
+#endif
+
 /* The hooks arm exactly while their registry is non-empty: Node with
  * every listener removed (off, or once-consumed) reverts to the default
  * report/silence, and the report loop consults the hook per promise. */
@@ -376,11 +409,15 @@ static void scr_urj_sync_hook(void) {
 }
 
 static void scr_rjh_sync_hook(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) return; /* Node tracks the handled rejections */
+#endif
   scr_rjh_notify_fn = scr_nrjh > 0 ? scr_rjh_dispatch : NULL;
 }
 
 void scr_process_on_unhandled_rejection(ScrDyn *fn, bool once) {
   if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, "unhandledRejection", fn)) return;
   static SCR_TL bool teardown_armed = false;
   if (!teardown_armed) {
     teardown_armed = true;
@@ -391,12 +428,14 @@ void scr_process_on_unhandled_rejection(ScrDyn *fn, bool once) {
 }
 
 void scr_process_off_unhandled_rejection(ScrDyn *fn) {
+  if (scr_pe_listen(3, "unhandledRejection", fn)) return;
   scr_rej_remove(scr_urj_listeners, &scr_nurj, fn);
   scr_urj_sync_hook();
 }
 
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once) {
   if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, "rejectionHandled", fn)) return;
   static SCR_TL bool teardown_armed = false;
   if (!teardown_armed) {
     teardown_armed = true;
@@ -407,6 +446,7 @@ void scr_process_on_rejection_handled(ScrDyn *fn, bool once) {
 }
 
 void scr_process_off_rejection_handled(ScrDyn *fn) {
+  if (scr_pe_listen(3, "rejectionHandled", fn)) return;
   scr_rej_remove(scr_rjh_listeners, &scr_nrjh, fn);
   scr_rjh_sync_hook();
 }
@@ -454,6 +494,9 @@ static SCR_TL size_t scr_uncaught_n[2], scr_uncaught_cap[2];
 static int scr_uncaught_dispatch(bool from_promise);
 
 static void scr_uncaught_sync_hook(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) return; /* the hook raises through Node's process */
+#endif
   scr_uncaught_exception_hook = (scr_uncaught_n[0] || scr_uncaught_n[1]) ? scr_uncaught_dispatch : NULL;
 }
 
@@ -467,8 +510,11 @@ static void scr_uncaught_teardown(void) {
   scr_uncaught_sync_hook();
 }
 
+#define SCR_UNCAUGHT_EVENT(monitor) ((monitor) ? "uncaughtExceptionMonitor" : "uncaughtException")
+
 void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor) {
   if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, SCR_UNCAUGHT_EVENT(monitor), fn)) return;
   static SCR_TL bool armed = false;
   if (!armed) { armed = true; scr_atexit(scr_uncaught_teardown); }
   size_t k = monitor ? 1 : 0;
@@ -483,6 +529,12 @@ void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor) {
  * then moves to the front, so the two share one registration; a refused
  * listener (a non-function) left the list alone and nothing moves. */
 void scr_process_prepend_uncaught_exception(ScrDyn *fn, bool monitor) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) {
+    if (scr_rej_check_listener(fn)) scr_ni_process_listen(2, SCR_UNCAUGHT_EVENT(monitor), fn);
+    return;
+  }
+#endif
   size_t k = monitor ? 1 : 0;
   size_t before = scr_uncaught_n[k];
   scr_process_on_uncaught_exception(fn, false, monitor);
@@ -496,6 +548,7 @@ void scr_process_prepend_uncaught_exception(ScrDyn *fn, bool monitor) {
 
 void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor) {
   if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(3, SCR_UNCAUGHT_EVENT(monitor), fn)) return;
   size_t k = monitor ? 1 : 0;
   scr_rej_remove(scr_uncaught_ls[k], &scr_uncaught_n[k], fn);
   scr_uncaught_sync_hook();
@@ -595,6 +648,7 @@ static int scr_uncaught_dispatch(bool from_promise) {
     }
     error = wrapped;
   }
+  SCR_PE_ENTER();
   const char *origin = from_promise ? "unhandledRejection" : "uncaughtException";
   ScrStr *text = scr_str_new(origin, strlen(origin));
   ScrDyn *args[2] = {error, scr_dyn_new_str(text)};
@@ -607,6 +661,7 @@ static int scr_uncaught_dispatch(bool from_promise) {
   scr_uncaught_sync_hook();
   if (ok && !handled) scr_rethrow(caught);
   scr_caught_release(caught);
+  SCR_PE_LEAVE();
   return !ok ? -1 : handled ? 1 : 0;
 }
 
@@ -620,10 +675,12 @@ static bool scr_urj_dispatch(ScrPromise *p) {
   ScrDyn *reason = scr_promise_reason_dyn(p);
   ScrDyn *boxed = scr_dyn_new_promise(p);
   ScrDyn *args[2] = {reason, boxed};
+  SCR_PE_ENTER();
   bool ok = scr_rej_fire(&scr_urj_listeners, &scr_nurj, args, 2);
   scr_dyn_release(reason);
   scr_dyn_release(boxed);
   scr_urj_sync_hook();
+  SCR_PE_LEAVE();
   return ok;
 }
 
@@ -631,9 +688,11 @@ static bool scr_urj_dispatch(ScrPromise *p) {
  * throw propagates as a pending exception through the attach site. */
 static void scr_rjh_dispatch(ScrPromise *p) {
   ScrDyn *boxed = scr_dyn_new_promise(p);
+  SCR_PE_ENTER();
   (void)scr_rej_fire(&scr_rjh_listeners, &scr_nrjh, &boxed, 1);
   scr_dyn_release(boxed);
   scr_rjh_sync_hook(); /* a once-consumed-to-empty registry disarms */
+  SCR_PE_LEAVE();
 }
 
 /* `new Promise(setImmediate)` (the Node-suite early-exit shape): the
@@ -885,6 +944,7 @@ void scr_process_on_warning(ScrDyn *fn) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, strlen(msg), "ERR_INVALID_ARG_TYPE");
     return;
   }
+  if (scr_pe_listen(0, "warning", fn)) return;
   scr_warning_emit_hook = scr_emit_warning;
   if (scr_nwarn == scr_warn_cap) {
     scr_warn_cap = scr_warn_cap ? scr_warn_cap * 2 : 4;
@@ -899,6 +959,7 @@ void scr_process_on_warning(ScrDyn *fn) {
 }
 
 void scr_process_off_warning(ScrDyn *fn) {
+  if (scr_pe_listen(3, "warning", fn)) return;
   for (size_t i = 0; i < scr_nwarn; i++) {
     ScrDyn *l = scr_warn_listeners[i];
     bool same = l == fn || (l->kind == SCR_DYN_FUNC && fn->kind == SCR_DYN_FUNC &&
@@ -995,6 +1056,15 @@ static bool scr_warning_is_deprecation(const ScrDyn *w) {
 /* The default stderr report + dispatch over a built warning dyn node.
  * Borrowed. A listener throw propagates (the dc publish stance). */
 static void scr_warning_dispatch(ScrDyn *w) {
+#ifdef SCR_NODE_ISLANDS
+  /* Node's `process` holds the listeners, Node's own report first among
+   * them: it prints what the report below prints, under the same rule for
+   * deprecations (process.noDeprecation, which the emit carries over). */
+  if (scr_pe_node) {
+    (void)scr_ni_warning(w, scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0));
+    return;
+  }
+#endif
   /* "(node:pid) [CODE] Name: message" + "\n<detail>" — Node's
    * onWarning report, written as ONE console.error line (so the global
    * console's group indentation applies to each of its lines). Node
@@ -1049,12 +1119,67 @@ static void scr_warning_dispatch(ScrDyn *w) {
   scr_console_error(1, &line);
   scr_str_release(line.v.s);
 listeners:
+  SCR_PE_ENTER();
   for (size_t i = 0; i < scr_nwarn; i++) {
     ScrDyn *r = scr_dyn_call(scr_warn_listeners[i], &w, 1, "listener");
-    if (r == NULL) return; /* pending exception propagates */
+    if (r == NULL) {
+      SCR_PE_LEAVE();
+      return; /* pending exception propagates */
+    }
     scr_dyn_release(r);
   }
+  SCR_PE_LEAVE();
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* One registry's listeners onto Node's `process`, in their order. */
+static void scr_pe_move(ScrRejListener **list, size_t *n, size_t *cap, const char *event) {
+  ScrRejListener *moved = *list;
+  size_t count = *n;
+  *list = NULL;
+  *n = *cap = 0;
+  for (size_t i = 0; i < count; i++) {
+    scr_ni_process_listen(moved[i].once ? 1 : 0, event, moved[i].fn);
+    if (scr_exc_pending()) scr_exc_clear();
+    scr_rej_release(&moved[i]);
+  }
+  free(moved);
+}
+
+static void scr_pe_move_all(void) {
+  scr_pe_wanted = false;
+  scr_pe_node = true;
+  scr_pe_move(&scr_uncaught_ls[1], &scr_uncaught_n[1], &scr_uncaught_cap[1], SCR_UNCAUGHT_EVENT(true));
+  scr_pe_move(&scr_uncaught_ls[0], &scr_uncaught_n[0], &scr_uncaught_cap[0], SCR_UNCAUGHT_EVENT(false));
+  scr_pe_move(&scr_urj_listeners, &scr_nurj, &scr_urj_cap, "unhandledRejection");
+  scr_pe_move(&scr_rjh_listeners, &scr_nrjh, &scr_rjh_cap, "rejectionHandled");
+  ScrDyn **warn = scr_warn_listeners;
+  size_t nwarn = scr_nwarn;
+  scr_warn_listeners = NULL;
+  scr_nwarn = scr_warn_cap = 0;
+  for (size_t i = 0; i < nwarn; i++) {
+    scr_ni_process_listen(0, "warning", warn[i]);
+    if (scr_exc_pending()) scr_exc_clear();
+    scr_dyn_release(warn[i]);
+  }
+  free(warn);
+  /* The runtime's errors, rejections and warnings are raised through Node
+   * from here on; units that report warnings by themselves while no
+   * listener exists route them through the dispatch above. */
+  scr_uncaught_exception_hook = scr_ni_uncaught;
+  scr_urj_deliver_fn = NULL;
+  scr_urj_node_fn = scr_ni_promise_unhandled;
+  scr_rjh_notify_fn = scr_ni_promise_handled;
+  scr_warning_emit_hook = scr_emit_warning;
+}
+
+/* Node is loaded (scr_node_island.c, on the main thread). */
+void scr_process_events_to_node(void) {
+  if (scr_pe_node) return;
+  if (scr_pe_dispatching > 0) scr_pe_wanted = true;
+  else scr_pe_move_all();
+}
+#endif
 
 /* A string warning with a type and an optional code, as
  * process.emitWarning(message, type, code) builds it. Borrows; +1. */

@@ -123,6 +123,42 @@ ScrPromise *scr_ni_await(ScrDyn *value);
 /* Island arrays as copies for results typed as arrays of copied values. */
 ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
 ScrPromise *scr_node_island_await_copy(ScrDyn *value);
+/* ── process events (scr_node_island_events.c) ──────────────────────────
+ * Once Node is loaded, Node's `process` is the registry of
+ * uncaughtException, its monitor, unhandledRejection, rejectionHandled and
+ * warning, and process.exitCode is Node's property. */
+/* The SCR_NODE_ISLANDS build of scr_async_dyn.c: moves the native
+ * listeners onto `process`, in their order, and installs the hooks below. */
+void scr_process_events_to_node(void);
+/* process.on (0), once (1), prependListener (2), removeListener (3). */
+void scr_ni_process_listen(int mode, const char *event, ScrDyn *listener);
+int scr_ni_uncaught(bool from_promise);          /* scr_uncaught_exception_hook */
+void scr_ni_promise_unhandled(ScrPromise *p);    /* scr_urj_node_fn */
+void scr_ni_promise_handled(ScrPromise *p);      /* scr_rjh_notify_fn */
+bool scr_ni_warning(ScrDyn *warning, bool no_deprecation);
+/* The SCR_NODE_ISLANDS build of scr_async.c: when set, a rejected promise
+ * nobody observed at a hosted checkpoint is handed to Node's tracking
+ * instead of the runtime's report. */
+extern SCR_TL void (*scr_urj_node_fn)(ScrPromise *p);
+/* The SCR_NODE_ISLANDS build of scr_async.c: `p` stands for an island
+ * promise and subscribes to it (scr_promise_island_fn) when native code
+ * first reacts to it. */
+void scr_promise_island_source(ScrPromise *p);
+extern SCR_TL void (*scr_promise_island_fn)(ScrPromise *p);
+/* A runtime promise whose V8 promise exists: V8 tracks its unhandled
+ * rejection. true when native code already reacts to it. */
+bool scr_promise_tracked_by_node(ScrPromise *p);
+/* process.exitCode in Node: 1 set (*out), 0 unset, -1 Node cannot answer. */
+int scr_ni_exit_code(bool set, double code, double *out);
+/* The libCalls of process.exitCode in a program with islands. */
+void scr_node_island_set_exit_code(double code);
+double scr_node_island_exit_code(void);
+bool scr_node_island_has_exit_code(void);
+/* A native error is one V8 error while native code holds it. */
+void scr_ni_error_link(ScrDyn *value);
+ScrDyn *scr_ni_helper(const char *name, ScrDyn *const *args, size_t argc);
+bool scr_ni_running(void); /* Node is loaded and not stopped */
+
 /* An island thenable as the promise V8 adopts it into; any other value as
  * itself (the operand of a dynamic await or PromiseResolve). +1. */
 ScrDyn *scr_node_island_adopt_thenable(ScrDyn *value);

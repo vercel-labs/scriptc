@@ -3375,7 +3375,7 @@ export function lowerBufferPrototypeObject(
   return { kind: "libCall", fn: "buffer.prototypeObject", args: [], type: DYN, loc: locOf(expr) };
 }
 
-const BUFFER_VALUE_FNS: ReadonlySet<string> = new Set([
+const BUFFER_VALUE_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "buffer.constructor",
   "buffer.staticValue",
   "buffer.prototypeMember",

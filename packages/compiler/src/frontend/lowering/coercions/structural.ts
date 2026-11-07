@@ -3,6 +3,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { constructedValue } from "../constructor-returns.js";
 import { countedFor, dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import type { FieldLift } from "./structural-plans.js";
+import { liftableBesideArm, widthNarrowHelper } from "./unions.js";
 import { buildArrayConversion } from "./builders.js";
 import { arrayValueRead, arrayValueStore, primitiveElement } from "../array-values.js";
 import type { WidthLift } from "../width-lift.js";
@@ -328,7 +329,16 @@ export function applyWidthLift(
     case "narrow": {
       if (value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: narrow lift on a non-union");
-      const helper = lowerer.narrowedArmHelper(value.type.unionId, dst, loc);
+      // A member or element typed by a union that holds the destination
+      // record beside arms that convert into it (`{ v: S | T }` into
+      // `{ v: T }`, S assignable to T): a declared member type is not
+      // narrowed, so those arms are values of the slot's type and convert
+      // on their own tag instead of throwing.
+      const converts = liftableBesideArm(lowerer, value.type.unionId, dst);
+      const helper =
+        converts.length > 0
+          ? widthNarrowHelper(lowerer, value.type.unionId, dst, loc, converts)
+          : lowerer.narrowedArmHelper(value.type.unionId, dst, loc);
       if (!helper)
         throw new InternalCompilerError("lowerer bug: planned narrow lift failed to intern");
       return { kind: "call", callee: helper, args: [value], type: dst, loc };

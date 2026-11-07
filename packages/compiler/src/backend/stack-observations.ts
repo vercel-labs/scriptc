@@ -15,6 +15,7 @@ import {
 } from "../ir/node-index.js";
 import { MAY_THROW_LIB_FNS } from "../ir/builtin-effects.js";
 import type { IrExpr, IrFunction, IrModule, IrStmt, IrType } from "../ir/ir.js";
+import type { IrLibFn } from "../ir/builtin-signatures.js";
 import { MAY_THROW_ARR_METHODS } from "../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
 import { unreachableStatements } from "./may-throw.js";
@@ -29,7 +30,7 @@ const CENSUS_KINDS: readonly IrNodeKind[] = ["call", ...FUNCTION_REFERENCE_KINDS
 const DECLARATION_KINDS: readonly IrNodeKind[] = ["varDecl"];
 
 /** Lib calls that read a captured stack trace. */
-const STACK_READS: ReadonlySet<string> = new Set(["error.stack"]);
+const STACK_READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["error.stack"]);
 
 /** Key types whose property names are never `stack`: a number, bigint or
  * boolean key names its decimal or `true`/`false` property. */

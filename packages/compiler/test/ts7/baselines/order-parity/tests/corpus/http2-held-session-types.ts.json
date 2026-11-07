@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http2-held-session-types.ts"
+ ],
+ "diags": []
+}

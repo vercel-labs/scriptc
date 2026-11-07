@@ -55,6 +55,8 @@ export function collectClassMethodMutations(
   const jsAssignments: (ts.PropertyAccessExpression | ts.ElementAccessExpression)[] = [];
   const computedMethods: ts.Expression[] = [];
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
+  /** Whether an unchecked JavaScript file declares a class. */
+  let untypedClass = false;
   const symbolMethods = new Set<string>();
   let unknownKey: ts.Node | undefined;
   /** Every write with an unknown key: each may install a replacement of any
@@ -64,6 +66,10 @@ export function collectClassMethodMutations(
     unknownKey = site;
     unknownKeySites.push(site);
   };
+  /** Writes with an unknown key through a receiver whose static type bounds
+   * the objects it can hold: each may install a replacement of any method
+   * name, but only on an instance of one of `classes`. */
+  const boundedUnknownKeys: { site: ts.Node; classes: readonly ts.Type[] }[] = [];
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
   // `sym:iterator` for `Symbol.iterator`: the name a class method declared
@@ -80,7 +86,15 @@ export function collectClassMethodMutations(
   // declarations (including JavaScript files TypeScript checks), while
   // writes in either source language can invalidate it.
   for (const file of files) {
-    if (isJsSourceFile(file) && !lowerer.checkedJsFile(file)) continue;
+    if (isJsSourceFile(file) && !lowerer.checkedJsFile(file)) {
+      // A class of an unchecked JavaScript file has no declared members to
+      // judge what a receiver can hold (classesHeldBy).
+      if (!untypedClass)
+        ts.walkPreorder(file, (node) => {
+          if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) untypedClass = true;
+        });
+      continue;
+    }
     ts.walkPreorder(file, (node) => {
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) typedClasses.push(node);
       if (
@@ -534,7 +548,15 @@ export function collectClassMethodMutations(
       markUnknownKey(node);
       continue;
     }
-    const receiver = call.arguments.nodes[0];
+    // Reflect.set(target, key, value, receiver) defines a data property on
+    // its fourth argument when one is given: the object written is that
+    // one, which only a repeat of the target lets this census name.
+    const fourth = reflectMethod === "set" ? call.arguments.nodes[3] : undefined;
+    const receiver =
+      fourth === undefined ||
+      (call.arguments.nodes[0] && sameBinding(fourth, call.arguments.nodes[0]))
+        ? call.arguments.nodes[0]
+        : undefined;
     if (single && call.arguments.nodes[1]) markKey(call.arguments.nodes[1], call, receiver);
     else if (objectMethod === "defineProperties" && call.arguments.nodes[1])
       markFields(call.arguments.nodes[1], call, receiver);
@@ -634,6 +656,96 @@ export function collectClassMethodMutations(
     if (owners === null || type === null) return true;
     return owners.some((owner) => lowerer.checker.isTypeAssignableTo(owner, type));
   };
+  // The typed classes whose instances a value of `type` can be, or null when
+  // it can be an instance of any class. An object is a value of a type with
+  // required properties only when it has them all, by assignment or by a
+  // checked conversion, so a class that lacks one of those names is never
+  // behind such a receiver. A string-keyed dictionary that does not keep
+  // checked identity holds its own entries (a converted class instance is a
+  // copy), so it is a class instance only for a class that declares a string
+  // index signature (class instances have no implicit one). A dictionary
+  // that keeps checked identity holds the existing objects it receives, and
+  // `{}`, `object` and all-optional types accept every object.
+  const classMembers = new Map<ts.Type, { names: Set<string>; stringIndex: boolean }>();
+  const instanceTypeOf = (cls: ts.ClassExpression): ts.Type | null => {
+    const construct = lowerer.checker.getConstructSignatures(lowerer.typeOf(cls))[0];
+    return construct ? lowerer.checker.getReturnTypeOfSignature(construct) : null;
+  };
+  let typedClassTypes: ts.Type[] | null | undefined;
+  const classInstanceTypes = (): ts.Type[] | null => {
+    if (typedClassTypes !== undefined) return typedClassTypes;
+    if (untypedClass) return (typedClassTypes = null);
+    const types: ts.Type[] = [];
+    for (const cls of typedClasses) {
+      const symbol = cls.name ? lowerer.checker.getSymbolAtLocation(cls.name) : undefined;
+      // An anonymous class expression has no declared type: its instances
+      // are what its constructor answers.
+      const type = symbol
+        ? lowerer.checker.getDeclaredTypeOfSymbol(symbol)
+        : ts.isClassExpression(cls)
+          ? instanceTypeOf(cls)
+          : null;
+      if (type === null) return (typedClassTypes = null);
+      if (classMembers.has(type)) continue;
+      classMembers.set(type, {
+        names: new Set(lowerer.checker.getPropertiesOfType(type).map((p) => ts.symbolName(p))),
+        stringIndex: lowerer.checker
+          .getIndexInfosOfType(type)
+          .some((index) => (index.keyType.flags & ts.TypeFlags.StringLike) !== 0),
+      });
+      types.push(type);
+    }
+    return (typedClassTypes = types);
+  };
+  const heldClasses = new Map<ts.Type, readonly ts.Type[] | null>();
+  const classesHeldBy = (type: ts.Type): readonly ts.Type[] | null => {
+    const cached = heldClasses.get(type);
+    if (cached !== undefined) return cached;
+    const answer = ((): readonly ts.Type[] | null => {
+      if (type.isUnionType()) {
+        const all = new Set<ts.Type>();
+        for (const part of ts.constituentTypes(type)) {
+          const held = classesHeldBy(part);
+          if (held === null) return null;
+          for (const cls of held) all.add(cls);
+        }
+        return [...all];
+      }
+      if (
+        (type.flags &
+          (ts.TypeFlags.StringLike |
+            ts.TypeFlags.NumberLike |
+            ts.TypeFlags.BooleanLike |
+            ts.TypeFlags.BigIntLike |
+            ts.TypeFlags.Null |
+            ts.TypeFlags.Undefined |
+            ts.TypeFlags.ESSymbolLike)) !==
+        0
+      )
+        return [];
+      if (!(type.flags & ts.TypeFlags.Object)) return null;
+      const classes = classInstanceTypes();
+      if (classes === null) return null;
+      const properties = lowerer.checker.getPropertiesOfType(type);
+      const required = properties
+        .filter((property) => (property.flags & ts.SymbolFlags.Optional) === 0)
+        .map((property) => ts.symbolName(property));
+      if (required.length > 0)
+        return classes.filter((cls) => {
+          const names = classMembers.get(cls)!.names;
+          return required.every((name) => names.has(name));
+        });
+      const dictionary =
+        properties.length === 0 &&
+        lowerer.checker
+          .getIndexInfosOfType(type)
+          .some((index) => (index.keyType.flags & ts.TypeFlags.StringLike) !== 0);
+      if (!dictionary || lowerer.classImplementedProtocol(type)) return null;
+      return classes.filter((cls) => classMembers.get(cls)!.stringIndex);
+    })();
+    heldClasses.set(type, answer);
+    return answer;
+  };
   // A named write can replace a method only when the written property can
   // hold a function: a class instance seen through the receiver's type must
   // have its method assignable to that property's type. Data fields (an AST
@@ -689,7 +801,11 @@ export function collectClassMethodMutations(
       // Numeric writes can replace numeric names but not ordinary names.
       numericKey = site;
     } else if (!(flags & ts.TypeFlags.ESSymbolLike)) {
-      markUnknownKey(site);
+      // The write reaches a method only on an object the receiver can hold.
+      const held = receiver ? receiverType(receiver) : null;
+      const classes = held === null ? null : classesHeldBy(held);
+      if (classes === null) markUnknownKey(site);
+      else if (classes.length > 0) boundedUnknownKeys.push({ site, classes });
     }
   }
   lowerer.checker.prefetchClassCollection(
@@ -716,8 +832,26 @@ export function collectClassMethodMutations(
       for (const site of unknownKeySites) lowerer.noteMethodSite(method, site);
     }
     for (const method of symbolMethods) lowerer.replacedSymbolMethods.add(method);
+  } else if (boundedUnknownKeys.length > 0) {
+    // Each bounded write marks the method names of the classes it can reach
+    // (names stay shared across classes, like every other entry).
+    for (const method of methods) {
+      const sites = boundedUnknownKeys.filter(({ classes }) =>
+        classes.some((cls) => {
+          const property = classMembers.get(cls)!.names.has(method)
+            ? lowerer.checker.getPropertyOfType(cls, method)
+            : undefined;
+          return property !== undefined && property.declarations.some(ts.isMethodDeclaration);
+        }),
+      );
+      if (sites.length === 0) continue;
+      if (!lowerer.prototypeMethodAccesses.has(method))
+        lowerer.prototypeMethodAccesses.set(method, sites[0]!.site);
+      for (const { site } of sites) lowerer.noteMethodSite(method, site);
+    }
+    for (const method of symbolMethods) lowerer.replacedSymbolMethods.add(method);
   }
-  if (!unknownKey && !unknownOwnField)
+  if (!unknownKey && boundedUnknownKeys.length === 0 && !unknownOwnField)
     for (const field of arrowFields) {
       if (!receiverFields.has(field)) lowerer.receiverFreeCallbackFields.add(field);
     }

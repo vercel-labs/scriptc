@@ -17,8 +17,10 @@ import {
 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  hostFact,
   trackedDirectoryExists,
   trackedFileExists,
+  trackedHostFact,
   trackedReadFile,
   trackedRealpath,
 } from "./input-tracker.js";
@@ -81,25 +83,51 @@ export function cjsNodeModulePaths(fromDirectory: string): string[] {
   return paths;
 }
 
+/** The host facts the legacy lookup locations come from (hostFact), with
+ * the values they had when this module loaded: the environment is captured
+ * once, as Node does during module initialization. */
+const globalPathFacts: [string, string | null][] = [
+  "prefix",
+  process.platform === "win32" ? "env:USERPROFILE" : "env:HOME",
+  "env:NODE_PATH",
+].map((name) => [name, hostFact(name)]);
+
 /** Match the default host's legacy lookup locations. Native compiler clients
- * use their own executable prefix, so they need no installed Node executable.
- * Capture the environment once, as Node does during module initialization. */
+ * use their own executable prefix, so they need no installed Node executable. */
 function initialGlobalPaths(): string[] {
-  const prefix =
-    process.platform === "win32" ? dirname(process.execPath) : dirname(dirname(process.execPath));
-  const paths = [resolve(prefix, "lib", "node")];
-  const homeDirectory =
-    process.platform === "win32" ? process.env["USERPROFILE"] : process.env["HOME"];
+  const [prefixFact, homeFact, nodePathFact] = globalPathFacts;
+  const paths = [resolve(prefixFact![1] ?? "", "lib", "node")];
+  const homeDirectory = homeFact![1];
   if (homeDirectory)
     paths.unshift(
       resolve(homeDirectory, ".node_modules"),
       resolve(homeDirectory, ".node_libraries"),
     );
-  const nodePath = process.env["NODE_PATH"];
+  const nodePath = nodePathFact![1];
   if (nodePath) paths.unshift(...nodePath.split(delimiter).filter((part) => part !== ""));
   return paths;
 }
-const globalPaths = initialGlobalPaths();
+const initialPaths = initialGlobalPaths();
+
+/** The legacy lookup locations, for a resolution that consults them. The
+ * facts they come from are recorded as inputs of the running frontend, so
+ * its cache entry is not reused under another home directory, NODE_PATH or
+ * compiler location; the directories themselves are probed through the
+ * tracked filesystem like every other candidate. */
+function globalPaths(): string[] {
+  for (const [name, value] of globalPathFacts) trackedHostFact(name, value);
+  return initialPaths;
+}
+
+/** Record the process's working directory when a resolution can depend on
+ * it: a caller's lookup path that is not absolute is resolved from there
+ * (cjsNodeModulePaths), and so is the request under it. The directory is an
+ * input like any other, so a cache entry recorded under one directory is not
+ * reused for a build started in another. */
+function trackRelativeLookupPaths(request: string, paths: readonly string[] | undefined): void {
+  if (paths === undefined || isAbsolute(request)) return;
+  if (paths.some((path) => !isAbsolute(path))) trackedHostFact("cwd");
+}
 
 function parentFile(fromFile: string): string {
   return resolve(
@@ -120,7 +148,7 @@ export function cjsResolvePaths(fromFile: string, request: string): string[] | n
       (process.platform === "win32" && request[1] === "\\"))
   )
     return [dirname(fromFile)];
-  return [...cjsNodeModulePaths(dirname(fromFile)), ...globalPaths];
+  return [...cjsNodeModulePaths(dirname(fromFile)), ...globalPaths()];
 }
 
 const extensions = [".js", ".json", ".node"];
@@ -490,6 +518,7 @@ class CjsResolver {
         );
       }
     }
+    trackRelativeLookupPaths(request, paths);
     let lookup: string[];
     if (isAbsolute(request)) lookup = [""];
     else if (paths === undefined) lookup = cjsResolvePaths(fromFile, request) ?? [];
@@ -497,7 +526,7 @@ class CjsResolver {
     else {
       lookup = [];
       for (const path of paths) {
-        for (const candidate of [...cjsNodeModulePaths(path), ...globalPaths]) {
+        for (const candidate of [...cjsNodeModulePaths(path), ...globalPaths()]) {
           if (!lookup.includes(candidate)) lookup.push(candidate);
         }
       }

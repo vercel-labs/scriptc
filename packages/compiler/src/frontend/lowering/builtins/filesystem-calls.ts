@@ -2,7 +2,7 @@ import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js"
 import * as ts from "../../ts7/adapter.js";
 import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
-import { lowerFsPath } from "./fs-paths.js";
+import { jsFsPathValue, lowerFsPath } from "./fs-paths.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
   type BuiltinModuleFn,
@@ -1579,14 +1579,22 @@ export function lowerFsReadPathCall(
   // (test/common fixtures.js's readFixtureKey(name, enc) — BOTH the
   // path and the encoding are untyped JS values there: the path is
   // fixturesPath(...)'s checker-any, so the LOWERED kind decides and
-  // a dyn path rides a validated string extraction — Node's
-  // non-string paths throw ERR_INVALID_ARG_TYPE where the dynCheck
-  // throws its path-annotated TypeError. The fd forms (a number
-  // argument) and literal-utf8 reads keep their existing lowerings.
+  // a dyn path rides a validated string extraction: in a JavaScript
+  // source Node's getValidatedPath (dyn.validateFsPath, which throws
+  // ERR_INVALID_ARG_TYPE for a non-path), in a TypeScript source the
+  // checked cast. The fd forms (a number argument) and literal-utf8
+  // reads keep their existing lowerings.
   const pathV = lowerer.lowerExpr(expr.arguments.nodes[0]!);
   if (pathV.type.kind === "string" || pathV.type.kind === "dyn") {
     const pathArg: IrExpr =
-      pathV.type.kind === "dyn" ? { kind: "dynCheck", value: pathV, type: STRING, loc } : pathV;
+      pathV.type.kind === "dyn"
+        ? (jsFsPathValue(lowerer, expr.arguments.nodes[0]!, pathV) ?? {
+            kind: "dynCheck",
+            value: pathV,
+            type: STRING,
+            loc,
+          })
+        : pathV;
     if (expr.arguments.nodes.length === 1) {
       return { kind: "libCall", fn: "fs.readFileSyncBuf", args: [pathArg], type: BYTES_U8, loc };
     }

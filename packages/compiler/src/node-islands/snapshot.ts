@@ -131,7 +131,7 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * conditional part of an expression is placed last, both branches of a
  * selection where they are written. A run that takes the other way
  * evaluates a file two loads share in the other load, so the decisions do
- * not rest on the order for that (sharedEffects). */
+ * not rest on the order for that (loadReads). */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
   const functions = new Map<string, IrModule["functions"][number]>();
   for (const fn of mod.functions) if (typeof fn.name === "string") functions.set(fn.name, fn);
@@ -274,27 +274,57 @@ function traceDecision(d: DeferralDecision): void {
     );
 }
 
-/** A probed module with effects that `result` shares a file with, and the
- * file. A file that two modules load evaluates once, in the load of
- * whichever the run reaches first, and the probe recorded what that
- * evaluation did in the load it reached first. The two are not always the
- * same load: one written under a condition (`flag && require("a")`, an arm
- * of `?:`, a branch, after an early `return`) is probed where it is written
- * and skipped in a run where the condition fails, and then the shared file
- * evaluates, with its effects, in the other module's load. So a module is
- * not deferred when a load it shares a file with has effects, whichever of
- * the two the probe reached first. */
-function sharedEffects(
-  result: ProbeResult,
-  results: ProbeResult[],
-): { with: ProbeResult; file: string } | null {
-  const files = new Set(result.files);
-  for (const other of results) {
-    if (other === result || other.effects.length === 0) continue;
-    const file = other.files.find((f) => files.has(f));
-    if (file !== undefined) return { with: other, file };
-  }
-  return null;
+/** What a module's load depends on from outside the island: its own reads
+ * and those of every probed module it shares a file with. */
+interface LoadReads {
+  env: [string, string | null][];
+  tty: [number, boolean][];
+  inputs: string[];
+  volatile: string[];
+  effects: string[];
+}
+
+/** The reads each probed module's snapshot depends on, and the effects
+ * its load answers for. A file that two modules load evaluates once, in the
+ * load of whichever reaches it first, and what that evaluation read (an
+ * environment variable, the terminal, the clock, another input) or did is
+ * in that module's record only. The other module's exports can still hold
+ * values computed from it, and in a run that reaches the other module
+ * first (the first is written under a condition: `flag && require("a")`,
+ * an arm of `?:`, a branch, after an early `return`) the file evaluates,
+ * with its effects, in the other module's load. So the modules of a group
+ * that shares files carry each other's reads and effects: their guards,
+ * and the reasons that keep one of them eager. A module's own come
+ * first. */
+function loadReads(results: ProbeResult[]): Map<ProbeResult, LoadReads> {
+  const parent = results.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  const owner = new Map<string, number>();
+  results.forEach((r, i) => {
+    for (const f of r.files) {
+      const j = owner.get(f);
+      if (j === undefined) owner.set(f, i);
+      else parent[find(i)] = find(j);
+    }
+  });
+  const reads = new Map<ProbeResult, LoadReads>();
+  results.forEach((r, i) => {
+    const group = [r, ...results.filter((other, j) => j !== i && find(j) === find(i))];
+    const env = new Map<string, string | null>();
+    const tty = new Map<number, boolean>();
+    for (const m of group) {
+      for (const [k, v] of m.env) if (!env.has(k)) env.set(k, v);
+      for (const [fd, isTty] of m.tty) if (!tty.has(fd)) tty.set(fd, isTty);
+    }
+    reads.set(r, {
+      env: [...env],
+      tty: [...tty],
+      inputs: [...new Set(group.flatMap((m) => m.inputs))],
+      volatile: [...new Set(group.flatMap((m) => m.volatile))],
+      effects: [...new Set(group.flatMap((m) => m.effects))],
+    });
+  });
+  return reads;
 }
 
 /** Island loads lowering emitted at call sites (`require()`, `import()`). */
@@ -372,6 +402,7 @@ export function finalizeDeferredIslands(
   // against its digests when it opens): only files outside it need guards.
   const tree = mod.nodeIsland?.modules;
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
+  const reads = loadReads(probe.results);
   const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === c.path);
@@ -385,15 +416,16 @@ export function finalizeDeferredIslands(
         snapshotNames(probe, result.root, tree.root)
       )
         return "its exports hold a path of the build machine";
-      const privateEnv = result.env.map(([k]) => k).filter((k) => !publicEnv.has(k));
+      const { env, inputs, effects } = reads.get(result)!;
+      const privateEnv = env.map(([k]) => k).filter((k) => !publicEnv.has(k));
       if (privateEnv.length > 0)
         return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, whose build-time values its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
       if (c.lazy) return null;
-      if (result.effects.length > 0) return `its load has effects: ${result.effects.join(", ")}`;
-      if (result.inputs.length > 0) return `its load reads ${result.inputs.join(", ")}`;
-      const shared = sharedEffects(result, probe.results);
-      if (shared !== null)
-        return `it shares ${shared.file} with ${shared.with.path}, whose load has effects (${shared.with.effects.join(", ")}): the file evaluates in whichever of the two the program reaches first`;
+      // Its own, or those of a load it shares a file with.
+      const whose = (own: string[]): string =>
+        own.length > 0 ? "its load" : "a load it shares a file with";
+      if (effects.length > 0) return `${whose(result.effects)} has effects: ${effects.join(", ")}`;
+      if (inputs.length > 0) return `${whose(result.inputs)} reads ${inputs.join(", ")}`;
       return null;
     })();
     if (why !== null || result === undefined) {
@@ -431,20 +463,21 @@ export function finalizeDeferredIslands(
   }
   for (const d of deferred) {
     const r = d.result;
+    const { env, tty, volatile } = reads.get(r)!;
     const guards = [
       ...packGuards,
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
-      ...r.env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
-      ...r.tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
+      ...env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
+      ...tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
       ...(lazyMode ? [`M ${component.get(r.path)}`] : []),
     ];
-    const text = encodeSnapshot(probe, r.root!, guards, r.volatile.length === 0);
+    const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
     const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     const notes = [
       d.why,
-      ...(r.env.length > 0 ? [`env guards ${r.env.map(([k]) => k).join(",")}`] : []),
-      ...(r.volatile.length > 0 ? [`volatile ${r.volatile.join(",")}: no constants`] : []),
+      ...(env.length > 0 ? [`env guards ${env.map(([k]) => k).join(",")}`] : []),
+      ...(volatile.length > 0 ? [`volatile ${volatile.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
       lazyMode ? `per-module (component ${component.get(r.path)})` : "evaluated when Node starts",
     ];

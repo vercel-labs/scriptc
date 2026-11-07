@@ -145,9 +145,9 @@ describe("environment boot guards", () => {
 
 describe("modules that share a file", () => {
   /** Two island modules, `first` and `second`, probed in that order; the
-   * probe evaluated `common`, a file both load, in `first`'s load, with
-   * `effects`. */
-  function sharing(effects: string[], shared: boolean) {
+   * probe evaluated `common`, a file both load, in `first`'s load, and
+   * what that evaluation did and read is in `first`'s record (`record`). */
+  function sharing(record: Partial<ProbeOutput["results"][number]>, shared = true) {
     const root = scratch();
     writeFileSync(join(root, "package.json"), '{ "name": "app" }');
     const file = (name: string): string => {
@@ -168,46 +168,57 @@ describe("modules that share a file", () => {
     });
     const calls = [load(first), load(second)];
     const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
-    const result = (path: string, root: number, files: string[], effects: string[]) => ({
-      path,
-      root,
-      inputs: [],
-      volatile: [],
-      effects,
-      mutations: [],
-      env: [],
-      tty: [],
-      files,
-    });
+    const empty = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
     const probe: ProbeOutput = {
       results: [
-        result(first, 1, [first, common], effects),
-        result(second, 2, shared ? [second, common] : [second], []),
+        { ...empty, ...record, path: first, root: 1, files: [first, common] },
+        { ...empty, path: second, root: 2, files: shared ? [second, common] : [second] },
       ],
-      objects: { "1": { f: 0, p: false, m: [] }, "2": { f: 0, p: false, m: [] } },
+      objects: {
+        "1": { f: 0, p: false, m: [["count", { s: "three" }]] },
+        "2": { f: 0, p: false, m: [["count", { s: "three" }]] },
+      },
     };
     const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
-    return { decisions, calls, common };
+    // An eager load has lost its snapshot argument.
+    const snapshots = calls.map((c) => c.args[1]?.value ?? "");
+    return { decisions, calls, snapshots };
   }
 
   test("neither defers when the load that evaluated the file has effects", () => {
     // The probe reached `first` first, so the shared file's output is in
     // its record and `second`'s is empty. A run that skips `first` (it is
     // written under a condition) evaluates the file in `second`'s load.
-    const { decisions, calls, common } = sharing(["process.stdout.write()"], true);
+    const { decisions, calls } = sharing({ effects: ["process.stdout.write()"] });
     expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
-    expect(decisions[1]!.reason).toContain(`it shares ${common} with`);
+    expect(decisions[0]!.reason).toContain("its load has effects");
+    expect(decisions[1]!.reason).toContain("a load it shares a file with has effects");
     expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
   });
 
-  test("a module that shares nothing with a load that has effects still defers", () => {
-    const { decisions } = sharing(["process.stdout.write()"], false);
-    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
+  test("neither defers when the load that evaluated the file read an input", () => {
+    // `second`'s exports can hold what the shared file computed from the
+    // input (the arguments, the working directory): not a constant.
+    const { decisions } = sharing({ inputs: ["process.argv"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("a load it shares a file with reads process.argv");
   });
 
-  test("modules that share a file whose loads have no effects both defer", () => {
-    const { decisions } = sharing([], true);
+  test("neither snapshot has constants when the load that evaluated the file read the clock", () => {
+    const { decisions, snapshots } = sharing({ volatile: ["Date.now()"] });
     expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
+    for (const d of decisions) expect(d.reason).toContain("volatile Date.now(): no constants");
+    const plain = sharing({});
+    expect(plain.snapshots[1]).not.toBe(snapshots[1]);
+  });
+
+  test("a module that shares nothing with such a load still defers", () => {
+    for (const record of [{ effects: ["process.stdout.write()"] }, { inputs: ["process.argv"] }])
+      expect(sharing(record, false).decisions.map((d) => d.deferred)).toEqual([false, true]);
+  });
+
+  test("modules that share a file whose loads read nothing and do nothing both defer", () => {
+    expect(sharing({}).decisions.map((d) => d.deferred)).toEqual([true, true]);
   });
 });
 

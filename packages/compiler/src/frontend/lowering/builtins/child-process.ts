@@ -1,5 +1,5 @@
 import { recordToEnvPairs } from "./environment.js";
-import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import { boolLit, helperLoc, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { keyedHelperName } from "../stable-names.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { resolve } from "node:path";
@@ -43,10 +43,66 @@ export function lowerChildArgsArg(
   return lowerer.lowerExprExpecting(node, arrayOf(STRING));
 }
 
-/** spawn's per-slot stdio modes (scr_child.c): 0 ignore, 1 inherit,
- * 2 fd, 3 pipe — one number set for all three slots. */
-function spawnMode(v: string): number {
-  return v === "inherit" ? 1 : v === "pipe" ? 3 : 0;
+/** A stdio value whose TYPE is a union of supported literals — the
+ * portable `stdio: process.platform === "win32" ? "ignore" : "pipe"` slot
+ * and its variants — maps to its mode at run time. One interned helper per
+ * mode table compares the value against each arm and returns that arm's
+ * mode, so the slot expression is evaluated exactly once. `modes` is the
+ * literal→mode table for the slot (or the scalar form). Null when the
+ * value is not a union of supported literals. */
+function stdioModeChain(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  modes: Readonly<Record<string, number>>,
+): IrExpr | null {
+  const t = lowerer.typeOf(node);
+  if (!t.isUnionType()) return null;
+  const names: string[] = [];
+  for (const arm of ts.constituentTypes(t)) {
+    if (!arm.isStringLiteralType() || !Object.hasOwn(modes, arm.value)) return null;
+    if (!names.includes(arm.value)) names.push(arm.value);
+  }
+  if (names.length === 0) return null;
+  const loc = locOf(node);
+  const key = names.map((name) => `${name}=${modes[name]}`).join(",");
+  let helper = lowerer.arrHofHelpers.get(`stdio.mode:${key}`);
+  if (!helper) {
+    const at = helperLoc(loc);
+    helper = keyedHelperName(lowerer, "%stdio.mode", key);
+    lowerer.arrHofHelpers.set(`stdio.mode:${key}`, helper);
+    const value = varRef("m.0", STRING, at);
+    const body: IrStmt[] = names.map((name) => ({
+      kind: "if",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: value,
+        right: { kind: "strLit", value: name, type: STRING, loc: at },
+        type: BOOL,
+        loc: at,
+      },
+      then: [{ kind: "return", value: numLit(modes[name]!, at), loc: at }],
+      else_: null,
+      loc: at,
+    }));
+    // Every arm is covered, so the last arm's mode is the fallthrough.
+    body.push({ kind: "return", value: numLit(modes[names[names.length - 1]!]!, at), loc: at });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "m.0", name: "m", type: STRING }],
+      returnType: F64,
+      locals: [{ id: "m.0", name: "m", type: STRING, mutable: false }],
+      body,
+      loc: at,
+    });
+  }
+  return {
+    kind: "call",
+    callee: helper,
+    args: [lowerer.lowerExprExpecting(node, STRING)],
+    type: F64,
+    loc,
+  };
 }
 
 /** True when the args slot is statically empty (omitted, `undefined`, or an
@@ -97,125 +153,6 @@ const NODE_SIGNAL_NAMES = new Set([
   "SIGINFO",
 ]);
 
-/** A local, or a field or record member read through one: reading it again
- * has no effect and yields the same value. A member read off anything else
- * (a call's result, an arithmetic value) re-evaluates its receiver, so the
- * mode chain must hold it in a local. */
-function plainRead(e: IrExpr): boolean {
-  if (e.kind === "varRef") return true;
-  return (e.kind === "fieldGet" || e.kind === "recordGet") && plainRead(e.obj);
-}
-
-/** A stdio slot's mode as a RUNTIME number. The slot's TYPE proves every
- * arm is one of "pipe"/"ignore"/"inherit", but which one arrives at the
- * call — a conditional over the literals (`stdio: [commandFromStdin ?
- * "pipe" : "ignore", "pipe", "pipe"]`), a read typed as a union of them,
- * or any other expression of that type. A literal folds to its mode; a
- * conditional becomes a ternary over the same computation for each arm,
- * so its condition evaluates exactly once; a union-typed value becomes a
- * string-equality chain (all arms supported, so the last arm is the
- * fallback) over a read the chain may repeat, or over a hidden local when
- * the expression must evaluate exactly once. `scalar` refuses the
- * conditional form: one value feeds three fds there, and its test would
- * run three times. Null when the type is not a set of supported literals;
- * the caller keeps its fence. */
-function stdioModeValue(
-  lowerer: Lowerer,
-  node: ts.Expression,
-  loc: SrcLoc,
-  fd: 0 | 1 | 2,
-  modeOf: (v: string, fd: 0 | 1 | 2) => number,
-  scalar = false,
-): IrExpr | null {
-  const inner = stripTypeCasts(node);
-  if (ts.isConditionalExpression(inner)) {
-    if (scalar) return null;
-    const whenTrue = stdioModeValue(lowerer, inner.whenTrue, loc, fd, modeOf);
-    const whenFalse = stdioModeValue(lowerer, inner.whenFalse, loc, fd, modeOf);
-    if (whenTrue === null || whenFalse === null) return null;
-    return {
-      kind: "ternary",
-      cond: lowerer.lowerCondition(inner.condition),
-      then: whenTrue,
-      else_: whenFalse,
-      type: F64,
-      loc,
-    };
-  }
-  const t = lowerer.typeOf(inner);
-  const arms: readonly ts.Type[] = t.isUnionType() ? ts.constituentTypes(t) : [t];
-  if (
-    arms.length === 0 ||
-    !arms.every(
-      (a) =>
-        a.isStringLiteralType() &&
-        (a.value === "pipe" || a.value === "ignore" || a.value === "inherit"),
-    )
-  )
-    return null;
-  const first = arms[0]!;
-  if (arms.length === 1 && first.isStringLiteralType()) {
-    // The type names the mode, but the expression still runs when its
-    // branch is taken: a call that returns "inherit" has its effects and
-    // its exceptions, as under Node. A literal and a plain read have none.
-    const mode = numLit(modeOf(first.value, fd), loc);
-    if (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner)) return mode;
-    const evaluated = lowerer.lowerExprExpecting(inner, STRING);
-    if (evaluated.kind === "strLit" || plainRead(evaluated)) return mode;
-    return {
-      kind: "seqExpr",
-      stmts: [{ kind: "exprStmt", expr: evaluated, loc }],
-      result: mode,
-      type: F64,
-      loc,
-    };
-  }
-  const lowered = lowerer.lowerExprExpecting(inner, STRING);
-  // A local, or a field or record member read through one, is side-effect
-  // free, so the chain may re-read it once per comparison; any other
-  // expression (a call, or a member read off one) is evaluated once into a
-  // hidden local the chain reads.
-  const isRead = plainRead(lowered);
-  const slotLocal = isRead ? null : lowerer.declareHiddenLocal(`stdio${fd}`, STRING);
-  if (slotLocal !== null) slotLocal.mutable = true;
-  const value: IrExpr = slotLocal === null ? lowered : varRef(slotLocal.id, STRING, loc);
-  let expr: IrExpr | null = null;
-  for (let i = arms.length - 1; i >= 0; i--) {
-    const arm = arms[i]!;
-    if (!arm.isStringLiteralType()) return null;
-    const v = arm.value;
-    const mode = numLit(modeOf(v, fd), loc);
-    if (expr === null) {
-      expr = mode;
-      continue;
-    }
-    expr = {
-      kind: "ternary",
-      cond: {
-        kind: "strEq",
-        negated: false,
-        left: value,
-        right: { kind: "strLit", value: v, type: STRING, loc },
-        type: BOOL,
-        loc,
-      },
-      then: mode,
-      else_: expr,
-      type: F64,
-      loc,
-    };
-  }
-  if (expr === null) return null;
-  if (slotLocal === null) return expr;
-  return {
-    kind: "seqExpr",
-    stmts: [{ kind: "assign", localId: slotLocal.id, value: lowered, loc }],
-    result: expr,
-    type: F64,
-    loc,
-  };
-}
-
 /** `spawnSync(command, args?, options?)` → one cp.spawnSync /
  * cp.spawnSyncOpts libCall. An omitted args list completes to an empty
  * string[] literal (Node's default). The options argument must be an
@@ -233,13 +170,11 @@ function stdioModeValue(
  * meaning absent), `shell` (a boolean literal: the complete command line
  * runs through /bin/sh -c, with an empty args list only — Node warns
  * DEP0190 for separate shell args), and
- * `windowsHide` (a POSIX no-op, evaluated for side effects). A tuple
- * slot may also be a RUNTIME value whose type pins it to those literals
- * (a conditional over them, or a read union-typed as them) — the mode
- * resolves at the call. Everything else (maxBuffer, ...) fences by name.
- * A TYPED options value (SpawnSyncOptionsWithStringEncoding) reads its
- * members at the call. The bare `{ encoding: "utf8" }` shape keeps its
- * historical cp.spawnSync lowering. */
+ * `windowsHide` (a POSIX no-op, evaluated for side effects). Everything
+ * else (maxBuffer, ...) fences by name. A TYPED options value
+ * (SpawnSyncOptionsWithStringEncoding) reads its members at the call.
+ * The bare `{ encoding: "utf8" }` shape keeps its historical
+ * cp.spawnSync lowering. */
 export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
@@ -255,10 +190,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   let timeout: IrExpr = numLit(0, loc);
   let killSignal: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
   // stdio modes (scr_child.c's core): stdin 0 = /dev/null ("pipe" with
-  // no input and "ignore" both read nothing), 2 = inherit; stdout/
-  // stderr 0 = capture, 1 = ignore, 2 = inherit. A runtime stdio value
-  // makes the mode an EXPRESSION (stdioModeValue) — the libCall takes
-  // the number as data either way.
+  // no input and "ignore" both read nothing), 1 = ignore, 2 = inherit;
+  // stdout/stderr 0 = capture, 1 = ignore, 2 = inherit. A slot whose TYPE
+  // is a union of the supported literals carries a runtime mode expression.
   let inMode: IrExpr = numLit(0, loc),
     outMode: IrExpr = numLit(0, loc),
     errMode: IrExpr = numLit(0, loc);
@@ -266,9 +200,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // and "inherit" both take the child's fd 0 away, and Node drops `input`
   // there instead of piping it.
   let stdinPiped = true;
-  // A runtime stdio[0] value leaves which mode it names to the call, so
-  // `input` — piped only by the "pipe" arm — cannot follow it.
-  let stdioRuntimeStdin = false;
+  // The stdin slot resolved at the call (a union-typed entry): whether it
+  // honors `input` then rides on the runtime mode, where 0 is the pipe.
+  let stdinModeRuntime = false;
   // A RUNTIME stdio string (the defaultRunner idiom: `options?.stdio ??
   // "pipe"`) — accepted when its TYPE proves every arm is a supported
   // literal; the runtime maps the value to the modes at the call.
@@ -292,8 +226,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // member runs exactly once, as the options object's evaluation does.
   let inputRead: { id: string; init: IrExpr } | null = null;
   // The options whose values reach the call, in source order: the
-  // extended entry point's prelude evaluates them in this order.
-  const optionOrder: ("timeout" | "cwd" | "env" | "input" | "stdio")[] = [];
+  // extended entry point's prelude evaluates them in this order. `stdio`
+  // stands for a tuple whose slots resolve at the call.
+  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input")[] = [];
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -363,11 +298,6 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       );
     }
     const applyStdio = (node: ts.Expression): void => {
-      const mode = (v: string, fd: 0 | 1 | 2): number => {
-        if (v === "pipe") return 0; // the default modes
-        if (v === "ignore") return fd === 0 ? 0 : 1;
-        return 2; // "inherit"
-      };
       const modeOf = (v: string, fd: 0 | 1 | 2): void => {
         if (v === "pipe") return; // the default modes
         if (fd === 0) stdinPiped = false;
@@ -396,36 +326,30 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         return;
       }
       if (ts.isArrayLiteralExpression(node) && node.elements.nodes.length === 3) {
-        const setMode = (fd: 0 | 1 | 2, m: IrExpr): void => {
-          if (fd === 0) inMode = m;
-          else if (fd === 1) outMode = m;
-          else errMode = m;
-        };
-        let runtimeEntry = false;
+        let slotRuntime = false;
         node.elements.nodes.forEach((el, i) => {
           const et = lowerer.typeOf(el);
-          if (et.isStringLiteralType()) {
-            modeOf(et.value, i as 0 | 1 | 2);
+          if (!et.isStringLiteralType()) {
+            // A slot typed as a union of the supported literals maps at
+            // the call. stdin's "ignore" and "pipe" both read nothing, but
+            // only "pipe" (mode 0) honors `input`, so the arms stay apart
+            // here as they do in the typed-options helper.
+            const chain = stdioModeChain(lowerer, el, { pipe: 0, ignore: 1, inherit: 2 });
+            if (chain === null)
+              lowerer.noLowering("spawnSync stdio tuple entries beyond string literals", el);
+            if (i === 0) {
+              inMode = chain;
+              stdinModeRuntime = true;
+            } else if (i === 1) outMode = chain;
+            else errMode = chain;
+            slotRuntime = true;
             return;
           }
-          // A RUNTIME slot value (a conditional over the literals, or a
-          // read union-typed as them): the mode resolves at the call.
-          const m = stdioModeValue(lowerer, el, loc, i as 0 | 1 | 2, mode);
-          if (m === null) {
-            lowerer.noLowering("spawnSync stdio tuple entries beyond string literals", el);
-          }
-          runtimeEntry = true;
-          if (i === 0) {
-            stdinPiped = false;
-            stdioRuntimeStdin = true;
-          }
-          setMode(i as 0 | 1 | 2, m);
+          modeOf(et.value, i as 0 | 1 | 2);
         });
-        // A runtime entry resolves at the member's own position: a later
-        // option whose expression changes what the entry reads must not run
-        // first, and an entry's own expression must not run after them. A
-        // tuple of literals keeps the direct call's arguments.
-        if (runtimeEntry) optionOrder.push("stdio");
+        // A slot that resolves at the call is read where the member sits
+        // among the other options, before the members written after it run.
+        if (slotRuntime) optionOrder.push("stdio");
         return;
       }
       // A runtime string whose TYPE pins every possible value to the
@@ -600,13 +524,6 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       }
     }
   }
-  if (stdioRuntimeStdin && input !== emptyStr) {
-    lowerer.noLowering(
-      "spawnSync with a runtime stdio[0] value and input",
-      optsNode!,
-      'input is piped only when stdio[0] is "pipe" — pass the stdin mode as a literal',
-    );
-  }
   if (plain) {
     return { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv], type: SPAWNRES_T, loc };
   }
@@ -633,22 +550,26 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       loc,
     };
   }
-  // A runtime stdio tuple entry is a read, and the direct call's argument
-  // list would place it after the other options; an extended call reads its
-  // options from a prelude instead. Either way the prelude evaluates the
-  // command, the arguments and the options in source order, each into a
-  // hidden local the call reads, so an earlier option that changes a later
-  // one's value (a getter, a call) is seen as in Node. A union `input` lands
-  // in the hidden local its tag test and its value share. Literals need no
-  // local. Without a runtime stdio entry a plain call keeps its arguments
-  // as written.
+  // A stdio slot that resolves at the call is a read, and the direct call's
+  // argument list would evaluate it after `timeout` wherever the member
+  // sits: it takes the prelude too, so the options run in source order.
   if (extOptions || optionOrder.includes("stdio")) {
     // Node ignores `input` when stdio[0] takes the child's fd 0 away
     // ("ignore" is /dev/null, "inherit" the parent's): the option is dead
     // there, not a pipe. Its expression still runs — Node evaluates the
     // member before the call — so it stays an argument, and `has_input`
-    // false keeps it out of the child's stdin.
+    // false keeps it out of the child's stdin. A union-typed stdin slot
+    // decides that at the call instead: mode 0 is the only stdin mode that
+    // honors `input` (the test the typed-options helper makes).
     const ignoreInput = !stdinPiped;
+    // The call's prelude evaluates the command, the arguments and the
+    // options in source order, each into a hidden local the call reads, so
+    // an earlier option that changes a later one's value (a getter, a call)
+    // is seen as in Node. A union `input` lands in the hidden local its tag
+    // test and its value share, and a union stdio slot is read where its
+    // member sits, so a side effect in a later member (the `input`
+    // expression, say) cannot change the mode the call already chose.
+    // Literals need no local.
     const prelude: IrStmt[] = [];
     const bind = (name: string, value: IrExpr): IrExpr => {
       if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
@@ -663,20 +584,50 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     let cwdArg = cwd;
     let inputArg = input;
     let envArg = envPairs;
+    let stdinModeArg = inMode;
+    let outModeArg = outMode;
+    let errModeArg = errMode;
     for (const option of optionOrder) {
       if (option === "timeout") timeoutArg = bind("%spawnSyncTimeout", timeout);
       else if (option === "cwd") cwdArg = bind("%spawnSyncCwd", cwd);
       else if (option === "env" && envPairs !== null) envArg = bind("%spawnSyncEnv", envPairs);
-      else if (option === "input") {
+      else if (option === "stdio") {
+        // Each slot runs once, left to right as the array literal does.
+        stdinModeArg = bind("%spawnSyncStdinMode", inMode);
+        outModeArg = bind("%spawnSyncStdoutMode", outMode);
+        errModeArg = bind("%spawnSyncStderrMode", errMode);
+      } else if (option === "input") {
         if (inputRead !== null)
           prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
         else inputArg = bind("%spawnSyncInput", input);
-      } else if (option === "stdio") {
-        inMode = bind("%spawnSyncStdioIn", inMode);
-        outMode = bind("%spawnSyncStdioOut", outMode);
-        errMode = bind("%spawnSyncStdioErr", errMode);
       }
     }
+    // An `input` option makes the call read the stdin slot's runtime mode
+    // twice: once as the mode argument, once in the `has_input` test. The
+    // slot's expression can have side effects (a getter, a call), and two
+    // reads can answer differently — a second "ignore" would drop the input
+    // the first "pipe" asked to pipe. Both uses read the local bound at the
+    // stdio member. With no `input`, the false `has_input` short-circuits
+    // the test.
+    const hasInputArg: IrExpr = stdinModeRuntime
+      ? {
+          kind: "logical",
+          op: "&&",
+          left: hasInput,
+          right: {
+            kind: "bin",
+            op: "===",
+            left: stdinModeArg,
+            right: numLit(0, loc),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        }
+      : ignoreInput
+        ? boolLit(false, loc)
+        : hasInput;
     const call: IrExpr = extOptions
       ? {
           kind: "libCall",
@@ -686,12 +637,12 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
             argvArg,
             timeoutArg,
             killSignal,
-            inMode,
-            outMode,
-            errMode,
+            stdinModeArg,
+            outModeArg,
+            errModeArg,
             cwdArg,
             inputArg,
-            ignoreInput ? boolLit(false, loc) : hasInput,
+            hasInputArg,
             shell,
             ...(envArg !== null ? [envArg] : []),
           ],
@@ -706,9 +657,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
             argvArg,
             timeoutArg,
             killSignal,
-            inMode,
-            outMode,
-            errMode,
+            stdinModeArg,
+            outModeArg,
+            errModeArg,
             ...(envArg !== null ? [envArg] : []),
           ],
           type: SPAWNRES_T,
@@ -1111,29 +1062,91 @@ function spawnSyncStdioModeHelper(
   return name;
 }
 
+/** A runtime stdio SLOT expression whose TYPE is a union of the supported
+ * literals (`useStdin ? "pipe" : "ignore"`): the expression evaluates once
+ * into a hidden local, and a strEq chain maps the value to its mode (0
+ * ignore, 1 inherit, 3 pipe). The type proves the value is one of them; a
+ * lying assertion lands on the runtime TypeError Node raises for an
+ * invalid stdio value. Null for anything else — the literal and fd paths,
+ * and the fences, stay where they are. */
+function stdioModeExpr(
+  lowerer: Lowerer,
+  el: ts.Expression,
+  t: ts.Type,
+  which: 0 | 1 | 2,
+): IrExpr | null {
+  const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
+  if (parts.length < 2) return null;
+  let hasPipe = false;
+  let hasInherit = false;
+  let hasIgnore = false;
+  for (const part of parts) {
+    if (!part.isStringLiteralType()) return null;
+    const literal = part.value;
+    if (literal === "pipe") hasPipe = true;
+    else if (literal === "inherit") hasInherit = true;
+    else if (literal === "ignore") hasIgnore = true;
+    else return null;
+  }
+  const slotLoc = locOf(el);
+  const value = lowerer.lowerExprExpecting(el, STRING);
+  const local = lowerer.declareHiddenLocal(`stdio${which}`, STRING);
+  local.mutable = true;
+  const read = (): IrExpr => varRef(local.id, STRING, slotLoc);
+  const withMode = (name: string, m: number, next: IrExpr): IrExpr => ({
+    kind: "ternary",
+    cond: {
+      kind: "strEq",
+      negated: false,
+      left: read(),
+      right: strLit(name, slotLoc),
+      type: BOOL,
+      loc: slotLoc,
+    },
+    then: numLit(m, slotLoc),
+    else_: next,
+    type: F64,
+    loc: slotLoc,
+  });
+  let mode: IrExpr = nodeThrowExpr(
+    1,
+    "ERR_INVALID_ARG_VALUE",
+    'spawn stdio must be "pipe", "ignore", or "inherit"',
+    F64,
+    slotLoc,
+  );
+  if (hasPipe) mode = withMode("pipe", 3, mode);
+  if (hasInherit) mode = withMode("inherit", 1, mode);
+  if (hasIgnore) mode = withMode("ignore", 0, mode);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "assign", localId: local.id, value, loc: slotLoc }],
+    result: mode,
+    type: F64,
+    loc: slotLoc,
+  };
+}
+
 /** `spawn(command, args?, options)` → one cp.spawn / cp.spawnOpts
  * libCall. Computed options use native runtime normalization. Inline
- * stdio accepts "ignore", "inherit", or "pipe" as the scalar,
- * or the 3-tuple whose stdin pipe becomes child.stdin, stdout/stderr
- * pipes become child.stdout/child.stderr, and output slots may also be
- * number fds. A slot may be a RUNTIME value whose type pins it to those
- * literals (`useStdin ? "pipe" : "ignore"`, or a read union-typed as
- * them): it evaluates once at its member's position and maps to its
- * mode at the call. The scalar form takes a runtime value of that type
- * too. Omitting stdio uses Node's default: all three piped. The other
- * lowered members: `detached` (a boolean — a literal, a runtime boolean
- * such as `process.platform !== "win32"`, or the conditional spread
- * `...(c ? { detached: true } : {})` in either orientation —
- * POSIX_SPAWN_SETSID, the child gets its own session and process group
- * like Node's), `env` (a REPLACEMENT environment, the exec-core pairs
- * machinery), `cwd`, `shell` (a boolean literal, or a runtime boolean:
- * the spawn becomes a ternary on the flag, its shell arm running Node's
- * `[file, ...args].join(" ")` through /bin/sh -c — the portable idiom
- * cannot be fenced on one platform, so the runtime arm implements Node's
- * exact command building, while the literal `true` keeps its "put the
- * complete command in the first argument" fence), and `windowsHide` (a
- * POSIX no-op). The bare `{ stdio: "ignore" }` shape keeps its
- * historical cp.spawn lowering. */
+ * stdio accepts "ignore", "inherit", or "pipe" as the scalar, or the
+ * 3-tuple whose stdin pipe becomes child.stdin, stdout/stderr pipes
+ * become child.stdout/child.stderr, and output slots may also be number
+ * fds; a 3-tuple slot whose type is a union of those literals
+ * (`useStdin ? "pipe" : "ignore"`) evaluates once and maps to its mode
+ * at the call. Omitting stdio uses Node's default: all three piped. The
+ * other lowered members: `detached` (a boolean literal, inline or carried
+ * by the conditional spread `...(c ? { detached: true } : {})` in either
+ * orientation — POSIX_SPAWN_SETSID, the child gets its own session and
+ * process group like Node's), `env` (a REPLACEMENT environment, the
+ * exec-core pairs machinery), `cwd`, `shell` (a boolean literal, or a
+ * runtime boolean: the spawn becomes a ternary on the flag, its shell arm
+ * running Node's `[file, ...args].join(" ")` through /bin/sh -c — the
+ * portable idiom cannot be fenced on one platform, so the runtime arm
+ * implements Node's exact command building, while the literal `true` keeps
+ * its "put the complete command in the first argument" fence), and
+ * `windowsHide` (a POSIX no-op). The bare `{ stdio: "ignore" }` shape keeps
+ * its historical cp.spawn lowering. */
 export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
@@ -1175,13 +1188,14 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   }
 
   const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
-  // Per-slot stdio modes (scr_child.c: 0 ignore, 1 inherit, 2 fd) and
-  // the out/err fd expressions for mode 2 (the daemon-log idiom:
-  // stdio: ["ignore", logFd, logFd]).
+  // Per-slot stdio modes (scr_child.c: 0 ignore, 1 inherit, 2 fd, 3 pipe)
+  // and the out/err fd expressions for mode 2 (the daemon-log idiom:
+  // stdio: ["ignore", logFd, logFd]). A slot whose TYPE is a union of the
+  // supported literals carries a runtime mode expression (stdioModeExpr in
+  // spawn, stdioModeChain in spawnSync).
   let sawStdio = false;
-  // A slot may be a runtime expression (a conditional over the literals, or
-  // a read union-typed as them), so each mode is an IrExpr: a literal here,
-  // the mapped expression there, bound at its member's position.
+  // A slot may be a runtime expression (a union of the three literals), so
+  // each mode is an IrExpr: a literal here, the mapped expression there.
   let inMode: IrExpr = numLit(0, loc);
   let outMode: IrExpr = numLit(0, loc);
   let errMode: IrExpr = numLit(0, loc);
@@ -1270,16 +1284,11 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           // "pipe" (child.stdin/stdout/stderr); stdout/stderr also accept
           // a number-typed fd (an openSync result — dup2'd into the child).
           // A slot EXPRESSION whose type is a union of the three literals
-          // (`useStdin ? "pipe" : "ignore"`) evaluates once at its member's
-          // position and maps to its mode at the call.
+          // (`useStdin ? "pipe" : "ignore"`) evaluates once into a hidden
+          // local and maps to its mode at the call.
           if (ts.isArrayLiteralExpression(m.value) && m.value.elements.nodes.length === 3) {
             const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
               const t = lowerer.typeOf(el);
-              const setMode = (m: IrExpr): void => {
-                if (which === 0) inMode = m;
-                else if (which === 1) outMode = m;
-                else errMode = m;
-              };
               if (t.isStringLiteralType()) {
                 if (t.value !== "ignore" && t.value !== "inherit" && t.value !== "pipe") {
                   lowerer.noLowering(
@@ -1288,18 +1297,19 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                     '"ignore", "inherit", "pipe", and number output fds are the supported stdio slots',
                   );
                 }
-                setMode(numLit(spawnMode(t.value), loc));
+                const mode = numLit(t.value === "inherit" ? 1 : t.value === "pipe" ? 3 : 0, loc);
+                if (which === 0) inMode = mode;
+                else if (which === 1) outMode = mode;
+                else errMode = mode;
                 if (t.value === "pipe") plain = false;
                 return;
               }
-              // A RUNTIME slot value: a conditional over the three
-              // literals (the `commandFromStdin ? "pipe" : "ignore"`
-              // slot) or a read union-typed as them. It binds at its
-              // member's position, so the mode is the value the slot had
-              // there; "pipe" keeps the slot's stream.
-              const runtimeMode = stdioModeValue(lowerer, el, loc, which, spawnMode);
-              if (runtimeMode !== null) {
-                setMode(bind(`%spawnStdio${which}Mode`, runtimeMode));
+              const runtimeMode = stdioModeExpr(lowerer, el, t, which);
+              if (runtimeMode) {
+                const mode = bind(`%spawnStdio${which}Mode`, runtimeMode);
+                if (which === 0) inMode = mode;
+                else if (which === 1) outMode = mode;
+                else errMode = mode;
                 plain = false;
                 return;
               }
@@ -1307,7 +1317,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                 lowerer.noLowering(
                   "spawn with this stdin slot",
                   el,
-                  'stdin takes "pipe", "ignore", or "inherit" — a literal, a conditional over them, or a value typed as a union of them (fd stdin has no lowering)',
+                  'stdin takes "pipe", "ignore", or "inherit" (fd stdin has no lowering)',
                 );
               }
               if (lowerer.mapTypeOf(t)?.kind !== "f64") {
@@ -1335,21 +1345,18 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             break;
           }
           const t = lowerer.typeOf(m.value);
-          const v = t.isStringLiteralType() ? t.value : null;
-          if (v === "pipe" || v === "ignore" || v === "inherit") {
-            const mode = numLit(spawnMode(v), loc);
-            inMode = outMode = errMode = mode;
+          // A scalar union-typed stdio expression feeds all three modes: it
+          // is read once into a hidden local, so a side effect in the
+          // expression runs once and the three modes cannot disagree.
+          const scalarMode = stdioModeExpr(lowerer, m.value, t, 0);
+          if (scalarMode !== null) {
+            inMode = outMode = errMode = bind("%spawnStdioMode", scalarMode);
             sawStdio = true;
-            if (v !== "ignore") plain = false;
+            plain = false;
             break;
           }
-          // A RUNTIME scalar: the same value feeds all three slots, so it
-          // binds once here — a later member's expression cannot change the
-          // modes — and only a value read without side effects per
-          // comparison (not a conditional, whose test would run three
-          // times) can carry it.
-          const scalarMode = stdioModeValue(lowerer, m.value, loc, 0, spawnMode, true);
-          if (scalarMode === null) {
+          const v = t.isStringLiteralType() ? t.value : null;
+          if (v !== "pipe" && v !== "ignore" && v !== "inherit") {
             lowerer.noLowering(
               "spawn with this stdio option",
               m.value,
@@ -1357,10 +1364,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                 "(or a 3-tuple of those and number output fds)",
             );
           }
-          const scalarBound = bind("%spawnStdioMode", scalarMode);
-          inMode = outMode = errMode = scalarBound;
+          const mode = numLit(v === "inherit" ? 1 : v === "pipe" ? 3 : 0, loc);
+          inMode = outMode = errMode = mode;
           sawStdio = true;
-          plain = false;
+          if (v !== "ignore") plain = false;
           break;
         }
         case "detached": {
@@ -1440,12 +1447,12 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   if (plain) {
     return { kind: "libCall", fn: "cp.spawn", args: [cmd, argv], type: CHILD_T, loc };
   }
-  const spawnOpts = (file: IrExpr, args: IrExpr, shellFlag: IrExpr): IrExpr => ({
+  const callOf = (callCmd: IrExpr, callArgs: IrExpr, shellFlag: IrExpr = shell): IrExpr => ({
     kind: "libCall",
     fn: "cp.spawnOpts",
     args: [
-      file,
-      args,
+      callCmd,
+      callArgs,
       inMode,
       outMode,
       errMode,
@@ -1463,7 +1470,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   // A runtime `shell` takes the tail below even when its value folded to a
   // constant and bound nothing: `shell` here is still the default, and
   // returning with it would run the command line as a file name.
-  if (valuePrelude.length === 0 && shellRuntime === null) return spawnOpts(cmd, argv, shell);
+  if (valuePrelude.length === 0 && shellRuntime === null) return callOf(cmd, argv);
   // The bound member values were collected in source order; the command and
   // the arguments precede them, so an earlier value that changes a later
   // one's input is seen as in Node.
@@ -1494,7 +1501,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     return {
       kind: "seqExpr",
       stmts,
-      result: spawnOpts(
+      result: callOf(
         { kind: "ternary", cond: shellRuntime, then: joined, else_: callCmd, type: STRING, loc },
         {
           kind: "ternary",
@@ -1510,13 +1517,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       loc,
     };
   }
-  return {
-    kind: "seqExpr",
-    stmts,
-    result: spawnOpts(callCmd, callArgs, shell),
-    type: CHILD_T,
-    loc,
-  };
+  return { kind: "seqExpr", stmts, result: callOf(callCmd, callArgs), type: CHILD_T, loc };
 }
 
 /** `fork(staticModulePath, args?, options?)` embeds the selected program

@@ -164,11 +164,17 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // A generator that binds its parameters at the call (scr_gen_bind.c).
   unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
+  // A generator function that reads `this` (scr_gen_receiver.c).
+  unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
   // argument is the SCR_FS_FLAGS build of scr_fs_cp.c.
   unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
+  // The BYTE-data spellings of the options write and fs.promises.writeFile
+  // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
+  // program that writes no byte payload keeps both objects unchanged.
+  unit((u) => u.opts.fsBytesWrites === true, "scr_fs_bytes_write.c"),
   // string_decoder's checked-dynamic chunk forms, beside their typed twins.
   unit((u) => u.opts.strdecDyn === true, "scr_bytes_strdec_dyn.c"),
   // BigIntStats member reads (`statSync(p, { bigint: true })` integers and
@@ -389,8 +395,14 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // ChildProcess listener removal (off/removeListener) and signalCode.
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
+  // The spawnSync capture Buffers (spawnRes.stdoutBytes/stderrBytes).
+  unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
   // Object.isExtensible and Object.isSealed of a value typed dynamically.
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
+  // Reflect.getPrototypeOf's primitive-target check.
+  unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
+  // `delete` of a key a record's type does not declare.
+  unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
@@ -406,8 +418,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
-  // fs writes that pass an options record or Uint8Array data.
-  unit((u) => u.opts.fsWriteForms === true, "scr_fs_write_forms.c"),
+  // appendFileSync with a creation mode.
+  unit((u) => u.opts.fsAppendMode === true, "scr_fs_append_mode.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
   // epoll on Linux, WSAPoll on Windows — each TU is empty off its
   // platform, so all three link whenever a poller-using unit does and

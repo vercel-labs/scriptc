@@ -160,7 +160,7 @@ declare module "fs/promises" {
   ): Promise<void>;
   export function writeFile(
     path: string | URL,
-    data: string,
+    data: string | Uint8Array,
     encoding: "utf8" | "utf-8",
   ): Promise<void>;
   export function mkdir(

@@ -823,6 +823,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
+  "dyn.reflectGetPrototypeTarget",
   "dyn.hasKeyComputed",
   // `… in globalThis` over a name the runtime does not provide throws
   "dyn.globalHas",
@@ -846,6 +847,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.throwReadOnly",
   "class.throwNotExtensible",
   "record.throwFrozen",
+  // `delete r.k` of a key the record's kept source holds throws Node's
+  // TypeError on a frozen record in strict code.
+  "record.sourceDelete",
   "dyn.toString",
   "dyn.valueOf",
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run
@@ -1059,6 +1063,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
   "fs.writeFileSyncBytes",
+  "fs.writeFileSyncBytesFlags",
   "fs.writeFileSyncFd",
   "fs.appendFileSyncBytes",
   "fs.appendFileModeSync",

@@ -25,7 +25,6 @@ import {
   lowerFsRemoveCall,
   lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
-  lowerFsWriteDataOptionsCall,
   lowerFsWriteOptionsCall,
   lowerFsReadPathCall,
 } from "./filesystem-calls.js";
@@ -45,6 +44,7 @@ import {
   F64,
   type IrExpr,
   type IrLibFn,
+  type IrType,
   STRING,
   type SrcLoc,
   arrayOf,
@@ -385,20 +385,37 @@ export function lowerBuiltinModuleCall(
       loc,
     };
   }
-  // fs/promises appendFile/writeFile over byte data, and writeFile over a
-  // string|Uint8Array union: the data kind picks the runtime entry (an
-  // append never truncates, a write never appends). String data keeps the
-  // generic path below.
+  // The byte-data two-argument forms: appendFile appends, writeFile
+  // truncates (the same difference the string forms have).
   if (
     bi.module === "fs/promises" &&
     (bi.member === "appendFile" || bi.member === "writeFile") &&
+    expr.arguments.nodes.length === 2 &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "bytes"
+  ) {
+    const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
+    if (lowered) return lowered;
+  }
+  // writeFile(path, data) over a `string | Uint8Array` payload: the live
+  // tag picks the string or the byte write, as the three-argument form
+  // does. Without this the data is converted to a string, which throws at
+  // run time when the value is bytes.
+  if (
+    bi.module === "fs/promises" &&
+    bi.member === "writeFile" &&
     expr.arguments.nodes.length === 2
   ) {
-    const dataKind = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind;
-    if (dataKind === "bytes" || (bi.member === "writeFile" && dataKind === "union")) {
-      const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
-      if (lowered) return lowered;
-    }
+    const dataIr = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!));
+    const arms =
+      dataIr?.kind === "union" ? (lowerer.unions.get(dataIr.unionId)?.arms ?? null) : null;
+    const isBytes = (arm: IrType): boolean => arm.kind === "bytes" && arm.elem === "u8";
+    if (
+      arms !== null &&
+      arms.some((arm) => arm.kind === "string") &&
+      arms.some(isBytes) &&
+      arms.every((arm) => arm.kind === "string" || isBytes(arm))
+    )
+      return lowerFsWriteOptionsCall(lowerer, expr, loc, true);
   }
   // writeFileSync(fd, data): Node accepts an open descriptor where it
   // accepts a path. Routed by the FIRST ARGUMENT's static type, like
@@ -429,18 +446,12 @@ export function lowerBuiltinModuleCall(
   const syncWriteOptions = bi.module === "fs" && bi.member === "writeFileSync";
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
   if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
-    if (promiseWriteOptions) {
-      // Byte and string|Uint8Array data take the entry its arm selects;
-      // only string data reaches the string lowerings.
-      const dataKind = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind;
-      if (dataKind === "bytes" || dataKind === "union") {
-        return lowerFsWriteDataOptionsCall(lowerer, expr, loc);
-      }
-    }
     return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
   }
-  // appendFileSync(p, data, options): the append disposition with the
-  // option's creation mode.
+  // appendFileSync(p, data, options): only the encoding can be lowered
+  // here (utf8 is what the runtime appends anyway; the flag a plain append
+  // already uses); `mode` and any other flag keep their fence, since they
+  // change what an append creates.
   if (bi.module === "fs" && bi.member === "appendFileSync" && expr.arguments.nodes.length === 3) {
     return lowerFsAppendOptionsCall(lowerer, expr, loc);
   }

@@ -62,11 +62,15 @@ export const BASE_RUNTIME_SOURCES = [
 export const OPTIONAL_RUNTIME_SOURCES = [
   // The call-time parameter bind of a generator (fn.generator.bindAtCall).
   ["scr_gen_bind.c", "genBind"],
+  // The receiver a generator function's body reads (dyn.generatorThis).
+  ["scr_gen_receiver.c", "genReceiver"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
   // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
   ["scr_fs_flags.c", "fsFlags"],
+  // The BYTE-data spellings of the option write and fs.promises.writeFile.
+  ["scr_fs_bytes_write.c", "fsBytesWrites"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
   // typed twins so a typed program keeps that object byte for byte.
   ["scr_bytes_strdec_dyn.c", "strdecDyn"],
@@ -202,9 +206,18 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Object.isExtensible and Object.isSealed of a value typed dynamically; a
   // unit of its own so scr_json.c keeps its layout for every other program.
   ["scr_dyn_integrity.c", "dynIntegrityQueries"],
+  // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
+  // scr_json.c keeps its layout for every program that never reflects.
+  ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // `delete` of a key a record's type does not declare, removed from the
+  // record's kept source; a unit of its own so scr_json.c keeps its layout
+  // for every other program.
+  ["scr_record_source_delete.c", "recordSourceDelete"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
+  // The spawnSync capture Buffers; a unit of its own for the same reason.
+  ["scr_child_capture.c", "spawnCaptureBytes"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.
@@ -217,10 +230,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.
   ["scr_fs_stream_fh.c", all("stream", "fileHandle")],
-  // fs writes that pass an options record or Uint8Array data; a unit of its
-  // own so scr_lib.c's, scr_bytes_io.c's and scr_async.c's layout stays put
-  // for every other program.
-  ["scr_fs_write_forms.c", "fsWriteForms"],
+  // appendFileSync with a creation mode; a unit of its own so scr_lib.c's
+  // layout stays put for every other program.
+  ["scr_fs_append_mode.c", "fsAppendMode"],
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],
   ["scr_loop_wsapoll.c", any("netEffective", "dgram")],

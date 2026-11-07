@@ -21,6 +21,8 @@ import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
+import { llvmBytes, wtf8Bytes } from "../literals.js";
+import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
 import { CHECKED_INT32_MIN_LENGTH } from "../../ir/int32-arrays.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitStringParts, numberPart, stringParts } from "./string-construction.js";
@@ -1070,6 +1072,10 @@ const RESERVE_LIMIT = 2 ** 20;
  * (SCR_ARR_SMALL_SLOTS, scr_array.c). */
 const SMALL_ARRAY_SLOTS = 3;
 
+/** How many values of an array literal one scr_arr_push_many call takes
+ * from the frame's buffer. */
+const LITERAL_BATCH = 64;
+
 /** The capacity scr_arr_reserve_len would reserve for `length` on an empty
  * array: the length truncated when it is at least 1 and at most
  * RESERVE_LIMIT, else 0. */
@@ -1100,6 +1106,68 @@ function numericLiteral(expr: IrExpr): number | null {
   return null;
 }
 
+/** A block of immortal string literals, one per distinct string of `values`
+ * in first-use order, and the byte offset of each value's literal in it.
+ * Every literal has the layout of the module's interned ones: the immortal
+ * reference count, the byte length and the capacity word (literalCapWord),
+ * each a little-endian word of the target, then the bytes and a NUL, padded
+ * to a word. */
+function literalBlock(
+  values: readonly string[],
+  size: string,
+): { bytes: Uint8Array; offsets: number[] } {
+  const word = size === "i64" ? 8 : 4;
+  const placed = new Map<string, number>();
+  const parts: Uint8Array[] = [];
+  const offsets: number[] = [];
+  let length = 0;
+  for (const text of values) {
+    let at = placed.get(text);
+    if (at === undefined) {
+      at = length;
+      placed.set(text, at);
+      const bytes = wtf8Bytes(text);
+      const cap = BigInt(word === 8 ? literalCapWord(bytes) : literalCapWord32(bytes));
+      const literal = new Uint8Array(Math.ceil((3 * word + bytes.length + 1) / word) * word);
+      const words = [-1n, BigInt(bytes.length), cap];
+      for (let w = 0; w < 3; w++) {
+        const bits = BigInt.asUintN(word * 8, words[w]!);
+        for (let b = 0; b < word; b++)
+          literal[w * word + b] = Number((bits >> BigInt(8 * b)) & 0xffn);
+      }
+      literal.set(bytes, 3 * word);
+      parts.push(literal);
+      length += literal.length;
+    }
+    offsets.push(at);
+  }
+  const bytes = new Uint8Array(length);
+  let at = 0;
+  for (const part of parts) {
+    bytes.set(part, at);
+    at += part.length;
+  }
+  return { bytes, offsets };
+}
+
+/** The values of the number literals from `elems[start]` up to the next
+ * element that is not one, when there are more of them than one batch of
+ * array values holds (emitArrayValues stores up to 64 and makes one call);
+ * null for a shorter run, which keeps the batch. */
+function numberRun(
+  elems: readonly IrExpr[],
+  start: number,
+  spreads: ReadonlySet<number>,
+): number[] | null {
+  const values: number[] = [];
+  for (let i = start; i < elems.length && !spreads.has(i); i++) {
+    const value = numericLiteral(elems[i]!);
+    if (value === null) break;
+    values.push(value);
+  }
+  return values.length > LITERAL_BATCH ? values : null;
+}
+
 /** The elements of `e` when they are all numeric literals whose storage is
  * the literal's data: for an int32 array each an exact int32 that is not -0
  * (the values its slots hold). */
@@ -1127,6 +1195,7 @@ export function emitContainerExpr(
     | "arrayGet"
     | "arrayHas"
     | "arrayState"
+    | "constCell"
     | "arrIntrinsic"
     | "bytesNew"
     | "bytesIntrinsic"
@@ -1138,6 +1207,60 @@ export function emitContainerExpr(
 ): LlValue {
   const B = host.B;
   switch (e.kind) {
+    case "constCell": {
+      // The index is the counter of the loop that builds the rows
+      // (ir/literal-tables.ts): an integer below the column's length.
+      const index = host.emitExpr(e.index);
+      const size = host.sizeType;
+      const integer = index.integer;
+      let row: string;
+      if (integer !== undefined && integer.type === size) row = integer.name;
+      else {
+        row = B.tmp();
+        if (integer === undefined) B.line(`${row} = fptoui double ${index.name} to ${size}`);
+        else
+          B.line(
+            `${row} = ${integer.type === "i32" ? "zext" : "trunc"} ${integer.type} ${integer.name} to ${size}`,
+          );
+      }
+      const cell = (n: number, type: string, column: string): string => {
+        const slot = B.tmp();
+        const value = B.tmp();
+        B.line(
+          `${slot} = getelementptr inbounds [${n} x ${type}], ptr ${column}, ${size} 0, ${size} ${row}`,
+        );
+        B.line(`${value} = load ${type}, ptr ${slot}`);
+        return value;
+      };
+      if (e.strings === undefined) {
+        const numbers = (e.numbers ?? []).map((v) => `double ${f64Lit(v)}`);
+        const n = numbers.length;
+        const column = host.imageData(`internal constant [${n} x double] [${numbers.join(", ")}]`);
+        return { name: cell(n, "double", column), type: e.type };
+      }
+      // Strings: the column is the offset of each row's literal in a block
+      // of immortal literals laid out as the module's own (emit-module.ts),
+      // one per distinct string. Offsets need no relocation, which a column
+      // of pointers would need per row.
+      const block = literalBlock(e.strings, size);
+      const n = block.offsets.length;
+      const offset = cell(
+        n,
+        "i32",
+        host.imageData(
+          `internal constant [${n} x i32] [${block.offsets.map((o) => `i32 ${o}`).join(", ")}]`,
+        ),
+      );
+      const literals = host.imageData(
+        `internal global [${block.bytes.length} x i8] c"${llvmBytes(block.bytes, false)}", align 8`,
+      );
+      const wide = size === "i64" ? B.tmp() : offset;
+      if (size === "i64") B.line(`${wide} = zext i32 ${offset} to i64`);
+      const literal = B.tmp();
+      B.line(`${literal} = getelementptr inbounds i8, ptr ${literals}, ${size} ${wide}`);
+      host.markImmortal({ name: literal, type: e.type });
+      return host.own({ name: host.retainFrame(literal, e.type), type: e.type });
+    }
     case "arrayLit": {
       // Batch adjacent plain elements. Spread boundaries flush the batch
       // so every source is copied before later expressions can mutate it.
@@ -1247,12 +1370,15 @@ export function emitContainerExpr(
       const flush = (): void => {
         if (pending.length > 1 && buffer === undefined) {
           buffer = B.tmp();
-          B.entryAllocas.push(`${buffer} = alloca [${Math.min(e.elems.length, 64)} x i64]`);
+          B.entryAllocas.push(
+            `${buffer} = alloca [${Math.min(e.elems.length, LITERAL_BATCH)} x i64]`,
+          );
         }
         if (pending.length > 0) emitArrayValues(host, arr, acc, elem, pending, false, buffer);
         pending = [];
       };
-      e.elems.forEach((el, i) => {
+      for (let i = 0; i < e.elems.length; i++) {
+        const el = e.elems[i]!;
         if (spreadSet.has(i)) {
           flush();
           const v = host.emitExpr(el);
@@ -1264,11 +1390,27 @@ export function emitContainerExpr(
           );
           // A literal with spreads is never an int32 allocation.
           host.emitArrayCopyLoop(arr, v.name, runtimeAccess(acc));
-          return;
+          continue;
+        }
+        // A run of number literals too long for one batch is appended from
+        // the program image in one call: the slots are the same double bits
+        // the batches store, so the array is the one the batches build.
+        const run = acc === "f64" || acc === "i32" ? numberRun(e.elems, i, spreadSet) : null;
+        if (run !== null) {
+          flush();
+          const data = host.imageData(
+            `internal constant [${run.length} x double] [${run.map((v) => `double ${f64Lit(v)}`).join(", ")}], align 8`,
+          );
+          host.declare(`declare double @scr_arr_push_many(ptr, ${host.sizeType}, ptr)`);
+          B.line(
+            `${B.tmp()} = call double @scr_arr_push_many(ptr ${arr}, ${host.sizeType} ${run.length}, ptr ${data})`,
+          );
+          i += run.length - 1;
+          continue;
         }
         pending.push(host.emitExpr(el));
-        if (pending.length === 64) flush();
-      });
+        if (pending.length === LITERAL_BATCH) flush();
+      }
       flush();
       return out;
     }

@@ -8748,6 +8748,50 @@ function recordAssignHelper(
   return helper;
 }
 
+/** `Object.create(...)` written where a record type is expected (a declared
+ * binding, parameter or return type, or an `as` assertion). The created
+ * object inherits its prototype's members and can hold non-enumerable and
+ * accessor properties; a record holds its declared members as its own
+ * enumerable fields, so the conversion would answer own-key tests,
+ * `Object.keys`, JSON, `Object.getPrototypeOf` and later writes to the
+ * prototype differently from Node. The created object stays exact as an
+ * untyped value. `Object.create(null)` with no descriptors is an empty
+ * object, which an index-signature record holds as it is. */
+function refuseObjectCreateAsRecord(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  nullProto: boolean,
+): void {
+  let node: ts.Node = call;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  const asserted =
+    (ts.isAsExpression(parent) || ts.isTypeAssertion(parent)) && parent.expression === node
+      ? lowerer.checker.getTypeFromTypeNode(parent.type)
+      : undefined;
+  const destination = asserted ?? lowerer.checker.getContextualType(call);
+  if (destination === undefined || (destination.flags & ts.TypeFlags.Any) !== 0) return;
+  let mapped: IrType | null;
+  try {
+    mapped = lowerer.mapTypeOf(destination);
+  } catch {
+    return;
+  }
+  const records = (
+    mapped?.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped]
+  ).filter((arm): arm is IrType & { kind: "record" } => arm?.kind === "record");
+  if (records.length === 0) return;
+  const empty = nullProto && call.arguments.nodes.length === 1;
+  if (empty && records.every((arm) => lowerer.shapes.get(arm.shapeId)?.indexValue !== undefined))
+    return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    `an Object.create result as a '${lowerer.fmt(mapped!)}' value (a typed object holds its declared members as its own properties: it has no prototype to inherit from and no property attributes)`,
+    "keep the result untyped ('unknown', or 'Record<string, unknown>' for keyed access), or build the object with a literal or a spread",
+  );
+}
+
 /** The `Iterator` global's statics (ES2025): `Iterator.from` over a typed
  * built-in iterable lowers (lowerIteratorFromCall); every other member,
  * and other arguments, fence with the working spelling named instead of
@@ -8980,6 +9024,50 @@ export function isPlainDescriptorMap(
     shape.indexValue === undefined &&
     shape.fields.every((field) => field.type.kind === "record")
   );
+}
+
+/** A descriptor map as Object.defineProperties and Object.create read it:
+ * an ordinary object. A record literal written at the call is rebuilt as an
+ * untyped object with the same members in the same order (nothing else
+ * holds the literal, so its own identity is unobservable); each member, a
+ * descriptor, is boxed as any other typed value is, so the `value`, `get`
+ * and `set` it carries stay the program's own objects. Null when the
+ * expression is anything else, which the caller passes as it is. */
+function descriptorMapLiteral(
+  lowerer: Lowerer,
+  source: ts.Expression,
+  descriptors: IrExpr,
+): IrExpr | null {
+  if (descriptors.kind !== "dynFrom" || descriptors.liveRef !== true) return null;
+  const literal = descriptors.value;
+  if (literal.kind !== "recordLit") return null;
+  // An accessor member is a reserved `%get:`/`%set:` slot holding a closure,
+  // not a property name. The rebuilt object has no accessor form, and
+  // calling the getter while building it would run it before the later
+  // members evaluate, so the form is refused.
+  if (literal.fields.some((field) => field.name.startsWith("%"))) {
+    let node: ts.Expression = source;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    const accessor = ts.isObjectLiteralExpression(node)
+      ? node.properties.nodes.find(
+          (member) => ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member),
+        )
+      : undefined;
+    lowerer.unsupported(
+      "SC1090",
+      accessor ?? node,
+      "a get or set accessor in a property descriptor map literal",
+      "write the descriptor as the member's value ('name: { get() { ... }, enumerable: true }' defines an accessor property)",
+    );
+  }
+  if (literal.fields.some((field) => field.value.kind === "fieldAbsent")) return null;
+  const loc = descriptors.loc;
+  const fields = literal.fields.map((field) => ({
+    key: { kind: "strLit", value: field.name, type: STRING, loc } as IrExpr,
+    value: lowerer.coerceToExpected(field.value, DYN),
+  }));
+  if (fields.some((field) => field.value.type.kind !== "dyn")) return null;
+  return { kind: "dynObjLit", fields, type: DYN, loc };
 }
 
 function lowerObjectStaticCall(
@@ -9256,6 +9344,7 @@ function lowerObjectStaticCall(
     let protoNode: ts.Expression = call.arguments.nodes[0]!;
     while (ts.isParenthesizedExpression(protoNode)) protoNode = protoNode.expression;
     const nullProto = protoNode.kind === ts.SyntaxKind.NullKeyword;
+    refuseObjectCreateAsRecord(lowerer, call, nullProto);
 
     if (nullProto && call.arguments.nodes.length === 1) {
       return { kind: "libCall", fn: "dyn.objCreateNullProto", args: [], type: DYN, loc };
@@ -9292,16 +9381,20 @@ function lowerObjectStaticCall(
     if (proto.type.kind === "dyn") {
       if (call.arguments.nodes.length === 1)
         return { kind: "libCall", fn: "dyn.objCreate", args: [proto], type: DYN, loc };
-      const descriptors = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+      const written = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+      const rebuilt = descriptorMapLiteral(lowerer, call.arguments.nodes[1]!, written);
+      const descriptors = rebuilt ?? written;
       if (descriptors.type.kind === "dyn")
         return {
           kind: "libCall",
           // A descriptor map built by an expression, or a literal map with a
           // descriptor built by one, may hold an array, a function or an
-          // object with inherited fields.
-          fn: isPlainDescriptorMap(descriptors, (id) => lowerer.shapes.get(id))
-            ? "dyn.objCreateWithProperties"
-            : "dyn.objCreateWithPropertiesShapes",
+          // object with inherited fields. A rebuilt TypeScript literal's
+          // descriptors are typed records, read the same way.
+          fn:
+            rebuilt === null && isPlainDescriptorMap(descriptors, (id) => lowerer.shapes.get(id))
+              ? "dyn.objCreateWithProperties"
+              : "dyn.objCreateWithPropertiesShapes",
           args: [proto, descriptors],
           type: DYN,
           loc,
@@ -9828,16 +9921,19 @@ function lowerObjectStaticCall(
       if (boxed) target = boxed;
     }
     if (target?.type.kind === "dyn") {
-      const descs = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+      const written = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+      const rebuilt = descriptorMapLiteral(lowerer, call.arguments.nodes[1]!, written);
+      const descs = rebuilt ?? written;
       if (descs.type.kind === "dyn") {
         return {
           kind: "libCall",
           // As for Object.create above: a descriptor map built by an
-          // expression, or a literal map with a descriptor built by one, takes
-          // the any-object entry point.
-          fn: isPlainDescriptorMap(descs, (id) => lowerer.shapes.get(id))
-            ? "dyn.defineProps"
-            : "dyn.definePropsShapes",
+          // expression, a literal map with a descriptor built by one, or a
+          // rebuilt TypeScript literal takes the any-object entry point.
+          fn:
+            rebuilt === null && isPlainDescriptorMap(descs, (id) => lowerer.shapes.get(id))
+              ? "dyn.defineProps"
+              : "dyn.definePropsShapes",
           args: [target, descs],
           type: DYN,
           loc: locOf(call),

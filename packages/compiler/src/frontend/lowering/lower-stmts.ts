@@ -12609,7 +12609,8 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     !privateSplit &&
     !awaitArray &&
     elementType.kind !== "dyn" &&
-    lowerer.presentElementLoops.has(stmt);
+    lowerer.presentElementLoops.has(stmt) &&
+    !lowerer.instanceLoopHoldsMissing(stmt);
   const yieldedT =
     tupleSource === null && arrayUnionSource === null && !privateSplit && !presentElements
       ? arrayValueType(lowerer, elementType)

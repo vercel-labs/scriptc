@@ -3274,11 +3274,35 @@ export class Lowerer {
   /** for-of loops over arrays that can hold neither holes nor undefined:
    * each pass reads the element payload directly. */
   readonly presentElementLoops = new Set<ts.ForOfStatement>();
+  /** The loops of presentElementLoops whose arrays come from generic
+   * arrays, with those arrays. A generic array has no element key until an
+   * instance binds its type parameters, so the analysis judged the loop
+   * without the holes and undefined values recorded under the key each
+   * instance gives it; the instance asks again (instanceLoopHoldsMissing). */
+  readonly instanceElementLoops = new Map<ts.ForOfStatement, readonly ts.Expression[]>();
+  /** The optional-read analysis's final element facts, for questions that
+   * only lowering can ask: whether one of a loop's generic arrays can hold
+   * a hole or undefined under the type-parameter bindings installed when it
+   * is asked, and whether arrays with an element key can. */
+  elementFacts: {
+    sourcesHoldMissing(sources: readonly ts.Expression[]): boolean;
+    keyHoldsMissing(key: string): boolean;
+  } | null = null;
   /** Element keys (typeKey of the element type) of native arrays that can
    * hold elements outside their element type, stored through dynamic views
    * (SCR_ARR_FOREIGN); "*" for every array. Empty unless the program stores
    * values through a dynamic value that can view a native array. */
   foreignElementKeys: ReadonlySet<string> = new Set();
+  /** A for-of loop the analysis judged present reads, where it lowers now,
+   * a generic array whose element key can hold a hole or undefined. */
+  instanceLoopHoldsMissing(stmt: ts.ForOfStatement): boolean {
+    const sources = this.instanceElementLoops.get(stmt);
+    return sources !== undefined && (this.elementFacts?.sourcesHoldMissing(sources) ?? true);
+  }
+  /** Native arrays with this element type can hold a hole or undefined. */
+  elementsMayBeMissing(elem: IrType): boolean {
+    return this.elementFacts?.keyHoldsMissing(typeKey(elem)) ?? true;
+  }
   /** The fs/promises glob() call lowerForOf is lowering as a for await
    * head; other glob() calls have no lowering. */
   fspGlobHead: ts.Node | null = null;
@@ -4966,6 +4990,7 @@ export class Lowerer {
       checkedTable("runtimeOptionalAssertions", () => this.runtimeOptionalAssertions.size),
       checkedTable("presentElementCalls", () => this.presentElementCalls.size),
       checkedTable("presentElementLoops", () => this.presentElementLoops.size),
+      checkedTable("instanceElementLoops", () => this.instanceElementLoops.size),
       checkedTable("errorFirstLiterals", () => this.errorFirstLiterals.size),
       checkedTable("anySymbols", () => this.anySymbols.size),
       checkedTable("knownErrors", () => this.knownErrors.size),
@@ -5159,6 +5184,7 @@ export class Lowerer {
     "inferredCollectionTypes",
     "partialAssertions",
     "foreignElementKeys",
+    "elementFacts",
     // caches made when first needed
     "nanCodedReads",
     "mentionsProcessVersions",
@@ -9126,11 +9152,15 @@ export class Lowerer {
           throw e;
         }
       }, null);
+    // Set while an instance asks about its own arrays after the fixed
+    // point (elementFacts.sourcesHoldMissing): an implicitly typed parameter
+    // has the type its instance binds, not the one cached here.
+    let instanceQuery = false;
     const arrayKeysUnsafe = (node: ts.Expression): readonly string[] | null => {
-      let checkerType = checkerTypes.get(node);
+      let checkerType = instanceQuery ? undefined : checkerTypes.get(node);
       if (checkerType === undefined) {
         checkerType = this.typeOf(node);
-        checkerTypes.set(node, checkerType);
+        if (!instanceQuery) checkerTypes.set(node, checkerType);
       }
       const e = peel(node);
       // A binding the prepass widened stores its widened array ABI.
@@ -9180,6 +9210,60 @@ export class Lowerer {
         keys.push(key);
       }
       return keys;
+    };
+    // Calls by whether their callee is generic: a function, method or
+    // constructor whose declaration, or a declaration around it (a function,
+    // a class, an interface, a type alias), has type parameters. Such a body
+    // is judged without its instances' element keys.
+    const genericCallees = new Map<ts.CallExpression | ts.NewExpression, boolean>();
+    const declaresTypeParameters = (declaration: ts.Node): boolean => {
+      const own = (node: ts.Node): boolean =>
+        (ts.isFunctionLike(node) ||
+          ts.isClassDeclaration(node) ||
+          ts.isClassExpression(node) ||
+          ts.isInterfaceDeclaration(node) ||
+          ts.isTypeAliasDeclaration(node)) &&
+        (node.typeParameters?.nodes.length ?? 0) > 0;
+      if (
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        own(peel(declaration.initializer))
+      )
+        return true;
+      for (let node: ts.Node | undefined = declaration; node; node = node.parent)
+        if (own(node)) return true;
+      return false;
+    };
+    const mappedArrayHolder = (node: ts.Node): IrType | null =>
+      panicSafe(() => {
+        try {
+          return this.mapTypeOf(this.typeOf(node));
+        } catch (e) {
+          if (e instanceof PoisonError) return null;
+          throw e;
+        }
+      }, null);
+    // Element keys of the native arrays a value of `type` is or directly
+    // holds: through arrays, unions, promises, tuples, and the parameters
+    // and result of a function value. Records and class instances are not
+    // entered: a generic body reads their fields by their declared types.
+    const reachableElementKeys = (type: IrType | null, keys: Set<string>, depth = 0): void => {
+      if (!type || depth > 4) return;
+      if (type.kind === "array") {
+        if (type.elem.kind !== "dyn") keys.add(typeKey(type.elem));
+        reachableElementKeys(type.elem, keys, depth + 1);
+      } else if (type.kind === "union") {
+        for (const arm of this.unions.get(type.unionId)?.arms ?? [])
+          reachableElementKeys(arm, keys, depth + 1);
+      } else if (type.kind === "promise") reachableElementKeys(type.inner, keys, depth + 1);
+      else if (type.kind === "record") {
+        const shape = this.shapes.get(type.shapeId);
+        if (shape?.tuple === true)
+          for (const field of shape.fields) reachableElementKeys(field.type, keys, depth + 1);
+      } else if (type.kind === "func") {
+        for (const param of type.params) reachableElementKeys(param, keys, depth + 1);
+        reachableElementKeys(type.ret, keys, depth + 1);
+      }
     };
     const ownership = new ArrayOwnership(sourceFiles, {
       symbolOf,
@@ -9573,6 +9657,48 @@ export class Lowerer {
       ownerOf: (node) => ownership.ownerOf(node),
       allocationOwner: (node) => ownership.allocationOwner(node),
       arrayKeys: arrayKeysOf,
+      instanceTyped: (node) => {
+        const type = typeOrNull(node);
+        return type !== null && (type.flags & (ts.TypeFlags.Instantiable | ts.TypeFlags.Any)) !== 0;
+      },
+      genericCallKeys: (call) => {
+        const callee = peel(call.expression);
+        if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
+        let generic = genericCallees.get(call);
+        if (generic === undefined) {
+          // The standard library's generic methods are judged by what they
+          // do (ArrayElementStates), not by this rule.
+          const symbol = callableSymbolOf(callee);
+          generic =
+            symbol !== null &&
+            (symbol.declarations ?? []).some(
+              (declaration) =>
+                !this.isStdlibFile(ts.getSourceFileOfNode(declaration)) &&
+                declaresTypeParameters(declaration),
+            );
+          genericCallees.set(call, generic);
+        }
+        if (!generic) return null;
+        const keys = new Set<string>();
+        for (const arg of call.arguments?.nodes ?? [])
+          reachableElementKeys(
+            mappedArrayHolder(ts.isSpreadElement(arg) ? arg.expression : arg),
+            keys,
+          );
+        // A method's receiver and a constructor's instance hold the arrays
+        // their class's type parameters type, one field deep.
+        const instance = ts.isNewExpression(call)
+          ? mappedArrayHolder(call)
+          : ts.isPropertyAccessExpression(callee)
+            ? mappedArrayHolder(callee.expression)
+            : null;
+        if (instance?.kind === "object")
+          for (const field of this.classes.get(instance.className)?.fields.values() ?? [])
+            reachableElementKeys(field, keys);
+        else reachableElementKeys(instance, keys);
+        reachableElementKeys(mappedArrayHolder(call), keys);
+        return [...keys];
+      },
       mayBeUndefined: (node) => {
         if (explicitlyNonNull(node)) return assertedReadMayBeUndefined(node);
         if (mayBeOptional(node)) return true;
@@ -9711,6 +9837,8 @@ export class Lowerer {
     const presentSites = new Map<ts.CallExpression, boolean>();
     // The same for each for-of loop over an array.
     const presentLoops = new Map<ts.ForOfStatement, boolean>();
+    // The generic arrays each present loop's elements come from.
+    const loopSources = new Map<ts.ForOfStatement, readonly ts.Expression[]>();
     const scanSites = new Map<ts.SourceFile, ts.Node[]>();
     const sitesOf = (sf: ts.SourceFile): ts.Node[] => {
       const cached = scanSites.get(sf);
@@ -9760,8 +9888,11 @@ export class Lowerer {
       let changed = false;
       const scan = (node: ts.Node): void => {
         if (elementStates.scan(node)) changed = true;
-        if (ts.isForOfStatement(node))
-          presentLoops.set(node, !elementStates.loopMayYieldUndefined(node));
+        if (ts.isForOfStatement(node)) {
+          const sources = elementStates.loopSources(node);
+          presentLoops.set(node, sources !== null);
+          loopSources.set(node, sources ?? []);
+        }
         // A parameter pattern reads its argument like a declaration's
         // pattern reads its initializer.
         if (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) {
@@ -10499,6 +10630,19 @@ export class Lowerer {
     }
     for (const [site, present] of presentSites) if (present) this.presentElementCalls.add(site);
     for (const [loop, present] of presentLoops) if (present) this.presentElementLoops.add(loop);
+    for (const [loop, sources] of loopSources)
+      if (sources.length > 0) this.instanceElementLoops.set(loop, sources);
+    this.elementFacts = {
+      sourcesHoldMissing: (sources) => {
+        instanceQuery = true;
+        try {
+          return elementStates.sourcesMayHoldMissing(sources);
+        } finally {
+          instanceQuery = false;
+        }
+      },
+      keyHoldsMissing: (key) => elementStates.keyMayHoldMissing(key),
+    };
     this.foreignElementKeys = elementStates.foreignKeys();
     const globalsById = new Map(this.globalsList.map((global) => [global.id, global]));
     for (const [symbol, field] of staticFieldsBySymbol) {

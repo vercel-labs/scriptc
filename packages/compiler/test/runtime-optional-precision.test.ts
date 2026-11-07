@@ -325,3 +325,74 @@ console.log(cold([1, 2, 3]), drain([4, 5]), lookup(new Map([["a", 6]])));
   for (const caller of ["cold", "drain", "lookup"])
     expect(body(llvm, caller)).not.toContain("@scr_union_new");
 });
+
+/** The instances of a generic function, by the element type of their
+ * first parameter, with whether the body tests an element's state. */
+function instanceReads(module: IrModule, name: string): Record<string, boolean> {
+  const reads: Record<string, boolean> = {};
+  for (const fn of module.functions) {
+    if (!fn.name.startsWith(`${name}%`)) continue;
+    const first = fn.params[0]!.type;
+    const element = first.kind === "array" ? first.elem : first;
+    const key = element.kind === "object" ? element.className : element.kind;
+    reads[key] = JSON.stringify(fn.body).includes('"kind":"arrayState"');
+  }
+  return reads;
+}
+
+test("a generic loop is judged with each instance's element type", async () => {
+  // Item arrays can hold a hole; string arrays cannot.
+  const module = await lower(`${ITEM}
+function total<T>(xs: readonly T[], measure: (x: T) => number): number {
+  let sum = 0;
+  for (const x of xs) sum += x === undefined ? 0 : measure(x);
+  return sum;
+}
+const items: Item[] = [];
+items[2] = new Item(3);
+const words: string[] = ["a", "bc"];
+console.log(total(items, weigh), total(words, (word) => word.length));
+`);
+  expect(instanceReads(module, "total")).toEqual({ Item: true, string: false });
+});
+
+test("a generic loop over arrays that never hold undefined reads elements directly", async () => {
+  const module = await lower(`${ITEM}
+function total<T>(xs: readonly T[], measure: (x: T) => number): number {
+  let sum = 0;
+  for (const x of [...xs, ...xs.slice()]) sum += measure(x);
+  const copy = xs.slice();
+  for (const x of copy) sum += measure(x);
+  return sum;
+}
+const items: Item[] = [new Item(2), new Item(3)];
+const words: string[] = ["a", "bc"];
+console.log(total(items, weigh), total(words, (word) => word.length));
+`);
+  expect(instanceReads(module, "total")).toEqual({ Item: false, string: false });
+});
+
+test("an array a generic function builds carries its argument's holes", async () => {
+  // The copy holds the holes as present undefined elements, so the
+  // callback over it takes the element or undefined.
+  const visits = (fill: string): Promise<string[]> =>
+    lower(`${ITEM}
+function clone<T>(xs: readonly T[]): T[] {
+  return [...xs];
+}
+const items: Item[] = [];
+${fill}
+const copy = clone(items);
+let sum = 0;
+copy.forEach((item) => {
+  sum += item === undefined ? 0 : weigh(item);
+});
+console.log(sum);
+`).then((module) =>
+      module.functions
+        .filter((fn) => fn.params.length > 0 && fn.name !== "weigh" && !fn.name.startsWith("clone"))
+        .map((fn) => signature(module, fn.name).replace(/^[^(]*/, "")),
+    );
+  expect(await visits("items[2] = new Item(3);")).toContain("(Item|undefined): void");
+  expect(await visits("items.push(new Item(3));")).toContain("(Item): void");
+});

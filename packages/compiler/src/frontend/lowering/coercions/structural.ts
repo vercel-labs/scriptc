@@ -786,28 +786,39 @@ export function arrayWidthHelper(
   lowerer.valueHelpers.set(key, name);
   const arrT: IrType = { kind: "array", elem: fromElem };
   const outT: IrType = { kind: "array", elem: toElem };
+  const source = varRef("a.0", arrT, loc);
+  const present = (index: IrExpr): IrExpr => ({
+    kind: "bin",
+    op: "===",
+    left: { kind: "arrayState", arr: source, index, type: F64, loc },
+    right: { kind: "numLit", value: 1, type: F64, loc },
+    type: BOOL,
+    loc,
+  });
+  // A number, string or boolean array can hold present undefined elements
+  // (`(T | undefined)[]` stores T): they, and holes, copy as the target's
+  // undefined. So does a missing element of any other array the analysis
+  // knows can hold one. A target with no undefined rejects it with a
+  // TypeError, as the conversion of a stored undefined would.
+  const known = fromElem.kind !== "dyn" && lowerer.elementsMayBeMissing(fromElem);
+  const rejects = known && lowerer.wrappedUndefined(toElem, loc) === null;
   lowerer.liftedFns.push(
     buildArrayConversion(
       name,
       arrT,
       { kind: "arrayLit", elems: [], type: outT, loc },
       (element, index, result) => {
-        let value = lowerer.applyWidthLift(elemLift, element, toElem, loc);
-        // A number, string or boolean array can hold present undefined
-        // elements (`(T | undefined)[]` stores T): they, and holes, copy
-        // as the target's undefined.
-        const missing = primitiveElement(fromElem) ? lowerer.wrappedUndefined(toElem, loc) : null;
+        // A hole of a dynamic array reads as undefined, which the element
+        // conversion accepts or rejects like a stored undefined.
+        const read =
+          fromElem.kind === "dyn" ? arrayValueRead(lowerer, source, index, fromElem, loc) : element;
+        let value = lowerer.applyWidthLift(elemLift, read, toElem, loc);
+        const missing =
+          known || primitiveElement(fromElem) ? lowerer.wrappedUndefined(toElem, loc) : null;
         if (missing !== null)
           value = {
             kind: "ternary",
-            cond: {
-              kind: "bin",
-              op: "===",
-              left: { kind: "arrayState", arr: varRef("a.0", arrT, loc), index, type: F64, loc },
-              right: { kind: "numLit", value: 1, type: F64, loc },
-              type: BOOL,
-              loc,
-            },
+            cond: present(index),
             then: value,
             else_: missing,
             type: toElem,
@@ -823,6 +834,37 @@ export function arrayWidthHelper(
         };
       },
       loc,
+      (index) =>
+        rejects
+          ? [
+              {
+                kind: "if",
+                cond: { kind: "unary", op: "!", operand: present(index), type: BOOL, loc },
+                then: [
+                  {
+                    kind: "throw",
+                    value: {
+                      kind: "libCall",
+                      fn: "error.new",
+                      args: [
+                        {
+                          kind: "strLit",
+                          value: `expected ${lowerer.fmt(toT)} (a missing element of ${lowerer.fmt(fromT)} has no value the target can hold)`,
+                          type: STRING,
+                          loc,
+                        },
+                      ],
+                      type: { kind: "object", className: "%TypeError" },
+                      loc,
+                    },
+                    loc,
+                  },
+                ],
+                else_: [],
+                loc,
+              },
+            ]
+          : [],
     ),
   );
   return name;

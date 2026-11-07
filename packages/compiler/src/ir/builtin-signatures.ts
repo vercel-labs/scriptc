@@ -283,6 +283,9 @@ function buildLibFnSignatures() {
     "dyn.reflectDeleteProperty": { argTypes: [DYN, DYN], result: BOOL },
     /** Reflect.has's target check: Node's TypeError for a primitive. */
     "dyn.reflectHasTarget": { argTypes: [DYN], result: VOID },
+    /** Reflect.getPrototypeOf's target check: Node's TypeError for any
+     * primitive (Object.getPrototypeOf boxes instead). */
+    "dyn.reflectGetPrototypeTarget": { argTypes: [DYN], result: VOID },
     "dyn.hasKeyComputed": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.hasOwnComputed": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.propertyIsEnumerableComputed": { argTypes: [DYN, DYN], result: BOOL },
@@ -3341,6 +3344,10 @@ function buildLibFnSignatures() {
     "child.ref": { argTypes: [CHILD_T], result: VOID },
     "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
     "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
+    /* The Buffer captures (spawnSync without an encoding option): the same
+     * stored bytes as a bytes<u8> value, branded under fsBufferBrand. */
+    "spawnRes.stdoutBytes": { argTypes: [SPAWNRES_T], result: BYTES_U8 },
+    "spawnRes.stderrBytes": { argTypes: [SPAWNRES_T], result: BYTES_U8 },
     /** fs/promises (scr_lib.c over scr_async.c's settled minting): the SAME
      * sync syscalls, wrapped in an ALREADY-SETTLED promise — failure
      * REJECTS (catchable at the await) instead of throwing, so none of
@@ -3682,6 +3689,10 @@ function buildLibFnSignatures() {
     "fs.readFileSyncBytes": { argTypes: [STRING], result: BYTES_U8 },
     "fs.writeFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
     "fs.appendFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
+    /** writeFileSync(path, bytes, { mode, flag }) and its fs/promises
+     * twins: the byte-data spellings of the option write (scr_fs_flags.c's
+     * open(2) with the disposition flag, creation mode at creation only). */
+    "fs.writeFileSyncBytesFlags": { argTypes: [STRING, BYTES_U8, F64, F64], result: VOID },
     "fsp.readFileBytes": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     /** node:zlib (scr_zlib.c — native-toolchain.ts compiles/links it ONLY when these
      * appear on the IR, the regex/libcurl gating precedent): one-shot zlib,
@@ -3806,6 +3817,17 @@ function buildLibFnSignatures() {
     "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.appendFileBytes": {
       argTypes: [STRING, BYTES_U8],
+      result: { kind: "promise", inner: VOID },
+    },
+    /** fs.promises.writeFile(path, bytes): the truncating write, and its
+     * { mode, flag } form — the settled-promise twins of
+     * fs.writeFileSyncBytes and fs.writeFileSyncBytesFlags. */
+    "fsp.writeFileBytes": {
+      argTypes: [STRING, BYTES_U8],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileBytesFlags": {
+      argTypes: [STRING, BYTES_U8, F64, F64],
       result: { kind: "promise", inner: VOID },
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
@@ -4090,7 +4112,11 @@ function buildLibFnSignatures() {
      * super(message) call of an `extends Error` constructor — borrowed
      * receiver (already allocated by the derived class's new) + borrowed
      * message, void; the receiver's type names the builtin class whose name
-     * field to stamp. error.toString: borrowed `%Error`-typed receiver, +1
+     * field to stamp. Both may omit the message: `new Error()` and `super()`
+     * create no own message property. Source constructions take these typed
+     * entries when the message is a native string or absent and no options
+     * argument is passed; every other form takes error.newOptions and
+     * error.ctorOptions. error.toString: borrowed `%Error`-typed receiver, +1
      * string in Node's "name: message" shape. Formatting can invoke a user
      * message accessor, which can throw. */
     "error.new": { argTypes: [STRING], result: VOID },
@@ -5342,6 +5368,13 @@ function buildLibFnSignatures() {
      * (inspect, Object.keys/values/entries) then answer through its live
      * checked view. The receiver is any such record type. Never throws. */
     "record.sourceHas": { argTypes: [null], result: BOOL },
+    /** `record.sourceDelete(record, key, strict)`: `delete record.key` of a
+     * key the record's declared layout does not hold — the key lives in the
+     * record's kept source, and the delete removes it there. Answers
+     * `delete`'s boolean (true when the property is gone), and throws
+     * Node's TypeError for a frozen record in strict code (`strict` is the
+     * delete's own mode). `key` is a constant literal. */
+    "record.sourceDelete": { argTypes: [null, STRING, BOOL], result: BOOL },
     /** `record.sourceSpread(built, value)`: the record a literal starting
      * with `...value` just built keeps the order of value's kept source
      * (key-order-witness.ts ordered spreads). Both are record types. Never

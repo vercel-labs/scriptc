@@ -94,6 +94,16 @@ bool scr_spawn_res_has_status(ScrSpawnRes *r);
 double scr_spawn_res_status(ScrSpawnRes *r);
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r); /* +1 */
 ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1 */
+/* The Buffer captures (spawnSync without an encoding option): the same
+ * bytes as a bytes<u8> value, carrying the Buffer brand Node's capture has
+ * (+1). All three entries live in scr_child_capture.c, a unit linked only
+ * by programs that read a capture, so scr_child.c keeps its layout and no
+ * always-linked unit names an optional one. */
+ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r);
+ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r);
+/* The Buffer behind one capture (NULL = the stream was not piped): the
+ * one-Buffer-per-capture memo the accessors above answer from. +1. */
+ScrBytes *scr_spawn_res_capture_bytes(ScrStr *capture);
 /* result.signal — the termination signal's name when a signal killed the
  * child (a timeout's killSignal included), the null arm otherwise; the
  * emitter wraps type-directedly over the has/get pair like status. */
@@ -301,6 +311,13 @@ void scr_child_ref(ScrChild *c);
 /* Installs ChildProcess's checked-dynamic handle identity bridge. Emitted
  * programs call this only when the child_process surface is present. */
 void scr_child_dyn_install(void);
+/* Installs the builder of a failed spawn's 'error' object (errno, code,
+ * syscall, path, spawnargs; one object for every listener). Called once at
+ * start by a program that can register an 'error' listener on a child. */
+void scr_child_error_event_install(void);
+/* The installed builder (+1 error), NULL in a program that cannot register
+ * an 'error' listener on a child. Read by the settle path. */
+extern ScrError *(*scr_child_spawn_error_hook)(ScrChild *c);
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener); /* borrowed */
 /* Own properties JavaScript adds to a child (scr_dyn_handle_props.c,
  * linked only by programs that add them). scr_dyn_handle_props_install is

@@ -1,0 +1,6 @@
+{
+  "name": "island-explicit-copy",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "union-pkg": "node" } }
+}

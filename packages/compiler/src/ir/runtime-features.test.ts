@@ -546,4 +546,40 @@ describe("runtime feature snapshots", () => {
       childErrorFields: false,
     });
   });
+
+  test("installs a failed spawn's error object only where an 'error' listener can be registered", () => {
+    // The fact decides the emitted scr_child_error_event_install call: a
+    // program that only spawns keeps the settle path's hook empty and links
+    // none of the property code.
+    for (const fn of ["child.onError", "child.onDyn", "child.propsOnDyn"] as const) {
+      const listener = module();
+      listener.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(listener)).toMatchObject({
+        childProcess: true,
+        childErrorEvent: true,
+      });
+    }
+
+    // A child that becomes an untyped value can be listened to through the
+    // handle table.
+    const boxed = module();
+    boxed.functions[0]!.body.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "dynFrom",
+        value: { kind: "varRef", localId: "c", type: { kind: "child" }, loc },
+        type: { kind: "dyn" },
+        loc,
+      },
+      loc,
+    });
+    expect(moduleRuntimeFeatures(boxed).childErrorEvent).toBe(true);
+
+    const spawner = module();
+    spawner.functions[0]!.body.push(call("child.onExit"));
+    expect(moduleRuntimeFeatures(spawner)).toMatchObject({
+      childProcess: true,
+      childErrorEvent: false,
+    });
+  });
 });

@@ -23,6 +23,7 @@ import { InternalCompilerError } from "../../errors.js";
  * ToBoolean/ToString coercion helpers, and field/element reads and writes
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
@@ -3177,12 +3178,8 @@ export function aliasTypeofNarrows(
   polarity: boolean,
 ): { sym: ts.Symbol; tsArm: ts.Type }[] {
   const out: { sym: ts.Symbol; tsArm: ts.Type }[] = [];
-  const strip = (e: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    return e;
-  };
   const walk = (e0: ts.Expression, pol: boolean): void => {
-    const e = strip(e0);
+    const e = withoutParentheses(e0);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
       walk(e.operand, !pol);
       return;
@@ -3203,7 +3200,7 @@ export function aliasTypeofNarrows(
       (k === ts.SyntaxKind.EqualsEqualsEqualsToken && pol) ||
       (k === ts.SyntaxKind.ExclamationEqualsEqualsToken && !pol);
     if (!positive) return;
-    const leaf = aliasTypeofArmOf(lowerer, e, strip);
+    const leaf = aliasTypeofArmOf(lowerer, e, withoutParentheses);
     if (leaf) out.push(leaf);
   };
   if (implicitMonoFile(ts.getSourceFileOfNode(cond))) walk(cond, polarity);

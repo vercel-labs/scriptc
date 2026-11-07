@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { restTupleElementTypes, unitOnlyUnion } from "../type-mapper.js";
@@ -27,18 +28,6 @@ import { omittedArgFor } from "./call-arguments.js";
  * site's concrete signature, so a higher-order wrapper specializes to the
  * wrapped function's exact ABI. Forwarding (`f.apply(thisArg, args)`,
  * `f(...args)`) then calls with the tuple's positions directly. */
-
-/** `e`, with the type-only wrappers that never change its value removed. */
-export function stripTypeWrappers(e: ts.Expression): ts.Expression {
-  let cur = e;
-  for (;;) {
-    if (ts.isParenthesizedExpression(cur)) cur = cur.expression;
-    else if (ts.isAsExpression(cur) || ts.isTypeAssertion(cur) || ts.isSatisfiesExpression(cur))
-      cur = cur.expression;
-    else if (ts.isNonNullExpression(cur)) cur = cur.expression;
-    else return cur;
-  }
-}
 
 /** The outermost type assertion around `node` (`node as unknown as F` → F),
  * looking through parentheses; null when the value is not asserted. */
@@ -286,7 +275,7 @@ export function onlyForwarded(
 /** The native slots of a pure-forwarded tuple binding read at `node` in
  * the current function, or null when the tuple is materialized. */
 function pureSlotsOf(lowerer: Lowerer, node: ts.Expression): IrLocal[] | null {
-  const operand = stripTypeWrappers(node);
+  const operand = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(operand)) return null;
   const local =
     operand.text === "arguments" ? lowerer.ctx.argumentsLocal : lowerer.peekLocal(operand);
@@ -318,7 +307,7 @@ function isTypedArgumentsRead(lowerer: Lowerer, node: ts.Expression): boolean {
  * fixed-tuple rest parameter, or a const alias of either — seen through
  * type assertions, which never change the value. */
 export function forwardedTupleType(lowerer: Lowerer, node: ts.Expression): IrType | null {
-  const operand = stripTypeWrappers(node);
+  const operand = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(operand)) return null;
   if (operand.text === "arguments") {
     if (!isTypedArgumentsRead(lowerer, operand)) return null;
@@ -425,7 +414,7 @@ export function lowerForwardingApply(
     stmts.push({
       kind: "varDecl",
       localId: savedArgs.id,
-      init: lowerer.lowerExpr(stripTypeWrappers(argNodes[1]!)),
+      init: lowerer.lowerExpr(withoutParenthesesTypeWrappers(argNodes[1]!)),
       loc,
     });
     reads = tupleReads(
@@ -488,7 +477,7 @@ export function lowerTupleAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclarati
     lowerer.ctx.pureTuples.set(local.id, slots);
     return { kind: "block", body: [], loc: locOf(decl) };
   }
-  const init = lowerer.lowerExpr(stripTypeWrappers(decl.initializer));
+  const init = lowerer.lowerExpr(withoutParenthesesTypeWrappers(decl.initializer));
   const local = lowerer.declareLocal(decl.name, decl.name.text, tupleType, false);
   return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
 }

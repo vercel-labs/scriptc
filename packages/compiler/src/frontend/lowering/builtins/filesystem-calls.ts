@@ -1,5 +1,6 @@
 import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { lowerFsPath } from "./fs-paths.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -27,12 +28,7 @@ import {
   funcOf,
   typeEquals,
 } from "../../../ir/ir.js";
-import {
-  lowerBuiltinOptionalDefault,
-  optionMember,
-  literalBoolOptions,
-  stripTypeCasts,
-} from "./arguments.js";
+import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
 import { constInitializerOf } from "../lower-exprs.js";
 import {
   lowerFsTimestampValue,
@@ -1538,8 +1534,8 @@ function optionsLiteralOf(
   lowerer: Lowerer,
   node: ts.Expression,
 ): ts.ObjectLiteralExpression | null {
-  // stripTypeCasts also strips parentheses: `({...} as const)` is the literal.
-  const unwrap = (expr: ts.Expression): ts.Expression => stripTypeCasts(expr);
+  // `({...} as const)` is the literal: the parentheses go with the assertion.
+  const unwrap = (expr: ts.Expression): ts.Expression => withoutParenthesesAssertionsNonNull(expr);
   const bare = unwrap(node);
   if (ts.isObjectLiteralExpression(bare)) return bare;
   if (!ts.isIdentifier(bare)) return null;

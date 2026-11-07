@@ -3320,7 +3320,7 @@ static bool scr_h2_settings_validate(const ScrDyn *settings) {
   const ScrDyn *custom = scr_dyn_obj_get(settings, "customSettings", 14);
   if (custom != NULL && custom->kind != SCR_DYN_UNDEF) {
     static const char text[] = "HTTP/2 customSettings are not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, text, sizeof text - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "SC2020");
     return false;
   }
   for (size_t k = 0; k < SCR_H2_NSETTINGS; k++) {
@@ -3849,7 +3849,7 @@ static void scr_h2_dyn_refuse_read(const char *key, const char *const *names, co
     if (strcmp(key, names[i]) != 0) continue;
     char msg[128];
     int n = snprintf(msg, sizeof msg, "reading '%s' from an %s is not supported yet", key, cls);
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
     return;
   }
 }
@@ -3857,7 +3857,7 @@ static void scr_h2_dyn_refuse_read(const char *key, const char *const *names, co
 static void scr_h2_dyn_refuse_call(const char *method, const char *cls) {
   char msg[128];
   int n = snprintf(msg, sizeof msg, "'%s' on an %s is not supported yet", method, cls);
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
 }
 
 static void scr_h2_dyn_not_a_fn(const char *what) {

@@ -2501,7 +2501,7 @@ void scr_http_res_on_prefinish(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool onc
     scr_closure_release(cb);
     static const char msg[] =
         "Http2ServerResponse.on('prefinish') is not supported by the static runtime yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return;
   }
   if (r->finished || r->unflushed) {

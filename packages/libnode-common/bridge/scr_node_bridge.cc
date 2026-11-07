@@ -2158,7 +2158,18 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
     if (v.As<Function>()->IsConstructor()) flags |= SCR_NVF_CONSTRUCTOR;
   }
   if (v->IsNativeError()) flags |= SCR_NVF_ERROR;
-  if (v->IsArray()) flags |= SCR_NVF_ARRAY;
+  // Array.isArray follows a proxy to its target; IsArray() stops at the
+  // proxy. A revoked proxy answers false here rather than throwing.
+  {
+    Local<Value> tested = v;
+    while (tested->IsProxy()) {
+      Local<v8::Proxy> proxy = tested.As<v8::Proxy>();
+      if (proxy->IsRevoked()) break;
+      tested = proxy->GetTarget();
+      if (tested.IsEmpty()) break;
+    }
+    if (tested->IsArray()) flags |= SCR_NVF_ARRAY;
+  }
   if (v->IsPromise()) flags |= SCR_NVF_PROMISE;
   if (!g_twin_prototypes.empty() && v->IsObject() && !v->IsFunction() && !v->IsProxy()) {
     Local<Value> prototype = v.As<Object>()->GetPrototypeV2();

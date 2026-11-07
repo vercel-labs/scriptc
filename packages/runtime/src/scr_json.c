@@ -14563,10 +14563,11 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
 }
 
 /* ── recursive shapes: cycle-aware dynMatch and the dynCheck memo ──────
- * The tables are open-addressed sets keyed by a dyn value's address and a
- * generated helper's address. A visit session lasts while any matcher or
- * builder of a type holding a recursive shape runs; the memo and the
- * capsule views are dropped when the outermost one returns. */
+ * The tables are open-addressed sets keyed by a dyn value's identity (the
+ * box, or the value a handle box carries) and a generated helper's
+ * address. A visit session lasts while any matcher or builder of a type
+ * holding a recursive shape runs; the memo and the capsule views are
+ * dropped when the outermost one returns. */
 typedef struct {
   ScrDyn *d; /* NULL marks an empty slot */
   const void *helper;
@@ -14617,8 +14618,16 @@ static SCR_TL bool scr_dyn_session_ran_code;
 /* Tables up to this many slots stay allocated for the next session. */
 #define SCR_DYN_VISIT_KEEP 4096
 
+/* The value a visit tracks. A handle is tracked by the value behind its
+ * box: a member read of an island answers a fresh box for the same Node
+ * value every time, so the box address does not identify it. */
+static const void *scr_dyn_visit_identity(const ScrDyn *d) {
+  const void *refer = d->kind == SCR_DYN_HANDLE ? d->v.handle.ptr : NULL;
+  return refer != NULL ? refer : (const void *)d;
+}
+
 static size_t scr_dyn_visit_slot(const ScrDynVisitSet *s, const ScrDyn *d, const void *helper) {
-  uint64_t h = (uint64_t)(uintptr_t)d * 0x9E3779B97F4A7C15ull;
+  uint64_t h = (uint64_t)(uintptr_t)scr_dyn_visit_identity(d) * 0x9E3779B97F4A7C15ull;
   h ^= (uint64_t)(uintptr_t)helper * 0xC2B2AE3D27D4EB4Full;
   h ^= h >> 29;
   return (size_t)h & (s->cap - 1);
@@ -14627,10 +14636,11 @@ static size_t scr_dyn_visit_slot(const ScrDynVisitSet *s, const ScrDyn *d, const
 static ScrDynVisit *scr_dyn_visit_find(const ScrDynVisitSet *s, const ScrDyn *d,
                                        const void *helper) {
   if (s->count == 0) return NULL;
+  const void *identity = scr_dyn_visit_identity(d);
   for (size_t i = scr_dyn_visit_slot(s, d, helper);; i = (i + 1) & (s->cap - 1)) {
     ScrDynVisit *e = &s->slots[i];
     if (!e->d) return NULL;
-    if (e->d == d && e->helper == helper) return e;
+    if (scr_dyn_visit_identity(e->d) == identity && e->helper == helper) return e;
   }
 }
 
@@ -14815,6 +14825,9 @@ void scr_dyn_release_held(ScrDyn *d) {
  * value twice takes two references. */
 static bool scr_dyn_visit_shared(const ScrDyn *d) {
   if (!d) return false;
+  /* A handle box is made for the read that answers it, so its reference
+   * count says nothing about whether the visit meets the value again. */
+  if (d->kind == SCR_DYN_HANDLE) return true;
   if (d->rc == SIZE_MAX) return true;
   return d->rc - (scr_dyn_visit_held == d ? 1 : 0) >= 2;
 }
@@ -16740,6 +16753,13 @@ static ScrDyn *scr_json_key_arg(const ScrStr *key, size_t index) {
   return name;
 }
 
+/* Whether a member answers toJSON: a native function, or an island function
+ * a spread or Object.assign copied onto the object. */
+static bool scr_json_callable(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_FUNC) return true;
+  return scr_ni_dyn_handle(value) && scr_ni_dyn_ops->is_function(value);
+}
+
 static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t index) {
   /* An instance of a class declared `extends Date` converts through its
    * toJSON, declared or inherited. */
@@ -16767,6 +16787,21 @@ static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t inde
     ScrDyn *converted = ops->invoke(inspected->v.handle.ptr, value, "toJSON", NULL, 0, "toJSON");
     scr_dyn_release(value);
     value = converted;
+  } else if (scr_ni_dyn_handle(inspected)) {
+    /* An island object's toJSON runs in Node, like any other member read. */
+    ScrDyn *method = scr_dyn_obj_read(inspected, "toJSON", 6);
+    if (!method) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
+    if (scr_json_callable(method)) {
+      ScrDyn *name = scr_json_key_arg(key, index);
+      ScrDyn *args[] = { name };
+      scr_dyn_this_push_dyn(value);
+      ScrDyn *converted = scr_dyn_call(method, args, 1, "toJSON");
+      scr_dyn_this_pop();
+      scr_dyn_release(method);
+      scr_dyn_release(name);
+      scr_dyn_release(value);
+      value = converted;
+    } else scr_dyn_release(method);
   } else if (inspected->kind == SCR_DYN_BYTES && inspected->buffer) {
     ScrDyn *converted = scr_json_buffer_view(inspected);
     scr_dyn_release(value);
@@ -16774,7 +16809,7 @@ static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t inde
   } else if (inspected->kind == SCR_DYN_OBJ) {
     ScrDyn *method = scr_dyn_obj_read(inspected, "toJSON", 6);
     if (!method) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
-    if (method->kind == SCR_DYN_FUNC) {
+    if (scr_json_callable(method)) {
       ScrDyn *name = scr_json_key_arg(key, index);
       ScrDyn *args[] = { name };
       scr_dyn_this_push_dyn(value);
@@ -16805,6 +16840,15 @@ static ScrDyn *scr_json_replace(const ScrDyn *holder, const ScrStr *key, const S
 }
 
 static bool scr_json_omitted(const ScrDyn *value) {
+  if (scr_ni_dyn_handle(value)) {
+    if (scr_ni_dyn_ops->is_function(value)) return true;
+    /* A symbol has no JSON text: an object member is omitted and an array
+     * element is null, as for a native symbol. */
+    ScrStr *type = scr_ni_dyn_ops->type_of((ScrDyn *)value);
+    bool symbol = type != NULL && type->len == 6 && memcmp(type->data, "symbol", 6) == 0;
+    scr_str_release(type);
+    return symbol;
+  }
   return value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_FUNC || value->kind == SCR_DYN_SYMBOL;
 }
 
@@ -17005,6 +17049,15 @@ static bool scr_json_live_write(ScrJsonBuf *buffer, const ScrDyn *value, bool ar
   return true;
 }
 
+/* The length JSON.stringify walks for an island array, read in Node. */
+static size_t scr_json_island_length(const ScrDyn *value) {
+  ScrDyn *len = scr_ni_dyn_ops->get_str((ScrDyn *)value, "length", 6);
+  if (len == NULL) return 0;
+  double n = len->kind == SCR_DYN_NUM ? len->v.num : 0;
+  scr_dyn_release(len);
+  return n >= 0 && n <= 4294967295.0 ? (size_t)n : 0;
+}
+
 /* `properties`, when present, is an array replacer's PropertyList: objects
  * serialize exactly those keys, own or inherited, in that order; arrays
  * keep all their indexes. */
@@ -17020,7 +17073,12 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
   if (scr_exc_pending()) { scr_dyn_release(view); return false; }
   if (!view && !live && replacer->kind == SCR_DYN_UNDEF && !properties && scr_json_plain_container(value))
     return scr_json_plain_write(buffer, value, gap, depth);
-  ScrDynKind kind = !live ? observed->kind : scr_dyn_typed_ref_array_ops(value) ? SCR_DYN_ARR : SCR_DYN_OBJ;
+  /* An island object is walked through the node: its own enumerable keys
+   * and members, and an array's indexes to its length, are all read there. */
+  bool island = scr_ni_dyn_handle(observed);
+  ScrDynKind kind = island
+      ? (scr_ni_dyn_ops->is_array((ScrDyn *)observed) ? SCR_DYN_ARR : SCR_DYN_OBJ)
+      : !live ? observed->kind : scr_dyn_typed_ref_array_ops(value) ? SCR_DYN_ARR : SCR_DYN_OBJ;
   if (kind != SCR_DYN_OBJ && kind != SCR_DYN_ARR && kind != SCR_DYN_BYTES) {
 
 
@@ -17032,7 +17090,8 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
   /* Different capsules may refer to the same native container. Detect
    * cycles by the original payload, while sibling references remain legal
    * after the current frame leaves the traversal stack. */
-  const void *identity = view || live ? value->v.typed_ref.ptr : (const void *)value;
+  const void *identity = view || live ? value->v.typed_ref.ptr
+      : island ? (const void *)observed->v.handle.ptr : (const void *)value;
   if (!scr_jb_enter(buffer, identity, array)) { scr_dyn_release(view); return false; }
   if (live && replacer->kind == SCR_DYN_UNDEF && !properties &&
       (array || scr_typed_ref_record_ops(value)->count <= 64)) {
@@ -17044,7 +17103,8 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
   ScrDyn *keys = array ? NULL : properties ? scr_dyn_retain((ScrDyn *)properties) : scr_dyn_obj_keys(observed);
   if (scr_exc_pending()) { scr_dyn_release(keys); scr_dyn_release(view); scr_jb_leave(buffer); return false; }
   size_t length = !array ? keys->v.arr.len
-      : live ? ((ScrArr *)value->v.typed_ref.ptr)->len : observed->v.arr.len;
+      : live ? ((ScrArr *)value->v.typed_ref.ptr)->len
+      : island ? scr_json_island_length(observed) : observed->v.arr.len;
   bool first = true;
   bool ok = true;
   for (size_t i = 0; i < length; i++) {
@@ -18105,6 +18165,10 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
     scr_str_release(name);
     return value;
   }
+  /* An island object keeps its members in Node: the read runs there, so a
+   * getter, an inherited member or a missing key answers as it does in the
+   * program the value came from. */
+  if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->get_str((ScrDyn *)d, key, key_len);
   return scr_dyn_obj_read_receiver(d, key, key_len, d);
 }
 
@@ -18927,6 +18991,79 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
 
 ScrDyn *scr_dyn_obj_keys(const ScrDyn *v) { return scr_dyn_objwalk(v, SCR_OBJWALK_KEYS); }
 
+/* ── checked conversions of island values ───────────────────────────────
+ * An array or object an island made has its members in V8, and a checked
+ * conversion builds a native value from them. The array's elements are
+ * read here, a hole staying absent as it is on a native array, and the
+ * object's own enumerable string keys become the native object an
+ * index-signature record captures. Both answer +1, or NULL with a
+ * pending exception from a getter or a proxy trap. An array conversion of
+ * a value that is not an array answers NULL with nothing pending, so the
+ * check goes on to report the value it was given. */
+ScrDyn *scr_dyn_island_array(ScrDyn *value) {
+  if (scr_ni_dyn_ops == NULL) scr_trap("scriptc: island array conversion without Node islands\n");
+  if (!scr_ni_dyn_ops->is_array(value)) return NULL;
+  ScrDyn *len = scr_ni_dyn_ops->get_str(value, "length", 6);
+  if (len == NULL) return NULL;
+  double n = len->kind == SCR_DYN_NUM ? len->v.num : 0;
+  scr_dyn_release(len);
+  if (!(n >= 0 && n <= 4294967295.0)) n = 0;
+  ScrDyn *out = scr_dyn_new_arr();
+  for (double i = 0; i < n; i++) {
+    ScrDyn *key = scr_dyn_new_num(i);
+    int present = scr_ni_dyn_ops->has(value, key);
+    if (present < 0) {
+      scr_dyn_release(key);
+      scr_dyn_release(out);
+      return NULL;
+    }
+    if (present == 0) {
+      scr_dyn_release(key);
+      scr_dyn_arr_push_hole(out);
+      continue;
+    }
+    ScrDyn *element = scr_ni_dyn_ops->get(value, key);
+    scr_dyn_release(key);
+    if (element == NULL) {
+      scr_dyn_release(out);
+      return NULL;
+    }
+    scr_dyn_arr_push(out, element); /* moves */
+  }
+  return out;
+}
+
+ScrDyn *scr_dyn_island_object(ScrDyn *value, const char *const *names, const size_t *lens,
+                              size_t count) {
+  if (scr_ni_dyn_ops == NULL) scr_trap("scriptc: island object conversion without Node islands\n");
+  ScrDyn *keys = scr_ni_dyn_ops->own_keys(value, SCR_OBJWALK_KEYS);
+  if (keys == NULL) return NULL;
+  ScrDyn *out = scr_dyn_new_obj();
+  for (size_t i = 0; i < keys->v.arr.len; i++) {
+    const ScrDyn *key = keys->v.arr.items[i];
+    /* A declared field is read as an ordinary property read by the
+     * conversion itself, so the view leaves it out and its getter runs
+     * once, answering the caller's field read. */
+    bool declared = false;
+    for (size_t j = 0; j < count; j++) {
+      if (key->v.str->len == lens[j] && memcmp(key->v.str->data, names[j], lens[j]) == 0) {
+        declared = true;
+        break;
+      }
+    }
+    if (declared) continue;
+    ScrDyn *member = scr_ni_dyn_ops->get(value, (ScrDyn *)key);
+    if (member == NULL) {
+      scr_dyn_release(out);
+      scr_dyn_release(keys);
+      return NULL;
+    }
+    scr_dyn_obj_set(out, key->v.str->data, key->v.str->len, member); /* moves */
+  }
+  scr_dyn_release(keys);
+  return out;
+}
+
 static ScrDyn *scr_typed_ref_record_walk(const ScrDyn *d, const ScrDynTypedRecordOps *ops,
                                          int mode) {
   ScrDyn *out = scr_dyn_new_arr();
@@ -19286,6 +19423,22 @@ static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool 
     return;
   }
   if (src->kind == SCR_DYN_UNDEF || src->kind == SCR_DYN_NULL) return;
+  /* An island object's own enumerable keys and its members are read in
+   * Node, like any other member read. */
+  if (scr_ni_dyn_handle(src)) {
+    ScrDyn *keys = scr_dyn_obj_keys(src);
+    if (!keys) return;
+    for (size_t i = 0; i < keys->v.arr.len; i++) {
+      ScrStr *key = keys->v.arr.items[i]->v.str;
+      ScrDyn *value = scr_dyn_obj_read(src, key->data, key->len);
+      if (!value) break;
+      scr_dyn_copy_property(target, key, value, define);
+      scr_dyn_release(value);
+      if (scr_exc_pending()) break;
+    }
+    scr_dyn_release(keys);
+    return;
+  }
   if (src->kind == SCR_DYN_OBJ) {
     ScrDyn *keys = scr_dyn_obj_own_keys(src);
     if (!keys) return;
@@ -19557,6 +19710,25 @@ ScrDyn *scr_dyn_object_rest(const ScrDyn *source, const ScrDyn *excluded) {
       }
       if (!skip) scr_dyn_obj_set(out, name->data, name->len, record->get(rec, i));
     }
+    return out;
+  }
+  /* An island object's own enumerable keys and its members are read in
+   * Node, like any other member read. */
+  if (scr_ni_dyn_handle(source)) {
+    ScrDyn *names = scr_dyn_obj_keys(source);
+    if (!names) { scr_dyn_release(out); return NULL; }
+    for (size_t i = 0; i < names->v.arr.len && !scr_exc_pending(); i++) {
+      ScrDyn *key = names->v.arr.items[i];
+      bool skip = false;
+      for (size_t j = 0; j < excluded->v.arr.len; j++)
+        if (scr_dyn_strict_eq(key, excluded->v.arr.items[j])) { skip = true; break; }
+      if (skip) continue;
+      ScrDyn *value = scr_dyn_obj_read(source, key->v.str->data, key->v.str->len);
+      if (!scr_exc_pending()) scr_dyn_obj_set(out, key->v.str->data, key->v.str->len, value);
+      else scr_dyn_release(value);
+    }
+    scr_dyn_release(names);
+    if (scr_exc_pending()) { scr_dyn_release(out); return NULL; }
     return out;
   }
   ScrDyn *names = scr_dyn_get_own_property_names(source);

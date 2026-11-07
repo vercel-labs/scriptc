@@ -1,0 +1,26 @@
+stats-structural-view-fences.ts:11:26 - error SC2002: record shapes must match exactly or width-coerce: expected '{ size: number }', got 'Stats'
+
+  10 | }
+  11 | const written: Written = statSync(".");
+     |                          ^~~~~~~~~~~~~
+  12 | written.size = 1;
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+stats-structural-view-fences.ts:17:24 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isDirectory: () => boolean }', got 'Stats'
+
+  16 | }
+  17 | const listed: Listed = statSync(".");
+     |                        ^~~~~~~~~~~~~
+  18 | console.log(Object.keys(listed).length);
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+stats-structural-view-fences.ts:26:22 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isFile: () => boolean }', got 'Stats'
+
+  25 | }
+  26 | const loose: Loose = statSync(".");
+     |                      ^~~~~~~~~~~~~
+  27 | show(loose);
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

@@ -54,6 +54,7 @@
 #include "scr_node_island.h"
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -127,6 +128,8 @@ __attribute__((used)) const char *__lsan_default_options(void) { return "print_s
 static const char *ni_libnode = NULL;      /* recorded pack directory */
 static const char *ni_node_version = NULL; /* recorded Node version */
 static const ScrNodeBridge *ni_bridge = NULL;
+/* Node's start completed on the island's thread (ni_start's tail). */
+static atomic_bool ni_started;
 static char ni_dir[4096];
 static uint32_t ni_next_id = 1;
 static NiPending *ni_pending = NULL;
@@ -962,7 +965,9 @@ static bool ni_cached_root(const char *digest) {
 
 /* ── repair ───────────────────────────────────────────────────────────── */
 
-static size_t ni_repaired = 0;
+/* Files put back so far. Written on the island's thread; a worker thread
+ * that repeats its own call reads it too, hence atomic. */
+static atomic_size_t ni_repaired;
 
 size_t scr_ni_tree_repairs(void) { return ni_repaired; }
 
@@ -979,8 +984,11 @@ static bool ni_text_has(const char *text, size_t len, const char *part) {
 bool scr_ni_tree_named(const char *text, size_t len) {
   static char resolved[4096] = "";
   static bool looked = false;
+  /* Any thread that reads an island error asks: the path is resolved once. */
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
   if (!ni_root_installed) return false;
   if (ni_text_has(text, len, ni_root)) return true;
+  pthread_mutex_lock(&lock);
   if (!looked) {
     looked = true;
     char *real = realpath(ni_root, NULL);
@@ -988,6 +996,7 @@ bool scr_ni_tree_named(const char *text, size_t len) {
       strcpy(resolved, real);
     free(real);
   }
+  pthread_mutex_unlock(&lock);
   return ni_text_has(text, len, resolved);
 }
 
@@ -996,7 +1005,8 @@ bool scr_ni_tree_named(const char *text, size_t len) {
  * and a rename so that no reader sees part of a file. Once per process:
  * a tree that loses files while the program runs is repaired by the next
  * one. A file that is present is left as it is. */
-void scr_ni_tree_repair(void) {
+static void ni_tree_repair_job(void *unused) {
+  (void)unused;
   static bool done = false;
   if (done || !ni_root_installed || ni_modules == NULL) return;
   done = true;
@@ -1052,6 +1062,17 @@ void scr_ni_tree_repair(void) {
   fprintf(stderr, "scriptc: reinstalled %zu Node island module file%s missing from %s\n", restored,
           restored == 1 ? "" : "s", ni_root);
   fflush(stderr);
+}
+
+static void ni_route(void (*job)(void *), void *arg);
+
+/* The manifest and the tree's state belong to the island's thread. A worker
+ * thread reads the outcome of its own call, so the repair it asks for is
+ * posted to that thread like any other island operation, and has run when
+ * this returns. */
+void scr_ni_tree_repair(void) {
+  if (scr_context_is_main()) ni_tree_repair_job(NULL);
+  else ni_route(ni_tree_repair_job, NULL);
 }
 
 /* The tree in a private directory of this run, removed at exit. */
@@ -1168,8 +1189,9 @@ bool scr_ni_missing_file_code(const char *code, size_t len) {
 }
 
 /* The last "T" outcome was a call whose module failed to load (the host
- * marks it: its function did not run). */
-static bool ni_load_failed = false;
+ * marks it: its function did not run). Per thread: each thread reads the
+ * outcomes of its own calls. */
+static SCR_TL bool ni_load_failed = false;
 
 /* Leaves the copied error of a "T" outcome pending. */
 static void ni_throw(const char *json, size_t len) {
@@ -1311,10 +1333,130 @@ static void ni_main_stack(void) {
 }
 
 static void ni_on_node_stack(void (*job)(void *), void *arg);
+static void ni_start(void);
 static const ScrNodeBridgeHost ni_host;
 #if defined(__APPLE__)
 static void ni_pthread_hold(bool hold);
 #endif
+
+/* ── island operations on other threads ────────────────────────────────
+ * Node runs on the thread that started it: its isolate is entered under
+ * the Locker that thread holds, its stack is process-wide, and the island
+ * tables and the bridge's own state are not thread-safe. A native worker
+ * (or any other thread) that reaches island code therefore posts the
+ * operation to the island's thread — the main thread — and blocks until it
+ * has run there, exactly as Node's own workers reach the main thread.
+ * Every operation already funnels through ni_on_node_stack, so that one
+ * seam is where a foreign thread is diverted.
+ *
+ * The island's thread drains the posted operations from both loop shapes:
+ * its own runtime loop before Node starts, and Node's loop afterwards
+ * (scr_async.c asks scr_ni_remote_pending/pollfd and calls
+ * scr_ni_remote_dispatch). The wake pipe ends a sleep with no timer due,
+ * and the pending count keeps a loop that only waits for other work from
+ * stalling a caller. */
+typedef struct NiRoute {
+  struct NiRoute *next;
+  void (*job)(void *);
+  void *arg;
+  pthread_cond_t cond;
+  bool done;
+} NiRoute;
+
+static pthread_mutex_t ni_route_lock = PTHREAD_MUTEX_INITIALIZER;
+static NiRoute *ni_route_head = NULL, *ni_route_tail = NULL;
+static atomic_size_t ni_route_pending;
+static int ni_route_wake[2] = {-1, -1};
+static SCR_TL bool ni_route_serving = false;
+
+static void ni_route_noop(void *p) { (void)p; }
+
+/* (under ni_route_lock) */
+static void ni_route_open(void) {
+  if (ni_route_wake[0] >= 0) return;
+  if (pipe(ni_route_wake) != 0) {
+    ni_route_wake[0] = ni_route_wake[1] = -1;
+    return;
+  }
+  for (int i = 0; i < 2; i++) {
+    (void)fcntl(ni_route_wake[i], F_SETFD, FD_CLOEXEC);
+    int flags = fcntl(ni_route_wake[i], F_GETFL);
+    if (flags >= 0) (void)fcntl(ni_route_wake[i], F_SETFL, flags | O_NONBLOCK);
+  }
+}
+
+/* Runs `job` on the island's thread and returns once it has. */
+static void ni_route(void (*job)(void *), void *arg) {
+  NiRoute request = {NULL, job, arg, {0}, false};
+  if (pthread_cond_init(&request.cond, NULL) != 0) ni_oom();
+  pthread_mutex_lock(&ni_route_lock);
+  ni_route_open();
+  if (ni_route_tail != NULL) ni_route_tail->next = &request;
+  else ni_route_head = &request;
+  ni_route_tail = &request;
+  atomic_fetch_add_explicit(&ni_route_pending, 1, memory_order_release);
+  if (ni_route_wake[1] >= 0) {
+    char byte = 1;
+    /* A full pipe already holds a wake for the operations queued before
+     * this one. */
+    (void)write(ni_route_wake[1], &byte, 1);
+  }
+  while (!request.done) pthread_cond_wait(&request.cond, &ni_route_lock);
+  pthread_mutex_unlock(&ni_route_lock);
+  pthread_cond_destroy(&request.cond);
+}
+
+bool scr_ni_remote_pending(void) {
+  /* Posted operations are the island's thread's work: a worker thread's
+   * loop has none of its own to run. */
+  if (!scr_context_is_main()) return false;
+  return atomic_load_explicit(&ni_route_pending, memory_order_acquire) > 0;
+}
+
+int scr_ni_remote_pollfd(void) {
+  /* The wake fd belongs to the island's thread: another thread's loop has
+   * no posted work of its own to wake for. */
+  if (!scr_context_is_main()) return -1;
+  pthread_mutex_lock(&ni_route_lock);
+  ni_route_open();
+  int fd = ni_route_wake[0];
+  pthread_mutex_unlock(&ni_route_lock);
+  return fd;
+}
+
+/* The island's thread: starts Node if it has not started yet, then runs
+ * every posted operation. Never re-entered (a served operation may call
+ * back into the runtime, whose loop then asks again). */
+void scr_ni_remote_dispatch(void) {
+  if (!scr_context_is_main() || ni_route_serving) return;
+  ni_route_serving = true;
+  int fd = scr_ni_remote_pollfd();
+  if (fd >= 0) {
+    char bytes[64];
+    while (read(fd, bytes, sizeof bytes) > 0) {
+    }
+  }
+  for (;;) {
+    pthread_mutex_lock(&ni_route_lock);
+    NiRoute *request = ni_route_head;
+    if (request != NULL) {
+      ni_route_head = request->next;
+      if (ni_route_head == NULL) ni_route_tail = NULL;
+      atomic_fetch_sub_explicit(&ni_route_pending, 1, memory_order_release);
+    }
+    pthread_mutex_unlock(&ni_route_lock);
+    if (request == NULL) break;
+    /* The posted operation may be the very first island use: Node starts
+     * here, on the island's thread, before the operation runs. */
+    ni_start();
+    ni_on_node_stack(request->job, request->arg);
+    pthread_mutex_lock(&ni_route_lock);
+    request->done = true;
+    pthread_cond_signal(&request->cond);
+    pthread_mutex_unlock(&ni_route_lock);
+  }
+  ni_route_serving = false;
+}
 
 /* ── Node's stack ─────────────────────────────────────────────────────── */
 
@@ -1473,8 +1615,14 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   SCR_STACK_GUARD_SET(guard);
 }
 
-/* Runs job(arg) on Node's stack (directly when already there). */
+/* Runs job(arg) on Node's stack (directly when already there). On any
+ * thread but the island's, the job runs on that thread instead, with this
+ * one waiting for it (ni_route). */
 static void ni_on_node_stack(void (*job)(void *), void *arg) {
+  if (!scr_context_is_main()) {
+    ni_route(job, arg);
+    return;
+  }
   if (ni_on_stack) {
     if (ni_mark != 0 && !ni_stack_has((uintptr_t)__builtin_frame_address(0)))
       ni_on_node_stack_below_mark(job, arg);
@@ -1861,6 +2009,13 @@ static ScrNodeBridge ni_hosted;
 void (*scr_ni_started_hook)(void) = NULL;
 
 static void ni_start(void) {
+  if (ni_bridge != NULL && atomic_load_explicit(&ni_started, memory_order_acquire)) return;
+  if (!scr_context_is_main()) {
+    /* Only the island's thread may load Node: it runs ni_start itself, then
+     * the posted no-op. When this returns, ni_started is set. */
+    ni_route(ni_route_noop, NULL);
+    return;
+  }
   if (ni_bridge != NULL) return;
   /* Timers pending now keep their deadlines relative to this moment: the
    * time Node takes to load is invisible to their order. */
@@ -1948,6 +2103,9 @@ static void ni_start(void) {
   /* NI-7: deferred island modules evaluate now, before the operation that
    * needed Node, in their import order. */
   if (scr_ni_started_hook != NULL) scr_ni_started_hook();
+  /* Last: another thread waiting on a posted operation proceeds only once
+   * Node is fully up (the acquire load in ni_start pairs with this). */
+  atomic_store_explicit(&ni_started, true, memory_order_release);
 }
 
 const ScrNodeBridge *scr_ni_bridge(void) {
@@ -1995,14 +2153,18 @@ static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, Sc
   return outcome;
 }
 
-/* Node runs on the main thread only: its isolate is entered under the
- * Locker the starting thread holds, and the loader's state and Node's
- * stack are process-wide. A call from a worker thread throws an Error. */
-static bool ni_main_thread(void) {
+/* Asynchronous island calls are still main-thread-only: the promise they
+ * settle and the pending table they register in belong to the calling
+ * thread's heap, and delivering a settlement to another thread's loop is
+ * not implemented. A call from a worker thread rejects, naming the limit,
+ * instead of settling a promise that belongs to another thread. */
+static bool ni_async_main_thread(void) {
   if (scr_context_is_main()) return true;
-  ScrStr *code = scr_str_new("", 0);
+  static const char name[] = "ERR_SCRIPTC_ISLAND_WORKER_ASYNC";
   static const char text[] =
-      "Node islands run on the main thread only; this call came from a worker thread";
+      "asynchronous island calls from a worker thread are not supported; "
+      "call the island synchronously (@scriptc/node callSync) from the worker";
+  ScrStr *code = scr_str_new(name, sizeof name - 1);
   ScrStr *message = scr_str_new(text, sizeof text - 1);
   scr_throw_node_coded(0, code, message);
   scr_str_release(message);
@@ -2011,7 +2173,6 @@ static bool ni_main_thread(void) {
 }
 
 ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
-  if (!ni_main_thread()) return NULL;
   ScrDyn *json = ni_args_json(args);
   if (json == NULL) return NULL;
   ni_start();
@@ -2035,7 +2196,7 @@ ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name,
 
 ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
   ScrPromise *p = scr_promise_new();
-  if (!ni_main_thread()) {
+  if (!ni_async_main_thread()) {
     scr_promise_reject_pending(p);
     return p;
   }
@@ -2101,6 +2262,12 @@ SCR_COLD static void ni_unsupported(void) {
   fflush(stderr);
   _Exit(1);
 }
+
+/* No islands here, so nothing is ever posted (the compiler refuses them on
+ * this target; scr_async.c's island build still references the hooks). */
+bool scr_ni_remote_pending(void) { return false; }
+int scr_ni_remote_pollfd(void) { return -1; }
+void scr_ni_remote_dispatch(void) {}
 
 ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
   (void)file;

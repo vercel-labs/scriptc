@@ -35,6 +35,7 @@
 #include "scr_node_island.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,7 +44,11 @@
 #if !defined(_WIN32) && !defined(__wasi__)
 
 typedef struct ScrNodeRef {
-  size_t rc;
+  /* Native worker threads hold island values too (K4), so the ref count
+   * and the tables below are shared once another thread uses the island:
+   * the count is then updated atomically and every table access takes its
+   * mutex (nh_shared). */
+  _Atomic size_t rc;
   uint32_t id;
   uint32_t flags; /* SCR_NVF_* */
   /* NI-7: a stub of a deferred island module's value (id 0) carries its
@@ -67,6 +72,86 @@ typedef struct ScrNodeRef {
 static ScrNodeRef **ni_refs = NULL; /* by bridge id */
 static size_t ni_refs_cap = 0;
 static bool ni_stopped = false;
+/* Worker threads reach the same island values, so the table is shared. */
+static pthread_mutex_t nh_refs_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Whether a thread other than the island's has used the island (K4).
+ * Until then the island's thread is the only one that touches the refs,
+ * the pins and the export table, so it takes no lock and makes no atomic
+ * update: a program that never uses an island from another thread pays
+ * nothing for them. The flag is set once and never cleared, on the
+ * island's thread, by the job each other thread posts before its first
+ * island use (nh_share). The post orders everything that thread does
+ * after the flag, and the island's thread serves posted jobs only between
+ * its own operations (from its loop), never inside a locked section, so
+ * no section runs half in each mode. Read with relaxed loads: every reader
+ * other than the island's thread is ordered after the store by its post. */
+atomic_bool scr_ni_threads_shared = false;
+
+static inline bool nh_shared(void) {
+  return atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed);
+}
+
+/* Takes `m` when the tables are shared; answers whether it did. */
+static inline bool nh_lock(pthread_mutex_t *m) {
+  if (!nh_shared()) return false;
+  pthread_mutex_lock(m);
+  return true;
+}
+
+static inline void nh_unlock(pthread_mutex_t *m, bool held) {
+  if (held) pthread_mutex_unlock(m);
+}
+
+static inline void nh_rc_inc(struct ScrNodeRef *ref) {
+  if (nh_shared()) atomic_fetch_add_explicit(&ref->rc, 1, memory_order_relaxed);
+  else atomic_store_explicit(&ref->rc, atomic_load_explicit(&ref->rc, memory_order_relaxed) + 1,
+                             memory_order_relaxed);
+}
+
+/* Drops one count; answers whether it was the last. */
+static inline bool nh_rc_dec_last(struct ScrNodeRef *ref) {
+  if (nh_shared()) return atomic_fetch_sub_explicit(&ref->rc, 1, memory_order_acq_rel) == 1;
+  size_t rc = atomic_load_explicit(&ref->rc, memory_order_relaxed) - 1;
+  atomic_store_explicit(&ref->rc, rc, memory_order_relaxed);
+  return rc == 0;
+}
+
+static void nh_share_job(void *p) {
+  (void)p;
+  atomic_store_explicit(&scr_ni_threads_shared, true, memory_order_relaxed);
+}
+
+/* What this thread is to the island: not seen yet, the island's thread,
+ * or another thread that has shared the tables (nh_share). */
+enum { NH_THREAD_UNSEEN, NH_THREAD_ISLAND, NH_THREAD_OTHER };
+static SCR_TL uint8_t nh_thread = NH_THREAD_UNSEEN;
+
+void scr_ni_handles_install(void);
+
+SCR_COLD static void nh_thread_first(void) {
+  /* The handle values this thread receives are dispatched by the dynamic
+   * core through the thread's own tag table. */
+  scr_ni_handles_install();
+  if (scr_context_is_main()) {
+    nh_thread = NH_THREAD_ISLAND;
+    return;
+  }
+  /* Another thread, before its first island use: the island's thread
+   * switches the tables to shared mode. */
+  nh_thread = NH_THREAD_OTHER;
+  scr_ni_on_node_stack(nh_share_job, NULL);
+}
+
+/* Every island operation starts here, before it touches a table. */
+static inline void nh_share(void) {
+  if (nh_thread == NH_THREAD_UNSEEN) nh_thread_first();
+}
+
+/* Whether this thread is the island's, once nh_share ran on it (and on any
+ * thread while the tables are unshared: only the island's thread reaches
+ * them then). */
+static inline bool nh_on_island(void) { return nh_thread != NH_THREAD_OTHER; }
 
 SCR_COLD static void nh_oom(void) { scr_trap("scriptc: out of memory\n"); }
 
@@ -84,8 +169,15 @@ typedef struct {
 
 static NhPin *nh_pins = NULL;
 static size_t nh_npins = 0, nh_pins_cap = 0, nh_sweep_at = 64;
+static pthread_mutex_t nh_pins_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void nh_ref_release(ScrNodeRef *ref);
+static void nh_ref_free(ScrNodeRef *ref);
+static void nh_drop_drain(void);
+
+/* Releases one count of `ref`; the last frees it (nh_ref_free). */
+static inline void nh_ref_release(ScrNodeRef *ref) {
+  if (nh_rc_dec_last(ref)) nh_ref_free(ref);
+}
 
 static void nh_pin_release_obj(NhPin *pin) {
   switch (pin->kind) {
@@ -96,6 +188,7 @@ static void nh_pin_release_obj(NhPin *pin) {
 }
 
 static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
+  bool held = nh_lock(&nh_pins_lock);
   if (nh_npins == nh_pins_cap) {
     size_t cap = nh_pins_cap ? nh_pins_cap * 2 : 16;
     NhPin *grown = realloc(nh_pins, cap * sizeof *grown);
@@ -108,22 +201,50 @@ static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
   case NH_PIN_ERROR: scr_error_retain((ScrError *)obj); break;
   case NH_PIN_BYTES: scr_bytes_retain((ScrBytes *)obj); break;
   }
-  ref->rc++;
+  nh_rc_inc(ref);
   nh_pins[nh_npins++] = (NhPin){obj, ref, kind};
+  nh_unlock(&nh_pins_lock, held);
 }
 
-/* The ref a pinned runtime object represents, or NULL. */
+/* The ref a pinned runtime object represents (+1), or NULL. The count is
+ * taken under the lock: the sweep runs on another thread too, and a ref the
+ * table alone held may be freed as soon as the lock is dropped. */
 static ScrNodeRef *nh_pinned(const void *obj, int kind) {
+  /* A thread that never used the island holds no island value (and must
+   * not read the table the island's thread is changing unlocked). */
+  if (nh_thread == NH_THREAD_UNSEEN && !scr_context_is_main()) return NULL;
+  ScrNodeRef *ref = NULL;
+  bool held = nh_lock(&nh_pins_lock);
   for (size_t i = 0; i < nh_npins; i++)
-    if (nh_pins[i].obj == obj && nh_pins[i].kind == kind) return nh_pins[i].ref;
-  return NULL;
+    if (nh_pins[i].obj == obj && nh_pins[i].kind == kind) {
+      ref = nh_pins[i].ref;
+      nh_rc_inc(ref);
+      break;
+    }
+  nh_unlock(&nh_pins_lock, held);
+  return ref;
 }
 
-/* The pinned object of a ref, or NULL. */
+/* The pinned object of a ref (+1, by its kind's retain), or NULL. Retained
+ * under the lock for the same reason as nh_pinned: after the unlock the
+ * sweep on the island's thread may free an object only the table held. */
 static void *nh_pinned_obj(const ScrNodeRef *ref, int kind) {
+  void *obj = NULL;
+  bool held = nh_lock(&nh_pins_lock);
   for (size_t i = 0; i < nh_npins; i++)
-    if (nh_pins[i].ref == ref && nh_pins[i].kind == kind) return nh_pins[i].obj;
-  return NULL;
+    if (nh_pins[i].ref == ref && nh_pins[i].kind == kind) {
+      obj = nh_pins[i].obj;
+      break;
+    }
+  if (obj != NULL) {
+    switch (kind) {
+    case NH_PIN_PROMISE: scr_promise_retain((ScrPromise *)obj); break;
+    case NH_PIN_ERROR: scr_error_retain((ScrError *)obj); break;
+    case NH_PIN_BYTES: scr_bytes_retain((ScrBytes *)obj); break;
+    }
+  }
+  nh_unlock(&nh_pins_lock, held);
+  return obj;
 }
 
 /* Releases every pin whose object only the table still holds. Releasing a
@@ -131,6 +252,7 @@ static void *nh_pinned_obj(const ScrNodeRef *ref, int kind) {
  * a pass frees nothing. */
 static void nh_sweep(void) {
   bool freed = true;
+  bool held = nh_lock(&nh_pins_lock);
   while (freed) {
     freed = false;
     for (size_t i = 0; i < nh_npins;) {
@@ -147,6 +269,7 @@ static void nh_sweep(void) {
     }
   }
   nh_sweep_at = nh_npins * 2 > 64 ? nh_npins * 2 : 64;
+  nh_unlock(&nh_pins_lock, held);
 }
 
 /* ── runtime bytes V8 freed (any thread) ─────────────────────────────── */
@@ -181,6 +304,12 @@ static void nh_drain_freed(void) {
 /* Housekeeping at every operation: bytes V8 freed, and the pin sweep once
  * the table has grown. */
 static void nh_enter(void) {
+  if (nh_thread != NH_THREAD_ISLAND) {
+    nh_share();
+    /* The island's thread does the housekeeping, for every thread. */
+    if (!nh_on_island()) return;
+  }
+  if (nh_shared()) nh_drop_drain();
   if (nh_nfreed > 0) nh_drain_freed();
   if (nh_npins >= nh_sweep_at) nh_sweep();
 }
@@ -188,8 +317,110 @@ static void nh_enter(void) {
 /* ── refs ─────────────────────────────────────────────────────────────── */
 
 static void *nh_ref_retain_v(void *h) {
-  ((ScrNodeRef *)h)->rc++;
+  nh_rc_inc((ScrNodeRef *)h);
   return h;
+}
+
+/* ── the id lifecycle across threads (K4) ─────────────────────────────
+ *
+ * A bridge id names a live import-table entry from the moment the bridge
+ * answers it until the runtime drops it, and the bridge recycles a dropped
+ * id for the next value it imports. Worker threads hold island values too,
+ * so the runtime keeps one invariant that makes a drop safe on any
+ * interleaving:
+ *
+ *   Every ref with an id is created on the island's thread, and every drop
+ *   is issued on the island's thread; a drop is issued only when ni_refs
+ *   has no ref for the id.
+ *
+ * The island's thread is sequential, and it creates a ref (nh_ref) right
+ * after the bridge answered its id, with no drop possible in between; a
+ * routed operation's answer gets its ref there too, inside the served job
+ * (nh_call_job), before the requesting thread wakes. So whenever the
+ * runtime holds an id at all, ni_refs holds a ref for it, and the drop
+ * check (nh_can_drop) cannot miss a holder: a ref no table entry names has
+ * a count of zero, and nothing else names an id. Worker threads only
+ * release refs (and retain refs they already hold): a release that ends a
+ * ref removes its table entry and asks the island's thread to drop the id
+ * (nh_drop), which checks the table again when it gets there, because the
+ * island's thread may have taken the id up again in between.
+ *
+ * A ref may reach zero on one thread while the island's thread finds it in
+ * ni_refs (its release has not removed the entry yet). nh_ref then never
+ * revives it: a ref at zero is being freed, so nh_ref installs a new ref in
+ * its place, and the old ref's release leaves the entry alone (it is no
+ * longer the one named there).
+ *
+ * A program that never uses an island from another thread keeps the
+ * single-threaded lifecycle: it creates and drops refs at the same points,
+ * a table ref is never at zero there, and with the tables unshared
+ * (nh_shared) none of it takes a lock or an atomic update. */
+
+/* Whether the bridge entry of `id` may be dropped now: no ref holds the
+ * value (the invariant above). Called under nh_refs_lock. */
+static bool nh_can_drop(uint32_t id) {
+  return !(id != 0 && id < ni_refs_cap && ni_refs[id] != NULL);
+}
+
+/* Drops the bridge entry of `id`. The bridge runs on the island's thread,
+ * so a drop a worker thread releases is queued for that thread instead of
+ * being posted: a release may run under the pin lock, and posting from
+ * there would wait on a thread that may want the lock. */
+static pthread_mutex_t nh_dropq_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t *nh_dropq = NULL;
+static size_t nh_ndropq = 0, nh_dropq_cap = 0;
+static atomic_size_t nh_dropq_len;
+
+static void nh_drop_drain(void) {
+  if (atomic_load_explicit(&nh_dropq_len, memory_order_acquire) == 0) return;
+  for (;;) {
+    pthread_mutex_lock(&nh_dropq_lock);
+    uint32_t id = nh_ndropq > 0 ? nh_dropq[--nh_ndropq] : 0;
+    if (id != 0) atomic_fetch_sub_explicit(&nh_dropq_len, 1, memory_order_relaxed);
+    pthread_mutex_unlock(&nh_dropq_lock);
+    if (id == 0) return;
+    bool held = nh_lock(&nh_refs_lock);
+    bool can = nh_can_drop(id);
+    nh_unlock(&nh_refs_lock, held);
+    /* Another thread took the value again (or a reply still owes it): its
+     * own release queues the drop. */
+    if (!can) continue;
+    const ScrNodeBridge *b = scr_ni_bridge_loaded();
+    if (b != NULL) b->drop(id);
+  }
+}
+
+static void nh_drop(uint32_t id) {
+  const ScrNodeBridge *b = scr_ni_bridge_loaded();
+  if (b == NULL) return;
+  /* Unshared, this is the island's thread and its release just removed
+   * the only ref of the id. */
+  if (!nh_shared()) {
+    b->drop(id);
+    return;
+  }
+  if (nh_on_island()) {
+    nh_drop_drain();
+    if (id != 0) {
+      bool held = nh_lock(&nh_refs_lock);
+      bool can = nh_can_drop(id);
+      nh_unlock(&nh_refs_lock, held);
+      if (!can) return;
+      b->drop(id);
+    }
+    return;
+  }
+  pthread_mutex_lock(&nh_dropq_lock);
+  if (nh_ndropq == nh_dropq_cap) {
+    size_t cap = nh_dropq_cap ? nh_dropq_cap * 2 : 16;
+    uint32_t *grown = realloc(nh_dropq, cap * sizeof *grown);
+    if (grown == NULL) nh_oom();
+    nh_dropq = grown;
+    nh_dropq_cap = cap;
+  }
+  nh_dropq[nh_ndropq++] = id;
+  atomic_fetch_add_explicit(&nh_dropq_len, 1, memory_order_release);
+  pthread_mutex_unlock(&nh_dropq_lock);
 }
 
 static void nh_lazy_free(ScrNodeRef *ref) {
@@ -199,8 +430,9 @@ static void nh_lazy_free(ScrNodeRef *ref) {
   ref->lazy = NULL;
 }
 
-static void nh_ref_release(ScrNodeRef *ref) {
-  if (--ref->rc != 0) return;
+/* A ref whose count reached zero. Kept out of line, so the release every
+ * handle box makes stays a decrement and a test at its call site. */
+__attribute__((noinline)) static void nh_ref_free(ScrNodeRef *ref) {
   free(ref->identity);
   if (ref->alias != NULL) {
     nh_ref_release(ref->alias);
@@ -212,15 +444,21 @@ static void nh_ref_release(ScrNodeRef *ref) {
     free(ref);
     return;
   }
-  if (ref->id < ni_refs_cap && ni_refs[ref->id] == ref) ni_refs[ref->id] = NULL;
-  if (!ni_stopped && scr_ni_bridge_loaded() != NULL) scr_ni_bridge_loaded()->drop(ref->id);
+  uint32_t id = ref->id;
+  bool held = nh_lock(&nh_refs_lock);
+  if (id < ni_refs_cap && ni_refs[id] == ref) ni_refs[id] = NULL;
+  nh_unlock(&nh_refs_lock, held);
+  if (!ni_stopped) nh_drop(id);
   free(ref);
 }
 
 static void nh_ref_release_v(void *h) { nh_ref_release((ScrNodeRef *)h); }
 
-/* The ref of bridge id `id` (+1), created on first sight. */
+/* The ref of bridge id `id` (+1), created on first sight. Called on the
+ * island's thread only, right after the bridge answered `id` (the id
+ * lifecycle above). */
 static ScrNodeRef *nh_ref(uint32_t id, uint32_t flags) {
+  bool held = nh_lock(&nh_refs_lock);
   if (id >= ni_refs_cap) {
     size_t cap = ni_refs_cap ? ni_refs_cap : 64;
     while (cap <= id) cap *= 2;
@@ -231,16 +469,32 @@ static ScrNodeRef *nh_ref(uint32_t id, uint32_t flags) {
     ni_refs_cap = cap;
   }
   ScrNodeRef *ref = ni_refs[id];
-  if (ref != NULL) {
-    ref->rc++;
+  if (ref != NULL && !held) {
+    /* Unshared, a ref in the table is never at zero (its release removes
+     * it first). */
+    nh_rc_inc(ref);
     return ref;
+  }
+  if (ref != NULL) {
+    /* Never from zero: a ref at zero is being released on another thread,
+     * which frees it; a new ref takes its entry. */
+    size_t rc = atomic_load_explicit(&ref->rc, memory_order_relaxed);
+    while (rc != 0 && !atomic_compare_exchange_weak_explicit(&ref->rc, &rc, rc + 1,
+                                                             memory_order_relaxed,
+                                                             memory_order_relaxed)) {
+    }
+    if (rc != 0) {
+      nh_unlock(&nh_refs_lock, held);
+      return ref;
+    }
   }
   ref = calloc(1, sizeof *ref);
   if (ref == NULL) nh_oom();
-  ref->rc = 1;
+  atomic_init(&ref->rc, 1);
   ref->id = id;
   ref->flags = flags;
   ni_refs[id] = ref;
+  nh_unlock(&nh_refs_lock, held);
   return ref;
 }
 
@@ -278,9 +532,11 @@ bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real) {
   if (r == s) return true;
   if (r->rc == 1 && r->alias == NULL) {
     /* Only `real` holds the fresh ref: move its id to the stub. */
+    bool held = nh_lock(&nh_refs_lock);
     s->id = r->id;
     s->flags = r->flags;
     ni_refs[r->id] = s;
+    nh_unlock(&nh_refs_lock, held);
     r->id = 0;
     real->v.handle.ptr = s;
     s->rc++;
@@ -333,9 +589,11 @@ static bool nh_lazy_create(ScrNodeRef *ref) {
     return false;
   }
   ScrNodeRef *r = real->v.handle.ptr;
+  bool held = nh_lock(&nh_refs_lock);
   ref->id = r->id;
   ref->flags = r->flags;
   ni_refs[r->id] = ref;
+  nh_unlock(&nh_refs_lock, held);
   real->v.handle.ptr = ref;
   ref->rc++;
   r->id = 0;
@@ -402,7 +660,9 @@ static uint32_t nh_wait(ScrPromise *p) {
 
 static ScrDyn *nh_from_node(const ScrNodeValue *v);
 static void nh_throw_value(const ScrNodeValue *v);
+static ScrNodeRef *nh_ref_in(uint32_t id, uint32_t flags);
 static int nh_then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *thrown);
+static void nh_routed_done(void);
 
 static bool nh_has_lone_surrogate(const char *p, size_t n) {
   for (size_t i = 0; i + 1 < n; i++)
@@ -413,6 +673,96 @@ static bool nh_has_lone_surrogate(const char *p, size_t n) {
 static ScrStr *nh_str(const char *data, size_t len) {
   if (nh_has_lone_surrogate(data, len)) scr_wtf8_note();
   return scr_str_new(data, len);
+}
+
+/* The error details of an island error, with the bridge's strings copied.
+ * The bridge keeps them only until its next entry and a worker thread asks
+ * across threads, so the copy is made on the island's thread. */
+typedef struct {
+  ScrNodeErrorInfo info;
+  char *name, *message, *stack, *code, *arrow;
+} NhErrorInfo;
+
+static void nh_error_dup(char **dst, const char *src, size_t len) {
+  *dst = NULL;
+  if (src == NULL) return;
+  char *copy = malloc(len + 1);
+  if (copy == NULL) nh_oom();
+  memcpy(copy, src, len);
+  copy[len] = '\0';
+  *dst = copy;
+}
+
+typedef struct {
+  uint32_t id;
+  NhErrorInfo *e;
+} NhErrorInfoJob;
+
+static void nh_error_info_read(NhErrorInfo *e, uint32_t id) {
+  scr_ni_bridge_loaded()->error_info(id, &e->info);
+  nh_error_dup(&e->name, e->info.name, e->info.name_len);
+  nh_error_dup(&e->message, e->info.message, e->info.message_len);
+  nh_error_dup(&e->stack, e->info.stack, e->info.stack_len);
+  nh_error_dup(&e->code, e->info.code, e->info.code_len);
+  nh_error_dup(&e->arrow, e->info.arrow, e->info.arrow_len);
+  e->info.name = e->name;
+  e->info.message = e->message;
+  e->info.stack = e->stack;
+  e->info.code = e->code;
+  e->info.arrow = e->arrow;
+}
+
+static void nh_error_info_job(void *p) {
+  NhErrorInfoJob *j = p;
+  nh_error_info_read(j->e, j->id);
+}
+
+static void nh_error_info(uint32_t id, NhErrorInfo *e) {
+  if (nh_on_island()) {
+    nh_error_info_read(e, id);
+    return;
+  }
+  NhErrorInfoJob j = {id, e};
+  scr_ni_on_node_stack(nh_error_info_job, &j);
+}
+
+static void nh_error_info_free(NhErrorInfo *e) {
+  free(e->name);
+  free(e->message);
+  free(e->stack);
+  free(e->code);
+  free(e->arrow);
+}
+
+/* Island values whose runtime object is settled or owned by the island's
+ * thread. Refusing keeps a worker honest instead of sharing one object
+ * between two threads. */
+SCR_COLD static void nh_worker_refusal(const char *what) {
+  char message[320];
+  int n = snprintf(message, sizeof message,
+                   "scriptc: %s cannot cross between a worker thread and its Node island; "
+                   "the island belongs to the thread that started it (the main thread)",
+                   what);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, n > 0 ? (size_t)n : 0,
+                           "ERR_SCRIPTC_ISLAND_WORKER_VALUE");
+}
+
+/* Awaiting an island value registers its waiter in the island thread's
+ * table and settles the promise there, from the V8 reaction. A worker
+ * thread's promise belongs to the worker's heap, so the wait is refused by
+ * name, as an asynchronous island call is (scr_node_island.c): the promise
+ * rejects and the caller catches a coded Error. */
+SCR_COLD static void nh_worker_await_refusal(ScrPromise *p) {
+  static const char name[] = "ERR_SCRIPTC_ISLAND_WORKER_ASYNC";
+  static const char text[] =
+      "awaiting an island value from a worker thread is not supported; "
+      "await it on the main thread, which owns the Node island";
+  ScrStr *code = scr_str_new(name, sizeof name - 1);
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  scr_throw_node_coded(0, code, message);
+  scr_str_release(message);
+  scr_str_release(code);
+  scr_promise_reject_pending(p);
 }
 
 /* An island promise as a scriptc promise: one per V8 promise while the
@@ -430,9 +780,13 @@ static ScrDyn *nh_promise_box(ScrNodeRef *ref) {
       nh_throw_value(&thrown);
       scr_promise_reject_pending(p);
     }
+    nh_routed_done();
     scr_promise_release(p); /* the pin holds it */
+    return scr_dyn_new_promise(p);
   }
-  return scr_dyn_new_promise(p);
+  ScrDyn *d = scr_dyn_new_promise(p);
+  scr_promise_release(p); /* the lookup's reference */
+  return d;
 }
 
 /* Bytes from V8: an external root over the V8 store's memory, one per V8
@@ -440,7 +794,8 @@ static ScrDyn *nh_promise_box(ScrNodeRef *ref) {
 static ScrDyn *nh_bytes_box(const ScrNodeValue *v) {
   ScrNodeRef *ref = nh_ref(v->u.bytes.handle, v->flags);
   ScrBytes *b = nh_pinned_obj(ref, NH_PIN_BYTES);
-  if (b == NULL) {
+  bool found = b != NULL;
+  if (!found) {
     b = scr_bytes_from_external(v->u.bytes.data, v->u.bytes.len);
     b->elem = (ScrBytesElem)v->u.bytes.elem;
     b->is_buffer = (v->flags & SCR_NVF_BUFFER) != 0;
@@ -451,6 +806,7 @@ static ScrDyn *nh_bytes_box(const ScrNodeValue *v) {
   nh_ref_release(ref);
   ScrDyn *d = scr_dyn_new_bytes(b);
   d->buffer = b->is_buffer;
+  if (found) scr_bytes_release(b); /* the lookup's reference */
   return d;
 }
 
@@ -477,13 +833,23 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
     return d;
   }
   case SCR_NV_HANDLE: {
-    ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
+    ScrNodeRef *ref = nh_ref_in(v->u.handle, v->flags);
+    if ((ref->flags & SCR_NVF_PROMISE) != 0 && !nh_on_island()) {
+      nh_ref_release(ref);
+      nh_worker_refusal("an island promise");
+      return NULL;
+    }
     ScrDyn *d = (ref->flags & SCR_NVF_PROMISE) ? nh_promise_box(ref)
                                                 : scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
     nh_ref_release(ref);
     return d;
   }
-  case SCR_NV_BYTES: return nh_bytes_box(v);
+  case SCR_NV_BYTES:
+    if (!nh_on_island()) {
+      nh_worker_refusal("island bytes (a typed array or Buffer)");
+      return NULL;
+    }
+    return nh_bytes_box(v);
   case SCR_NV_EXPORT: {
     /* A native value's representative came back: the value itself. */
     ScrDyn *d = scr_ni_export_value(v->u.exp.id);
@@ -496,18 +862,20 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
 /* The ScrError of an island Error handle (+1): the one already pinned to
  * it, else a new one of the nearest intrinsic class, pinned. */
 static ScrError *nh_error_of(const ScrNodeValue *v) {
-  ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
+  ScrNodeRef *ref = nh_ref_in(v->u.handle, v->flags);
   ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
   if (pinned != NULL) {
     nh_ref_release(ref);
-    return scr_error_retain(pinned);
+    return pinned; /* the lookup's reference is the caller's */
   }
-  ScrNodeErrorInfo info;
-  nh_bridge()->error_info(ref->id, &info);
+  NhErrorInfo ni;
+  nh_error_info(ref->id, &ni);
+  ScrNodeErrorInfo info = ni.info;
   /* Node did not find a file, and the error names the installed module
    * tree: a tool may have removed files from it. What is missing is put
-   * back (scr_ni_tree_repair), for nh_load's second attempt and for every
-   * later load. */
+   * back (scr_ni_tree_repair, on the island's thread whichever thread
+   * reads the error), for nh_load's second attempt and for every later
+   * load. */
   if (info.code != NULL && scr_ni_missing_file_code(info.code, info.code_len) &&
       ((info.message != NULL && scr_ni_tree_named(info.message, info.message_len)) ||
        (info.stack != NULL && scr_ni_tree_named(info.stack, info.stack_len))))
@@ -539,6 +907,7 @@ static ScrError *nh_error_of(const ScrNodeValue *v) {
     scr_error_set_code_value(e, code);
     scr_str_release(code);
   }
+  nh_error_info_free(&ni);
   nh_pin(e, NH_PIN_ERROR, ref);
   nh_ref_release(ref);
   return e;
@@ -649,6 +1018,13 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   /* NI-5: closures, promises, records, class instances and dyn objects
    * cross by reference (scr_node_island_export.c). */
   if (scr_ni_exportable(v)) {
+    /* An export is a reference the island calls back through: it would run
+     * this thread's heap object on the island's thread, and the export
+     * table is the island's. */
+    if (!nh_on_island()) {
+      nh_worker_refusal("a native function or object passed by reference");
+      return false;
+    }
     scr_ni_export_out(v, out);
     return true;
   }
@@ -735,9 +1111,16 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
     out->tag = SCR_NV_HANDLE;
     out->flags = ref->flags;
     out->u.handle = ref->id;
+    nh_ref_release(ref);
     return true;
   }
   case SCR_DYN_BYTES: {
+    /* The island would hold this thread's store after the call returns:
+     * the V8 view keeps the owner, but the owner is a worker's heap. */
+    if (!nh_on_island()) {
+      nh_worker_refusal("native bytes (a typed array or Buffer)");
+      return false;
+    }
     ScrBytes *b = v->v.bytes;
     ScrBytes *root = b->backing != NULL ? b->backing : b;
     ScrNodeRef *ref = nh_pinned(b, NH_PIN_BYTES);
@@ -749,6 +1132,7 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
     if (b->is_data_view) out->flags |= SCR_NVF_DATAVIEW;
     if (ref != NULL) {
       out->u.bytes.handle = ref->id; /* the same V8 view */
+      nh_ref_release(ref);
       return true;
     }
     if (root->shared != NULL) return nh_refuse("shared memory");
@@ -766,6 +1150,7 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
       out->tag = SCR_NV_HANDLE;
       out->flags = ref->flags;
       out->u.handle = ref->id;
+      nh_ref_release(ref);
       return true;
     }
     ScrStr *name = e->name != NULL ? scr_str_retain(e->name) : scr_error_default_name(e);
@@ -816,6 +1201,31 @@ typedef struct {
   int threw;
 } NhCall;
 
+/* A call another thread made, served on the island's thread. Its answer
+ * crosses threads: the bridge's string data dies at its next entry, which
+ * the island's thread may reach first, so the served job copies it into
+ * the caller's buffer (`copy`); a handle in the answer gets its ref there
+ * too (`ref`, +1, for `ref_id`), on the island's thread (the id lifecycle
+ * above). */
+typedef struct {
+  NhCall *call;
+  char **copy;
+  ScrNodeRef *ref;
+  uint32_t ref_id;
+} NhRouted;
+
+/* String and BigInt out-values are bridge-owned copies; keep the caller's. */
+static void nh_copy_str_out(ScrNodeValue *v, char **slot) {
+  if (v->tag != SCR_NV_STRING && v->tag != SCR_NV_BIGINT) return;
+  size_t len = v->u.str.len;
+  char *copy = malloc(len > 0 ? len : 1);
+  if (copy == NULL) nh_oom();
+  if (len > 0) memcpy(copy, v->u.str.data, len);
+  free(*slot);
+  *slot = copy;
+  v->u.str.data = copy;
+}
+
 static void nh_call_job(void *p) {
   NhCall *c = p;
   const ScrNodeBridge *b = scr_ni_bridge_loaded();
@@ -834,10 +1244,72 @@ static void nh_call_job(void *p) {
   }
 }
 
+static void nh_call_job_routed(void *p) {
+  NhRouted *r = p;
+  NhCall *c = r->call;
+  nh_call_job(c);
+  nh_copy_str_out(c->out, r->copy);
+  /* The ref of the handle the requester receives, made while the id is
+   * certainly live: the bridge just answered it, and this thread is the
+   * only one that drops. */
+  uint32_t id = c->out->tag == SCR_NV_HANDLE  ? c->out->u.handle
+                : c->out->tag == SCR_NV_BYTES ? c->out->u.bytes.handle
+                                              : 0;
+  if (id != 0) {
+    r->ref = nh_ref(id, c->out->flags);
+    r->ref_id = id;
+  }
+}
+
+/* The answer of a routed call, valid until this thread's next one: its
+ * string copy, and the ref its handle was given on the island's thread
+ * until the conversion takes it (nh_ref_in). */
+static SCR_TL char *nh_routed_copy = NULL;
+static SCR_TL ScrNodeRef *nh_routed_ref = NULL;
+static SCR_TL uint32_t nh_routed_id = 0;
+
+/* Releases the routed answer once it has been converted into the
+ * runtime's own values, with the ref of a handle nothing converted. The
+ * island's thread never has one. */
+static void nh_routed_done(void) {
+  if (nh_on_island() || (nh_routed_copy == NULL && nh_routed_ref == NULL)) return;
+  free(nh_routed_copy);
+  nh_routed_copy = NULL;
+  ScrNodeRef *ref = nh_routed_ref;
+  nh_routed_ref = NULL;
+  if (ref != NULL) nh_ref_release(ref);
+}
+
+/* Another thread's call: posted to the island's thread (ni_route). */
+__attribute__((noinline)) static int nh_run_routed(NhCall *c) {
+  /* The previous answer is released here too: a path that reads its
+   * answer without nh_outcome never converted it. */
+  nh_routed_done();
+  NhRouted r = {c, &nh_routed_copy, NULL, 0};
+  scr_ni_on_node_stack(nh_call_job_routed, &r);
+  nh_routed_ref = r.ref;
+  nh_routed_id = r.ref_id;
+  return c->threw;
+}
+
 static int nh_run(NhCall *c) {
+  if (!nh_on_island()) return nh_run_routed(c);
   scr_ni_shared_refresh();
   scr_ni_on_node_stack(nh_call_job, c);
   return c->threw;
+}
+
+/* The ref of a handle the bridge answered (+1). On the island's thread it
+ * is made now; another thread takes the one its served job made, as it
+ * must never make one itself (the id lifecycle above). */
+static ScrNodeRef *nh_ref_in(uint32_t id, uint32_t flags) {
+  if (nh_on_island()) return nh_ref(id, flags);
+  ScrNodeRef *ref = nh_routed_ref;
+  if (ref == NULL || nh_routed_id != id)
+    scr_trap("scriptc: internal error: an island handle reached a worker thread without "
+             "its reference\n");
+  nh_routed_ref = NULL;
+  return ref;
 }
 
 static int nh_then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *thrown) {
@@ -848,11 +1320,14 @@ static int nh_then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *thro
 /* The outcome of a call as a dyn value (+1), or NULL with the thrown
  * value pending. */
 static ScrDyn *nh_outcome(NhCall *c) {
-  if (c->threw) {
-    nh_throw_value(c->out);
-    return NULL;
-  }
-  return nh_from_node(c->out);
+  ScrDyn *out = NULL;
+  if (c->threw) nh_throw_value(c->out);
+  else out = nh_from_node(c->out);
+  /* The runtime's value owns its bytes now; the thread's next call does
+   * not have to carry the copy, and a worker thread that ends here keeps
+   * none. */
+  nh_routed_done();
+  return out;
 }
 
 /* The receiver of a property operation as an in-value: an island handle
@@ -1142,6 +1617,7 @@ static int nh_error_constructor(const struct ScrError *err, ScrDyn **out) {
   ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
   if (ref == NULL) return 0;
   ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND); /* retains */
+  nh_ref_release(ref);
   ScrDyn *ctor = scr_ni_get_str(handle, "constructor", 11);
   scr_dyn_release(handle);
   *out = ctor;
@@ -1192,6 +1668,12 @@ ScrPromise *scr_ni_await(ScrDyn *value) {
                             scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     return p;
   }
+  /* An island value settles on the island's thread (nh_wait's table and the
+   * V8 reaction): a worker thread has no route for that and refuses. */
+  if (!scr_context_is_main()) {
+    nh_worker_await_refusal(p);
+    return p;
+  }
   nh_enter();
   ScrNodeValue v = {.tag = SCR_NV_HANDLE, .flags = ref->flags}, thrown;
   v.u.handle = ref->id;
@@ -1200,6 +1682,7 @@ ScrPromise *scr_ni_await(ScrDyn *value) {
     nh_throw_value(&thrown);
     scr_promise_reject_pending(p);
   }
+  nh_routed_done();
   return p;
 }
 
@@ -1216,6 +1699,9 @@ static ScrClosure *nh_function_identity(const ScrDyn *value) {
   if (ref == NULL || (ref->flags & SCR_NVF_FUNCTION) == 0) return NULL;
   /* A deferred module's stub that already had a ref stands for it. */
   while (ref->alias != NULL) ref = ref->alias;
+  /* Two threads may hold the one ref of an island function (K4): the root
+   * is made once, under the lock the refs share. */
+  bool held = nh_lock(&nh_refs_lock);
   if (ref->identity == NULL) {
     ScrClosure *root = calloc(1, sizeof *root + sizeof(ScrBox *));
     if (root == NULL) nh_oom();
@@ -1224,7 +1710,9 @@ static ScrClosure *nh_function_identity(const ScrDyn *value) {
     root->caps[0] = (ScrBox *)(void *)ref; /* not a capture: ncaps stays 0 */
     ref->identity = root;
   }
-  return ref->identity;
+  ScrClosure *identity = ref->identity;
+  nh_unlock(&nh_refs_lock, held);
+  return identity;
 }
 
 static ScrDyn *nh_function_of_identity(const ScrClosure *root) {
@@ -1309,6 +1797,7 @@ ScrDyn *scr_ni_value_in(const ScrNodeValue *v) {
 size_t scr_ni_gc_pins(void ***objs, void ***refs) {
   static void **o = NULL, **r = NULL;
   static size_t cap = 0;
+  bool held = nh_lock(&nh_pins_lock);
   if (nh_npins > cap) {
     cap = nh_npins * 2;
     void **go = realloc(o, cap * sizeof *go);
@@ -1322,9 +1811,11 @@ size_t scr_ni_gc_pins(void ***objs, void ***refs) {
     o[i] = nh_pins[i].obj;
     r[i] = nh_pins[i].ref;
   }
+  size_t n = nh_npins;
+  nh_unlock(&nh_pins_lock, held);
   *objs = o;
   *refs = r;
-  return nh_npins;
+  return n;
 }
 
 /* NI-8: the ref an island handle box holds, its reference count and its
@@ -1333,8 +1824,10 @@ size_t scr_ni_gc_pins(void ***objs, void ***refs) {
 void *scr_ni_gc_ref_info(void *r, size_t *rc, uint32_t *id) {
   ScrNodeRef *ref = r;
   if (ref == NULL) return NULL;
-  *rc = ref->rc;
+  *rc = atomic_load_explicit(&ref->rc, memory_order_relaxed);
+  bool held = nh_lock(&nh_refs_lock);
   *id = ref->id != 0 && ref->id < ni_refs_cap && ni_refs[ref->id] == ref ? ref->id : 0;
+  nh_unlock(&nh_refs_lock, held);
   return ref;
 }
 
@@ -1394,12 +1887,22 @@ ScrPromise *scr_node_island_await_copy(ScrDyn *value) {
   return dst;
 }
 
-uint32_t scr_ni_live_handles(void) {
+static void nh_live_handles_job(void *p) {
   const ScrNodeBridge *b = scr_ni_bridge_loaded();
-  if (b == NULL) return 0;
-  nh_drain_freed();
-  nh_sweep();
-  return b->live_handles();
+  *(uint32_t *)p = b != NULL ? b->live_handles() : 0;
+}
+
+uint32_t scr_ni_live_handles(void) {
+  if (scr_ni_bridge_loaded() == NULL) return 0;
+  nh_share();
+  if (nh_on_island()) {
+    nh_drain_freed();
+    nh_sweep();
+  }
+  uint32_t n = 0;
+  if (nh_on_island()) n = scr_ni_bridge_loaded()->live_handles();
+  else scr_ni_on_node_stack(nh_live_handles_job, &n);
+  return n;
 }
 
 void scr_ni_stop(void) { ni_stopped = true; }
@@ -1588,6 +2091,7 @@ static const ScrDynHandleOps nh_ops = {
  * util.inspect), so the runtime's reference audit sees only the program's
  * own objects. */
 static void nh_cleanup(void) {
+  nh_drop_drain();
   nh_drain_freed();
   /* What the last conversion for the export unit kept alive. */
   NhKeep last = nh_out_keep;
@@ -1621,17 +2125,27 @@ static void nh_cleanup(void) {
   while (nh_nwaiters > 0) scr_promise_release(nh_waiters[--nh_nwaiters].promise);
   free(nh_pins);
   free(nh_waiters);
+  free(nh_dropq);
+  free(nh_routed_copy);
+  nh_routed_copy = NULL;
+  nh_dropq = NULL;
+  nh_ndropq = nh_dropq_cap = 0;
+  atomic_store_explicit(&nh_dropq_len, 0, memory_order_relaxed);
   nh_pins = NULL;
   nh_waiters = NULL;
   nh_pins_cap = nh_waiters_cap = 0;
 }
 
 void scr_ni_handles_install(void) {
-  static bool installed = false;
+  /* The tag table is thread-local (scr_json.c), so every script thread that
+   * can hold an island handle installs the ops for itself: a worker thread
+   * receives the module handle its island calls return. The cleanup runs on
+   * the island's thread, which owns the tables below and the Node side. */
+  static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
   scr_dyn_handle_install(SCR_DYNH_NODE_ISLAND, &nh_ops);
-  scr_atexit(nh_cleanup);
+  if (scr_context_is_main()) scr_atexit(nh_cleanup);
 }
 
 /* ── NI-4d: util.types, Array.isArray and uncaught reports ─────────────── */
@@ -1672,10 +2186,19 @@ bool scr_ni_is_array(ScrDyn *value) {
 bool scr_ni_report_uncaught(ScrError *error) {
   ScrNodeRef *ref = nh_pinned(error, NH_PIN_ERROR);
   const ScrNodeBridge *bridge = scr_ni_bridge_loaded();
-  if (ref == NULL || ref->id == 0 || bridge == NULL) return false;
+  if (ref == NULL || ref->id == 0 || bridge == NULL) {
+    if (ref != NULL) nh_ref_release(ref);
+    return false;
+  }
   ScrNodeErrorInfo info;
-  bridge->error_info(ref->id, &info);
-  if (info.stack == NULL) return false;
+  NhErrorInfo ni;
+  nh_error_info(ref->id, &ni);
+  info = ni.info;
+  if (info.stack == NULL) {
+    nh_error_info_free(&ni);
+    nh_ref_release(ref);
+    return false;
+  }
   if (info.arrow != NULL && info.arrow_len > 0) {
     fwrite(info.arrow, 1, info.arrow_len, stderr);
     fputs("\n\n", stderr);
@@ -1683,6 +2206,8 @@ bool scr_ni_report_uncaught(ScrError *error) {
   fwrite(info.stack, 1, info.stack_len, stderr);
   fprintf(stderr, "\n\nNode.js v%s\n", bridge->node_version);
   fflush(stderr);
+  nh_error_info_free(&ni);
+  nh_ref_release(ref);
   return true;
 }
 
@@ -1753,6 +2278,9 @@ ScrDyn *scr_node_island_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *args) {
 }
 
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
+  /* A callee that resolved to nothing already threw; the TypeError below
+   * would replace that exception with a misleading one. */
+  if (fn == NULL) return NULL;
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   if (ni_lc_island(fn)) return scr_ni_call(fn, NULL, items, argc);
@@ -1760,6 +2288,7 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
 }
 
 ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args) {
+  if (fn == NULL) return NULL;
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   if (nh_is_native_function(fn)) return nh_call_native(fn, this_, items, argc, "value");

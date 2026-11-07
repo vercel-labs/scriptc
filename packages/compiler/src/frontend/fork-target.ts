@@ -176,7 +176,8 @@ function constInitializer(program: ts.Program, expr: ts.Expression): ts.Expressi
   return decl.initializer;
 }
 
-function importMetaUrl(expr: ts.Expression): boolean {
+/** True for `import.meta.url`, the module's own file URL. */
+export function importMetaUrl(expr: ts.Expression): boolean {
   const current = strip(expr);
   return (
     ts.isPropertyAccessExpression(current) &&
@@ -281,12 +282,7 @@ function staticString(
       return null;
     }
   }
-  if (
-    ts.isNewExpression(current) &&
-    ts.isIdentifier(current.expression) &&
-    (isBuiltinMemberImport(program, current.expression, "url", "URL") ||
-      (current.expression.text === "URL" && isNodeGlobal(program, current.expression)))
-  ) {
+  if (ts.isNewExpression(current) && isUrlConstructor(program, current.expression)) {
     const args = current.arguments?.nodes ?? [];
     if (args.length < 1 || args.length > 2) return null;
     const input = staticString(program, args[0]!, seen);
@@ -299,6 +295,17 @@ function staticString(
     }
   }
   return null;
+}
+
+/** True for a `new URL(...)` constructor: the `url` module's binding, or the
+ * Node global. */
+export function isUrlConstructor(program: ts.Program, expr: ts.Expression): boolean {
+  const current = strip(expr);
+  if (!ts.isIdentifier(current)) return false;
+  return (
+    isBuiltinMemberImport(program, current, "url", "URL") ||
+    (current.text === "URL" && isNodeGlobal(program, current))
+  );
 }
 
 /** Resolves the supported fork modulePath expression to an absolute source

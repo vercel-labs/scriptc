@@ -12,11 +12,23 @@
  * bindings, `+` and template-span cartesian products (capped), the
  * conditional/`??`/`||` union, and parameters of module-local functions that
  * never escape. Slice B2 adds the whitelisted pure String methods
- * (boundStringCall). Every other form is Top — including `path.join`
- * folding and glob expansion, which the sites B1 and B2 clear do not need.
- * A bound is an OVER-approximation: a superset is sound (the selector's
- * final arm is a thrown ERR_MODULE_NOT_FOUND), a set that misses a runtime
- * value is not.
+ * (boundStringCall). The Worker-entry slice (wave2 §4.2) adds the three
+ * value forms a computed `new Worker(entry)` needs and `import()` does not:
+ *
+ *   - a MODULE-RELATIVE URL, `new URL(<bounded text>, import.meta.url)`,
+ *     resolved against the module that spelled it;
+ *   - the RETURN VALUES of a module-local function every call of which is
+ *     direct (`defaultWorkerUrl()`), under the same escape and recursion
+ *     rules as a parameter;
+ *   - a PARTIAL bound `{ values, top }`: `a ?? b` with a Top `a` keeps b's
+ *     values and marks the residual a Worker entry can still be. `import()`
+ *     has no residual arm, so it reads a partial bound as Top.
+ *
+ * Every other form is Top — including `path.join` folding and glob
+ * expansion, which the sites these slices clear do not need. A bound is an
+ * OVER-approximation: a superset is sound (the selector's final arm is a
+ * thrown ERR_MODULE_NOT_FOUND, or a Worker's named entry error), a set that
+ * misses a runtime value is not.
  *
  * The analysis runs only on NON-literal load sites (pitfall P4): a literal
  * specifier keeps its exact existing lowering, unfiltered. It needs no
@@ -24,14 +36,36 @@
  * (SpecifierBoundContext) — so the program's graph walks, which run before
  * lowering, bound a site exactly as its lowering does. */
 
+import { pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
 import { bindingNeverReassigned, stripValueWrappers, type BindingScope } from "./binding-writes.js";
+import { importMetaUrl, isUrlConstructor } from "./fork-target.js";
 
 /** At most this many values: beyond it the cartesian products are no longer
  * a catalogue a selector should spell out. */
 const MAX_VALUES = 256;
 
+/** One value a computed module load may take. `text` is a plain string: a
+ * specifier for `import()` and a path for a module load. `url` is a value
+ * built by `new URL(<bounded text>, import.meta.url)`: an absolute file URL
+ * resolved at build time against the module that spelled it. Only a module
+ * load resolves a URL; `import()` reads URL values as Top. */
+export type SpecifierValue =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "url"; readonly href: string };
+
+/** The values a load site may take, with `partial`'s values plus the Top
+ * part that keeps a residual (`values` covers the values the analysis
+ * bounded, `at`/`why` name the first source it could not). */
 export type SpecifierBound =
+  | { kind: "set"; values: SpecifierValue[] }
+  | { kind: "partial"; values: SpecifierValue[]; at: ts.Node; why: string }
+  | { kind: "top"; at: ts.Node; why: string };
+
+/** A bound as `import()` reads it: text values only, and no residual — an
+ * `import()` whose operand may hold a value outside the set cannot be
+ * lowered, so a partial bound is Top there. */
+export type TextBound =
   | { kind: "set"; values: string[] }
   | { kind: "top"; at: ts.Node; why: string };
 
@@ -64,29 +98,118 @@ export function specifierBoundContextOf(program: ts.Program): SpecifierBoundCont
 }
 
 /** The values `expr` may evaluate to, or the first source that prevents
- * bounding it. */
-export function boundSpecifier(ctx: SpecifierBoundContext, expr: ts.Expression): SpecifierBound {
-  return bound(ctx, expr, new Set<ts.Symbol>());
+ * bounding it: the full domain, with URL values and the residual part of a
+ * partial bound. A module load (a Worker entry) reads this answer. */
+export function boundLoadValues(ctx: SpecifierBoundContext, expr: ts.Expression): SpecifierBound {
+  const inProgress: InProgress = new Set();
+  return bound(ctx, expr, inProgress);
+}
+
+/** What the walk is in the middle of bounding, so a value that depends on
+ * itself is Top instead of an endless descent: a variable's symbol while its
+ * initializer is bounded, a function's symbol while the arguments its calls
+ * pass (its PARAMETERS) are, and a function's declaration while the values
+ * it RETURNS are. The last two are separate entries because a return value
+ * that reads the function's own parameter (`entryUrl(specifier)` returning
+ * `new URL(specifier, import.meta.url)`) is not a recursion: the parameter
+ * is bounded from the call sites while the returns are in progress. */
+type InProgress = Set<ts.Symbol | ts.SignatureDeclaration>;
+
+/** The values an `import()` specifier may evaluate to: `boundLoadValues`,
+ * read as text values only. A URL value or a partial bound is Top — an
+ * `import()` has a single selector with no residual arm. */
+export function boundSpecifier(ctx: SpecifierBoundContext, expr: ts.Expression): TextBound {
+  const load = boundLoadValues(ctx, expr);
+  if (load.kind === "top") return { kind: "top", at: load.at, why: load.why };
+  const values: string[] = [];
+  for (const value of load.values) {
+    if (value.kind !== "text")
+      return { kind: "top", at: expr, why: "the URL value of a `new URL(...)`" };
+    values.push(value.text);
+  }
+  // A partial bound has a residual an import() cannot answer: it is Top.
+  if (load.kind === "partial") return { kind: "top", at: load.at, why: load.why };
+  const unique = [...new Set(values)].sort();
+  if (unique.length > MAX_VALUES)
+    return { kind: "top", at: expr, why: `more than ${MAX_VALUES} possible values` };
+  return { kind: "set", values: unique };
 }
 
 function top(at: ts.Node, why: string): SpecifierBound {
   return { kind: "top", at, why };
 }
 
-/** Deduplicated, sorted values; over the cap is Top at `at`. */
-function finite(values: readonly string[], at: ts.Node): SpecifierBound {
+/** A single text value. */
+function textValue(text: string): SpecifierValue {
+  return { kind: "text", text };
+}
+
+/** Deduplicated, sorted text values; over the cap is Top at `at`. */
+function finiteText(values: readonly string[], at: ts.Node): SpecifierBound {
   const unique = [...new Set(values)].sort();
+  if (unique.length > MAX_VALUES) return top(at, `more than ${MAX_VALUES} possible values`);
+  return { kind: "set", values: unique.map(textValue) };
+}
+
+/** Deduplicated values in their own order (text values sorted, URL values
+ * kept in discovery order after them); over the cap is Top at `at`. */
+function finiteValues(values: readonly SpecifierValue[], at: ts.Node): SpecifierBound {
+  const texts = [...new Set(values.filter((v) => v.kind === "text").map((v) => v.text))].sort();
+  const urls = [...new Set(values.filter((v) => v.kind === "url").map((v) => v.href))];
+  const unique: SpecifierValue[] = [
+    ...texts.map((text): SpecifierValue => ({ kind: "text", text })),
+    ...urls.map((href): SpecifierValue => ({ kind: "url", href })),
+  ];
   if (unique.length > MAX_VALUES) return top(at, `more than ${MAX_VALUES} possible values`);
   return { kind: "set", values: unique };
 }
 
+/** The values of a bound that a string operation can consume, or null when
+ * one of them is a URL (a string operation has no build-time value for it). */
+function textValues(bound: SpecifierBound): string[] | null {
+  if (bound.kind !== "set") return null;
+  const out: string[] = [];
+  for (const value of bound.values) {
+    if (value.kind !== "text") return null;
+    out.push(value.text);
+  }
+  return out;
+}
+
+/** `bound` as the text values a string operation consumes, or the Top it
+ * stops at. A partial bound stops as Top: a string operation over a partly
+ * unknown operand has no build-time value. */
+function textOrStop(bound: SpecifierBound): string[] | SpecifierBound {
+  const values = textValues(bound);
+  return values !== null ? values : bound.kind === "partial" ? top(bound.at, bound.why) : bound;
+}
+
+/** The Top a fold must stop at, or null when `bound` is a set of text
+ * values. */
+function stops(bound: SpecifierBound): SpecifierBound | null {
+  const stopped = textOrStop(bound);
+  return Array.isArray(stopped) ? null : stopped;
+}
+
+/** The union of the branches a site may take. A Top branch makes the answer
+ * partial when another branch is bounded: a Worker entry keeps those values
+ * and the residual arm, while `import()` reads the partial bound as Top. */
 function union(bounds: readonly SpecifierBound[], at: ts.Node): SpecifierBound {
-  const values: string[] = [];
+  const values: SpecifierValue[] = [];
+  let residual: { at: ts.Node; why: string } | null = null;
   for (const b of bounds) {
-    if (b.kind === "top") return b;
+    if (b.kind !== "set") {
+      residual ??= b;
+      if (b.kind === "top") continue;
+    }
     values.push(...b.values);
   }
-  return finite(values, at);
+  if (residual !== null) {
+    const finite = finiteValues(values, at);
+    if (finite.kind !== "set") return finite;
+    return { kind: "partial", values: finite.values, at: residual.at, why: residual.why };
+  }
+  return finiteValues(values, at);
 }
 
 /** The cartesian concatenation of two bounds, or the operand that is Top.
@@ -94,33 +217,33 @@ function union(bounds: readonly SpecifierBound[], at: ts.Node): SpecifierBound {
  * cut short at a raw pair count would lack the values only later pairs
  * produce while still looking finite. */
 function concat(left: SpecifierBound, right: SpecifierBound, at: ts.Node): SpecifierBound {
-  if (left.kind === "top") return left;
-  if (right.kind === "top") return right;
+  const stopped = stops(left) ?? stops(right);
+  if (stopped !== null) return stopped;
   const values = new Set<string>();
-  for (const l of left.values) {
-    for (const r of right.values) {
+  for (const l of textValues(left)!) {
+    for (const r of textValues(right)!) {
       values.add(l + r);
       if (values.size > MAX_VALUES) return top(at, `more than ${MAX_VALUES} possible values`);
     }
   }
-  return finite([...values], at);
+  return finiteText([...values], at);
 }
 
 function bound(
   ctx: SpecifierBoundContext,
   expression: ts.Expression,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const expr = stripValueWrappers(expression);
-  if (ts.isStringLiteralLike(expr)) return { kind: "set", values: [expr.text] };
+  if (ts.isStringLiteralLike(expr)) return textOf(expr.text);
   if (ts.isTemplateExpression(expr)) {
     // The head, then one cartesian step per span (its expression) with the
     // literal that follows it appended to every value.
-    let values: SpecifierBound = { kind: "set", values: [expr.head.text] };
+    let values: SpecifierBound = textOf(expr.head.text);
     for (const span of expr.templateSpans.nodes) {
       const part = bound(ctx, span.expression, inProgress);
       values = concat(values, part, expr);
-      const tail: SpecifierBound = { kind: "set", values: [span.literal.text] };
+      const tail: SpecifierBound = textOf(span.literal.text);
       values = concat(values, tail, expr);
       if (values.kind === "top") return values;
     }
@@ -142,11 +265,70 @@ function bound(
     return top(expr, `the result of the '${ts.getTextOfNode(expr.operatorToken)}' operator`);
   }
   if (ts.isIdentifier(expr)) return boundIdentifier(ctx, expr, inProgress);
+  if (ts.isPropertyAccessExpression(expr) && importMetaUrl(expr)) return moduleUrlOf(expr);
+  if (ts.isNewExpression(expr)) {
+    const url = boundUrl(ctx, expr, inProgress);
+    if (url !== null) return url;
+  }
   if (ts.isCallExpression(expr)) {
     const folded = boundStringCall(ctx, expr, inProgress);
     if (folded !== null) return folded;
+    const returned = boundReturns(ctx, expr, inProgress);
+    if (returned !== null) return returned;
   }
   return top(expr, describeUnbounded(expr));
+}
+
+/** A bound holding exactly one text value. */
+function textOf(text: string): SpecifierBound {
+  return { kind: "set", values: [textValue(text)] };
+}
+
+/** The module's own file URL — the value `import.meta.url` has in the
+ * compiled program (lowering/import-meta.ts). */
+function moduleUrlOf(node: ts.Node): SpecifierBound {
+  return {
+    kind: "set",
+    values: [{ kind: "url", href: pathToFileURL(ts.getSourceFileOfNode(node).fileName).href }],
+  };
+}
+
+/** `new URL(<bounded text>, import.meta.url)` (or the one-argument absolute
+ * form): one URL value per bounded string, resolved against the module that
+ * spelled it. Any other base or a value URL throws for is Top. */
+function boundUrl(
+  ctx: SpecifierBoundContext,
+  expr: ts.NewExpression,
+  inProgress: InProgress,
+): SpecifierBound | null {
+  if (!isUrlConstructor(ctx.program, expr.expression)) return null;
+  const args = expr.arguments?.nodes ?? [];
+  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
+    return top(expr, describeUnbounded(expr));
+  const input = bound(ctx, args[0]!, inProgress);
+  const stopped = stops(input);
+  if (stopped !== null) return stopped;
+  let base: string | null = null;
+  if (args.length === 2) {
+    if (!importMetaUrl(args[1]!))
+      return top(
+        args[1]!,
+        "a `new URL(...)` base other than `import.meta.url` (the module the URL is relative to)",
+      );
+    base = pathToFileURL(ts.getSourceFileOfNode(expr).fileName).href;
+  }
+  const values: SpecifierValue[] = [];
+  for (const text of textValues(input)!) {
+    try {
+      values.push({
+        kind: "url",
+        href: base === null ? new URL(text).href : new URL(text, base).href,
+      });
+    } catch {
+      return top(expr, "a `new URL(...)` that throws for one of its values");
+    }
+  }
+  return finiteValues(values, expr);
 }
 
 /** §3.2's whitelisted pure String methods: the receiver and every argument
@@ -170,15 +352,15 @@ const FOLDED_STRING_METHODS: ReadonlySet<string> = new Set([
 function boundStringCall(
   ctx: SpecifierBoundContext,
   call: ts.CallExpression,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound | null {
   const callee = call.expression;
   if (!ts.isPropertyAccessExpression(callee)) return null;
   const method = callee.name.text;
   if (!FOLDED_STRING_METHODS.has(method)) return null;
   if (callee.questionDotToken !== undefined || call.questionDotToken !== undefined) return null;
-  const receiver = bound(ctx, callee.expression, inProgress);
-  if (receiver.kind === "top") return receiver;
+  const receiver = textOrStop(bound(ctx, callee.expression, inProgress));
+  if (!Array.isArray(receiver)) return receiver;
   const args = call.arguments.nodes;
   // The argument shapes: none for the case methods and trim; number literals
   // for slice; strings (and, for replace, a regex literal) otherwise. Each
@@ -187,7 +369,7 @@ function boundStringCall(
   // String method call but not `String.prototype` or `Function.prototype.call`.
   if (method === "toLowerCase" || method === "toUpperCase" || method === "trim") {
     if (args.length !== 0) return null;
-    return foldValues(receiver.values, (value) => [caseOrTrim(method, value)], call);
+    return foldValues(receiver, (value) => [caseOrTrim(method, value)], call);
   }
   if (method === "slice") {
     const indices: number[] = [];
@@ -198,7 +380,7 @@ function boundStringCall(
     }
     if (indices.length > 2) return null;
     return foldValues(
-      receiver.values,
+      receiver,
       (value) => [
         indices.length === 0
           ? value
@@ -212,18 +394,18 @@ function boundStringCall(
   if (method === "concat") {
     const parts: string[][] = [];
     for (const arg of args) {
-      const part = bound(ctx, arg, inProgress);
-      if (part.kind === "top") return part;
-      parts.push(part.values);
+      const part = textOrStop(bound(ctx, arg, inProgress));
+      if (!Array.isArray(part)) return part;
+      parts.push(part);
     }
     // Every argument contributes one of its values, so the result is the
     // cartesian product of the receiver and those choices — not the single
     // string of every value joined (a runtime value would miss it).
-    let total = receiver.values.length;
+    let total = receiver.length;
     for (const part of parts) total *= part.length;
     if (total > MAX_VALUES) return top(call, `more than ${MAX_VALUES} possible values`);
     return foldValues(
-      receiver.values,
+      receiver,
       (value) => {
         let results = [value];
         for (const part of parts)
@@ -236,22 +418,21 @@ function boundStringCall(
   // replace / replaceAll: a regex literal or a bounded string pattern, with
   // a bounded string replacement (a callback has no build-time value).
   if (args.length !== 2) return null;
-  const replacement = bound(ctx, args[1]!, inProgress);
-  if (replacement.kind === "top") return replacement;
+  const replacement = textOrStop(bound(ctx, args[1]!, inProgress));
+  if (!Array.isArray(replacement)) return replacement;
   const regex = regexLiteralOf(args[0]!);
   const patterns = regex === null ? boundPatterns(ctx, args[0]!, inProgress) : null;
   if (regex === null && patterns === null) return null;
-  if (patterns !== null && (patterns.length === 0 || replacement.values.length === 0)) return null;
+  if (patterns !== null && (patterns.length === 0 || replacement.length === 0)) return null;
   return foldValues(
-    receiver.values,
+    receiver,
     (value) => {
       const out: string[] = [];
       if (regex !== null) {
-        for (const part of replacement.values) out.push(replaceIn(method, value, regex, part));
+        for (const part of replacement) out.push(replaceIn(method, value, regex, part));
       } else if (patterns !== null) {
         for (const pattern of patterns)
-          for (const part of replacement.values)
-            out.push(replaceText(method, value, pattern, part));
+          for (const part of replacement) out.push(replaceText(method, value, pattern, part));
       }
       return out;
     },
@@ -302,7 +483,7 @@ function foldValues(
       if (out.length > MAX_VALUES) return top(at, `more than ${MAX_VALUES} possible values`);
     }
   }
-  return finite(out, at);
+  return finiteText(out, at);
 }
 
 /** The regex literal `node` denotes (its source and flags), or null. */
@@ -323,10 +504,9 @@ function regexLiteralOf(node: ts.Expression): RegExp | null {
 function boundPatterns(
   ctx: SpecifierBoundContext,
   node: ts.Expression,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): string[] | null {
-  const pattern = bound(ctx, node, inProgress);
-  return pattern.kind === "top" ? null : pattern.values;
+  return textValues(bound(ctx, node, inProgress));
 }
 
 /** The number a `slice` argument literal denotes (an optionally negated
@@ -366,7 +546,7 @@ function describeUnbounded(expr: ts.Expression): string {
 function boundIdentifier(
   ctx: SpecifierBoundContext,
   expr: ts.Identifier,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const sym = ctx.resolveValueSymbol(expr) ?? ctx.checker.getSymbolAtLocation(expr);
   if (sym === undefined) return top(expr, `'${expr.text}', which has no declaration`);
@@ -383,7 +563,7 @@ function boundVariable(
   expr: ts.Identifier,
   sym: ts.Symbol,
   decl: ts.VariableDeclaration,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const isConst = (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0;
   if (!isConst && !bindingNeverReassigned(ctx, sym, decl))
@@ -407,7 +587,7 @@ function boundParameter(
   expr: ts.Identifier,
   sym: ts.Symbol,
   decl: ts.ParameterDeclaration,
-  inProgress: Set<ts.Symbol>,
+  inProgress: InProgress,
 ): SpecifierBound {
   const fn = decl.parent;
   if (fn === undefined || !ts.isFunctionLike(fn))
@@ -427,19 +607,7 @@ function boundParameter(
     return top(binding, `a parameter of the function '${binding.text}', which has no symbol`);
   if (inProgress.has(fnSym))
     return top(binding, `a parameter of the recursive function '${binding.text}'`);
-  const sf = ts.getSourceFileOfNode(fn);
-  const calls: ts.CallExpression[] = [];
-  let escaped: ts.Node | null = null;
-  ts.walkPreorder(sf, (node) => {
-    if (escaped !== null) return "stop";
-    if (!ts.isIdentifier(node) || node === binding) return;
-    if (ts.isTypeNode(node)) return;
-    if (ctx.checker.getSymbolAtLocation(node) !== fnSym) return;
-    const call = directCallee(node);
-    if (call === null) escaped = node;
-    else calls.push(call);
-    return;
-  });
+  const { calls, escaped } = scanCalls(ctx, binding, fnSym);
   if (escaped !== null)
     return top(
       escaped,
@@ -473,6 +641,128 @@ function boundParameter(
   }
   if (bounds.length === 0) return top(expr, `'${expr.text}', whose function is never called`);
   return union(bounds, expr);
+}
+
+/** Every reference to the function symbol `fnSym` in `binding`'s own file,
+ * split into the direct calls and the first reference that is not one (the
+ * function escapes as a value then, and another module's callers would be
+ * outside the scan). */
+function scanCalls(
+  ctx: SpecifierBoundContext,
+  binding: ts.Identifier,
+  fnSym: ts.Symbol,
+): { calls: ts.CallExpression[]; escaped: ts.Node | null } {
+  const calls: ts.CallExpression[] = [];
+  let escaped: ts.Node | null = null;
+  ts.walkPreorder(ts.getSourceFileOfNode(binding), (node) => {
+    if (escaped !== null) return "stop";
+    if (!ts.isIdentifier(node) || node === binding) return;
+    if (ts.isTypeNode(node)) return;
+    if (ctx.checker.getSymbolAtLocation(node) !== fnSym) return;
+    const call = directCallee(node);
+    if (call === null) escaped = node;
+    else calls.push(call);
+    return;
+  });
+  return { calls, escaped };
+}
+
+/** The values a call of a module-local function returns
+ * (`defaultWorkerUrl()`): every call of it in its file must be direct, the
+ * module must not export it, and every path through its body must return a
+ * bounded value. A call of anything else (an imported function, a parameter,
+ * a method) is null, so the caller reports it. */
+function boundReturns(
+  ctx: SpecifierBoundContext,
+  call: ts.CallExpression,
+  inProgress: InProgress,
+): SpecifierBound | null {
+  if (call.questionDotToken !== undefined || call.arguments.nodes.some(ts.isSpreadElement))
+    return null;
+  let callee: ts.Expression = call.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  if (!ts.isIdentifier(callee)) return null;
+  const sym = ctx.resolveValueSymbol(callee) ?? ctx.checker.getSymbolAtLocation(callee);
+  if (sym === undefined) return null;
+  const fn = localFunctionOf(sym);
+  if (fn === null) return null;
+  const binding = functionBindingName(fn);
+  if (binding === null) return top(callee, `'${callee.text}', a function with no local name`);
+  // An exported function's callers may live in another file, so its returns
+  // are not this file's to bound: decline, and the site reports the call it
+  // actually wrote (`the result of \`tag(...)\``) rather than the
+  // declaration's own file.
+  if (isExported(ctx, binding)) return null;
+  const fnSym = ctx.checker.getSymbolAtLocation(binding);
+  if (fnSym === undefined) return top(binding, `'${binding.text}', whose function has no symbol`);
+  if (inProgress.has(fn)) return top(callee, `'${binding.text}', which is recursive`);
+  const { escaped } = scanCalls(ctx, binding, fnSym);
+  if (escaped !== null)
+    return top(
+      escaped,
+      `the function value '${binding.text}', which is used other than as a direct call`,
+    );
+  return returnedValues(ctx, fn, inProgress);
+}
+
+/** The function a `const` binding's symbol declares, or null for anything
+ * that is not a module-local function with a body. */
+function localFunctionOf(sym: ts.Symbol): ts.SignatureDeclaration | null {
+  const decl = sym.valueDeclaration ?? sym.declarations?.[0];
+  if (decl === undefined) return null;
+  if (ts.isFunctionDeclaration(decl)) return decl;
+  if (!ts.isVariableDeclaration(decl) || decl.initializer === undefined) return null;
+  const init = decl.initializer;
+  return ts.isArrowFunction(init) || ts.isFunctionExpression(init) ? init : null;
+}
+
+/** The union of every value `fn` returns. A body that can fall off its end
+ * returns undefined on that path, and a bare `return` has no value: both are
+ * Top. A returned expression may read the function's own parameters; those
+ * are bounded from every call site (boundParameter), so the answer covers
+ * the returns of every call, not only the one being bounded. */
+function returnedValues(
+  ctx: SpecifierBoundContext,
+  fn: ts.SignatureDeclaration,
+  inProgress: InProgress,
+): SpecifierBound {
+  const body = fn.body;
+  if (body === undefined) return top(fn, "a function with no body");
+  const expressions: ts.Expression[] = [];
+  if (!ts.isBlock(body)) {
+    // An arrow's expression body is its return value.
+    expressions.push(body as ts.Expression);
+  } else {
+    const statements = body.statements.nodes;
+    const last = statements[statements.length - 1];
+    if (last === undefined || !(ts.isReturnStatement(last) || ts.isThrowStatement(last)))
+      return top(fn, "a function that can return without a value");
+    let refused: ts.Node | null = null;
+    ts.walkPreorder(body, (node) => {
+      if (!ts.isReturnStatement(node) || nearestFunctionLike(node) !== fn) return;
+      if (node.expression === undefined) refused = node;
+      else expressions.push(node.expression);
+    });
+    if (refused !== null) return top(refused, "a function that returns without a value");
+  }
+  if (expressions.length === 0) return top(fn, "a function that returns no value");
+  const bounds: SpecifierBound[] = [];
+  inProgress.add(fn);
+  try {
+    for (const expression of expressions) bounds.push(bound(ctx, expression, inProgress));
+  } finally {
+    inProgress.delete(fn);
+  }
+  return union(bounds, fn);
+}
+
+/** The innermost function-like scope `node` is written in — a `return` in a
+ * nested closure belongs to that closure, not to the function whose returns
+ * are bounded. */
+function nearestFunctionLike(node: ts.Node): ts.Node | undefined {
+  for (let parent = node.parent; parent !== undefined; parent = parent.parent)
+    if (ts.isFunctionLike(parent)) return parent;
+  return undefined;
 }
 
 /** The identifier a function's own binding is read through, or null for a

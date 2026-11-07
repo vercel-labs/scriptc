@@ -9223,6 +9223,19 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
 }
 
+/** The fields a checked-identity view's type declares: the layout the type
+ * has when no live object stands behind it. A value of the type is a live
+ * dynamic object, so the type itself maps to the checked-dynamic value; an
+ * object literal built for the view stores its members at these field types
+ * (view-literals.ts). Member types map as everywhere else, so a member that
+ * is a view itself stays one. Null when the type declares no fixed layout
+ * (an index signature, a symbol key, a member with no representation). */
+export function declaredViewFields(type: ts.Type, ctx: TypeMapperCtx): IrRecordField[] | null {
+  const parts = mapRecordTypeInner(ctx.checker.getBaseTypeOfLiteralType(type), ctx, true);
+  if (parts === null || !("fields" in parts) || parts.indexValue !== undefined) return null;
+  return parts.fields;
+}
+
 /** An index signature already describes every OPTIONAL declared member
  * whose type is its slot type: @types/node's `ProcessEnv extends
  * Dict<string> { TZ?: string }` and every spread of it, or a declared
@@ -9582,6 +9595,9 @@ function interfaceExtendsAny(type: ts.Type, checker: ts.TypeChecker): boolean {
 function mapRecordTypeInner(
   widened: ts.Type,
   ctx: TypeMapperCtx,
+  /** Answer the fields the type declares even when the type is a
+   * checked-identity view (declaredViewFields). */
+  declaredLayout = false,
 ): IrType | RecordShapeParts | null {
   const { checker, shapes } = ctx;
   if (checker.getConstructSignatures(widened).length > 0) return null;
@@ -9734,7 +9750,7 @@ function mapRecordTypeInner(
   const computed = widened.isIntersectionType() || isMappedShape(widened);
   {
     const props = checker.getPropertiesOfType(widened);
-    if (ctx.classImplementedProtocol?.(widened)) return DYN;
+    if (!declaredLayout && ctx.classImplementedProtocol?.(widened)) return DYN;
     // Symbol-keyed records use the checked object's descriptor table. A
     // checker-internal __@ name is not a string field in a native struct.
     if (props.some((property) => ts.symbolName(property).startsWith("__@"))) return DYN;

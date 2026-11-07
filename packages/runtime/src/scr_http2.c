@@ -3196,7 +3196,7 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
     } else {
       char msg[128];
       int n = snprintf(msg, sizeof msg, "listening for '%s' on an Http2Stream is not supported yet", ev);
-      scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
       return NULL;
     }
     return scr_dyn_retain(self);
@@ -3270,7 +3270,7 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
     } else {
       char msg[128];
       int n = snprintf(msg, sizeof msg, "listening for '%s' on an Http2Session is not supported yet", ev);
-      scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
       return NULL;
     }
     return scr_dyn_retain(self);

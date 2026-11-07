@@ -1214,7 +1214,7 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
  * prototype/iterator keep a catchable refusal instead of losing hooks. */
 static bool scr_bytes_source_refusal(void) {
   static const char msg[] = "typed-array conversion of an opaque reference is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return false;
 }
 

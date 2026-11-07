@@ -7686,7 +7686,7 @@ static ScrDyn *scr_dir_dyn_invoke(void *h, ScrDyn *self, const char *method, Scr
     return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
   }
   static const char msg[] = "Dir method calls through an 'unknown' value are not supported yet — narrow the value to Dir first";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return NULL;
 }
 

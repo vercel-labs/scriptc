@@ -622,7 +622,7 @@ SCR_COLD static bool nh_refuse(const char *what) {
   snprintf(message, sizeof message,
            "scriptc: %s cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)",
            what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "SC8010");
   return false;
 }
 
@@ -847,7 +847,7 @@ static bool nh_receiver(ScrDyn *obj, uint32_t *id, const char *what) {
   if (ref == NULL) {
     char message[160];
     snprintf(message, sizeof message, "scriptc: %s needs a Node island value", what);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "SC8010");
     return false;
   }
   if (!nh_live(ref)) return false;

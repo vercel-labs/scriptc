@@ -6624,7 +6624,7 @@ static ScrDyn *scr_spawn_res_dyn_invoke(void *h, ScrDyn *self, const char *metho
   (void)what;
   static const char msg[] =
       "spawnSync result methods through an 'unknown' value are not supported yet — narrow the value first";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return NULL;
 }
 

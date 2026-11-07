@@ -2450,7 +2450,7 @@ ScrDyn *scr_fetch_stream_new(ScrDyn *source) {
     if (type && type->kind != SCR_DYN_UNDEF) {
       sf_stream_release(s);
       scr_dyn_release(materialized);
-      sf_type_error("byte streams are not supported by static ReadableStream");
+      { static const char refused[] = "byte streams are not supported by static ReadableStream"; scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020"); }
       return NULL;
     }
     const ScrDyn *pull = scr_dyn_obj_get(source_view, "pull", 4);
@@ -2656,7 +2656,7 @@ static ScrDyn *sf_stream_invoke(void *ptr, ScrDyn *self, const char *method,
     scr_dyn_release(materialized);
     if (scr_exc_pending()) return NULL;
     if (byob) {
-      sf_type_error("BYOB readers are not supported");
+      { static const char refused[] = "BYOB readers are not supported"; scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020"); }
       return NULL;
     }
     SfReader *r = sf_stream_get_reader(s);

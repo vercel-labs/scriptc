@@ -243,6 +243,17 @@ test("extended spawn options beside an error read keep both child builds", () =>
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
 });
 
+test("a worker program links the symbol and assert units its env option needs", () => {
+  // The Worker env option compares against worker_threads.SHARE_ENV, whose
+  // symbol lives in scr_symbol.c, so a worker program selects that unit even
+  // when it never uses a symbol itself; scr_symbol.c assembles symbol
+  // equality messages through scr_assert.c, which travels with it.
+  const symbol = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_symbol.c");
+  expect(symbol.predicate).toEqual({ any: ["symbol", "workers"] });
+  const assert = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_assert.c");
+  expect(assert.predicate).toEqual({ any: ["assert", "regex", "symbol", "workers"] });
+});
+
 test("Node islands select no build of the units that reach them through the installed table", () => {
   // util.inspect and instanceof of an island value, an island error's
   // constructor and its uncaught report call through ScrNiDynOps, which
@@ -289,4 +300,29 @@ test("a unit that tests SCR_NODE_ISLANDS has a build that defines it", () => {
       ),
   );
   expect(withoutBuild).toEqual([]);
+});
+
+test("the installed island table has every entry the shared units call through it", () => {
+  // The shared units build once, so an island path in them is a call through
+  // ScrNiDynOps (a native weak collection keyed by an island object, for
+  // one: scr_json.c's weak_get, weak_test and weak_set). An entry the island
+  // unit's initializer leaves out is NULL there, and nothing notices before
+  // an island program takes that path.
+  const source = (name: string): string => readFileSync(join(runtimeSources, name), "utf8");
+  const struct = /typedef struct ScrNiDynOps \{([\s\S]*?)\n\} ScrNiDynOps;/.exec(
+    source("scr_node_island.h"),
+  );
+  const declared = [...struct![1]!.matchAll(/\(\*(\w+)\)\(/g)].map((match) => match[1]!);
+  const table = /static const ScrNiDynOps nh_dyn_ops = \{([\s\S]*?)\n\};/.exec(
+    source("scr_node_island_handle.c"),
+  );
+  const installed = [...table![1]!.matchAll(/^\s*\.(\w+) = /gm)].map((match) => match[1]!);
+  // In the struct's order: a new entry goes last in both, because the
+  // runtime every program links reads the table by offset.
+  expect(installed).toEqual(declared);
+  const called = new Set<string>();
+  for (const name of readdirSync(runtimeSources).filter((name) => name.endsWith(".c")))
+    for (const match of source(name).matchAll(/\bscr_ni_dyn_ops->(\w+)\(/g)) called.add(match[1]!);
+  expect([...called].filter((entry) => !installed.includes(entry))).toEqual([]);
+  expect([...called]).toEqual(expect.arrayContaining(["weak_get", "weak_test", "weak_set"]));
 });

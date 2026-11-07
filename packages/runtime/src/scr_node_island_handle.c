@@ -683,7 +683,7 @@ SCR_COLD static bool nh_refuse(const char *what) {
   snprintf(message, sizeof message,
            "scriptc: %s cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)",
            what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "SC8010");
   return false;
 }
 
@@ -908,7 +908,7 @@ static bool nh_receiver(ScrDyn *obj, uint32_t *id, const char *what) {
   if (ref == NULL) {
     char message[160];
     snprintf(message, sizeof message, "scriptc: %s needs a Node island value", what);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "SC8010");
     return false;
   }
   if (!nh_live(ref)) return false;
@@ -1849,6 +1849,9 @@ static const ScrNiDynOps nh_dyn_ops = {
     .function_of_identity = nh_function_of_identity,
     .inspect = scr_ni_inspect,
     .report_uncaught = scr_ni_report_uncaught,
+    .weak_get = scr_ni_weak_get,
+    .weak_test = scr_ni_weak_test,
+    .weak_set = scr_ni_weak_set,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

@@ -400,7 +400,7 @@ static ScrDyn *scr_mime_member_get(const char *cls, const char *const *methods, 
     if (strlen(methods[i]) != len || memcmp(methods[i], key, len) != 0) continue;
     char message[128];
     int n = snprintf(message, sizeof message, "'%s.prototype.%s' as a value is not supported yet", cls, methods[i]);
-    scr_throw_error_msg(SCR_ERR_ERROR, message, (size_t)n);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC2020");
     return NULL;
   }
   return NULL;

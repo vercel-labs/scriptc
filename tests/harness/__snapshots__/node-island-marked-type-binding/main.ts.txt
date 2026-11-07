@@ -1,0 +1,41 @@
+node-island-marked-type-binding/default-beside-named.ts:1:8 - error SC8006: scriptc.nodeIslands.modules marks 'node-island-marked-type-binding/default-beside-named.ts' to run in a Node island, but Node cannot strip its types: the default import of 'Box', which is only a type (use `import type`)
+
+  1 | import Box, { unit } from "./box.ts";
+    |        ^~~
+  2 | 
+
+  hint: Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is
+
+node-island-marked-type-binding/default-import.ts:1:8 - error SC8006: scriptc.nodeIslands.modules marks 'node-island-marked-type-binding/default-import.ts' to run in a Node island, but Node cannot strip its types: the default import of 'Box', which is only a type (use `import type`)
+
+  1 | import Box from "./box.ts";
+    |        ^~~
+  2 | 
+
+  hint: Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is
+
+node-island-marked-type-binding/export-default.ts:9:1 - error SC8006: scriptc.nodeIslands.modules marks 'node-island-marked-type-binding/export-default.ts' to run in a Node island, but Node cannot strip its types: the default export of 'Shape', which is only a type (use `export type { Shape as default }`)
+
+   8 | 
+   9 | export default Shape;
+     | ^~~~~~~~~~~~~~~~~~~~~
+  10 | 
+
+  hint: Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is
+
+node-island-marked-type-binding/export-local.ts:9:27 - error SC8006: scriptc.nodeIslands.modules marks 'node-island-marked-type-binding/export-local.ts' to run in a Node island, but Node cannot strip its types: the export of 'Local', which is only a type (use `export type`)
+
+   8 | 
+   9 | export { twice as double, Local };
+     |                           ^~~~~
+  10 | 
+
+  hint: Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is
+
+node-island-marked-type-binding/reexport.ts:1:16 - error SC8006: scriptc.nodeIslands.modules marks 'node-island-marked-type-binding/reexport.ts' to run in a Node island, but Node cannot strip its types: the export of 'Size', which is only a type (use `export type`)
+
+  1 | export { unit, Size } from "./box.ts";
+    |                ^~~~
+  2 | 
+
+  hint: Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is

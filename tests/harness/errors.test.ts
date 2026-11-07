@@ -127,6 +127,34 @@ throw new PlainSub("unnamed sub");
     expect(r.stderr).toBe("Uncaught Error: unnamed sub\n");
   });
 
+  test("a subclass thrown from a union value prints like one thrown directly", async () => {
+    // The thrown value is boxed from the union; it is still the error, so
+    // the line is its name and message, not a placeholder for an object.
+    const thrown = await compileAndRun(
+      "uncaught-subclass-union",
+      `class Plain extends Error {}
+class Fixed extends TypeError {}
+const list = [new Plain("p"), new Fixed("from a union")];
+throw list[1]!;
+`,
+    );
+    expect(thrown.exitCode).toBe(1);
+    expect(thrown.stderr).toBe("Uncaught TypeError: from a union\n");
+
+    const rejected = await compileAndRun(
+      "unhandled-subclass-union",
+      `class Plain extends Error {}
+class Fixed extends RangeError {}
+const list = [new Plain("p"), new Fixed("rejected from a union")];
+Promise.reject(list[1]!);
+`,
+    );
+    expect(rejected.exitCode).toBe(1);
+    expect(rejected.stderr).toBe(
+      "Unhandled promise rejection: RangeError: rejected from a union\n",
+    );
+  });
+
   test("toString's empty-half rules shape the line", async () => {
     const empty = await compileAndRun("uncaught-empty", `throw new Error();\n`);
     expect(empty.exitCode).toBe(1);

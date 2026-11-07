@@ -1,7 +1,7 @@
 // Accessor edges the compiler rejects (tsc-clean, outside the subset).
 
-// static members don't poison the class — their USES fence (the class
-// name has no value form)
+// a static accessor of a TypeScript class compiles: the read calls the
+// getter
 class Config {
   static get version(): number {
     return 1;

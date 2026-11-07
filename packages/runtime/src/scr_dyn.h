@@ -1590,6 +1590,13 @@ void *scr_record_link_source(const void *copy);
  * that order. Undeclared keys are not copied, as the literal copies none. */
 void scr_record_source_spread(void *dst, const void *src, const char *const *names,
                               const size_t *lens, size_t count);
+/* `delete rec.key` of a key the record's declared layout does not hold
+ * (scr_record_source_delete.c, a gated unit): removes the own property
+ * from the record's kept source (a record view deletes from the record it
+ * views). Answers `delete`'s boolean: true when the property is gone, false
+ * when it survives — a frozen or non-configurable property, which strict
+ * code (`strict`) refuses with Node's TypeError instead. Borrows both. */
+bool scr_record_source_delete(void *rec, const char *key, size_t key_len, bool strict);
 /* Object.freeze of a record a program may freeze: sets SCR_RC_FROZEN in its
  * rc word (immortal records are left as they are). */
 void scr_record_freeze(void *record);
@@ -2720,6 +2727,8 @@ void scr_dyn_this_pop(void);
  * handle whose tag has no installed ops — a unit that fires without its
  * dyn half never binds). */
 ScrDyn *scr_dyn_this_get(void);
+/* The receiver the current generator's spawn recorded
+ * (scr_gen_capture_receiver), or undefined (+1). */
 ScrDyn *scr_gen_receiver(void);
 
 /* The data-chunk encoding window (setEncoding — scr_json.c's note): the

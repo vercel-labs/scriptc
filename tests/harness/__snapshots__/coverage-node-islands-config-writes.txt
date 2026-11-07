@@ -2,7 +2,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-config-writes/main.ts
 
   statements analyzed   6
   compile statically    6  (100%)
-    in dynamic tier     3  (operate on values typed only at runtime; --explain-dynamic lists them)
+    in dynamic tier     6  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     ni-config  refused (its shipped JS carries build-transform markers (bundled/transpiled dist))

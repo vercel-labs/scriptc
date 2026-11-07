@@ -219,6 +219,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // record's kept source; a unit of its own so scr_json.c keeps its layout
   // for every other program.
   ["scr_record_source_delete.c", "recordSourceDelete"],
+  // Record views of types whose values may also be frozen; a unit of its own
+  // so scr_json.c keeps its layout for every program without one.
+  ["scr_record_view_frozen.c", "recordViewFrozen"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
@@ -277,6 +280,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
+  // A native AbortSignal's twin in an island: programs with islands and
+  // native signals (the signal unit or the fetch unit).
+  ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived

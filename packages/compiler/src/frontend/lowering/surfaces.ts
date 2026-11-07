@@ -1,27 +1,9 @@
 import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
 import { isLoweredConsoleMember } from "./builtins/console.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { staticCondition, staticallySelected } from "./static-typeof.js";
-
-function unparenthesized(e: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
-
-/** `e` without parentheses and type-only wrappers (as, satisfies, type
- * assertions, non-null assertions), which change no runtime value. */
-export function withoutTypeCasts(e: ts.Expression): ts.Expression {
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
-}
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
 import {
   BOOL,
@@ -3939,8 +3921,8 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // A cast of the global object (`(globalThis as { Buffer?: B }).Buffer`,
     // `(globalThis as any).Buffer`) changes only its static type: the
     // member is the global object's own.
-    const uncast = withoutTypeCasts(expr.expression);
-    if (uncast !== unparenthesized(expr.expression)) {
+    const uncast = withoutParenthesesTypeWrappers(expr.expression);
+    if (uncast !== withoutParentheses(expr.expression)) {
       if (!ts.isIdentifier(uncast) || stdlibGlobalNameOf(lowerer, uncast) !== "globalThis")
         return null;
       const member = lowerer.checker.getPropertyOfType(lowerer.typeOf(uncast), expr.name.text);
@@ -3953,7 +3935,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // member.
     const selected = staticallySelected(lowerer, expr.expression);
     const symbol =
-      selected === expr.expression || ts.isIdentifier(unparenthesized(expr.expression))
+      selected === expr.expression || ts.isIdentifier(withoutParentheses(expr.expression))
         ? lowerer.checker.getSymbolAtLocation(expr.name)
         : lowerer.checker.getPropertyOfType(lowerer.typeOf(selected), expr.name.text);
     if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
@@ -4101,11 +4083,13 @@ export function stdlibGlobalAliasDecl(
  * the left operand of `||` (stdlibGlobalAliasNameOf's guard), or copies an
  * alias made that way. Such an alias carries the cast's static type. */
 function castGlobalAliasSource(lowerer: Lowerer, init: ts.Expression): boolean {
-  let source = unparenthesized(init);
+  let source = withoutParentheses(init);
   if (ts.isBinaryExpression(source) && source.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-    source = unparenthesized(source.left);
+    source = withoutParentheses(source.left);
   if (ts.isPropertyAccessExpression(source))
-    return withoutTypeCasts(source.expression) !== unparenthesized(source.expression);
+    return (
+      withoutParenthesesTypeWrappers(source.expression) !== withoutParentheses(source.expression)
+    );
   if (ts.isIdentifier(source)) {
     const symbol = lowerer.checker.getSymbolAtLocation(source);
     return symbol !== undefined && lowerer.castGlobalAliases.has(symbol);

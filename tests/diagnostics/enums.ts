@@ -1,6 +1,7 @@
 // The enum fences: everything that does NOT fold to a compile-time
 // constant is a pointed, named rejection — never a silently-wrong value.
-// (Constant-member enums themselves lower; see the 183x corpus programs.)
+// (Constant-member enums themselves lower; see the 183x corpus programs.
+// The enum object's own refusals are in enum-objects.ts.)
 
 // A computed member's initializer is a runtime expression Node evaluates
 // when the declaration executes — the declaration fences on the member.
@@ -16,15 +17,6 @@ enum E {
   A,
   B,
 }
-
-// The enum OBJECT as a value: no runtime representation exists.
-const grabbed = E;
-console.log(grabbed.A);
-
-// Reverse lookups through a runtime index.
-let i = 0;
-i += 1;
-console.log(E[i]);
 
 // A constant reverse index no member carries: Node answers undefined,
 // which the reverse mapping's `string` type cannot carry.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6972-node-island-abort-signal-timeout-any/main.ts"
+ ],
+ "diags": []
+}

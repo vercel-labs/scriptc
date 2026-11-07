@@ -2132,6 +2132,7 @@ async function compileTracked(
       ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
+      ...(opts.tier === "static-only" ? { tier: "static-only" as const } : {}),
       ...(nodeIslandOptionsKey(opts.nodeIslands) !== ""
         ? { nodeIslands: nodeIslandOptionsKey(opts.nodeIslands) }
         : {}),

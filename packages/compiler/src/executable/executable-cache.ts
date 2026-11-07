@@ -245,6 +245,10 @@ export interface EarlyExecutableCacheOptions {
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
+  /** Omitted for the default tier policy (`--tier=auto`), which keeps the
+   * keys it had. `static-only` refuses programs that `auto` compiles, so
+   * its verdict must not be answered from an `auto` entry. */
+  tier?: "static-only";
   /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
   heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
@@ -439,6 +443,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
+    ...(options.tier === "static-only" ? ["tier-static-only"] : []),
     ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
     ...(options.heapCensus ? ["heap-census"] : []),
     ...(options.shapeOverlay ? ["shape-overlay"] : []),
@@ -496,6 +501,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
+  if (options.tier === "static-only") hash.update("tier-static-only\0");
   if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
   if (options.heapCensus) hash.update("heap-census\0");
   if (options.shapeOverlay) hash.update("shape-overlay\0");
@@ -523,6 +529,17 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
     hash.update(resolve(options.ffiProfile.path)).update("\0").update(options.ffiProfile.bytes);
   }
   return hash.digest("hex");
+}
+
+/** The two keys a build's cache entries are stored under: the entry's and
+ * the route's (the launcher's shortcut to it). For tests of what the keys
+ * cover; a build option that changes the verdict or the output must change
+ * both. */
+export function earlyExecutableCacheKeys(options: EarlyExecutableCacheOptions): {
+  entry: string;
+  route: string;
+} {
+  return { entry: cacheKey(options), route: routeKey(options) };
 }
 
 function routePath(

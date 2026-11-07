@@ -16,4 +16,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
+  // Emitted inline: the value's tag, its signature literal's length and
+  // the literal's last four bytes. No runtime call but strlen.
+  "dyn.classValueHash",
 ]);

@@ -427,9 +427,11 @@ function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
   if (!body.some(isClassHashSwitch)) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassHashSwitch(stmt))
-      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
-    else branches.push(stmt);
+    if (isClassHashSwitch(stmt)) {
+      // A case of branches that can complete ends with a `break`.
+      for (const { body: caseBody } of stmt.cases)
+        for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
+    } else branches.push(stmt);
   }
   return branches;
 }
@@ -437,7 +439,11 @@ function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
 /** The switch the compiler builds over a generated class table's branches
  * (frontend/lowering/class-dynamic-dispatch.ts). */
 function isClassHashSwitch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
-  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
+  return (
+    stmt.kind === "switch" &&
+    stmt.disc.kind === "libCall" &&
+    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+  );
 }
 
 /** `p = %dyn.class.normalize(p)`. */

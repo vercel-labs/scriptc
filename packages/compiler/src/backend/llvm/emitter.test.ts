@@ -545,6 +545,30 @@ test("class constructor probes test the function tag and borrow across a literal
   expect(computed).toContain("call zeroext i1 @scr_dyn_class_is_key(");
 });
 
+test("a class-value table's index folds the function's signature key inline", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const index: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.classValueHash",
+    args: [ref(dyn), { kind: "numLit", value: 5, type: { kind: "f64" }, loc: receiverLoc }],
+    type: { kind: "f64" },
+    loc: receiverLoc,
+  };
+  const text = work(index, dyn);
+  // The receiver is borrowed, only a function value is inspected, and the
+  // key is the signature literal: its length and last four bytes.
+  expect(text).not.toContain("call ptr @scr_dyn_retain_v(");
+  expect(text).toMatch(/icmp eq i32 %t\d+, 8\b/);
+  expect(text).toContain("; ->v.fn.sig");
+  expect(text).toContain("@strlen(ptr");
+  expect(text).toMatch(/mul i32 %t\d+, -1640531535\b/);
+  // The slot: the folded word's high five bits after the second multiply.
+  expect(text).toMatch(/mul i32 %t\d+, -2048144789\b/);
+  expect(text).toMatch(/lshr i32 %t\d+, 27\b/);
+  expect(text).toContain("store i32 -1, ptr");
+  expect(text).not.toContain("@scr_dyn_class_is_key(");
+});
+
 test("class brand probes compare the program's key constant before the key text", () => {
   const dyn: IrType = { kind: "dyn" };
   const key: IrExpr = { kind: "strLit", value: "object:Example", type: STRING, loc: receiverLoc };

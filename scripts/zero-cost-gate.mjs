@@ -67,6 +67,9 @@ import {
   HEAP_PROBE_FLAGS,
   heapLimitMb,
   judgesSelfCompile,
+  llvmFacts,
+  outputGrowthAllowance,
+  outputGrowthVerdict,
   programInputs,
   readBudget,
   SELF_ENTRY,
@@ -855,6 +858,8 @@ if (recordPath !== undefined) {
  * (see below). On a host with room for a third self-hosted build it runs
  * alongside the comparison builds instead of after them. */
 const checkCandidateSelf = judgesSelfCompile(sets, programs);
+/** llvmFacts of the baseline's compiler source built by the candidate, once that build is in. */
+let pairedSelfLlvm = null;
 const candidateSelfProgram = {
   id: "self/candidate-source",
   entry: join(trees.candidate, SELF_ENTRY),
@@ -985,6 +990,10 @@ await pool(
       report.programs.push(entry);
       nmCache.delete(baseline.exe);
       nmCache.delete(candidate.exe);
+      // The candidate's build of the baseline's compiler source is what the self-compile
+      // budget compares the candidate's own source with; its LLVM is deleted just below.
+      if (program.id === "self/cli" && checkCandidateSelf && candidate.llvm)
+        pairedSelfLlvm = llvmFacts(candidate.llvm);
       if (!values.keep) {
         if (baseline.dir && !baseline.cached)
           rmSync(baseline.dir, { recursive: true, force: true });
@@ -1132,6 +1141,19 @@ async function selfCompileBudget(build) {
   const paired = report.programs.find((p) => p.id === "self/cli")?.buildMs.candidate;
   if (budget === null || baselineSource === undefined || !paired) return result;
   const sourceRatio = bytes / sourceBytes(baselineSource.entry);
+  // What the two sources compile to, with the candidate compiler: the LLVM of this build and
+  // of the compared build of the baseline's source. Exact numbers, so one pair decides.
+  if (pairedSelfLlvm !== null) {
+    const growth = outputGrowthVerdict({
+      candidate: llvmFacts(build.llvm),
+      baseline: pairedSelfLlvm,
+      sourceRatio,
+      allowance: outputGrowthAllowance(budget, previous),
+    });
+    result.outputGrowth = { worst: growth.worst };
+    result.lines.push(...growth.lines);
+    result.failures.push(...growth.failures);
+  }
   const allowance = sourceCostAllowance(budget, previous);
   const ratios = [build.ms / paired];
   let cost = sourceCostVerdict({ ratios, sourceRatio, allowance });

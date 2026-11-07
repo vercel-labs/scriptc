@@ -719,6 +719,17 @@ function nextTick(token) {
 
 const EVENT_SIGNAL = 1;
 const EVENT_EXIT = 2;
+// Not a process event: from a tick of its own, the runtime asks for the
+// rest of the current turn before it decides its unhandled rejections
+// (scr_async.c, scr_hosted_deciding_tick). Node's tick callback, the
+// function Node runs after every callback, runs the tick queue and the
+// microtasks to exhaustion and then decides Node's rejections, so the
+// runtime decides where Node does. A throw from a tick leaves `emit`
+// through MakeCallback as an uncaught exception, so the runtime hears
+// JOB_TURN only when the turn ran to its end.
+const EVENT_TURN = 3;
+const JOB_TURN = 5;
+const runNextTicks = process._tickCallback;
 const signalNames = new Set(Object.keys(osConstants.signals));
 const islandListeners = [];
 let nextListener = 1;
@@ -813,6 +824,11 @@ processMethods.prependListener = function prependListener(event, listener) {
 };
 
 function emit(kind, id, name, arg) {
+  if (kind === EVENT_TURN) {
+    runNextTicks();
+    nativeHost.run(JOB_TURN, 0);
+    return;
+  }
   const entry = islandListeners.find((e) => e.id === id);
   if (entry === undefined) return;
   // The registered function: the listener itself, or its once wrapper,

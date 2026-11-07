@@ -68,8 +68,16 @@ void scr_node_island_leave_stack(uintptr_t sp);
  * ABI). Their listeners sit in the runtime's registries (the
  * SCR_NODE_ISLANDS build of scr_events.c) at their registration position,
  * and a delivery calls them through scr_node_island_emit: a signal with
- * its number, exit with the code. */
-enum { SCR_NODE_ISLAND_EVENT_SIGNAL = 1, SCR_NODE_ISLAND_EVENT_EXIT = 2 };
+ * its number, exit with the code.
+ *
+ * SCR_NODE_ISLAND_EVENT_TURN is not an event and has no listener: the
+ * bootstrap answers it by running the rest of Node's current turn (the
+ * hosted loop's deciding tick, scr_async.c). */
+enum {
+  SCR_NODE_ISLAND_EVENT_SIGNAL = 1,
+  SCR_NODE_ISLAND_EVENT_EXIT = 2,
+  SCR_NODE_ISLAND_EVENT_TURN = 3,
+};
 void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg);
 void scr_signal_on_island(ScrStr *name, uint32_t listener);
 void scr_signal_off_island(uint32_t listener);

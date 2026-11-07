@@ -8,8 +8,8 @@ import { serializeModule } from "../src/ir/serialize.js";
 
 // A stream program decides its checked-dynamic async-iteration protocol
 // slots against the stream pass, not the push-down pass: the stream pass
-// replaces the push-down result outright, and a push-down pass that ends at
-// its last stream flag (stream-flags-abort.test.ts) has not seen the protocol
+// replaces the push-down result outright, and a push-down pass that ends where
+// it asks for a stream mode (stream-flags-abort.test.ts) has not seen the protocol
 // spellings that follow. These fixtures pin that the decision is the same
 // whether or not the push-down pass ran to its end.
 

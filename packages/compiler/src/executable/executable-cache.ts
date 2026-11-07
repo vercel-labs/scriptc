@@ -73,6 +73,7 @@ export interface EarlyExecutableNativeFeatures {
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
   mutableBuffers: boolean;
   fsFlags?: boolean;
+  fsExistsValue?: boolean;
   fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;

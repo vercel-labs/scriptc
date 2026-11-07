@@ -410,18 +410,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     tracked: "designs/t262-dc",
     lowererFields: [],
   },
-  {
-    name: "npm-static-js-depth",
-    file: `${SRC}/frontend/program.ts`,
-    symbol: "maxNodeModuleJsDepth",
-    source: "option",
-    scope: "program",
-    setBy: "the `--npm-static` flag, with any package listed",
-    gates: "the checker reads the JavaScript of every package, island packages included",
-    narrower: "the listed packages",
-    tracked: "FOLLOWUPS 2026-10-30",
-    lowererFields: [],
-  },
 ];
 
 /** Why a whole-program scan decides no registered fact.
@@ -548,6 +536,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "closed-world",
     "references to one class of an import cycle",
+  ),
+  scan(
+    "frontend/lowering/enum-objects.ts#enumObjectUsed",
+    1,
+    "closed-world",
+    "whether one enum is ever used as a value; the text test skips files that spell none of its names",
   ),
   scan(
     "frontend/lowering/expressions/property-access.ts#globalThisWrittenNames",

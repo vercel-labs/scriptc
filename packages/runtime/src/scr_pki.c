@@ -1372,6 +1372,12 @@ static void sp_invalid_jwk(void) {
   sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_JWK", "Invalid JWK data");
 }
 
+/* A JWK whose members do not make a key of its type: Node names the type
+ * ("Invalid JWK RSA key"). */
+static void sp_invalid_jwk_key(const char *kty) {
+  scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_JWK", "Invalid JWK %s key", kty);
+}
+
 /* A key from a JWK object: RSA (n, e, and d, p, q for a private key) or EC
  * (crv, x, y, and d). NULL with the error pending. */
 static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private);
@@ -1489,7 +1495,7 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
   }
   if (!ok) {
     sp_key_release(k);
-    sp_invalid_jwk();
+    sp_invalid_jwk_key(sp_is_str(kty, "OKP") ? "OKP" : sp_is_str(kty, "RSA") ? "RSA" : "EC");
     return NULL;
   }
   return k;
@@ -1795,6 +1801,97 @@ static SpKey *sp_parse(const unsigned char *data, size_t len, bool private_key) 
   return sp_parse_with(data, len, private_key, NULL);
 }
 
+/* How many decoders OpenSSL runs over the body of an armored private key
+ * before it gives up: one for the PKCS#8 labels, two for the traditional
+ * RSA and EC labels (the type's decoder, then PKCS#8). 0 for input without
+ * armor and for a label no private-key decoder takes. */
+static size_t sp_pem_private_decoders(const unsigned char *data, size_t len) {
+  static const struct { const char *label; size_t decoders; } labels[] = {
+    {"PRIVATE KEY", 1}, {"ENCRYPTED PRIVATE KEY", 1}, {"RSA PRIVATE KEY", 2}, {"EC PRIVATE KEY", 2},
+  };
+  for (size_t at = 0; at + 11 <= len; at++) {
+    if (memcmp(data + at, "-----BEGIN ", 11) != 0) continue;
+    const unsigned char *label = data + at + 11;
+    size_t rest = len - at - 11;
+    for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++) {
+      size_t n = strlen(labels[i].label);
+      if (rest >= n + 5 && memcmp(label, labels[i].label, n) == 0 && memcmp(label + n, "-----", 5) == 0)
+        return labels[i].decoders;
+    }
+    return 0;
+  }
+  return 0;
+}
+
+/* How OpenSSL's ASN.1 reader fails on the outer element of a DER body
+ * that is not a key, as far as the element's header decides it: a header
+ * whose length field cannot be read, a length that runs past the data, or
+ * a complete element that is not a SEQUENCE. SP_OUTER_INSIDE for anything
+ * else (a SEQUENCE that fails further in, an indefinite length, a
+ * multi-byte tag): what OpenSSL reports there depends on where its parser
+ * stops. */
+enum { SP_OUTER_INSIDE, SP_OUTER_WRONG_TAG, SP_OUTER_HEADER_TOO_LONG, SP_OUTER_TOO_LONG };
+
+static int sp_der_outer_failure(const unsigned char *der, size_t len) {
+  if (len == 0 || (der[0] & 0x1f) == 0x1f) return SP_OUTER_INSIDE;
+  if (len == 1) return SP_OUTER_HEADER_TOO_LONG; /* a tag and no length */
+  size_t at = 2;
+  size_t length = der[1];
+  if (der[1] & 0x80) {
+    size_t count = der[1] & 0x7f;
+    if (count == 0) return SP_OUTER_INSIDE;
+    if (count > len - at) return SP_OUTER_HEADER_TOO_LONG;
+    while (count > 0 && der[at] == 0) {
+      at++;
+      count--;
+    }
+    if (count > sizeof(long)) return SP_OUTER_HEADER_TOO_LONG;
+    length = 0;
+    while (count-- > 0) length = (length << 8) | der[at++];
+  }
+  if (length > len - at) return SP_OUTER_TOO_LONG;
+  return (der[0] & 0x1f) != 0x10 ? SP_OUTER_WRONG_TAG : SP_OUTER_INSIDE;
+}
+
+/* OpenSSL's "unsupported" for key material no decoder takes, as Node
+ * reports it: library, reason and code, and the error stack. The stack
+ * ends with the reported error. Before it come the errors of each decoder
+ * that ran over an armored private key, when the outer element's header
+ * decides them (sp_der_outer_failure); for a body that fails further in
+ * they are left out. */
+static void sp_unsupported_key_input(const unsigned char *data, size_t len) {
+  static const char unsupported[] = "error:1E08010C:DECODER routines::unsupported";
+  static const char nested[] = "error:0688010A:asn1 encoding routines::nested asn1 error";
+  static const char wrong_tag[] = "error:068000A8:asn1 encoding routines::wrong tag";
+  static const char bad_header[] = "error:06800066:asn1 encoding routines::bad object header";
+  static const char header_too_long[] = "error:0680007B:asn1 encoding routines::header too long";
+  static const char too_long[] = "error:0680009B:asn1 encoding routines::too long";
+  const char *stack[7];
+  size_t n = 0;
+  size_t decoders = sp_pem_private_decoders(data, len);
+  int failure = SP_OUTER_INSIDE;
+  if (decoders > 0) {
+    unsigned char *decoded;
+    const unsigned char *der;
+    size_t der_len;
+    if (sp_der_of(data, len, &decoded, &der, &der_len)) {
+      failure = sp_der_outer_failure(der, der_len);
+      free(decoded);
+    }
+  }
+  for (; failure != SP_OUTER_INSIDE && decoders > 0; decoders--) {
+    stack[n++] = nested;
+    if (failure == SP_OUTER_WRONG_TAG) {
+      stack[n++] = wrong_tag;
+    } else {
+      stack[n++] = bad_header;
+      stack[n++] = failure == SP_OUTER_HEADER_TOO_LONG ? header_too_long : too_long;
+    }
+  }
+  stack[n++] = unsupported;
+  sp_throw_key_decrypt(unsupported, "DECODER routines", "unsupported", "ERR_OSSL_UNSUPPORTED", stack, n);
+}
+
 /* sp_parse with a passphrase for an encrypted private key (NULL: none). */
 static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_key, const ScrBytes *pass) {
   {
@@ -1899,7 +1996,7 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
     /* An encrypted traditional PEM key mbedTLS read. */
     if (private_rc == MBEDTLS_ERR_PK_PASSWORD_REQUIRED) sp_throw_passphrase_missing(false);
     else if (private_rc == MBEDTLS_ERR_PK_PASSWORD_MISMATCH) sp_throw_bad_decrypt(2);
-    else sp_unsupported_input();
+    else sp_unsupported_key_input(data, len);
     return NULL;
   }
   if (!sp_key_supported(k)) {
@@ -3130,6 +3227,17 @@ static bool sp_sig_key(const ScrDyn *value, bool sign, SpSigKey *out) {
   return ok;
 }
 
+/* The key of Sign.prototype.sign and crypto.sign: Node tests it for
+ * truthiness before it looks at its type. */
+static bool sp_sign_key(const ScrDyn *value, SpSigKey *out) {
+  out->key = NULL;
+  if (!scr_dyn_truthy(value)) {
+    sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_SIGN_KEY_REQUIRED", "No key provided to sign");
+    return false;
+  }
+  return sp_sig_key(value, true, out);
+}
+
 static bool sp_sig_key_plain(const ScrDyn *value, bool sign, SpSigKey *out) {
   out->key = NULL;
   out->padding = 1;
@@ -3485,7 +3593,7 @@ ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key) {
     return NULL;
   }
   SpSigKey k;
-  if (!sp_sig_key(key, true, &k)) return NULL;
+  if (!sp_sign_key(key, &k)) return NULL;
   if (sp_reject_x25519(&k)) return NULL;
   /* A null algorithm signs with an RSA-PSS key's own digest. */
   if ((algorithm->kind == SCR_DYN_UNDEF || algorithm->kind == SCR_DYN_NULL) && k.key->pss_params)
@@ -3615,7 +3723,7 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
       return NULL;
     }
     SpSigKey k;
-    if (!sp_sig_key(argc ? args[0] : scr_dyn_undefined(), true, &k)) return NULL;
+    if (!sp_sign_key(argc ? args[0] : scr_dyn_undefined(), &k)) return NULL;
     if (sp_reject_x25519(&k)) return NULL;
     if (sp_is_ed(k.key)) {
       sp_key_release(k.key);

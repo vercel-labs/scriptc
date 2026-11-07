@@ -4899,7 +4899,16 @@ static void scr_http_client_error(ScrHttpClientReq *c, ScrStr *msg /*borrowed*/)
     scr_event_error_payload = saved;
     return;
   }
+  /* A failed connect or lookup reaches the request as Node's system
+   * error (errno, syscall, address and port, or hostname), unless the
+   * caller already built the error for this message. */
+  ScrError *system = scr_event_error_payload == NULL ? scr_net_system_error(msg) : NULL;
+  if (system != NULL) scr_event_error_payload = system;
   scr_net_fire_err(&c->err_ls, msg);
+  if (system != NULL) {
+    scr_event_error_payload = NULL;
+    scr_error_release(system);
+  }
 }
 
 /* ── the wire: Node's exact request head ─────────────────────────────── */
@@ -7511,6 +7520,15 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
     ScrDyn *d = scr_dyn_new_str(s);
     scr_str_release(s);
     return d;
+  }
+  if (strcmp(method, "pipe") == 0) {
+    /* OutgoingMessage.prototype.pipe: a response is not readable. Node
+     * emits the error as 'error'; a response of this surface takes no
+     * 'error' listener, and an unhandled 'error' is the throw of its
+     * argument, here at the call. */
+    static const char msg[] = "Cannot pipe, not readable";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_STREAM_CANNOT_PIPE");
+    return NULL;
   }
   {
     static const char *const known[] = { "writeContinue", "writeEarlyHints",

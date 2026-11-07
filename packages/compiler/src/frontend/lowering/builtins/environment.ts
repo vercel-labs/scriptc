@@ -161,6 +161,7 @@ function unwrapped(node: ts.Expression): ts.Expression {
   while (
     ts.isParenthesizedExpression(inner) ||
     ts.isAsExpression(inner) ||
+    ts.isTypeAssertion(inner) ||
     ts.isNonNullExpression(inner) ||
     ts.isSatisfiesExpression(inner)
   )

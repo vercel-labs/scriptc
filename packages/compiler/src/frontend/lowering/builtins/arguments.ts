@@ -181,6 +181,7 @@ export function stripTypeCasts(e: ts.Expression): ts.Expression {
     ts.isParenthesizedExpression(cur) ||
     ts.isAsExpression(cur) ||
     ts.isTypeAssertion(cur) ||
+    ts.isSatisfiesExpression(cur) ||
     ts.isNonNullExpression(cur)
   ) {
     cur = cur.expression;

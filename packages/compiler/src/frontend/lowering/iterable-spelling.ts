@@ -7,6 +7,7 @@ function unwrapped(expr: ts.Expression): ts.Expression {
   while (
     ts.isParenthesizedExpression(e) ||
     ts.isAsExpression(e) ||
+    ts.isTypeAssertion(e) ||
     ts.isSatisfiesExpression(e) ||
     ts.isNonNullExpression(e)
   )

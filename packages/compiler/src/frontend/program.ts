@@ -1674,6 +1674,7 @@ function requireSpecOf7(node: ts.Node): string | null {
     ts.isParenthesizedExpression(value) ||
     ts.isAsExpression(value) ||
     ts.isTypeAssertion(value) ||
+    ts.isSatisfiesExpression(value) ||
     ts.isNonNullExpression(value)
   ) {
     value = value.expression;
@@ -2710,6 +2711,7 @@ function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
       (ts.isParenthesizedExpression(outer.parent) ||
         ts.isAsExpression(outer.parent) ||
         ts.isTypeAssertion(outer.parent) ||
+        ts.isSatisfiesExpression(outer.parent) ||
         ts.isNonNullExpression(outer.parent))
     ) {
       outer = outer.parent;
@@ -2733,6 +2735,7 @@ function stripRequireCasts7(expr: ts.Expression): ts.Expression {
     ts.isParenthesizedExpression(cur) ||
     ts.isAsExpression(cur) ||
     ts.isTypeAssertion(cur) ||
+    ts.isSatisfiesExpression(cur) ||
     ts.isNonNullExpression(cur)
   ) {
     cur = cur.expression;

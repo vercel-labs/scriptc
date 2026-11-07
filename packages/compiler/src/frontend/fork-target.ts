@@ -35,6 +35,7 @@ function strip(expr: ts.Expression): ts.Expression {
     ts.isParenthesizedExpression(current) ||
     ts.isAsExpression(current) ||
     ts.isTypeAssertion(current) ||
+    ts.isSatisfiesExpression(current) ||
     ts.isNonNullExpression(current)
   ) {
     current = current.expression;

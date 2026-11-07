@@ -154,6 +154,7 @@ export function lowerNodeApiCall(
     lowerer.pushDiag(diag(`${surface}: ${problem}`, locOf(specifierNode)));
     throw new PoisonError();
   }
+  lowerer.noteIslandOnWorkerThread(specifierNode.text, call);
   const specifier = lowerer.lowerExprExpecting(specifierNode, STRING);
   // An absolute specifier names a file of the build machine: the call names
   // the shipped copy, relative to the caller inside the tree.
@@ -235,6 +236,7 @@ function lowerRequireModule(lowerer: Lowerer, call: ts.CallExpression, surface: 
       "install the module or fix the specifier",
     );
   }
+  lowerer.noteIslandOnWorkerThread(arg.text, call);
   lowerer.usesNodeIsland = true;
   const raw: IrExpr = {
     kind: "libCall",
@@ -477,6 +479,7 @@ export function collectIslandImport(
   if (islands === null) return false;
   const path = islandModuleFile(islands, sf.fileName, spec, "import");
   if (path === null) return false;
+  lowerer.noteIslandOnWorkerThread(spec, stmt);
   if (ts.isExportDeclaration(stmt)) {
     // `export { Type } from "typebox"`: the re-exporting module loads the
     // island module and every name it re-exports binds the island's own
@@ -2701,6 +2704,7 @@ function lowerIslandLoadCall(
   const file = ts.getSourceFileOfNode(expr).fileName;
   const path = islandModuleFile(islands, file, arg.text, isImport ? "import" : "require");
   if (path === null) return undefined;
+  lowerer.noteIslandOnWorkerThread(arg.text, expr);
   lowerer.usesNodeIsland = true;
   if (isImport) {
     return {
@@ -3144,6 +3148,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
         const spec = requireInitSpecOf(lowerer, decl);
         const path = spec === null ? null : islandModuleFile(islands, sf.fileName, spec, "require");
         if (path !== null) {
+          lowerer.noteIslandOnWorkerThread(spec!, decl);
           lowerer.usesNodeIsland = true;
           islandModuleGlobal(lowerer, path);
         }
@@ -3153,6 +3158,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       if (spec === null) continue;
       const path = islandModuleFile(islands, sf.fileName, spec, "require");
       if (path === null) continue;
+      lowerer.noteIslandOnWorkerThread(spec, decl);
       lowerer.usesNodeIsland = true;
       const loc = locOf(decl);
       const binding = islandModuleGlobal(lowerer, path);

@@ -435,6 +435,11 @@ describe.skipIf(skip)("Node islands in-process", () => {
         "main 42\nmain count 1\nworker called 42\nworker get ERR_SCRIPTC_ISLAND_WORKER_VALUE\n" +
         "worker count 2\n" +
         refusal(
+          "function back",
+          "a native function or object the island holds by reference",
+          "the result of the call to 'getFunction'",
+        ) +
+        refusal(
           "callback",
           "a native function (a callback)",
           "argument 1 of the call to 'callBack'",

@@ -1464,9 +1464,29 @@ int scr_ni_remote_pollfd(void) {
   return fd;
 }
 
+/* How the island's thread shares itself with the threads that post to it.
+ * A thread it has just answered is no longer blocked, and in a run of
+ * island operations it asks again within microseconds. Leaving as soon as
+ * the queue is empty would give each such thread one operation per turn of
+ * this thread's loop: beside a main thread whose own work fills its turns,
+ * a worker's operations then take a main-thread turn each (measured: 2.8 ms
+ * an operation, and the repro of the pi crash, 300,000 calls from a worker
+ * beside a busy main thread, did not end within a minute). So the dispatch
+ * waits a moment for the next operation (NI_ROUTE_GAP_NS) and goes on
+ * serving, for at most as long as this thread spent on its own work since
+ * the dispatch before (an equal share, between NI_ROUTE_SLICE_MIN_NS and
+ * NI_ROUTE_SLICE_MAX_NS). A dispatch that finds nothing posted returns at
+ * once and reads no clock. */
+#define NI_ROUTE_GAP_NS UINT64_C(100000)         /* 100 us */
+#define NI_ROUTE_SLICE_MIN_NS UINT64_C(1000000)  /* 1 ms */
+#define NI_ROUTE_SLICE_MAX_NS UINT64_C(20000000) /* 20 ms */
+/* When the last dispatch that served an operation ended (0: none has). */
+static uint64_t ni_route_left_at = 0;
+
 /* The island's thread: starts Node if it has not started yet, then runs
- * every posted operation. Never re-entered (a served operation may call
- * back into the runtime, whose loop then asks again). */
+ * the posted operations (see the sharing rule above). Never re-entered (a
+ * served operation may call back into the runtime, whose loop then asks
+ * again). */
 void scr_ni_remote_dispatch(void) {
   if (!scr_context_is_main() || ni_route_serving) return;
   ni_route_serving = true;
@@ -1476,16 +1496,33 @@ void scr_ni_remote_dispatch(void) {
     while (read(fd, bytes, sizeof bytes) > 0) {
     }
   }
+  uint64_t slice_end = 0, gap_end = 0;
   for (;;) {
-    pthread_mutex_lock(&ni_route_lock);
-    NiRoute *request = ni_route_head;
-    if (request != NULL) {
-      ni_route_head = request->next;
-      if (ni_route_head == NULL) ni_route_tail = NULL;
-      atomic_fetch_sub_explicit(&ni_route_pending, 1, memory_order_release);
+    NiRoute *request = NULL;
+    if (atomic_load_explicit(&ni_route_pending, memory_order_acquire) > 0) {
+      pthread_mutex_lock(&ni_route_lock);
+      request = ni_route_head;
+      if (request != NULL) {
+        ni_route_head = request->next;
+        if (ni_route_head == NULL) ni_route_tail = NULL;
+        atomic_fetch_sub_explicit(&ni_route_pending, 1, memory_order_release);
+      }
+      pthread_mutex_unlock(&ni_route_lock);
     }
-    pthread_mutex_unlock(&ni_route_lock);
-    if (request == NULL) break;
+    if (request == NULL) {
+      if (slice_end == 0) break; /* nothing was posted */
+      /* The thread just answered may be about to ask again. */
+      uint64_t now = scr_hrtime_ns();
+      if (now >= gap_end || now >= slice_end) break;
+      continue;
+    }
+    if (slice_end == 0) {
+      uint64_t now = scr_hrtime_ns();
+      uint64_t own = ni_route_left_at != 0 && now > ni_route_left_at ? now - ni_route_left_at : 0;
+      if (own < NI_ROUTE_SLICE_MIN_NS) own = NI_ROUTE_SLICE_MIN_NS;
+      if (own > NI_ROUTE_SLICE_MAX_NS) own = NI_ROUTE_SLICE_MAX_NS;
+      slice_end = now + own;
+    }
     /* The posted operation may be the very first island use: Node starts
      * here, on the island's thread, before the operation runs. */
     ni_start();
@@ -1494,7 +1531,11 @@ void scr_ni_remote_dispatch(void) {
     request->done = true;
     pthread_cond_signal(&request->cond);
     pthread_mutex_unlock(&ni_route_lock);
+    uint64_t now = scr_hrtime_ns();
+    if (now >= slice_end) break; /* what is still posted waits for the next turn */
+    gap_end = now + NI_ROUTE_GAP_NS;
   }
+  if (slice_end != 0) ni_route_left_at = scr_hrtime_ns();
   ni_route_serving = false;
 }
 

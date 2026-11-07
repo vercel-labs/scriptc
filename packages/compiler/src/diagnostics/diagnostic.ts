@@ -293,6 +293,22 @@ export function widthCopyDivergenceDiag(
   };
 }
 
+/** SC6010 — a module that worker threads run loads a Node island module.
+ * Under Node a worker thread has an instance of its own of every module it
+ * loads; a compiled program has one Node island, on the main thread, and a
+ * worker's island operations are answered there, so the module is the one
+ * instance the main thread and every worker share. Whatever the module
+ * keeps between calls (a counter, a cache, a registered listener, a
+ * configured default) is therefore shared, where under Node it is not. */
+export function nodeIslandWorkerInstanceDiag(module: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6010",
+    message: `worker threads run this module, and it loads the Node island module '${module}': the program has one instance of that module for all its threads, while under Node each worker thread has its own, so what the module keeps between calls (a counter, a cache, a registered listener) is shared with the main thread and the other workers`,
+    loc,
+    hint: "nothing differs when the module keeps no state between calls; otherwise use it from one thread only, or pass the state in and out of each call",
+  };
+}
+
 /** SC6002 — an object literal whose written key order differs from the
  * order its declared type compiles to, for a type the program observes
  * (JSON.stringify, Object.keys/values/entries, for-in, console output). */

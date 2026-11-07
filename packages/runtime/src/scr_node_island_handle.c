@@ -350,6 +350,8 @@ static void nh_drain_freed(void) {
   }
 }
 
+static SCR_TL const struct ScrNodeRef *nh_site_fn; /* below, with the refusals */
+
 /* Housekeeping at every operation: bytes V8 freed, and the pin sweep once
  * the table has grown. */
 static void nh_enter(void) {
@@ -358,6 +360,7 @@ static void nh_enter(void) {
     /* The island's thread does the bridge's housekeeping, for every
      * thread; a thread's pins are its own to sweep. */
     if (!nh_on_island()) {
+      nh_site_fn = NULL; /* a new operation: the last read's function is no longer "just read" */
       if (nh_own_pins >= nh_sweep_at) nh_sweep();
       return;
     }
@@ -806,10 +809,15 @@ static SCR_TL struct {
   bool receiver;
 } nh_site;
 
-/* The member a dynamic method call read its function from (nh_op_invoke),
- * for the call that follows on the same thread: it has the function, not
- * the name. */
+/* The member a dynamic method call read its function from, for the call
+ * that follows on the same thread: it has the function, not the name.
+ * nh_op_invoke names it; a member read that answered an island function
+ * notes it (nh_site_note_fn), and the next operation of the thread, when
+ * it calls that very function, takes the name (scr_ni_call). Any other
+ * operation in between forgets it, so a name is never a stale one. */
 static SCR_TL const char *nh_site_member = NULL;
+static SCR_TL const struct ScrNodeRef *nh_site_fn = NULL;
+static SCR_TL char nh_site_fn_name[64];
 
 static inline void nh_site_set(int op, const char *name, size_t name_len) {
   if (nh_on_island()) return;
@@ -825,7 +833,9 @@ static inline void nh_site_set(int op, const char *name, size_t name_len) {
 }
 
 static inline void nh_site_clear(void) {
-  if (!nh_on_island()) nh_site.op = NH_SITE_NONE;
+  if (nh_on_island()) return;
+  nh_site.op = NH_SITE_NONE;
+  nh_site_fn = NULL;
 }
 
 /* " (argument 2 of the call to 'resize')", or "" when no operation is
@@ -1503,6 +1513,16 @@ __attribute__((noinline)) static int nh_run_routed(NhCall *c) {
   return c->threw;
 }
 
+/* A worker thread read member `key` and got `value`: an island function is
+ * remembered with the member's name until the thread's next operation. */
+static void nh_site_note_fn(const ScrDyn *value, const char *key, size_t len) {
+  const ScrNodeRef *ref = nh_ref_of(value);
+  if (ref == NULL || (ref->flags & SCR_NVF_FUNCTION) == 0 || len >= sizeof nh_site_fn_name) return;
+  memcpy(nh_site_fn_name, key, len);
+  nh_site_fn_name[len] = '\0';
+  nh_site_fn = ref;
+}
+
 static int nh_run(NhCall *c) {
   if (!nh_on_island()) return nh_run_routed(c);
   scr_ni_shared_refresh();
@@ -1652,6 +1672,7 @@ ScrDyn *scr_ni_get_str(ScrDyn *obj, const char *key, size_t len) {
   nh_site_set(NH_SITE_READ, key, len);
   ScrDyn *value = nh_outcome(&c);
   nh_site_clear();
+  if (!nh_on_island()) nh_site_note_fn(value, key, len);
   return value;
 }
 
@@ -1777,7 +1798,12 @@ static ScrDyn *nh_call(int op, uint32_t id, ScrDyn *this_, const ScrNodeValue *k
 ScrDyn *scr_ni_call(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc) {
   uint32_t id;
   if (!nh_receiver(fn, &id, "a call")) return NULL;
-  return nh_call(NH_INVOKE, id, this_, NULL, args, argc);
+  /* The function a member read just answered: the call is that member's. */
+  bool named = nh_site_member == NULL && nh_site_fn != NULL && nh_site_fn == nh_ref_of(fn);
+  if (named) nh_site_member = nh_site_fn_name;
+  ScrDyn *result = nh_call(NH_INVOKE, id, this_, NULL, args, argc);
+  if (named) nh_site_member = NULL;
+  return result;
 }
 
 ScrDyn *scr_ni_call_method(ScrDyn *obj, const char *key, size_t len, ScrDyn *const *args,

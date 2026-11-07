@@ -17,6 +17,7 @@ if (isMainThread) {
   // The island keeps a native object by reference: the export is the island
   // thread's object, so a worker asking for it back is refused by code.
   requireModule("./helper.cjs").keep({ tag: "kept" });
+  requireModule("./helper.cjs").keepFunction(() => "main thread's");
   const worker = new Worker(new URL(import.meta.url));
   worker.on("message", (message: string) => console.log("worker", message));
   worker.on("exit", (code: number) => console.log("exit", code));
@@ -47,6 +48,9 @@ if (isMainThread) {
       parentPort!.postMessage("  " + refusal.message.slice(0, refusal.message.indexOf(";")));
     }
   };
+  // A function the main thread passed in comes back as that thread's
+  // function, which a worker must not get either.
+  refused("function back", () => helper.getFunction());
   refused("callback", () => helper.callBack((n: number) => n + 1));
   refused("bytes out", () => helper.byteLength(new Uint8Array(4)));
   refused("bytes in", () => helper.bytes());

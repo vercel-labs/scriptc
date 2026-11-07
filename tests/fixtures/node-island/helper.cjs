@@ -9,6 +9,12 @@ exports.keep = (value) => {
   return "kept";
 };
 exports.get = () => kept;
+let keptFunction = null;
+exports.keepFunction = (fn) => {
+  keptFunction = fn;
+  return "kept";
+};
+exports.getFunction = () => keptFunction;
 // What a worker thread cannot pass to or take from the island (worker.ts):
 // a function to call back, bytes either way, and an error of its own.
 exports.callBack = (fn) => fn(1);

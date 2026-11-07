@@ -90,3 +90,38 @@ describe("event loop: piped stdin (differential)", () => {
     await differential(c.fixture, c.script);
   });
 });
+
+// Not differential: once an encoding is set Node hands out strings, and a
+// consumer compiled for bytes cannot take one. The compiled program refuses
+// by name; before, it handed out the raw bytes (a listener that appended its
+// chunks printed their decimal values).
+test.for([
+  [
+    "a bytes 'data' listener",
+    "stdin-set-encoding-bytes.ts",
+    "process.stdin 'data' listener takes a Buffer, but setEncoding makes the chunks strings",
+  ],
+  [
+    "read()",
+    "stdin-set-encoding-read.ts",
+    "process.stdin.read() answers a Buffer, but setEncoding makes the chunks strings",
+  ],
+  [
+    "for await",
+    "stdin-set-encoding-for-await.ts",
+    "for await over process.stdin takes Buffers, but setEncoding makes the chunks strings",
+  ],
+] as const)("stdin under setEncoding: %s is refused by name", async ([, fixture, message]) => {
+  const binary = await compileFixture(fixture);
+  const result = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+    const child = execFile(binary, [], { encoding: "utf8" }, (err, stdout, stderr) => {
+      const e = err as { code?: unknown } | null;
+      resolve({ stdout, stderr, code: e && typeof e.code === "number" ? e.code : 0 });
+    });
+    child.stdin?.end("Say hello\n");
+  });
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain(message);
+  expect(result.stderr).toContain("SC2020");
+  expect(result.code).toBe(1);
+});

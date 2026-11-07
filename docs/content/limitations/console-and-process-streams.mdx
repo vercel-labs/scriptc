@@ -33,3 +33,8 @@ For the same reason `process.stdin.isPaused()` does not report a `pause()` of th
 A process stream held as an untyped value does not convert to a stream class: asserting or passing it as `Readable` or `Writable` throws a TypeError.
 Passing `process.stdin` where `Duplex` or `EventEmitter` is declared throws the same TypeError.
 The bundled declarations declare `process.stdin` by its own members, so these conversions need `@types/node`.
+After `process.stdin.setEncoding`, a `'data'` listener registered on `process.stdin` whose parameter is declared `string` receives the decoded chunks, with a multi-byte sequence split across reads kept whole.
+A listener whose parameter is a `Buffer` or `Uint8Array`, which includes a parameter with no annotation, throws a TypeError with code `SC2020` at the first chunk, because Node delivers a string there.
+`process.stdin.read()` and `for await` over `process.stdin` answer bytes, so after `setEncoding` they throw the same kind of TypeError at the first chunk they would hand out, where Node answers a string.
+A `read()` that hands out no chunk (`read(0)`, or a `read()` with nothing held) answers `null` and an iteration that gets no input ends, as in Node.
+To read text that way, leave the encoding unset and decode the Buffers with a `TextDecoder`.

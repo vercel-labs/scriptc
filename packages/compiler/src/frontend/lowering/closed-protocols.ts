@@ -619,7 +619,7 @@ export class ClosedProtocols {
     // origins with their own types.
     if ((type.flags & ts.TypeFlags.Object) === 0) return;
     this.test(type);
-    if (depth < 3 && type.isTypeReference())
+    if (type.isTypeReference())
       for (const argument of this.checker.getTypeArguments(type))
         this.originType(argument, depth + 1);
   }
@@ -748,8 +748,8 @@ export class ClosedProtocols {
   }
 
   /** Whether `type` is `any` or `unknown`, alone, as a union part or as a
-   * type argument (`any[]`, `Promise<any>`): a value of it converts where
-   * it is written to a typed slot. */
+   * type argument at any depth (`any[]`, `any[][][]`, `Promise<any>`): a
+   * value of it converts where it is written to a typed slot. */
   private holdsUntyped(type: ts.Type, depth: number): boolean {
     if ((type.flags & ts.TypeFlags.Any) !== 0) return true;
     // An `unknown` value itself (the checker types a JSON.parse result so
@@ -761,7 +761,7 @@ export class ClosedProtocols {
     let answer = false;
     if (type.isUnionType() || type.isIntersectionType())
       answer = ts.constituentTypes(type).some((part) => this.holdsUntyped(part, depth));
-    else if ((type.flags & ts.TypeFlags.Object) !== 0 && depth < 2 && type.isTypeReference())
+    else if ((type.flags & ts.TypeFlags.Object) !== 0 && type.isTypeReference())
       answer = this.checker
         .getTypeArguments(type)
         .some((argument) => this.holdsUntyped(argument, depth + 1));

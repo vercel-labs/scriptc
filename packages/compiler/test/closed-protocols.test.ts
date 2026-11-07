@@ -91,6 +91,7 @@ test("an untyped value converted to the interface keeps it checked-dynamic", asy
     `const parsed: Shape = JSON.parse('{"scale":1}'); console.log(parsed.scale);`,
     `const boxed: unknown = new Sq(1); console.log(use(boxed as Shape));`,
     `const list = JSON.parse("[]") as Shape[]; console.log(list.length);`,
+    `const raw: any[][][] = [[[]]]; const nested: Shape[][][] = raw; console.log(nested.length);`,
     `function isShape(value: unknown): value is Shape { return typeof value === "object"; }
 const candidate: unknown = new Sq(1); if (isShape(candidate)) console.log(use(candidate));`,
   ]) {

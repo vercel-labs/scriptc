@@ -1821,11 +1821,11 @@ export class ClassProtocols {
     return this.closedProtocols;
   }
 
-  /** Whether the program has a closed protocol. */
+  /** Whether a pass of this program held a protocol closed: the closed
+   * index exists only once a pass asked for a declared interface's
+   * mapping, so this never builds an index the program did not need. */
   anyClosed(): boolean {
-    this.index();
-    if (this.implementers.size === 0) return false;
-    return this.closedIndex().size > 0;
+    return this.closedProtocols !== null && this.closedProtocols.size > 0;
   }
 
   /** Class-backed protocols require live receiver dispatch. Other interfaces,

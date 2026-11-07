@@ -1005,8 +1005,9 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value);
  * index in `values` of the string `d`'s own data property `key` holds, or
  * -1 when every literal test above fails (`d` is not an object, or its own
  * data property `key` holds no string among `values`), or -2 when only the
- * tests themselves can tell (a typed capsule, an accessor, or a property
- * `d` does not own). Borrowed args. */
+ * tests themselves can tell (a typed capsule, an accessor, a property `d`
+ * does not own, or an island object, whose members live in Node). Borrowed
+ * args. */
 int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
                                   size_t count);
 
@@ -1015,6 +1016,14 @@ int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *co
  * member nodes. null/undefined receivers throw Node's catchable
  * TypeError. */
 ScrDyn *scr_dyn_obj_keys(const ScrDyn *v);
+/* A checked conversion's view of a value an island made (scr_json.c): the
+ * array's elements read through the handle into a native array, holes left
+ * absent; the object's own enumerable string keys read into a native object.
+ * Both answer +1, or NULL with an exception pending from a getter or a proxy
+ * trap. An array view of a value that is not an array answers NULL with
+ * nothing pending. */
+ScrDyn *scr_dyn_island_array(ScrDyn *value);
+ScrDyn *scr_dyn_island_object(ScrDyn *value);
 ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v);
 /* for-in keys as a native string[] (+1); NULL with an exception pending. */
 ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v);

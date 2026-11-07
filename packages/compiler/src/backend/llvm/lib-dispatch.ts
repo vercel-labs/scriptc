@@ -304,9 +304,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const record = host.emitReadReceiver(e.args[0]!);
     const key = e.args[1]!;
     if (key.kind !== "strLit")
-      throw new InternalCompilerError(
-        "llvm emitter bug: record.sourceHasKey key is not a literal",
-      );
+      throw new InternalCompilerError("llvm emitter bug: record.sourceHasKey key is not a literal");
     host.declare(`declare zeroext i1 @scr_record_source_has_key(ptr, ptr, ${host.sizeType})`);
     const present = B.tmp();
     const length = Buffer.byteLength(key.value, "utf8");
@@ -331,9 +329,11 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     );
     // The read runs the view's accessor: a getter that throws leaves the
     // exception pending and answers NULL, which must unwind here rather
-    // than reach the dynamic-value consumer as a value.
+    // than reach the dynamic-value consumer as a value. The temp joins its
+    // frame first, so the unwind releases it as every other call's does.
+    const out = host.own({ name: value, type: e.type });
     host.emitPendingCheck();
-    return host.own({ name: value, type: e.type });
+    return out;
   }
   if (e.fn === "record.sourceSpread") {
     const built = host.emitReadReceiver(e.args[0]!);

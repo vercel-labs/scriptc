@@ -827,6 +827,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.throwReadOnly",
   "class.throwNotExtensible",
   "record.throwFrozen",
+  // The kept-source read runs the source view's accessor, which can throw
+  // (record-sources.ts carries the read into a record width copy).
+  "record.sourceGet",
   "dyn.toString",
   "dyn.valueOf",
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run

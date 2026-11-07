@@ -1590,10 +1590,40 @@ function lowerNetServerMethodCall(
     // statement position keeps the plain void call; a consumed result
     // rides the interned receiver-returning helper.
     const listenResult = (fn: IrLibFn, callArgs: IrExpr[]): IrExpr => {
-      if (ts.isExpressionStatement(call.parent)) {
-        return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+      const statement = ts.isExpressionStatement(call.parent);
+      const port = callArgs[1];
+      if (port === undefined || port.kind !== "libCall" || port.fn !== "net.listenPortDyn") {
+        if (statement) return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+        return receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
       }
-      return receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
+      // A port checked when the call runs: Node evaluates every argument,
+      // left to right, before listen validates the port. The receiver and
+      // each argument are held first, so a later argument's effects happen
+      // and its exception wins over ERR_SOCKET_BAD_PORT.
+      const stmts: IrStmt[] = [];
+      const held = callArgs.map((arg, index): IrExpr => {
+        const value = index === 1 ? port.args[0]! : arg;
+        const local = lowerer.declareHiddenLocal(`%listenArg${index}`, value.type);
+        stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+        return varRef(local.id, value.type, loc);
+      });
+      const server = held[0]!;
+      held[1] = { ...port, args: [held[1]!, port.args[1]!] };
+      if (statement) {
+        stmts.push({
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn, args: held, type: VOID, loc },
+          loc,
+        });
+        return { kind: "seqExpr", stmts, result: server, type: NETSERVER_T, loc };
+      }
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: receiverReturningCall(lowerer, fn, held, NETSERVER_T, loc),
+        type: NETSERVER_T,
+        loc,
+      };
     };
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
     // listen() and listen(callback): Node binds an arbitrary unused port
@@ -1639,6 +1669,32 @@ function lowerNetServerMethodCall(
       type: F64,
       loc,
     });
+    // A number port: Node's validatePort accepts an integer from 0 to 65535
+    // and throws ERR_SOCKET_BAD_PORT for every other number (a fraction, a
+    // negative, NaN, 70000). A literal in that range needs no check; any
+    // other number takes the check an untyped port takes, so the bind never
+    // sees a value truncated into the range. A number is never the options
+    // object or pipe path that check fences, so it carries no fence.
+    const validatedPort = (port: IrExpr): IrExpr => {
+      if (port.type.kind !== "f64") return port;
+      if (
+        port.kind === "numLit" &&
+        Number.isInteger(port.value) &&
+        port.value >= 0 &&
+        port.value <= 65535
+      )
+        return port;
+      return {
+        kind: "libCall",
+        fn: "net.listenPortDyn",
+        args: [
+          lowerer.coerceToExpected(port, DYN),
+          { kind: "strLit", value: "", type: STRING, loc },
+        ],
+        type: F64,
+        loc,
+      };
+    };
     if (args.length === 1 && untyped) {
       // An untyped single argument: a function is the callback on an
       // arbitrary port; any other value is the port.
@@ -1813,6 +1869,7 @@ function lowerNetServerMethodCall(
           "the supported options object is { port, host?, ipv6Only?, reusePort? } — port 0 binds an ephemeral port",
         );
       }
+      port = validatedPort(port);
       host ??= {
         kind: "strLit",
         value: "",
@@ -1895,7 +1952,7 @@ function lowerNetServerMethodCall(
     }
     const port = untyped
       ? portOfUntyped(lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN))
-      : lowerer.lowerExprExpecting(args[0]!, F64);
+      : validatedPort(lowerer.lowerExprExpecting(args[0]!, F64));
     // The optional middle host — listen(port, '127.0.0.1'[, cb]): a
     // string-typed second argument is the bind address (the net.connect
     // disambiguation), routed through the options-form entry.

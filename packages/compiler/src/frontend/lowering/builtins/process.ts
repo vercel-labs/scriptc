@@ -35,7 +35,12 @@ import {
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
 import { builtinFunctionValue } from "../lower-exprs.js";
 import { canonicalBuiltinModule } from "../../builtin-modules.js";
-import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
+import {
+  lowerProcessIpcDisconnect,
+  lowerProcessIpcSend,
+  ipcMessageListener,
+  ipcDisconnectListener,
+} from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
 import { isCheckerPanic } from "../../../diagnostics/diagnostic.js";
 
@@ -1123,19 +1128,7 @@ export function lowerProcessMethodCall(
     };
   }
   if (directProcessMember === "send") return lowerProcessIpcSend(lowerer, call);
-  if (directProcessMember === "disconnect") {
-    if (call.arguments.nodes.length !== 0) {
-      lowerer.noLowering(`process.disconnect with ${call.arguments.nodes.length} arguments`, call);
-    }
-    if (!resultIsDiscarded(call)) {
-      lowerer.unsupported(
-        "SC1090",
-        call,
-        "using the result of process.disconnect() (call it as its own statement)",
-      );
-    }
-    return { kind: "libCall", fn: "process.disconnect", args: [], type: VOID, loc: locOf(call) };
-  }
+  if (directProcessMember === "disconnect") return lowerProcessIpcDisconnect(lowerer, call);
   // process.stdout.write(s[, encoding][, callback]) and stderr's twin:
   // raw bytes, no newline or formatting. stdout shares console.log's
   // promptly-submitted stream, preserving source order. Node's boolean
@@ -2417,20 +2410,24 @@ export function lowerProcessOptionalMethodCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
 ): IrExpr | null {
-  // `process.send!(message)`: the asserted direct call of the optional
-  // member (the @types/node spelling under strict null checks).
+  // `process.send!(message)` and `process.disconnect!()`: the asserted
+  // direct call of the optional member (the @types/node spelling under
+  // strict null checks).
   if (
     !expr.questionDotToken &&
     ts.isNonNullExpression(expr.expression) &&
     ts.isPropertyAccessExpression(expr.expression.expression) &&
-    !expr.expression.expression.questionDotToken &&
-    lowerer.stdlibGlobalMember(expr.expression.expression, "process") === "send"
-  )
-    return lowerProcessIpcSend(lowerer, expr);
+    !expr.expression.expression.questionDotToken
+  ) {
+    const asserted = lowerer.stdlibGlobalMember(expr.expression.expression, "process");
+    if (asserted === "send") return lowerProcessIpcSend(lowerer, expr);
+    if (asserted === "disconnect") return lowerProcessIpcDisconnect(lowerer, expr);
+  }
   if (!expr.questionDotToken) return null;
   if (!ts.isPropertyAccessExpression(expr.expression)) return null;
   const member = lowerer.stdlibGlobalMember(expr.expression, "process");
   if (member === "send") return lowerProcessIpcSend(lowerer, expr);
+  if (member === "disconnect") return lowerProcessIpcDisconnect(lowerer, expr);
   if (member === null || !PROCESS_CREDENTIAL_FNS.has(member)) return null;
   if (expr.arguments.nodes.length !== 0) {
     lowerer.noLowering(`process.${member} with ${expr.arguments.nodes.length} arguments`, expr);

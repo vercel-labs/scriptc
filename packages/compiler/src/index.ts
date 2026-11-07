@@ -602,11 +602,20 @@ interface CompileWarningSink {
 
 /** The texts a cache hit's warnings point into, re-read for their code
  * frames: the same files the build read, unchanged since (the entry's
- * frontend snapshot proved it). */
-function cachedWarningSources(warnings: readonly ScrDiagnostic[]): Map<string, string> {
+ * frontend snapshot proved it). A file the frontend rewrote before the
+ * warnings were located in it (its JSX) keeps the text the entry stores. */
+function cachedWarningSources(
+  warnings: readonly ScrDiagnostic[],
+  stored: Record<string, string> | undefined,
+): Map<string, string> {
   const texts = new Map<string, string>();
   for (const w of warnings) {
     if (texts.has(w.loc.file)) continue;
+    const kept = stored?.[w.loc.file];
+    if (kept !== undefined) {
+      texts.set(w.loc.file, kept);
+      continue;
+    }
     try {
       texts.set(w.loc.file, readFileSync(w.loc.file, "utf8"));
     } catch {
@@ -627,12 +636,21 @@ function islandFields(sink: CompileWarningSink | undefined): {
 
 /** Every warning the build reported, stored with its cache entry so a cache
  * hit repeats them exactly: a hit skips lowering, and skipping it must not
- * hide a diagnostic the cold build prints. */
+ * hide a diagnostic the cold build prints. The texts their frames render from
+ * ride along for the files the frontend rewrote (its JSX): the file on disk
+ * no longer holds the positions the warnings name. */
 function warningFields(sink: CompileWarningSink | undefined): {
   warnings?: ScrDiagnostic[];
+  warningTexts?: ReadonlyMap<string, string>;
 } {
   const warnings = sink?.warnings ?? [];
-  return warnings.length === 0 ? {} : { warnings };
+  if (warnings.length === 0) return {};
+  const texts = new Map<string, string>();
+  for (const w of warnings) {
+    const text = sink?.sourceTexts?.get(w.loc.file);
+    if (text !== undefined) texts.set(w.loc.file, text);
+  }
+  return { warnings, ...(texts.size === 0 ? {} : { warningTexts: texts }) };
 }
 
 /** The profile match of a --profile-use build's program object, for its
@@ -2202,7 +2220,7 @@ async function compileTracked(
     // lowering must not hide a diagnostic.
     if (warningSink !== undefined && earlyHit.warnings !== undefined) {
       warningSink.warnings = earlyHit.warnings;
-      warningSink.sourceTexts = cachedWarningSources(earlyHit.warnings);
+      warningSink.sourceTexts = cachedWarningSources(earlyHit.warnings, earlyHit.warningSources);
     }
     if (warningSink !== undefined && earlyHit.islands !== undefined)
       warningSink.islands = earlyHit.islands;
@@ -2304,6 +2322,9 @@ async function compileTracked(
                 executableRestored: true,
                 nativeDependencies: dependencies,
                 frontend: earlyHit.frontend,
+                ...(earlyHit.warningSources === undefined
+                  ? {}
+                  : { warningTexts: new Map(Object.entries(earlyHit.warningSources)) }),
                 ...profileMatchField(nativeProgramObject),
                 ...partitionsField(nativeProgramObject),
               });

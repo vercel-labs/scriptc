@@ -184,6 +184,10 @@ interface EarlyExecutableCacheStamp {
    * notes, SC8001/SC8020/SC8023 Node island notices, SC803x type patches),
    * which a cache hit repeats exactly. */
   warnings?: ScrDiagnostic[];
+  /** The text the build's warnings were located in, for each file whose text
+   * on disk differs from it (a JSX file the frontend rewrote), by path. A hit
+   * frames a warning whose file is absent here from the file on disk. */
+  warningSources?: Record<string, string>;
   /** The Node islands the build ran, which a cache hit reports again. */
   islands?: { packages: string[]; modules: string[] };
   /** Programs that call into Node.js: the libnode pack identity the build
@@ -317,6 +321,10 @@ export interface EarlyExecutableCacheHit {
   frontend: FrontendInputSnapshot;
   /** The warnings the build reported, repeated on a hit. */
   warnings?: ScrDiagnostic[];
+  /** The texts the build's warnings point into, for the files whose text on
+   * disk differs from the text the warnings were located in (a JSX file the
+   * frontend rewrote). A hit re-reads every other file. */
+  warningSources?: Record<string, string>;
   /** The Node islands the build ran, repeated on a hit. */
   islands?: { packages: string[]; modules: string[] };
   /** How a --profile-use build's profile matched, reported again on a hit. */
@@ -328,6 +336,10 @@ export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   /** The partitions the native helper compiled, when the build divided the
    * module; omitted when it linked one object. */
   partitions?: number;
+  /** The texts the build's warnings were located in, by file. The entry keeps
+   * the ones that differ from the file on disk (a JSX file the frontend
+   * rewrote), so a hit frames the warnings as the build did. */
+  warningTexts?: ReadonlyMap<string, string>;
 }
 
 function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
@@ -359,6 +371,17 @@ function isWarnings(value: unknown): value is ScrDiagnostic[] {
         typeof loc.end === "number"
       );
     })
+  );
+}
+
+/** The texts a cache entry keeps for its warnings: one string per file, read
+ * back as the map the frames render from. */
+function isWarningSources(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((text) => typeof text === "string")
   );
 }
 
@@ -872,6 +895,7 @@ async function readExecutableCache(
       ...(isWarnings(stamp.warnings) && stamp.warnings.length > 0
         ? { warnings: stamp.warnings }
         : {}),
+      ...(isWarningSources(stamp.warningSources) ? { warningSources: stamp.warningSources } : {}),
       ...(isIslands(stamp.islands) ? { islands: stamp.islands } : {}),
       ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
       ...(ir === null ? {} : { irPath: paths.irPath }),
@@ -998,6 +1022,26 @@ export async function publishEarlyExecutableRoute(
   }
 }
 
+/** The warning texts a cache entry keeps: the ones a hit cannot read back
+ * from disk, because the frontend rewrote the file (its JSX) before the
+ * warnings were located in it. */
+async function changedWarningTexts(
+  texts: ReadonlyMap<string, string> | undefined,
+): Promise<Record<string, string>> {
+  const changed: Record<string, string> = {};
+  for (const [file, text] of texts ?? []) {
+    let onDisk: string | null = null;
+    try {
+      onDisk = await readFile(file, "utf8");
+    } catch {
+      // A file that no longer exists cannot be re-read; the entry keeps the
+      // text the warnings were located in.
+    }
+    if (onDisk !== text) changed[file] = text;
+  }
+  return changed;
+}
+
 export async function publishEarlyExecutableCache(
   root: string | null,
   options: EarlyExecutableCacheOptions,
@@ -1049,6 +1093,7 @@ export async function publishEarlyExecutableCache(
       )
     )
       return;
+    const warningSources = await changedWarningTexts(result.warningTexts);
     const unsigned: Omit<EarlyExecutableCacheStamp, "integrity"> = {
       version: 2,
       key: cacheKey(options),
@@ -1067,6 +1112,7 @@ export async function publishEarlyExecutableCache(
       ...(result.warnings === undefined || result.warnings.length === 0
         ? {}
         : { warnings: result.warnings }),
+      ...(Object.keys(warningSources).length === 0 ? {} : { warningSources }),
       ...(result.islands === undefined ? {} : { islands: result.islands }),
       ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
       ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),

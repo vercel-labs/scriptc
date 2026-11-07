@@ -224,6 +224,39 @@ test("early executable cache replays every warning the build reported", async ()
   expect((await readEarlyExecutableCache(f.root, f.options))?.warnings).toEqual(warnings);
 });
 
+test("early executable cache keeps the rewritten text its warnings were located in", async () => {
+  const f = await fixture();
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  const warnings: ScrDiagnostic[] = [
+    {
+      code: "SC6101",
+      message: "likely-hot function 'view' uses untyped values",
+      loc: { file: f.source, start: 0, end: 4 },
+    },
+  ];
+  // The frontend locates a rewritten JSX file's warnings in the rewritten
+  // text, which no longer matches the file on disk: the entry keeps that text
+  // so a hit frames the warning where the build did. A file the frontend did
+  // not rewrite stays out of the entry and is re-read on a hit.
+  const rewritten = 'const view = jsx("div");\n';
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: false,
+    frontend: tracker.snapshot(),
+    warnings,
+    warningTexts: new Map([
+      [f.source, rewritten],
+      [f.llvmPath, "; generated llvm\n"],
+    ]),
+  });
+  const hit = await readEarlyExecutableCache(f.root, f.options);
+  expect(hit?.warnings).toEqual(warnings);
+  expect(hit?.warningSources).toEqual({ [f.source]: rewritten });
+});
+
 test("early executable cache preserves worker runtime selection when only frontend output restores", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();

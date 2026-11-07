@@ -338,7 +338,7 @@ export function cjsExportMemberWriteGlobalOf(
 
 /** Whether a function body reads `this` (arrow functions inherit it; other
  * nested functions bind their own). */
-function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
+export function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
   if (fn.body === undefined) return false;
   let found = false;
   ts.walkPreorder(fn.body, (node) => {

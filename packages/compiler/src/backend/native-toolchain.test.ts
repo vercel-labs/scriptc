@@ -28,6 +28,7 @@ import {
   implicitDependencyProbeIncludes,
   parseLinkTraceFiles,
   resolveBuildCacheRoot,
+  resolveCompilerStateRoot,
   runtimeFingerprint,
   runtimeSrcDir,
   stageRuntimeObjects,
@@ -156,6 +157,36 @@ test("the production cache root follows overrides, platform defaults, and the ha
       "/Users/tester",
     ),
   ).toBe("/Users/tester/AppData/Local/scriptc/cache/build");
+});
+
+test("the compiler-level store follows the hard disable but not the build cache's location", () => {
+  // A build with an empty build cache still reads what an earlier build
+  // derived, so the store's root does not move with the build cache's.
+  expect(resolveCompilerStateRoot({}, "linux", "/home/tester")).toBe(
+    "/home/tester/.cache/scriptc/compiler",
+  );
+  expect(
+    resolveCompilerStateRoot({ SCRIPTC_CACHE_DIR: "/var/tmp/cold" }, "linux", "/home/tester"),
+  ).toBe("/home/tester/.cache/scriptc/compiler");
+  expect(
+    resolveCompilerStateRoot({ SCRIPTC_STATE_DIR: "/var/tmp/state" }, "linux", "/home/tester"),
+  ).toBe("/var/tmp/state");
+  expect(
+    resolveCompilerStateRoot({ XDG_CACHE_HOME: "/var/tmp/xdg" }, "linux", "/home/tester"),
+  ).toBe("/var/tmp/xdg/scriptc/compiler");
+  expect(resolveCompilerStateRoot({}, "darwin", "/Users/tester")).toBe(
+    "/Users/tester/Library/Caches/scriptc/compiler",
+  );
+  expect(
+    resolveCompilerStateRoot(
+      { LOCALAPPDATA: "/Users/tester/AppData/Local" },
+      "win32",
+      "/Users/tester",
+    ),
+  ).toBe("/Users/tester/AppData/Local/scriptc/cache/compiler");
+  expect(resolveCompilerStateRoot({ SCRIPTC_NO_CACHE: "1" }, "linux", "/home/tester")).toBeNull();
+  expect(resolveCompilerStateRoot({ SCRIPTC_CACHE_DIR: "" }, "linux", "/home/tester")).toBeNull();
+  expect(resolveCompilerStateRoot({ SCRIPTC_STATE_DIR: "" }, "linux", "/home/tester")).toBeNull();
 });
 
 test("executable section elimination flags are target-aware", () => {

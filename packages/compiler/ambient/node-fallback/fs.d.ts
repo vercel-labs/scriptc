@@ -26,10 +26,10 @@ declare module "node:fs" {
   ): void;
   /* The options form carries the mode (applied at CREATION only, like
    * Node — an existing file keeps its permissions) and/or the utf8
-   * encoding spelling. */
+   * encoding spelling; it writes text or raw byte data. */
   export function writeFileSync(
     path: string | URL,
-    data: string,
+    data: string | Uint8Array,
     /* The options-record stance (see http.RequestOptions): an unsupported
      * flag fences by name at the call site; undocumented keys drop like
      * Node. The lowered flags are "w" (truncate-or-create) and "wx"
@@ -42,7 +42,11 @@ declare module "node:fs" {
     },
   ): void;
   /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
+  export function writeFileSync(
+    path: string | URL,
+    data: string | Uint8Array,
+    encoding: "utf8" | "utf-8",
+  ): void;
   export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
   /* The file-descriptor form: Node writes the whole data to an already
    * open descriptor and leaves it open (closeSync owns its lifetime, and
@@ -50,6 +54,25 @@ declare module "node:fs" {
   export function writeFileSync(fd: number, data: string): void;
   export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
   export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
+  /* The bare-encoding spelling is the options record's encoding key alone. */
+  export function appendFileSync(
+    path: string | URL,
+    data: string | Uint8Array,
+    encoding: "utf8" | "utf-8",
+  ): void;
+  /* The options record: `encoding` may only spell the utf8 the runtime
+   * appends; `mode` and any other flag keep their fence, since they change
+   * what an append creates (see the writeFileSync stance). */
+  export function appendFileSync(
+    path: string | URL,
+    data: string | Uint8Array,
+    options?: {
+      mode?: number;
+      encoding?: "utf8" | "utf-8";
+      flag?: string;
+      [option: string]: unknown;
+    },
+  ): void;
   export function existsSync(path: string | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(
@@ -191,16 +214,19 @@ declare module "node:fs" {
     },
   ): string[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
-   * probes — the honest subset of Node's Dirent surface). The type is
-   * interned explicitly in type-mapper.ts (the record's hidden %dtype field
-   * carries the entry kind; isFile/isDirectory/isSymbolicLink lower as
-   * reads of it in builtins/process.ts). */
+   * probes). The type is interned explicitly in type-mapper.ts (the
+   * record's hidden %dtype field carries the entry kind; the probes lower
+   * as reads of it in builtins/filesystem.ts). */
   export interface Dirent {
     name: string;
     parentPath: string;
     isFile(): boolean;
     isDirectory(): boolean;
     isSymbolicLink(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
+    isCharacterDevice(): boolean;
+    isBlockDevice(): boolean;
   }
   export function readdirSync(
     path: string | URL,
@@ -244,14 +270,27 @@ declare module "node:fs" {
     readonly path: string;
     readSync(): Dirent | null;
     read(): Promise<Dirent | null>;
+    read(callback: (err: NodeJS.ErrnoException | null, dirent: Dirent | null) => void): void;
     closeSync(): void;
     close(): Promise<void>;
+    close(callback: (err: NodeJS.ErrnoException | null) => void): void;
     [Symbol.asyncIterator](): AsyncIterableIterator<Dirent>;
+    [Symbol.dispose](): void;
+    [Symbol.asyncDispose](): Promise<void>;
   }
   export interface OpenDirOptions {
     encoding?: "utf8" | "utf-8";
     bufferSize?: number;
   }
+  export function opendir(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, dir: Dir) => void,
+  ): void;
+  export function opendir(
+    path: string | URL,
+    options: OpenDirOptions,
+    callback: (err: NodeJS.ErrnoException | null, dir: Dir) => void,
+  ): void;
   export function opendirSync(path: string | URL, options?: OpenDirOptions): Dir;
   /* fs.ReadStream / fs.WriteStream: runtime Readable and Writable streams
    * over a file (scr_fs_stream.c). The options are checked at runtime
@@ -471,8 +510,9 @@ declare module "node:fs" {
   ): BigIntStats;
   export function lstatSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
-   * the raw fd. Numeric flags use an inline OR of the O_* constants. */
-  export function openSync(path: string | URL, flags: string): number;
+   * the raw fd. Numeric flags use an inline OR of the O_* constants. The
+   * mode is open(2)'s creation mode and applies to both flag forms. */
+  export function openSync(path: string | URL, flags: string, mode?: number): number;
   export function openSync(path: string | URL, flags: number, mode?: number): number;
   export function closeSync(fd: number): void;
   export function fdatasyncSync(fd: number): void;

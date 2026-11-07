@@ -1,6 +1,7 @@
 import { iterableGeneratorArm } from "./iterable-values.js";
 import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
+import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -11,6 +12,7 @@ import {
   VOID,
   isUnitType,
   typeEquals,
+  sortArms,
   typeKey,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
@@ -225,14 +227,12 @@ export function declaredReturnType(
   // `() => void`), and throw-only callbacks are ordinary code
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
   if (retTsType.flags & ts.TypeFlags.Never) return VOID;
-  // A JS generator whose result the checker cannot infer (mutually
-  // recursive methods returning `yield*` of each other, as in yaml's
-  // Parser) has the return type `any`: a generator over untyped values.
-  if (
-    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    decl.asteriskToken &&
-    retTsType.flags & ts.TypeFlags.Any
-  )
+  // A generator whose result the checker cannot spell — a JS method
+  // returning `yield*` of itself (yaml's Parser), or a TypeScript
+  // annotation over a package generic alias the checker reduces to `any`
+  // (`Effect.fn.Return<number, never>`) — is a generator over untyped
+  // values: the channels are checked-dynamic, as `any` is everywhere.
+  if (decl.asteriskToken && retTsType.flags & ts.TypeFlags.Any)
     return {
       kind: "generator",
       ...(decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
@@ -242,17 +242,28 @@ export function declaredReturnType(
       retT: DYN,
       nextT: DYN,
     };
-  let mappedReturn = lowerer.mapTypeOf(retTsType);
+  // An `async *` declaration spelled with one of the protocol interfaces
+  // (`AsyncIterator<T>`, `AsyncIterableIterator<T>`, `AsyncIterable<T>`)
+  // builds an async generator. Under checked-dynamic protocol slots
+  // (TypeMapperCtx.dynAsyncProtocol) the value rule maps those annotations
+  // to the checked-dynamic value they hold, so the declared return ask
+  // comes first; with the flag off the value rule already answers with the
+  // generator and the fallback below only fires for an annotation it does
+  // not map.
+  const asyncStar =
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true;
+  let mappedReturn =
+    lowerer.typeCtx.dynAsyncProtocol === true && asyncStar
+      ? mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx)
+      : null;
+  if (mappedReturn === null) mappedReturn = lowerer.mapTypeOf(retTsType);
   if (mappedReturn !== null)
     mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
     mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
-  if (
-    mappedReturn === null &&
-    decl.asteriskToken &&
-    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-  )
+  if (mappedReturn === null && asyncStar)
     mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx);
   if (
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
@@ -550,6 +561,7 @@ export function resolveInferredReturn(
   // The wrap pass: settle every recorded return onto `final`, in place.
   // Write through the stored union arm: optional-field widening on a
   // local alias can otherwise introduce a record copy in native builds.
+  const fenced = new Map<IrStmt, IrStmt>();
   for (const e of infer.entries) {
     if (e.stmt.kind !== "return") continue;
     const diagsBefore = lowerer.diags.length;
@@ -581,19 +593,45 @@ export function resolveInferredReturn(
       for (const d of ice) lowerer.diags.push(d);
       for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
       const first = captured.find((d) => d.code !== "SC9001");
-      // Property writes, not literal element writes: the class method
-      // census reads `x["kind"] = …` as a possible write to every method
-      // named `kind`, which would make those methods dynamic in native builds.
-      const mutable = e.stmt as unknown as Record<string, unknown>;
-      delete mutable.value;
-      mutable.kind = "runtimeFence";
-      mutable.code = first?.code ?? "SC1090";
-      mutable.message = first
-        ? `${first.message} [${first.code}]`
-        : "this return value has no lowering onto the instance's settled return type [SC1090]";
+      // The fence is a NEW statement. A node's kind is a union arm, and in a
+      // native build the tag cannot be reassigned through a dynamic view of
+      // the node (the `return` node keeps its fields: `delete` of a required
+      // field throws there). Record the replacement and swap it into the body
+      // once every entry is settled, below.
+      fenced.set(e.stmt, {
+        kind: "runtimeFence",
+        code: first?.code ?? "SC1090",
+        message: first
+          ? `${first.message} [${first.code}]`
+          : "this return value has no lowering onto the instance's settled return type [SC1090]",
+        loc: e.stmt.loc,
+      });
     }
   }
+  if (fenced.size > 0) replaceFencedReturns(body, fenced);
   return final;
+}
+
+/** Puts each fence in place of its return. Only the nodes on a path to a
+ * fenced return are copied: every other node keeps its identity, because
+ * later passes rewrite the body in place. */
+function replaceFencedReturns(body: IrStmt[], fenced: ReadonlyMap<IrStmt, IrStmt>): void {
+  const stmt = (s: IrStmt): IrStmt => {
+    const fence = fenced.get(s);
+    if (fence !== undefined) return fence;
+    let changed = false;
+    const copy = mapStmtChildren(
+      s,
+      (e) => e,
+      (next) => {
+        const mapped = stmt(next);
+        if (mapped !== next) changed = true;
+        return mapped;
+      },
+    );
+    return changed ? copy : s;
+  };
+  for (let i = 0; i < body.length; i += 1) body[i] = stmt(body[i]!);
 }
 
 /** The declaration's real Block body. tsgo's remote child indexing can hand
@@ -759,7 +797,7 @@ function widenReturnArms(
   if (extra.size === 0) return mapped;
   const joined = new Map<string, IrType>();
   for (const a of [...arms, ...extra.values()]) joined.set(typeKey(a), a);
-  const sorted = [...joined.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...joined.values()]);
   const unionId = lowerer.unions.intern(sorted);
   lowerer.coercions.widenedReturns.add(unionId);
   return { kind: "union", unionId };

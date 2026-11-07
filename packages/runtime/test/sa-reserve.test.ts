@@ -8,9 +8,9 @@ const execFileAsync = promisify(execFile);
 const testDir = import.meta.dirname;
 
 // Under a limited address space, as under valgrind, worker runtimes reserve
-// fewer arenas, down to four, before smaller class slices.
+// a smaller window, and every thread still gets an arena in it.
 test.runIf(process.platform === "linux" && process.arch === "x64")(
-  "a limited address space reserves fewer arenas before smaller class slices",
+  "a limited address space reserves a smaller window for every arena",
   async () => {
     const buildDir = join(testDir, "build");
     await mkdir(buildDir, { recursive: true });

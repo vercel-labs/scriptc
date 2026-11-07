@@ -27,6 +27,9 @@ import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
+import { recordMayKeepSource } from "./record-sources.js";
+import { recordStringCall } from "./record-links.js";
+import { nullProtoRecordShape } from "./null-prototype.js";
 import {
   lowerMaybePromiseAwait,
   maybePromiseUnionOf,
@@ -56,7 +59,7 @@ import {
   funcOf,
   isUnitType,
   typeEquals,
-  typeKey,
+  sortArms,
 } from "../../ir/ir.js";
 import {
   cjsExportAssignmentOf,
@@ -102,7 +105,8 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary, v8CalleeText } from "./expressions/narrowing.js";
+import { lowerTernary, staleReadMessage } from "./expressions/narrowing.js";
+import { checkedArmExtraction } from "./coercions/unions.js";
 import {
   classFieldTarget,
   lowerPropertyAccessExpr,
@@ -145,7 +149,11 @@ export {
   lowerStrictEquality,
   lowerUnitComparison,
 } from "./expressions/binary.js";
-export { jsHoldsDynObject, lowerArrayLiteral } from "./expressions/array-literals.js";
+export {
+  jsHoldsDynObject,
+  jsHoldsMixedClassConstructors,
+  lowerArrayLiteral,
+} from "./expressions/array-literals.js";
 export {
   lowerElementAccess,
   lowerElementWrite,
@@ -158,6 +166,7 @@ export {
   lowerIncDecTarget,
   lowerPrefixUnary,
 } from "./expressions/updates.js";
+import { lowerDeleteExpression } from "./primitive-throws.js";
 import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
 import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
@@ -259,10 +268,34 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     }
     if (lowered.type.kind === "void" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Never) !== 0)
       lowerer.neverValued.add(lowered);
+    if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
     return lowered;
   } finally {
     lowerExprDepth--;
   }
+}
+
+/** Record that the enclosing arrow resumed: the assignment runs right after
+ * the await's value lands, so anything the body does later reads it. The
+ * await expression itself is the sequence's result, which keeps void awaits
+ * representable. */
+function markSuspension(lowerer: Lowerer, awaited: IrExpr, loc: SrcLoc): IrExpr {
+  const flag = lowerer.ctx.suspendedFlag;
+  if (!flag) return awaited;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "assign",
+        localId: flag.id,
+        value: { kind: "boolLit", value: true, type: BOOL, loc },
+        loc,
+      },
+    ],
+    result: awaited,
+    type: awaited.type,
+    loc,
+  };
 }
 
 /** `number | undefined` from a NaN-coded double whose slot never holds a
@@ -459,11 +492,33 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const operand = assertionOperand(lowerer, expr, inner, target ?? null, loc);
       if (operand) return operand;
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
+        const unionId = inner.type.unionId;
+        const messages = assertedFailureMessages(lowerer, expr, unionId, target);
+        if (messages !== null && messages.size > 1) {
+          // Each failing arm throws the TypeError Node gives the operation
+          // that consumes the value (`x!.f` on null or on undefined).
+          const local = lowerer.declareHiddenLocal("%asserted", inner.type);
+          const extracted = checkedArmExtraction(
+            lowerer,
+            varRef(local.id, inner.type, loc),
+            lowerer.armTag(unionId, target),
+            target,
+            (found) => staleReadMessage(expr, found),
+          );
+          if (extracted)
+            return {
+              kind: "seqExpr",
+              stmts: [{ kind: "varDecl", localId: local.id, init: inner, loc }],
+              result: extracted,
+              type: target,
+              loc,
+            };
+        }
         const helper = lowerer.narrowedArmHelper(
-          inner.type.unionId,
+          unionId,
           target,
           loc,
-          assertedCalleeMessage(expr, target),
+          messages?.size === 1 ? [...messages][0] : undefined,
         );
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, loc);
@@ -717,7 +772,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           );
         } else {
           const arms = [inner, ...units];
-          arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          sortArms(arms);
           type = { kind: "union", unionId: lowerer.unions.intern(arms) };
         }
         return { kind: "awaitUnionExpr", value, promiseTag, type, loc };
@@ -841,6 +896,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
 
+  // `delete` in expression position: a primitive base answers the way the
+  // statement form does (true, or Node's ToObject TypeError); other bases
+  // keep the fence.
+  if (ts.isDeleteExpression(expr)) return lowerDeleteExpression(lowerer, expr);
   const entry = UNSUPPORTED_EXPR[expr.kind];
   if (entry)
     lowerer.unsupported(
@@ -1724,17 +1783,27 @@ const NUMERIC_COMPOUNDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
 ]);
 
-/** The TypeError Node raises when an asserted callee (`t[k]!(…)`, `o.f!()`)
- * holds no function: `!` is erased, so the call itself throws "<callee> is
- * not a function" in V8's spelling of the callee. */
-function assertedCalleeMessage(expr: ts.NonNullExpression, target: IrType): string | undefined {
-  if (target.kind !== "func") return undefined;
-  let child: ts.Expression = expr;
-  while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
-  const call = child.parent;
-  if (!ts.isCallExpression(call) || call.expression !== child || call.questionDotToken)
-    return undefined;
-  return `${v8CalleeText(expr.expression)} is not a function`;
+/** The TypeErrors Node throws when the operation consuming `expr!` (a
+ * member read, a call) finds one of the union's other arms instead of
+ * `target`, or null when that operation does not throw for them (the
+ * stranded-value message applies). A call on a value of another arm throws
+ * "<callee> is not a function" in V8's spelling of the callee, because `!`
+ * is erased and the call itself throws. */
+function assertedFailureMessages(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+  unionId: string,
+  target: IrType,
+): Set<string> | null {
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  const messages = new Set<string>();
+  for (const found of arms) {
+    if (typeEquals(found, target)) continue;
+    const message = staleReadMessage(expr, found);
+    if (message === null) return null;
+    messages.add(message);
+  }
+  return messages.size > 0 ? messages : null;
 }
 
 /** Whether the use of `t[i]!` tells undefined from NaN: a converting use
@@ -2253,6 +2322,61 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** `lowerOptionalNumber`'s bigint twin: an `undefined`-armed BIGINT value at
+ * a `++`/`--` use (`let sequence: bigint | undefined` read back after the
+ * guard proved it present). JavaScript's ToNumeric(undefined) is NaN, which
+ * a bigint slot has no representation for, so the payload is EXTRACTED with
+ * the same checked helper a narrowed read uses: a value that is really
+ * undefined there (only a lying assertion reaches it) throws the catchable
+ * TypeError instead of yielding a number the checker says cannot appear.
+ * Null when the operand is not an optional bigint the checker narrowed to
+ * bigint — the caller keeps its refusal. */
+export function lowerOptionalBigint(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  loc: SrcLoc,
+  narrowedNode: ts.Expression,
+): IrExpr | null {
+  if (operand.type.kind !== "union") return null;
+  const unionId = operand.type.unionId;
+  const valueTag = lowerer.armTag(unionId, BIGINT_T);
+  if (valueTag < 0 || lowerer.armTag(unionId, UNDEFINED_T) < 0) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(narrowedNode))?.kind !== "bigint") return null;
+  const checked = lowerer.narrowedArmHelper(unionId, BIGINT_T, loc);
+  if (checked) return { kind: "call", callee: checked, args: [operand], type: BIGINT_T, loc };
+  return {
+    kind: "unionNarrow",
+    unionId,
+    tag: valueTag,
+    value: operand,
+    type: BIGINT_T,
+    loc,
+  };
+}
+
+/** A numeric operand of an operator: the binary arithmetic and bitwise six
+ * (and their ordering comparisons), unary `+`, `-` and `~`, and compound
+ * assignment's read and right side. JavaScript applies ToNumber to a
+ * `null`/`undefined` LITERAL — 0 and NaN — so the operand lowers to a
+ * number literal, the form every other ToNumber fold already uses.
+ *
+ * Other numeric uses keep `lowerOptionalNumber`'s optional-union handling
+ * alone, because their callers fold a unit literal themselves: a builtin's
+ * ToNumber argument emits the same NaN, and an element key keeps its
+ * property-key semantics (`a[null]` reads `a.null`, not `a[0]`). Only a
+ * JavaScript source reaches this with a unit operand; TypeScript rejects the
+ * position (TS18050) before any lowering runs.
+ */
+export function lowerOperatorNumber(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  loc: SrcLoc,
+  narrowedNode?: ts.Expression,
+): IrExpr {
+  if (operand.kind === "unitLit") return numLit(operand.unit === "null" ? 0 : NaN, loc);
+  return lowerOptionalNumber(lowerer, operand, loc, narrowedNode);
+}
+
 /** A number argument of a builtin that converts it with ToNumber (Math
  * functions, String.fromCharCode, the global isNaN/isFinite, DataView
  * offsets and values). ToNumber(undefined) is NaN, so a missing value — an
@@ -2624,10 +2748,17 @@ export function lowerDynMemberAssignment(
   const loc = locOf(expr);
   const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
   const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
-  const keyValue = ts.isElementAccessExpression(target)
+  const boxedKey = ts.isElementAccessExpression(target)
     ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
     : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
-  const key = lowerer.declareHiddenLocal("%setKey", DYN);
+  // A key that is a string before boxing is its own property key: the
+  // write takes it as a string, without boxing it and coercing it back.
+  const stringKey =
+    ts.isElementAccessExpression(target) &&
+    boxedKey.kind === "dynFrom" &&
+    boxedKey.value.type.kind === "string";
+  const keyValue = stringKey ? boxedKey.value : boxedKey;
+  const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2656,8 +2787,12 @@ export function lowerDynMemberAssignment(
         kind: "exprStmt",
         expr: {
           kind: "libCall",
-          fn: "dyn.keySetComputed",
-          args: [varRef(receiver.id, DYN, loc), varRef(key.id, DYN, loc), stored],
+          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+          args: [
+            varRef(receiver.id, DYN, loc),
+            varRef(key.id, stringKey ? STRING : DYN, loc),
+            stored,
+          ],
           type: VOID,
           loc,
         },
@@ -2726,6 +2861,18 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
 /** An operand of `+` with a string: ToString of ToPrimitive with the
  * default hint, which tries a class instance's valueOf before toString. */
 export function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  // `+` converts an object with ToPrimitive's default hint, which tries
+  // valueOf before toString: a linked copy or a record with a kept source
+  // adds as its source does (record-links.ts).
+  if (
+    e.type.kind === "record" &&
+    recordMayKeepSource(lowerer, e.type) &&
+    lowerer.shapes
+      .get(e.type.shapeId)
+      ?.fields.every((f) => f.name !== "toString" && f.name !== "valueOf") === true &&
+    nullProtoRecordShape(lowerer, e.type) === null
+  )
+    return recordStringCall(lowerer, e, "primitive", e.loc, "toString");
   return (
     classToStringConversion(lowerer, e, "default", node) ??
     classUnionToString(lowerer, e, "default", node) ??

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/in-operator-declare-field-assigned.ts"
+ ],
+ "diags": []
+}

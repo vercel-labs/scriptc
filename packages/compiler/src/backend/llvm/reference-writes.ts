@@ -99,6 +99,7 @@ const INERT_LIB_CALLS = new Set([
   "error.nodeThrow",
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
+  "dyn.classHash",
   "dyn.bagGet",
   "json.parse",
   "process.stderrWrite",
@@ -117,6 +118,7 @@ const INERT_LIB_CALLS = new Set([
   "process.cwd",
   "process.argv",
   "process.execArgv",
+  "process.allowedEnvFlags",
   "process.platform",
   "process.execPath",
   "process.isTTY",
@@ -127,6 +129,8 @@ const INERT_LIB_CALLS = new Set([
   "worker.root",
   "cp.spawnSyncOpts",
   "cp.spawnSyncEnv",
+  "cp.spawnSyncExt",
+  "cp.spawnSyncExtEnv",
 ]);
 
 /** jsval conversions (ir/jsval.ts): no user code, no stores. */

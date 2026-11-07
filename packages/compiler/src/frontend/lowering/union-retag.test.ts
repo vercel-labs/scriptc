@@ -787,3 +787,144 @@ describe("promise payload widening", () => {
     ).toEqual([0, 1]);
   });
 });
+
+describe("checked arm conversion", () => {
+  const narrow = record("n");
+  const wide = record("w");
+  const wide2 = record("w2");
+  const from: IrUnionDef = { id: "cu0", arms: [narrow, UNDEFINED_T] };
+  const shapes: IrRecordShape[] = [
+    { id: "n", fields: [{ name: "role", type: STRING }] },
+    {
+      id: "w",
+      fields: [
+        { name: "role", type: STRING },
+        { name: "content", type: STRING },
+      ],
+    },
+    {
+      id: "w2",
+      fields: [
+        { name: "role", type: STRING },
+        { name: "timestamp", type: F64 },
+      ],
+    },
+  ];
+  const shapeOf = (id: string) => shapes.find((shape) => shape.id === id);
+  const lift = (source: IrType, target: IrType): WidthLift | null =>
+    typeEquals(source, target) ? { how: "copy" } : null;
+  const checkedLift = (source: IrType, target: IrType): WidthLift | null =>
+    source.kind === "record" && target.kind === "record" && !typeEquals(source, target)
+      ? { how: "checkedWiden" }
+      : null;
+
+  test("a narrower record arm enters the one wider arm by the checked lift", () => {
+    const to: IrUnionDef = { id: "cu1", arms: [wide, UNDEFINED_T] };
+    expect(planUnionRetag(from, to, shapeOf, lift, undefined, undefined, checkedLift)).toEqual([
+      { kind: "direct", route: { tag: 0, lift: { how: "checkedWiden" }, values: [] } },
+      { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
+    ]);
+    // The ordinary plan is unchanged: a caller that does not ask the second
+    // question still refuses the conversion.
+    expect(planUnionRetag(from, to, shapeOf, lift)).toBeNull();
+  });
+
+  test("two destination arms accepting the checked lift stay ambiguous", () => {
+    const to: IrUnionDef = { id: "cu2", arms: [wide, wide2, UNDEFINED_T] };
+    expect(planUnionRetag(from, to, shapeOf, lift, undefined, undefined, checkedLift)).toBeNull();
+  });
+
+  test("an arm the ordinary width reaches keeps the checked lift off another arm", () => {
+    const to: IrUnionDef = { id: "cu4", arms: [wide, wide2, UNDEFINED_T] };
+    const widthToW = (source: IrType, target: IrType): WidthLift | null =>
+      typeEquals(source, target)
+        ? { how: "copy" }
+        : target.kind === "record" && target.shapeId === "w"
+          ? { how: "width" }
+          : null;
+    const checkedToW2 = (source: IrType, target: IrType): WidthLift | null =>
+      target.kind === "record" && target.shapeId === "w2" ? { how: "checkedWiden" } : null;
+    expect(
+      planUnionRetag(from, to, shapeOf, widthToW, undefined, undefined, checkedToW2),
+    ).toBeNull();
+  });
+
+  test("an exact arm still wins over the checked lift", () => {
+    const to: IrUnionDef = { id: "cu3", arms: [narrow, wide, UNDEFINED_T] };
+    expect(planUnionRetag(from, to, shapeOf, lift, undefined, undefined, checkedLift)).toEqual([
+      { kind: "direct", route: { tag: 0, lift: { how: "copy" }, values: [] } },
+      { kind: "direct", route: { tag: 2, lift: { how: "copy" }, values: [] } },
+    ]);
+  });
+});
+
+describe("class routes from a stored base arm", () => {
+  const animal: IrType & { kind: "object" } = { kind: "object", className: "Animal" };
+  const dog: IrType & { kind: "object" } = { kind: "object", className: "Dog" };
+  const cat: IrType & { kind: "object" } = { kind: "object", className: "Cat" };
+  const source: IrUnionDef = { id: "cu0", arms: [animal, F64] };
+  const target: IrUnionDef = { id: "cu1", arms: [dog, F64] };
+  const routes = new Map([[0, [{ tag: 0, arm: dog }]]]);
+  const plan = (to: IrUnionDef = target) =>
+    planUnionRetag(
+      source,
+      to,
+      () => undefined,
+      () => null,
+      undefined,
+      routes,
+    );
+
+  test("plans a class test in place of the base arm's identity", () => {
+    expect(plan()).toEqual([
+      { kind: "classRoute", routes: [{ tag: 0, arm: dog }] },
+      { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
+    ]);
+  });
+
+  test("declines when the destination arm is not the routed class", () => {
+    const other: IrUnionDef = { id: "cu2", arms: [cat, F64] };
+    expect(plan(other)).toBeNull();
+  });
+
+  test("declines when the routed class has no destination arm", () => {
+    const absent: IrUnionDef = { id: "cu3", arms: [F64] };
+    expect(plan(absent)).toBeNull();
+  });
+
+  test("builds the class test, the checked downcast and the trap after it", () => {
+    const fn = buildUnionRetag(
+      "retag",
+      source,
+      target,
+      plan()!,
+      loc,
+      (_, value) => value,
+      () => "source",
+    );
+    const branch = fn.body[1]!;
+    if (branch.kind !== "if") throw new Error("missing class route branch");
+    expect(branch.cond).toMatchObject({ kind: "unionIsTag", tag: 0 });
+    expect(branch.then[0]).toMatchObject({
+      kind: "if",
+      cond: { kind: "instanceOf", className: "Dog" },
+      then: [
+        {
+          kind: "return",
+          value: {
+            kind: "unionWrap",
+            unionId: "cu1",
+            tag: 0,
+            value: { kind: "downcast", type: { kind: "object", className: "Dog" } },
+          },
+        },
+      ],
+    });
+    const thrown = branch.then[1]!;
+    if (thrown.kind !== "throw" || thrown.value.kind !== "libCall")
+      throw new Error("missing TypeError after the class tests");
+    expect(thrown.value.args[0]).toMatchObject({
+      value: expect.stringContaining("is not representable in the target union"),
+    });
+  });
+});

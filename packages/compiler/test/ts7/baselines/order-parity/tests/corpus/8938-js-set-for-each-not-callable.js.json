@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8938-js-set-for-each-not-callable.js"
+ ],
+ "diags": []
+}

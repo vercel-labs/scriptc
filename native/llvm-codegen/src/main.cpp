@@ -2,6 +2,7 @@
 #include "emit.h"
 #include "profile.h"
 #include "runtime-unit.h"
+#include "server.h"
 #include "target.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -60,7 +61,8 @@ int version(int Argc, char **Argv) {
       {"data_layout", Machine->createDataLayout().getStringRepresentation()},
       // Commands and options added within one protocol version, for callers
       // that also run against older helpers.
-      {"features", json::Array{"runtime-unit-profile", "profile-functions"}},
+      {"features", json::Array{"runtime-unit-profile", "profile-functions",
+                                "runtime-unit-optional-bitcode"}},
   };
   outs() << formatv("{0}\n", json::Value(std::move(Response)));
   return 0;
@@ -68,8 +70,7 @@ int version(int Argc, char **Argv) {
 
 } // namespace
 
-int main(int Argc, char **Argv) {
-  scriptc::installFatalDiagnosticHandler();
+int scriptc::runCommand(int Argc, char **Argv) {
   // Process-isolated test seam for the fatal handler itself. It is inert in
   // every ordinary invocation and ensures a future LLVM fatal never becomes
   // an unstructured abort/stack trace in the Node caller.
@@ -100,6 +101,13 @@ int main(int Argc, char **Argv) {
   }
   return scriptc::reportError("usage",
                               "expected 'version --format=json', 'emit', 'runtime-unit', "
-                              "'prune-import', 'merge-profiles', or "
-                              "'profile-functions'");
+                              "'prune-import', 'merge-profiles', 'profile-functions', "
+                              "or 'serve --socket <path>'");
+}
+
+int main(int Argc, char **Argv) {
+  scriptc::installFatalDiagnosticHandler();
+  if (Argc >= 2 && StringRef(Argv[1]) == "serve")
+    return scriptc::serve(Argc, Argv);
+  return scriptc::runCommand(Argc, Argv);
 }

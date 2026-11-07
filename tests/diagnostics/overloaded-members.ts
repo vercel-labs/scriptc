@@ -1,7 +1,8 @@
 // Overloaded interface members compile as one stored function whose type
-// joins the overloads; calls resolve per site. Two fences remain: reading
-// the member as a VALUE (its type is still the overload set), and a set
-// whose overloads do not join (here, a rest parameter beside a fixed one).
+// joins the overloads; calls resolve per site, and a read of the member as a
+// value is that function (tests/corpus/8937-overload-set-values). A set
+// whose overloads do not join (here, a rest parameter beside a fixed one)
+// keeps its fence.
 interface Api {
   on(event: "a", handler: (x: number) => void): void;
   on(event: "b", handler: (x: string) => void): void;
@@ -12,8 +13,6 @@ const api: Api = {
   },
 };
 api.on("a", (x) => console.log(x + 1));
-const detached = api.on;
-console.log(typeof detached);
 
 interface Emitter {
   emit(event: "many", ...values: number[]): void;

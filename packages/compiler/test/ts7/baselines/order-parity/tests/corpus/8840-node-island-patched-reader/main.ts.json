@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8840-node-island-patched-reader/patch.ts",
+  "<repo>/tests/corpus/8840-node-island-patched-reader/read.ts",
+  "<repo>/tests/corpus/8840-node-island-patched-reader/main.ts"
+ ],
+ "diags": []
+}

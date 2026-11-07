@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9218-expando-callable-table.ts"
+ ],
+ "diags": []
+}

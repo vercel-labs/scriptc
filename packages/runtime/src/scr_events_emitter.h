@@ -95,6 +95,13 @@ void scr_emitter_check_listener(const ScrDyn *cb);
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend);
+/* on_dyn whose untyped emits call `flex` — a function value over an adapter
+ * that binds the receiver — while `cb` keeps the entry's identity (a
+ * stream's listeners read the stream as `this` on both paths). cb and flex
+ * are borrowed, adapter MOVES; returns em +1. */
+ScrEmitter *scr_emitter_on_dyn_bound(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                     const ScrDyn *flex, ScrClosure *adapter /*moves*/,
+                                     ScrEeInvoke inv, bool once, bool prepend);
 /* Listeners registered as checked-dynamic functions retain the original
  * closure and its checked-dynamic call thunk, preserving the number of
  * arguments passed to an untyped emit. on_dyn entries also carry the typed
@@ -127,6 +134,22 @@ extern SCR_TL const ScrEeDynOps *scr_ee_dyn;
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend);
+/* The same registrations for a listener that can read `this`: each call of
+ * the listener runs with the emitter as the receiver (scr_dyn_this_push_typed
+ * with `recv`, the typed-ref recipe of the registration's receiver type), as
+ * Node calls listeners with `this` set to the emitter. recv is a static
+ * constant. */
+typedef struct ScrDynTypedRefRecipe ScrDynTypedRefRecipe; /* scr_dyn.h */
+ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv);
+ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv);
+ScrEmitter *scr_emitter_on_flex_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb, bool once,
+                                     bool prepend, const ScrDynTypedRefRecipe *recv);
+ScrEmitter *scr_emitter_on_any_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb, bool once,
+                                    bool prepend, const ScrDynTypedRefRecipe *recv);
 /* Fixed-arity invoke shims for backends that cannot read a va_list
  * (LLVM textual IR is not va_arg-portable): shim k reads k POINTER-SIZE
  * slots off the emit tuple and calls cb->fn behind the fixed signature
@@ -172,8 +195,18 @@ bool scr_emitter_emit_message(ScrEmitter *em, ScrStr *name, const struct ScrMess
  * whether any listener of the name needs the converted tuple. */
 bool scr_emitter_emit_mixed(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc, ...);
 bool scr_emitter_has_typed(ScrEmitter *em, ScrStr *name);
+/* The inverse: a typed emit's arguments must also convert to checked-
+ * dynamic values when a listener of the name was registered through an
+ * untyped value with no typed form (its thunk alone). Also true for
+ * 'error' when errorMonitor has such a listener. */
+bool scr_emitter_has_dyn(ScrEmitter *em, ScrStr *name);
 bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error);
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err);
+/* emit('error', err) with the emitted arguments as checked-dynamic values
+ * too, for listeners registered through untyped values. err is borrowed;
+ * the unhandled form throws its +1. */
+bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                  ScrDyn *const *args, size_t argc);
 double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn);
 double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *fn);

@@ -1,4 +1,5 @@
 import { ProgramAnalysis } from "../program-analysis.js";
+import { isBundledLibraryFile } from "../default-library.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Shared program lifecycle over the native TypeScript server API.
  *
@@ -154,6 +155,20 @@ export type Ts7HostOptions = {
   } | null;
 };
 
+/** The synthesized config one load's programs share. A load builds its
+ * program, then rebuilds it for each root-discovery pass, each rewrite
+ * (JSX, declaration projection, the shape overlay) and its project world.
+ * With a lineage every rebuild updates the SAME project instead of opening
+ * a new one, so the server reports that project's changed files and the
+ * session's AST cache carries every unchanged file forward; without one,
+ * each program is a fresh project whose files are all new to the cache.
+ * The owning load releases the lineage once its last program is disposed
+ * (releaseLineage). */
+export interface Ts7ProjectLineage {
+  /** The synthesized config path this load's programs share. */
+  configPath?: string | undefined;
+}
+
 /** One spawned tsgo server plus the virtual-FS overlay serving synthesized
  * tsconfigs. Share a host across programs to pay the spawn once; the overlay
  * is a live map, so each createProgram call adds its config before taking
@@ -166,16 +181,45 @@ export class Ts7Host {
   /** The text the server reads for a file (its readFile hook). */
   private readonly readSource: (fileName: string) => string | null;
   private closed = false;
+  /** The file system shadow of the load that holds this host (rebind). */
+  private shadow: NonNullable<Ts7HostOptions["fsShadow"]> | null;
+  /** Whether the next snapshot drops every file the server read: set when
+   * the host passes to another load, whose files may read differently. */
+  private invalidateAll = false;
+  /** The working directory of the server connection. */
+  readonly cwd: string;
+  /** The loads this host has served: 1, and one more for each rebind. */
+  loads = 1;
+  /** The declaration-file module member each alias resolves to, keyed by the
+   * alias declaration's AST identity (see `declarationKey` in
+   * `frontend/fork-target.ts`), as a module name and symbol name, or null
+   * when the alias resolves elsewhere. Programs of one load share it: the
+   * load's option set and file shadow are one, so a declaration resolves the
+   * same way in every program the load builds. The next load can resolve
+   * differently, so `rebind` drops it. */
+  readonly aliasMembers = new Map<string, readonly [string, string] | null>();
+  /** Called instead of closing the connection when the host is reusable. */
+  private release: ((host: Ts7Host) => void) | undefined;
+  /** Whether a load holds this reusable host: from its creation or rebind
+   * until that load closes it. */
+  private held = true;
 
-  constructor(createApi: Ts7ApiFactory, options?: Ts7HostOptions) {
+  constructor(
+    createApi: Ts7ApiFactory,
+    options?: Ts7HostOptions,
+    release?: (host: Ts7Host) => void,
+  ) {
     const virtualFiles = this.virtualFiles;
-    const shadow = options?.fsShadow ?? null;
+    this.shadow = options?.fsShadow ?? null;
+    this.cwd = options?.cwd ?? process.cwd();
+    this.release = release;
     // A virtual file, a shadow's replacement, a package shim's declaration
     // entry, a type-patched package file or the file on disk; null when shadowed out of existence or
     // missing.
     this.readSource = (fileName) => {
       const virtual = virtualFiles.get(tsgoPath(fileName));
       if (virtual !== undefined) return stripSourceBom(virtual);
+      const shadow = this.shadow;
       if (shadow !== null) {
         if (shadow.hideFile(fileName)) return null;
         const replacement = shadow.readFile(fileName);
@@ -199,7 +243,7 @@ export class Ts7Host {
         readFile: this.readSource,
         fileExists: (fileName) => {
           if (virtualFiles.has(tsgoPath(fileName))) return true;
-          if (shadow !== null && shadow.hideFile(fileName)) return false;
+          if (this.shadow !== null && this.shadow.hideFile(fileName)) return false;
           return trackedFileExists(fileName) || typePatchFileExists(fileName);
         },
         directoryExists: (path) => trackedDirectoryExists(path),
@@ -249,16 +293,30 @@ export class Ts7Host {
     options: Ts7CompilerOptions,
     /** Internal: true when the program owns this host and dispose() closes it. */
     programOwnsHost = false,
+    /** The load's shared config: its rebuilds update one project instead of
+     * opening a new one. The load releases it (releaseLineage). */
+    lineage?: Ts7ProjectLineage,
   ): Ts7Program {
     this.ensureOpen();
     const roots = rootNames.map((r) => resolve(r));
     const first = roots[0];
     if (first === undefined) throw new InternalCompilerError("ts7 createProgram: no root files");
-    const configPath = join(dirname(first), `__scriptc-ts7-${nextConfigId++}.tsconfig.json`);
-    this.virtualFiles.set(
-      tsgoPath(configPath),
-      JSON.stringify({ compilerOptions: serializeOptions(options), files: roots, include: [] }),
-    );
+    const configPath =
+      lineage?.configPath ?? join(dirname(first), `__scriptc-ts7-${nextConfigId++}.tsconfig.json`);
+    if (lineage !== undefined) lineage.configPath = configPath;
+    const configKey = tsgoPath(configPath);
+    const previousConfig = this.virtualFiles.get(configKey);
+    const configText = JSON.stringify({
+      compilerOptions: serializeOptions(options),
+      files: roots,
+      include: [],
+    });
+    this.virtualFiles.set(configKey, configText);
+    // A lineage reuses its config path, so a rebuilt config is a changed
+    // file the server must see. The lineage's first program registers it as
+    // new through openProjects instead.
+    if (lineage !== undefined && previousConfig !== undefined && previousConfig !== configText)
+      this.virtualChanges.set(configKey, "changed");
     const created: string[] = [];
     const changed: string[] = [];
     const closeProjects: string[] = [...this.closingProjects];
@@ -270,8 +328,9 @@ export class Ts7Host {
       const snapshot = this.api.updateSnapshot({
         openProjects: [configPath],
         closeProjects,
-        fileChanges: { created, changed },
+        fileChanges: this.invalidateAll ? { invalidateAll: true } : { created, changed },
       });
+      this.invalidateAll = false;
       this.closingProjects.clear();
       this.virtualChanges.clear();
       const project = snapshot.getProject(configPath);
@@ -279,9 +338,10 @@ export class Ts7Host {
         snapshot.dispose();
         throw new InternalCompilerError(`ts7 createProgram: project failed to open for ${first}`);
       }
-      return new Ts7Program(project, snapshot, this, !programOwnsHost, configPath);
+      return new Ts7Program(project, snapshot, this, !programOwnsHost, configPath, lineage);
     } catch (error) {
-      this.releaseProgram(configPath);
+      // A lineage's config outlives one program: its load retires it.
+      if (lineage === undefined) this.releaseProgram(configPath);
       throw error;
     }
   }
@@ -294,6 +354,15 @@ export class Ts7Host {
     if (!this.closed) this.closingProjects.add(configPath);
   }
 
+  /** Retire a load's shared config once every program of the lineage is
+   * disposed: the next update closes the project and stops serving the
+   * config. */
+  releaseLineage(lineage: Ts7ProjectLineage): void {
+    const configPath = lineage.configPath;
+    lineage.configPath = undefined;
+    if (configPath !== undefined) this.releaseProgram(configPath);
+  }
+
   getTimingInfo(): Ts7TimingInfo {
     this.ensureOpen();
     return this.api.getTimingInfo();
@@ -303,8 +372,39 @@ export class Ts7Host {
     if (this.closed) throw new InternalCompilerError("Ts7Host is closed");
   }
 
+  /** Pass this pooled host to another load: its shadow replaces the last
+   * load's, the last load's in-memory files are gone, and the next snapshot
+   * reads every file again (the server reuses a file's syntax tree only for
+   * identical text). */
+  rebind(fsShadow: Ts7HostOptions["fsShadow"]): void {
+    this.ensureOpen();
+    this.held = true;
+    this.loads++;
+    this.shadow = fsShadow ?? null;
+    this.virtualFiles.clear();
+    this.virtualChanges.clear();
+    this.invalidateAll = true;
+    // Another load may resolve the same declaration differently: its option
+    // set, path mappings, provenance and file shadow are not this one's.
+    this.aliasMembers.clear();
+  }
+
+  /** Close the server connection, even when the host is pooled. */
+  closeConnection(): void {
+    this.release = undefined;
+    this.close();
+  }
+
   close(): void {
     if (this.closed) return;
+    const release = this.release;
+    if (release !== undefined) {
+      // A second close by the same load returns nothing twice.
+      if (!this.held) return;
+      this.held = false;
+      release(this);
+      return;
+    }
     this.closed = true;
     try {
       this.api.close();
@@ -312,6 +412,7 @@ export class Ts7Host {
       this.virtualFiles.clear();
       this.virtualChanges.clear();
       this.closingProjects.clear();
+      this.aliasMembers.clear();
     }
   }
 }
@@ -321,6 +422,9 @@ export class Ts7Host {
  * releases the snapshot (and the host, when this program spawned it). */
 export class Ts7Program {
   readonly analysis = new ProgramAnalysis();
+  /** See Ts7Host#aliasMembers: the answers this program shares with every
+   * other program of the same host load. */
+  readonly aliasMembers: Ts7Host["aliasMembers"];
   private sourceFilesCache: readonly SourceFile[] | null = null;
   private implementationFilesCache: readonly SourceFile[] | null = null;
   private sourceFileNamesCache: readonly string[] | null = null;
@@ -334,7 +438,12 @@ export class Ts7Program {
     private readonly host: Ts7Host,
     private readonly sharedHost: boolean,
     private readonly configPath: string,
-  ) {}
+    /** The load's shared config: a newer program of the lineage may still
+     * answer from this project, so disposing one program does not retire it. */
+    private readonly lineage?: Ts7ProjectLineage,
+  ) {
+    this.aliasMembers = host.aliasMembers;
+  }
 
   getCompilerOptions(): Ts7CompilerOptions {
     return this.project.program.getCompilerOptions();
@@ -459,7 +568,7 @@ export class Ts7Program {
     const supplied = (name: string): boolean =>
       declarations.has(tsgoPath(name)) ||
       isFallbackDtsPath(name) ||
-      program.getSourceFileMetadataByPath(name)?.isDefaultLibrary === true;
+      isBundledLibraryFile(this, name);
     const sourceFile = (name: string): SourceFile | undefined => this.getSourceFile(name);
     // By path: a supplied file that is not one of scriptc's is a default library.
     const kind = (name: string): SuppliedKind =>
@@ -493,7 +602,10 @@ export class Ts7Program {
     try {
       this.snapshot.dispose();
     } finally {
-      this.host.releaseProgram(this.configPath);
+      // A program of a lineage leaves the shared project open: the next
+      // rebuild updates it, and an older snapshot of the same load may still
+      // answer from it. The load's disposeAll retires it.
+      if (this.lineage === undefined) this.host.releaseProgram(this.configPath);
       if (!this.sharedHost) this.host.close();
     }
   }

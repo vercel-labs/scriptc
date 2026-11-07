@@ -358,8 +358,10 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_apply",
   "scr_dyn_invoke",
   "scr_dyn_stdlib_prototype",
+  "scr_data_view_prototype",
   "scr_dyn_array_like",
   "scr_dyn_builtin_prototype",
+  "scr_dyn_builtin_method_value",
   "scr_dyn_construct",
   "scr_dyn_function_apply",
   "scr_dyn_fn_get",
@@ -370,6 +372,10 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_to_numeric",
   "scr_dyn_number_coerce",
   "scr_dyn_string_coerce",
+  // Own properties JavaScript adds to runtime handles (handle-expandos H1).
+  "scr_dyn_handle_props",
+  // Object.isExtensible/Object.isSealed of a value typed dynamically.
+  "scr_dyn_integrity",
 ];
 
 /** Symbols under those prefixes that typed binaries reach today through a

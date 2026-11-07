@@ -157,6 +157,10 @@ export interface CcOptions {
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
+  /** The keyed collections' prototype objects and member values, their
+   * constructors' adder lookup and the ES2025 Set compositions: compiles
+   * scr_dyn_collections.c. */
+  dynCollections?: boolean;
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
@@ -173,6 +177,9 @@ export interface CcOptions {
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
+  /** A program that builds a Blob or File: the SCR_WEB_BODIES build of
+   * scr_fetch.c, which sends the blob's bytes and its type as Content-Type. */
+  webBodies?: boolean;
   /** AbortController and AbortSignal: compiles scr_abort.c, unless the
    * program compiles the fetch unit, which has them. */
   abortSignal?: boolean;
@@ -189,6 +196,9 @@ export interface CcOptions {
   /** A standard library prototype object read as a value in a JavaScript
    * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (`DataView.prototype`): compiles scr_data_view_proto.c. */
+  dataViewPrototypeValue?: boolean;
   /** A computed read of the global object, or `… in globalThis`: compiles
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c. */
@@ -197,9 +207,9 @@ export interface CcOptions {
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype or Boolean.prototype read as a value in a JavaScript
-   * source: compiles scr_dyn_builtin_prototype.c. */
-  builtinPrototypeValue?: boolean;
+  /** A builtin prototype method read as a value in a JavaScript source:
+   * compiles scr_dyn_builtin_methods.c. */
+  builtinMethodValue?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
@@ -209,6 +219,9 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_PROMISE_REJECT_DYN: the scr_async.c build with the reject closure
+   * a checked-dynamic promise reasons with. */
+  promiseRejectDyn?: boolean;
   /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
    * object model feature the program reaches (t262-da §J). */
   jsObjectModel?: boolean;
@@ -234,6 +247,9 @@ export interface CcOptions {
   /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
    * (the write method as a value, its replacement, run-time-typed chunks). */
   stdioWriteSlot?: boolean;
+  /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
+   * errnoException fields (errno, syscall, path, spawnargs). */
+  childErrorFields?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;

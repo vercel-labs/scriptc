@@ -17,8 +17,10 @@
  *  - the packages those islands drag along: a native ES module that imports
  *    an island CommonJS package (the ESM→CJS closure, graph-islands.ts).
  *
- * The caps are the retry budgets the build has always used: the lowering
- * rules grow a set of at most 16 islands, the fence rule one of at most 32. */
+ * No rule stops at a size: every retry adds packages that were never
+ * islanded, so growth is monotone and bounded by the project's package
+ * count, and the retry reaches a fixed point. A numeric cap only turned a
+ * refusal the automatic policy promised to island into a fatal SC2013. */
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { resolveBareModule } from "../frontend/resolve.js";
@@ -81,12 +83,6 @@ export interface IslandGrowth {
   sure?: Set<string>;
 }
 
-/** The retry budget of the lowering rules (an SC2013, a package's own
- * refusal): a set already larger than this grows no further. */
-const LOWERING_CAP = 16;
-/** The retry budget of the fence rule. */
-const FENCE_CAP = 32;
-
 /** The island set grown from what a lowering saw, or null when nothing
  * grows (`--node-islands=auto` only). `known` is the set the round started
  * from; the returned map is a copy of it with the growth added. */
@@ -98,11 +94,11 @@ export function growIslandSet(
   if (ctx.policy.mode !== "auto") return null;
   const grown = new Map(known);
   if (growth.preflight !== undefined && growth.preflight.length > 0)
-    growFromPreflight(ctx, known, grown, growth.preflight);
+    growFromPreflight(ctx, grown, growth.preflight);
   // Both rules run the ESM→CJS closure over the set as it stands, so they
   // run even when the lowering saw nothing (the closure grows an importer of
   // an island the set already holds).
-  if (growth.diagnostics !== undefined) growFromLowering(ctx, known, grown, growth.diagnostics);
+  if (growth.diagnostics !== undefined) growFromLowering(ctx, grown, growth.diagnostics);
   if (growth.fences !== undefined)
     growFromFences(
       ctx,
@@ -132,11 +128,9 @@ const NO_EXPLICIT: ReadonlySet<string> = new Set();
  * package runs in a Node island instead. */
 function growFromPreflight(
   ctx: IslandGrowthContext,
-  known: ReadonlyMap<string, IslandPackage>,
   grown: Map<string, IslandPackage>,
   preflight: readonly ScrDiagnostic[],
 ): void {
-  if (known.size > LOWERING_CAP) return;
   const compiled = compiledPackages(ctx.npm, NO_EXPLICIT);
   if (compiled.size === 0) return;
   const texts = ctx.sourceTexts?.();
@@ -174,11 +168,9 @@ function growFromPreflight(
  * inside a compiled package's own module is that package's refusal. */
 function growFromLowering(
   ctx: IslandGrowthContext,
-  known: ReadonlyMap<string, IslandPackage>,
   grown: Map<string, IslandPackage>,
   diagnostics: readonly ScrDiagnostic[],
 ): void {
-  if (known.size > LOWERING_CAP) return;
   const compiled = compiledPackages(ctx.npm, NO_EXPLICIT);
   for (const d of diagnostics) {
     // A use of a package outside the compiled module graph (an import()
@@ -233,8 +225,6 @@ function growFromFences(
   mode: "sure" | "report",
   sure: Set<string> | null,
 ): void {
-  // A set already past the fence budget grows no further, closure included.
-  if (known.size > FENCE_CAP) return;
   // With the sure rule, a fence in top-level module code is the only growth;
   // no fence at all means nothing to grow (the report rule still runs: the
   // package's island class may explain a fence the lowering deferred).

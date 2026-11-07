@@ -221,6 +221,33 @@ typedef struct ScrJsIc {
   uint32_t next;  /* the entry a full cache replaces next */
 } ScrJsIc;
 
+/* ── object guard groups (backend/llvm/js-groups.ts) ───────────────────
+ * A group answers several constant-key reads of one subject through one
+ * probe of its layout. An entry records, for one layout, the slot of each
+ * of the group's keys, so the guard tests the layout once and every member
+ * reads its slot without a site of its own. A layout missing any of the
+ * keys has no entry: the guard then sends the object to its members' sites.
+ * Like ScrJsIc, a filled record is cleared by the reset that frees a
+ * thread's layouts. */
+#define SCR_JS_GROUP_KEYS 8
+#define SCR_JS_GROUP_WAYS 4
+typedef struct ScrJsGroupEntry {
+  const ScrLayout *layout;
+  uint8_t slot[SCR_JS_GROUP_KEYS];
+} ScrJsGroupEntry;
+
+typedef struct ScrJsGroup {
+  ScrJsGroupEntry entry[SCR_JS_GROUP_WAYS];
+  uint32_t count; /* filled entries */
+  uint32_t next;  /* the entry a full group replaces next */
+} ScrJsGroup;
+
+/* The entry of `group` for `object`, filled on a miss, or NULL when the
+ * object is not an ordinary layout-mode object, is immortal, or lacks one
+ * of the keys as an own property. Never runs user code. */
+const ScrJsGroupEntry *scr_js_group_probe(const ScrDyn *object, const ScrStr *const *keys,
+                                          uint32_t count, ScrJsGroup *group);
+
 /* `receiver.key` for a plain data property: +1 value, or NULL. */
 ScrDyn *scr_js_load_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic);
 /* The same for a property read site, which also answers (+1) undefined for

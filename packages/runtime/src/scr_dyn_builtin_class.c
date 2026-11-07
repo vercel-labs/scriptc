@@ -295,6 +295,7 @@ static void bc_warn_tick(ScrClosure *self) {
   } else if (scr_warning_emit_hook) {
     scr_warning_emit_hook("MaxListenersExceededWarning", NULL, message);
   } else {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "(node:%ld) MaxListenersExceededWarning: %.*s\n", BC_PID(),
             (int)message->len, message->data);

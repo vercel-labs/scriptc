@@ -4,13 +4,15 @@ import * as program from "./program.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 
 const opened: ReturnType<ProgramLoader>[] = [];
+const loadPackages = new Map<ReturnType<ProgramLoader>, readonly string[] | undefined>();
 const preflight = vi.spyOn(program, "checkPreflight");
 afterEach(() => {
   opened.length = 0;
+  loadPackages.clear();
   preflight.mockReset();
 });
 
-const loader: ProgramLoader = () => {
+const loader: ProgramLoader = (_path, options) => {
   // Resource-ownership tests inject only the load fields the orchestration
   // reads. Real program loading and native execution have integration tests.
   const load = {
@@ -19,8 +21,15 @@ const loader: ProgramLoader = () => {
     dispose: vi.fn(),
   } as unknown as ReturnType<ProgramLoader>;
   opened.push(load);
+  loadPackages.set(load, options.npmStatic);
   return load;
 };
+/** The load the frontend retains: the only one not disposed by the run. */
+function retainedLoad(): ReturnType<ProgramLoader> {
+  const live = opened.filter((load) => vi.mocked(load.dispose).mock.calls.length === 0);
+  expect(live).toHaveLength(1);
+  return live[0]!;
+}
 const typeError: ScrDiagnostic = {
   code: "SC0001",
   message: "the program does not typecheck",
@@ -71,17 +80,16 @@ test("closes the current program if opening a probe fails", () => {
 
 test("does not retain or close disposed fallback loads twice", () => {
   preflight
-    .mockReturnValueOnce([])
-    .mockReturnValueOnce([typeError])
-    .mockReturnValueOnce([typeError])
-    .mockReturnValue([]);
+    .mockReturnValueOnce([]) // the scout
+    .mockReturnValueOnce([typeError]) // the opted-in load
+    .mockReturnValueOnce([]) // the no-opt-in baseline: the program itself is clean
+    .mockReturnValueOnce([{ ...typeError, loc: { file: "/main.ts", start: 5, end: 6 } }]) // the solo probe: this package breaks its own import site
+    .mockReturnValue([]); // the survivor reload
   const frontend = runFrontend("/main.ts", loader, ["fixture"]);
-  expect(opened).toHaveLength(4);
+  expect(opened).toHaveLength(5);
   expect(frontend.npmStatic).toMatchObject([{ package: "fixture", status: "refused" }]);
-  expect(opened[0]!.dispose).toHaveBeenCalledTimes(1);
-  expect(opened[1]!.dispose).toHaveBeenCalledTimes(1);
-  expect(opened[2]!.dispose).toHaveBeenCalledTimes(1);
-  expect(opened[3]!.dispose).not.toHaveBeenCalled();
+  for (const load of opened.slice(0, 4)) expect(load.dispose).toHaveBeenCalledTimes(1);
+  expect(opened[4]!.dispose).not.toHaveBeenCalled();
   frontend.dispose();
   for (const load of opened) expect(load.dispose).toHaveBeenCalledTimes(1);
 });
@@ -108,12 +116,16 @@ test("reports program type errors instead of refusing the package", () => {
   // and against its declarations alike: the errors are the program's.
   preflight.mockReturnValueOnce([]).mockReturnValue([typeError]);
   const frontend = runFrontend("/main.ts", loader, ["fixture"]);
-  expect(frontend.npmStatic).toEqual([]);
+  // The package stays statically compiled — no package caused the error.
+  expect(frontend.npmStatic).toEqual([{ package: "fixture", status: "static" }]);
   expect(frontend.preflight).toEqual([typeError]);
   frontend.dispose();
 });
 
 test("reports program type errors that name the package's module", () => {
+  // The message names the package, so the attribution pass refuses it before
+  // the last resort; the final program still reports the error, so the
+  // splice drops the refusal and the diagnostic is reported as the program's.
   const missingExport: ScrDiagnostic = {
     code: "SC0001",
     message: `Module '"fixture"' has no exported member 'open'.`,
@@ -123,5 +135,51 @@ test("reports program type errors that name the package's module", () => {
   const frontend = runFrontend("/main.ts", loader, ["fixture"]);
   expect(frontend.npmStatic).toEqual([]);
   expect(frontend.preflight).toEqual([missingExport]);
+  frontend.dispose();
+});
+
+test("keeps the whole set when no probe can attribute the diagnostic", () => {
+  // The error depends on the flag, not on WHICH package is opted in: every
+  // solo probe reports the load's own error word for word. No package
+  // separates itself, so no package is a culprit and none is refused — the
+  // diagnostic is reported once, at its own location.
+  preflight
+    .mockReturnValueOnce([]) // the scout
+    .mockReturnValueOnce([typeError]) // the opted-in load
+    .mockReturnValueOnce([]) // the no-opt-in baseline: the program itself is clean
+    .mockReturnValue([typeError]); // every solo probe reproduces the load's error
+  const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
+  // The last load is the reload of the retained program: each probe installed
+  // its own package set as npm-static's live state, and lowering reads that
+  // state after runFrontend returns.
+  expect(opened).toHaveLength(6);
+  const retained = retainedLoad();
+  expect(retained).toBe(opened.at(-1));
+  expect(loadPackages.get(retained)).toEqual(["alpha", "beta"]);
+  expect(frontend.npmStatic).toEqual([
+    { package: "alpha", status: "static" },
+    { package: "beta", status: "static" },
+  ]);
+  expect(frontend.preflight).toEqual([typeError]);
+  frontend.dispose();
+});
+
+test("one program diagnostic does not refuse every package in the set", () => {
+  // pi's round 2: a single program-level SC0001 that every solo probe
+  // reproduces (the diagnostic depends on the opt-in, not on WHICH package
+  // was opted in). Probing alone cannot attribute it, and reporting one
+  // refusal per package hides the one diagnostic that is real.
+  preflight.mockReturnValueOnce([]).mockReturnValue([typeError]);
+  const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
+  // The no-opt-in baseline load left its empty set live; the retained program
+  // is reloaded so lowering reads the set it was compiled with.
+  const retained = retainedLoad();
+  expect(retained).toBe(opened.at(-1));
+  expect(loadPackages.get(retained)).toEqual(["alpha", "beta"]);
+  expect(frontend.npmStatic).toEqual([
+    { package: "alpha", status: "static" },
+    { package: "beta", status: "static" },
+  ]);
+  expect(frontend.preflight).toEqual([typeError]);
   frontend.dispose();
 });

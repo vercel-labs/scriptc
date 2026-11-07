@@ -328,3 +328,49 @@ test("a wide expression looks each operand up once, not once per earlier operand
   expect(long.lookups / 2000).toBeLessThanOrEqual((short.lookups / 500) * 1.25);
   expect(long.lowerings / 2000).toBeLessThanOrEqual((short.lowerings / 500) * 1.25);
 }, 120_000);
+
+/** One expression with `width` operands, each a sum the lowering keeps. */
+const WIDE: Record<string, (width: number) => string> = {
+  "an array literal": (width) =>
+    `const seed: number = Number(process.argv.length);
+const wide = [
+  ${Array.from({ length: width }, (_, i) => `seed + ${i}`).join(",\n  ")},
+];
+console.log(wide.length);
+`,
+  "an object literal": (width) =>
+    `const seed: number = Number(process.argv.length);
+const wide = {
+  ${Array.from({ length: width }, (_, i) => `p${i}: seed + ${i}`).join(",\n  ")},
+};
+console.log(wide.p0);
+`,
+  "an argument list": (width) =>
+    `const seed: number = Number(process.argv.length);
+function count(...values: number[]): number {
+  return values.length;
+}
+console.log(count(
+  ${Array.from({ length: width }, (_, i) => `seed + ${i}`).join(",\n  ")},
+));
+`,
+};
+
+for (const [name, shape] of Object.entries(WIDE)) {
+  test(`${name} of 10,000 operands costs the same per operand as one of 2,000`, () => {
+    // The widest case, for each list an expression can have: five times
+    // the operands may cost no more than a quarter more lowerings or
+    // operand lookups per operand. Scanned from a list, 10,000 operands
+    // compared 50 to 100 million kept entries.
+    const measure = (width: number): { lowerings: number; lookups: number } => {
+      takeKeptOperandLookups();
+      const count = lowerings(`wide ${name}`, width, shape(width));
+      return { lowerings: count, lookups: takeKeptOperandLookups() };
+    };
+    const narrow = measure(2_000);
+    const wide = measure(10_000);
+    expect(wide.lowerings).toBeGreaterThan(narrow.lowerings);
+    expect(wide.lowerings / 10_000).toBeLessThanOrEqual((narrow.lowerings / 2_000) * 1.25);
+    expect(wide.lookups / 10_000).toBeLessThanOrEqual((narrow.lookups / 2_000) * 1.25);
+  }, 240_000);
+}

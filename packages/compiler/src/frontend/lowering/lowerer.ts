@@ -18285,7 +18285,15 @@ export class Lowerer {
       this.diagSinkMark() === sinkMark &&
       this.probeSurroundings() === surroundings
     ) {
-      (this.keptOperands ??= new Map()).set(node, {
+      // Created and written in separate statements: the compiler compiles
+      // its own source, and it has no lowering for a Map method chained onto
+      // the `??=` that creates the map (SC2020).
+      let operands = this.keptOperands;
+      if (operands === null) {
+        operands = new Map();
+        this.keptOperands = operands;
+      }
+      operands.set(node, {
         node,
         value,
         ctx: this.ctx,

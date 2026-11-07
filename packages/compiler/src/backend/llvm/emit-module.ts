@@ -391,6 +391,48 @@ function writeDefinitions(
   }
 }
 
+/** `line` with a section of its own when it defines a function, a constant
+ * or a variable, named as -ffunction-sections and -fdata-sections name them. A
+ * program object is otherwise one code section and one section per kind of
+ * data, which the linker's section GC keeps or drops whole; a definition in
+ * its own section is dropped when nothing live references it. Only ELF
+ * needs this: Mach-O is dead-stripped by symbol, and a COFF section is only
+ * droppable as a COMDAT. A definition this does not recognize is left where
+ * it is, which is always correct. */
+function ownSection(line: string, enabled: boolean): string {
+  if (!enabled || line.includes(` section "`)) return line;
+  const fn = /^define (?:internal |private )?[^@]*@([\w.$-]+)\(.*?\) #0 (?=personality |\{)/.exec(
+    line,
+  );
+  if (fn) {
+    const at = fn[0].length;
+    return `${line.slice(0, at)}section ".text.${fn[1]}" ${line.slice(at)}`;
+  }
+  // A constant whose text ends with its initializer (no comment, alignment
+  // or metadata after it, no string body that could hold their spelling).
+  const constant =
+    /^@([\w.$-]+) = (?:internal |private )?(?:unnamed_addr )?constant [^;!"]*[\]}\w]$/.exec(line);
+  if (constant && !/, align \d+$/.test(line))
+    return `${line}, section ".${line.includes("@", 1) ? "data.rel.ro" : "rodata"}.${constant[1]}"`;
+  // A variable (a record's field hooks, filled in once): writable data.
+  const variable = /^@([\w.$-]+) = internal global [^;!"]*[\]}\w]$/.exec(line);
+  if (variable && !/, align \d+$/.test(line)) return `${line}, section ".data.${variable[1]}"`;
+  return line;
+}
+
+/** Gives every definition in `defs` from index `from` on a section of its
+ * own (ownSection). An entry may hold several lines. */
+function ownSections(defs: string[], from: number): void {
+  for (let i = from; i < defs.length; i++) {
+    const text = defs[i]!;
+    if (!text.includes("define ") && !text.startsWith("@")) continue;
+    defs[i] = text
+      .split("\n")
+      .map((line) => ownSection(line, true))
+      .join("\n");
+  }
+}
+
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
@@ -417,13 +459,22 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       );
     }
   }
+  // The checked-dynamic view of each program class that extends Error, in
+  // the table the runtime reads when it boxes an error
+  // (scr_error_dyn_types, scr_dyn.h). Nothing else names the table, so a
+  // program that never views an error dynamically links neither the views
+  // nor the dynamic object model behind them. The linker can only drop
+  // them when they are sections of their own (ownSections).
+  const errorViewRows: string[] = [];
+  const viewDefs = [emitter.resolveThunkDefs, emitter.dyn.defs, emitter.walkers.defs];
+  const viewDefsBefore = viewDefs.map((defs) => defs.length);
   for (const meta of emitter.classMeta.values()) {
     if (meta.def.runtime || meta.root.def.name !== "%Error") continue;
     const type: IrType = { kind: "object", className: meta.def.name };
     const adapter = emitter.liveDynRefAdapter(type);
     const rc = vAdapters(emitter.shapeHost, type);
     const key = typeKey(type);
-    const name = `sc_error_view_${errorViews.length}`;
+    const name = `sc_error_view_${errorViewRows.length}`;
     emitter.resolveThunkDefs.push(
       `define internal ptr @${name}(ptr %v) ${FN_ATTRS} {`,
       `entry:`,
@@ -432,10 +483,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       `}`,
       ``,
     );
-    emitter.declare(`declare void @scr_error_register_dyn(ptr, ptr)`);
-    errorViews.push(
-      `  call void @scr_error_register_dyn(ptr @${mangleVtInstance(meta.def.name)}, ptr @${name})`,
-    );
+    errorViewRows.push(`{ ptr, ptr } { ptr @${mangleVtInstance(meta.def.name)}, ptr @${name} }`);
+  }
+  if (errorViewRows.length > 0) {
+    errorViewRows.push(`{ ptr, ptr } zeroinitializer`);
+    if (emitter.elfSections) viewDefs.forEach((defs, i) => ownSections(defs, viewDefsBefore[i]!));
   }
   const layouts = emitLlvmLayouts(
     emitter.shapeHost,
@@ -989,6 +1041,16 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // Overrides the runtime's weak default (scr_console.c).
     ...(emitter.stdoutBuffering && emitter.mod.lib === undefined
       ? [`@scr_stdout_buffering = constant i8 1`]
+      : []),
+    // Overrides the runtime's weak default (scr_json.c).
+    ...(errorViewRows.length > 0
+      ? [
+          ownSection(
+            `@sc_error_views = internal constant [${errorViewRows.length} x { ptr, ptr }] [${errorViewRows.join(", ")}]`,
+            emitter.elfSections,
+          ),
+          ownSection(`@scr_error_dyn_types = constant ptr @sc_error_views`, emitter.elfSections),
+        ]
       : []),
   );
   if (emitter.abortFrames) for (const d of ABORT_FRAMES_DECLARATIONS) emitter.declare(d);

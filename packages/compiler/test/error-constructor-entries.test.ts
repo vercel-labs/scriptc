@@ -5,7 +5,7 @@ import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 
-async function llvmOf(source: string): Promise<string> {
+async function llvmOf(source: string, targetTriple?: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-error-entries-"));
   try {
     const entry = join(dir, "main.ts");
@@ -14,7 +14,10 @@ async function llvmOf(source: string): Promise<string> {
     const lowered = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
     if (!lowered.ok)
       throw new Error(lowered.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    return emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    return emitLlvmModule(
+      deserializeModule(await readFile(outPath, "utf8")),
+      targetTriple === undefined ? {} : { targetTriple },
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -86,4 +89,60 @@ console.log(errors.length);
   expect(calls(ll, "scr_error_init_options")).toBe(2);
   expect(calls(ll, "scr_error_new")).toBe(0);
   expect(calls(ll, "scr_error_init")).toBe(0);
+});
+
+test("the views of program error classes are a table only the runtime's reader names", async () => {
+  const source = `
+class AppError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+class Quiet extends TypeError {}
+try {
+  throw new AppError("denied", 403);
+} catch (error) {
+  if (error instanceof AppError) console.log(error.status, new Quiet("q").message);
+}
+`;
+  const elf = await llvmOf(source, "x86_64-unknown-linux-gnu");
+  // Nothing registers a view at start-up: the program defines the table the
+  // runtime reads when it boxes an error, one row per class and a null row.
+  expect(elf).not.toContain("scr_error_register_dyn");
+  expect(elf).toMatch(
+    /^@sc_error_views = internal constant \[3 x \{ ptr, ptr \}\] \[.*@sc_error_view_0.*@sc_error_view_1.*zeroinitializer\], section "\.data\.rel\.ro\.sc_error_views"$/m,
+  );
+  expect(elf).toMatch(
+    /^@scr_error_dyn_types = constant ptr @sc_error_views, section "\.data\.rel\.ro\.scr_error_dyn_types"$/m,
+  );
+  // No compiled code names the table or a view, so the linker can drop them
+  // with what only they reach: on ELF each is a section of its own.
+  const uses = (ll: string, symbol: string): number =>
+    ll.split("\n").filter((line) => line.includes(`@${symbol}`) && !line.startsWith("@")).length;
+  expect(uses(elf, "scr_error_dyn_types")).toBe(0);
+  expect(uses(elf, "sc_error_views")).toBe(0);
+  for (const view of ["sc_error_view_0", "sc_error_view_1"]) {
+    expect(elf).toContain(`define internal ptr @${view}(ptr %v) #0 section ".text.${view}" {`);
+    expect(uses(elf, view)).toBe(1);
+  }
+  const snapshots = elf.match(/^define internal ptr @sc_ldr_\d+_materialize\(.*$/gm) ?? [];
+  expect(snapshots.length).toBe(2);
+  for (const line of snapshots)
+    expect(line).toMatch(/ #0 section "\.text\.sc_ldr_\d+_materialize" \{/);
+
+  // Mach-O is dead-stripped by symbol and takes no ELF section names.
+  const macho = await llvmOf(source, "arm64-apple-macosx14.0.0");
+  expect(macho).toContain("@scr_error_dyn_types = constant ptr @sc_error_views");
+  expect(macho).not.toContain(' section "');
+});
+
+test("a program without error classes defines no view table", async () => {
+  const ll = await llvmOf(
+    `try { throw new RangeError("r"); } catch (error) { if (error instanceof Error) console.log(error.message); }`,
+    "x86_64-unknown-linux-gnu",
+  );
+  expect(ll).not.toContain("scr_error_dyn_types");
+  expect(ll).not.toContain(' section "');
 });

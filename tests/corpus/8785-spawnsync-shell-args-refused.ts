@@ -1,11 +1,11 @@
 // @normalize-pid
-// spawnSync with the shell enabled, separate arguments, and a value Node
-// refuses. normalizeSpawnArguments checks the file, the arguments and cwd
+// spawnSync and spawn with the shell enabled, separate arguments, and a
+// value Node refuses. normalizeSpawnArguments checks the file, the arguments and cwd
 // before it joins the arguments onto the command and reports DEP0190, and
 // it checks the environment after. So a refused file, argument or cwd
 // reports no warning and leaves the once-per-process warning to a later
 // call, and a refused environment has already reported it.
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 
 let seen = 0;
 process.on("warning", (warning) => {
@@ -45,6 +45,16 @@ async function main(): Promise<void> {
   refused("typed cwd", () => spawnSync("echo", ["x"], onCwd));
   await tick();
   console.log("warnings after the typed refusals:", seen);
+
+  // spawn checks the same values before it joins, with the shell always on
+  // and with a shell decided at run time.
+  const flag: boolean = nul.length === 3;
+  refused("spawn argument", () => spawn("echo", ["x", nul], { shell: true }));
+  refused("spawn file", () => spawn(empty, ["x"], { shell: true }));
+  refused("spawn argument, shell at run time", () => spawn("echo", ["x", nul], { shell: flag }));
+  refused("spawn cwd, shell at run time", () => spawn("echo", ["x"], { shell: flag, cwd: nul }));
+  await tick();
+  console.log("warnings after spawn's refusals:", seen);
 
   // The environment is checked after the line is built: the warning is out.
   const onEnv: SpawnSyncOptionsWithStringEncoding = {

@@ -1,4 +1,6 @@
-- **Generics:** Generic functions declared inside other functions, generic class expressions, and generic methods requiring dynamic dispatch are unsupported.
+- **Generics:** A generic `function` declared inside another function compiles when the enclosing function only calls it: captured values travel as the instance's parameters, or through a shared closure environment when one of them is reassigned.
+  Taking such a declaration as a value, or capturing a value whose type is the enclosing function's own type parameter, remains unsupported.
+  Generic class expressions and generic methods requiring dynamic dispatch are unsupported.
   Generic classes can extend generic bases when each specialization has a concrete layout.
   Independent concrete uses have no specialization-count limit; recursively expanding demands and type layouts produce diagnostics.
   Other generic calls compile when the target resolves statically.

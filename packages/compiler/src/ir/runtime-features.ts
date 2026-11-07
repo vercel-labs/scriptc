@@ -315,6 +315,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.errored",
   "stream.pipeDyn",
   "stream.prop",
+  "stream.stdioReadable",
   "stream.stdioWritable",
   "stream.unboxDyn",
   "stream.dynIterableSource",
@@ -798,6 +799,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.stdioWriteDyn",
   "process.stdioWriteStr",
   "stdin.nextChunk",
+  "stream.stdioReadable",
   "stdin.onData",
   "stdin.onEnd",
   "stdin.onError",
@@ -1300,6 +1302,11 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** The command line of a shell-enabled call that passes separate
+   * arguments (cp.shellLine), with Node's DEP0190: scr_child_shell.c, a
+   * unit of its own so a program that never joins one keeps scr_child.c's
+   * layout. The warning reports through the dyn-async unit. */
+  childShellLine: rule({ fns: ["cp.shellLine", "cp.checkShellArgs"] }),
   /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
    * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
    * own, so a program that never passes those options keeps the default
@@ -1381,11 +1388,13 @@ const RUNTIME_FEATURE_RULES = {
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
     // The legacy url functions, crypto.createCipheriv,
-    // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
+    // ecdh.setPublicKey, generateKeyPair's rsa-pss options and a shell
+    // command line joined from separate arguments emit their
     // deprecation warnings through the dyn-async unit (WebCrypto's
     // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
     // handles and promises through it.
     fns: [
+      "cp.shellLine",
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
@@ -1490,6 +1499,8 @@ const RUNTIME_FEATURE_RULES = {
   streamDyn: rule({
     fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
   }),
+  /** process.stdin converted into a Readable (scr_stream_stdin.c). */
+  streamStdin: rule({ fns: ["stream.stdioReadable"] }),
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
   handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
@@ -2103,8 +2114,10 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stream: false,
     strdecDyn: false,
     streamDyn: false,
+    streamStdin: false,
     handleProps: false,
     childLifecycle: false,
+    childShellLine: false,
     childOptionExt: false,
     spawnCaptureBytes: false,
     childErrorFields: false,

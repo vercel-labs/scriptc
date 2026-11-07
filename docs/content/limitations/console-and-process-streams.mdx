@@ -40,3 +40,16 @@ The record is a separate value: it is not identical to the stream, and it expose
 A record type that also declares a data member, such as `isTTY`, throws `SC2002`.
 An instance of a stream class such as `Writable` throws `SC2002` in a record type of methods as well.
 For those, pass an object literal that wraps the stream: `const sink: Sink = { write: (text: string) => { process.stdout.write(text); } }`.
+Under `@types/node`, `process.stdin` passed, stored or returned where `stream.Readable` is declared is one `Readable` over the process's input, and `process.stdout` and `process.stderr` where `stream.Writable` is declared are one `Writable` each.
+Every conversion answers the same stream, and a binding of the stream class compares identical to the process stream it was read from.
+The stdin stream receives each chunk once, beside any listener registered on `process.stdin` itself, and ends when the input ends.
+Listeners registered on `process.stdin` and listeners registered on the stream are kept separately, so for one event their relative order can differ from Node's registration order.
+For the same reason `process.stdin.isPaused()` does not report a `pause()` of the stream, and `listenerCount` does not include the listeners Node itself attaches to a pipe or a terminal.
+A process stream held as an untyped value does not convert to a stream class: asserting or passing it as `Readable` or `Writable` throws a TypeError.
+Passing `process.stdin` where `Duplex` or `EventEmitter` is declared throws the same TypeError.
+The bundled declarations declare `process.stdin` by its own members, so these conversions need `@types/node`.
+After `process.stdin.setEncoding`, a `'data'` listener registered on `process.stdin` whose parameter is declared `string` receives the decoded chunks, with a multi-byte sequence split across reads kept whole.
+A listener whose parameter is a `Buffer` or `Uint8Array`, which includes a parameter with no annotation, throws a TypeError with code `SC2020` at the first chunk, because Node delivers a string there.
+`process.stdin.read()` and `for await` over `process.stdin` answer bytes, so after `setEncoding` they throw the same kind of TypeError at the first chunk they would hand out, where Node answers a string.
+A `read()` that hands out no chunk (`read(0)`, or a `read()` with nothing held) answers `null` and an iteration that gets no input ends, as in Node.
+To read text that way, leave the encoding unset and decode the Buffers with a `TextDecoder`.

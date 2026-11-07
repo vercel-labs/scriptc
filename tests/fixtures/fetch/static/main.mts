@@ -155,6 +155,38 @@ console.log(
   appendDuringForEachSeen.join(","),
 );
 
+// keys(), values(), entries() and the Headers itself iterate the same
+// sorted list, live: one step per next(), re-read after a mutation.
+const iteratedHeaders = new Response(null, {
+  headers: [
+    ["x-b", "2"],
+    ["set-cookie", "s=1"],
+    ["X-A", "1"],
+    ["set-cookie", "t=2"],
+  ],
+}).headers;
+console.log("response header keys:", [...iteratedHeaders.keys()].join(","));
+console.log("response header values:", [...iteratedHeaders.values()].join(","));
+const iteratedEntries: string[] = [];
+for (const [name, value] of iteratedHeaders.entries()) iteratedEntries.push(`${name}=${value}`);
+console.log("response header entries:", iteratedEntries.join(","));
+const iteratedSelf: string[] = [];
+for (const [name, value] of iteratedHeaders) iteratedSelf.push(`${name}=${value}`);
+console.log("response header iteration:", iteratedSelf.join(","));
+const liveHeaderIterator = iteratedHeaders.keys();
+const liveHeaderFirst = liveHeaderIterator.next();
+iteratedHeaders.delete("x-a");
+iteratedHeaders.append("y-late", "9");
+const liveHeaderRest: string[] = [];
+for (const name of liveHeaderIterator) liveHeaderRest.push(name);
+console.log(
+  "response header live iterator:",
+  liveHeaderFirst.value,
+  liveHeaderFirst.done,
+  liveHeaderRest.join(","),
+  JSON.stringify(liveHeaderIterator.next()),
+);
+
 const responseHeaderMutationOrder: string[] = [];
 let responseHeaderNameCalls = 0;
 const responseHeaderName: any = {

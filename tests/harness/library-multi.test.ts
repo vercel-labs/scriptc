@@ -619,11 +619,11 @@ function buildThreadProbe(
   return bin;
 }
 
-const THREADED_EXPECTED = `t0: bump x100 -> 101, calls_seen 100, sums_ok=1, clocks_ok=1, index_ok=1, trap fell through 0
+const THREADED_EXPECTED = `t0: bump x100 -> 101, calls_seen 100, sums_ok=1, clocks_ok=1, index_ok=1, identity_ok=1, trap fell through 0
 t0 sink: calls=1 ctx_ok=1 fields=3 code=[SC4014] symbol=[mt_boom] addr_nonzero=1
-t1: bump x150 -> 151, calls_seen 150, sums_ok=1, clocks_ok=1, index_ok=1, post_ok=1
-t2: bump x200 -> 201, calls_seen 200, sums_ok=1, clocks_ok=1, index_ok=1, post_ok=1
-t3: bump x250 -> 251, calls_seen 250, sums_ok=1, clocks_ok=1, index_ok=1, post_ok=1
+t1: bump x150 -> 151, calls_seen 150, sums_ok=1, clocks_ok=1, index_ok=1, identity_ok=1, post_ok=1
+t2: bump x200 -> 201, calls_seen 200, sums_ok=1, clocks_ok=1, index_ok=1, identity_ok=1, post_ok=1
+t3: bump x250 -> 251, calls_seen 250, sums_ok=1, clocks_ok=1, index_ok=1, identity_ok=1, post_ok=1
 survivor sinks: 0 0 0
 `;
 
@@ -701,6 +701,7 @@ localizationTest(
         "mt_bump",
         "mt_calls_seen",
         "mt_collect",
+        "mt_generic_identity",
         "mt_indexed_unicode",
         "mt_init",
         "mt_perf_now",

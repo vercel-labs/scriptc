@@ -2072,6 +2072,18 @@ export interface IrFunction {
    * object literal's method. Present only in modules that box function
    * values into checked values (function-names.ts). */
   displayName?: string;
+  /** The function's identity ROOT: the name of another function whose
+   * interned closure IS the JavaScript function this one also is. One
+   * generic declaration monomorphizes into one function per signature, and
+   * JavaScript has one function object for it, so every instance closure
+   * adopts the root's identity (scr_closure_identity). Absent for every
+   * ordinary function and for the root itself: a closure with no
+   * `identity` is its own root. */
+  identityRoot?: string;
+  /** The root's JavaScript `length` (its arity), which a boxed adopting
+   * closure reports in place of its own. Meaningful only with
+   * `identityRoot`. */
+  identityLength?: number;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
   params: IrParam[];

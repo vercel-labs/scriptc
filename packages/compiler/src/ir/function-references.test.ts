@@ -142,6 +142,7 @@ const FUNCTION_FIELDS: Record<StringFields<Omit<IrFunction, "body">>, Role> = {
   name: "other",
   sourceName: "other",
   jsEntry: "reference",
+  identityRoot: "reference",
   displayName: "other",
   asyncCacheGlobal: "other",
   asyncCycleCacheGlobal: "other",
@@ -312,6 +313,11 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
     mod.functions.push({ ...entry(), name: "%m0.closure", captures: [], jsEntry: TARGET });
     return mod;
   },
+  "functions[].identityRoot": () => {
+    const mod = module();
+    mod.functions.push({ ...entry(), name: "%m0.instance", identityRoot: TARGET });
+    return mod;
+  },
   "classes[].prototypeDataHelper": () => ({
     ...module(),
     classes: [{ name: "%m0.Cell", fields: [], prototypeDataHelper: TARGET, loc }],
@@ -473,6 +479,17 @@ test("removable functions reach each other only from a reached one", () => {
   };
   const all = new Set(namesOf(mod));
   expect(namesOf(withoutUnreachedFunctions(mod, all))).toEqual(["%live.a", "%live.b", "%main"]);
+});
+
+test("an identity root is reached from an instance that adopts it, when the instance is", () => {
+  const instance: IrFunction = { ...target, name: "%m0.instance", identityRoot: TARGET };
+  const call = exprStmt({ kind: "call", callee: instance.name, args: [], type: VOID, loc });
+  const both = new Set([TARGET, instance.name]);
+  const reached: IrModule = { ...module(), functions: [target, instance, entry([call])] };
+  expect(withoutUnreachedFunctions(reached, both)).toBe(reached);
+  // An instance nothing reaches does not keep its root.
+  const unreached: IrModule = { ...module(), functions: [target, instance, entry()] };
+  expect(namesOf(withoutUnreachedFunctions(unreached, both))).toEqual(["%main"]);
 });
 
 test("the functions the emitter looks up by name and class members stay", () => {

@@ -80,8 +80,11 @@ console.log(identity(new Box(7), 3).value);
 test("identical declaration errors in separate modules retain both source locations", async () => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-module-diagnostics-"));
   try {
+    // A generic declaration held as a value inside a function is one of the
+    // refusals the function-scoped machinery keeps, so the identical source in
+    // two modules must report it once per module.
     const source =
-      "export function value(): number { function local<T>(value:T):T {return value;} return local(1); }\n";
+      "export function value(): number { function local<T>(value:T):T {return value;} const held: (value:number)=>number = local; return held(1); }\n";
     writeFileSync(join(directory, "first.ts"), source);
     writeFileSync(join(directory, "second.ts"), source);
     writeFileSync(

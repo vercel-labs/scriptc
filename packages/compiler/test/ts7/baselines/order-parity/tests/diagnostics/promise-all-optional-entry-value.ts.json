@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/promise-all-optional-entry-value.ts"
+ ],
+ "diags": []
+}

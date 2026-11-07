@@ -1020,7 +1020,10 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
      * nothing. */
     ScrStr *text = scr_strdec_write(scr_stdin_encoding, scr_stdin_dec_pending, chunk);
     scr_stdin_dec_pending = scr_strdec_next(scr_stdin_encoding, scr_stdin_dec_pending, chunk);
-    if (text->len > 0) scr_stdin_deliver_parts(chunk, text);
+    /* An empty text (the read held only part of a sequence) still goes
+     * down: the runtime's byte consumers take every raw chunk, or the
+     * bytes the decoder is holding would never reach them. */
+    scr_stdin_deliver_parts(chunk, text);
     scr_str_release(text);
     return;
   }
@@ -1040,6 +1043,16 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
       scr_closure_retain(snap[i].cb);
     }
     for (size_t i = 0; i < nd; i++) {
+#ifdef SCR_STDIO_EXTENDED
+      /* A read that decoded to nothing is no 'data' event for a listener
+       * that takes the text (or would be refused for it): it stays
+       * registered, a once listener included. */
+      if (text != NULL && text->len == 0 &&
+          !(snap[i].kind == SCR_STDIN_DATA_BYTES && snap[i].fn != scr_stdin_data_thunk_bytes)) {
+        scr_closure_release(snap[i].cb);
+        continue;
+      }
+#endif
       if (snap[i].once) {
         for (size_t j = 0; j < scr_stdin_ndata; j++) {
           if (scr_stdin_data[j].cb == snap[i].cb) {
@@ -1054,7 +1067,21 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
 #ifdef SCR_STDIO_EXTENDED
       if (!scr_exc_pending()) {
         if (snap[i].kind == SCR_STDIN_DATA_BYTES) {
-          if (chunk != NULL) snap[i].fn(snap[i].cb, chunk);
+          if (text != NULL && snap[i].fn == scr_stdin_data_thunk_bytes) {
+            /* A program listener compiled for Buffer chunks (its parameter
+             * is declared, or left to the declaration, as bytes) while an
+             * encoding is set: Node delivers the decoded string here. The
+             * listener cannot take a string, and handing it the bytes would
+             * be a value Node never delivers, so the delivery is refused by
+             * name. The runtime's own byte consumers (readline, the stdin
+             * stream) register other adapters and keep the raw chunk. */
+            static const char msg[] =
+                "process.stdin 'data' listener takes a Buffer, but setEncoding makes the chunks "
+                "strings (declare the listener's parameter as string) [SC2020]";
+            scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+          } else if (chunk != NULL) {
+            snap[i].fn(snap[i].cb, chunk);
+          }
         } else if (text != NULL) {
           snap[i].str_fn(snap[i].cb, text);
         } else if (snap[i].kind == SCR_STDIN_DATA_DYN) {
@@ -1078,6 +1105,22 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
 #endif
     ScrPromise *p = scr_stdin_waiter;
     scr_stdin_waiter = NULL;
+#ifdef SCR_STDIO_EXTENDED
+    if (scr_stdin_encoding != NULL) {
+      /* A chunk is about to settle the iteration's step, and with an
+       * encoding set Node's iteration yields it as a string. The compiled
+       * loop takes Buffers, so the step is rejected by name; the loop's
+       * await throws it. An iteration that ends without a chunk settles
+       * done, as in Node. */
+      static const char msg[] =
+          "for await over process.stdin takes Buffers, but setEncoding makes the chunks strings "
+          "(leave the encoding unset and decode the Buffers) [SC2020]";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+      scr_promise_reject_pending(p);
+      scr_promise_release(p);
+      return;
+    }
+#endif
     /* Node's stdin yields Buffers. */
     chunk->is_buffer = true;
     scr_promise_fulfill_ref(p, scr_bytes_retain(chunk), scr_bytes_retain_v,
@@ -1288,6 +1331,19 @@ ScrBytes *scr_stdin_read_bytes(bool all, double size) {
     }
     return NULL;
   }
+#ifdef SCR_STDIO_EXTENDED
+  if (scr_stdin_encoding != NULL) {
+    /* A chunk is about to be handed out, and with an encoding set Node's
+     * read() answers it as a string. This read answers a Buffer, so it is
+     * refused by name. A read that hands out nothing (read(0), or nothing
+     * held yet) answered null above, as in Node. */
+    static const char msg[] =
+        "process.stdin.read() answers a Buffer, but setEncoding makes the chunks strings "
+        "(leave the encoding unset and decode the Buffer) [SC2020]";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+    return NULL;
+  }
+#endif
   ScrBytes *chunk = scr_stdin_take(wanted);
   bool rest = scr_stdin_buffered > 0;
   scr_stdin_read_demand = 65536;

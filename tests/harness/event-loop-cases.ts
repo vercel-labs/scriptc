@@ -5,8 +5,10 @@
  * programs live in tests/fixtures/event-loop. */
 
 export interface StdinScript {
-  /** Writes performed in order; `delayMs` waits BEFORE the write. */
-  writes: { delayMs: number; data: string }[];
+  /** Writes performed in order; `delayMs` waits BEFORE the write. With
+   * `latin1` each character of `data` is one byte, so a write can end
+   * inside a UTF-8 sequence. */
+  writes: { delayMs: number; data: string; latin1?: true }[];
   /** Close the write end after the writes (false = hold the pipe open
    * until the child exits on its own — the timeout paths). */
   end: boolean;
@@ -185,6 +187,94 @@ export const eventLoopCases: EventLoopCase[] = [
   {
     title: "readline: immediate EOF closes the interface",
     fixture: "rl-lines.ts",
+    script: { writes: [], end: true },
+  },
+  // process.stdin received where a node:stream Readable is declared. These
+  // fixtures live in the node-types project: with @types/node,
+  // process.stdin is assignable to Readable (the bundled declarations list
+  // only the members the direct calls compile).
+  {
+    title: "stdin as a Readable: a parameter, a class field and an options member share one stream",
+    fixture: "../node-types/stdin-readable-parameter.ts",
+    script: { writes: [{ delayMs: 0, data: "alpha\nbeta\ngamma" }], end: true },
+  },
+  {
+    title: "stdin as a Readable: setEncoding, pause, 'readable' with read(), async iteration",
+    fixture: "../node-types/stdin-readable-surface.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "one\n" },
+        { delayMs: 150, data: "two\n" },
+        { delayMs: 150, data: "three\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: pipe into process.stdout as a Writable",
+    fixture: "../node-types/stdin-readable-pipe.ts",
+    script: { writes: [{ delayMs: 0, data: "piped through\ntwo slots\n" }], end: true },
+  },
+  {
+    title: "stdin as a Readable: readline over the parameter",
+    fixture: "../node-types/stdin-readable-readline.ts",
+    script: { writes: [{ delayMs: 0, data: "first\nsecond\nlast" }], end: true },
+  },
+  {
+    title: "typed stdio: setEncoding with a string 'data' listener delivers the decoded text",
+    fixture: "stdin-set-encoding-string.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "Say hello\n" },
+        { delayMs: 40, data: "and more\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: with an encoding set, characters split across reads lose no byte",
+    fixture: "../node-types/stdin-readable-split-sequence.ts",
+    script: {
+      // "aéb€c😀\n" as UTF-8. Three of the reads hold only the first bytes
+      // of a character, so they decode to nothing.
+      writes: [
+        { delayMs: 0, data: "a\xc3", latin1: true },
+        { delayMs: 120, data: "\xa9b", latin1: true },
+        { delayMs: 120, data: "\xe2", latin1: true },
+        { delayMs: 120, data: "\x82", latin1: true },
+        { delayMs: 120, data: "\xacc\xf0", latin1: true },
+        { delayMs: 120, data: "\x9f\x98", latin1: true },
+        { delayMs: 120, data: "\x80\n", latin1: true },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: read() and async iteration yield Buffers",
+    fixture: "../node-types/stdin-readable-iteration.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "first\n" },
+        { delayMs: 150, data: "second\n" },
+        { delayMs: 150, data: "third\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "typed stdio: after setEncoding, read(0) and a read() with nothing held answer null",
+    fixture: "stdin-set-encoding-no-chunk.ts",
+    script: {
+      writes: [
+        { delayMs: 20, data: "Say hello\n" },
+        { delayMs: 40, data: "and more\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "typed stdio: after setEncoding, an iteration that gets no chunk ends",
+    fixture: "stdin-set-encoding-empty-iteration.ts",
     script: { writes: [], end: true },
   },
 ];

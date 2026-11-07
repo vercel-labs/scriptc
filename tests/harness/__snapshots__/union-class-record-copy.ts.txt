@@ -1,0 +1,8 @@
+union-class-record-copy.ts:13:22 - error SC1090: a '{ id: string; kind: string }' value where '{ id: string; kind: string; parent: string | undefined } | { kind: string; n: number }' is expected (the union keeps its members that share one discriminant value as one record, '{ id: string; kind: string; parent: string | undefined }', and this value's type is not one of those members: it would be copied into that record, and the copy would not be the object this expression names) is not supported yet
+
+  12 | const fresh: Item = { kind: "node", id: "j" };
+  13 | const stored: Item = held;
+     |                      ^~~~
+  14 | console.log(JSON.stringify(stored), JSON.stringify(fresh));
+
+  hint: declare the value with the union's type, or with the type of the union member it is, so that it is built as that record

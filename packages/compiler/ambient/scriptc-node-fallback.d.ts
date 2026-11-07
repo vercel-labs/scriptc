@@ -373,8 +373,10 @@ declare var process: {
    * resume, isPaused, read, readableLength), destroy() (full teardown:
    * nothing fires after, the loop stops waiting), and async iteration
    * (`for await (const chunk of process.stdin)` — chunks are Uint8Array
-   * values, ending at EOF). setEncoding has no lowering (chunks stay
-   * bytes; decode with TextDecoder). */
+   * values, ending at EOF). setEncoding decodes the chunks a 'data'
+   * listener with a string parameter receives. read() and async iteration
+   * answer bytes, so once an encoding is set they throw (Node answers
+   * strings there): leave the encoding unset and decode with TextDecoder. */
   stdin: {
     readonly isTTY: boolean;
     /* The descriptor the stream is built over (Node reports 0 here and
@@ -384,6 +386,11 @@ declare var process: {
      * undefined on a non-TTY stdin (the `x || false` idiom). */
     readonly isRaw: boolean;
     on(event: "data", listener: (chunk: Uint8Array) => void): void;
+    /* After setEncoding the chunks are strings: a listener that declares
+     * its parameter string receives the decoded text. A listener compiled
+     * for bytes (the overload above, which an unannotated parameter takes)
+     * throws at the first chunk once an encoding is set. */
+    on(event: "data", listener: (chunk: string) => void): void;
     on(event: "end", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     /* Paused mode, as in Node: input stays buffered for read(), and the
@@ -396,6 +403,7 @@ declare var process: {
       listener: (str: string | undefined, key: import("readline").Key) => void,
     ): void;
     once(event: "data", listener: (chunk: Uint8Array) => void): void;
+    once(event: "data", listener: (chunk: string) => void): void;
     once(event: "end", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "readable", listener: () => void): void;
@@ -1389,6 +1397,9 @@ interface Headers {
     callbackfn: (value: string, key: string, parent: Headers) => void,
     thisArg?: unknown,
   ): void;
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
   [Symbol.iterator](): IterableIterator<[string, string]>;
 }
 declare var Headers: {

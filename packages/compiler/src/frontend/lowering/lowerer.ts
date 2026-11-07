@@ -812,6 +812,7 @@ import { partialAssertionFields } from "./partial-assertions.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import { lowerTernary } from "./lower-exprs.js";
+import { closeLoweringBudget, openLoweringBudget, refuseSpentLowering } from "./lower-exprs.js";
 import {
   maybePromiseReturnStmt,
   maybePromiseUnionOf,
@@ -860,6 +861,16 @@ const DECLARATION_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>
   "global",
   "loop",
 ]);
+
+/** A refused probe of an operand (Lowerer.refusedProbes). */
+interface RefusedProbe {
+  node: ts.Expression;
+  ctx: FnCtx;
+  bindings: Map<ts.Symbol, IrType> | null;
+  /** Lowerer.probeSurroundings when the probe was refused. */
+  surroundings: number;
+  diagnostics: ScrDiagnostic[];
+}
 
 export class PoisonError extends Error {
   /** Set when a type with no static lowering poisoned a slot (badType and
@@ -4586,6 +4597,7 @@ export class Lowerer {
     const first = keyedHelperName(this, prefix, key);
     const seen = this.closureNameCounts.get(first) ?? 0;
     this.closureNameCounts.set(first, seen + 1);
+    this.closureNamesIssued++;
     return (seen === 0 ? first : keyedHelperName(this, prefix, `${key}|${seen}`)) + suffix;
   }
 
@@ -5303,6 +5315,13 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    // Refused probes are held only while the expression or statement that
+    // probed is being lowered, so a unit begins and ends with none; the
+    // closure-name count is only compared across one probe.
+    "refusedProbes",
+    "refusedProbeFrame",
+    "refusedProbeFrames",
+    "closureNamesIssued",
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
@@ -5589,6 +5608,98 @@ export class Lowerer {
   /** Non-null redirects pushDiag into a capture buffer (the deferred
    * collection wrapper). */
   diagSink: ScrDiagnostic[] | null = null;
+  /** Operands whose probe (tryLowerExpression) was refused, for as long as
+   * the expression or statement that probed them is still being lowered:
+   * the function context, type bindings and ambient lowering state the
+   * probe ran under, and the diagnostics it captured. lowerExpr answers a
+   * later request for the same operand from here while a probe is active,
+   * in place of lowering it again to the same refusal. */
+  readonly refusedProbes = new Map<ts.Expression, RefusedProbe>();
+  /** The refusals the expression or statement on top recorded (null until
+   * its first), and how many expressions and statements are open. */
+  private refusedProbeFrame: RefusedProbe[] | null = null;
+  private refusedProbeFrames = 0;
+  /** Closure names handed out so far (closureName counts every request). */
+  private closureNamesIssued = 0;
+
+  /** Starts the expression or statement that owns the refusals recorded
+   * until closeRefusedProbeFrame; returns the enclosing owner's. */
+  openRefusedProbeFrame(): RefusedProbe[] | null {
+    const outer = this.refusedProbeFrame;
+    this.refusedProbeFrame = null;
+    this.refusedProbeFrames++;
+    return outer;
+  }
+
+  /** Forgets the refusals recorded since the matching open. */
+  closeRefusedProbeFrame(outer: RefusedProbe[] | null): void {
+    const own = this.refusedProbeFrame;
+    if (own !== null) {
+      for (const refusal of own) {
+        if (this.refusedProbes.get(refusal.node) === refusal)
+          this.refusedProbes.delete(refusal.node);
+      }
+    }
+    this.refusedProbeFrame = outer;
+    this.refusedProbeFrames--;
+  }
+
+  /** A number that changes when lowering leaves something behind besides
+   * its result: a local or a lifted function declared, a closure name
+   * taken, a diagnostic or a deferred fence recorded. A refused probe that
+   * leaves it unchanged can be refused again without being run again. */
+  probeEffects(): number {
+    return (
+      this.ctx.locals.length +
+      this.liftedFns.length +
+      this.implicitFns.length +
+      this.closureNamesIssued +
+      this.diags.length +
+      this.runtimeFences.length
+    );
+  }
+
+  /** A number that changes when a lowering in progress installs or removes
+   * what makes an expression lower differently: an expression override, an
+   * optional chain taken in hand, a narrowed type, a staged argument, a
+   * scope. A recorded refusal stands only while it is unchanged. */
+  private probeSurroundings(): number {
+    return (
+      this.chainRecvByNode.size +
+      this.chainHandled.size +
+      this.chainNarrowedType.size +
+      this.runtimeOptionalBindingTypes.size +
+      this.stagedArguments.size +
+      this.receiverTypeOverrides.size +
+      this.ctx.scopes.length
+    );
+  }
+
+  /** A probe of `node` was refused with these captured diagnostics and
+   * left nothing else behind. */
+  noteRefusedProbe(node: ts.Expression, diagnostics: ScrDiagnostic[]): void {
+    if (this.refusedProbeFrames === 0) return;
+    const refusal: RefusedProbe = {
+      node,
+      ctx: this.ctx,
+      bindings: this.typeParamBindings,
+      surroundings: this.probeSurroundings(),
+      diagnostics,
+    };
+    this.refusedProbes.set(node, refusal);
+    (this.refusedProbeFrame ??= []).push(refusal);
+  }
+
+  /** The recorded refusal of `node` that still stands here, or null. */
+  standingRefusal(node: ts.Expression): RefusedProbe | null {
+    const refusal = this.refusedProbes.get(node);
+    return refusal !== undefined &&
+      refusal.ctx === this.ctx &&
+      refusal.bindings === this.typeParamBindings &&
+      refusal.surroundings === this.probeSurroundings()
+      ? refusal
+      : null;
+  }
   /** Diagnostics converted into runtimeFence statements (JS sources —
    * see lowerStmts): off the build, preserved here so coverage reporting
    * can still name every deferred fence. */
@@ -17735,7 +17846,16 @@ export class Lowerer {
   }
 
   lowerStmt(stmt: ts.Statement): IrStmt | IrStmt[] | null {
-    return lowerStmt(this, stmt);
+    const outermost = openLoweringBudget(stmt);
+    const frame = this.openRefusedProbeFrame();
+    try {
+      const lowered = lowerStmt(this, stmt);
+      if (outermost) refuseSpentLowering(this);
+      return lowered;
+    } finally {
+      this.closeRefusedProbeFrame(frame);
+      closeLoweringBudget();
+    }
   }
 
   lowerVarStatement(stmt: ts.VariableStatement): IrStmt[] {

@@ -61,6 +61,7 @@ import {
   projectDtsRuntimeSibling,
   resolveBareModule,
   resolveProjectModule,
+  resolveWorkspaceSourceModule,
   resolveTypeDirective,
   setProjectPathMappings,
   setProjectRealm,
@@ -125,9 +126,11 @@ import {
   clearWorkspacePackages,
   isRelativeSpecifier,
   isWorkspacePackageName,
+  isWorkspaceSourcePath,
   npmPackageNameOf,
   packageNameOfSpecifier,
   registerWorkspacePackage,
+  registerWorkspaceSourcePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
 import {
@@ -445,8 +448,10 @@ export interface LoadResult {
    * errors are the program's, and its project world when it has errors. */
   tscWorld?: {
     program: ts.Program;
-    /** The program's pre-emit diagnostics, computed once. */
-    diagnostics: readonly ts.Diagnostic[];
+    /** The program's pre-emit diagnostics, computed once. The tsc gate is
+     * their one reader, so a load whose report nobody asks for (a rung of the
+     * npm-static fixpoint) never asks the checker for them. */
+    diagnostics: () => readonly ts.Diagnostic[];
     projectWorld: ts.Program | null;
     /** The declaration-typed boundary rewrote user files: errors fall
      * back to the declaration world (load.projectWorld()), as without it. */
@@ -1045,7 +1050,7 @@ function loadProgram7(
       const errors = diagnostics.some((d) => d.category === ts.DiagnosticCategory.Error);
       tscWorld = {
         program: original,
-        diagnostics,
+        diagnostics: () => diagnostics,
         projectWorld: errors ? host.createProgram(programRoots, options, false, lineage) : null,
       };
       for (const [file, lowered] of jsx.sources) host.addVirtualFile(file, lowered.text);
@@ -1099,9 +1104,11 @@ function loadProgram7(
           programRoots.pop();
           program = original;
         } else {
+          let diagnostics: readonly ts.Diagnostic[] | null = null;
           tscWorld = {
             program: original,
-            diagnostics: ts.getPreEmitDiagnostics(original, tscGateFileKept),
+            diagnostics: () =>
+              (diagnostics ??= ts.getPreEmitDiagnostics(original, tscGateFileKept)),
             projectWorld: null,
             declWorldFallback: true,
           };
@@ -1130,13 +1137,19 @@ function loadProgram7(
         // taken before the overlay's files replace them on the host, and
         // its project world (load.projectWorld()) is built over the files
         // as written.
-        if (tscWorld === undefined)
+        if (tscWorld === undefined) {
+          const diagnostics = ts.getPreEmitDiagnostics(before);
           tscWorld = {
             program: before,
-            diagnostics: ts.getPreEmitDiagnostics(before),
+            diagnostics: () => diagnostics,
             projectWorld: null,
             declWorldFallback: true,
           };
+        } else {
+          // The gate's diagnostics are taken before the overlay's files
+          // replace the files as written on the host.
+          tscWorld.diagnostics();
+        }
         for (const file of overlay.keys())
           if (!overlayOriginals.has(file))
             overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
@@ -5864,14 +5877,17 @@ function sameResolvedFile(a: string, b: string): boolean {
 /** A program file TypeScript's checker pulled in from a package the build
  * does not compile — unselected node_modules JavaScript, or an unselected
  * workspace package's shipped JavaScript at a realpath outside node_modules
- * (the symlinked-install shape): Node never loads it as program source. */
+ * (the symlinked-install shape): Node never loads it as program source. A
+ * workspace package whose bare import resolves to its TypeScript source
+ * compiles from source, and its JavaScript modules compile with it. */
 function unselectedPackageJsFilePredicate(entryFileName: string): (file: string) => boolean {
   const entryPackageFile = entryPackageFilePredicate(entryFileName);
   return (file) =>
     isJsSourceFileName(file) &&
     !entryPackageFile(file) &&
     npmStaticPackageOfPath(file) === null &&
-    (isNodeModulesPath(file) || workspacePackageOfPath(file) !== null);
+    (isNodeModulesPath(file) ||
+      (workspacePackageOfPath(file) !== null && !isWorkspaceSourcePath(file)));
 }
 
 /** Workspace-linked packages register before the tsc gate. Their files live
@@ -5905,8 +5921,11 @@ function registerWorkspaceEdges(load: LoadResult): void {
       if (probed.has(key)) return;
       probed.add(key);
       const r = resolveBareModule(fromFile, spec);
-      if (r !== null && r.workspaceDir !== undefined)
+      if (r !== null && r.workspaceDir !== undefined) {
         registerWorkspacePackage(r.packageName, r.workspaceDir);
+        if (resolveWorkspaceSourceModule(fromFile, spec) !== null)
+          registerWorkspaceSourcePackage(r.workspaceDir);
+      }
     };
     for (const sf of program.getImplementationSourceFiles()) {
       if (sf.isDeclarationFile || sf.fileName.endsWith(".json")) continue;
@@ -7404,7 +7423,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
   // to (a factory whose signature does not accept them).
   const tscWorld = load.tscWorld;
   const tscErrors =
-    tscWorld === undefined ? errorsOf(program) : keptErrors(tscWorld.program, tscWorld.diagnostics);
+    tscWorld === undefined
+      ? errorsOf(program)
+      : keptErrors(tscWorld.program, tscWorld.diagnostics());
   if (tscErrors.length > 0) {
     const world =
       tscWorld === undefined || tscWorld.declWorldFallback === true

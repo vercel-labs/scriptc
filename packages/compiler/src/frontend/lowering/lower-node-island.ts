@@ -24,6 +24,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
+import { InternalCompilerError } from "../../errors.js";
 import {
   BOOL,
   DYN,
@@ -1171,14 +1172,11 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
         return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
       // NI-5: closures, promises, records and class instances cross by
       // reference (scr_node_island_export.c): their dyn boxes keep the
-      // native referent, and the closure's thunk checks its arguments.
-      if (exportedByReference(lowerer, type)) {
-        const lowered = lowerer.lowerExpr(node);
-        const value = lowerer.coerceToExpected(lowered, DYN);
-        return lowered.type.kind === "object"
-          ? withClassMethods(lowerer, value, lowered.type.className, node)
-          : value;
-      }
+      // native referent, and the closure's thunk checks its arguments. A
+      // class instance's prototype methods are answered from its own
+      // class's table when the island first reads one (island-class-tables).
+      if (exportedByReference(lowerer, type))
+        return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
       return boundaryFail(
         lowerer,
         `a '${lowerer.checker.typeToString(type)}' value (a native object would cross as a copy and lose its identity)`,
@@ -1196,35 +1194,12 @@ function islandMethodName(name: string): boolean {
   return name !== "constructor" && !name.startsWith("#") && !/^(?:get|set|sym):/.test(name);
 }
 
-/** A class instance crossing into an island: its capsule answers island
- * reads of its fields, and its prototype methods come from a table the
- * runtime builds once per class (nodeIsland.classMethods): the unbound
- * method values, whose thunks check the receiver Node calls them on. */
-function withClassMethods(
-  lowerer: Lowerer,
-  value: IrExpr,
-  className: string,
-  blame: ts.Node,
-): IrExpr {
-  const builder = classMethodsBuilderOf(lowerer, className, blame, value.loc);
-  if (builder === null) return value;
-  return {
-    kind: "libCall",
-    fn: "nodeIsland.classMethods",
-    args: [value, builder],
-    type: DYN,
-    loc: value.loc,
-  };
-}
-
-/** The builder of a class's method table (a dyn closure answering
- * {name: unbound method value}), or null for a class without methods. */
-function classMethodsBuilderOf(
-  lowerer: Lowerer,
-  className: string,
-  blame: ts.Node,
-  loc: SrcLoc,
-): IrExpr | null {
+/** The function answering the method table of class `className` (a dyn
+ * object, {name: unbound method value}; the thunk of each value checks the
+ * receiver Node calls it on), or null for a class without methods an island
+ * can name. The table is built on the first call and kept, so a method is
+ * one function value for every instance of the class. */
+export function classMethodsTable(lowerer: Lowerer, className: string, loc: SrcLoc): string | null {
   const info = lowerer.classes.get(className);
   if (info === undefined || info.def.runtime) return null;
   const names: string[] = [];
@@ -1242,42 +1217,67 @@ function classMethodsBuilderOf(
     lowerer.classMethodValueHelpers.add(builder);
     const fields: { key: IrExpr; value: IrExpr }[] = [];
     for (const m of names) {
-      const method = classMethodValue(lowerer, blame, info, m, loc);
+      let method: IrExpr | null;
+      try {
+        method = classMethodValue(lowerer, info.decl ?? lowerer.entry, info, m, loc);
+      } catch (error) {
+        // The diagnostic names the method that has no value.
+        if (!(error instanceof PoisonError)) throw error;
+        continue;
+      }
       if (method === null) continue;
-      fields.push({
-        key: { kind: "strLit", value: m, type: STRING, loc },
-        value: lowerer.coerceToExpected(method, DYN),
-      });
+      // A method value without a checked-dynamic form has no entry.
+      const value = lowerer.coerceToExpected(method, DYN);
+      if (value.type.kind !== "dyn") continue;
+      fields.push({ key: { kind: "strLit", value: m, type: STRING, loc }, value });
     }
+    const tableId = `%g.${builder}`;
+    const readyId = `${tableId}.ready`;
+    const jsName = info.def.jsName ?? info.def.name;
+    lowerer.globalsList.push({
+      id: tableId,
+      name: `${jsName}.islandMethods`,
+      type: DYN,
+      mutable: true,
+    });
+    lowerer.globalsList.push({
+      id: readyId,
+      name: `${jsName}.islandMethods.ready`,
+      type: BOOL,
+      mutable: true,
+    });
     lowerer.liftedFns.push({
       name: builder,
       params: [],
       returnType: DYN,
       locals: [],
-      body: [{ kind: "return", value: { kind: "dynObjLit", fields, type: DYN, loc }, loc }],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "unary", op: "!", operand: varRef(readyId, BOOL, loc), type: BOOL, loc },
+          then: [
+            {
+              kind: "assign",
+              localId: tableId,
+              value: { kind: "dynObjLit", fields, type: DYN, loc },
+              loc,
+            },
+            {
+              kind: "assign",
+              localId: readyId,
+              value: { kind: "boolLit", value: true, type: BOOL, loc },
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: varRef(tableId, DYN, loc), loc },
+      ],
       loc,
     });
   }
-  const closure: IrExpr = {
-    kind: "closure",
-    fnName: builder,
-    captures: [],
-    type: funcTypeFromParamShapes([], DYN),
-    loc,
-  };
-  return lowerer.coerceToExpected(closure, DYN);
-}
-
-/** NI-6: the method-table builder of the class a shared module exports
- * (`ident` is its declaration's name), or null. */
-export function classMethodsBuilder(
-  lowerer: Lowerer,
-  ident: ts.Identifier,
-  loc: SrcLoc,
-): IrExpr | null {
-  const decl = ident.parent;
-  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
-  return classMethodsBuilderOf(lowerer, lowerer.classNamer(decl), ident, loc);
+  return builder;
 }
 
 /** NI-6: `new C(...)` from island code for the class a shared module
@@ -1619,11 +1619,17 @@ function lowerIslandChain(
  *   A member that is a function value (a closure on a native object) is
  *   still called as read when the arguments run code.
  *
- * The arguments cross once, into hidden locals both arms read. A call that
- * spreads an argument keeps the runtime's routing (it has no fixed
- * argument list for the dynamic call node): scr_node_island_invoke and
- * scr_node_island_apply_to send a native receiver to the runtime's by-name
- * call there. */
+ * The arguments cross once, into hidden locals both arms read.
+ *
+ * A call that spreads an argument has no fixed argument list for that
+ * node. Its native arm is what the ordinary tier lowers such a call to:
+ * the member read (a dynKeyGet with a literal key, which the class
+ * dispatch pass answers with the method value) and a dynCall that spreads
+ * the argument pack. It serves the receivers whose members compiled code
+ * dispatches (a class instance, a generator: nodeIsland.isCapsule). Every
+ * other native receiver keeps the runtime's by-name call, which takes a
+ * list of any length and is the call the dynamic call node ends in for
+ * them (an array's push, a Map's set). */
 function islandMethodCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1644,16 +1650,39 @@ function islandMethodCall(
     return () => varRef(local.id, init.type, loc);
   };
   const recv = hold("%islandRecv", target);
+  const spread = args.some((a) => ts.isSpreadElement(a));
+  const capsule = (): IrExpr => ({
+    kind: "libCall",
+    fn: "nodeIsland.isCapsule",
+    args: [recv()],
+    type: BOOL,
+    loc,
+  });
   // The member is read before the arguments only when they can run code.
+  // For a call that spreads, a receiver compiled code dispatches reads it
+  // the way the ordinary tier does.
+  const read: IrExpr = {
+    kind: "libCall",
+    fn: "nodeIsland.get",
+    args: [recv(), name()],
+    type: DYN,
+    loc,
+  };
   const held = inert
     ? null
-    : hold("%islandMethod", {
-        kind: "libCall",
-        fn: "nodeIsland.get",
-        args: [recv(), name()],
-        type: DYN,
-        loc,
-      });
+    : hold(
+        "%islandMethod",
+        spread
+          ? {
+              kind: "ternary",
+              cond: capsule(),
+              then: { kind: "dynKeyGet", value: recv(), key: name(), type: DYN, loc },
+              else_: read,
+              type: DYN,
+              loc,
+            }
+          : read,
+      );
   const bridge = (pack: IrExpr): IrExpr =>
     held === null
       ? { kind: "libCall", fn: "nodeIsland.invoke", args: [recv(), name(), pack], type: DYN, loc }
@@ -1664,8 +1693,27 @@ function islandMethodCall(
           type: DYN,
           loc,
         };
-  if (args.some((a) => ts.isSpreadElement(a))) {
-    const result = fromIsland(lowerer, bridge(argsOf(lowerer, args, loc)), expr);
+  if (spread) {
+    if (held === null) throw new InternalCompilerError("a spread argument is never inert");
+    const pack = hold("%islandArgs", argsOf(lowerer, args, loc));
+    const call: IrExpr = {
+      kind: "ternary",
+      cond: capsule(),
+      then: {
+        kind: "dynCall",
+        callee: held(),
+        receiver: recv(),
+        calleeName: v8CalleeText(callee),
+        args: [pack()],
+        spreads: [{ arg: 0, what: "arguments" }],
+        type: DYN,
+        loc,
+      },
+      else_: bridge(pack()),
+      type: DYN,
+      loc,
+    };
+    const result = fromIsland(lowerer, call, expr);
     return { kind: "seqExpr", stmts, result, type: result.type, loc };
   }
   const values = args.map((a) => hold("%islandArg", toIsland(lowerer, a)));

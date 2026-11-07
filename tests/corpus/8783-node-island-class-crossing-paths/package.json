@@ -1,0 +1,6 @@
+{
+  "name": "island-class-crossing-paths",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "paths-pkg": "node" } }
+}

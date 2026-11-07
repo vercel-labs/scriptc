@@ -24,13 +24,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.applyTo",
   "nodeIsland.construct",
   "nodeIsland.instanceof",
-  "nodeIsland.classMethods",
   "nodeIsland.subclass",
   "nodeIsland.superConstruct",
   "nodeIsland.superMethod",
   "nodeIsland.defineField",
   "nodeIsland.promisify",
-  "nodeIsland.classMethodsOf",
   "nodeIsland.copyArrays",
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",

@@ -4663,6 +4663,7 @@ struct ScrHttpClientReq {
   bool removed_connection;
   ScrHttpTrailers trailers;
   bool user_cl;      /* caller set content-length/transfer-encoding */
+  bool frames_any_method; /* fetch(): a body is framed whatever the method */
   bool head_sent;
   bool chunked;      /* streaming framing committed */
   int corked;
@@ -5051,6 +5052,12 @@ static bool scr_http_client_chunks_by_default(const ScrHttpClientReq *c) {
   return true;
 }
 
+/* fetch()'s requests go through this client, and undici frames a request
+ * body whatever the method (Content-Length for a known length, chunked for
+ * a stream), where Node's ClientRequest leaves the methods above without a
+ * framing header. Called by scr_fetch.c before it writes the body. */
+void scr_http_client_frame_any_method(ScrHttpClientReq *c) { c->frames_any_method = true; }
+
 /* Serializes and sends the head. `body_len` >= 0 fixes Content-Length
  * (the end(data) path — and Node's Content-Length: 0 for empty POST/PUT/
  * PATCH bodies); -1 means STREAMING: chunked unless the caller set the
@@ -5096,10 +5103,11 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
     else scr_http_buf_str(&b, "Connection: keep-alive\r\n");
   }
   if (!c->user_cl) {
-    if (body_len < 0 && !scr_http_client_chunks_by_default(c)) {
+    if (body_len < 0 && !c->frames_any_method && !scr_http_client_chunks_by_default(c)) {
       /* Node's useChunkedEncodingByDefault is false for these methods: a
        * head that goes out before the body length is known carries no
-       * framing header, and the body, if any, is written as it is. */
+       * framing header, and the body, if any, is written as it is.
+       * fetch() frames every body, as undici does. */
     } else if (body_len < 0 || scr_http_client_has_header(c, "trailer")) {
       scr_http_buf_str(&b, "Transfer-Encoding: chunked\r\n");
       c->chunked = true;

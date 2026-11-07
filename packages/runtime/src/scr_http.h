@@ -328,6 +328,8 @@ void scr_http_client_on_continue(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, 
  * hands the listener Node's event object. */
 void scr_http_client_on_information(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpRespFn fn, bool once);
 void scr_http_information_thunk_dyn(ScrClosure *cb, ScrHttpReq *res /* +1 */);
+/* fetch(): frame the request body whatever the method, as undici does. */
+void scr_http_client_frame_any_method(ScrHttpClientReq *c);
 void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);

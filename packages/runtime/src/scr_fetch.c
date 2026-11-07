@@ -6376,6 +6376,7 @@ static bool sf_start_hop(SfTransfer *t) {
     return false;
   }
   t->client = client;
+  scr_http_client_frame_any_method(client);
 
   scr_http_client_on_response(
       client, sf_closure(t, (void *)&sf_on_response),

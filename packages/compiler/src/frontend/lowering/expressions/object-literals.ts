@@ -1145,6 +1145,8 @@ export function lowerObjectLiteral(
   // copyDataProperties of whichever arm runs) may still lower the whole
   // literal, and the fence's message fires where that declines.
   let deferredConditionalSpread: ts.SpreadAssignment | null = null;
+  /** The first `this` a method body reads (see the method fence below). */
+  let deferredThis: ts.Node | null = null;
   for (const prop of expr.properties.nodes) {
     if (ts.isSpreadAssignment(prop)) {
       // Supported shapes: FULL spreads of known record shapes read as
@@ -1205,8 +1207,14 @@ export function lowerObjectLiteral(
     // is dynamically bound (typed as the literal by tsc, so noImplicitThis
     // lets it through) and records don't model it; the generic
     // lexical-this walk would incorrectly capture an ENCLOSING method's
-    // `this`, so any `this` in the body is rejected up front.
-    if (ts.isMethodDeclaration(prop)) lowerer.rejectThisInObjectMethod(prop.body ?? prop);
+    // `this`. The refusal is DEFERRED to the checked-dynamic route below: a
+    // literal a receiver-dependent member made a checked-identity view
+    // builds there with the call's receiver as `this` (JavaScript's own
+    // rule), and only a literal that still builds as a record refuses.
+    if (ts.isMethodDeclaration(prop)) {
+      const receiver = thisInObjectMethod(prop.body ?? prop);
+      if (receiver !== null) deferredThis ??= receiver;
+    }
   }
 
   let tsType = lowerer.checker.getContextualType(expr) ?? lowerer.typeOf(expr);
@@ -1452,6 +1460,13 @@ export function lowerObjectLiteral(
       jsOpenObjectType(expr, mapped, lowerer.shapes, lowerer.unions).kind === "dyn")
   ) {
     return lowerDynObjectLiteral(lowerer, expr);
+  }
+  // A record's function field has no receiver, so a method that reads its own
+  // `this` cannot build here: the literal would bind the receiver of an
+  // enclosing method, or none. The checked-dynamic route above is the one
+  // representation that gives it one (SPEC 3b).
+  if (deferredThis !== null) {
+    lowerer.unsupported("SC1090", deferredThis, "references to 'this' in object literal methods");
   }
   if (deferredConditionalSpread) {
     // The checked-dynamic build copies whichever arm the conditional picks,
@@ -4458,17 +4473,29 @@ export function lowerShorthandValue(
 /** Rejects the method's own receiver, including lexical captures in
  * arrows. Nested ordinary functions bind their own ambient receiver. */
 export function rejectThisInObjectMethod(lowerer: Lowerer, node: ts.Node): void {
+  const at = thisInObjectMethod(node);
+  if (at !== null) {
+    lowerer.unsupported("SC1090", at, "references to 'this' in object literal methods");
+  }
+}
+
+/** The first `this` a method body reads — its own receiver, including a
+ * lexical capture in an arrow, but not a nested ordinary function's, which
+ * binds its own ambient receiver. */
+export function thisInObjectMethod(node: ts.Node): ts.Node | null {
   if (
     ts.isFunctionExpression(node) ||
     ts.isFunctionDeclaration(node) ||
     ts.isMethodDeclaration(node) ||
     ts.isAccessor(node)
   )
-    return;
-  if (node.kind === ts.SyntaxKind.ThisKeyword) {
-    lowerer.unsupported("SC1090", node, "references to 'this' in object literal methods");
-  }
-  ts.forEachChild(node, (child) => lowerer.rejectThisInObjectMethod(child));
+    return null;
+  if (node.kind === ts.SyntaxKind.ThisKeyword) return node;
+  let found: ts.Node | null = null;
+  ts.forEachChild(node, (child) => {
+    if (found === null) found = thisInObjectMethod(child);
+  });
+  return found;
 }
 
 /** The accessor twin of rejectThisInObjectMethod: a get/set accessor body

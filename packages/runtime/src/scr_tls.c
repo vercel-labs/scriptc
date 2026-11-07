@@ -714,6 +714,11 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
     scr_tls_oom();
   }
   mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
+  /* Node refuses a server's finite-field Diffie-Hellman group under 2048
+   * bits (OpenSSL's default security level: "dh key too small"); the
+   * mbedTLS default accepts 1024. Every client configuration is built
+   * here, so this is the one place the floor is set. */
+  mbedtls_ssl_conf_dhm_min_bitlen(&c->conf, 2048);
   c->verify_recorded = reject_unauthorized || verify_optional;
   c->reject = reject_unauthorized;
   c->has_ca = ca != NULL;
@@ -2182,6 +2187,8 @@ ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                                   auto_end, NULL, cb, fn, 443, &scr_tls_cli_wrap,
                                                   cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (c == NULL) scr_tls_cli_free(cli);
   return c;
 }
 
@@ -2224,6 +2231,8 @@ ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port
                                                   auto_end, agent, cb, fn, 443, &scr_tls_cli_wrap,
                                                   cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (c == NULL) scr_tls_cli_free(cli);
   return c;
 }
 
@@ -2454,6 +2463,8 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
   ScrHttpClientReq *req = scr_http_req_opts_send(&o, auto_end, cb, fn, add_abort,
                                                  &scr_tls_cli_wrap, cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (req == NULL) scr_tls_cli_free(cli);
   if (ca) scr_bytes_release(ca);
   scr_http_req_opts_free(&o);
   return req;

@@ -1,10 +1,3 @@
-accessors.ts:10:13 - error SC1090: the static member 'version' of class 'Config' (static accessors and initializer-less static fields have no lowering, and Function members like .call/.bind/.prototype have no value form) is not supported yet
-
-   9 | }
-  10 | console.log(Config.version);
-     |             ^~~~~~~~~~~~~~
-  11 | 
-
 accessors.ts:14:3 - error SC1090: auto-accessor fields ('accessor x') are not supported yet
 
   13 | class Auto {

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8854-node-island-function-values/barrel.ts",
+  "<repo>/tests/corpus/8854-node-island-function-values/main.ts"
+ ],
+ "diags": []
+}

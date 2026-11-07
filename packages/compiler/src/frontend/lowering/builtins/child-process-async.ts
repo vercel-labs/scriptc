@@ -1,6 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { lowerChildArgsArg } from "./child-process.js";
+import { lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
 import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -187,13 +187,39 @@ export function lowerExecFileAsyncCall(
       }
     }
   }
-  return {
-    kind: "call",
-    callee: helper.name,
-    args: [cmd, argv, cwd, env, timeout],
-    type: { kind: "promise", inner: { kind: "record", shapeId: helper.shapeId } },
+  // Node's promisified function calls execFile before it returns its
+  // promise, so an argument execFile refuses throws from the call itself;
+  // the check therefore sits at the call, outside the async helper.
+  return withChildArgsCheck(
+    lowerer,
+    {
+      kind: "call",
+      callee: helper.name,
+      args: [cmd, argv, cwd, env, timeout],
+      type: { kind: "promise", inner: { kind: "record", shapeId: helper.shapeId } },
+      loc,
+    },
+    shell ? 1 : 0,
+    (a) => {
+      const envArg = a[3]!;
+      const pairs =
+        envArg.kind === "recordLit"
+          ? envArg.fields.find((field) => field.name === "pairs")?.value
+          : undefined;
+      return {
+        cwd: a[2],
+        envPairs: pairs ?? {
+          kind: "recordGet",
+          obj: envArg,
+          shapeId: helper.envShapeId,
+          field: "pairs",
+          type: arrayOf(STRING),
+          loc,
+        },
+      };
+    },
     loc,
-  };
+  );
 }
 
 /** The interned `%execFileAsync` helper behind promisified-execFile

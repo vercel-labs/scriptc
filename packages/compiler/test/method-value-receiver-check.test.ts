@@ -63,6 +63,8 @@ const FOLDED = [
   "m(): string { return typeof this.tag; }",
   "m(): boolean { return this.tag !== undefined; }",
   "m(): boolean { return #secret in this; }",
+  // An overloaded method: the implementation decides, not a signature.
+  'm(): string; m(prefix: string): string; m(prefix?: string): string { return (prefix ?? "") + typeof this; }',
   "m(missing: boolean = this === undefined): boolean { return missing; }",
   "m(): boolean { const absent = (): boolean => this === undefined; return absent(); }",
 ];

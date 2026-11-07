@@ -41,6 +41,18 @@ class Counter {
   visit(_item?: unknown): void {
     console.log("visit", this === undefined, typeof this, this instanceof Counter);
   }
+  // An overloaded method: its implementation is what reads the receiver.
+  label(): string;
+  label(prefix: string): string;
+  label(prefix?: string): string {
+    return (prefix ?? "") + typeof this;
+  }
+  owned(): string;
+  owned(prefix: string): string;
+  owned(prefix?: string): string {
+    if (this === undefined) throw new TypeError("no receiver");
+    return (prefix ?? "") + this.tag;
+  }
   // No use of `this` at all: callable without a receiver.
   twice(x: number): number {
     return x * 2;
@@ -95,6 +107,12 @@ const hasTag = c.hasTag;
 const checked = c.checked;
 console.log("unbound", thrown(tagKind), thrown(hasTag), thrown(guarded), thrown(checked));
 console.log("unbound", thrown(() => c.tagKind.call(undefined)), thrown(() => guarded.apply(null, [])));
+
+// Overloaded methods are checked like any other.
+const label = c.label;
+const owned = c.owned;
+console.log("overloaded", label.call(c, ">"), c.label.bind(other)(), owned.call(other, ">"));
+console.log("overloaded unbound", thrown(owned), thrown(() => owned.call(undefined, ">")));
 
 // Methods that never mention their own `this` run without a receiver.
 const twice = c.twice;

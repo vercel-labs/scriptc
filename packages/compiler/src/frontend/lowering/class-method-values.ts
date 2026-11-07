@@ -344,7 +344,8 @@ export function reflectedClassStaticMethodValue(
 }
 
 /** The declaration with a body behind `method` of `info`'s own class
- * declaration (an accessor's name is `get:x` or `set:x`). */
+ * declaration (an accessor's name is `get:x` or `set:x`). An overloaded
+ * method's signatures have none; its implementation is the one. */
 function classMethodMember(
   lowerer: Lowerer,
   info: ClassInfo,
@@ -355,6 +356,7 @@ function classMethodMember(
     if (
       (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) ||
       !member.name ||
+      !member.body ||
       !!ts
         .getModifiers(member)
         ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) !== staticMethod

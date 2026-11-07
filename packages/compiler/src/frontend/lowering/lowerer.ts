@@ -872,6 +872,42 @@ interface RefusedProbe {
   diagnostics: ScrDiagnostic[];
 }
 
+/** The declaration slots a lowering inside a probe met, keyed by node and
+ * then by checker type id: the same slot met again is one entry.
+ *
+ * A kept receiver's notes are handed to every form that asks for the value
+ * and forwarded into the enclosing receiver's notes, so the same slot is met
+ * many times along a chain of calls. Recording it once per node keeps a
+ * chain's notes in proportion to the slots it declares; recording every
+ * meeting made them multiply at each link (three ways for an array method),
+ * which took a chain of eighteen array methods past the heap limit. */
+type ProbedSlotNotes = Map<ts.Node, Map<number, ts.Type>>;
+
+/** Test hook: note-recording requests since the last call (see
+ * ProbedSlotNotes); a request for a slot the scope already holds is
+ * counted too, because it is the work a chain of calls must not repeat. */
+let probedSlotNoteRequests = 0;
+
+export function takeProbedSlotNoteRequests(): number {
+  const count = probedSlotNoteRequests;
+  probedSlotNoteRequests = 0;
+  return count;
+}
+
+/** Adds `from` to `into`, one entry per node and type id. Copies the type
+ * maps it adds rather than sharing them: a node reached in two subtrees
+ * keeps each subtree's types. */
+function mergeSlotNotes(into: ProbedSlotNotes, from: ProbedSlotNotes): void {
+  for (const [node, types] of from) {
+    const seen = into.get(node);
+    if (seen === undefined) {
+      into.set(node, new Map(types));
+      continue;
+    }
+    for (const [id, type] of types) if (!seen.has(id)) seen.set(id, type);
+  }
+}
+
 /** The receiver of the call being dispatched (Lowerer.dispatchedReceiver)
  * and, once a lowering produced one that may be handed out again, its
  * value with what that lowering ran under. */
@@ -887,7 +923,7 @@ interface DispatchedReceiver {
   overrides: IrExpr[] | null;
   /** The declaration slots the lowering would have reported as dynamic had
    * it not run inside a probe (noteDegradedSlot), or null for none. */
-  slotNotes: { node: ts.Node; type: ts.Type }[] | null;
+  slotNotes: ProbedSlotNotes | null;
 }
 
 export class PoisonError extends Error {
@@ -5767,8 +5803,15 @@ export class Lowerer {
     ) {
       const notes = receiver.slotNotes;
       if (notes !== null) {
-        if (this.diagSink === null) receiver.slotNotes = null;
-        for (const note of notes) this.noteDegradedSlot(note.node, note.type);
+        if (this.diagSink === null) {
+          receiver.slotNotes = null;
+          for (const [node, types] of notes)
+            for (const type of types.values()) this.noteDegradedSlot(node, type);
+        } else if (this.probedSlotNotes !== null) {
+          // Still inside a probe: the notes join that probe's notes, which
+          // defer them further up, without recording each one again.
+          mergeSlotNotes(this.probedSlotNotes, notes);
+        }
       }
       return receiver.value;
     }
@@ -5776,7 +5819,7 @@ export class Lowerer {
     const fencesBefore = this.runtimeFences.length;
     const sinkMark = this.diagSinkMark();
     const outerNotes = this.probedSlotNotes;
-    const notes: { node: ts.Node; type: ts.Type }[] = [];
+    const notes: ProbedSlotNotes = new Map();
     this.probedSlotNotes = notes;
     let value: IrExpr;
     try {
@@ -5784,7 +5827,7 @@ export class Lowerer {
     } finally {
       this.probedSlotNotes = outerNotes;
       // An enclosing receiver's lowering skipped them too.
-      if (outerNotes !== null) for (const note of notes) outerNotes.push(note);
+      if (outerNotes !== null) mergeSlotNotes(outerNotes, notes);
     }
     if (
       this.diags.length === diagsBefore &&
@@ -5798,7 +5841,7 @@ export class Lowerer {
       receiver.surroundings = surroundings;
       receiver.overrides =
         this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()];
-      receiver.slotNotes = notes.length > 0 ? notes : null;
+      receiver.slotNotes = notes.size > 0 ? notes : null;
     }
     return value;
   }
@@ -5806,7 +5849,7 @@ export class Lowerer {
   /** The degraded declaration slots a probe did not report while a
    * dispatched receiver is being lowered (null otherwise): its kept value
    * reports them when it is used outside a probe. */
-  private probedSlotNotes: { node: ts.Node; type: ts.Type }[] | null = null;
+  private probedSlotNotes: ProbedSlotNotes | null = null;
 
   /** Whether the expression overrides in force are exactly `overrides`. */
   private expressionOverridesAre(overrides: IrExpr[] | null): boolean {
@@ -12857,7 +12900,14 @@ export class Lowerer {
    * (outside probes; the lookup is skipped while nothing is degraded). */
   noteDegradedSlot(node: ts.Node, type: ts.Type): void {
     if (this.diagSink !== null) {
-      if (this.probedSlotNotes !== null) this.probedSlotNotes.push({ node, type });
+      const notes = this.probedSlotNotes;
+      if (notes !== null) {
+        probedSlotNoteRequests++;
+        let types = notes.get(node);
+        if (types === undefined) notes.set(node, (types = new Map()));
+        const id = (type as { id?: number }).id ?? -1;
+        if (!types.has(id)) types.set(id, type);
+      }
       return;
     }
     const degraded = this.degradedTypes.get((type as { id?: number }).id ?? -1);

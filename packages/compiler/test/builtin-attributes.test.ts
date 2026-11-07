@@ -4,7 +4,8 @@
  *  - every builtin says whether it can throw (MAY_THROW_LIB_FNS or
  *    NEVER_THROW_LIB_FNS); the builtins that predate the rule are listed in
  *    src/ir/builtin-throw-undecided.txt, a snapshot nothing is added to;
- *  - every row of the runtime symbol tables names a builtin;
+ *  - every row of the runtime symbol tables names a builtin, and a call
+ *    without a signature does not pass IR validation;
  *  - every other list of builtins in the compiler's source is typed by
  *    `IrLibFn`, so a name the table does not have fails the build, or is
  *    registered below with the reason it is not and has its names checked
@@ -31,6 +32,9 @@ import { LIB_FN_SYMS, MOCK_TIMER_SYMS, PURE_MATH_LIB_FNS } from "../src/backend/
 import { ALWAYS_THROW_LIB_FNS, MAY_THROW_LIB_FNS } from "../src/ir/builtin-effects.js";
 import { NEVER_THROW_LIB_FNS } from "../src/ir/builtin-never-throw.js";
 import { libFnSignatures } from "../src/ir/builtin-signatures.js";
+import { VOID, type IrExpr, type IrModule } from "../src/ir/ir.js";
+import { assignLegacyTiers } from "../src/ir/tiers.js";
+import { validateModule } from "../src/ir/validate.js";
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const sourceRoot = join(repoRoot, "packages/compiler/src");
@@ -111,6 +115,32 @@ test("every runtime symbol row names a builtin", () => {
     unknown,
     "a row of LIB_FN_SYMS or MOCK_TIMER_SYMS whose name has no signature in ir/builtin-signatures.ts: nothing can emit it",
   ).toEqual([]);
+});
+
+test("a libCall whose name has no signature does not pass IR validation", () => {
+  // What makes a list's row without a signature dead: no call reaches it.
+  const loc = { file: "unknown-builtin.ts", start: 0, end: 0 };
+  const call = { kind: "libCall", fn: "child.propsInstall", args: [], type: VOID, loc };
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    unions: [],
+    functions: [
+      {
+        name: "main",
+        params: [],
+        locals: [],
+        returnType: VOID,
+        body: [{ kind: "exprStmt", expr: call as unknown as IrExpr, loc }],
+        loc,
+      },
+    ],
+  };
+  assignLegacyTiers(mod.functions);
+  expect(validateModule(mod).map((error) => error.message)).toEqual([
+    'in main: libCall of unknown library function "child.propsInstall"',
+  ]);
 });
 
 /* ---- lists of builtins written in the source ---- */

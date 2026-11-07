@@ -42,16 +42,19 @@ static void scr_child_shell_args_warn(void) {
 }
 
 /* cp.shellLine(file, args): the command line a shell-enabled call runs.
- * An empty list is the file itself, with no warning. Borrows both; +1. */
+ * An empty list is the file itself, with no warning. A list is empty by its
+ * length, and Array.prototype.join reads a hole as the empty string, so a
+ * sparse list still warns and each hole leaves its separator in the line
+ * (`["a", , "b"]` runs `file a  b`). Borrows both; +1. */
 ScrStr *scr_child_shell_line(ScrStr *file, ScrArr *args) {
   size_t n = (size_t)scr_arr_len(args);
   if (n == 0) return scr_str_retain(file);
   scr_child_shell_args_warn();
   size_t len = file->len;
   for (size_t i = 0; i < n; i++) {
-    ScrStr *arg = (ScrStr *)scr_arr_get_ref(args, (double)i);
-    len += 1 + arg->len;
-    scr_str_release(arg); /* borrow: the array's reference keeps it alive */
+    /* Borrowed, NULL for a hole: the array's reference keeps it alive. */
+    const ScrStr *arg = scr_arr_peek_ref(args, (double)i);
+    len += 1 + (arg != NULL ? arg->len : 0);
   }
   char *line = malloc(len > 0 ? len : 1);
   if (!line) {
@@ -61,11 +64,11 @@ ScrStr *scr_child_shell_line(ScrStr *file, ScrArr *args) {
   size_t at = file->len;
   memcpy(line, file->data, file->len);
   for (size_t i = 0; i < n; i++) {
-    ScrStr *arg = (ScrStr *)scr_arr_get_ref(args, (double)i);
+    const ScrStr *arg = scr_arr_peek_ref(args, (double)i);
     line[at++] = ' ';
+    if (arg == NULL) continue;
     memcpy(line + at, arg->data, arg->len);
     at += arg->len;
-    scr_str_release(arg);
   }
   ScrStr *joined = scr_str_new(line, len);
   free(line);

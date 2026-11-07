@@ -311,6 +311,13 @@ void scr_child_ref(ScrChild *c);
 /* Installs ChildProcess's checked-dynamic handle identity bridge. Emitted
  * programs call this only when the child_process surface is present. */
 void scr_child_dyn_install(void);
+/* Installs the builder of a failed spawn's 'error' object (errno, code,
+ * syscall, path, spawnargs; one object for every listener). Called once at
+ * start by a program that can register an 'error' listener on a child. */
+void scr_child_error_event_install(void);
+/* The installed builder (+1 error), NULL in a program that cannot register
+ * an 'error' listener on a child. Read by the settle path. */
+extern ScrError *(*scr_child_spawn_error_hook)(ScrChild *c);
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener); /* borrowed */
 /* Own properties JavaScript adds to a child (scr_dyn_handle_props.c,
  * linked only by programs that add them). scr_dyn_handle_props_install is

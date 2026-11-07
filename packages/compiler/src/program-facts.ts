@@ -291,7 +291,7 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     source: "types",
     scope: "type",
     setBy:
-      "a value that is not a compiled async generator flowing into an AsyncIterable, AsyncIterableIterator or AsyncIterator slot",
+      "a value that is not a compiled async generator flowing into an AsyncIterable, AsyncIterableIterator or AsyncIterator slot, or a Node island's declarations naming one of the three",
     gates:
       "every slot of the three interfaces over that element type holds the checked-dynamic value",
     narrower: "the slot, once type mapping knows the declaration it serves",

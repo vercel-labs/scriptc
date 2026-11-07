@@ -19,6 +19,15 @@
  * marks that one too. A flow the scan does not see leaves its target a
  * generator slot, where the value is refused by name when it is lowered.
  *
+ * A Node island's values do not arrive through a flow site: `for await
+ * (const item of reply.stream)` reads a member the island declares as
+ * `AsyncIterable<Item>` and iterates it where it stands. What an island
+ * makes is typed by the island's declarations, so every protocol type those
+ * declarations name is marked: the island can hand the program a value of
+ * it, and take one, through any member, call or callback. A declaration
+ * over a type parameter (`pages<T>(): AsyncIterable<T>`) stands for every
+ * element type its callers bind.
+ *
  * The scan runs when the mapper first meets one of the three interfaces, so
  * a program that names none of them never pays for it. */
 import * as ts from "../ts7/adapter.js";
@@ -71,11 +80,16 @@ export class AsyncProtocolHolders {
    * line. */
   sites = 0;
   elapsedMs = 0;
+  /** The protocol types the round's island declarations name. */
+  islandDeclared = 0;
 
   constructor(
     private readonly checker: ts.TypeChecker,
     private readonly sources: readonly ts.SourceFile[],
     private readonly isStdlibFile: (sf: ts.SourceFile) => boolean,
+    /** The files of the round's Node islands that name a protocol interface
+     * (LoweringFacts.islandProtocolFiles): asked once, by the scan. */
+    private readonly islandFiles: () => readonly ts.SourceFile[] = () => [],
   ) {}
 
   /** Whether the protocol types over `element` hold the checked-dynamic
@@ -108,6 +122,7 @@ export class AsyncProtocolHolders {
   }
 
   private scan(marked: Set<ts.Type>): void {
+    for (const file of this.islandFiles()) this.markIslandDeclared(file);
     const sites = this.collect();
     this.sites = sites.length;
     if (sites.length === 0) return;
@@ -157,6 +172,29 @@ export class AsyncProtocolHolders {
         changed = true;
       }
     }
+  }
+
+  /** Marks the element type of every protocol type an island's file names
+   * in a type position: a member, a parameter or a result the island
+   * declares with it holds what the island makes, never a compiled
+   * generator the program did not pass in. */
+  private markIslandDeclared(file: ts.SourceFile): void {
+    ts.walkPreorder(file, (node) => {
+      if (
+        !ts.isTypeReferenceNode(node) ||
+        !ts.isIdentifier(node.typeName) ||
+        !PROTOCOL_NAMES.has(node.typeName.text)
+      )
+        return;
+      const type = attempt(() => this.checker.getTypeFromTypeNode(node));
+      if (type === undefined) return;
+      const elements: ts.Type[] = [];
+      this.protocolElements(type, 0, elements);
+      for (const element of elements) {
+        this.islandDeclared++;
+        this.mark(element);
+      }
+    });
   }
 
   private mark(element: ts.Type): void {

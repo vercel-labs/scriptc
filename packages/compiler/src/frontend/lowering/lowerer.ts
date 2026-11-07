@@ -1678,6 +1678,7 @@ function lowerToIrWithIslands(
         scan_ms: asyncProtocols.elapsedMs,
         sites: asyncProtocols.sites,
         marked: asyncProtocols.markedCount,
+        island_declared: asyncProtocols.islandDeclared,
       })}\n`,
     );
   // A generic class-rest support decision can depend on record metadata
@@ -6205,12 +6206,13 @@ export class Lowerer {
    * checker and the program's modules. With SCRIPTC_LOWERING_FACTS_VERIFY this Lowerer
    * runs its own and every answer is compared. */
   private asyncProtocolHoldsImplementor(element: ts.Type | undefined): boolean {
-    const answer = this.facts.asyncProtocolHolders(this.entry).holds(element);
+    const answer = this.facts.asyncProtocolHolders(this.entry, this.nodeIslands).holds(element);
     if (!this.facts.verify) return answer;
     this.ownAsyncProtocolHolders ??= new AsyncProtocolHolders(
       this.checker,
       this.moduleOrder.includes(this.entry) ? this.moduleOrder : [...this.moduleOrder, this.entry],
       (sf) => this.isStdlibFile(sf),
+      () => this.facts.islandProtocolFiles(this.nodeIslands),
     );
     const fresh = this.ownAsyncProtocolHolders.holds(element);
     this.facts.noteVerified("asyncProtocolHolders");

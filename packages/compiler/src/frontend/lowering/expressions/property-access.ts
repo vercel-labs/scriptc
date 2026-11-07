@@ -5345,6 +5345,34 @@ export function fieldTarget(
       lowerer.lowerExpr(access.expression),
     );
   }
+  // `(p as any).k = v` on a record: `any` has no static layout, and Node
+  // erases the assertion, so the write reaches the object `p` names. A
+  // member the record's own layout declares is that slot (the value
+  // converts into the slot's type like any other write); a member it does
+  // not declare has no slot, and the statement refuses it by name
+  // (anyAssertedUndeclaredWrite).
+  if (!receiverIr && !readOnlyAccess(access)) {
+    const erased = anyAssertedRecordOperand(lowerer, access.expression);
+    const field = erased
+      ? lowerer.shapes.get(erased.layout.shapeId)?.fields.find((f) => f.name === access.name.text)
+      : undefined;
+    if (erased && field) {
+      const obj = lowerErasedRecordOperand(
+        lowerer,
+        erased,
+        nullishMutationMessage(access, access.name.text),
+      );
+      if (obj?.type.kind === "record" && obj.type.shapeId === erased.layout.shapeId) {
+        return {
+          container: "record",
+          obj,
+          shapeId: obj.type.shapeId,
+          field: access.name.text,
+          fieldType: field.type,
+        };
+      }
+    }
+  }
   // A member the checker ADMITS on a receiver that has no static layout: a
   // write through an assertion on a checked-dynamic value (a caught binding
   // — `(error as { headers?: Headers }).headers = undefined`). Node erases
@@ -6586,4 +6614,33 @@ function primitivePrototypeKind(
   if (lowerer.stdlibGlobalMember(expr, "Number") === "prototype") return "Number";
   if (lowerer.stdlibGlobalMember(expr, "Boolean") === "prototype") return "Boolean";
   return null;
+}
+
+/** The record a member write through an assertion to `any` addresses:
+ * `(p as any).k = v` names `p`. Null when the receiver is not asserted to
+ * `any`, or the operand is not a record (a class instance, an array and a
+ * function keep their own dynamic member writes). */
+function anyAssertedRecordOperand(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+): ReturnType<typeof erasedRecordOperand> {
+  if ((lowerer.typeOf(receiver).flags & ts.TypeFlags.Any) === 0) return null;
+  const erased = erasedRecordOperand(lowerer, receiver);
+  if (erased === null) return null;
+  const shape = lowerer.shapes.get(erased.layout.shapeId);
+  return shape && !shape.tuple ? erased : null;
+}
+
+/** The reason `(p as any).k = v` is refused when the record `p` names does
+ * not declare `k`: Node adds the property to the object, and a native
+ * record has no slot for it. Null for every other write. */
+export function anyAssertedUndeclaredWrite(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): string | null {
+  const erased = anyAssertedRecordOperand(lowerer, access.expression);
+  if (erased === null) return null;
+  const shape = lowerer.shapes.get(erased.layout.shapeId);
+  if (!shape || shape.fields.some((f) => f.name === access.name.text)) return null;
+  return `writing '${access.name.text}' through an assertion to 'any' on a '${lowerer.fmt(erased.layout)}' value, whose layout does not declare it (Node adds the property to the object; a native record has no slot for an undeclared member — declare '${access.name.text}' on the value's type)`;
 }

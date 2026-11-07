@@ -28,6 +28,7 @@ import {
   lowerIndexedUnionRead,
 } from "./indexed-unions.js";
 import {
+  anyAssertedUndeclaredWrite,
   declaredMemberOf,
   fenceDatePrototypeWrite,
   isDataViewPrototypeRead,
@@ -10305,6 +10306,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             loc,
           };
         }
+      }
+      if (ts.isPropertyAccessExpression(expr.left) && !expr.left.questionDotToken) {
+        const undeclared = anyAssertedUndeclaredWrite(lowerer, expr.left);
+        if (undeclared !== null) lowerer.unsupported("SC1090", expr.left, undeclared);
       }
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");

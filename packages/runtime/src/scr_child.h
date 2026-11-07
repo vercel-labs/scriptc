@@ -103,6 +103,11 @@ ScrStr *scr_spawn_res_signal(ScrSpawnRes *r); /* +1; has_signal only */
  * stamped) when the spawn itself failed, NULL otherwise (the undefined
  * arm — the emitter wraps type-directedly, the envGet convention). */
 ScrError *scr_spawn_res_error(ScrSpawnRes *r);
+/* The result in the checked-dynamic tree: a HANDLE boxed by REFERENCE
+ * (identity, no copy), installing the tag's ops on first use. The typed
+ * slot reads it back through the tag check — a plain object that merely
+ * looks like a spawn result is not one and throws. Borrows (+1 out). */
+ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r);
 
 /* argv construction shared by spawnSync and spawn: a NULL-terminated
  * vector borrowing the strings (alive while cmd/args are); free() the

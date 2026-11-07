@@ -22,6 +22,23 @@ async function emit(source: string): Promise<string> {
   }
 }
 
+/** The serialized IR of one program, for the questions a lowering answers
+ * by the order of the statements it builds. */
+async function irText(source: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-in-runtime-key-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(entry, source);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    return await readFile(outPath, "utf8");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 function body(llvm: string, name: RegExp): string {
   const match = llvm.match(
     new RegExp(
@@ -59,4 +76,26 @@ console.log(has(d, "a"), has(d, "b"));
   expect(helper).toContain("@scr_map_has_str(");
   // Not a scan over a fresh key snapshot per probe.
   expect(helper).not.toContain("@scr_map_keys_js_order(");
+});
+
+test("a runtime key over a builtin namespace is read before an effectful receiver", async () => {
+  // Node evaluates the key first, then the receiver. The census answer
+  // does not read the receiver, so the key is held in a local that the
+  // receiver's evaluation cannot change.
+  const ir = await irText(`
+let name = "deflateSync";
+console.log(name in (await import("node:zlib")));
+`);
+  const key = ir.indexOf('"%inKey');
+  expect(key).toBeGreaterThan(-1);
+  expect(key).toBeLessThan(ir.indexOf('"kind":"awaitExpr"'));
+});
+
+test("a side-effect-free namespace receiver keeps the key inside the census test", async () => {
+  const ir = await irText(`
+import * as zlib from "node:zlib";
+let name = "deflateSync";
+console.log(name in zlib);
+`);
+  expect(ir).not.toContain('"%inKey');
 });

@@ -3387,12 +3387,17 @@ function validateFunction(
         break;
       }
       case "fieldAbsent": {
-        const def = unions.get(e.unionId);
-        if (!def) err(`fieldAbsent of undeclared union "${e.unionId}"`, e.loc);
-        else if (!def.arms.some((arm) => arm.kind === "undefinedT"))
-          err(`fieldAbsent of ${e.unionId}: the union has no undefined arm`, e.loc);
-        if (e.type.kind !== "union" || e.type.unionId !== e.unionId)
-          err("fieldAbsent must have its union type", e.loc);
+        if (e.unionId === undefined) {
+          // The optional checked-dynamic slot's ABSENT marker.
+          if (e.type.kind !== "dyn") err("fieldAbsent without a union must be dyn", e.loc);
+        } else {
+          const def = unions.get(e.unionId);
+          if (!def) err(`fieldAbsent of undeclared union "${e.unionId}"`, e.loc);
+          else if (!def.arms.some((arm) => arm.kind === "undefinedT"))
+            err(`fieldAbsent of ${e.unionId}: the union has no undefined arm`, e.loc);
+          if (e.type.kind !== "union" || e.type.unionId !== e.unionId)
+            err("fieldAbsent must have its union type", e.loc);
+        }
         if (!fieldSlotValues.has(e)) err("fieldAbsent outside a record field write", e.loc);
         break;
       }
@@ -4723,7 +4728,8 @@ function validateFunction(
       e.fn === "https.requestAgentCb" ||
       e.fn === "https.requestUrlCb" ||
       e.fn === "http.requestDynCb" ||
-      e.fn === "https.requestDynCb"
+      e.fn === "https.requestDynCb" ||
+      e.fn === "https.requestFnDynCb"
     ) {
       // The response listener: void, no params or exactly (res: httpReq).
       const cbT =
@@ -4736,11 +4742,13 @@ function validateFunction(
                 ? 3
                 : e.fn === "http.requestDynCb" || e.fn === "https.requestDynCb"
                   ? 2
-                  : e.fn === "http.requestAgentCb"
-                    ? 8
-                    : e.fn === "https.requestAgentCb"
-                      ? 10
-                      : 1
+                  : e.fn === "https.requestFnDynCb"
+                    ? 3
+                    : e.fn === "http.requestAgentCb"
+                      ? 8
+                      : e.fn === "https.requestAgentCb"
+                        ? 10
+                        : 1
         ]?.type;
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {

@@ -291,7 +291,7 @@ static inline void scr_map_kill_at(ScrMap *m, size_t e) {
 
 /* A compact value's 4-byte form and back (scr_cref_encode in scr_array.h). */
 static inline uint32_t scr_map_cref_encode(uint64_t val) { return (uint32_t)(val >> 3); }
-static inline uint64_t scr_map_cref_decode(uint32_t val) { return (uint64_t)val << 3; }
+static inline uint64_t scr_map_cref_decode(uint32_t val) { return scr_compact_ref_address(val); }
 
 /* The value of entry e as an 8-byte slot, and its store. */
 static inline uint64_t scr_map_val_at(const ScrMap *m, size_t e) {

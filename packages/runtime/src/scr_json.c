@@ -108,8 +108,8 @@ static SCR_TL ScrDyn *scr_iterator_symbol;
 static SCR_TL ScrDyn *scr_async_iterator_symbol;
 static SCR_TL ScrDyn *scr_to_primitive_symbol;
 static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint, bool *handled);
-/* ToNumber's Symbol.toPrimitive step, set by
- * scr_dyn_to_primitive_number_install: programs that never read
+/* ToPrimitive's Symbol.toPrimitive step for the number and default hints,
+ * set by scr_dyn_to_primitive_number_install: programs that never read
  * Symbol.toPrimitive do not link the step or the ToString its TypeError
  * messages use. External, so the optimizer does not turn the call through
  * it into a direct call. */
@@ -2228,7 +2228,8 @@ static bool dyn_bytes_element_set(ScrDyn *target, double index, const ScrDyn *va
 
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
  * checked-dynamic tier): JS's spread over the checked-dynamic tree's iterable kinds —
- * arrays element-by-element (retained), strings by code POINT (the string
+ * arrays element-by-element (retained; a hole reads through the prototype
+ * chain, as the array iterator does), strings by code POINT (the string
  * iterator; astral chars arrive unsplit), bytes by byte; every other kind
  * throws V8's exact SPREAD-CALL TypeError (catchable, pending — callers
  * check): nullish sources spell the spread expression (`what`) — "v is
@@ -2250,8 +2251,19 @@ void scr_dyn_arr_push_spread(ScrDyn *arr, const ScrDyn *src, const char *what) {
     return;
   }
   if (src->kind == SCR_DYN_ARR) {
+    if (!src->v.arr.presence) {
+      for (size_t i = 0; i < src->v.arr.len; i++) {
+        scr_dyn_arr_push(arr, scr_dyn_retain(src->v.arr.items[i]));
+      }
+      return;
+    }
+    /* A hole has no element of its own: JS reads it through the prototype
+     * chain, where an inherited indexed getter the program installed runs,
+     * exactly as the array iterator does (scr_dyn_arr_at). */
     for (size_t i = 0; i < src->v.arr.len; i++) {
-      scr_dyn_arr_push(arr, scr_dyn_retain(src->v.arr.items[i]));
+      ScrDyn *value = scr_dyn_arr_at(src, (double)i);
+      if (!value) return; /* an inherited getter threw: the exception is pending */
+      scr_dyn_arr_push(arr, value);
     }
     return;
   }
@@ -3044,6 +3056,9 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   }
   if (object->kind == SCR_DYN_ARR && object != scr_builtin_array_prototype) {
     if (object->prototype) return scr_dyn_retain(object->prototype);
+    /* An array reaches Array.prototype until something replaces its
+     * [[Prototype]]; a null one reports null, as the object arm does. */
+    if (object->null_proto) return scr_dyn_new_null();
     return scr_dyn_array_prototype_base();
   }
   if (object->kind == SCR_DYN_OBJ) {
@@ -13300,6 +13315,33 @@ double scr_dyn_number_coerce(const ScrDyn *d) {
 }
 
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d);
+static ScrDyn *scr_dyn_obj_ordinary_primitive(const ScrDyn *d);
+
+/* OrdinaryToPrimitive with the number hint, after the object's
+ * Symbol.toPrimitive member was read and did not answer: the protocol runs
+ * with the same hint, and the member is not read a second time. */
+static ScrDyn *scr_dyn_number_primitive_ordinary(const ScrDyn *d) {
+  if (d->kind == SCR_DYN_PROXY) {
+    scr_dyn_proxy_unsupported("Symbol.toPrimitive lookup");
+    return NULL;
+  }
+  if (d->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+    ScrDyn *out = scr_exc_pending() ? NULL : scr_dyn_number_primitive_ordinary(view);
+    scr_dyn_release(view);
+    return out;
+  }
+  if (d->kind == SCR_DYN_OBJ) return scr_dyn_obj_ordinary_primitive(d);
+  if (!scr_dyn_to_primitive_result_is_object(d)) return scr_dyn_retain((ScrDyn *)d);
+  bool hooked;
+  ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_NUMBER, &hooked);
+  if (hooked) return primitive;
+  ScrStr *str = scr_dyn_string_coerce(d);
+  if (!str) return NULL;
+  ScrDyn *out = scr_dyn_new_str(str);
+  scr_str_release(str);
+  return out;
+}
 
 /* ToPrimitive with the number hint, which differs from the default hint
  * only for a Date: its time value, or the valueOf of an instance of a class
@@ -13316,7 +13358,15 @@ static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
     scr_dyn_release(value);
     return out;
   }
-  return scr_dyn_add_primitive(d);
+  /* An object's Symbol.toPrimitive member runs before OrdinaryToPrimitive,
+   * with the number hint. The step is installed only for a program that
+   * reads the symbol; without it the ordinary conversion below is the whole
+   * of ToPrimitive's object case. */
+  if (scr_to_primitive_number_fn) {
+    ScrDyn *exotic = scr_to_primitive_number_fn(d, "number", &hooked);
+    if (hooked) return exotic;
+  }
+  return scr_dyn_number_primitive_ordinary(d);
 }
 
 double scr_dyn_number_constructor(const ScrDyn *d) {
@@ -13368,9 +13418,50 @@ ScrBigInt *scr_dyn_bigint_coerce(const ScrDyn *d) {
   return scr_dyn_bigint_convert(d, false);
 }
 
-/* OrdinaryToPrimitive's default hint is numeric for the represented
- * ordinary objects. Retain the primitive itself: addition must choose
- * string concatenation before either side is converted to a number. */
+/* OrdinaryToPrimitive over an ordinary object's valueOf/toString members,
+ * as both the number and the default hint order them: the object's
+ * Symbol.toPrimitive member has already been read and did not answer. +1 /
+ * NULL pending. */
+static ScrDyn *scr_dyn_obj_ordinary_primitive(const ScrDyn *d) {
+  static const char *const methods[] = { "valueOf", "toString" };
+  for (size_t i = 0; i < 2; i++) {
+    const ScrDyn *owner = scr_dyn_property_owner(d, methods[i], strlen(methods[i]));
+    ScrDyn *method = owner ? scr_dyn_obj_read(d, methods[i], strlen(methods[i])) : NULL;
+    if (!method) {
+      if (i == 1 && scr_dyn_error_encoding(d)) {
+        ScrStr *str = scr_dyn_error_string(d);
+        if (!str) return NULL;
+        ScrDyn *out = scr_dyn_new_str(str);
+        scr_str_release(str);
+        return out;
+      }
+      if (i == 1 && scr_dyn_has_object_prototype(d)) {
+        ScrStr *str = scr_str_new("[object Object]", 15);
+        ScrDyn *out = scr_dyn_new_str(str);
+        scr_str_release(str);
+        return out;
+      }
+      continue;
+    }
+    if (method->kind != SCR_DYN_FUNC) { scr_dyn_release(method); continue; }
+    scr_dyn_this_push_dyn(d);
+    ScrDyn *out = scr_dyn_call(method, NULL, 0, methods[i]);
+    scr_dyn_this_pop();
+    scr_dyn_release(method);
+    if (!out) return NULL;
+    if (!scr_dyn_to_primitive_result_is_object(out)) return out;
+    scr_dyn_release(out);
+  }
+  static const char msg[] = "Cannot convert object to primitive value";
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+  return NULL;
+}
+
+/* ToPrimitive with the default hint, as `+` and the abstract equality
+ * comparison apply it: an object's Symbol.toPrimitive member first, then
+ * OrdinaryToPrimitive's valueOf/toString order. Retain the primitive
+ * itself: addition must choose string concatenation before either side is
+ * converted to a number. */
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toPrimitive lookup");
@@ -13393,38 +13484,14 @@ static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
   }
 
   if (d->kind == SCR_DYN_OBJ) {
-    static const char *const methods[] = { "valueOf", "toString" };
-    for (size_t i = 0; i < 2; i++) {
-      const ScrDyn *owner = scr_dyn_property_owner(d, methods[i], strlen(methods[i]));
-      ScrDyn *method = owner ? scr_dyn_obj_read(d, methods[i], strlen(methods[i])) : NULL;
-      if (!method) {
-        if (i == 1 && scr_dyn_error_encoding(d)) {
-          ScrStr *str = scr_dyn_error_string(d);
-          if (!str) return NULL;
-          ScrDyn *out = scr_dyn_new_str(str);
-          scr_str_release(str);
-          return out;
-        }
-        if (i == 1 && scr_dyn_has_object_prototype(d)) {
-          ScrStr *str = scr_str_new("[object Object]", 15);
-          ScrDyn *out = scr_dyn_new_str(str);
-          scr_str_release(str);
-          return out;
-        }
-        continue;
-      }
-      if (method->kind != SCR_DYN_FUNC) { scr_dyn_release(method); continue; }
-      scr_dyn_this_push_dyn(d);
-      ScrDyn *out = scr_dyn_call(method, NULL, 0, methods[i]);
-      scr_dyn_this_pop();
-      scr_dyn_release(method);
-      if (!out) return NULL;
-      if (!scr_dyn_to_primitive_result_is_object(out)) return out;
-      scr_dyn_release(out);
+    /* The hook runs before OrdinaryToPrimitive for every ordinary object,
+     * errors included, and only for a program that reads the symbol. */
+    if (scr_to_primitive_number_fn) {
+      bool handled;
+      ScrDyn *exotic = scr_to_primitive_number_fn(d, "default", &handled);
+      if (handled) return exotic;
     }
-    static const char msg[] = "Cannot convert object to primitive value";
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-    return NULL;
+    return scr_dyn_obj_ordinary_primitive(d);
   }
   if (!scr_dyn_to_primitive_result_is_object(d)) return scr_dyn_retain((ScrDyn *)d);
   bool hooked;
@@ -13877,6 +13944,29 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
   if (!deleting) scr_dyn_note_assign_failure();
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* Object.prototype's `__proto__` is an accessor whose getter answers the
+ * receiver's [[Prototype]] and whose setter replaces it (a primitive other
+ * than null is ignored). The object model build answers it here instead of
+ * as an entry in the builtin's table, so a program that names the member
+ * reads and writes it through the object model build. The read and write
+ * paths ask after their own walk found no `__proto__` entry, which is
+ * exactly "no own or inherited definition shadows the accessor". */
+static bool scr_dyn_proto_accessor(const ScrDyn *receiver, const char *key, size_t key_len) {
+  if (key_len != 9 || memcmp(key, "__proto__", 9) != 0 || receiver == NULL) return false;
+  if (receiver->kind != SCR_DYN_OBJ && receiver->kind != SCR_DYN_ARR &&
+      receiver->kind != SCR_DYN_FUNC) return false;
+  /* Object.create(null) and a chain that ends elsewhere have no accessor. */
+  return scr_dyn_has_object_prototype(receiver);
+}
+
+static void scr_dyn_proto_accessor_set(ScrDyn *receiver, ScrDyn *value) {
+  /* A non-object, non-null prototype completes without a property. */
+  if (value->kind != SCR_DYN_NULL && !scr_dyn_to_primitive_result_is_object(value)) return;
+  scr_dyn_release(scr_dyn_set_prototype(receiver, value));
+}
+#endif
+
 /* One lookup of the own property decides the assignment: an own property
  * is written (or runs its setter, or refuses the write); an absent one
  * consults the prototype chain and is then added. */
@@ -13919,6 +14009,10 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
     scr_error_sync_cause(recv, key);
     return;
   }
+  /* Whether the chain itself defines the key: an inherited definition takes
+   * the ordinary assignment, so it also keeps Object.prototype's accessor
+   * out of the write below. */
+  bool inherited_definition = false;
   {
     for (const ScrDyn *current = scr_dyn_proto_next(recv); current;) {
       ScrDyn *table = current->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(current) : NULL;
@@ -13927,6 +14021,7 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
       if (object->v.obj.layout) {
         /* A layout-mode prototype's properties are writable data. */
         bool found = scr_layout_find(object->v.obj.layout, key->data, key->len) != UINT32_MAX;
+        inherited_definition = found;
         current = found ? NULL : scr_dyn_proto_next(object);
         scr_dyn_release(table);
         continue;
@@ -13954,9 +14049,19 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
         return;
       }
       scr_dyn_release(table);
+      inherited_definition = true;
       break;
     }
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  /* No own `__proto__` and none on the chain: the assignment is
+   * Object.prototype's setter. It adds no property, so a non-extensible
+   * receiver is no reason to refuse it. */
+  if (!inherited_definition && scr_dyn_proto_accessor(receiver, key->data, key->len)) {
+    scr_dyn_proto_accessor_set((ScrDyn *)receiver, value);
+    return;
+  }
+#endif
   if (recv->non_extensible) {
     ScrJsonBuf buffer;
     scr_jb_init(&buffer);
@@ -14147,6 +14252,45 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       recv->v.arr.properties = scr_dyn_new_obj();
     }
     recv->v.arr.properties->non_extensible = recv->non_extensible;
+#ifdef SCR_JS_OBJECT_MODEL
+    /* The named property lives in the array's table, but an assignment's
+     * receiver is the array: Object.prototype's `__proto__` setter replaces
+     * the array's [[Prototype]] and adds no member. The named read passes
+     * the array the same way (scr_dyn_arr_named_get). */
+    if (key->len == 9 && memcmp(key->data, "__proto__", 9) == 0 &&
+        !scr_dyn_has_own(recv->v.arr.properties, key)) {
+      if (scr_dyn_property_owner(recv, key->data, key->len)) {
+        /* A definition of the key on the chain shadows the accessor, as it
+         * does for an object, and the assignment adds the array's own member.
+         * The nested write below cannot: it reaches the properties table's
+         * own prototype, whose accessor answers for a different receiver. */
+        if (!recv->non_extensible) {
+          scr_dyn_obj_set(recv->v.arr.properties, key->data, key->len, scr_dyn_retain(value));
+          return;
+        }
+      } else if (scr_dyn_proto_accessor(recv, key->data, key->len)) {
+        scr_dyn_proto_accessor_set(recv, value);
+        return;
+      } else {
+        /* The array's chain answers no `__proto__` at all (a null
+         * prototype): the assignment adds the own data property. The write
+         * below cannot: the properties table keeps Object.prototype as its
+         * own prototype, whose accessor would swallow the member. */
+        if (recv->non_extensible) {
+          ScrJsonBuf buffer;
+          scr_jb_init(&buffer);
+          scr_jb_puts(&buffer, "Cannot add property ");
+          scr_jb_write(&buffer, key->data, key->len);
+          scr_jb_puts(&buffer, ", object is not extensible");
+          scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+          scr_dyn_note_assign_failure();
+          return;
+        }
+        scr_dyn_obj_set(recv->v.arr.properties, key->data, key->len, scr_dyn_retain(value));
+        return;
+      }
+    }
+#endif
     scr_dyn_key_set(recv->v.arr.properties, key, value);
     return;
   }
@@ -14240,6 +14384,38 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   }
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
 }
+
+#ifdef SCR_JS_OBJECT_MODEL
+/* A property definition (an object literal's member, dynObjLit) creates or
+ * updates the own data property: unlike an assignment it never runs an
+ * inherited accessor, so a literal `__proto__` member is an ordinary own
+ * member and not Object.prototype's prototype setter. The compiler emits
+ * this entry for a literal `__proto__` key, which is also what selects the
+ * object model build (runtime-features.ts), and for the computed members'
+ * coerced keys (scr_dyn_key_define_computed, same build). */
+void scr_dyn_key_define(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
+  if (recv->kind == SCR_DYN_OBJ && key->len == 9 && memcmp(key->data, "__proto__", 9) == 0) {
+    scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
+    return;
+  }
+  scr_dyn_key_set(recv, key, value);
+}
+
+/* The same definition for a member whose key is known only at run time
+ * (`{ [k]: v }`, dynObjLit's computed member): ToPropertyKey, then the
+ * definition above, so a key that evaluates to `__proto__` creates an own
+ * data property instead of replacing the literal's [[Prototype]]. */
+void scr_dyn_key_define_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value) {
+  if (key->kind == SCR_DYN_SYMBOL) {
+    scr_dyn_symbol_key_set(recv, key, value);
+    return;
+  }
+  ScrStr *name = scr_dyn_string_coerce_js(key);
+  if (!name) return;
+  scr_dyn_key_define(recv, name, value);
+  scr_str_release(name);
+}
+#endif
 
 /* Sloppy-mode assignments (the compiler's IrModule.sloppyDynWrites). */
 void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
@@ -17830,6 +18006,12 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       return scr_dyn_error_constructor(names[kind]);
     }
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Nothing on the chain defines `__proto__`: Object.prototype's getter
+   * answers the receiver's [[Prototype]]. */
+  if (scr_dyn_proto_accessor(receiver, key, key_len))
+    return scr_dyn_get_prototype((ScrDyn *)receiver);
+#endif
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
@@ -17905,6 +18087,11 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
     return value;
   }
   return scr_dyn_obj_read_receiver(d, key, key_len, d);
+}
+
+ScrDyn *scr_dyn_obj_read_with_receiver(const ScrDyn *d, const char *key, size_t key_len,
+                                       const ScrDyn *receiver) {
+  return scr_dyn_obj_read_receiver(d, key, key_len, receiver);
 }
 
 /* Read-site caches (ScrDynReadIc). A hit is exactly the first step of
@@ -20990,11 +21177,19 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
   ScrDyn *entries = scr_dyn_map_seed_entries(seed);
   if (!entries) { scr_weak_map_release(map); return NULL; }
   for (size_t i = 0; i < entries->v.arr.len; i++) {
+    /* An array seed answers a hole through the prototype chain, where an
+     * inherited indexed getter runs (scr_dyn_arr_at). */
+    ScrDyn *raw = entries->v.arr.presence ? scr_dyn_arr_at(entries, (double)i)
+                                          : scr_dyn_retain(entries->v.arr.items[i]);
+    if (!raw) break;
     if (is_set) {
-      if (!scr_weak_set(map, entries->v.arr.items[i], scr_dyn_undefined())) break;
+      bool added = scr_weak_set(map, raw, scr_dyn_undefined());
+      scr_dyn_release(raw);
+      if (!added) break;
       continue;
     }
-    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
+    ScrDyn *entry = scr_dyn_map_seed_entry(raw);
+    scr_dyn_release(raw);
     if (!entry) break;
     ScrDyn *key = scr_dyn_entry_read(entry, 0);
     ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
@@ -21421,18 +21616,69 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
 }
 
-ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
-  ScrDyn *items = NULL;
-  if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
-    items = scr_dyn_seed_values(seed);
-    if (!items) return NULL;
+/* Insert a constructor seed into a native Set or Map handle with the bulk
+ * insert, without running program code. The checked-dynamic collection
+ * constructor creates its collection before it reads the adder (an accessor
+ * getter runs with the collection as `this`), so an adder that turns out to
+ * be the builtin fills this already-created collection. False with the
+ * exception pending. */
+bool scr_dyn_native_collection_insert_seed(ScrDyn *collection, const ScrDyn *seed) {
+  if (scr_dyn_native_set_is(collection)) {
+    ScrDyn *items = NULL;
+    if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
+      items = scr_dyn_seed_values(seed);
+      if (!items) return false;
+    }
+    ScrMap *set = scr_map_retain(collection->v.handle.ptr);
+    if (items)
+      for (size_t i = 0; i < items->v.arr.len; i++)
+        scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
+    scr_map_release(set);
+    scr_dyn_release(items);
+    return true;
   }
+  if (scr_dyn_native_map_is(collection)) {
+    ScrDyn *entries = scr_dyn_map_seed_entries(seed);
+    if (!entries) return false;
+    ScrMap *map = scr_map_retain(collection->v.handle.ptr);
+    bool ok = true;
+    for (size_t i = 0; i < entries->v.arr.len; i++) {
+      /* An array seed answers a hole through the prototype chain, where an
+       * inherited indexed getter runs (scr_dyn_arr_at). */
+      ScrDyn *raw = entries->v.arr.presence ? scr_dyn_arr_at(entries, (double)i)
+                                            : scr_dyn_retain(entries->v.arr.items[i]);
+      ScrDyn *entry = raw ? scr_dyn_map_seed_entry(raw) : NULL;
+      scr_dyn_release(raw);
+      if (!entry) {
+        ok = false;
+        break;
+      }
+      ScrDyn *key = scr_dyn_entry_read(entry, 0);
+      ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
+      scr_dyn_release(entry);
+      if (value) scr_map_dyn_set(map, key, value, false);
+      scr_dyn_release(key);
+      scr_dyn_release(value);
+      if (scr_exc_pending()) {
+        ok = false;
+        break;
+      }
+    }
+    scr_map_release(map);
+    scr_dyn_release(entries);
+    return ok;
+  }
+  return false;
+}
+
+ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
   ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
-  if (items) for (size_t i = 0; i < items->v.arr.len; i++) scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
   ScrDyn *result = scr_dyn_native_set(set);
   scr_map_release(set);
-  scr_dyn_release(items);
-  return result;
+  if (!result) return NULL;
+  if (scr_dyn_native_collection_insert_seed(result, seed)) return result;
+  scr_dyn_release(result);
+  return NULL;
 }
 
 bool scr_dyn_native_set_is(const ScrDyn *value) {
@@ -21540,24 +21786,13 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
 }
 
 ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed) {
-  ScrDyn *entries = scr_dyn_map_seed_entries(seed);
-  if (!entries) return NULL;
   ScrMap *map = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
-  for (size_t i = 0; i < entries->v.arr.len; i++) {
-    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
-    if (!entry) break;
-    ScrDyn *key = scr_dyn_entry_read(entry, 0);
-    ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
-    scr_dyn_release(entry);
-    if (value) scr_map_dyn_set(map, key, value, false);
-    scr_dyn_release(key);
-    scr_dyn_release(value);
-    if (scr_exc_pending()) break;
-  }
-  scr_dyn_release(entries);
-  ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_native_map(map);
+  ScrDyn *result = scr_dyn_native_map(map);
   scr_map_release(map);
-  return result;
+  if (!result) return NULL;
+  if (scr_dyn_native_collection_insert_seed(result, seed)) return result;
+  scr_dyn_release(result);
+  return NULL;
 }
 
 bool scr_dyn_native_map_is(const ScrDyn *value) {
@@ -22026,6 +22261,55 @@ ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
 
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
   return scr_dyn_sync_generator(value);
+}
+
+/* Whether a native iterator seed reads its values from internal slots. A
+ * string, Map, Set or stepping-handle iterator (any kind but the array one)
+ * answers from its source's own records. An array iterator answers its
+ * source's own elements too, but a hole reads through the prototype chain,
+ * where an inherited indexed getter the program installed runs: the
+ * collection constructor has to step such a seed so each read sees the
+ * entries the earlier steps inserted. An array-like iterator reads
+ * properties of an arbitrary object, which also runs program code. A keys()
+ * iterator only forms index numbers. */
+static bool scr_native_iterator_packs(const ScrDyn *seed) {
+  const ScrNativeIterator *iterator = seed->v.handle.ptr;
+  if (iterator->kind != 0) return true;
+  const ScrDyn *source = iterator->source;
+  if (!source) return true;
+  if (iterator->array_like) return false;
+  if (iterator->selection == 1) return true;
+  if (source->kind == SCR_DYN_ARR) return !source->v.arr.presence;
+  /* A live compiled array answers its own elements; a hole sends the read
+   * to the materialized view's prototype chain. */
+  if (source->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(source))
+    return !scr_arr_has_states(source->v.typed_ref.ptr);
+  return false;
+}
+
+/* Whether a collection constructor's seed gives its values without running
+ * program code: dense arrays, strings, bytes and collections pack, a native
+ * iterator over internal slots drains (scr_native_iterator_packs). Any other
+ * iterable walks the iterator protocol, whose steps run the program. An
+ * array seed answers its holes through the prototype chain, where an
+ * inherited indexed getter the program installed runs, so only a dense array
+ * packs — the same rule scr_native_iterator_packs applies to an array
+ * iterator's source. */
+bool scr_dyn_seed_packs_natively(const ScrDyn *seed) {
+  if (seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES) return true;
+  if (seed->kind == SCR_DYN_ARR) return !seed->v.arr.presence;
+  if (seed->kind == SCR_DYN_TYPED_REF) {
+    if (scr_dyn_iterates_by_protocol(seed)) return false;
+    /* A live compiled array reads a hole through the materialized view's
+     * prototype chain, as an array iterator over it does. */
+    if (scr_dyn_typed_ref_array_ops(seed)) return !scr_arr_has_states(seed->v.typed_ref.ptr);
+    return true;
+  }
+  if (seed->kind != SCR_DYN_HANDLE) return false;
+  if (seed->v.handle.tag == SCR_DYNH_ITERATOR) return scr_native_iterator_packs(seed);
+  if (seed->v.handle.tag == SCR_DYNH_MAP) return true;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(seed);
+  return ops->iter_step || ops->iter_pack;
 }
 
 /* ── dynamic-tier primitives (scr_dyn.h) ─────────────────── */

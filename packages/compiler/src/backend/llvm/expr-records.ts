@@ -811,7 +811,20 @@ export function keyedRecordReadInto(
           host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
           const r = B.tmp();
           B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${v})`);
-          B.line(`store ptr ${r}, ptr ${slot}`);
+          // An ABSENT optional dyn slot reads as the dyn undefined, so the
+          // marker never escapes through a keyed read either.
+          if (f.optional === true) {
+            host.declare(`declare ptr @scr_dyn_undefined()`);
+            const absent = B.tmp();
+            const undef = B.tmp();
+            const value = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+            B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+            B.line(`${value} = select i1 ${absent}, ptr ${undef}, ptr ${r}`);
+            B.line(`store ptr ${value}, ptr ${slot}`);
+          } else {
+            B.line(`store ptr ${r}, ptr ${slot}`);
+          }
         } else {
           const r = host.dyn.liveReadToDyn(B, type, v);
           B.line(`store ptr ${r}, ptr ${slot}`);

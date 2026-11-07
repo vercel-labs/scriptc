@@ -1205,6 +1205,15 @@ static bool scr_http_res_head_request(const ScrHttpRes *r) {
          memcmp(r->req_ref->method->data, "HEAD", 4) == 0;
 }
 
+/* Whether an h2 compat response's stream has ended its writable side
+ * already: a HEAD request's ends when the request arrives, and a response
+ * whose headers went out with a status that carries no body (204, 205,
+ * 304) ends with them (Node's respond sets endStream). */
+static bool scr_http_res_h2_stream_ended(const ScrHttpRes *r) {
+  return scr_http_res_head_request(r) ||
+         (r->head_sent && (r->status == 204 || r->status == 205 || r->status == 304));
+}
+
 static bool scr_http_res_expected_length(ScrHttpRes *r, double *expected) {
   if (!r->strict_content_length || r->h2_stream || r->chunked ||
       (r->status >= 100 && r->status < 200) || r->status == 204 || r->status == 304 ||
@@ -2562,12 +2571,13 @@ static void scr_http_res_end_callback_nt(ScrClosure *self) {
  * (scr_http_h2_res_local_end), and one registered while the response is
  * already ending or closed on the next tick, as Node's compat end() does.
  * A HEAD request's stream ended its writable side when the request
- * arrived, so there the callback waits for the response's own 'finish',
+ * arrived, and a 204, 205 or 304 response's when writeHead sent its
+ * headers, so there the callback waits for the response's own 'finish',
  * in listener order. */
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
   if (r->h2_stream != NULL) {
     if (!r->finished && !r->writable_finished) {
-      scr_net_ls_add(scr_http_res_head_request(r) ? &r->finish_ls : &r->endcb_ls, cb, NULL, true);
+      scr_net_ls_add(scr_http_res_h2_stream_ended(r) ? &r->finish_ls : &r->endcb_ls, cb, NULL, true);
       return;
     }
     ScrClosure *tick = scr_closure_new((void *)&scr_http_res_end_callback_nt, 2);

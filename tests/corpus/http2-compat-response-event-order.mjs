@@ -6,7 +6,10 @@
 // never runs. A HEAD request's stream ends its writable side when the
 // request arrives, so its end(cb) callback runs with the 'finish'
 // listeners, and its response emits nothing when the stream closes before
-// end(); a later end() emits both events. A stream reset before its body
+// end(); a later end() emits both events. A 204, 205 or 304 response's
+// stream ends when writeHead sends its headers, so there too the end(cb)
+// callback runs after the 'finish' listeners registered before it; a status
+// set without writeHead goes out with end(), as for any other status. A stream reset before its body
 // went out never runs the end(cb) callback.
 import http2 from "node:http2";
 
@@ -83,6 +86,16 @@ function respondLarge(req, res) {
   res.end("x".repeat(1 << 20), () => log(`reset body: end callback ${res.statusCode}`));
 }
 
+// A 'finish' listener registered before end(cb), for a status with no body.
+function respondStatus(label, status, viaWriteHead) {
+  return (req, res) => {
+    res.on("finish", () => log(`${label}: finish listener`));
+    if (viaWriteHead) res.writeHead(status);
+    else res.statusCode = status;
+    res.end(() => log(`${label}: end callback`));
+  };
+}
+
 function cancelSoon(stream) {
   setTimeout(() => stream.close(http2.constants.NGHTTP2_CANCEL), 20);
   return stream;
@@ -109,5 +122,17 @@ await listen(
   },
   false,
 );
+for (const [label, status, viaWriteHead] of [
+  ["writeHead 204", 204, true],
+  ["writeHead 205", 205, true],
+  ["writeHead 304", 304, true],
+  ["statusCode 204", 204, false],
+]) {
+  await listen(respondStatus(label, status, viaWriteHead), (client) => {
+    const stream = client.request({ ":path": "/" });
+    stream.end();
+    return stream;
+  });
+}
 await new Promise((resolve) => setTimeout(resolve, 20));
 for (const line of lines) console.log(line);

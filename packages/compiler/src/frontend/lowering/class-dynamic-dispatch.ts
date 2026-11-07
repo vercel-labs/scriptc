@@ -338,8 +338,8 @@ const TO_PRIMITIVE_PREFIX = "%dyn.class.toPrimitive.";
  * and `==` take the default hint, the arithmetic, bitwise, relational and
  * numeric conversions the number hint, and the string conversions the
  * string hint. */
-const DEFAULT_HINT_CALLS = new Set<string>(["dyn.abstractEq", "dyn.add"]);
-const NUMBER_HINT_CALLS = new Set<string>([
+const DEFAULT_HINT_CALLS = new Set<IrLibFn>(["dyn.abstractEq", "dyn.add"]);
+const NUMBER_HINT_CALLS = new Set<IrLibFn>([
   "dyn.arithmetic",
   "dyn.bigintConstructor",
   "dyn.bitwise",
@@ -348,12 +348,12 @@ const NUMBER_HINT_CALLS = new Set<string>([
   "dyn.toNumberCoerce",
   "dyn.toNumeric",
 ]);
-const STRING_HINT_CALLS = new Set<string>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
+const STRING_HINT_CALLS = new Set<IrLibFn>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
 /** Operations whose second operand is a property key, converted with the
  * string hint when the receiver admits a key: `in` needs an object,
  * propertyIsEnumerable converts before checking its receiver, and the
  * others need a receiver other than null and undefined. */
-const KEY_CALLS = new Map<string, "object" | "any" | "value">([
+const KEY_CALLS = new Map<IrLibFn, "object" | "any" | "value">([
   ["dyn.hasKeyComputed", "object"],
   ["dyn.propertyIsEnumerableComputed", "any"],
   ["dyn.hasOwnComputed", "value"],

@@ -100,7 +100,7 @@ import { lowerTlsRootCertificates } from "../lower-server.js";
 import { unloweredGlobalValue, unloweredModuleMemberValue } from "../node-value-reads.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
-import { fenceEnumObjectValue } from "../lower-enums.js";
+import { lowerEnumObjectValue } from "../enum-objects.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
@@ -1112,9 +1112,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       return lowerer.classValueRef(classInfo, expr);
     }
     // The enum OBJECT as a value (member reads never reach here — the
-    // access hooks fold them): iteration, storage, reverse lookups
-    // through variables all land on this pointed fence.
-    if (sym) fenceEnumObjectValue(lowerer, expr, sym);
+    // access hooks fold them): the record its declaration built, or a
+    // pointed fence for an enum that has no object (enum-objects.ts).
+    if (sym) {
+      const enumObject = lowerEnumObjectValue(lowerer, expr, sym);
+      if (enumObject) return enumObject;
+    }
     // A MIXIN function as a first-class value: no runtime function
     // exists — calls instantiate a class per call site
     // (lower-mixins.ts). Generic mixins took the generic-fn value

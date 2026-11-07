@@ -4,6 +4,7 @@ import { contentDigest, type HeldContents, type JournalTable } from "./lowering/
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
+import type { EnumObjectEntry } from "./enum-object-layout.js";
 import type {
   IrRecordField,
   IrRecordShape,
@@ -1501,6 +1502,11 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * once per Lowerer and threaded through the recursion — adding a hook means
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
+  /** The own properties of this enum's object when the program builds it
+   * (lowering/enum-objects.ts): then `typeof E` maps to the record of
+   * them. Absent or null: the type stays unmapped, as for every enum only
+   * read through its members. */
+  enumObjectEntries?: (symbol: ts.Symbol) => readonly EnumObjectEntry[] | null;
   /** Whether the program creates primitive wrapper objects
    * (primitive-wrappers.ts): then the boxed interface types (`String`,
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
@@ -9811,14 +9817,29 @@ function mapRecordTypeInner(
   const { checker, shapes } = ctx;
   if (checker.getConstructSignatures(widened).length > 0) return null;
   if (checker.isTupleType(widened) || checker.isArrayLikeType(widened)) return null;
-  // ENUM OBJECTS (`typeof e` — the enum used as a first-class value) look
-  // exactly like a number-keyed hybrid (member fields + the reverse-map
-  // index signature), but the VALUE has no lowering: an enum identifier in
-  // value position resolves to nothing. Mapping the type would strand the
-  // reference sites, so the enum-object type stays unmapped and badType
-  // names the construct.
+  // ENUM OBJECTS (`typeof e` — the enum used as a first-class value): the
+  // checker describes one as member fields plus, for numeric members, a
+  // reverse-map index signature. The object tsc's emit builds has a known
+  // key set when every member is a compile-time constant, so the type is
+  // the closed record of those keys (enum-object-layout.ts): the member
+  // names and each numeric member's reverse entry, enumerated in the order
+  // the emit creates them. Only an enum whose object the program builds
+  // has the type: for every other enum (read only through its members, or
+  // const, ambient, with computed members or a namespace merge) it stays
+  // unmapped, and badType names the construct.
   const widenedSym = widened.getSymbol();
-  if (widenedSym !== undefined && (widenedSym.flags & ts.SymbolFlags.Enum) !== 0) return null;
+  if (widenedSym !== undefined && (widenedSym.flags & ts.SymbolFlags.Enum) !== 0) {
+    if ((widened.flags & ts.TypeFlags.Object) === 0) return null;
+    const entries = ctx.enumObjectEntries?.(widenedSym) ?? null;
+    if (entries === null) return null;
+    const fields: IrRecordField[] = entries.map((entry) => ({
+      name: entry.key,
+      type: typeof entry.value === "number" ? F64 : STRING,
+    }));
+    const declaredOrder = esOwnKeyOrder(fields.map((f) => f.name));
+    fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { kind: "record", shapeId: shapes.intern(fields, false, undefined, declaredOrder) };
+  }
   // An interface extending a type the checker answers `any` for (in the
   // compiled world, a package type computed from members only its .d.ts
   // declares, such as `interface P extends z.infer<typeof S>`) has members

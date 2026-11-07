@@ -22,12 +22,17 @@ interface Scratch {
 }
 
 /** Runs a CLI entry inside the scratch directory, where a relative path an option names stays
- * out of the repository. */
-function invoke(script: string, args: string[], { dir, env }: Scratch): Promise<Outcome> {
+ * out of the repository. `preload` is a module Node imports first. */
+function invoke(
+  script: string,
+  args: string[],
+  { dir, env }: Scratch,
+  preload?: string,
+): Promise<Outcome> {
   return new Promise((resolve, reject) => {
     execFile(
       process.execPath,
-      [script, ...args],
+      [...(preload === undefined ? [] : ["--import", preload]), script, ...args],
       { env, cwd: dir, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error === null) resolve({ status: 0, stdout, stderr });
@@ -88,19 +93,35 @@ test("each string option a fast path answers for has a value here", () => {
   }
 });
 
-/** The launcher answers a cached program without loading the compiler. Whatever it answers has
- * to be the full CLI's answer: the same status, the same stdout and the same stderr. Each
- * option is tried on a program whose plain command is already cached: the launcher, then the
- * full CLI, then the launcher again, which by then may have a cached answer of its own. */
+/** A module that makes loading the compiler fail, so a launcher that hands a command line to
+ * the full CLI stops with this message instead of doing the work. */
+const REJECT_FULL_COMPILER = [
+  "import { registerHooks } from 'node:module';",
+  "registerHooks({ load(url, context, nextLoad) {",
+  "  if (url.includes('/packages/compiler/dist/index.js')) throw new Error('compiler graph loaded');",
+  "  return nextLoad(url, context);",
+  "}});",
+  "",
+].join("\n");
+
+/** The launcher answers a cached program without loading the compiler, and only for the options
+ * its fast path names (and `--help` and `--version`). With any other option it has to hand the
+ * command line to the full CLI, whatever is cached. With an option it does answer for, its
+ * answer has to be the full CLI's: the same status, stdout and stderr, on the launcher's first
+ * run and again once the command with that option may have a cached answer of its own. */
 test.concurrent.each(["build", "run", "coverage"])(
-  "the launcher answers a cached %s as the full CLI does, with every option",
+  "the launcher answers a cached %s only for the options its fast path names",
   async (command) => {
     const at = await scratch(command);
     const { dir } = at;
     const entry = join(dir, "main.ts");
+    const preload = join(dir, "reject-full-compiler.mjs");
+    const fastPath = Object.values(CLI_FAST_PATHS).find((path) => path.commands.includes(command));
+    const answered: readonly string[] = [...(fastPath?.options ?? []), "help", "version"];
     try {
       await writeFile(entry, 'console.log("one");\n');
       await writeFile(join(dir, "host.d.ts"), "export declare const value: number;\n");
+      await writeFile(preload, REJECT_FULL_COMPILER);
       const plain = await invoke(bootstrap, [command, entry], at);
       expect(plain.status, plain.stderr).toBe(0);
       expect(await invoke(bootstrap, [command, entry], at)).toEqual(plain);
@@ -108,6 +129,13 @@ test.concurrent.each(["build", "run", "coverage"])(
       for (const option of Object.keys(CLI_OPTIONS) as CliOptionName[]) {
         // Options go before the entry: what follows it may be the program's.
         const args = [command, ...spelling(option, values), entry];
+        if (!answered.includes(option)) {
+          const handed = await invoke(bootstrap, args, at, preload);
+          expect(handed.stderr, `${args.join(" ")}: left to the full CLI`).toContain(
+            "compiler graph loaded",
+          );
+          continue;
+        }
         const first = await invoke(bootstrap, args, at);
         const full = await invoke(fullCli, args, at);
         const second = await invoke(bootstrap, args, at);
@@ -118,7 +146,7 @@ test.concurrent.each(["build", "run", "coverage"])(
       await rm(dir, { recursive: true, force: true });
     }
   },
-  900_000,
+  600_000,
 );
 
 /** `--tier=static-only` refuses what the default tier compiles with a dynamic slot

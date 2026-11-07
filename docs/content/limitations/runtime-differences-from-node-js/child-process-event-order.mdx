@@ -1,0 +1,5 @@
+- **Child process event order:** A child's `stdout` and `stderr` chunks, and the `'spawn'`, `'exit'`, and `'close'` events of several children, arrive in the order Node.js delivers them on Linux and macOS.
+  The events of one stream relative to the child's exit differ: when a child exits, the rest of its output and each stream's `'end'` are delivered before its `'exit'`, where Node.js fires `'exit'` first when the child's output and its exit arrive in the same turn of the event loop.
+  A child that is spawned as the program's first act and writes to `stderr` before `stdout` is delivered in the order written, where Node.js usually delivers `stdout` first because the child finishes before Node.js starts its event loop.
+  A child's output pipe does not hold the same amount as the socket Node.js gives it, so a child that fills one stream before it writes to the other can block at a different point and be delivered in a different order.
+  On Windows, `stderr` is delivered before `stdout` when both hold output, and the events of several children fire newest child first.

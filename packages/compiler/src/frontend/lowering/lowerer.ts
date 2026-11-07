@@ -186,6 +186,7 @@ import {
 import { assertedConversion } from "./coercions/asserted.js";
 import {
   boxBuiltinValuesChecked,
+  shareBuiltinValueIdentities,
   lowerUtilTypeValue,
   checkedNativeCallableValue,
   pathModuleValue,
@@ -4060,7 +4061,7 @@ export class Lowerer {
    * builtin, its display name and the location the twin is lowered at. */
   readonly builtinCheckedValues = new Map<
     string,
-    { fn: BuiltinModuleFn; display: string; loc: SrcLoc }
+    { fn: BuiltinModuleFn; display: string; loc: SrcLoc; type: IrType & { kind: "func" } }
   >();
   /** Optional-chain lowering state. While a chain body lowers, the guarded
    * receiver NODE reads as a chainRecv (typed by the narrowed arm) instead
@@ -11258,6 +11259,7 @@ export class Lowerer {
     // values it adds to the entry module are boxed with the rest.
     if (!library) installBuiltinStatics(this, functions);
     boxBuiltinValuesChecked(this, functions);
+    shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
@@ -19648,6 +19650,11 @@ export class Lowerer {
           : [{ kind: "return", value: call, loc }];
       this.liftedFns.push({
         name: fnName,
+        // The name an untyped box of the value reports when the boxing site
+        // does not know which builtin it holds.
+        ...(fn.valueNameMainThreadOnly
+          ? {}
+          : { displayName: fn.valueName ?? display.slice(display.lastIndexOf(".") + 1) }),
         params,
         returnType: fn.result,
         locals: params.map((param) => ({
@@ -19667,7 +19674,7 @@ export class Lowerer {
       // UnitEvents.touch), and the change is counted here instead of being
       // found by HeldTables.check as an unnamed write.
       if (this.builtinCheckedValues.has(fnName)) this.unitEvents?.touch(fnName);
-      this.builtinCheckedValues.set(fnName, { fn, display, loc });
+      this.builtinCheckedValues.set(fnName, { fn, display, loc, type: funcType });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };
   }

@@ -340,6 +340,20 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "closure.shareIdentity") {
+    const adapter = host.emitReadReceiver(e.args[0]!);
+    const root = host.emitReadReceiver(e.args[1]!);
+    const length = e.args[2]!;
+    if (length.kind !== "numLit")
+      throw new InternalCompilerError(
+        "llvm emitter bug: closure.shareIdentity length is not a literal",
+      );
+    host.declare(`declare void @scr_closure_adopt_identity(ptr, ptr, i32)`);
+    B.line(
+      `call void @scr_closure_adopt_identity(ptr ${adapter.name}, ptr ${root.name}, i32 ${length.value})`,
+    );
+    return { name: "", type: e.type };
+  }
   if (e.fn === "record.link") {
     // The link owns a reference to the source, released with the copy.
     const copy = host.emitReadReceiver(e.args[0]!);
@@ -1454,6 +1468,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitGenericLibCall(e);
     case "collection":
     case "record":
+    case "closure":
     case "disposable":
     case "punycode":
     case "constants":

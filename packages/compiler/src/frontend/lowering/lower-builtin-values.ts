@@ -6,6 +6,7 @@ import {
   F64,
   STRING,
   UNDEFINED_T,
+  VOID,
   arrayOf,
   type IrExpr,
   type IrFunction,
@@ -16,7 +17,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
-import { boolLit, dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile } from "../program.js";
 import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
@@ -885,15 +886,8 @@ export function checkedNativeCallableValue(
   loc: SrcLoc,
 ): IrExpr {
   const valueParams = fn.valueParams ?? [];
-  const callee = fn.checked?.fn ?? fn.valueFn ?? fn.fn;
-  const result = fn.checked ? (fn.checked.result ?? fn.result) : fn.result;
   const raw = fn.checked !== undefined;
-  const shapes: ParamShape[] = valueParams.map((param): ParamShape => ({
-    mode: param.mode === "rest" ? "dynRest" : param.mode === "optional" ? "omittable" : "required",
-    type: DYN,
-  }));
-  const funcType = funcTypeFromParamShapes(shapes, result);
-  const key = `checked:${callee}:${JSON.stringify(fn.checked?.args ?? [])}:${typeKey(funcType)}`;
+  const { callee, result, funcType, key } = checkedTwinSignature(fn);
   let fnName = lowerer.builtinCallableValueFns.get(key);
   if (!fnName) {
     fnName = keyedHelperName(lowerer, `%builtin.value.${callee}`, key);
@@ -978,9 +972,87 @@ export function checkedNativeCallableValue(
         : { kind: "return", value: call, loc },
     );
     if (result.kind === "void") body.push({ kind: "return", value: null, loc });
-    lowerer.liftedFns.push({ name: fnName, params, returnType: result, locals, body, loc });
+    lowerer.liftedFns.push({
+      name: fnName,
+      ...(fn.valueNameMainThreadOnly
+        ? {}
+        : { displayName: fn.valueName ?? display.slice(display.lastIndexOf(".") + 1) }),
+      params,
+      returnType: result,
+      locals,
+      body,
+      loc,
+    });
   }
   return { kind: "closure", fnName, captures: [], type: funcType, loc };
+}
+
+/** The entry point, result, function type and interning key of a builtin's
+ * checked twin (checkedNativeCallableValue). */
+function checkedTwinSignature(fn: BuiltinModuleFn): {
+  callee: IrLibFn;
+  result: IrType;
+  funcType: IrType & { kind: "func" };
+  key: string;
+} {
+  const callee = fn.checked?.fn ?? fn.valueFn ?? fn.fn;
+  const result = fn.checked ? (fn.checked.result ?? fn.result) : fn.result;
+  const shapes: ParamShape[] = (fn.valueParams ?? []).map((param): ParamShape => ({
+    mode: param.mode === "rest" ? "dynRest" : param.mode === "optional" ? "omittable" : "required",
+    type: DYN,
+  }));
+  const funcType = funcTypeFromParamShapes(shapes, result);
+  const key = `checked:${callee}:${JSON.stringify(fn.checked?.args ?? [])}:${typeKey(funcType)}`;
+  return { callee, result, funcType, key };
+}
+
+/** A builtin function a module holds both as its typed adapter and as its
+ * checked twin is one JavaScript function: the entry module's
+ * initialization makes the adapter stand for the twin
+ * (closure.shareIdentity), so the two compare equal, key the same Map entry
+ * and share one property table however each reached the comparison (a typed
+ * slot, an array element, a generic helper's result, an untyped value). A
+ * module that makes only one of the two has nothing to reconcile and is
+ * left as it is. */
+export function shareBuiltinValueIdentities(lowerer: Lowerer, functions: IrFunction[]): void {
+  if (lowerer.builtinCheckedValues.size === 0) return;
+  const entryInit = lowerer.initNameOf.get(lowerer.entry);
+  const entry = functions.find((fn) => fn.name === entryInit);
+  if (entry === undefined) return;
+  // The function values the module's code makes, by function name.
+  const made = new Set<string>();
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      expr: (expr) => {
+        if (expr.kind === "closure" && expr.captures.length === 0) made.add(expr.fnName);
+        return true;
+      },
+      stmt: () => true,
+    });
+  const shares: IrStmt[] = [];
+  const loc: SrcLoc = { ...entry.loc, end: entry.loc.start };
+  for (const [adapter, { fn, type }] of lowerer.builtinCheckedValues) {
+    const twin = checkedTwinSignature(fn);
+    const twinName = lowerer.builtinCallableValueFns.get(twin.key);
+    if (twinName === undefined || twinName === adapter) continue;
+    if (!made.has(adapter) || !made.has(twinName)) continue;
+    shares.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "closure.shareIdentity",
+        args: [
+          { kind: "closure", fnName: adapter, captures: [], type, loc },
+          { kind: "closure", fnName: twinName, captures: [], type: twin.funcType, loc },
+          numLit(fn.valueLength ?? (fn.valueParams ?? []).length, loc),
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  entry.body.unshift(...shares);
 }
 
 /** Every builtin function value that becomes untyped boxes as its checked

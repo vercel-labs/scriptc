@@ -15,6 +15,8 @@ import { locOf } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
 import {
   keyOrderDivergenceDiag,
+  keyOrderFallbackDiag,
+  keyOrderHybridDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
   widthCopyDivergenceDiag,
@@ -329,6 +331,33 @@ export function scanDivergences(
         ),
       );
     }
+  }
+
+  // ── key order: what the lowering could not order ────────────────────
+  // The key-order pass decides each record type's enumeration from every
+  // construction and write of the whole program, and names the observed
+  // types it left in one order though their objects are created in several
+  // (key-order-witness.ts). Those facts are the lowering's own, so no flow
+  // has to be re-derived here; a literal reported above is not repeated.
+  {
+    const reported = new Set(
+      out.filter((d) => d.code === "SC6002").map((d) => `${d.loc.file}:${d.loc.start}`),
+    );
+    const once = (diag: ScrDiagnostic): void => {
+      const at = `${diag.loc.file}:${diag.loc.start}`;
+      if (reported.has(at)) return;
+      reported.add(at);
+      out.push(diag);
+    };
+    for (const [shapeId, { loc, cause }] of lowerer.keyOrder.unordered) {
+      const shape = lowerer.shapes.get(shapeId);
+      const keys = (shape?.declaredOrder ?? []).filter((name) => !name.startsWith("%"));
+      once(keyOrderFallbackDiag(keys.join(", "), cause, loc));
+    }
+    // An index-signature record with declared properties lists those first:
+    // where the program creates its keys in another order and walks them.
+    for (const { loc, key, cause } of lowerer.keyOrder.hybridOrders)
+      if (!isNodeModulesPath(loc.file)) once(keyOrderHybridDiag(key, cause, loc));
   }
 
   // ── one-argument localeCompare over text outside the collation table ─
@@ -1003,8 +1032,14 @@ function keyOrderFinding(
   // Values of a shape with orderVariants enumerate in the order their
   // literal wrote (key-order-witness.ts).
   const mapped = safely(() => lowerer.mapTypeOf(contextual));
+  // A type whose values are checked-dynamic objects (a member typed
+  // `object` or `unknown` among them) has no table: such an object keeps
+  // its keys in creation order.
+  if (mapped?.kind === "dyn") return null;
   if (mapped?.kind === "record" && lowerer.shapes.get(mapped.shapeId)?.orderVariants !== undefined)
     return null;
+  // So do values of a tracked shape, which keep their own key list.
+  if (mapped?.kind === "record" && lowerer.keyOrder.tracked.has(mapped.shapeId)) return null;
   // A shape whose table the witness pass re-chose (key-order-witness.ts)
   // enumerates that table, not the checker's declaration order.
   const table = witnessTable(lowerer, contextual);

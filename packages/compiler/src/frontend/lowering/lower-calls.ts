@@ -8686,7 +8686,8 @@ function classAssignHelper(
  * same-typed target field — the caller's gate): optional source fields
  * copy only when present (an explicit undefined copies), everything else
  * straight,
- * and the TARGET returns (JS's aliasing). */
+ * and the TARGET returns (JS's aliasing). The writes run in the source's
+ * key order where the program can tell (orderCopiedWrites). */
 function recordAssignHelper(
   lowerer: Lowerer,
   targetShapeId: string,
@@ -8730,8 +8731,9 @@ function recordAssignHelper(
         : set,
     );
   }
+  const copied = sShape.fields.map((f) => f.name);
   body.push({ kind: "return", value: tRef, loc });
-  lowerer.liftedFns.push({
+  const fn: IrFunction = {
     name: helper,
     params: [
       { localId: "t.0", name: "t", type: tT },
@@ -8744,8 +8746,112 @@ function recordAssignHelper(
     ],
     body,
     loc,
-  });
+  };
+  lowerer.liftedFns.push(fn);
+  orderCopiedWrites(lowerer, fn, 0, copied, sRef, loc);
   return helper;
+}
+
+/** A per-field copy helper `fn` holds one statement per source field,
+ * `fn.body[first]` onwards, for the fields `copied` names, in slot order.
+ * Node copies an object's keys in its own key order, which is the order the
+ * target gains the keys it lacked. When the copy can create two or more
+ * keys of a target whose keys the program enumerates
+ * (KeyOrderNotes.orderedAssigns, decided once the whole program is
+ * lowered), the statements run in the source's order instead: its table
+ * when its type has one, and a walk over the value's own keys when its
+ * order is the value's (an order index or a kept source). The key-order
+ * pass rewrites the writes in place, one statement per field, so they are
+ * reordered here and never rebuilt. `source` is the helper's source
+ * parameter. */
+export function orderCopiedWrites(
+  lowerer: Lowerer,
+  fn: IrFunction,
+  first: number,
+  copied: readonly string[],
+  source: IrExpr & { kind: "varRef" },
+  loc: SrcLoc,
+): void {
+  const sT = source.type;
+  if (sT.kind !== "record" || copied.length < 2) return;
+  lowerer.shapeOrderHelperFinalizers.push(() => {
+    if (!lowerer.keyOrder.orderedAssigns.has(fn.name)) return;
+    const writes = new Map(copied.map((name, i) => [name, fn.body[first + i]!]));
+    const shape = lowerer.shapes.get(sT.shapeId);
+    if (shape === undefined) return;
+    const ownOrder =
+      shape.orderVariants !== undefined ||
+      ((lowerer.keyOrder.keptSourceShapes.has(sT.shapeId) ||
+        lowerer.keyOrder.converted.has(sT.shapeId)) &&
+        recordMayKeepSource(lowerer, sT));
+    let ordered: IrStmt[];
+    if (!ownOrder) {
+      const order = shapeKeyOrders(shape)[0]!.filter((name) => writes.has(name));
+      const listed = new Set(order);
+      ordered = [
+        ...order.map((name) => writes.get(name)!),
+        ...copied.filter((name) => !listed.has(name)).map((name) => writes.get(name)!),
+      ];
+    } else {
+      // The value's own keys, in its own order; each declared one runs its
+      // write.
+      const ksT = arrayOf(STRING);
+      const ksRef = varRef("ks.0", ksT, loc);
+      const kRef = varRef("k.0", STRING, loc);
+      fn.locals.push(
+        { id: "ks.0", name: "ks", type: ksT, mutable: false },
+        { id: "k.0", name: "k", type: STRING, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+      );
+      let dispatch: IrStmt[] = [];
+      for (const name of [...copied].reverse()) {
+        dispatch = [
+          {
+            kind: "if",
+            cond: {
+              kind: "strEq",
+              negated: false,
+              left: kRef,
+              right: { kind: "strLit", value: name, type: STRING, loc },
+              type: BOOL,
+              loc,
+            },
+            then: [writes.get(name)!],
+            else_: dispatch.length > 0 ? dispatch : null,
+            loc,
+          },
+        ];
+      }
+      ordered = [
+        {
+          kind: "varDecl",
+          localId: "ks.0",
+          init: {
+            kind: "libCall",
+            fn: "dyn.objKeyStrings",
+            args: [{ kind: "dynFrom", value: source, liveRef: true, type: DYN, loc }],
+            type: ksT,
+            loc,
+          },
+          loc,
+        },
+        countedFor(
+          loc,
+          { kind: "arrIntrinsic", method: "length", receiver: ksRef, args: [], type: F64, loc },
+          (index) => [
+            {
+              kind: "varDecl",
+              localId: "k.0",
+              init: { kind: "arrayGet", arr: ksRef, index, type: STRING, loc },
+              loc,
+            },
+            ...dispatch,
+          ],
+        ),
+      ];
+    }
+    fn.body.splice(first, copied.length, ...ordered);
+  });
 }
 
 /** The `Iterator` global's statics (ES2025): `Iterator.from` over a typed

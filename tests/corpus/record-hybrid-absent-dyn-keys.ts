@@ -19,13 +19,21 @@ console.log(JSON.stringify(Object.entries(bare)));
 for (const k in bare) console.log("for-in", k);
 console.log("store" in bare, "input" in bare, "extra" in bare, JSON.stringify(bare));
 
-// A late write fills the slot (its KEY ORDER across the declared/overflow
-// boundary is the hybrid representation's known divergence, so this block
-// asserts presence and value only).
-bare.store = true;
-console.log("store" in bare, bare.store);
-delete bare.store;
-console.log(Object.keys(bare).join(","), "store" in bare, JSON.stringify(bare));
+// A late write fills the slot. Node lists a declared key created after
+// other keys behind them and a hybrid record lists it ahead of them, which
+// SC6002 reports where the program lists the type's keys: this block writes
+// to a type whose keys nothing lists and asserts presence and value only.
+type Late = { model: string; store?: boolean; kind?: string; [key: string]: unknown };
+const late: Late = { model: "m", extra: 1 };
+late.store = true;
+console.log("store" in late, late.store);
+delete late.store;
+console.log("store" in late, late.store === undefined, "extra" in late);
+
+// A delete takes a declared key out of the listed keys again.
+const filled: Body = { model: "m", store: true, extra: 1 };
+delete filled.store;
+console.log(Object.keys(filled).join(","), "store" in filled, JSON.stringify(filled));
 
 // Present from the start, and nil-valued through a declared field.
 const present: Body = { model: "n", store: false, input: null };

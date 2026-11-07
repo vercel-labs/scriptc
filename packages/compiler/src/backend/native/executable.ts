@@ -404,6 +404,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
   // Reflect.getPrototypeOf's primitive-target check.
   unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
+  // The creation order of a record's keys, kept per value.
+  unit((u) => u.opts.recordKeyOrder === true, "scr_record_order.c"),
   // `delete` of a key a record's type does not declare.
   unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
   // Record views of types whose values may also be frozen.

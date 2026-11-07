@@ -1501,6 +1501,12 @@ const RUNTIME_FEATURE_RULES = {
   /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
    * a unit of its own so scr_json.c keeps its layout). */
   reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** A record's keys in creation order where neither its type's table nor
+   * an order index holds it (scr_record_order.c, a unit of its own so
+   * scr_json.c keeps its layout). */
+  recordKeyOrder: rule({
+    fns: ["record.orderAppend", "record.orderAppendKey", "record.orderCopy", "record.orderCarry"],
+  }),
   /** `delete` of a key a record's type does not declare, removed from the
    * record's kept source (scr_record_source_delete.c, a unit of its own so
    * scr_json.c keeps its layout). */
@@ -2090,6 +2096,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynCollections: false,
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
+    recordKeyOrder: false,
     recordSourceDelete: false,
     recordViewFrozen: false,
     dynBuffer: false,

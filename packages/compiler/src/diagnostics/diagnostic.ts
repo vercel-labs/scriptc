@@ -315,6 +315,56 @@ export function keyOrderDivergenceDiag(
   };
 }
 
+/** SC6002 — a record type whose objects are created with their keys in
+ * orders the compiler could neither fix per type nor keep per object
+ * (key-order-witness.ts), where the program observes the order: every
+ * object of the type enumerates in the type's one order. `keys` is that
+ * order. */
+export function keyOrderFallbackDiag(
+  keys: string,
+  cause: "shape" | "spread" | "copy",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const why =
+    cause === "spread"
+      ? "this literal spreads a value whose keys scriptc cannot read here"
+      : cause === "copy"
+        ? "this copy takes its properties from a value scriptc cannot read the keys of"
+        : "the type has no per-object key list";
+  return {
+    code: "SC6002",
+    message: `objects of this type are created with their keys in more than one order, which scriptc could not follow for each object (${why}): natively they all enumerate as '${keys}', under Node each in the order its keys were created (insertion order), and the program observes the order (JSON.stringify, Object.keys, for-in or console output)`,
+    loc,
+    hint: `create every object of the type with its properties in one order, and set optional properties in the literal instead of assigning them later`,
+  };
+}
+
+/** SC6002 — a record type with declared properties and an index signature,
+ * whose objects enumerate their declared properties first: `key` is created
+ * where Node would list it elsewhere, and the program observes the order
+ * (key-order-witness.ts). */
+export function keyOrderHybridDiag(
+  key: string,
+  cause: "write" | "literal" | "index",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const what =
+    cause === "write"
+      ? `this write can create the declared property '${key}' after other keys`
+      : cause === "literal"
+        ? `this literal creates the declared property '${key}' after a key the type does not declare`
+        : `'${key}' is an integer-like key, which Node lists before every other key`;
+  return {
+    code: "SC6002",
+    message: `objects of this type hold declared properties and other keys (an index signature): natively they enumerate the declared properties first, in declaration order, and then the other keys in creation order, while under Node every key enumerates in creation order after the integer-like keys; ${what}, and the program observes the order (JSON.stringify, Object.keys, for-in or console output)`,
+    loc,
+    hint:
+      cause === "index"
+        ? `keep integer-like keys in a Map or in a type without declared properties`
+        : `create the declared properties before any other key, in the literal that builds the object, or keep the other keys in a property of their own`,
+  };
+}
+
 /** SC6003 — one-argument localeCompare over text outside the root-locale
  * collation table the runtime carries: those characters compare by code
  * point natively, where Node applies full ICU collation. */

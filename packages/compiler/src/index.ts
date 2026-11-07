@@ -892,6 +892,7 @@ async function compileExecutableNative(
     ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
+    ...(features.recordKeyOrder ? { recordKeyOrder: true } : {}),
     ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
     ...(features.recordViewFrozen ? { recordViewFrozen: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),

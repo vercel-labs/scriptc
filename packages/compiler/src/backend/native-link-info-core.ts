@@ -139,6 +139,9 @@ export interface NativeLinkFeatures {
   /** Reflect.getPrototypeOf's primitive-target check compiles
    * scr_dyn_reflect_proto.c; absent (false) otherwise. */
   reflectProtoTarget?: boolean;
+  /** A record's keys in creation order, kept per value: scr_record_order.c.
+   * Absent (false) for programs without it. */
+  recordKeyOrder?: boolean;
   /** `delete` of a key a record's type does not declare:
    * scr_record_source_delete.c. Absent (false) for programs without one. */
   recordSourceDelete?: boolean;

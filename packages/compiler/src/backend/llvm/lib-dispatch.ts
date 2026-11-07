@@ -373,6 +373,16 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     );
     return { name: "", type: e.type };
   }
+  if (e.fn === "record.linked") {
+    // A link's pair is numbered from 1; a record without one answers 0.
+    const copy = host.emitReadReceiver(e.args[0]!);
+    host.declare(`declare i32 @scr_record_link_pair(ptr)`);
+    const found = B.tmp(),
+      t = B.tmp();
+    B.line(`${found} = call i32 @scr_record_link_pair(ptr ${copy.name})`);
+    B.line(`${t} = icmp ne i32 ${found}, 0`);
+    return { name: t, type: e.type };
+  }
   if (e.fn === "record.linkIs" || e.fn === "record.linkSource") {
     const copy = host.emitReadReceiver(e.args[0]!);
     const pair = e.args[1]!;
@@ -401,6 +411,44 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (type.kind !== "record")
       throw new InternalCompilerError("llvm emitter bug: record.sourceNote of a non-record");
     host.dyn.emitRecordSourceNote(B, built.name, keys.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.orderAppend") {
+    const record = host.emitReadReceiver(e.args[0]!);
+    const view = emitBorrowedInput(host, e.args[1]!);
+    const key = e.args[2]!;
+    const type = e.args[0]!.type;
+    if (type.kind !== "record" || key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.orderAppend of a non-record");
+    host.dyn.emitRecordOrderAppend(B, record.name, view.name, key.value, type.shapeId);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.orderAppendKey") {
+    const record = host.emitReadReceiver(e.args[0]!);
+    const view = emitBorrowedInput(host, e.args[1]!);
+    const key = emitBorrowedInput(host, e.args[2]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.orderAppendKey of a non-record");
+    host.dyn.emitRecordOrderAppendKey(B, record.name, view.name, key.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.orderCopy") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const keys = emitBorrowedInput(host, e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.orderCopy of a non-record");
+    host.dyn.emitRecordOrderCopy(B, built.name, keys.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.orderCarry") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const source = host.emitReadReceiver(e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.orderCarry of a non-record");
+    host.dyn.emitRecordOrderCarry(B, built.name, source.name, type.shapeId);
     return { name: "", type: e.type };
   }
   if (e.fn === "array.speciesCreate") {

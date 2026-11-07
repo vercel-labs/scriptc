@@ -28,3 +28,10 @@ console.log(keys(one), keys(two));
 const trailing: [number, number?] = [1, ,];
 console.log(trailing.length, 1 in trailing);
 console.log(JSON.stringify(one), JSON.stringify(two));
+
+// A hole stays absent when the literal also spreads a fixed tuple, on both
+// sides of the spread.
+const before: [number, number?, number?] = [1, , ...([9] as [number])];
+console.log(1 in before, before.length, before[1], JSON.stringify(before));
+const after: [number, number?, number?] = [1, ...([2] as [number]), ,];
+console.log(2 in after, after.length, after[2], Object.keys(after).join(","));

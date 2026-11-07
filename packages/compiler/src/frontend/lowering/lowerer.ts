@@ -1115,7 +1115,10 @@ export interface LowerOptions {
    * Asked after the push-down pass, or, for a program that needs the
    * general stream representation, after the stream pass in push-down mode
    * instead (decision D1 b): that pass can compile a program whose
-   * push-down pass failed, so it is the one whose diagnostics decide.
+   * push-down pass failed, so it is the one whose diagnostics decide. In
+   * both cases the protocol relower (dynAsyncProtocol) runs first when the
+   * deciding pass met a protocol spelling and failed: it too can compile
+   * the program, and then nothing is asked.
    * Absent for every other build, which keeps the full pipeline. */
   stopAfterPushDown?: ((result: LowerResult) => boolean) | undefined;
 }
@@ -1210,6 +1213,12 @@ export interface LowererMode {
    * pass saw an untyped value flow into a stream slot
    * (requiresDynNodeStreams). */
   dynNodeStreams?: boolean;
+  /** The program's checked-dynamic async-iteration protocol slots
+   * (TypeMapperCtx.dynAsyncProtocol). lowerToIr turns it on only for a
+   * program whose first pass moved a value no compiled async generator can
+   * hold into an AsyncIterable/AsyncIterableIterator/AsyncIterator slot
+   * (requiresDynAsyncProtocol). */
+  dynAsyncProtocol?: boolean;
   /** LoadResult.admittedOpinions: the JS opinion sites preflight admitted
    * (opinionAt). */
   admittedOpinions?: readonly AdmittedOpinion[] | undefined;
@@ -1568,7 +1577,7 @@ function lowerToIrWithIslands(
   // decision under the general representation: only a program that moves an
   // untyped value into a stream slot lowers again with them.
   let dynNodeStreams = pushDownEmit.requiresDynNodeStreams;
-  const streamPass = (dyn: boolean): Lowerer => {
+  const streamPass = (dyn: boolean, asyncProtocol = false): Lowerer => {
     // The stream pass always replaces the pass the comparison kept, and the
     // whole-slot flag is the only thing it reads from that pass. Taking the
     // flag first lets this frame reset the reachable set and the result
@@ -1597,6 +1606,7 @@ function lowerToIrWithIslands(
       generalNodeStreams: true,
       ...(dyn ? { dynNodeStreams: true } : {}),
       ...(wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...(asyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
@@ -1606,7 +1616,14 @@ function lowerToIrWithIslands(
     const generalEmitted = general.emitReachable(options.libRoots);
     reachable = generalEmitted.reachable;
     result = generalEmitted.result;
-    timing(dyn ? "dyn-streams-relower" : "general-streams-relower", { reachable: reachable.size });
+    timing(
+      asyncProtocol
+        ? "dyn-async-protocol-relower"
+        : dyn
+          ? "dyn-streams-relower"
+          : "general-streams-relower",
+      { reachable: reachable.size },
+    );
     return general;
   };
   // Localized failure (stage L3): push-down must never cost a failing
@@ -1656,6 +1673,82 @@ function lowerToIrWithIslands(
     wholeSlotDecided = won;
     return won;
   };
+  // Checked-dynamic async-iteration protocol slots (TypeMapperCtx.
+  // dynAsyncProtocol) are a per-program decision too: a program whose pass
+  // met an AsyncIterable<T> / AsyncIterableIterator<T> / AsyncIterator<T>
+  // spelling (requiresDynAsyncProtocol) and still failed to lower lowers
+  // again with them, and keeps that pass only when it resolves the program
+  // the generator spelling could not. A program that lowers without them
+  // never gets here and keeps its pass byte-identical. A stream program
+  // decides in `streamPasses`, against the stream pass: that pass replaces
+  // this one's result outright, and a push-down pass that ended at its last
+  // stream flag has not seen the whole program's protocol spellings.
+  //
+  // Like the whole-slot comparison, a round asks this once: the retry
+  // decision and the pipeline below ask the same question of the same pass.
+  let dynAsyncProtocol = false;
+  let asyncProtocolDecided = false;
+  const decideAsyncProtocol = (): void => {
+    if (asyncProtocolDecided) return;
+    asyncProtocolDecided = true;
+    if (!resultLowerer.requiresDynAsyncProtocol || result.diagnostics.length === 0) return;
+    const protocol = new Lowerer(program, entry, moduleOrder, {
+      facts,
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      targetPlatform,
+      startupCrash,
+      admittedOpinions: options.admittedOpinions,
+      inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      tierMode,
+      runtimeOptionalReport,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      ...(resultLowerer.generalNodeStreams ? { generalNodeStreams: true } : {}),
+      ...(resultLowerer.dynNodeStreams ? { dynNodeStreams: true } : {}),
+      ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      dynAsyncProtocol: true,
+    });
+    for (const d of extraModuleCycleDiags) protocol.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) protocol.pushDiag(d);
+    const protocolEmitted = protocol.emitReachable(options.libRoots);
+    if (protocolEmitted.result.diagnostics.length < result.diagnostics.length) {
+      reachable = protocolEmitted.reachable;
+      result = protocolEmitted.result;
+      resultLowerer = protocol;
+      dynAsyncProtocol = true;
+    }
+    timing("dyn-async-protocol-relower", { reachable: protocolEmitted.reachable.size });
+  };
+  // The passes of a stream program: the stream pass with the generator
+  // spelling, under the checked-dynamic stream slots when it asks for them,
+  // then the protocol decision by the rule above. The stream pass met a
+  // protocol spelling and still failed, so the program lowers once more
+  // under the same stream representation with the protocol slots, and that
+  // pass stands only when it has fewer errors.
+  const streamPasses = (): void => {
+    const general = streamPass(dynNodeStreams);
+    if (!dynNodeStreams && general.requiresDynNodeStreams) {
+      dynNodeStreams = true;
+      streamPass(true);
+    }
+    if (resultLowerer.requiresDynAsyncProtocol && result.diagnostics.length > 0) {
+      const kept = { reachable, result, resultLowerer, dynNodeStreams };
+      const protocol = streamPass(dynNodeStreams, true);
+      if (!dynNodeStreams && protocol.requiresDynNodeStreams) {
+        dynNodeStreams = true;
+        streamPass(true, true);
+      }
+      if (result.diagnostics.length < kept.result.diagnostics.length) dynAsyncProtocol = true;
+      else ({ reachable, result, resultLowerer, dynNodeStreams } = kept);
+    }
+  };
   // Prepared island rounds only (LowerOptions.stopAfterPushDown): a round
   // whose failing pass already implies a retry with more islands would
   // discard the passes below along with their diagnostics, so the caller's
@@ -1679,6 +1772,7 @@ function lowerToIrWithIslands(
     result: LowerResult;
     lowerer: Lowerer;
     dyn: boolean;
+    asyncProtocol: boolean;
   } | null = null;
   if (result.module === null && options.stopAfterPushDown !== undefined) {
     const stop = options.stopAfterPushDown;
@@ -1696,6 +1790,14 @@ function lowerToIrWithIslands(
           markModuleInitFences(program, result.runtimeFences);
         }
       }
+      // The protocol relower replaces a failure too, by the same rule: a
+      // program the protocol slots compile does not retry, and a dependency
+      // is not islanded for a refusal those slots clear.
+      decideAsyncProtocol();
+      if (dynAsyncProtocol) {
+        pushDownEmit = null;
+        markModuleInitFences(program, result.runtimeFences);
+      }
       if (result.module === null && stop(result)) {
         timing("stop-after-push-down");
         return result;
@@ -1704,12 +1806,11 @@ function lowerToIrWithIslands(
       const pushDownReachable = reachable;
       const pushDownResult = result;
       const pushDownLowerer = resultLowerer;
-      let dyn = dynNodeStreams;
-      let general = streamPass(dyn);
-      if (!dyn && general.requiresDynNodeStreams) {
-        dyn = true;
-        general = streamPass(true);
-      }
+      const pushDownDyn = dynNodeStreams;
+      // The stream pass and its protocol decision: the retry is decided from
+      // the pass they leave standing, which is the pass the pipeline reports
+      // short of its whole-slot comparison.
+      streamPasses();
       // A stream pass that compiles decides nothing: the round does not
       // retry, and the pipeline below keeps the program (a decision from
       // the push-down pass's diagnostics would island packages the final
@@ -1726,10 +1827,18 @@ function lowerToIrWithIslands(
       }
       // Push-down is the representation the stream pass above used, so the
       // pipeline reuses it whenever push-down wins the whole-slot comparison.
-      decidedStream = { reachable, result, lowerer: resultLowerer, dyn };
+      decidedStream = {
+        reachable,
+        result,
+        lowerer: resultLowerer,
+        dyn: dynNodeStreams,
+        asyncProtocol: dynAsyncProtocol,
+      };
       reachable = pushDownReachable;
       result = pushDownResult;
       resultLowerer = pushDownLowerer;
+      dynNodeStreams = pushDownDyn;
+      dynAsyncProtocol = false;
     }
   }
   if (
@@ -1742,15 +1851,21 @@ function lowerToIrWithIslands(
     // release the push-down pass here rather than at the end of the round.
     if (wholeSlotWins()) pushDownEmit = null;
   }
+  if (!generalNodeStreams) {
+    decideAsyncProtocol();
+    if (dynAsyncProtocol) pushDownEmit = null;
+  }
   if (generalNodeStreams) {
     if (decidedStream !== null && pushDownEmit !== null) {
       // Push-down won (the whole-slot pass ran no better, or did not run):
-      // the stream pass the retry decision above ran is the pass this
-      // pipeline would run, so it is reused instead of lowered again.
+      // the stream pass the retry decision above ran, with its protocol
+      // decision, is what this pipeline would run, so it is reused instead
+      // of lowered again.
       reachable = decidedStream.reachable;
       result = decidedStream.result;
       resultLowerer = decidedStream.lowerer;
       dynNodeStreams = decidedStream.dyn;
+      dynAsyncProtocol = decidedStream.asyncProtocol;
       pushDownEmit = null;
       timing("stream-relower-reused", { reachable: reachable.size });
     } else {
@@ -1758,11 +1873,7 @@ function lowerToIrWithIslands(
       // the retry decision's stream pass (if any) could not win and its IR
       // is released before this one allocates.
       decidedStream = null;
-      const general = streamPass(dynNodeStreams);
-      if (!dynNodeStreams && general.requiresDynNodeStreams) {
-        dynNodeStreams = true;
-        streamPass(true);
-      }
+      streamPasses();
       pushDownEmit = null;
     }
   }
@@ -1796,6 +1907,7 @@ function lowerToIrWithIslands(
       tierMode,
       runtimeOptionalReport,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
     for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
@@ -1834,6 +1946,7 @@ function lowerToIrWithIslands(
       tierMode,
       runtimeOptionalReport,
       wholeSlotDegradation: true,
+      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) whole.pushDiag(d);
     for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
@@ -1981,6 +2094,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
+      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
       reachable,
       remainder: true,
       alreadyFlushed: resultLowerer.flushedSymbols,
@@ -3946,6 +4060,17 @@ export class Lowerer {
   private checkStreamFlagsAbort(): void {
     if (this.streamFlagsAbortRequested) throw new StreamFlagsAbort();
   }
+  /** The first pass met an AsyncIterable<T>, AsyncIterableIterator<T> or
+   * AsyncIterator<T> spelling (TypeMapperCtx.noteAsyncProtocolSlot), or a
+   * value the generator representation that spelling takes on the first pass
+   * cannot hold (a class or object literal implementing Symbol.asyncIterator)
+   * reached one of those slots. lowerToIr then lowers the program again with
+   * checked-dynamic protocol slots (TypeMapperCtx.dynAsyncProtocol), where
+   * those spellings hold the dynamic value and `for await` runs the runtime's
+   * source-agnostic protocol, and keeps that pass only when it resolves what
+   * the first could not. A program that lowers on the first pass never runs
+   * it and stays byte-identical. */
+  requiresDynAsyncProtocol = false;
   /** Receiver representations forced by the per-value stream dispatch
    * (dyn-streams.ts): the native arm lowers a member call on the unboxed
    * stream through the ordinary class-method path. */
@@ -5190,6 +5315,7 @@ export class Lowerer {
     "runtimeOptionalReport",
     "generalNodeStreams",
     "dynNodeStreams",
+    "dynAsyncProtocol",
     "targetPlatform",
     "startupCrash",
     "projectCheckJs",
@@ -5404,6 +5530,11 @@ export class Lowerer {
         () => (this.requiresDynNodeStreams = true),
       ),
       flag(
+        "requiresDynAsyncProtocol",
+        () => this.requiresDynAsyncProtocol,
+        () => (this.requiresDynAsyncProtocol = true),
+      ),
+      flag(
         "errorPrototypeValues",
         () => this.errorPrototypeValues,
         () => (this.errorPrototypeValues = true),
@@ -5520,6 +5651,7 @@ export class Lowerer {
   readonly runtimeOptionalReport: boolean;
   readonly generalNodeStreams: boolean;
   readonly dynNodeStreams: boolean;
+  readonly dynAsyncProtocol: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
   dynamicFunctions: DynamicFunction[] = [];
   /** Their IR, for coverage's dynamic statement count. */
@@ -5811,6 +5943,7 @@ export class Lowerer {
       : RuntimeOptionalProvenance.fromEnvironment();
     this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
+    this.dynAsyncProtocol = mode.dynAsyncProtocol ?? false;
     this.workerTargets = mode.workerTargets ?? [];
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
@@ -5968,6 +6101,12 @@ export class Lowerer {
       typeMemoShared: this.sharedTypeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
+      ...(this.dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
+      // A hook like typeMemoFor: the ctx is spread in several places, and
+      // this one only ever writes a Lowerer field.
+      noteAsyncProtocolSlot: () => {
+        this.requiresDynAsyncProtocol = true;
+      },
       // Memoization is scoped by the binding maps (typeMemoFor); only a mixin
       // context opts out, because mixinClassInstance answers by class node and
       // the bindings do not identify it.
@@ -6221,10 +6360,13 @@ export class Lowerer {
 
   /** `unknown`, `object`, an array of those, or a union of those with
    * `null` and `undefined`: types whose values use checked-dynamic storage
-   * as they do in JavaScript class fields. */
+   * as they do in JavaScript class fields. A type parameter counts when the
+   * current generic instantiation binds it to the checked-dynamic kind
+   * (`value: T` in `Box<unknown>`), so `T | null` and `T[]` follow. */
   private opaqueValueType(type: ts.Type): boolean {
     const opaque = (part: ts.Type): boolean =>
       (part.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) !== 0 ||
+      this.typeParamResolver(part)?.kind === "dyn" ||
       (this.checker.isArrayType(part) &&
         this.checker.getTypeArguments(part as ts.TypeReference).every(opaque));
     if (!type.isUnionType()) return opaque(type);
@@ -12892,6 +13034,19 @@ export class Lowerer {
           (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
           this.isStdlibFile(ts.getSourceFileOfNode(d)),
       );
+    // An async-iteration protocol interface (AsyncIterable<T>,
+    // AsyncIterableIterator<T>, AsyncIterator<T>) that reached the lib
+    // fence: its value is the checked-dynamic one under the protocol slots
+    // (TypeMapperCtx.dynAsyncProtocol), where an object literal or class
+    // implementing Symbol.asyncIterator has a representation the typed
+    // generator spelling cannot hold. lowerToIr relowers the program with
+    // those slots; a program whose values are all compiled async generators
+    // never gets here.
+    if (stdlibNominal && stdlibOwnSym !== undefined) {
+      const name = ts.symbolName(stdlibOwnSym);
+      if (name === "AsyncIterable" || name === "AsyncIterableIterator" || name === "AsyncIterator")
+        this.requiresDynAsyncProtocol = true;
+    }
     // OVERLOADED call signatures (SC2007) — after the generic branch, so a
     // generic overload set keeps the monomorphization story: a value of a
     // multi-signature type has no single compiled signature to hold.
@@ -13565,6 +13720,15 @@ export class Lowerer {
       // slots (dyn-streams.ts).
       if (actual.kind === "dyn") this.requiresDynNodeStreams = true;
     }
+    // A value no compiled async generator can hold (a class or object
+    // literal implementing Symbol.asyncIterator, or any other object)
+    // reaching an async generator slot: on the typed spelling
+    // (dynAsyncProtocol off) an AsyncIterable<T> / AsyncIterableIterator<T>
+    // / AsyncIterator<T> slot IS a generator slot, and the checked-dynamic
+    // protocol form is what holds the value. lowerToIr relowers a program
+    // that needed it.
+    if (!this.dynAsyncProtocol && expected.kind === "generator" && expected.async === true)
+      this.requiresDynAsyncProtocol = true;
     // dyn mismatches first. A dyn ('unknown') value flowing into a typed
     // slot needs a CHECKED cast — the hint points at `as <type>`; tsc
     // usually rejects this before we do, so the fence is mostly defensive.

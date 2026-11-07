@@ -484,6 +484,11 @@ void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
  * TypeError's message gains the declaration and the type patch that would
  * admit the value. `origin` is the compiler's origin string. */
 void scr_type_origin_note(const char *origin);
+/* A checked conversion failed in a dev build (scr_conversion_trace.c,
+ * linked by executables built with debug sources): with
+ * SCRIPTC_CONVERSION_TRACE set, the pending TypeError and `where`, the
+ * conversion's position as a stack frame line, go to stderr. */
+void scr_conversion_trace(const char *where);
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
  * class by the compiler: the string names of methods, getters and setters

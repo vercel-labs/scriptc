@@ -126,7 +126,7 @@ import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
 import { isDiffieHellmanType, lowerDiffieHellmanCall } from "./builtins/dh.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
-import { valueStreamOf } from "./builtins/hash-stream.js";
+import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import {
@@ -249,8 +249,10 @@ import { shareIslandProcessState } from "./island-process-state.js";
 import { adoptIslandThenables } from "./island-thenables.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
+import { AsyncProtocolHolders } from "./async-protocol-holders.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
+import { type ClassHierarchy, classHierarchyOf } from "./construction-reads.js";
 import { enumObjectRefusal, type EnumObject } from "./enum-objects.js";
 import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
@@ -633,7 +635,7 @@ import {
   lowerProcessEnvGet,
   refuseHeldEnvWrite,
 } from "./builtins/environment.js";
-import { lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
+import { jsonResultTextOnly, lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
 import { lowerCryptoComposedCall, lowerCryptoModuleCall } from "./builtins/crypto.js";
 import {
   legacyUrlClassValue,
@@ -835,6 +837,7 @@ import {
   maybePromiseUnionOf,
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
+import { mayResolveThroughThen } from "./promise-resolution.js";
 import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
@@ -1309,12 +1312,6 @@ export interface LowererMode {
    * pass saw an untyped value flow into a stream slot
    * (requiresDynNodeStreams). */
   dynNodeStreams?: boolean;
-  /** The program's checked-dynamic async-iteration protocol slots
-   * (TypeMapperCtx.dynAsyncProtocol). lowerToIr turns it on only for a
-   * program whose first pass moved a value no compiled async generator can
-   * hold into an AsyncIterable/AsyncIterableIterator/AsyncIterator slot
-   * (requiresDynAsyncProtocol). */
-  dynAsyncProtocol?: boolean;
   /** LoadResult.admittedOpinions: the JS opinion sites preflight admitted
    * (opinionAt). */
   admittedOpinions?: readonly AdmittedOpinion[] | undefined;
@@ -1703,62 +1700,11 @@ function lowerToIrWithIslands(
     }
     timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
   }
-  // Checked-dynamic async-iteration protocol slots (TypeMapperCtx.
-  // dynAsyncProtocol) are a per-program decision too: a program whose pass
-  // met an AsyncIterable<T> / AsyncIterableIterator<T> / AsyncIterator<T>
-  // spelling (requiresDynAsyncProtocol) and still failed to lower lowers
-  // again with them, and keeps that pass only when it resolves the program
-  // the generator spelling could not. A program that lowers without them
-  // never gets here and keeps its pass byte-identical. A stream program
-  // decides below, against the stream pass: that pass replaces this one's
-  // result outright, and a push-down pass that ended where it asked for a
-  // stream mode has not seen the whole program's protocol spellings.
-  let dynAsyncProtocol = false;
-  if (
-    !generalNodeStreams &&
-    resultLowerer.requiresDynAsyncProtocol &&
-    result.diagnostics.length > 0
-  ) {
-    const protocol = new Lowerer(program, entry, moduleOrder, {
-      facts,
-      frontendServices: options.frontendServices,
-      projectCheckJs: options.projectCheckJs ?? false,
-      targetPlatform,
-      startupCrash,
-      admittedOpinions: options.admittedOpinions,
-      inlineRequireCycleCalls,
-      dynamicImportRejections: options.dynamicImportRejections,
-      ffiImports,
-      libraryCallbacks,
-      forkTargets,
-      workerTargets,
-      externalTypes,
-      externalTypeSpecifiersByFile,
-      tierMode,
-      runtimeOptionalReport,
-      typeClaims,
-      ffiBindingSymbols: ffiValidation.symbolsByName,
-      ...(resultLowerer.generalNodeStreams ? { generalNodeStreams: true } : {}),
-      ...(resultLowerer.dynNodeStreams ? { dynNodeStreams: true } : {}),
-      ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
-      dynAsyncProtocol: true,
-    });
-    for (const d of extraModuleCycleDiags) protocol.pushDiag(d);
-    for (const d of ffiValidation.diagnostics) protocol.pushDiag(d);
-    const protocolEmitted = protocol.emitReachable(options.libRoots);
-    if (protocolEmitted.result.diagnostics.length < result.diagnostics.length) {
-      reachable = protocolEmitted.reachable;
-      result = protocolEmitted.result;
-      resultLowerer = protocol;
-      dynAsyncProtocol = true;
-    }
-    timing("dyn-async-protocol-relower", { reachable: protocolEmitted.reachable.size });
-  }
   // Checked-dynamic stream slots (dyn-streams.ts) are a further per-program
   // decision under the general representation: only a program that moves an
   // untyped value into a stream slot lowers again with them.
   let dynNodeStreams = pushDownRequest !== null && pushDownRequest.dyn;
-  const streamPass = (dyn: boolean, asyncProtocol = false): Lowerer => {
+  const streamPass = (dyn: boolean): Lowerer => {
     const general = new Lowerer(program, entry, moduleOrder, {
       facts,
       frontendServices: options.frontendServices,
@@ -1783,15 +1729,10 @@ function lowerToIrWithIslands(
       // is replaced by the pass that has them.
       ...(dyn ? { dynNodeStreams: true } : { abortOnStreamFlags: abortReplacedPasses }),
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
-      ...(asyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
-    const phase = asyncProtocol
-      ? "dyn-async-protocol-relower"
-      : dyn
-        ? "dyn-streams-relower"
-        : "general-streams-relower";
+    const phase = dyn ? "dyn-streams-relower" : "general-streams-relower";
     let generalEmitted: { reachable: Set<string>; result: LowerResult };
     try {
       generalEmitted = general.emitReachable(options.libRoots);
@@ -1816,21 +1757,21 @@ function lowerToIrWithIslands(
       throw new InternalCompilerError(
         "lowerer bug: the push-down pass met an untyped stream flow after its stream request, and the general stream pass met none",
       );
-    // The protocol decision of a stream program, by the rule above: the
-    // stream pass met a protocol spelling and still failed, so the program
-    // lowers once more under the same stream representation with the
-    // protocol slots, and that pass stands only when it has fewer errors.
-    if (resultLowerer.requiresDynAsyncProtocol && result.diagnostics.length > 0) {
-      const kept = { reachable, result, resultLowerer, dynNodeStreams };
-      const protocol = streamPass(dynNodeStreams, true);
-      if (!dynNodeStreams && protocol.requestedStreamMode() !== null) {
-        dynNodeStreams = true;
-        streamPass(true, true);
-      }
-      if (result.diagnostics.length < kept.result.diagnostics.length) dynAsyncProtocol = true;
-      else ({ reachable, result, resultLowerer, dynNodeStreams } = kept);
-    }
   }
+  // The async-iteration protocol analysis (async-protocol-holders.ts) ran
+  // inside the first pass that mapped a protocol type; its cost is part of
+  // that pass's phase, reported here on its own line.
+  const asyncProtocols = facts.askedAsyncProtocolHolders;
+  if (phaseTiming && asyncProtocols !== null && asyncProtocols.sites > 0)
+    process.stderr.write(
+      `scriptc lowering ${JSON.stringify({
+        phase: "async-protocol-flows",
+        scan_ms: asyncProtocols.elapsedMs,
+        sites: asyncProtocols.sites,
+        marked: asyncProtocols.markedCount,
+        island_declared: asyncProtocols.islandDeclared,
+      })}\n`,
+    );
   // A generic class-rest support decision can depend on record metadata
   // whose historical owner is discovered only while retained bodies lower.
   // If the settled answer is a fence, rerun the ordinary reachable emit so
@@ -1862,7 +1803,6 @@ function lowerToIrWithIslands(
       runtimeOptionalReport,
       typeClaims,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
-      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
     for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
@@ -1902,7 +1842,6 @@ function lowerToIrWithIslands(
       runtimeOptionalReport,
       typeClaims,
       wholeSlotDegradation: true,
-      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
     for (const d of extraModuleCycleDiags) whole.pushDiag(d);
     for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
@@ -2052,7 +1991,6 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
-      ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
       reachable,
       remainder: true,
       alreadyFlushed: resultLowerer.flushedSymbols,
@@ -2168,7 +2106,10 @@ export function staticImportNamespaceType(
     }
   }
   if (moduleId === null) return null;
-  const ns: IrType = { kind: "moduleNs", moduleId };
+  // node:constants has no census and its ESM namespace is a checked-dynamic
+  // object (sorted runtime names plus "default"), so the import's value is
+  // typed dynamically rather than as a module namespace token.
+  const ns: IrType = moduleId === "builtin:constants" ? DYN : { kind: "moduleNs", moduleId };
   return awaited ? ns : { kind: "promise", inner: ns };
 }
 
@@ -3285,8 +3226,37 @@ export class Lowerer {
   /** All storage slots widened for runtime absence, including slots whose
    * current control-flow branch has temporarily narrowed the value. */
   readonly runtimeOptionalStorageLocals = new Set<IrLocal>();
-  /** `var` bindings code can read before their first store
-   * (var-hoisting.ts): their storage holds undefined until then. */
+  /** The files being lowered, for whole-program syntax scans. */
+  programSourceFiles: readonly ts.SourceFile[] = [];
+  private classHierarchyCache: ClassHierarchy | null = null;
+
+  /** The program's classes by base class (construction-reads.ts). */
+  classHierarchy(): ClassHierarchy {
+    return (this.classHierarchyCache ??= classHierarchyOf(this.programSourceFiles, (heritage) => {
+      let base = heritage;
+      while (ts.isParenthesizedExpression(base)) base = base.expression;
+      if (!ts.isIdentifier(base) && !ts.isPropertyAccessExpression(base)) return undefined;
+      let symbol = panicSafe(() => this.checker.getSymbolAtLocation(base), undefined);
+      if (symbol && symbol.flags & ts.SymbolFlags.Alias)
+        symbol = panicSafe(() => this.checker.getAliasedSymbol(symbol!), undefined);
+      const declaration = symbol?.valueDeclaration;
+      if (!declaration) return undefined;
+      // A runtime or library class runs no program code while it constructs.
+      if (ts.getSourceFileOfNode(declaration).isDeclarationFile) return null;
+      if (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration))
+        return declaration;
+      if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+        let value = declaration.initializer;
+        while (ts.isParenthesizedExpression(value)) value = value.expression;
+        if (ts.isClassExpression(value)) return value;
+      }
+      return undefined;
+    }));
+  }
+
+  /** `var` bindings, and `let` bindings declared without an initializer,
+   * that code can read before their first store (var-hoisting.ts): their
+   * storage holds undefined until then. */
   readonly earlyReadVars = new Set<ts.Symbol>();
   /** Enums whose object some code uses as a value (enum-objects.ts), by
    * symbol and by their first and last declarations. Filled before the
@@ -4038,17 +4008,6 @@ export class Lowerer {
     this.streamRequest = this.requestedStreamMode();
     if (this.streamRequest !== null && this.abortOnStreamFlags) throw new StreamFlagsAbort();
   }
-  /** The first pass met an AsyncIterable<T>, AsyncIterableIterator<T> or
-   * AsyncIterator<T> spelling (TypeMapperCtx.noteAsyncProtocolSlot), or a
-   * value the generator representation that spelling takes on the first pass
-   * cannot hold (a class or object literal implementing Symbol.asyncIterator)
-   * reached one of those slots. lowerToIr then lowers the program again with
-   * checked-dynamic protocol slots (TypeMapperCtx.dynAsyncProtocol), where
-   * those spellings hold the dynamic value and `for await` runs the runtime's
-   * source-agnostic protocol, and keeps that pass only when it resolves what
-   * the first could not. A program that lowers on the first pass never runs
-   * it and stays byte-identical. */
-  requiresDynAsyncProtocol = false;
   /** Receiver representations forced by the per-value stream dispatch
    * (dyn-streams.ts): the native arm lowers a member call on the unboxed
    * stream through the ordinary class-method path. */
@@ -4108,6 +4067,10 @@ export class Lowerer {
   /** Method adapter names are owned by class-method-values. Looking them
    * up must not scan and retain every unrelated lifted function. */
   readonly classMethodValueHelpers = new Set<string>();
+  /** The method value adapters (`%method.value:…`) of methods whose source
+   * reads `this` or `super`: each checks its receiver on every call, even
+   * when no read of the receiver is left in the method's lowered body. */
+  readonly receiverReadingMethodValues = new Set<string>();
   /** Reflected class methods whose lambda is lowering right now (null
    * until lowerLambda named it), with the closure it will produce: a
    * method that reads itself as a value inside its own body
@@ -4376,10 +4339,14 @@ export class Lowerer {
   /** Inline Promise.then parameters whose contextual type is a builtin
    * module namespace anonymous object. The settled native token is the
    * ABI truth even when the checker type has no stable module symbol. */
-  /** Receivers of a stream call on a Hash, Hmac, Cipheriv or Decipheriv
-   * (lowerHashStreamCall): for the duration of that call, the receiver
-   * lowers to the Transform of the value held in the named local. */
-  readonly valueStreamReceivers = new Map<ts.Expression, { localId: string; type: IrType }>();
+  /** Receivers of a stream call on a Hash, Hmac, Cipheriv, Decipheriv,
+   * Sign or Verify (lowerHashStreamCall): for the duration of that call,
+   * the receiver lowers to the native stream of the value held in the
+   * named local — its Transform, or for a signer its Writable. */
+  readonly valueStreamReceivers = new Map<
+    ts.Expression,
+    { localId: string; type: IrType; writable: boolean }
+  >();
   /** fs call arguments evaluated ahead of a URL path's conversion
    * (builtins/fs-paths.ts): each lowers to the hidden local that holds its
    * value, which is null until the path's lowering has saved it. */
@@ -5013,6 +4980,7 @@ export class Lowerer {
       mapTable("unionCallHelpers", this.unionCallHelpers),
       mapTable("indexedUnionNumericTwins", this.indexedUnionNumericTwins),
       setTable("coercions.checkedNarrows", this.coercions.checkedNarrows),
+      setTable("coercions.deferredRetags", this.coercions.deferredRetags),
       irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
       mapTable("coercions.retags", this.coercions.retags),
       mapTable("coercions.narrows", this.coercions.narrows),
@@ -5023,6 +4991,7 @@ export class Lowerer {
       mapTable("assertHelpers", this.assertHelpers),
       mapTable("inspectHelpers", this.inspectHelpers),
       setTable("classMethodValueHelpers", this.classMethodValueHelpers),
+      setTable("receiverReadingMethodValues", this.receiverReadingMethodValues),
       setTable("freshClosureAdapters", this.freshClosureAdapters),
       mapTable("iterDrainHelpers", this.iterDrainHelpers),
       mapTable("mapHofHelpers", this.mapHofHelpers),
@@ -5334,7 +5303,6 @@ export class Lowerer {
     "typeClaims",
     "generalNodeStreams",
     "dynNodeStreams",
-    "dynAsyncProtocol",
     "targetPlatform",
     "startupCrash",
     "projectCheckJs",
@@ -5350,6 +5318,8 @@ export class Lowerer {
     "partialAssertions",
     "foreignElementKeys",
     // caches made when first needed
+    "programSourceFiles",
+    "classHierarchyCache",
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
@@ -5382,6 +5352,7 @@ export class Lowerer {
     // index and provenance hit check, the comparisons the shared answers
     // are checked against.
     "ownClassProtocols",
+    "ownAsyncProtocolHolders",
     "verifySymbolProvenance",
     // Whether the program has a JavaScript implementation file depends only on
     // its modules, so the answer is a memo computed on first use and the
@@ -5484,6 +5455,9 @@ export class Lowerer {
     "narrowing.effects",
     "narrowing.capturedMutable",
     "narrowing.staleBindings",
+    "narrowing.inherited",
+    "narrowing.writes",
+    "narrowing.resolving",
     "narrowing.identifierWrites",
     "narrowing.widened",
     "narrowing.plainContainers",
@@ -5567,11 +5541,6 @@ export class Lowerer {
         "requiresDynNodeStreams",
         () => this.requiresDynNodeStreams,
         () => (this.requiresDynNodeStreams = true),
-      ),
-      flag(
-        "requiresDynAsyncProtocol",
-        () => this.requiresDynAsyncProtocol,
-        () => (this.requiresDynAsyncProtocol = true),
       ),
       flag(
         "errorPrototypeValues",
@@ -5704,7 +5673,6 @@ export class Lowerer {
   readonly boundaryClaims = new Set<string>();
   readonly generalNodeStreams: boolean;
   readonly dynNodeStreams: boolean;
-  readonly dynAsyncProtocol: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
   dynamicFunctions: DynamicFunction[] = [];
   /** Their IR, for coverage's dynamic statement count. */
@@ -6199,7 +6167,6 @@ export class Lowerer {
       : RuntimeOptionalProvenance.fromEnvironment();
     this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
-    this.dynAsyncProtocol = mode.dynAsyncProtocol ?? false;
     this.workerTargets = mode.workerTargets ?? [];
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
@@ -6358,12 +6325,9 @@ export class Lowerer {
       typeMemoShared: this.sharedTypeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
-      ...(this.dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
-      // A hook like typeMemoFor: the ctx is spread in several places, and
-      // this one only ever writes a Lowerer field.
-      noteAsyncProtocolSlot: () => {
-        this.requiresDynAsyncProtocol = true;
-      },
+      // The protocol types that hold a checked-dynamic value are a fact of
+      // the program (async-protocol-holders.ts), the same in every pass.
+      asyncProtocolHoldsImplementor: (element) => this.asyncProtocolHoldsImplementor(element),
       // Memoization is scoped by the binding maps (typeMemoFor); only a mixin
       // context opts out, because mixinClassInstance answers by class node and
       // the bindings do not identify it.
@@ -6485,6 +6449,30 @@ export class Lowerer {
     );
   }
   private ownClassProtocols: ClassProtocols | null = null;
+
+  /** Whether the async-iteration protocol types over `element` hold the
+   * checked-dynamic value (TypeMapperCtx.asyncProtocolHoldsImplementor): the
+   * round's shared analysis (lowering-facts.ts), a pure function of the
+   * checker and the program's modules. With SCRIPTC_LOWERING_FACTS_VERIFY this Lowerer
+   * runs its own and every answer is compared. */
+  private asyncProtocolHoldsImplementor(element: ts.Type | undefined): boolean {
+    const answer = this.facts.asyncProtocolHolders(this.entry, this.nodeIslands).holds(element);
+    if (!this.facts.verify) return answer;
+    this.ownAsyncProtocolHolders ??= new AsyncProtocolHolders(
+      this.checker,
+      this.moduleOrder.includes(this.entry) ? this.moduleOrder : [...this.moduleOrder, this.entry],
+      (sf) => this.isStdlibFile(sf),
+      () => this.facts.islandProtocolFiles(this.nodeIslands),
+    );
+    const fresh = this.ownAsyncProtocolHolders.holds(element);
+    this.facts.noteVerified("asyncProtocolHolders");
+    if (answer === fresh) return answer;
+    throw new InternalCompilerError(
+      `shared async protocol analysis answered ${String(answer)} where a fresh one over the ` +
+        `same program answered ${String(fresh)}`,
+    );
+  }
+  private ownAsyncProtocolHolders: AsyncProtocolHolders | null = null;
 
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
@@ -8592,8 +8580,67 @@ export class Lowerer {
     // A constrained type parameter keeps the checker's binding, since the
     // body may use what the constraint promises.
     type BareSlots = { params: (ts.Symbol | null)[]; result: ts.Symbol | null };
+    /** What the slots are read from: the function-like a call instantiates
+     * and the symbols of its own type parameters. */
+    type GenericCallee = Pick<GenericFnInfo, "decl" | "typeParams" | "implicitParams">;
+    // A generic member of a class (a method, a static method, a field that
+    // holds a generic function) is instantiated per call as a generic
+    // function is, through the same genericCallInstance. Its GenericFnInfo
+    // is made when its class lowers, and a generic class makes one for each
+    // of its instantiations, some of them after this scan. The slots depend
+    // on the declaration alone, so the callee is read from it. An overloaded
+    // method keeps the checker's bindings: its calls instantiate through the
+    // overload they resolve to.
+    const genericMembers = new Map<ts.Symbol, GenericCallee | null>();
+    const genericMemberOf = (symbol: ts.Symbol): GenericCallee | null => {
+      const cached = genericMembers.get(symbol);
+      if (cached !== undefined) return cached;
+      const compute = (): GenericCallee | null => {
+        const declaration = symbol.valueDeclaration;
+        if (
+          !declaration ||
+          !(ts.isMethodDeclaration(declaration) || ts.isPropertyDeclaration(declaration)) ||
+          !declaration.parent ||
+          !(ts.isClassDeclaration(declaration.parent) || ts.isClassExpression(declaration.parent))
+        )
+          return null;
+        // A field names the function it holds directly: an assertion around
+        // the function gives the field that type, not the function's own
+        // type parameters.
+        let decl: ts.Node | undefined = declaration;
+        if (ts.isPropertyDeclaration(declaration)) {
+          decl = declaration.initializer;
+          while (decl && ts.isParenthesizedExpression(decl)) decl = decl.expression;
+        }
+        if (
+          !decl ||
+          !(
+            ts.isMethodDeclaration(decl) ||
+            ts.isArrowFunction(decl) ||
+            ts.isFunctionExpression(decl)
+          ) ||
+          !decl.body ||
+          (decl.typeParameters?.nodes.length ?? 0) === 0 ||
+          symbol.declarations.length !== 1
+        )
+          return null;
+        const typeParams: ts.Symbol[] = [];
+        for (const parameter of decl.typeParameters!.nodes) {
+          const typeParameter = symbolOf(parameter.name);
+          if (!typeParameter) return null;
+          typeParams.push(typeParameter);
+        }
+        return { decl, typeParams };
+      };
+      const member = panicSafe(compute, null);
+      genericMembers.set(symbol, member);
+      return member;
+    };
+    /** The generic function or member a call of `symbol` instantiates. */
+    const genericCalleeOf = (symbol: ts.Symbol): GenericCallee | null =>
+      this.genericFnsBySymbol.get(symbol) ?? genericMemberOf(symbol);
     const bareSlots = new Map<ts.Node, BareSlots | null>();
-    const bareTypeParameterSlots = (info: GenericFnInfo): BareSlots | null => {
+    const bareTypeParameterSlots = (info: GenericCallee): BareSlots | null => {
       const decl = info.decl;
       const cached = bareSlots.get(decl);
       if (cached !== undefined) return cached;
@@ -8670,7 +8717,7 @@ export class Lowerer {
       if (!ts.isIdentifier(call.expression) && !ts.isPropertyAccessExpression(call.expression))
         return false;
       const symbol = callableSymbolOf(call.expression);
-      const info = symbol ? this.genericFnsBySymbol.get(symbol) : undefined;
+      const info = symbol ? genericCalleeOf(symbol) : null;
       const result = info ? bareTypeParameterSlots(info)?.result : null;
       return !!result && bound.has(result);
     };
@@ -8961,6 +9008,30 @@ export class Lowerer {
         this.isStdlibGlobal(e.expression.expression, "JSON")
       )
         return true;
+      // An untyped root can serialize to undefined; the result keeps it
+      // unless every use reads it as text (jsonResultTextOnly).
+      if (
+        ts.isCallExpression(e) &&
+        e.arguments.nodes.length > 0 &&
+        ts.isPropertyAccessExpression(e.expression) &&
+        e.expression.name.text === "stringify" &&
+        this.isStdlibGlobal(e.expression.expression, "JSON") &&
+        !ts.isSpreadElement(e.arguments.nodes[0]!) &&
+        !jsonResultTextOnly(this, e)
+      ) {
+        // A JavaScript parameter has no mapping yet: its checker type says.
+        // An instance of a class with a toJSON method serializes what the
+        // method returns, which can be undefined too.
+        const root = this.typeOf(e.arguments.nodes[0]!);
+        const mapped = this.mapTypeOf(root);
+        if (
+          mapped?.kind === "dyn" ||
+          (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) ||
+          (mapped?.kind === "object" &&
+            this.findMethodOn(this.classes.get(mapped.className) ?? null, "toJSON") !== null)
+        )
+          return true;
+      }
       if (
         ts.isCallExpression(e) &&
         ts.isPropertyAccessExpression(e.expression) &&
@@ -10189,6 +10260,35 @@ export class Lowerer {
           (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
         );
       },
+      settledMayBeUndefined: (node) => {
+        // `Promise.all` resolves to an array or tuple of the entries'
+        // settled types. `(T | undefined)[]` stores T elements, so an
+        // undefined settled value is a fact of the result, not of its ABI.
+        const type = typeOrNull(node);
+        if (type === null) return true;
+        return panicSafe(() => {
+          const result = this.checker.getAwaitedType(type);
+          if (
+            result === undefined ||
+            !(this.checker.isArrayType(result) || this.checker.isTupleType(result))
+          )
+            return true;
+          return this.checker
+            .getTypeArguments(result as ts.TypeReference)
+            .some((element) =>
+              (element.isUnionType() ? ts.constituentTypes(element) : [element]).some(
+                (part) =>
+                  (part.flags &
+                    (ts.TypeFlags.Undefined |
+                      ts.TypeFlags.Void |
+                      ts.TypeFlags.Any |
+                      ts.TypeFlags.Unknown |
+                      ts.TypeFlags.TypeParameter)) !==
+                  0,
+              ),
+            );
+        }, true);
+      },
       callbackReturnsUndefined: (node) => {
         if (callbackReturnsOptional(node)) return true;
         // A callback the checker types as possibly returning undefined
@@ -10662,10 +10762,11 @@ export class Lowerer {
             return ts.isCallExpression(use.parent) && use.parent.expression !== use;
           };
           if (!sig) {
-            // A generic function has one signature per instance. A possibly
-            // missing argument at a slot declared as a bare type parameter
-            // binds that parameter with undefined for this call's instance.
-            const generic = this.genericFnsBySymbol.get(symbol);
+            // A generic function or member has one signature per instance.
+            // A possibly missing argument at a slot declared as a bare type
+            // parameter binds that parameter with undefined for this call's
+            // instance.
+            const generic = genericCalleeOf(symbol);
             if (generic) {
               const slots = bareTypeParameterSlots(generic);
               if (!slots || node.arguments.nodes.some(ts.isSpreadElement)) return;
@@ -10951,9 +11052,9 @@ export class Lowerer {
       }
       return changed;
     };
-    // A `var` that code can read before its first store holds undefined
-    // there, whatever its declared type.
-    for (const symbol of earlyReadVarSymbols(this, sourceFiles)) {
+    // A `var` or an uninitialized `let` that code can read before its first
+    // store holds undefined there, whatever its declared type.
+    for (const [symbol, read] of earlyReadVarSymbols(this, sourceFiles)) {
       // Text codec bindings keep their own presence-checked storage.
       const declaration = symbol.valueDeclaration;
       const mapped =
@@ -10964,6 +11065,15 @@ export class Lowerer {
         continue;
       optionalSymbols.add(symbol);
       this.earlyReadVars.add(symbol);
+      if (declaration && ts.isVariableDeclaration(declaration))
+        provenance?.note("unassigned-read", declaration.name, read);
+      // `let f: () => void;` guards its dead zone with the empty function
+      // pointer. The widened slot holds undefined as that pointer, so the
+      // dead zone moves to the binding's initialization flag
+      // (cycle-initialization.ts gives every such binding one) and the slot
+      // keeps its typed storage.
+      const global = this.globalsBySymbol.get(symbol);
+      if (global?.tdz && this.uninitializedLexicalGlobals.has(global.id)) delete global.tdz;
     }
     // Number the sites of every file. The first and the last pass visit
     // every site; the passes between visit only the sites whose facts
@@ -11456,6 +11566,8 @@ export class Lowerer {
   run(): LowerResult {
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
+    this.programSourceFiles = parts.map((fp) => fp.sf);
+    this.classHierarchyCache = null;
     // The coverage remainder deliberately visits every body that reachable
     // emit skipped. Those files are already phase-managed, so an ordinary
     // checker miss would stay a one-node IPC query instead of falling back
@@ -12083,6 +12195,8 @@ export class Lowerer {
     this.deferredModuleInitializers = new DeferredModuleInitializers();
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
+    this.programSourceFiles = parts.map((fp) => fp.sf);
+    this.classHierarchyCache = null;
     // Direct lowering callers do not necessarily run program preflight.
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.
@@ -13793,19 +13907,6 @@ export class Lowerer {
           (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
           this.isStdlibFile(ts.getSourceFileOfNode(d)),
       );
-    // An async-iteration protocol interface (AsyncIterable<T>,
-    // AsyncIterableIterator<T>, AsyncIterator<T>) that reached the lib
-    // fence: its value is the checked-dynamic one under the protocol slots
-    // (TypeMapperCtx.dynAsyncProtocol), where an object literal or class
-    // implementing Symbol.asyncIterator has a representation the typed
-    // generator spelling cannot hold. lowerToIr relowers the program with
-    // those slots; a program whose values are all compiled async generators
-    // never gets here.
-    if (stdlibNominal && stdlibOwnSym !== undefined) {
-      const name = ts.symbolName(stdlibOwnSym);
-      if (name === "AsyncIterable" || name === "AsyncIterableIterator" || name === "AsyncIterator")
-        this.requiresDynAsyncProtocol = true;
-    }
     // OVERLOADED call signatures (SC2007) — after the generic branch, so a
     // generic overload set keeps the monomorphization story: a value of a
     // multi-signature type has no single compiled signature to hold.
@@ -14494,15 +14595,6 @@ export class Lowerer {
       // slots (dyn-streams.ts).
       if (actual.kind === "dyn") this.requiresDynNodeStreams = true;
     }
-    // A value no compiled async generator can hold (a class or object
-    // literal implementing Symbol.asyncIterator, or any other object)
-    // reaching an async generator slot: on the typed spelling
-    // (dynAsyncProtocol off) an AsyncIterable<T> / AsyncIterableIterator<T>
-    // / AsyncIterator<T> slot IS a generator slot, and the checked-dynamic
-    // protocol form is what holds the value. lowerToIr relowers a program
-    // that needed it.
-    if (!this.dynAsyncProtocol && expected.kind === "generator" && expected.async === true)
-      this.requiresDynAsyncProtocol = true;
     // dyn mismatches first. A dyn ('unknown') value flowing into a typed
     // slot needs a CHECKED cast — the hint points at `as <type>`; tsc
     // usually rejects this before we do, so the fence is mostly defensive.
@@ -16393,11 +16485,14 @@ export class Lowerer {
     return this.coerceInto(node, e, expected);
   }
 
-  /** An unannotated empty collection has no existing elements or aliases
-   * that constrain its layout. An explicit type argument still wins. */
-  emptyCollectionFor(node: ts.Expression, expected: IrType): IrExpr | null {
+  /** What `node` builds when it is a fresh empty container with no type of
+   * its own: `[]`, or `new Map()` / `new Set()` with no arguments and no
+   * type arguments. Null for every other expression. */
+  freshEmptyContainer(node: ts.Expression): "array" | "map" | "set" | null {
     let value = node;
     while (ts.isParenthesizedExpression(value)) value = value.expression;
+    if (ts.isArrayLiteralExpression(value))
+      return value.elements.nodes.length === 0 ? "array" : null;
     if (
       !ts.isNewExpression(value) ||
       !ts.isIdentifier(value.expression) ||
@@ -16407,9 +16502,16 @@ export class Lowerer {
       return null;
     const symbol = this.resolveValueSymbol(value.expression);
     if (!symbol || !this.isStdlibSymbol(symbol)) return null;
-    const kind =
-      ts.symbolName(symbol) === "Map" ? "map" : ts.symbolName(symbol) === "Set" ? "set" : null;
-    if (!kind) return null;
+    return ts.symbolName(symbol) === "Map" ? "map" : ts.symbolName(symbol) === "Set" ? "set" : null;
+  }
+
+  /** An unannotated empty collection has no existing elements or aliases
+   * that constrain its layout. An explicit type argument still wins. */
+  emptyCollectionFor(node: ts.Expression, expected: IrType): IrExpr | null {
+    let value = node;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    const kind = this.freshEmptyContainer(value);
+    if (kind !== "map" && kind !== "set") return null;
     const arms =
       expected.kind === "union" ? (this.unions.get(expected.unionId)?.arms ?? []) : [expected];
     const candidates = arms.filter((arm) => arm.kind === kind);
@@ -16896,11 +16998,26 @@ export class Lowerer {
     const s = this.lowerReturnOf(node, loc);
     const awaited = this.returnAwaitedPromise;
     this.returnAwaitedPromise = saved;
-    if (!awaited) return s;
-    if (s.kind === "return") return { ...s, awaited: true };
+    // A checked-dynamic operand may hold a promise: the same await settles
+    // it, and takes its one turn for any other value.
+    const settled = (ret: IrStmt & { kind: "return" }): IrStmt & { kind: "return" } => {
+      if (awaited) return { ...ret, awaited: true };
+      if (ret.value?.type.kind !== "dyn" || !mayResolveThroughThen(this, this.typeOf(node)))
+        return ret;
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "async.awaitDyn",
+        args: [ret.value],
+        type: DYN,
+        loc: ret.value.loc,
+      };
+      return { ...ret, value, awaited: true };
+    };
+    if (s.kind === "return") return settled(s);
     if (s.kind === "block" && s.body.at(-1)?.kind === "return") {
       const last = s.body.at(-1) as IrStmt & { kind: "return" };
-      return { ...s, body: [...s.body.slice(0, -1), { ...last, awaited: true }] };
+      const ret = settled(last);
+      return ret === last ? s : { ...s, body: [...s.body.slice(0, -1), ret] };
     }
     return s;
   }
@@ -16925,9 +17042,52 @@ export class Lowerer {
     return stmt;
   }
 
+  /** `return v` where the checker types v as checked-dynamic and the async
+   * result is a concrete type: the run-time value decides. A promise adopts
+   * into the result the way a statically typed one does (JS's async
+   * resolution adopts a returned thenable): the function's promise settles
+   * where that one does, one turn later, and its rejection never reaches
+   * the function's own catch clauses. Any other value converts now, as the
+   * ordinary return does. The operand binds to a hidden local because the
+   * branch tests it and then returns it. Null when the return is not that
+   * shape, or when the result holds the value as it is (dyn, promise) or
+   * discards it (void). */
+  dynamicReturnStmt(node: ts.Expression, e: IrExpr, expected: IrType, loc: SrcLoc): IrStmt | null {
+    if (!this.adoptsReturnedPromise()) return null;
+    if (e.type.kind !== "dyn") return null;
+    if (expected.kind === "dyn" || expected.kind === "promise" || expected.kind === "void")
+      return null;
+    const local = this.declareHiddenLocal("%returned", DYN);
+    const read = (): IrExpr => varRef(local.id, DYN, loc);
+    // The test and the cast agree — both look for a native promise — so the
+    // cast cannot fail. A thenable object is a value here, not a promise: it
+    // converts (or fails to convert) like any other.
+    const awaited = this.returnedPromiseAwait({
+      kind: "dynCheck",
+      value: read(),
+      type: { kind: "promise", inner: DYN },
+      loc,
+    });
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: local.id, init: e, loc },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "promise", value: read(), type: BOOL, loc },
+          then: [{ kind: "return", value: this.coerceInto(node, awaited, expected), loc }],
+          else_: [{ kind: "return", value: this.coerceInto(node, read(), expected), loc }],
+          loc,
+        },
+      ],
+      loc,
+    };
+  }
+
   private lowerReturnOf(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
+      this.refuseDroppedStaleReturn(node);
       let e = this.lowerExpr(node);
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
@@ -16963,13 +17123,33 @@ export class Lowerer {
     ) {
       // The async return lowers its operand untyped first (a promise
       // adopts before its payload converts); a maybe-promise union needs
-      // the statement form, which branches between adoption and fulfillment.
+      // the statement form, which branches between adoption and fulfillment,
+      // and so does a checked-dynamic operand, whose run-time promise the
+      // branch adopts.
       const e = this.lowerExpr(node);
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
+      const dynamic = this.dynamicReturnStmt(node, e, expected, loc);
+      if (dynamic) return dynamic;
       return { kind: "return", value: this.asyncReturnValueOf(node, e, expected), loc };
     }
     return { kind: "return", value: this.lowerReturnValue(node), loc };
+  }
+
+  /** A function returns nothing when the checker inferred its return type
+   * from a read it narrowed to `undefined`. A call may have stored a value
+   * there since (widenedType restored the read), and returning nothing
+   * would drop it; the caller's types were inferred from the same
+   * narrowing, so only a declared return type can carry the value. */
+  refuseDroppedStaleReturn(node: ts.Expression): void {
+    const stale = this.narrowing.restoredNothingRead(node);
+    if (stale === null) return;
+    this.unsupported(
+      "SC1090",
+      node,
+      `returning '${ts.getTextOfNode(stale)}' from a function whose return type TypeScript infers as 'undefined' (it types the read by the last assignment in this function, and a call made since can have assigned it from another function)`,
+      "declare the function's return type, so the result is the value stored at the return",
+    );
   }
 
   maybeNarrow(expr: IrExpr, node: ts.Node): IrExpr {
@@ -18873,8 +19053,10 @@ export class Lowerer {
       }
     }
     const streamValue = this.valueStreamReceivers.get(expr);
-    if (streamValue)
-      return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
+    if (streamValue) {
+      const value = varRef(streamValue.localId, streamValue.type, locOf(expr));
+      return streamValue.writable ? writableStreamOf(value) : valueStreamOf(value);
+    }
     const staged = this.stagedArgument(expr);
     if (staged !== null) return staged;
     const dispatched = this.dispatchedReceiver;
@@ -19708,6 +19890,7 @@ export class Lowerer {
     if (read.kind !== "fieldGet" || read.type.kind !== "union") return null;
     if (this.classes.get(read.className)?.deferredInitFields?.has(read.field) !== true) return null;
     return this.coercions.checkedNarrows.has(value.callee) ||
+      this.coercions.deferredRetags.has(value.callee) ||
       value.callee.startsWith("%deferred.read.")
       ? read
       : null;

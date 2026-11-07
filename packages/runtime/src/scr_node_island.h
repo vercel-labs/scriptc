@@ -177,6 +177,9 @@ typedef struct ScrNiDynOps {
   int (*has)(ScrDyn *obj, ScrDyn *key);
   int (*delete_key)(ScrDyn *obj, ScrDyn *key);
   ScrDyn *(*own_keys)(ScrDyn *obj, int mode);
+  /* Array.isArray of the node: the JSON serializer and a checked array
+   * conversion take the array shape from it. */
+  bool (*is_array)(const ScrDyn *value);
   ScrDyn *(*call)(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);
   ScrDyn *(*construct)(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
   ScrStr *(*type_of)(ScrDyn *value);

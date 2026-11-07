@@ -1433,6 +1433,7 @@ function buildLibFnSignatures() {
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
+    "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
     "webstream.install": { argTypes: [], result: VOID },
     "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
@@ -3354,6 +3355,12 @@ function buildLibFnSignatures() {
     "stream.handleStream": {
       argTypes: [DYN],
       result: { kind: "object", className: "%Transform" },
+    },
+    /** stream.handleWritable for a value typed as a Writable handle class
+     * (a Sign or Verify): the value's native Writable (+1). */
+    "stream.handleWritable": {
+      argTypes: [DYN],
+      result: { kind: "object", className: "%Writable" },
     },
     /** Checked-dynamic stream slots (dyn-streams.ts): the native stream a
      * checked-dynamic value boxes (+1) — a runtime stream with the readable

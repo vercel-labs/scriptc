@@ -141,6 +141,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unboxDynStage",
   "stream.dynTransformResult",
   "stream.handleStream",
+  "stream.handleWritable",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "weakMap.new",
@@ -1279,6 +1280,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  // ReadableStream.from's iterability and iterator-method errors, which
+  // Node raises from the call itself.
+  "webstream.from",
 ]);
 
 /** libCall members that always throw. Their result type is the replaced

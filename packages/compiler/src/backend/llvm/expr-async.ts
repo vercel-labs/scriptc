@@ -1191,6 +1191,32 @@ export function emitAsyncExpr(
         B.line(`call void @scr_promise_run_executor0(ptr ${p}, ptr ${exec0.name})`);
         return out;
       }
+      if (e.resolves === true) {
+        // The resolve function runs the promise resolution procedure, and
+        // shares its target with the reject function so that a resolution
+        // that adopts a promise ends both (scr_make_resolve_dyn). The reject
+        // maker follows the closure's signature, as below.
+        const rejectType = e.executor.type.kind === "func" ? e.executor.type.params[1] : undefined;
+        let reject = "null";
+        if (rejectType !== undefined) {
+          const maker =
+            rejectType.kind === "func" && rejectType.params[0]?.kind === "dyn"
+              ? "scr_make_reject_dyn"
+              : "scr_make_reject";
+          host.declare(`declare ptr @${maker}(ptr)`);
+          reject = B.tmp();
+          B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
+        }
+        host.declare(`declare ptr @scr_make_resolve_dyn(ptr, ptr)`);
+        const resolving = B.tmp();
+        B.line(`${resolving} = call ptr @scr_make_resolve_dyn(ptr ${p}, ptr ${reject})`);
+        const exec = host.emitExpr(e.executor);
+        host.declare(`declare void @scr_promise_run_executor_dyn(ptr, ptr, ptr, ptr)`);
+        B.line(
+          `call void @scr_promise_run_executor_dyn(ptr ${p}, ptr ${exec.name}, ptr ${resolving}, ptr ${reject})`,
+        );
+        return out;
+      }
       let resolve: string;
       const kindNums: Partial<Record<IrType["kind"], number>> = {
         f64: 0,
@@ -1277,18 +1303,31 @@ export function emitAsyncExpr(
         void: 3,
       };
       const kindNum = kindNums[inner.kind];
-      const resolve = B.tmp();
-      if (kindNum !== undefined) {
-        host.declare(`declare ptr @scr_make_resolve(ptr, i32)`);
-        B.line(`${resolve} = call ptr @scr_make_resolve(ptr ${p}, i32 ${kindNum})`);
+      let resolve: string;
+      let reject: string;
+      if (inner.kind === "dyn") {
+        // The callers of a checked-dynamic promise's resolve function are
+        // not known here, so it runs the promise resolution procedure and
+        // shares its target with the reject function (scr_make_resolve_dyn).
+        reject = B.tmp();
+        B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
+        host.declare(`declare ptr @scr_make_resolve_dyn(ptr, ptr)`);
+        resolve = B.tmp();
+        B.line(`${resolve} = call ptr @scr_make_resolve_dyn(ptr ${p}, ptr ${reject})`);
       } else {
-        host.declare(`declare ptr @scr_make_resolve_fn(ptr, ptr)`);
-        B.line(
-          `${resolve} = call ptr @scr_make_resolve_fn(ptr ${p}, ptr @${host.resolveThunkFor(inner)})`,
-        );
+        resolve = B.tmp();
+        if (kindNum !== undefined) {
+          host.declare(`declare ptr @scr_make_resolve(ptr, i32)`);
+          B.line(`${resolve} = call ptr @scr_make_resolve(ptr ${p}, i32 ${kindNum})`);
+        } else {
+          host.declare(`declare ptr @scr_make_resolve_fn(ptr, ptr)`);
+          B.line(
+            `${resolve} = call ptr @scr_make_resolve_fn(ptr ${p}, ptr @${host.resolveThunkFor(inner)})`,
+          );
+        }
+        reject = B.tmp();
+        B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
       }
-      const reject = B.tmp();
-      B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
       const rec = B.tmp();
       B.line(`${rec} = call ptr @${mangleRecordNew(e.type.shapeId)}()`);
       const out = host.own({ name: rec, type: e.type });

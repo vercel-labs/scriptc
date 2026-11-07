@@ -1,5 +1,5 @@
 import * as ts from "../ts7/adapter.js";
-import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { heritageElementTarget } from "../heritage-elements.js";
 import { InternalCompilerError } from "../../errors.js";
 import { typeEquals } from "../../ir/ir.js";
@@ -51,6 +51,14 @@ export class NarrowingStability {
   private readonly effects = new Map<ts.Node, boolean>();
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
   private readonly staleBindings = new Map<ts.Symbol, boolean>();
+  private readonly inherited = new Map<ts.Symbol, ts.Type | null>();
+  private readonly writes = new Map<ts.Symbol, BindingWrite[] | null>();
+  /** Bindings whose writes or inherited type are being computed, and how
+   * often a computation asked for one of them: an answer that depends on
+   * itself (`copy = keep ? copy : undefined`) is not an answer, so
+   * nothing derived from it is kept and the write counts as stale. */
+  private readonly resolving = new Set<ts.Symbol>();
+  private selfReferences = 0;
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -73,13 +81,46 @@ export class NarrowingStability {
     const cached = this.widened.get(node);
     if (cached !== undefined) return cached;
     const position = widePosition(node);
+    const selfReferences = this.selfReferences;
     let result: ts.Type | null = null;
     try {
-      if (position !== null) result = this.computeWidened(node, position);
+      result = this.computeWidened(node, position);
     } finally {
-      this.widened.set(node, result);
+      if (this.selfReferences === selfReferences) this.widened.set(node, result);
     }
     return result;
+  }
+
+  /** A read whose value `expression` can evaluate to (the expression
+   * itself, an arm of a conditional, an operand of `&&`, `||`, `??`, the
+   * right side of a comma or an assignment), that the checker types as
+   * nothing but `undefined` or `null` and widenedType restored to its
+   * declared type; or null. The checker computed the type of the whole
+   * expression, and of a function that returns it, from that narrowing, so
+   * a lowering that discards a value because its type is `undefined`
+   * consults this first. */
+  restoredNothingRead(expression: ts.Expression): ts.Expression | null {
+    if (this.files === null) return null;
+    const e = withoutParenthesesTypeWrappers(expression);
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
+      return this.widenedType(e) !== null && isNothing(this.lowerer.checker.getTypeAtLocation(e))
+        ? e
+        : null;
+    }
+    if (ts.isConditionalExpression(e))
+      return this.restoredNothingRead(e.whenTrue) ?? this.restoredNothingRead(e.whenFalse);
+    if (ts.isBinaryExpression(e)) {
+      switch (e.operatorToken.kind) {
+        case ts.SyntaxKind.AmpersandAmpersandToken:
+        case ts.SyntaxKind.BarBarToken:
+        case ts.SyntaxKind.QuestionQuestionToken:
+          return this.restoredNothingRead(e.left) ?? this.restoredNothingRead(e.right);
+        case ts.SyntaxKind.CommaToken:
+        case ts.SyntaxKind.EqualsToken:
+          return this.restoredNothingRead(e.right);
+      }
+    }
+    return null;
   }
 
   /** The checker narrows this reference below its declared type, and the
@@ -113,20 +154,47 @@ export class NarrowingStability {
 
   private computeWidened(
     node: ts.PropertyAccessExpression | ts.Identifier,
-    position: WidePosition,
+    position: WidePosition | null,
   ): ts.Type | null {
     const checker = this.lowerer.checker;
+    // A narrowing to nothing but `undefined` or `null` is restored in every
+    // position, so every read reaches the declared-type lookup; the other
+    // narrowings only in the positions that can take the declared type.
+    if (position === null && !this.mayReadNothing(node)) return null;
     let declared: ts.Type | null;
     if (ts.isPropertyAccessExpression(node)) {
       declared = this.declaredPropertyType(node);
     } else {
       const symbol = this.bindingOf(node);
+      // `let y = x` with `x` such a read: the checker inferred the binding's
+      // own type from the narrowing, so `y` is nothing to it as well, and it
+      // holds what `x` held.
+      if (symbol && isNothing(checker.getTypeAtLocation(node))) {
+        // Every assignment of the binding's own that can reach this read
+        // stores that nothing (`y = undefined; return y`): it ends what an
+        // earlier initializer or assignment left in the binding, and the
+        // checker's type is right.
+        if (this.holdsNothingAt(node, symbol)) return null;
+        if (isNothing(checker.getTypeOfSymbol(symbol))) return this.inheritedType(symbol);
+      }
       declared =
         symbol && this.mayHoldStaleNarrowing(symbol) ? checker.getTypeOfSymbol(symbol) : null;
     }
     if (declared === null) return null;
     const narrowedTs = checker.getTypeAtLocation(node);
     if (narrowedTs === declared) return null;
+    // A narrowing to nothing but `undefined` or `null` has no payload a
+    // checked read could validate: a lowering that takes the checker's word
+    // drops the read and continues with "absent" (`text.slice(start)` with
+    // `start` assigned by a callback slices from 0). When that narrowing may
+    // be stale the read has its declared type wherever it stands, so its
+    // consumer lowers for the value that is stored. The declared type of a
+    // binding the checker types by flow alone (`var re;`, which is
+    // `undefined` to it until the read's own function assigns it) is `any`,
+    // as the checker itself answers for a read from a nested function
+    // (`var re; compile(); scan(re)` passes the expression `compile` stored).
+    if (isNothing(narrowedTs)) return this.trusted(node) ? null : declared;
+    if (position === null) return null;
     const declaredIr = this.lowerer.mapTypeOf(declared);
     const narrowedIr = this.lowerer.mapTypeOf(narrowedTs);
     if (declaredIr === null || narrowedIr === null || typeEquals(declaredIr, narrowedIr))
@@ -174,6 +242,270 @@ export class NarrowingStability {
       }
     }
     return this.trusted(node) ? null : declared;
+  }
+
+  /** Whether the checker types this read as nothing but `undefined` or
+   * `null`. Asked for every identifier and property read outside the wide
+   * positions; the type is the one `Lowerer.typeOf` asks for next, from
+   * the checker's per-node memo. */
+  private mayReadNothing(node: ts.PropertyAccessExpression | ts.Identifier): boolean {
+    if (ts.isIdentifier(node) && !isValueIdentifier(node)) return false;
+    return isNothing(this.lowerer.checker.getTypeAtLocation(node));
+  }
+
+  /** The type an untyped binding holds when the checker inferred "nothing"
+   * for it from reads widenedType restored: the declared type of those
+   * reads (`let y = x` after a call that may have assigned `x`), `any`
+   * when they disagree. Null when no such read initializes or assigns it. */
+  private inheritedType(symbol: ts.Symbol): ts.Type | null {
+    const cached = this.inherited.get(symbol);
+    if (cached !== undefined) return cached;
+    if (this.resolving.has(symbol)) {
+      this.selfReferences++;
+      return null;
+    }
+    const selfReferences = this.selfReferences;
+    const writes = this.writesOf(symbol);
+    this.resolving.add(symbol);
+    let result: ts.Type | null = null;
+    try {
+      const decl = symbol.valueDeclaration;
+      if (decl !== undefined && ts.isVariableDeclaration(decl) && decl.type === undefined) {
+        for (const write of writes ?? []) {
+          if (write.value === null) continue;
+          const read = this.restoredNothingRead(write.value);
+          const restored = read === null ? null : this.widenedType(read);
+          if (restored === null) continue;
+          result =
+            result === null || result === restored ? restored : this.lowerer.checker.getAnyType();
+        }
+      }
+    } finally {
+      this.resolving.delete(symbol);
+      if (this.selfReferences === selfReferences) this.inherited.set(symbol, result);
+    }
+    return result;
+  }
+
+  /** Every write of a variable declared by one plain declaration
+   * statement: the declaration (`value` is its initializer; a `let`
+   * without one stores `undefined`, a `var` without one is no write: it
+   * holds `undefined` from the function's entry), each `=` assignment
+   * (`value` is its
+   * right side), and every other write (destructuring, `+=`, `++`, a
+   * `for...of` target), whose stored value is unknown. `stale` says the
+   * value can be a read whose narrowing may be stale. Null for any other
+   * binding (a parameter, a pattern or loop declaration, a redeclared
+   * `var`): its writes are not all in view. */
+  private writesOf(symbol: ts.Symbol): BindingWrite[] | null {
+    const cached = this.writes.get(symbol);
+    if (cached !== undefined) return cached;
+    if (this.resolving.has(symbol)) {
+      this.selfReferences++;
+      return null;
+    }
+    this.resolving.add(symbol);
+    let result: BindingWrite[] | null = null;
+    try {
+      const decl = symbol.valueDeclaration;
+      const list = decl?.parent;
+      if (
+        decl !== undefined &&
+        ts.isVariableDeclaration(decl) &&
+        ts.isIdentifier(decl.name) &&
+        (symbol.declarations?.length ?? 1) === 1 &&
+        list !== undefined &&
+        ts.isVariableDeclarationList(list) &&
+        list.parent !== undefined &&
+        ts.isVariableStatement(list.parent)
+      ) {
+        const found: BindingWrite[] = [];
+        // A value whose judgement asked for this binding's own writes
+        // (it reads the binding, directly or through another copy) is
+        // taken to be stale.
+        const stale = (value: ts.Expression): boolean => {
+          const selfReferences = this.selfReferences;
+          const found = this.mayBeStale(value) || this.restoredNothingRead(value) !== null;
+          return found || this.selfReferences !== selfReferences;
+        };
+        // A `var` binding is initialized to `undefined` when the function is
+        // entered, not when its declaration statement runs: a declaration
+        // without a value stores nothing there, and a loop around it does
+        // not reset the binding on later iterations. A block-scoped
+        // declaration does initialize its binding each time it runs.
+        const blockScoped = (list.flags & ts.NodeFlags.BlockScoped) !== 0;
+        if (decl.initializer !== undefined)
+          found.push({
+            at: decl,
+            value: decl.initializer,
+            kind: "assigned",
+            stale: stale(decl.initializer),
+          });
+        else if (blockScoped) found.push({ at: decl, value: null, kind: "declared", stale: false });
+        for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(
+          ts.symbolName(symbol),
+        ) ?? []) {
+          if (this.lowerer.resolveValueSymbol(write) !== symbol) continue;
+          const assignment = write.parent;
+          if (
+            ts.isBinaryExpression(assignment) &&
+            assignment.left === write &&
+            assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          )
+            found.push({
+              at: assignment,
+              value: assignment.right,
+              kind: "assigned",
+              stale: stale(assignment.right),
+            });
+          else found.push({ at: write, value: null, kind: "unknown", stale: true });
+        }
+        result = found;
+      }
+    } finally {
+      this.resolving.delete(symbol);
+      this.writes.set(symbol, result);
+    }
+    return result;
+  }
+
+  /** Whether the binding certainly holds, at `read`, the nothing the
+   * checker types the read as: every write that can reach the read along
+   * the function's control flow stores that nothing, spelled as such
+   * (`undefined`, `null`, `void e`, or a declaration without a value). A
+   * forward pass over the statements on the way to the read
+   * with one fact, "the binding may hold something else". A statement
+   * that is the declaration or an assignment of the binding sets the fact
+   * from what it stores; a block passes it through its statements; an
+   * `if` joins its arms; everything else (a loop, `try`, `switch`, a
+   * label, a short-circuit or conditional expression, a write inside a
+   * larger expression) can only raise the fact, by any write in it that
+   * does not store that nothing, wherever in it the write stands. So a
+   * reset is believed only where it runs on every path, and where the
+   * pass cannot tell, the read is of the stored value. */
+  private holdsNothingAt(read: ts.Identifier, symbol: ts.Symbol): boolean {
+    // Another function's assignment is not on this function's paths.
+    if (this.isCapturedMutable(symbol)) return false;
+    const writes = this.writesOf(symbol);
+    // Only a write that is stale or unknown gives the binding something
+    // the checker does not see; without one its type stands as it is.
+    if (writes === null || !writes.some((write) => write.stale)) return false;
+    const decl = symbol.valueDeclaration!;
+    const boundary = flowBoundary(read);
+    if (flowBoundary(decl) !== boundary) return false;
+    const checker = this.lowerer.checker;
+    const expected = nothingFlags(checker.getTypeAtLocation(read));
+    const undefinedFlag = ts.TypeFlags.Undefined;
+    // A write after which the binding holds the nothing the checker
+    // expects at the read. A JavaScript binding whose inferred type is
+    // `undefined` keeps that type after `y = null` or `y = "text"`, which
+    // the checker does not report there: those do not count.
+    // A `var` is hoisted: it holds `undefined` from the function's entry,
+    // and its declaration without a value is no write (writesOf). A `let`
+    // without a value is a fresh `undefined` each time it runs.
+    const list = decl.parent;
+    const hoisted =
+      list !== undefined &&
+      ts.isVariableDeclarationList(list) &&
+      (list.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const | ts.NodeFlags.Using)) === 0;
+    const holdsUndefined = (undefinedFlag & ~expected) === 0;
+    const settles = (write: BindingWrite): boolean => {
+      if (write.kind === "declared") return holdsUndefined;
+      if (write.kind === "unknown" || write.stale || write.value === null) return false;
+      // Only a value that is nothing by its own spelling: any other
+      // expression the checker types as nothing (a call, a conditional, a
+      // read of another binding) may carry a value its type was inferred
+      // without, the copy's own included (`y = keep ? y : undefined`,
+      // `y = same(y)`).
+      if (!spellsNothing(write.value)) return false;
+      const spelled = withoutParenthesesTypeWrappers(write.value);
+      if (ts.isIdentifier(spelled)) {
+        // `undefined` the global, not a binding of the program's.
+        const declaration = checker.getSymbolAtLocation(spelled)?.valueDeclaration;
+        if (declaration !== undefined && !ts.getSourceFileOfNode(declaration).isDeclarationFile)
+          return false;
+      }
+      const stored = checker.getTypeAtLocation(write.value);
+      return isNothing(stored) && (nothingFlags(stored) & ~expected) === 0;
+    };
+    const inside = (node: ts.Node, write: BindingWrite): boolean => contains(node, write.at);
+    const writesIn = (node: ts.Node): boolean => writes.some((write) => inside(node, write));
+    const raises = (node: ts.Node): boolean =>
+      writes.some((write) => inside(node, write) && !settles(write));
+    /** The write a statement is, when it is exactly the declaration or an
+     * assignment of the binding and nothing else writes it. */
+    const writeOf = (statement: ts.Node): BindingWrite | null => {
+      let own: BindingWrite | null = null;
+      for (const write of writes) {
+        if (!inside(statement, write)) continue;
+        if (own !== null) return null;
+        own = write;
+      }
+      if (own === null || own.kind === "unknown") return null;
+      if (ts.isVariableStatement(statement))
+        return own.at.parent?.parent === statement ? own : null;
+      if (ts.isExpressionStatement(statement))
+        return withoutParentheses(statement.expression) === own.at ? own : null;
+      return null;
+    };
+    /** The fact after `statement` completes, from the fact before it. */
+    const after = (statement: ts.Node, may: boolean): boolean => {
+      if (!writesIn(statement)) return may;
+      if (ts.isBlock(statement)) {
+        for (const inner of statement.statements.nodes) may = after(inner, may);
+        return may;
+      }
+      const own = writeOf(statement);
+      if (own !== null) return !settles(own);
+      if (ts.isIfStatement(statement)) {
+        const entered = may || raises(statement.expression);
+        const then = after(statement.thenStatement, entered);
+        const otherwise =
+          statement.elseStatement === undefined ? entered : after(statement.elseStatement, entered);
+        return then || otherwise;
+      }
+      return may || raises(statement);
+    };
+    /** The fact where `read` is evaluated, from the fact on entry to
+     * `node`, which contains the read. */
+    const before = (node: ts.Node, may: boolean): boolean => {
+      if (ts.isBlock(node) || ts.isSourceFile(node)) {
+        for (const inner of node.statements.nodes) {
+          if (contains(inner, read)) return before(inner, may);
+          may = after(inner, may);
+        }
+        return true;
+      }
+      if (ts.isIfStatement(node)) {
+        const entered = may || raises(node.expression);
+        if (contains(node.thenStatement, read)) return before(node.thenStatement, entered);
+        if (node.elseStatement !== undefined && contains(node.elseStatement, read))
+          return before(node.elseStatement, entered);
+        return may || raises(node);
+      }
+      // Any other construct: whatever it can store reaches the read (a
+      // loop's later iteration, a `catch` entered from anywhere in its
+      // `try`, an operand evaluated before or after), and nothing in it
+      // is believed to settle the binding except inside a block of it
+      // that holds the read.
+      const entered = may || raises(node);
+      let inner: ts.Node | undefined;
+      ts.forEachChild(node, (child) => {
+        if (inner === undefined && contains(child, read)) inner = child;
+        return undefined;
+      });
+      if (inner === undefined || !(ts.isBlock(inner) || ts.isStatement(inner))) return entered;
+      return before(inner, entered);
+    };
+    const body = ts.isSourceFile(boundary)
+      ? boundary
+      : ts.isFunctionLike(boundary)
+        ? (boundary as ts.FunctionLikeDeclaration).body
+        : undefined;
+    if (body === undefined || !contains(body, read)) return false;
+    // On entry a hoisted binding holds `undefined`; a block-scoped one is
+    // not readable before its declaration and is taken to hold anything.
+    return !before(body, hoisted ? !holdsUndefined : true);
   }
 
   /** A read in a call or construction argument (directly or inside a literal
@@ -918,6 +1250,49 @@ const INERT_CONSTRUCTORS = new Set([
   "BigInt64Array",
   "BigUint64Array",
 ]);
+
+/** One write of a variable: `at` is the declaration, the `=` assignment, or
+ * for any other write the identifier written. */
+interface BindingWrite {
+  at: ts.Node;
+  value: ts.Expression | null;
+  kind: "declared" | "assigned" | "unknown";
+  stale: boolean;
+}
+
+/** `undefined`, `null` or `void e`, through parentheses and assertions. */
+function spellsNothing(value: ts.Expression): boolean {
+  const e = withoutParenthesesTypeWrappers(value);
+  return (
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    ts.isVoidExpression(e) ||
+    (ts.isIdentifier(e) && e.text === "undefined")
+  );
+}
+
+/** Whether `node` is `inner` or contains it. */
+function contains(node: ts.Node, inner: ts.Node): boolean {
+  for (let n: ts.Node | undefined = inner; n !== undefined; n = n.parent) {
+    if (n === node) return true;
+  }
+  return false;
+}
+
+/** Which of `undefined`, `null` and `void` a type includes. */
+function nothingFlags(type: ts.Type): number {
+  const nothing = ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void;
+  if (!type.isUnionType()) return type.flags & nothing;
+  let flags = 0;
+  for (const part of ts.constituentTypes(type)) flags |= part.flags & nothing;
+  return flags;
+}
+
+/** `undefined`, `null`, `void`, or a union of only those. */
+function isNothing(type: ts.Type): boolean {
+  const nothing = ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void;
+  if (type.flags & nothing) return true;
+  return type.isUnionType() && ts.constituentTypes(type).every((part) => part.flags & nothing);
+}
 
 /** The receiver whose type widenedType reads for `node`: a property read in
  * a slot that accepts its declared type (an argument, a return, a typed

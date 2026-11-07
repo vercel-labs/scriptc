@@ -14,6 +14,7 @@ import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
 import {
+  islandValueCopyDivergenceDiag,
   keyOrderDivergenceDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
@@ -24,6 +25,8 @@ import { typeEquals, type IrType } from "../../ir/ir.js";
 import { isCollationCovered } from "./collation-repertoire.js";
 import type { Lowerer } from "./lowerer.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
+import { islandCall, islandMadeValue } from "./lower-node-island.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 /** How an identity-sensitive binding is used after a copy could replace it. */
 interface IdentityUse {
@@ -62,6 +65,9 @@ export function scanDivergences(
   const literals: ts.ObjectLiteralExpression[] = [];
   const observers: ts.Expression[] = [];
   const casts: (ts.AsExpression | ts.TypeAssertion)[] = [];
+  /** `const v: T = e`, collected only for a program that links Node islands. */
+  const annotatedDecls: ts.VariableDeclaration[] = [];
+  const islands = lowerer.nodeIslands !== null;
   const localeCompares: ts.CallExpression[] = [];
   /** binding name → member names assigned through it (`q.a = 2`). */
   const assignedMembers = new Map<string, Set<string>>();
@@ -109,6 +115,8 @@ export function scanDivergences(
     } else if (ts.isForInStatement(node)) {
       observers.push(node.expression);
     } else if (ts.isVariableDeclaration(node)) {
+      if (islands && node.type !== undefined && node.initializer !== undefined)
+        annotatedDecls.push(node);
       if (
         node.type !== undefined &&
         node.initializer !== undefined &&
@@ -406,7 +414,107 @@ export function scanDivergences(
     }
   }
 
+  // ── SC6007: a value a Node island made, copied by a checked conversion ──
+  // An island object or array that meets a native array or record type is
+  // read member by member into a native value. The compiler sees the
+  // conversion where its operand is an island read or call (or a `const` of
+  // one): an assertion, a typed binding of an `any`, a typed parameter of a
+  // callback passed to an island call that the callback writes through or
+  // compares, and an island Map or Set declared with a native array or
+  // record as a member type (the collection stays the island's; each key or
+  // value read from it is converted).
+  if (islands) {
+    const copy = (
+      typeAt: ts.Node,
+      site: "assertion" | "binding" | "parameter",
+      at: ts.Node,
+    ): void => {
+      const target =
+        site === "parameter"
+          ? checker.getTypeAtLocation(typeAt)
+          : checker.getTypeFromTypeNode(typeAt as ts.TypeNode);
+      if (!copiesIslandValue(lowerer, lowerer.mapTypeOf(target))) return;
+      out.push(islandValueCopyDivergenceDiag(checker.typeToString(target), site, locOf(at)));
+    };
+    for (const cast of casts)
+      safely(() => {
+        if (islandMadeValue(lowerer, cast.expression)) copy(cast.type, "assertion", cast);
+      });
+    for (const decl of annotatedDecls)
+      safely(() => {
+        const init = withoutParentheses(decl.initializer!);
+        // An assertion in the initializer is the conversion, reported above.
+        if (ts.isAsExpression(init) || ts.isTypeAssertion(init)) return;
+        if (islandMadeValue(lowerer, init)) copy(decl.type!, "binding", decl);
+      });
+    const reported = new Set<ts.Node>();
+    for (const call of calls)
+      safely(() => {
+        if (!islandCall(lowerer, call)) return;
+        const declared = checker.getTypeAtLocation(call);
+        const made = checker.getAwaitedType(declared) ?? declared;
+        const collection = lowerer.mapTypeOf(made);
+        if (
+          collection !== null &&
+          ((collection.kind === "map" &&
+            (copiesIslandValue(lowerer, collection.key) ||
+              copiesIslandValue(lowerer, collection.value))) ||
+            (collection.kind === "set" && copiesIslandValue(lowerer, collection.elem)))
+        )
+          out.push(
+            islandValueCopyDivergenceDiag(checker.typeToString(made), "members", locOf(call)),
+          );
+        for (const arg of call.arguments.nodes) {
+          const fn = callbackDeclaration(lowerer, arg);
+          if (fn === null) continue;
+          for (const param of fn.parameters.nodes) {
+            if (!ts.isIdentifier(param.name) || reported.has(param)) continue;
+            if (!parameterIdentityUse(fn, param.name.text)) continue;
+            reported.add(param);
+            copy(param, "parameter", param);
+          }
+        }
+      });
+  }
+
   return out;
+}
+
+/** Whether the checked conversion of an island object to `target` builds a
+ * native value from its members: an array, a tuple, a record with a typed
+ * member, or a union with such an arm. A target that stays checked-dynamic
+ * keeps the island's object. */
+function copiesIslandValue(lowerer: Lowerer, target: IrType | null): boolean {
+  if (target === null) return false;
+  if (target.kind === "array") return true;
+  if (target.kind === "record") return !keepsIdentityView(lowerer, target);
+  if (target.kind !== "union") return false;
+  const def = lowerer.unions.get(target.unionId);
+  return def !== undefined && def.arms.some((arm) => copiesIslandValue(lowerer, arm));
+}
+
+/** The program function an argument passes: a function expression, or a
+ * name that resolves to a function declaration or, through `const`
+ * bindings, to a function expression. */
+function callbackDeclaration(
+  lowerer: Lowerer,
+  arg: ts.Expression,
+  depth = 0,
+): ts.FunctionLikeDeclaration | null {
+  const e = withoutParenthesesTypeWrappers(arg);
+  if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) return e;
+  if (!ts.isIdentifier(e) || depth >= 4) return null;
+  const d = (lowerer.resolveValueSymbol(e) ?? lowerer.checker.getSymbolAtLocation(e))
+    ?.valueDeclaration;
+  if (d === undefined) return null;
+  if (ts.isFunctionDeclaration(d)) return d.body === undefined ? null : d;
+  if (
+    !ts.isVariableDeclaration(d) ||
+    d.initializer === undefined ||
+    (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  return callbackDeclaration(lowerer, d.initializer, depth + 1);
 }
 
 /** Whether the binding `decl` declares is used in a way a field copy would

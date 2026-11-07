@@ -715,7 +715,13 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
   for (const file of input.userFiles) {
     const jsSf = input.jsProgram.getSourceFile(file);
     const declSf = input.declProgram.getSourceFile(file);
-    if (jsSf === undefined || declSf === undefined || jsSf.text !== declSf.text) continue;
+    // Both programs must have loaded the same content; nothing is taken from it here.
+    if (
+      jsSf === undefined ||
+      declSf === undefined ||
+      ts.carriedSourceText(jsSf) !== ts.carriedSourceText(declSf)
+    )
+      continue;
     const fileEdits: Edit[] = [];
     const fileOrigins: (string | null)[] = [];
     /** Candidate expressions (by js node) with their declared type, named

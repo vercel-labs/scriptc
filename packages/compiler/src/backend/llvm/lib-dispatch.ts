@@ -1547,11 +1547,28 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
   const rc = vAdapters(host.shapeHost, tuple);
   host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
   host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
+  // A builder that checks a checked-dynamic entry into its tuple position
+  // can throw: the result rejects with that error, and there is no tuple.
+  const throws = host.mayThrow.has(fnName);
+  if (throws) {
+    host.declare(`declare zeroext i1 @scr_exc_pending()`);
+    host.declare(`declare void @scr_promise_reject_pending(ptr)`);
+  }
   host.resolveThunkDefs.push(
     `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
     `entry:`,
     `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
     `  %tuple = call ptr @${host.callTarget(fnName)}(ptr %entries)`,
+    ...(throws
+      ? [
+          `  %failed = call zeroext i1 @scr_exc_pending()`,
+          `  br i1 %failed, label %reject, label %fulfill`,
+          `reject:`,
+          `  call void @scr_promise_reject_pending(ptr %dst)`,
+          `  ret void`,
+          `fulfill:`,
+        ]
+      : []),
     `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
     `  ret void`,
     `}`,

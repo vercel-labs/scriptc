@@ -1258,6 +1258,17 @@ function optionalRecordReceiver(
 /** `value`, evaluated once at this point of `out`. */
 function stabilized(lowerer: Lowerer, value: IrExpr, name: string, out: IrStmt[]): IrExpr {
   if (isSafeToRepeat(value)) return value;
+  // `null` and `undefined` carry no payload to hold: the value runs once for
+  // its effects, and its literal stands in for it afterwards.
+  if (value.type.kind === "nullT" || value.type.kind === "undefinedT") {
+    if (!isSafeToDiscard(value)) out.push({ kind: "exprStmt", expr: value, loc: value.loc });
+    return {
+      kind: "unitLit",
+      unit: value.type.kind === "nullT" ? "null" : "undefined",
+      type: value.type,
+      loc: value.loc,
+    };
+  }
   const tmp = lowerer.declareHiddenLocal(name, value.type);
   out.push({ kind: "varDecl", localId: tmp.id, init: value, loc: value.loc });
   return varRef(tmp.id, value.type, value.loc);

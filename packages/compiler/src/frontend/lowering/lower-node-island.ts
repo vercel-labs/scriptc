@@ -41,6 +41,8 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { islandValueOrigin, ORIGIN_SEPARATOR } from "./decl-origin.js";
+import { claimKey } from "./type-claims.js";
 import { classMethodValue } from "./class-method-values.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { resolveBareModule } from "../resolve.js";
@@ -839,8 +841,56 @@ function islandUnitComparison(
 
 /** An island value (dyn) at the declared type of `node`: island handles
  * stay dyn (FOREIGN), primitives and strings meet their declared type
- * through the checked conversion. */
+ * through the checked conversion. A coverage analysis also records the
+ * package declaration that types the value, for the type-claims report
+ * (type-claims.ts); the lowered code is the same either way. */
 export function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
+  const out = islandValueAt(lowerer, raw, node);
+  if (lowerer.typeClaims) noteIslandClaim(lowerer, out, node, node);
+  // The conversion names the declaration that types the value, so its
+  // TypeError carries the type patch that would admit it (decl-origin.ts).
+  // A declaration no selector reaches (an empty patch range) is left out,
+  // as every generic declaration is.
+  if (out.kind !== "dynCheck" || out.origin !== undefined || out === raw) return out;
+  const origin = islandOriginOf(lowerer, node, node);
+  if (origin === null || origin.split(ORIGIN_SEPARATOR)[2] === "") return out;
+  return { ...out, origin: lowerer.declOriginIndex(origin) };
+}
+
+function islandOriginOf(
+  lowerer: Lowerer,
+  declaredBy: ts.Node,
+  typed: ts.Expression,
+  argument?: number,
+): string | null {
+  try {
+    return islandValueOrigin(
+      lowerer.checker,
+      declaredBy,
+      lowerer.typeOf(typed),
+      (file) => lowerer.program.isSourceFileDefaultLibrary(file),
+      argument,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Coverage's type claims: `value` is an island's, or a function an island
+ * calls, typed by the declaration of `declaredBy` (type-claims.ts). */
+function noteIslandClaim(
+  lowerer: Lowerer,
+  value: IrExpr,
+  declaredBy: ts.Node,
+  typed: ts.Expression,
+  argument?: number,
+): void {
+  const key = claimKey(value.loc);
+  if (lowerer.islandClaimOrigins.has(key)) return;
+  lowerer.islandClaimOrigins.set(key, islandOriginOf(lowerer, declaredBy, typed, argument) ?? "");
+}
+
+function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
   if (node === rawIslandRead) return raw;
   const tsType = lowerer.typeOf(node);
   const islands = lowerer.nodeIslands!;
@@ -1425,6 +1475,15 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       const crossByReference = (): IrExpr => {
         const lowered = lowerer.lowerExpr(node);
         const value = boxed(lowered);
+        // A function the island calls: the call it is an argument of
+        // declares the parameters its thunk checks.
+        if (lowerer.typeClaims && lowered.type.kind === "func") {
+          const call = node.parent;
+          if (call !== undefined && (ts.isCallExpression(call) || ts.isNewExpression(call))) {
+            const index = (call.arguments?.nodes ?? []).indexOf(node);
+            if (index >= 0) noteIslandClaim(lowerer, value, call, node, index);
+          }
+        }
         return lowered.type.kind === "object"
           ? withClassMethods(lowerer, value, lowered.type.className, node)
           : value;
@@ -2239,7 +2298,9 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
                 },
           loc,
         });
-        const result = fromIsland(lowerer, v, expr);
+        // The assignment answers the value the program wrote, at the
+        // member's declared type: the program's own, not an island's claim.
+        const result = islandValueAt(lowerer, v, expr);
         return { kind: "seqExpr", stmts, result, type: result.type, loc };
       }
       return null;
@@ -2317,7 +2378,9 @@ function islandCompoundAssign(
           },
     loc,
   });
-  const result = fromIsland(lowerer, next, expr);
+  // The value written is not noted as an island's: where the member's old
+  // value flows into it, the claims pass finds that read by itself.
+  const result = islandValueAt(lowerer, next, expr);
   return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 

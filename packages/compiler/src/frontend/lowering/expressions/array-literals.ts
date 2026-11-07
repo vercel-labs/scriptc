@@ -945,7 +945,7 @@ export function checkedIteratorPack(
   loc: SrcLoc,
 ): IrExpr {
   const name = "%iterator.pack.checked";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const ref = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: DYN, loc });
     const flag = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: BOOL, loc });
     const property = (key: string): IrExpr => ({

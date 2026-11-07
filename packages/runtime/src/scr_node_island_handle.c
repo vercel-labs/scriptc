@@ -1807,6 +1807,8 @@ static const ScrNiDynOps nh_dyn_ops = {
     .object_tag = nh_object_tag,
     .function_identity = nh_function_identity,
     .function_of_identity = nh_function_of_identity,
+    .inspect = scr_ni_inspect,
+    .report_uncaught = scr_ni_report_uncaught,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

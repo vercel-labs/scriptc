@@ -380,12 +380,24 @@ export function emitSerializationExpr(
         e.origin === undefined || host.mod.lib !== undefined
           ? undefined
           : host.mod.declOrigins?.[e.origin];
-      const note =
+      const named =
         origin === undefined
           ? undefined
           : (): void => {
               host.declare("declare void @scr_type_origin_note(ptr)");
               B.line(`call void @scr_type_origin_note(ptr ${host.cstr(origin)})`);
+            };
+      // A dev build reports the failure with the conversion's position
+      // (scr_conversion_trace.c), after the origin note so that the report
+      // carries the declaration too. An analysis-proven check that fails is
+      // a compiler bug with a report of its own.
+      const trace = e.inferredSite === undefined ? host.conversionTraceAt(e.loc) : undefined;
+      const note =
+        named === undefined || trace === undefined
+          ? (named ?? trace)
+          : (): void => {
+              named();
+              trace();
             };
       const parsed = e.value;
       if (!e.preserveRefs && parsed.kind === "libCall" && parsed.fn === "json.parse") {

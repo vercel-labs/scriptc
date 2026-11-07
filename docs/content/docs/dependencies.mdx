@@ -162,6 +162,8 @@ Uncaught TypeError: expected string at $, got undefined
     if that declaration is wrong, patch it: scriptc types patch profilekit "Profile.email" "| undefined"
 ```
 
+`scriptc coverage` lists the declarations your program trusts before it runs, each with the command that patches it; see [type claims](/docs/coverage#type-claims).
+
 Fix such a declaration in your project with a type patch. `scriptc types patch` shows what a declaration path matches in the installed package and adds the patch to your `package.json`:
 
 ```console

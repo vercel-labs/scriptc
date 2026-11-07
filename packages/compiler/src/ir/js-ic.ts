@@ -24,6 +24,7 @@
  * Static functions never contain sites (invariant I1): the backend only
  * consults this module for calls in dynamic-tier functions. */
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
+import type { IrLibFn } from "./builtin-signatures.js";
 import { everyExprChild, everyStmtChild } from "./traverse.js";
 
 export type JsIcSite =
@@ -48,7 +49,7 @@ export function dynIndexFastpath(env: NodeJS.ProcessEnv = process.env): boolean 
 
 export const DYN_INDEX_FASTPATH: boolean = dynIndexFastpath();
 
-const CAPSULE_TESTS = new Set(["dyn.typedRefIs", "dyn.typedRefKeyIs", "dyn.classIs"]);
+const CAPSULE_TESTS = new Set<IrLibFn>(["dyn.typedRefIs", "dyn.typedRefKeyIs", "dyn.classIs"]);
 
 /** A class table's branches in the order a receiver that matches none of
  * them reaches their guards: the body's statements, with a `dyn.classHash`

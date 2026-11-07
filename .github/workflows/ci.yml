@@ -73,8 +73,8 @@ jobs:
           NODE
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
-  # request's diff, so a pull request cannot change its own selection). Pushes to main run every lane except macos,
-  # whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every lane.
+  # request's diff, so a pull request cannot change its own selection). Pushes to main run every lane except macos
+  # and islands, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every lane.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -92,6 +92,7 @@ jobs:
       effects: ${{ steps.lanes.outputs.effects || 'false' }}
       bootstrap: ${{ steps.lanes.outputs.bootstrap || 'false' }}
       profile: ${{ steps.lanes.outputs.profile || 'false' }}
+      islands: ${{ steps.lanes.outputs.islands || 'false' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
@@ -104,9 +105,9 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\n' | tee -a "$GITHUB_OUTPUT"; }
+          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"; }
           if [ "$EVENT" = push ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
           elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -372,6 +373,46 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm test tests/harness/effect.test.ts tests/harness/effect4.test.ts
+
+  # Node island conformance (tests/harness/island-conformance.test.ts): every
+  # package program under Node, as its default build, and with each package
+  # forced into a Node island. It builds each program several times, so it
+  # runs in a pull request only when the change touches island code or the
+  # programs it runs (scripts/ci-lanes.mjs), and in the nightly sweep and
+  # manual runs; not on pushes to main. Linux x64 only: known-failures.json
+  # pins that platform's results.
+  island_conformance:
+    needs: [validation_scope, lanes, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.islands == 'true' }}
+    name: test (Linux, Node island conformance ${{ matrix.shard }}/4)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SCRIPTC_ISLAND_CONFORMANCE: "1"
+      SCRIPTC_TEST_WORKERS: "1"
+      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      # Every program of the lane loads Node from a libnode pack; the lane
+      # fails rather than skips when none is configured.
+      - uses: ./.github/actions/libnode
+      - run: pnpm test tests/harness/island-conformance.test.ts
 
   # The sanitized three.js nodes build alone: beside the san corpus's other
   # workers it took 860 to more than 1200 seconds of its shard
@@ -879,6 +920,9 @@ jobs:
               const value = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
               if (value.default_target !== "x86_64-unknown-linux-musl" || !value.supported_targets?.includes("wasm32-unknown-wasi")) process.exit(1);
             '
+      - run: pnpm build
+      - name: Executable hardening and debug payload (glibc and musl)
+        run: pnpm test tests/harness/executable-hardening.test.ts
 
   llvm_artifacts_linux_x64_wasi:
     needs: [validation_scope, lanes, native_linux]
@@ -967,7 +1011,8 @@ jobs:
     # The no-clang object, helper parity, packaged helper and packed npm
     # installation contracts: about 12 minutes, which used to run in front
     # of shard 1's differential slice and took that job to 45-50 minutes.
-    timeout-minutes: 30
+    # Its native CLI build alone can pass 30 minutes on a busy runner.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -1273,6 +1318,7 @@ jobs:
         tests_macos,
         native_linux,
         effects,
+        island_conformance,
         three_nodes_san,
         native_frontend_san,
         bootstrap_seed,
@@ -1311,6 +1357,7 @@ jobs:
               lane tests_macos "${{ needs.tests_macos.result }}" "${{ needs.lanes.outputs.macos }}"
               lane native_linux "${{ needs.native_linux.result }}" "${{ needs.lanes.outputs.linux }}"
               lane effects "${{ needs.effects.result }}" "${{ needs.lanes.outputs.effects }}"
+              lane island_conformance "${{ needs.island_conformance.result }}" "${{ needs.lanes.outputs.islands }}"
               lane three_nodes_san "${{ needs.three_nodes_san.result }}" "${{ needs.lanes.outputs.linux }}"
               lane native_frontend_san "${{ needs.native_frontend_san.result }}" "${{ needs.lanes.outputs.linux }}"
               lane bootstrap_seed "${{ needs.bootstrap_seed.result }}" "${{ needs.lanes.outputs.bootstrap }}"

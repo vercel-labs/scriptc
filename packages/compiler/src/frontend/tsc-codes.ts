@@ -171,6 +171,18 @@ const inCheckedJs = (row: Opinion): Opinion => ({ ...row, checkedJs: "enforce" }
 const notPrivateName = (node: ts.Node, d: ts.Diagnostic): boolean =>
   !ts.isPrivateIdentifier(node) && !ts.getSourceFileOfNode(node).text.startsWith("#", d.pos ?? -1);
 
+/** TS1533/TS1534 report a decimal escape (`\1`, `\8`) that names no
+ * capture group, and TS1536 one inside a character class (`[\1]`). Without
+ * the `u` or `v` flag, JavaScript reads such an escape as a legacy octal or
+ * identity escape (Annex B), so `/\1/` matches "\x01" and its source can
+ * be reused in a pattern that has the group. With either flag the escape
+ * is a SyntaxError, and the grammar row stays. */
+const nonUnicodeRegexLiteral = (node: ts.Node): boolean => {
+  if (!ts.isRegularExpressionLiteral(node)) return false;
+  const flags = node.text.slice(node.text.lastIndexOf("/") + 1);
+  return !flags.includes("u") && !flags.includes("v");
+};
+
 /** TS2362/2363/2365 fire on an operator whose other operand is bigint-ish;
  * plain JavaScript admits the `any` operand, a primitive wrapper operand
  * (`new Number(1) * 2`) converts with ToPrimitive like any object, and a
@@ -288,7 +300,19 @@ const DYNAMIC_SHAPE =
 const JSDOC_CLAIM =
   "a JSDoc type-space claim is documentation Node never reads: the values keep their runtime behavior and every use meets the per-site fences";
 
+const LEGACY_REGEX_ESCAPE = at(
+  nonUnicodeRegexLiteral,
+  CHECKER(
+    "a decimal escape without a matching group, or inside a character class, is a legacy octal or identity escape in a regex literal without the u or v flag",
+    ["tests/corpus/regexp-legacy-decimal-escapes.mjs"],
+  ),
+);
+
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  // legacy decimal escapes in non-Unicode regex literals
+  [1533, LEGACY_REGEX_ESCAPE],
+  [1534, LEGACY_REGEX_ESCAPE],
+  [1536, LEGACY_REGEX_ESCAPE],
   // implicit any (params, variables, elements, this, returns, rest,
   // construct signatures, index reads over shapes with no index signature —
   // typeof globalThis)
@@ -769,9 +793,10 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // behavior) and refuses the write with SC1091, which names the Node-island
   // route the sloppy semantics need. TypeScript input keeps the compile
   // error: an undeclared name there is a bug, not a runtime path. 2552 is
-  // 2304's did-you-mean spelling, and 18004 is the same unresolved name in
-  // SHORTHAND position (`{ x }`), which the checker reports against the
-  // property instead of the reference.
+  // 2304's did-you-mean spelling, 2584 its spelling for a name another
+  // library declares (`document`, `window`: Node defines neither), and
+  // 18004 is the same unresolved name in SHORTHAND position (`{ x }`), which
+  // the checker reports against the property instead of the reference.
   [
     2304,
     THROW(
@@ -783,6 +808,13 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
     2552,
     THROW(
       "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+    ),
+  ],
+  [
+    2584,
+    THROW(
+      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+      ["tests/corpus/8941-js-host-name-read.js", "tests/corpus/global-detection-typeof.cjs"],
     ),
   ],
   [

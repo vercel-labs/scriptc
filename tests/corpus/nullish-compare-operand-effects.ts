@@ -43,6 +43,19 @@ console.log((order.push("seq-null"), null) == null, null === (order.push("seq-le
 let counter = 0;
 console.log((counter++, undefined) == null, counter);
 
+// A sequence whose VALUE is a call runs that call too: the decided answer
+// replaces the comparison, not the operand's own result.
+function seqFirst(): number {
+  order.push("seq-first");
+  return 1;
+}
+function seqLast(): number {
+  order.push("seq-last");
+  return 2;
+}
+console.log((seqFirst(), seqLast()) !== null, (seqFirst(), seqLast()) === undefined);
+console.log((seqFirst(), seqLast()) == null ? "nullish" : "present");
+
 // The expression's value flows on: the literal is what a conditional, a
 // boolean coercion and a stored binding see.
 const decided = holder.value !== null;

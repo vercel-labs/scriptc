@@ -1,13 +1,22 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
+import {
+  fenceConsoleMutation,
+  isConsoleExpression,
+  isConsoleObjectRead,
+  refuseConsoleRecordComparison,
+  soleRecordArm,
+} from "../coercions/console-records.js";
 import { lowerStaticPrivateAssignment } from "../private-statics.js";
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import {
   lowerOptionalIndex,
   splitUndefinedIndex,
   undefinedTypedArrayKeyFence,
 } from "../undefined-index.js";
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
+import { checkedNarrowOperand } from "../coercions/unions.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import { recordMayKeepSource } from "../record-sources.js";
 import { recordStringCall } from "../record-links.js";
@@ -49,7 +58,7 @@ import {
   operatorUnsupported,
   runtimeOptionalStorageOperand,
   symbolFieldInfo,
-  typeofAnswer,
+  typeofAnswerOf,
 } from "../lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.js";
 import { lowerElementCompoundParts } from "./element-access.js";
@@ -76,7 +85,7 @@ import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { lowerShortCircuitAssignment } from "./nullish-assignment.js";
 import { lowerEventObjectPropertyWrite } from "../lower-event-target.js";
 import { lowerFieldCompoundValue } from "./updates.js";
-import { expandoWritableTarget } from "../lower-expando.js";
+import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
@@ -90,6 +99,7 @@ import {
   lowerRuntimeConstructorIs,
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
+import { lowerInstanceConstructorIs } from "../class-instance-constructor.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
@@ -104,11 +114,11 @@ import { lowerEnvironmentIdentity } from "../builtins/environment.js";
  * types the branches and reads bridge through maybeNarrow as usual. When
  * the checker already narrowed the non-literal side PAST the union
  * (`w = 5; if (w !== null)`), the comparison is statically decided and
- * folds to a bool literal. Soundness rests on the same narrowing proof
- * unionNarrow relies on; the operand's own effects are separate — a call
- * the checker types non-nullable (`f() !== null`), an awaited import or a
- * getter read still has to run, so a non-droppable operand evaluates once
- * before the literal answers. Null when neither side is a unit literal
+ * folds to a bool literal, and soundness rests on the same narrowing
+ * proof unionNarrow relies on. The same holds for an operand whose type
+ * never held the unit (`count() === undefined` over a number result):
+ * the answer is decided, and the operand is still evaluated when that is
+ * observable (decidedAfter). Null when neither side is a unit literal
  * (not a unit comparison). */
 export function lowerUnitComparison(
   lowerer: Lowerer,
@@ -136,16 +146,15 @@ export function lowerUnitComparison(
     lowerer.armTag(other.value.type.unionId, unit.type) >= 0
   )
     return lowerUnitComparison(lowerer, other.value, unit, negated, loc);
-  if (isUnitType(other.type)) {
-    // A unit-typed operand (`(f(), undefined) === undefined`): the value is
-    // exactly that unit, so identical units are equal — only the operand's
-    // effects have to run (`decidableUnitAnswer`).
-    const same = (other.type.kind === "undefinedT" ? "undefined" : "null") === unit.unit;
-    return decidableUnitAnswer(
-      other,
-      { kind: "boolLit", value: same !== negated, type: BOOL, loc },
-      loc,
-    );
+  // The same for a narrowed value whose read has to be evaluated anyway
+  // (`decl.name === undefined` through a getter, where the slot holds
+  // `Name | undefined` and this declaration's type says `Name`): the value
+  // under the narrow is evaluated once and its tag answers. A read with
+  // nothing to evaluate folds with the narrowing, below.
+  {
+    const narrowed = narrowedUnion(lowerer, other);
+    if (narrowed !== null && !isSafeToDiscard(narrowed))
+      return lowerUnitComparison(lowerer, narrowed, unit, negated, loc);
   }
   if (other.type.kind === "union") {
     const tag = lowerer.armTag(other.type.unionId, unit.type);
@@ -218,28 +227,43 @@ export function lowerUnitComparison(
   if (other.type.kind === "void") return null;
   // Non-union operand: it can never hold undefined/null at runtime (the
   // checker narrowed it to a concrete arm), so `=== unit` is false and
-  // `!== unit` is true — but the operand still evaluates for its own
-  // effects (`f() !== null`, `get x() !== undefined`, an awaited import).
-  return decidableUnitAnswer(other, { kind: "boolLit", value: negated, type: BOOL, loc }, loc);
+  // `!== unit` is true. JavaScript still evaluates the operand.
+  return decidedAfter(lowerer, other, negated, loc);
 }
 
-/** The literal answer to a unit comparison the checker already decided,
- * with the operand's effects preserved: a droppable read folds to the
- * literal alone (the pure forms keep their IR), while a call, an await, a
- * getter read or a sequence evaluates once, in place, and the literal is the
- * value. A sequence's own result is a unit literal with no runtime
- * representation — only its statements have to run — so the answer takes the
- * result position and the statements are kept as they are. */
-function decidableUnitAnswer(other: IrExpr, answer: IrExpr, loc: SrcLoc): IrExpr {
-  if (isSafeToDiscard(other)) return answer;
-  if (other.kind === "seqExpr") return { ...other, result: answer, type: answer.type };
-  return {
-    kind: "seqExpr",
-    stmts: [{ kind: "exprStmt", expr: other, loc }],
-    result: answer,
-    type: answer.type,
-    loc,
+/** The union value under a narrow of `e`, checked or not: what a
+ * narrowed read actually reads. Null when `e` is not a narrow of a union. */
+function narrowedUnion(lowerer: Lowerer, e: IrExpr): IrExpr | null {
+  const under = e.kind === "unionNarrow" ? e.value : checkedNarrowOperand(lowerer, e);
+  return under !== null && under.type.kind === "union" ? under : null;
+}
+
+/** A comparison whose answer is decided statically, over an operand
+ * JavaScript still evaluates: `count() === undefined` calls `count`, and a
+ * checked conversion inside the operand throws as it would anywhere else.
+ * The bare literal when evaluating `other` is unobservable (a read of a
+ * binding, a field, a literal), else `other` for its effects and then the
+ * literal. A reference the checker narrowed past the unit reads through a
+ * narrow of its storage; the answer rests on that same narrowing, so the
+ * read is dropped with its narrow, as it always was. */
+function decidedAfter(lowerer: Lowerer, other: IrExpr, value: boolean, loc: SrcLoc): IrExpr {
+  const answer: IrExpr = { kind: "boolLit", value, type: BOOL, loc };
+  if (isSafeToDiscard(narrowedUnion(lowerer, other) ?? other)) return answer;
+  // A sequence keeps its own statements and the answer takes the result
+  // position. Its result runs only when that is observable: a unit result
+  // has no value to evaluate, so `(f(), undefined) === null` runs `f`, and
+  // `(first(), last()) !== null` runs both.
+  const stmts: IrStmt[] = [];
+  const run = (e: IrExpr): void => {
+    if (e.kind === "seqExpr") {
+      stmts.push(...e.stmts);
+      run(e.result);
+    } else if (!isSafeToDiscard(e)) {
+      stmts.push({ kind: "exprStmt", expr: e, loc });
+    }
   };
+  run(other);
+  return { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
 }
 
 /** The union-typed process.envGet read inside a checker-narrowed operand,
@@ -258,18 +282,21 @@ function lowerLooseNullCompare(
   loc: SrcLoc,
 ): IrExpr | null {
   const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
-  const unwrap = (e: ts.Expression): ts.Expression =>
-    ts.isParenthesizedExpression(e) ? unwrap(e.expression) : e;
-  const left = unwrap(expr.left);
-  const right = unwrap(expr.right);
+  const left = withoutParentheses(expr.left);
+  const right = withoutParentheses(expr.right);
   const leftIsNull = left.kind === ts.SyntaxKind.NullKeyword;
   if (!leftIsNull && right.kind !== ts.SyntaxKind.NullKeyword) return null;
   const otherNode = leftIsNull ? right : left;
-  const other = lowerPresenceOperand(lowerer, otherNode);
+  let other = lowerPresenceOperand(lowerer, otherNode);
+  // A narrowed value whose read has to be evaluated anyway answers by what
+  // it holds (lowerUnitComparison).
+  {
+    const narrowed = narrowedUnion(lowerer, other);
+    if (narrowed !== null && !isSafeToDiscard(narrowed)) other = narrowed;
+  }
   if (isUnitType(other.type)) {
     // `null == null`, `undefined == null`: units are mutually loose-equal.
-    // The operand still runs for its effects (`(f(), undefined) == null`).
-    return decidableUnitAnswer(other, { kind: "boolLit", value: !negated, type: BOOL, loc }, loc);
+    return decidedAfter(lowerer, other, !negated, loc);
   }
   if (other.type.kind === "dyn") {
     // `v != null` on unknown: one dyn kind test covers both units.
@@ -288,9 +315,8 @@ function lowerLooseNullCompare(
     if (!def) lowerer.badType(otherNode, lowerer.typeOf(otherNode));
     const tags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
     if (tags.length === 0) {
-      // No unit arms: never null-ish (defensive — the fold below), with the
-      // operand's effects preserved like every other decided comparison.
-      return decidableUnitAnswer(other, { kind: "boolLit", value: negated, type: BOOL, loc }, loc);
+      // No unit arms: never null-ish (defensive — the fold below).
+      return decidedAfter(lowerer, other, negated, loc);
     }
     const isTag = (tag: number, value: IrExpr): IrExpr => ({
       kind: "unionIsTag",
@@ -347,9 +373,8 @@ function lowerLooseNullCompare(
     }
   }
   // A non-nullable operand (tsc allows the comparison as a guard):
-  // `== null` is statically false, `!= null` statically true — the
-  // operand still runs for its effects.
-  return decidableUnitAnswer(other, { kind: "boolLit", value: negated, type: BOOL, loc }, loc);
+  // `== null` is statically false, `!= null` statically true.
+  return decidedAfter(lowerer, other, negated, loc);
 }
 
 /** A plain value read whose storage can carry undefined while the checker
@@ -490,6 +515,13 @@ export function lowerNullishPair(
   // arm that has no first-class union representation.
   const fresh = rest.length === 1 ? lowerer.emptyCollectionFor(expr.right, rest[0]!) : null;
   if (fresh) return { kind: "nullish", left, right: fresh, type: fresh.type, loc };
+  // `logger ?? console` over an optional record: console flows into that
+  // record (console-records.ts), so the result keeps the record's layout.
+  if (rest.length === 1 && rest[0]!.kind === "record" && isConsoleExpression(lowerer, expr.right)) {
+    const right = lowerer.lowerExprExpecting(expr.right, rest[0]!);
+    if (typeEquals(right.type, rest[0]!))
+      return { kind: "nullish", left, right, type: rest[0]!, loc };
+  }
   // `optionalRecord ?? { a: 1, items: new Map() }`: a fresh fallback literal
   // whose untyped empty collections (`new Map()`, `new Set()` without type
   // arguments, which the checker types `Map<any, any>`) leave the checker's
@@ -1327,6 +1359,7 @@ function lowerBigIntOperandOperator(
 }
 
 export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
+  fenceConsoleMutation(lowerer, expr);
   const loc = locOf(expr);
   const op = expr.operatorToken.kind;
 
@@ -1412,9 +1445,10 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !(ts.isPropertyAccessExpression(expr.left) && expr.left.questionDotToken)
     ) {
-      const target =
-        expandoWritableTarget(lowerer, expr.left) ??
-        (ts.isPropertyAccessExpression(expr.left) ? nsWritableTarget(lowerer, expr.left) : null);
+      fenceReadonlyExpandoWrite(lowerer, expr.left);
+      const target = ts.isPropertyAccessExpression(expr.left)
+        ? nsWritableTarget(lowerer, expr.left)
+        : null;
       if (target) {
         const value = lowerCompoundValueToTarget(lowerer, expr, indexedCompound, target);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
@@ -1475,16 +1509,18 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       }
     }
     // Member targets whose storage IS a module global — namespace
-    // members (`N.x`) and expando function members (`Foo.baz`): the
-    // same assignExpr, since the "member" is a variable.
+    // members (`N.x`): the same assignExpr, since the "member" is a
+    // variable. Expando function members (`Foo.baz`) are callable-member
+    // table data and lower with every other callable member.
     if (
       op === ts.SyntaxKind.EqualsToken &&
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !(ts.isPropertyAccessExpression(expr.left) && expr.left.questionDotToken)
     ) {
-      const target =
-        expandoWritableTarget(lowerer, expr.left) ??
-        (ts.isPropertyAccessExpression(expr.left) ? nsWritableTarget(lowerer, expr.left) : null);
+      fenceReadonlyExpandoWrite(lowerer, expr.left);
+      const target = ts.isPropertyAccessExpression(expr.left)
+        ? nsWritableTarget(lowerer, expr.left)
+        : null;
       if (target) {
         const value = lowerer.lowerExprExpecting(expr.right, target.type);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
@@ -1691,6 +1727,15 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         )
           hold(target.argumentExpression, "%assignKey");
         const result = hold(expr.right, "%assignValue");
+        // A parenthesized RHS is the same expression: the chained
+        // whole-export lowering strips the parens to find the value it
+        // assigns, so the evaluated result stands for the inner node too —
+        // the value is evaluated once, as in Node.
+        {
+          let inner: ts.Expression = expr.right;
+          while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+          if (inner !== expr.right) overrides.push({ node: inner, value: result });
+        }
         stmts.push(
           lowerer.withExpressionOverrides(overrides, () => lowerer.lowerExprStatement(expr)),
         );
@@ -1714,10 +1759,14 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   if (op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
     const nullTest = lowerLooseNullCompare(lowerer, expr, loc);
     if (nullTest) return nullTest;
+    const looseLeft = deferredSlotOr(lowerer, lowerer.lowerExpr(expr.left));
+    const looseRight = deferredSlotOr(lowerer, lowerer.lowerExpr(expr.right));
+    // console against a record it could have flowed into, as for `===`.
+    refuseConsoleRecordComparison(lowerer, expr, expr.left, expr.right, looseLeft, looseRight);
     const loose = lowerAbstractEquality(
       lowerer,
-      deferredSlotOr(lowerer, lowerer.lowerExpr(expr.left)),
-      deferredSlotOr(lowerer, lowerer.lowerExpr(expr.right)),
+      looseLeft,
+      looseRight,
       op === ts.SyntaxKind.ExclamationEqualsToken,
       loc,
       expr,
@@ -1793,6 +1842,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
         return lowerRuntimeConstructorIs(lowerer, ctor.receiver, target.info, negated, loc);
       }
+      // `x.constructor === K` for an instance of a program class: whether
+      // the instance's own class is K (class-instance-constructor.ts).
+      const programClass = lowerInstanceConstructorIs(
+        lowerer,
+        side,
+        other,
+        op === ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        loc,
+      );
+      if (programClass !== null) return programClass;
     }
   }
   // `C === EventEmitter` between two builtin class references: the
@@ -1848,6 +1907,13 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   const bigintOperand = lowerBigIntOperandOperator(lowerer, expr, op, left, right);
   if (bigintOperand) return bigintOperand;
   if (left.type.kind === "dyn" || right.type.kind === "dyn") {
+    // console against a record it could have flowed into (`logger ===
+    // console`): refused by name (console-records.ts).
+    if (
+      op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+    )
+      refuseConsoleRecordComparison(lowerer, expr, expr.left, expr.right, left, right);
     // The narrowing unit comparisons ARE answerable on unknown: `v ===
     // undefined` / `v !== null` test the dyn node's kind directly, and
     // tsc's control flow narrows the branches (reads then bridge through
@@ -3046,7 +3112,14 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   }
   if (left.kind === "unitLit" && op === ts.SyntaxKind.AmpersandAmpersandToken) return left;
   if (op === ts.SyntaxKind.BarBarToken && REF_TRUTHY_KINDS.has(left.type.kind)) return left;
-  const right = lowerer.lowerExpr(expr.right);
+  let right = lowerer.lowerExpr(expr.right);
+  // `logger || console` over an optional record: console flows into the
+  // record the left operand holds (console-records.ts), so the pair stays
+  // typed, as the checker's own result type is.
+  if (op === ts.SyntaxKind.BarBarToken && isConsoleObjectRead(right)) {
+    const record = soleRecordArm(lowerer, left.type);
+    if (record) right = lowerer.coerceToExpected(right, record);
+  }
   // A LITERAL-unit left operand (a compile-time undefined/null — the
   // capability-probe members: `process.features.inspector ||
   // !flag.startsWith('--inspect')` reads undefined in a compiled
@@ -3554,7 +3627,7 @@ function lowerUnionTypeofTest(
     if (value.type.kind !== "union") continue; // defensive: an already-narrowed use
     const unionId = value.type.unionId;
     const def = lowerer.unions.get(unionId);
-    const answers = def?.arms.map(typeofAnswer);
+    const answers = def?.arms.map(typeofAnswerOf(lowerer));
     if (!def || !answers || !answers.every((s): s is string => s !== null)) continue;
     const tags = answers.flatMap((s, i) => (s === b.text ? [i] : []));
     if (tags.length === 0 || tags.length === def.arms.length) {

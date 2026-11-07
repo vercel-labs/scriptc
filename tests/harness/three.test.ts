@@ -62,9 +62,15 @@ const cases = balancedShardSelect(
   ({ fixture, target }) => `three:${fixture}:${target}`,
   ({ fixture }) => (fixture === "nodes" ? 8 : fixture === "loaders" || fixture === "gltf" ? 4 : 1),
 );
+// The budget is set by the sanitized nodes build, the longest case by far:
+// alone it took 584 to 982 s in CI's own job over six runs of main and 621 to
+// 679 s on a 24-vCPU Sandbox, and 1098 s was seen on a slower one, which the
+// former 1200 s left a tenth to spare. It is a hang detector for a build that
+// has a machine to itself (CI's three_nodes_san job); beside a shard's other
+// workers the build needs its own job, not a longer wait.
 test.for(cases)(
   "published three.js $fixture runs statically through LLVM on $target",
-  { timeout: 1_200_000 },
+  { timeout: 1_800_000 },
   async ({ fixture, target }, context) => {
     const entry = join(import.meta.dirname, `../fixtures/three/${fixture}.mjs`);
     if (target === "wasm32-wasi" && !hasZig) context.skip();

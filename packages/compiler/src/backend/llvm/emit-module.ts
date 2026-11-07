@@ -2,7 +2,7 @@
 import { loopUnrollMetadata } from "./periodic-guards.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
-import { type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
+import { DYN_ABSENT, type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { type ChunkResult, EmitJournal } from "./emit-journal.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,6 +36,11 @@ import {
   typedRefConstructor,
   vAdapters,
 } from "./shapes.js";
+import {
+  ABORT_FRAMES_DECLARATIONS,
+  ABORT_FRAMES_INSTALL,
+  abortFramesDefinition,
+} from "./frame-positions.js";
 import { emitLlvmLayouts } from "./layouts.js";
 import { emitArraySearchHelpers } from "./array-search.js";
 import { emitClassMembershipHelper } from "./classes.js";
@@ -78,6 +83,7 @@ import {
 } from "./cpu-dispatch.js";
 import { LANE_INIT_CALL, lanePlansEnabled, laneToggleDefs } from "./lanes.js";
 import type { IrFunction } from "../../ir/ir.js";
+import { ERROR_READER_PROPERTIES, errorReaderName } from "../../ir/function-references.js";
 import { type FunctionLayout, layoutTierOf } from "./function-layout.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
@@ -402,13 +408,15 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     }
   emitter.selectStacklessAsync(fnDefs);
   const errorViews: string[] = [];
-  for (const property of ["name", "message"])
-    if (emitter.mod.functions.some((fn) => fn.name === `%error.${property}.read`)) {
+  for (const property of ERROR_READER_PROPERTIES) {
+    const reader = errorReaderName(property);
+    if (emitter.mod.functions.some((fn) => fn.name === reader)) {
       emitter.declare(`declare void @scr_error_install_${property}_reader(ptr)`);
       errorViews.push(
-        `  call void @scr_error_install_${property}_reader(ptr @${mangleFunction(`%error.${property}.read`)})`,
+        `  call void @scr_error_install_${property}_reader(ptr @${mangleFunction(reader)})`,
       );
     }
+  }
   for (const meta of emitter.classMeta.values()) {
     if (meta.def.runtime || meta.root.def.name !== "%Error") continue;
     const type: IrType = { kind: "object", className: meta.def.name };
@@ -502,6 +510,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // ordering — the atexit half becomes an idempotent no-op).
   const usesEvents = runtimeFeatures.processEvents;
   const usesChildProcess = runtimeFeatures.childProcess;
+  // A program that can register an 'error' listener on a child installs
+  // the builder of a failed spawn's error object (runtime-features.ts).
+  const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
   const usesFsWatch = runtimeFeatures.fsWatch;
   // fs.watchFile programs register the poller unit's exit cleanup — the
   // same one-line gating (native/executable.ts links scr_watch_file.c on
@@ -547,6 +558,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
+  if (usesChildErrorEvent) emitter.declare(`declare void @scr_child_error_event_install()`);
   const childStreamBoxes =
     usesChildProcess &&
     usesStream &&
@@ -931,6 +943,20 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   ];
   for (const line of shapes.typeDefs) out.push(line);
   for (const line of classShapes.typeDefs) out.push(line);
+  if (emitter.needsDynAbsent) {
+    // The ABSENT marker of an optional checked-dynamic record field slot:
+    // an immortal ScrDyn (rc == SIZE_MAX, so RC and the collector skip it)
+    // of kind SCR_DYN_UNDEF (= 6), address-distinct from the module-wide
+    // scr_dyn_undefined() singleton. Layout follows scr_dyn.h: rc, i32
+    // kind, four bools, then the payload union. Compiled code only
+    // compares its address (reads select it to scr_dyn_undefined, boxing
+    // omits it, presence tests compare it), so the payload is zero.
+    const S = emitter.sizeType;
+    out.push(
+      `${DYN_ABSENT} = internal global { ${S}, i32, i8, i8, i8, i8, [8 x i8] } { ${S} -1, i32 6, i8 0, i8 0, i8 0, i8 0, [8 x i8] zeroinitializer } ; optional dyn absent field`,
+      ``,
+    );
+  }
   // Thread-instanced library state (abi.instance_per_thread): the
   // program TU's mutable globals — module globals, run-once guards, the
   // lazily-compiled regex literal caches — and the runtime globals its
@@ -965,6 +991,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       ? [`@scr_stdout_buffering = constant i8 1`]
       : []),
   );
+  if (emitter.abortFrames) for (const d of ABORT_FRAMES_DECLARATIONS) emitter.declare(d);
   for (const d of emitter.decls) out.push(d);
   out.push(``);
   const flushedDecls = new Set(emitter.decls);
@@ -1167,6 +1194,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   if (emitter.arrayConstData.size > 0) out.push(``);
+  for (const [definition, sym] of emitter.imageDataSyms) out.push(`@${sym} = ${definition}`);
+  if (emitter.imageDataSyms.size > 0) out.push(``);
   for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
   if (emitter.methodIdSlots.size > 0) out.push(``);
 
@@ -1283,6 +1312,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
   }
+  if (emitter.abortFrames) out.push(...abortFramesDefinition(FN_ATTRS));
   out.push(
     `define i32 @${emitter.mod.workers ? "sc_context_entry" : emitter.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
     `entry:`,
@@ -1291,6 +1321,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(lanePlansEnabled(emitter) ? [LANE_INIT_CALL] : []),
     ...(emitter.mod.workers ? [`  call void @scr_runtime_workers_v8()`] : []),
     `  call void @scr_init()`,
+    ...(emitter.abortFrames ? [ABORT_FRAMES_INSTALL] : []),
     // Compressed fields hold addresses in the program-lifetime region, which
     // is reserved below 32 GiB before compiled code runs.
     ...(emitter.compactRegion ? [`  call void @scr_plr_init()`] : []),
@@ -1306,6 +1337,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
     ...(usesChildProcess ? [`  call void @scr_child_dyn_install()`] : []),
+    ...(usesChildErrorEvent ? [`  call void @scr_child_error_event_install()`] : []),
     ...(childStreamBoxes
       ? [
           `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,

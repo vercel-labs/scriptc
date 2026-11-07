@@ -1,5 +1,6 @@
 /* typeof expressions and the typeof tests they lower to. */
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
@@ -17,6 +18,8 @@ import { processHasIpc } from "../builtins/process.js";
 import { lowerPerfHooksTypeof } from "../builtins/performance.js";
 import { isNodeModuleValue } from "../lower-node-module.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
+import { builtinModuleMemberCensus } from "../builtin-module-members.js";
+import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
 import { STRING_INDEX_METHODS, builtinModuleConstOf, stdlibGlobalNameOf } from "../surfaces.js";
 import {
   constructorGlobalTypeof,
@@ -25,7 +28,8 @@ import {
   lowerPromiseThenPresence,
   operandPairs,
   runtimeOptionalStorageOperand,
-  typeofAnswer,
+  hasCallSlot,
+  typeofAnswerOf,
 } from "../lower-exprs.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { isJsSourceFile, isNodeEsmFile } from "../../program.js";
@@ -95,6 +99,37 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   if (performance) return performance;
   if (isNodeModuleValue(lowerer, expr.expression)) {
     return { kind: "strLit", value: "object", type: STRING, loc };
+  }
+  // A builtin module namespace: the census says whether the CommonJS
+  // exports value is callable (node:assert, node:events, node:module,
+  // node:test); an ESM namespace object is always "object". A namespace
+  // whose runtime shape is not known statically (a parameter, an untraced
+  // call result) answers either. Asked before the class-alias arm below,
+  // which spells a namespace import of a callable module (node:events) as
+  // the class it exports.
+  {
+    const shape = lowerer.builtinNamespaceShapeOf(expr.expression);
+    if (shape !== null) {
+      if (shape.flavor === "unknown")
+        lowerer.unsupported(
+          "SC1090",
+          expr.expression,
+          'typeof a builtin module namespace whose runtime shape is not known statically (an ES module namespace answers "object"; the CommonJS exports object of a callable module answers "function"; bind the namespace where it is imported or required)',
+        );
+      const census = builtinModuleMemberCensus(shape.module);
+      if (census !== null)
+        return reflectOverNamespaceExpr(
+          lowerer,
+          expr.expression,
+          {
+            kind: "strLit",
+            value: shape.flavor === "cjs" && census.callable ? "function" : "object",
+            type: STRING,
+            loc,
+          },
+          loc,
+        );
+    }
   }
   // `typeof EventEmitter`, `typeof zlib.Gzip`, `typeof C` over a
   // builtin class alias.
@@ -311,11 +346,15 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     undefinedT: "undefined",
     nullT: "object",
   };
-  // An f64 handle (a readline Interface, a Timeout) is an object.
+  // An f64 handle (a readline Interface, a Timeout) is an object, and a
+  // value called through a `%call` slot (a function with members, a callable
+  // class instance) is a function.
   const folded =
     operand.type.kind === "f64" && isF64HandleTyped(lowerer, expr.expression)
       ? "object"
-      : FOLD[operand.type.kind];
+      : hasCallSlot(lowerer, operand.type)
+        ? "function"
+        : FOLD[operand.type.kind];
   if (folded) {
     const result: IrExpr = { kind: "strLit", value: folded, type: STRING, loc };
     return isSafeToDiscard(operand)
@@ -343,7 +382,7 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   }
   if (operand.type.kind === "union" && isSafeToRepeat(operand)) {
     const def = lowerer.unions.get(operand.type.unionId);
-    const answers = def?.arms.map(typeofAnswer);
+    const answers = def?.arms.map(typeofAnswerOf(lowerer));
     if (def && answers && answers.every((s): s is string => s !== null)) {
       const groups = new Map<string, number[]>();
       answers.forEach((s, i) => groups.set(s, [...(groups.get(s) ?? []), i]));
@@ -532,16 +571,12 @@ export function lowerDynTypeofTest(
       // a missing key answers undefined and the guard goes false,
       // Node-exact — never the checked cast (validating T here would
       // throw on exactly the values the guard exists to reject).
-      const unparen = (e: ts.Expression): ts.Expression => {
-        while (ts.isParenthesizedExpression(e)) e = e.expression;
-        return e;
-      };
       let keyed: IrExpr | null = null;
-      const pn = unparen(a.expression);
+      const pn = withoutParentheses(a.expression);
       if (ts.isPropertyAccessExpression(pn) && !pn.questionDotToken && ts.isIdentifier(pn.name)) {
-        const recv = unparen(pn.expression);
+        const recv = withoutParentheses(pn.expression);
         if (ts.isAsExpression(recv) || ts.isTypeAssertion(recv)) {
-          const inner = unparen(recv.expression);
+          const inner = withoutParentheses(recv.expression);
           const obj = tryLowerExpression(lowerer, inner);
           if (obj?.type.kind === "dyn") {
             keyed = {

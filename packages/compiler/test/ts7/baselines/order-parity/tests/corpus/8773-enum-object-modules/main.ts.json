@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8773-enum-object-modules/lib.ts",
+  "<repo>/tests/corpus/8773-enum-object-modules/reexport.ts",
+  "<repo>/tests/corpus/8773-enum-object-modules/main.ts"
+ ],
+ "diags": []
+}

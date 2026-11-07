@@ -4419,11 +4419,30 @@ static ScrDyn *scr_dyn_own_descriptor_or_null(const ScrDyn *source, const ScrStr
   return descriptor;
 }
 
+/* A declared key the checked source held as a non-enumerable data property
+ * stays non-enumerable in the record's view: its value lives in the record,
+ * and this entry attribute is the only place the record has for "not
+ * enumerable". Every rebuild of the view carries it (scr_record_source_merge)
+ * and the record's serializer skips the key (scr_jb_try_record_source), so
+ * Object.keys, for-in and JSON.stringify leave the key out and its
+ * descriptor reports it, as on the one object Node has. The writable and
+ * configurable attributes of a declared key are not kept, and a typed copy
+ * of the record (a spread, a rest binding) copies the field as any other.
+ * Out of line: the callers are linked by most programs and run this for
+ * none of their records. */
+static __attribute__((noinline)) void scr_record_source_hide(ScrDyn *view, const char *key,
+                                                            size_t key_len) {
+  ScrDynEntry *entry = scr_dyn_find_entry(view, key, key_len);
+  if (entry) entry->enumerable = false;
+}
+
 /* Called by the checked record builder after it filled `rec` from `src`;
  * `names` lists the shape's fields in declaration order. Keeps nothing
- * unless the source has an own property the shape does not declare, or
- * holds the declared ones in another order than the record serializes
- * them. Borrows both. */
+ * unless the source has an own property the shape does not declare, holds
+ * the declared ones in another order than the record serializes them, or
+ * holds a declared one as a non-enumerable data property: the record has
+ * no place for that attribute, so the view's entry for the key keeps it
+ * (scr_record_source_hide). Borrows both. */
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count) {
   if (!rec || !src || src->kind != SCR_DYN_OBJ || src->v.obj.source_identity) return;
@@ -4435,7 +4454,7 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
     const ScrDynProp entry_prop = scr_dyn_obj_prop_at(src, i);
     const ScrDynProp *entry = &entry_prop;
     size_t index = scr_record_source_index(&probe, entry->key, entry->key_len);
-    keep = index == count || index < next;
+    keep = index == count || index < next || (!entry->enumerable && !entry->accessor);
     next = index + 1;
   }
   if (!keep) return;
@@ -4445,6 +4464,8 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
     const ScrDynProp *entry = &entry_prop;
     if (scr_record_source_declared(&probe, entry->key, entry->key_len)) {
       scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(scr_dyn_undefined()));
+      if (!entry->enumerable && !entry->accessor)
+        scr_record_source_hide(view, entry->key, entry->key_len);
     } else if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
       scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(entry->value));
     } else {
@@ -4663,6 +4684,10 @@ static ScrDyn *scr_record_source_merge(const ScrRecordSource *source, const ScrD
     ScrDyn *value = scr_dyn_obj_get(fresh, entry->key, entry->key_len);
     if (value) {
       scr_dyn_obj_set(out, entry->key, entry->key_len, scr_dyn_retain(value));
+      /* A hidden declared key stays hidden across refreshes. (The fresh
+       * snapshot holds the record's fields, so a key it has is declared.) */
+      if (!entry->enumerable && !entry->accessor)
+        scr_record_source_hide(out, entry->key, entry->key_len);
       continue;
     }
     if (scr_record_source_declared(source, entry->key, entry->key_len)) continue;
@@ -4822,7 +4847,9 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
     const ScrDynProp *entry = &entry_prop;
     size_t index = scr_record_source_index(&source, entry->key, entry->key_len);
     if (index < count) {
-      if (!seen[index] && scr_jb_put_source_field(b, rec, &source, index, first, on_stack, field))
+      /* A hidden declared key (scr_record_source_hide) is not serialized. */
+      if (!seen[index] && (entry->enumerable || entry->accessor) &&
+          scr_jb_put_source_field(b, rec, &source, index, first, on_stack, field))
         first = false;
       seen[index] = true;
       continue;
@@ -4841,7 +4868,14 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
     for (size_t j = i; j < view->v.obj.len; j++) {
       const ScrDynProp entry_prop = scr_dyn_obj_prop_at(view, order ? order[j] : j);
       const ScrDynProp *entry = &entry_prop;
-      if (!entry->enumerable && !scr_record_source_declared(&source, entry->key, entry->key_len)) continue;
+      if (!entry->enumerable) {
+        size_t hidden = entry->accessor
+                            ? count
+                            : scr_record_source_index(&source, entry->key, entry->key_len);
+        if (hidden < count) seen[hidden] = true;
+        if (hidden < count || !scr_record_source_declared(&source, entry->key, entry->key_len))
+          continue;
+      }
       ScrStr *name = scr_str_new(entry->key, entry->key_len);
       scr_dyn_arr_push(rest, scr_dyn_new_str(name));
       scr_str_release(name);

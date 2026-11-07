@@ -21,6 +21,7 @@ import {
   elementMayBeForeign,
 } from "../array-values.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
+import { staticFieldWriteTarget } from "../lower-classes.js";
 import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { globalSymbolKey } from "./global-symbols.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -68,6 +69,7 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
   // The right side, when an element fast path already lowered it.
   let rhs: IrExpr | null = null;
   let write: (value: IrExpr) => IrStmt;
+  let staticField: { id: string; type: IrType } | null = null;
   if (ts.isIdentifier(target)) {
     const binding = lowerer.resolveWritable(target);
     if (!binding)
@@ -97,6 +99,16 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
         expr: { kind: "libCall", fn: "dyn.globalSymbolSet", args: [key, value], type: VOID, loc },
         loc,
       });
+    } else if (
+      ts.isPropertyAccessExpression(target) &&
+      (staticField = staticFieldWriteTarget(lowerer, target)) !== null
+    ) {
+      // `C.x ??= v` on a static field named through its own class: the
+      // field's module global, as the plain assignment writes it.
+      const { id, type } = staticField;
+      storage = type;
+      read = varRef(id, type, locOf(target));
+      write = (value) => ({ kind: "assign", localId: id, value, loc });
     } else if (ts.isPropertyAccessExpression(target) && isEventWritableAccessor(lowerer, target)) {
       // returnValue/cancelBubble on an Event subclass instance: the
       // accessors read and write the event.

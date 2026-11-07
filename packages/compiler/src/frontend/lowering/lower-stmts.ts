@@ -108,6 +108,7 @@ import {
   splitRequireBindingOf,
   splitRequireBindingOfIdent,
   splitRequireEarlyReadOf,
+  unresolvedRequireThrow,
   wholeExportSymbolOfModule,
   wholeExportValueOfModuleBinding,
 } from "./cjs-inline-require.js";
@@ -262,6 +263,8 @@ import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatc
 import {
   genericIfaceBindingKeepsClass,
   lowerClassStaticRead,
+  fenceStaticAccessorUpdate,
+  staticAccessorWrite,
   staticReceiverClass,
   superConditionLead,
 } from "./lower-classes.js";
@@ -2377,6 +2380,10 @@ function lowerVarDeclarator(
   ) {
     const spec = requireSpecOf(decl.initializer)!;
     if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
+    // A relative path that names no file: Node throws at the declaration,
+    // before the binding exists, wherever the declaration sits.
+    const missing = unresolvedRequireThrow(lowerer, decl.initializer, spec, VOID);
+    if (missing !== null) return [{ kind: "exprStmt", expr: missing, loc: locOf(decl) }];
     if (ts.isSourceFile(stmt.parent)) {
       // `const x = require("<island>")` and `const { name } = …`: the
       // island module loads here, at the statement (lower-node-island.ts).
@@ -9472,6 +9479,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     if (isCjsJsFile(sf, lowerer.program)) {
       const init = lowerer.requireInitStmt(spec, expr);
       if (init) return init;
+      // A relative path that names no file throws the same way; a builtin
+      // or a JSON document evaluates nothing.
+      const missing = unresolvedRequireThrow(lowerer, expr, spec, VOID);
+      if (missing !== null) return { kind: "exprStmt", expr: missing, loc: locOf(expr) };
       return { kind: "block", body: [], loc: locOf(expr) };
     }
     if (topLevelJs) return { kind: "block", body: [], loc: locOf(expr) };
@@ -9792,6 +9803,18 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
                 },
                 loc,
               };
+            }
+            // `C.x = v` where the static `x` is an accessor: the setter runs.
+            {
+              const viaSetter = staticAccessorWrite(
+                lowerer,
+                classInfo,
+                expr.left.name.text,
+                expr.right,
+                expr.left,
+                locOf(expr),
+              );
+              if (viaSetter) return { kind: "exprStmt", expr: viaSetter, loc: locOf(expr) };
             }
             const found = lowerer.findStaticOn(classInfo, expr.left.name.text);
             if (found?.field !== undefined) {
@@ -10387,6 +10410,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // members (`foo.count += 1`) are callable-member table data.
         if (!expr.left.questionDotToken) {
           fenceReadonlyExpandoWrite(lowerer, expr.left);
+          fenceStaticAccessorUpdate(lowerer, expr.left);
           const nsT = nsWritableTarget(lowerer, expr.left);
           if (nsT) return lowerCompoundToTarget(lowerer, expr, compound, nsT);
         }

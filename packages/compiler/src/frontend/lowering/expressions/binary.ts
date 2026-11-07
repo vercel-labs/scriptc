@@ -91,6 +91,7 @@ import {
   lowerRuntimeConstructorIs,
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
+import { lowerInstanceConstructorIs } from "../class-instance-constructor.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
@@ -1771,6 +1772,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
         return lowerRuntimeConstructorIs(lowerer, ctor.receiver, target.info, negated, loc);
       }
+      // `x.constructor === K` for an instance of a program class: whether
+      // the instance's own class is K (class-instance-constructor.ts).
+      const programClass = lowerInstanceConstructorIs(
+        lowerer,
+        side,
+        other,
+        op === ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        loc,
+      );
+      if (programClass !== null) return programClass;
     }
   }
   // `C === EventEmitter` between two builtin class references: the

@@ -2,5 +2,6 @@
   "entry": "workloads/json-unions.ts",
   "args": [
     "6"
-  ]
+  ],
+  "scaleArg": 0
 }

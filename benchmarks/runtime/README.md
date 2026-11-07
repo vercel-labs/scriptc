@@ -65,9 +65,23 @@ Without `--baseline`, the runner reports absolute medians. Baseline and candidat
 
 Node is timed in the same interleaved loop and every row reports candidate/Node; the summary prints the overall geomean and, when several categories ran, the geomean per category (`cpu`, `startup`, `server`). Node runs each `.ts` entry directly, so its times include type stripping and ESM detection, as a user running the TypeScript source would see.
 
+## Steady-state ratios
+
+Every timed sample is a whole launch, so candidate/Node includes process start-up: tens of milliseconds for Node (which also strips types and compiles the module) and about one for a compiled executable. For a workload that runs for 30 ms compiled, most of that ratio is start-up, and it says little about the speed of the code.
+
+`--steady=<factor>` adds a second ratio beside it:
+
+```console
+$ pnpm bench:runtime --candidate=. --steady=4 --json=result.json
+```
+
+A workload file names the argument that multiplies the workload's work with `"scaleArg"`, the argument's index in `args`. With `--steady=4` the runner also times the candidate and Node with that argument multiplied by 4 (`--steady-runs` launches each, 5 by default) and reports the candidate's extra time over Node's extra time: (time at 4x − time at 1x) for the candidate, divided by the same difference for Node. Start-up and most of the JIT's warm-up are in both times of each difference and cancel. The extra work need not be exactly 3 times the original, only the same for both.
+
+The existing columns and JSON fields are unchanged. The table gains a `steady candidate/node` column, each workload's JSON entry a `steady` object (`factor`, `args`, `candidate_ms` and `node_ms` at the scaled size, `candidate_marginal_ms`, `node_marginal_ms`, `vs_node`, and its bootstrap `ci95`), and the summary the geomean of the steady ratios next to the whole-process geomean over the same workloads. The scaled output is compared with Node's first; a difference is reported as `mismatch` and fails the run. A workload that times out at the scaled size, or whose time does not grow for both, has no steady ratio (`timeout`, `no-growth`). Startup-bound and server workloads, and workloads without `scaleArg`, have none either.
+
 ## Workload kinds
 
-Each workload is a JSON file in `workloads/`, named after the workload, that holds its `entry`, `args` and options; adding a workload adds its file and its row in the table above, kept in category and then name order. Workloads are process workloads unless they set `kind`.
+Each workload is a JSON file in `workloads/`, named after the workload, that holds its `entry`, `args` and options (`scaleArg` among them, when one argument scales the work); adding a workload adds its file and its row in the table above, kept in category and then name order. Workloads are process workloads unless they set `kind`.
 
 Process workloads time whole launches (wall time, startup included). An optional `launches` count makes each sample the median of that many sequential launches; `cli-config` uses 20 so that a startup-dominated command (a few milliseconds compiled, tens of milliseconds under Node) is measured with low noise. Its table row is labeled `(per launch)`. On a heavily loaded macOS host, whole batches of launches can run several times slower (samples become bimodal), so judge startup changes on the Linux lane or a quiet machine.
 

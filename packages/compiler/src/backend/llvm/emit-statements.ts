@@ -106,7 +106,7 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
-import { emitLaneLoop, laneLoopPlan } from "./lanes.js";
+import { emitLaneLoop, emitLaneOuter, laneLoopPlan, outerLanePlan } from "./lanes.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
@@ -1619,11 +1619,17 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // (lanes.ts). The plan is consulted here, before any copy is chosen:
       // the speculative, int32 and strip-mined copies keep their values in
       // layouts the lane body does not write.
+      const outer = !stripMined && capturedLets.length === 0 ? outerLanePlan(emitter, s) : null;
       const lane =
-        integerLoop !== null && integerSlot !== null && !stripMined && capturedLets.length === 0
+        outer === null &&
+        integerLoop !== null &&
+        integerSlot !== null &&
+        !stripMined &&
+        capturedLets.length === 0
           ? laneLoopPlan(emitter, s)
           : null;
-      if (lane !== null)
+      if (outer !== null) emitLaneOuter(emitter, outer, B.newLabel("lane.after"));
+      else if (lane !== null)
         emitLaneLoop(
           emitter,
           lane,

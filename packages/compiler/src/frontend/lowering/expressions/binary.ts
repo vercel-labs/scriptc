@@ -69,6 +69,7 @@ import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
+import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
 import {
@@ -1410,6 +1411,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) {
       fenceNodeModuleMutation(lowerer, expr.left, "assignment");
     }
+    if (ts.isElementAccessExpression(expr.left)) fenceCopiedKeyedWrite(lowerer, expr.left);
     // The writable Event accessors on Event subclass instances, in value
     // position (`const r = (event.returnValue = false)`).
     if (op === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(expr.left)) {

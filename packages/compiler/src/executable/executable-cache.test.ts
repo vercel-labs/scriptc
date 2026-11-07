@@ -882,6 +882,16 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
   "node-island": { keyed: (o) => ({ ...o, nodeIslands: "node:a-package" }) },
   native: { keyed: (o) => ({ ...o, nodeIslands: "native:a-package" }) },
   node: { keyed: (o) => ({ ...o, nodeIslands: "node:another-package" }) },
+  // The island key holds the decision file's path and the digest of its
+  // bytes (compileTracked): a recorded decision changes what a build compiles.
+  "node-island-decision": {
+    keyed: (o) => ({ ...o, nodeIslands: "|||||decision=/project/scriptc-islands.json#0123abcd" }),
+  },
+  "ignore-node-island-decision": { keyed: (o) => ({ ...o, nodeIslands: "|||||ignore-decision" }) },
+  "node-island-decision-check": {
+    unkeyed:
+      "the check decides the islands from scratch with the frontend only and compares them with the file: it builds no executable, so it neither reads nor writes an entry",
+  },
 };
 
 test("every build and run option is in the cache keys or says why it need not be", async () => {

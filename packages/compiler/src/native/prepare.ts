@@ -1,7 +1,6 @@
 import { targetCpuField, targetCpuTargetRefusal } from "../backend/target-cpu.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
-import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
@@ -29,6 +28,7 @@ import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import {
   FrontendInputTracker,
+  changedFrontendInput,
   frontendInputsSemanticallyMatch,
   frontendInputsStillMatch,
   validFrontendInputSnapshot,
@@ -49,8 +49,7 @@ import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
 import { libnodeCacheKeyFor } from "../node-islands/libnode.js";
 import type { LibraryProfile } from "../library/library-profile.js";
-import type { IrModule } from "../ir/ir.js";
-import { deserializeModuleBytes, serializeModuleParts } from "../ir/serialize.js";
+import { serializeModuleParts } from "../ir/serialize.js";
 import { contentDigest, NATIVE_STRING_BYTES, type NativeCache } from "./cache.js";
 import { batchTextParts, joinedParts } from "./text-file.js";
 import type { NativeToolchain } from "./toolchain.js";
@@ -315,29 +314,21 @@ function validCachedInput(value: unknown): value is FrontendCacheEntry {
   );
 }
 
-/** Bootstrap-only input for the split sanitized self-rebuild: emit an
- * executable from a serialized IR artifact of the same entry instead of
- * running the frontend. A separate run compares that artifact with the IR the
- * native frontend lowers itself. Debug metadata needs source text, so only
- * stripped executables are accepted. */
-const BOOTSTRAP_IR_INPUT = "SCRIPTC_BOOTSTRAP_IR_INPUT";
-
 /** The inputs a native frontend cache entry depends on: the entry, the
  * request's options and FFI manifest, the toolchain that lowers and emits,
  * and the SCRIPTC_* variables that reach the frontend. The sources and the
  * configuration are not part of it; the entry's probes prove those. Null when
  * an entry cannot describe the build: provenance rewriting replaces the
- * sources with build products, a build that writes or reads a lowered
+ * sources with build products, and a build that writes or reads a lowered
  * program (executable/lowered.ts) runs its frontend, or none, whatever an
- * entry holds, and a bootstrap build supplies the IR. */
+ * entry holds. */
 function nativeFrontendInputs(
   entry: string,
   options: CompileRequestOptions,
   ffi: FfiProfile | null,
   toolchain: NativeToolchain,
 ): Record<string, unknown> | null {
-  const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
-  if (usesLoweredProgram(options) || irInput !== "" || provenanceSources() !== null) return null;
+  if (usesLoweredProgram(options) || provenanceSources() !== null) return null;
   return {
     schema: 1,
     entry,
@@ -391,26 +382,6 @@ export function nativeFrontendExclusions(
   return { outputPaths, outputDirectories: [...directories] };
 }
 
-function preparedFromIr(
-  path: string,
-  entry: string,
-  options: CompileRequestOptions,
-): {
-  ok: true;
-  mod: IrModule;
-  sourceTexts: Map<string, string>;
-  warnings: ScrDiagnostic[];
-  /** As PreparedExecutableModule.islands; an IR artifact names none. */
-  islands?: { packages: string[]; modules: string[] };
-} {
-  if ((options.outputKind ?? "exe") !== "exe" || options.strip !== true)
-    throw new Error(`${BOOTSTRAP_IR_INPUT} requires a stripped executable build`);
-  const mod = deserializeModuleBytes(readFileSync(path));
-  if (resolve(mod.sourceFile) !== resolve(entry))
-    throw new Error(`${BOOTSTRAP_IR_INPUT} was lowered from a different entry`);
-  return { ok: true, mod, sourceTexts: new Map(), warnings: [] };
-}
-
 /** The identity of the libnode pack a build of `entry` records, as a
  * cached input stores it. */
 function libnodeIdentity(
@@ -440,6 +411,20 @@ function islandInputCurrent(
   return input.libnode === libnodeIdentity(entry, options, toolchain);
 }
 
+/** Why a frontend result with these input observations must not enter the
+ * cache, or null when it may: the observations are incomplete or changed
+ * while the frontend ran (the snapshot is not stable), or an input no
+ * longer has the answer the frontend saw. The words go on the build's
+ * timing line, since a build that is never cached is otherwise silent. */
+function unpublishable(
+  probes: FrontendInputSnapshot,
+  exclusions: FrontendInputExclusions,
+): string | null {
+  if (!probes.stable) return probes.unstable ?? "an input changed while the frontend ran";
+  const changed = changedFrontendInput(probes, exclusions);
+  return changed === null ? null : `${changed.path} changed during the build (${changed.op})`;
+}
+
 /** Keep the checker and typed IR out of the native optimizer's live heap. */
 export function prepareNativeExecutable(
   entry: string,
@@ -467,8 +452,11 @@ export function prepareNativeExecutable(
       sourceTexts: new Map(),
     };
   const exclusions = nativeFrontendExclusions(entry, options);
-  const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
   let key: string | null = null;
+  // Why this build has no cache key, for its timing line: an entry cannot
+  // describe it (nativeFrontendInputs), or something could not be read.
+  let keyless =
+    "the build has no cache entry: it writes or reads a lowered program, or rewrites its sources for provenance";
   // The unit store's key (unit-reuse.ts): the frontend's inputs without the
   // output paths, which lowering does not read.
   let unitKey: string | null = null;
@@ -480,6 +468,7 @@ export function prepareNativeExecutable(
     inputs = nativeFrontendInputs(entry, options, ffi, toolchain);
   } catch {
     inputs = null;
+    keyless = "the compiler's toolchain could not be identified";
   }
   if (cache !== null && inputs !== null) {
     try {
@@ -516,6 +505,7 @@ export function prepareNativeExecutable(
       }
     } catch {
       key = null;
+      keyless = "the frontend cache could not be read";
     }
   }
   timing("frontend-cache-miss");
@@ -523,32 +513,29 @@ export function prepareNativeExecutable(
   // The island steps (executable/islands.ts) follow lowering inside the
   // tracker, so the project configuration they read is an input too.
   const lowered = tracker.runSynchronous(() => {
-    const prepared =
-      irInput !== ""
-        ? preparedFromIr(irInput, entry, options)
-        : prepareLoweredProgram(
-            entry,
-            options,
-            toolchain.target.platform,
-            timing,
-            {
-              compiler: () => implementationIdentity(toolchain),
-              outputs: exclusions.outputPaths ?? [],
-            },
-            () =>
-              prepareExecutableModule(
-                entry,
-                options,
-                ffi,
-                toolchain.target.platform,
-                frontend,
-                timing,
-                new Map(),
-                true,
-                cache !== null && unitKey !== null ? nativeUnitStore(cache, unitKey) : null,
-              ),
-          );
-    if (!prepared.ok || irInput !== "") return { prepared, islandModuleData: undefined };
+    const prepared = prepareLoweredProgram(
+      entry,
+      options,
+      toolchain.target.platform,
+      timing,
+      {
+        compiler: () => implementationIdentity(toolchain),
+        outputs: exclusions.outputPaths ?? [],
+      },
+      () =>
+        prepareExecutableModule(
+          entry,
+          options,
+          ffi,
+          toolchain.target.platform,
+          frontend,
+          timing,
+          new Map(),
+          true,
+          cache !== null && unitKey !== null ? nativeUnitStore(cache, unitKey) : null,
+        ),
+    );
+    if (!prepared.ok) return { prepared, islandModuleData: undefined };
     const islands = finishNodeIslands(prepared.mod, entry, {
       outputKind,
       outPath: options.outPath,
@@ -624,17 +611,22 @@ export function prepareNativeExecutable(
   };
   timing("link-features");
   const probes = tracker.snapshot();
-  if (
-    cache !== null &&
-    key !== null &&
-    probes.stable &&
-    frontendInputsStillMatch(probes, exclusions) &&
-    islandInputCurrent(input, entry, options, toolchain)
-  ) {
+  const unpublished =
+    cache === null
+      ? null
+      : key === null
+        ? keyless
+        : (unpublishable(probes, exclusions) ??
+          (islandInputCurrent(input, entry, options, toolchain)
+            ? null
+            : options.libnode === "beside"
+              ? "a --libnode=beside build places the pack and the island modules from the lowered module"
+              : "the libnode pack changed during the build"));
+  if (cache !== null && key !== null && unpublished === null) {
     publishFrontendCache(cache, key, probes, input);
     onInputs?.(probes);
   }
-  timing("frontend-cache-publish");
+  timing("frontend-cache-publish", unpublished === null ? undefined : { skipped: unpublished });
   return input;
 }
 
@@ -735,15 +727,10 @@ export function prepareNativeLibrary(
   };
   timing("link-features");
   const probes = tracker.snapshot();
-  if (
-    cache !== null &&
-    key !== null &&
-    probes.stable &&
-    frontendInputsStillMatch(probes, exclusions)
-  ) {
+  const unpublished = cache === null || key === null ? null : unpublishable(probes, exclusions);
+  if (cache !== null && key !== null && unpublished === null)
     publishFrontendCache(cache, key, probes, input);
-  }
-  timing("frontend-cache-publish");
+  timing("frontend-cache-publish", unpublished === null ? undefined : { skipped: unpublished });
   return input;
 }
 

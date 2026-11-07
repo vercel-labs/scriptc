@@ -207,6 +207,11 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import {
+  fenceConsoleMemberValue,
+  fenceConsoleMutation,
+  isConsoleObjectRead,
+} from "./coercions/console-records.js";
 import { isProvenanceSourceFile } from "../provenance-registry.js";
 import {
   ambientUndefVarRootOf,
@@ -2759,6 +2764,15 @@ export function lowerDestructuringDecl(
     importMetaBindingSource(lowerer, decl.name, decl.initializer) ??
     nullishEmptyPatternSource(lowerer, decl.name, decl.initializer) ??
     lowerer.lowerExpr(decl.initializer);
+  // `const { table } = console`: each element names a console key as a
+  // value, which only the output members are (console-records.ts).
+  if (isConsoleObjectRead(init) && ts.isObjectBindingPattern(decl.name)) {
+    for (const element of decl.name.elements.nodes) {
+      const key = element.propertyName ?? element.name;
+      if (ts.isIdentifier(key) || ts.isStringLiteral(key))
+        fenceConsoleMemberValue(lowerer, key.text, element);
+    }
+  }
   const parseArgsDynObject =
     init.type.kind === "dyn" &&
     isParseArgsDynCheckerType(lowerer, lowerer.typeOf(decl.initializer));
@@ -6969,6 +6983,7 @@ export function lowerVarDecl(
             ts.isObjectLiteralExpression(decl.initializer))
           ? DYN
           : undefined,
+        g.type,
       );
     if (
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
@@ -7147,6 +7162,7 @@ export function lowerVarDecl(
               decl.type && (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Never) === 0
                 ? annotatedInitializerTarget(lowerer, decl.name)
                 : undefined,
+              bindingSlot(lowerer, decl),
             );
   } catch (e) {
     if (e instanceof PoisonError) {
@@ -7689,6 +7705,25 @@ export function lowerVarDecl(
   return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
 }
 
+/** The type a local binding gives a function literal that initializes it:
+ * the type of the name (the annotation's, or the checker's for an
+ * unannotated TypeScript binding), with the parameters the optional-read
+ * analysis widened for values a missing element can leave undefined. Every
+ * later read of the binding spells that type. Undefined when the
+ * initializer is not a function literal or the type has no lowering; the
+ * literal then keeps its own signature. */
+function bindingSlot(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | undefined {
+  let init = decl.initializer;
+  while (init && (ts.isParenthesizedExpression(init) || ts.isSatisfiesExpression(init)))
+    init = init.expression;
+  if (!init || !(ts.isArrowFunction(init) || ts.isFunctionExpression(init))) return undefined;
+  if (!ts.isIdentifier(decl.name) || isJsSourceFile(ts.getSourceFileOfNode(decl))) return undefined;
+  const type = lowerer.typeOf(decl.name);
+  if ((type.flags & ts.TypeFlags.Never) !== 0) return undefined;
+  const mapped = lowerer.mapTypeOf(type);
+  return mapped ? lowerer.runtimeOptionalBindingType(decl.name, mapped) : undefined;
+}
+
 /** The destination an annotated declaration builds its initializer for:
  * the declared type, or the record layout the optional-read analysis
  * widened for fields a missing element can leave undefined. */
@@ -7746,6 +7781,7 @@ function lowerVariableInitializer(
   lowerer: Lowerer,
   node: ts.Expression,
   expected?: IrType,
+  slot?: IrType,
 ): IrExpr {
   let value = node;
   while (
@@ -7764,9 +7800,12 @@ function lowerVariableInitializer(
     // instances must retain their nominal layout for generic dispatch.
     const empty = expected ? lowerer.emptyCollectionFor(node, expected) : null;
     if (empty) return lowerer.coerceInto(node, empty, expected!);
+    // A function literal takes the signature of the binding it initializes
+    // (`slot`: the binding's type where that is known before the
+    // initializer lowers), so the binding holds it without an adapter.
     return ts.isArrayLiteralExpression(value) || ts.isConditionalExpression(value)
       ? lowerer.lowerExprExpecting(node, expected)
-      : lowerer.lowerExpr(node);
+      : lowerer.lowerAtSlot(node, slot);
   }
 
   if (expected?.kind === "dyn") {
@@ -9323,6 +9362,7 @@ function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpressi
 export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  fenceConsoleMutation(lowerer, expr);
   // Node islands (scope-B NI-4): writes and calls on island values.
   if (lowerer.nodeIslands !== null) {
     const island = lowerIslandExpr(lowerer, expr);

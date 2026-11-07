@@ -8,8 +8,9 @@ import {
   WASM32_WASI_TARGET,
 } from "../backend/targets.js";
 import { runFrontend, type FrontendFactory } from "../frontend/pipeline.js";
-import { loadProgram } from "../frontend/program-node.js";
-import { ts7Executable } from "../frontend/ts7/rpc-api.js";
+import { loadProgram, loadProgramWithServices } from "../frontend/program-node.js";
+import { FrontendServices } from "../frontend/services.js";
+import { Ts7Api, ts7Executable } from "../frontend/ts7/rpc-api.js";
 import { deserializeModule } from "../ir/serialize.js";
 import { NativeCache, partsDigest } from "./cache.js";
 import { prepareNativeExecutable } from "./prepare.js";
@@ -267,6 +268,158 @@ test("an LLVM text entry that is missing or does not match its digest causes a r
   rmSync(join(family, digest));
   expect(f.prepare().ok).toBe(true);
   expect(f.loads()).toBe(3);
+});
+
+/* Build-time require.resolve. The native compiler resolves with its own
+ * resolver (cjs-resolve.ts), which reads the tracked filesystem and records
+ * the host facts its global lookup locations come from; a Node host
+ * supplies its resolver, whose reads are not reported. */
+
+/** A frontend whose services carry no host module resolver, as the native
+ * compiler's do. */
+const ownResolverFrontend: FrontendFactory = (path, npmStatic, externalTypes) =>
+  runFrontend(
+    path,
+    (entry, options) => {
+      const services = new FrontendServices((apiOptions) => new Ts7Api(apiOptions));
+      try {
+        const load = loadProgramWithServices(entry, services, options);
+        return {
+          ...load,
+          dispose: () => {
+            try {
+              load.dispose();
+            } finally {
+              services.close();
+            }
+          },
+        };
+      } catch (error) {
+        services.close();
+        throw error;
+      }
+    },
+    npmStatic,
+    externalTypes,
+  );
+
+function resolvingFixture(frontend: FrontendFactory) {
+  const f = fixture();
+  writeFileSync(
+    f.entry,
+    [
+      'import { createRequire } from "node:module";',
+      "const require = createRequire(import.meta.url);",
+      'console.log(require.resolve("./cfg.json"));',
+      'console.log(JSON.stringify(require.resolve.paths("some-package")));',
+      "try {",
+      '  console.log(require.resolve("./later.cjs"));',
+      "} catch (error) {",
+      '  console.log("missing", (error as { code?: string }).code);',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(f.root, "cfg.json"), "{}\n");
+  let loads = 0;
+  const phases: [string, Record<string, unknown> | undefined][] = [];
+  const prepare = (cache: NativeCache = f.cache) =>
+    prepareNativeExecutable(
+      f.entry,
+      f.options,
+      null,
+      fixtureToolchain(),
+      (path, npmStatic, externalTypes) => {
+        loads++;
+        return frontend(path, npmStatic, externalTypes);
+      },
+      cache,
+      (phase, detail) => phases.push([phase, detail]),
+    );
+  return { ...f, prepare, loads: () => loads, phases };
+}
+
+test("a build that resolves modules with the compiler's own resolver is cached", () => {
+  const f = resolvingFixture(ownResolverFrontend);
+  const first = f.prepare();
+  expect(first.ok, JSON.stringify(first)).toBe(true);
+  expect(f.phases.find(([phase]) => phase === "frontend-cache-publish")?.[1]).toBeUndefined();
+  const again = f.prepare();
+  expect(f.loads()).toBe(1);
+  expect(text(again)).toEqual(text(first));
+  // A candidate the resolution probed and did not find appears: the entry
+  // no longer answers, and the rebuild is a cold build's.
+  writeFileSync(join(f.root, "later.cjs"), "module.exports = 1;\n");
+  const later = f.prepare();
+  expect(f.loads()).toBe(2);
+  expect(later.ok && first.ok && later.llvm.join("")).not.toBe(first.ok && first.llvm.join(""));
+  const cold = f.prepare(new NativeCache(join(f.root, "..", "cold-cache")));
+  expect(text(later)).toEqual(text(cold));
+});
+
+test("the home directory, NODE_PATH and the compiler's location are inputs of such a build", () => {
+  const f = resolvingFixture(ownResolverFrontend);
+  expect(f.prepare().ok).toBe(true);
+  const key = readdirSync(join(f.cache.root, "frontend")).find((name) =>
+    /^[0-9a-f]{64}$/.test(name),
+  )!;
+  const entry = JSON.parse(readFileSync(join(f.cache.root, "frontend", key), "utf8"));
+  const facts = entry.probes.probes
+    .filter((probe: { op: string }) => probe.op === "host")
+    .map((probe: { path: string }) => probe.path);
+  expect([...facts].sort()).toEqual(
+    [
+      "env:NODE_PATH",
+      process.platform === "win32" ? "env:USERPROFILE" : "env:HOME",
+      "prefix",
+    ].sort(),
+  );
+  expect(f.prepare().ok).toBe(true);
+  expect(f.loads()).toBe(1);
+  // The legacy lookup locations start from these; under another value the
+  // entry's answer is not this build's.
+  vi.stubEnv("NODE_PATH", join(f.root, "elsewhere"));
+  expect(f.prepare().ok).toBe(true);
+  expect(f.loads()).toBe(2);
+});
+
+test("a build that asks the host's module resolver is not cached, and says so", () => {
+  const f = resolvingFixture((path, npmStatic, externalTypes) =>
+    runFrontend(path, loadProgram, npmStatic, externalTypes),
+  );
+  expect(f.prepare().ok).toBe(true);
+  expect(f.phases.find(([phase]) => phase === "frontend-cache-publish")?.[1]).toEqual({
+    skipped:
+      "a require.resolve call was answered by the host's module resolver, which does not report what it read",
+  });
+  expect(f.prepare().ok).toBe(true);
+  expect(f.loads()).toBe(2);
+});
+
+test("a build without a cache key says why nothing was published", () => {
+  const f = fixture();
+  const phases: [string, Record<string, unknown> | undefined][] = [];
+  const build = (toolchain: NativeToolchain) =>
+    prepareNativeExecutable(
+      f.entry,
+      f.options,
+      null,
+      toolchain,
+      (path, npmStatic, externalTypes) => runFrontend(path, loadProgram, npmStatic, externalTypes),
+      f.cache,
+      (phase, detail) => phases.push([phase, detail]),
+    );
+  // The checker's executable is part of the key: one that is not a file
+  // leaves the build without a key.
+  const result = build({ ...fixtureToolchain(), ts7Executable: join(f.root, "missing-checker") });
+  expect(result.ok).toBe(true);
+  expect(phases.find(([phase]) => phase === "frontend-cache-publish")?.[1]).toEqual({
+    skipped: "the compiler's toolchain could not be identified",
+  });
+  // A build that has one and publishes says nothing.
+  phases.length = 0;
+  expect(build(fixtureToolchain()).ok).toBe(true);
+  expect(phases.find(([phase]) => phase === "frontend-cache-publish")?.[1]).toBeUndefined();
 });
 
 test("an x86-64 level is refused for targets that are not x86-64 before the frontend runs", () => {

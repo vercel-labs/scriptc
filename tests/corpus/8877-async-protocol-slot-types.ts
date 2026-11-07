@@ -125,6 +125,32 @@ async function runAll(inputs: AsyncIterable<Entry>[]): Promise<number> {
   return count;
 }
 
+// Generic functions: an element type that names the type parameter, and a
+// generic body forwarding its source into a slot over another element type.
+class Gaps implements AsyncIterable<string | null> {
+  async *[Symbol.asyncIterator](): AsyncIterator<string | null> {
+    yield "g";
+    yield null;
+    yield "h";
+  }
+}
+
+async function present<T>(source: AsyncIterable<T | null>): Promise<T[]> {
+  const kept: T[] = [];
+  for await (const item of source) if (item !== null) kept.push(item);
+  return kept;
+}
+
+async function countAll(source: AsyncIterable<unknown>): Promise<number> {
+  let total = 0;
+  for await (const _ of source) total++;
+  return total;
+}
+
+function forward<T>(source: AsyncIterable<T>): Promise<number> {
+  return countAll(source);
+}
+
 // Two consumers running at once: each line is printed in the turn Node
 // prints it in.
 async function trace(label: string, source: AsyncIterable<string>): Promise<void> {
@@ -161,6 +187,9 @@ async function main(): Promise<void> {
   console.log("field", await run({ name: "class", input: new Entries() }));
   console.log("field", await run({ name: "generator", input: moreEntries() }));
   console.log("array", await runAll([new Entries(), moreEntries(), new Entries()]));
+
+  console.log("generic", (await present(new Gaps())).join(""), await forward(new Words(["x", "y"])));
+  console.log("generic", await forward(letters("abc")), await forward(new Entries()));
 
   await Promise.all([
     trace("w", new Words(["1", "2"])),

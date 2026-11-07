@@ -161,3 +161,43 @@ sum(numbers()).then(console.log);
   expect(codes).toEqual([]);
   expect(kinds).toEqual({ show: "dyn", sum: "generator" });
 });
+
+test("an element type that names a type parameter follows the marked ones", () => {
+  const { kinds, codes } = lower(
+    `
+class Gaps implements AsyncIterable<string | null> {
+  async *[Symbol.asyncIterator](): AsyncIterator<string | null> { yield "g"; yield null; }
+}
+async function present<T>(source: AsyncIterable<T | null>): Promise<number> {
+  let count = 0;
+  for await (const item of source) if (item !== null) count++;
+  return count;
+}
+present(new Gaps()).then(console.log);
+sum(numbers()).then(console.log);
+`,
+    ["sum"],
+  );
+  expect(codes).toEqual([]);
+  expect(kinds).toEqual({ sum: "generator" });
+});
+
+test("a generic function forwarding a marked type marks the slot it forwards into", () => {
+  const { kinds, codes } = lower(
+    `
+async function count(source: AsyncIterable<unknown>): Promise<number> {
+  let total = 0;
+  for await (const _ of source) total++;
+  return total;
+}
+function forward<T>(source: AsyncIterable<T>): Promise<number> {
+  return count(source);
+}
+forward(new Words()).then(console.log);
+sum(numbers()).then(console.log);
+`,
+    ["count", "sum"],
+  );
+  expect(codes).toEqual([]);
+  expect(kinds).toEqual({ count: "dyn", sum: "generator" });
+});

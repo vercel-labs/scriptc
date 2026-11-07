@@ -59,12 +59,14 @@ function attempt<T>(query: () => T): T | undefined {
 export class AsyncProtocolHolders {
   /** The element types whose protocol types hold a checked-dynamic value. */
   private marked: Set<ts.Type> | null = null;
-  /** A flow reached a protocol type over an unbound type parameter, which
-   * stands for every element type its instances bind. */
+  /** A flow reached a protocol type whose element names a type parameter,
+   * which stands for every element type its instances bind. */
   private every = false;
   /** Whether a type's own members implement the protocol, by its symbol (or
    * by the type, for one without a symbol). */
   private readonly implementors = new Map<ts.Symbol | ts.Type, boolean>();
+  /** open()'s answers. */
+  private readonly opens = new Map<ts.Type, boolean>();
   /** The flow sites the scan read and the time it took, for the timing
    * line. */
   sites = 0;
@@ -81,7 +83,13 @@ export class AsyncProtocolHolders {
    * parameters of a generic instance already bound. */
   holds(element: ts.Type | undefined): boolean {
     const marked = this.index();
-    return this.every || (element !== undefined && marked.has(element));
+    if (this.every || element === undefined) return this.every;
+    // An element that still names a type parameter (`T | null`, `T[]`, or a
+    // parameter nothing binds) has no single concrete type to look up: it
+    // is whichever its instances bind, so it holds the checked-dynamic
+    // value as soon as any element type does. A compiled generator boxes
+    // into it; the other way round would refuse a valid implementor.
+    return marked.has(element) || (marked.size > 0 && this.open(element));
   }
 
   /** How many element types are marked (every one counts as -1). */
@@ -141,7 +149,10 @@ export class AsyncProtocolHolders {
     for (let changed = edges.length > 0 && !this.every; changed;) {
       changed = false;
       for (const [from, to] of edges) {
-        if (!marked.has(from) || marked.has(to)) continue;
+        if (marked.has(to)) continue;
+        // A source over a type parameter is marked when any element type
+        // is: an instance can bind the parameter to that one.
+        if (!marked.has(from) && !(marked.size > 0 && this.open(from))) continue;
         this.mark(to);
         changed = true;
       }
@@ -149,8 +160,28 @@ export class AsyncProtocolHolders {
   }
 
   private mark(element: ts.Type): void {
-    if ((element.flags & ts.TypeFlags.TypeParameter) !== 0) this.every = true;
+    if (this.open(element)) this.every = true;
     this.marked!.add(element);
+  }
+
+  /** Whether an element type names a type parameter: itself, in a union or
+   * intersection, or as a type argument (an array's element included). */
+  private open(type: ts.Type, depth = 0): boolean {
+    if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
+    if (depth > 3) return false;
+    const known = depth === 0 ? this.opens.get(type) : undefined;
+    if (known !== undefined) return known;
+    const answer =
+      attempt(() => {
+        if (type.isUnionType() || type.isIntersectionType())
+          return ts.constituentTypes(type).some((part) => this.open(part, depth + 1));
+        if ((type.flags & ts.TypeFlags.Object) === 0 || !type.isTypeReference()) return false;
+        return this.checker
+          .getTypeArguments(type as ts.TypeReference)
+          .some((argument) => this.open(argument, depth + 1));
+      }) ?? false;
+    if (depth === 0) this.opens.set(type, answer);
+    return answer;
   }
 
   /** The lib interface `type` refers to, by name, or null. */

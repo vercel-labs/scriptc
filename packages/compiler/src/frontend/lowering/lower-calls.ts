@@ -308,7 +308,7 @@ import {
   isCjsRequireGlobal,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
-import { pathModuleValue } from "./lower-builtin-values.js";
+import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
 import {
   defaultAfterUndefined,
   lowerOptionalArgument,
@@ -621,7 +621,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // The platform namespaces are the path module objects.
     if (module === "path/posix" || module === "path/win32")
       return pathModuleValue(lowerer, module, loc);
-    if (module !== null && module !== "constants") {
+    // node:constants is one checked-dynamic object (its members are the
+    // platform's C tables, merged by the runtime), so an inline require of
+    // it answers that object, the same value a namespace binding reads.
+    if (module === "constants") return builtinConstantsObject(lowerer, loc);
+    if (module !== null) {
       const moduleId = `builtin:${module}`;
       return { kind: "moduleNsRef", moduleId, type: { kind: "moduleNs", moduleId }, loc };
     }

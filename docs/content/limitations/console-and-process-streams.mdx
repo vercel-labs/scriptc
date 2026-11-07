@@ -25,3 +25,19 @@ Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is f
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.
 A TypeScript `NodeJS.WritableStream` parameter that only receives `process.stdout` or `process.stderr` supports `write(string)`.
 When other streams flow into the same parameter, the process streams join them as `Writable` instances with the full writable surface.
+A parameter typed as a narrower writable — a record or interface whose only member is `write(s: string): void`, for example — does not accept a process stream directly, because the stream's type carries the rest of the writable surface and the shapes must match.
+Wrap the stream in an object literal that implements the narrow member:
+
+```ts
+interface Sink {
+  write(s: string): void;
+}
+
+const sink: Sink = {
+  write: (s: string) => {
+    process.stdout.write(s);
+  },
+};
+```
+
+The wrapper is an ordinary object literal: its `write` is a closure over the stream, and its shape matches the target record.

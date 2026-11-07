@@ -3022,7 +3022,7 @@ function bigintRefusalHint(lowerer: Lowerer, arg: IrExpr, narrowed: IrType | nul
   const arms = lowerer.unions.get(arg.type.unionId)?.arms ?? [];
   const blocking = arms.filter((arm) => !bigintArmLowers(arm)).map((arm) => lowerer.fmt(arm));
   if (blocking.length === 0) return supported;
-  return `the checker narrows the argument to ${lowerer.fmt(narrowed)}, but the stored value can also hold ${blocking.join(" | ")} at run time; ${supported}`;
+  return `the checker narrows the argument to ${lowerer.fmt(narrowed)}, but the value's storage keeps every arm its reads and call sites can produce, so ${blocking.join(" | ")} can still arrive at run time; bind the guarded value to a local declared as the narrowed type and convert that (${supported})`;
 }
 
 /** A runtime-optional local retains its full tagged storage even after a

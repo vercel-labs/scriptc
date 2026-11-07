@@ -155,6 +155,9 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
   <dt><code>--fail-on &lt;blockers|divergences|dynamic|dynamic-slots&gt;</code></dt>
   <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, with <code>divergences</code>, also when it has Node divergence warnings, with <code>dynamic</code>, also when it has the <code>SC6101</code> warning for untyped code that likely runs often, or with <code>dynamic-slots</code>, also when it has <a href="/docs/coverage#dynamic-slots">dynamic slots</a> (<code>SC6104</code>). See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
 
+  <dt><code>--coverage &lt;full|reached&gt;</code></dt>
+  <dd>Coverage only. <code>full</code> is the default and also lowers code the entry never reaches. <code>reached</code> skips that pass, for a large program whose analysis would otherwise run out of memory: the report has no unreached group, its totals count reached statements only, and it is not comparable with a full report. Not allowed with <code>--explain-dynamic</code>. See <a href="/docs/coverage#large-programs">Large programs</a>.</dd>
+
   <dt><code>--ffi &lt;file&gt;</code></dt>
   <dd>Bind signature-only TypeScript declarations to native C ABI symbols and link the manifest's archive, object, and system-library inputs. See <a href="/docs/ffi">Native FFI</a>.</dd>
 

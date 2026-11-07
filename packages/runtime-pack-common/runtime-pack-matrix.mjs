@@ -420,13 +420,21 @@ export function variantsFor(source) {
       defines: ["SCR_CHILD_CP_OPTIONS"],
     });
   }
-  // server.off / removeListener: the listener-removal entry, in a build of
-  // its own so a program that never removes a listener keeps the default.
+  // server.off / removeListener and server.listeners: the event-registry
+  // query entries, in builds of their own so a program that never removes
+  // or reads a listener keeps the default objects.
   if (source === "scr_net.c") {
     variants.push({
       id: "server-off",
       when: { processExtras: true },
       defines: ["SCR_NET_SERVER_OFF"],
+    });
+  }
+  if (source === "scr_http.c") {
+    variants.push({
+      id: "server-meta",
+      when: { processExtras: true },
+      defines: ["SCR_HTTP_SERVER_META"],
     });
   }
   // Programs with web streams link the promise unit with native promise

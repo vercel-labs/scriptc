@@ -60,3 +60,44 @@ test("unchanged and comment-only reruns replay the verdict; code edits relower",
   expect(run().cache).toBe("miss");
   expect(lowered).toBe(2);
 });
+
+test("a reached-only verdict never replays a full one", () => {
+  const entry = join(dir, "modes.ts");
+  writeFileSync(
+    entry,
+    `function used(n: number): number {\n  return n + 1;\n}\nfunction unused(): void {\n  console.log("x");\n}\nconsole.log(used(1));\n`,
+  );
+  const entries = new Map<string, string>();
+  const store: VerdictStore = {
+    read: (k) => entries.get(k) ?? null,
+    write: (k, t) => void entries.set(k, t),
+  };
+  let lowered = 0;
+  const run = (coverage?: "reached") => {
+    const { result, outcome } = analyzeWithVerdictCache(
+      entry,
+      coverage === undefined ? {} : { coverage },
+      { store, identity: "test", platform: process.platform },
+      () => {
+        lowered++;
+        return analyze(entry, coverage === undefined ? {} : { coverage });
+      },
+    );
+    return { ...result, cache: outcome };
+  };
+  const full = run();
+  expect(full.cache).toBe("miss");
+  expect(full.coverage.unreached).toBeDefined();
+  const reached = run("reached");
+  expect(reached.cache).toBe("miss");
+  expect(lowered).toBe(2);
+  expect(reached.coverage.reachedOnly).toBe(true);
+  expect(reached.coverage.unreached).toBeUndefined();
+  // Each mode replays its own entry, and the replayed verdict keeps its
+  // mode.
+  expect(run().cache).toBe("hit");
+  const again = run("reached");
+  expect(again.cache).toBe("hit");
+  expect(lowered).toBe(2);
+  expect(again.coverage.reachedOnly).toBe(true);
+});

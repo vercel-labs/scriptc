@@ -7,6 +7,7 @@ export const CLI_OPTIONS = {
   emit: { type: "string" },
   print: { type: "string" },
   "fail-on": { type: "string" },
+  coverage: { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },
@@ -111,6 +112,22 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
           "island (eager-node-islands is the same until deferred",
           "evaluation lands), or a gap island (a package scriptc",
           "should compile but cannot yet)",
+        ],
+      },
+    ],
+  },
+  coverage: {
+    entries: [
+      {
+        term: "--coverage <full|reached>",
+        help: [
+          "coverage only: how much of the program to analyze.",
+          "full (the default) also lowers code the entry never",
+          "reaches. reached skips that pass, for a large program",
+          "whose analysis would otherwise run out of memory; its",
+          "report has no unreached group, counts reached",
+          "statements only, and is not comparable with a full",
+          "report",
         ],
       },
     ],

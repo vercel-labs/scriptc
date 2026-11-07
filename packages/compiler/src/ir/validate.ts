@@ -4325,7 +4325,11 @@ function validateFunction(
         );
       }
     }
-    if (!typeEquals(e.type, sig.result)) {
+    // The server listeners() entries answer the event's listener array,
+    // whose element signature the event (a literal at the call site)
+    // selects; their own check below requires a func array.
+    const variableResult = e.fn === "net.serverListeners" || e.fn === "http.serverListeners";
+    if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
       // their `bigint` option picks BigIntStats' reads over Stats'.
       const statsVariant =
@@ -6329,9 +6333,13 @@ function validateFunction(
         if (!ok) err(`libCall emitter.names must return string[]`, e.loc);
         return true;
       }
-      if (e.fn === "emitter.listeners") {
+      if (
+        e.fn === "emitter.listeners" ||
+        e.fn === "net.serverListeners" ||
+        e.fn === "http.serverListeners"
+      ) {
         const ok = e.type.kind === "array" && e.type.elem.kind === "func";
-        if (!ok) err(`libCall emitter.listeners must return a func array`, e.loc);
+        if (!ok) err(`libCall ${e.fn} must return a func array`, e.loc);
         return true;
       }
       if (e.fn === "emitter.emitFlex" || e.fn === "emitter.emitAny") {

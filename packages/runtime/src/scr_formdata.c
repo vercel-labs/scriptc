@@ -405,10 +405,11 @@ static ScrDyn *scr_formdata_for_each(ScrFormData *f, ScrDyn *self, ScrDyn *const
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
-  /* Node iterates the entry-list array its iterator captured at the call;
-   * this list is live, so the walk stops at the length it started with. */
-  size_t count = f->len;
-  for (size_t i = 0; i < count && i < f->len; i++) {
+  /* Node's forEach walks the entry list with the iterator of entries(),
+   * which reads the list and its length again at every step: an entry the
+   * callback appends is visited, and one it removes moves the rest down
+   * under the walk's index. */
+  for (size_t i = 0; i < f->len; i++) {
     ScrFormDataEntry *entry = &f->entries[i];
     ScrDyn *argv[] = {scr_dyn_retain(entry->value), scr_dyn_new_str(entry->name), self};
     scr_dyn_this_push_dyn(argc > 1 ? args[1] : NULL);

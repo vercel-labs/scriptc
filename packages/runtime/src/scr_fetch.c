@@ -4379,6 +4379,11 @@ static SfResponse *sf_response_clone(SfResponse *r, const char *unusable) {
   c->redirected = r->redirected;
   c->null_body = r->null_body;
   c->light_length = r->light_length;
+#ifdef SCR_FORMDATA_BODY
+  /* The copy's body has the bytes the original's has. Left at zero, fetch
+   * would send a cloned Request with content-length: 0, whatever its body. */
+  c->body_length = r->body_length;
+#endif
   return c;
 }
 

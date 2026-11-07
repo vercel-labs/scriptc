@@ -75,6 +75,15 @@ describe.skipIf(skip)("Node island handles", () => {
     );
   }, 300_000);
 
+  test("abort listeners of a signal shared with an island: the island's run first", async () => {
+    // Under Node the four listeners run in registration order (n1, i1, n2,
+    // i2) and each count is the total (2, 4, 4): it is one signal. A native
+    // signal and its twin in the island keep one listener list each.
+    expect(await runFixture("abort-order", "abort-order/main.ts")).toBe(
+      "island counts 1 2 native count 2\ni1\ni2\nn1\nn2\n",
+    );
+  }, 300_000);
+
   test("requireModule() loads Node's built-in modules", async () => {
     expect(await runFixture("builtins", "builtins.ts")).toBe("a/b string\n");
   }, 300_000);

@@ -54,7 +54,7 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import type { IslandBinding, IslandModuleBinding } from "./lower-node-island.js";
-import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
+import { bindingSymbolOfRead, onlyForwarded } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
   noteUntypedStreamFlow,
@@ -187,6 +187,7 @@ import {
 import { assertedConversion } from "./coercions/asserted.js";
 import {
   boxBuiltinValuesChecked,
+  shareBuiltinValueIdentities,
   lowerUtilTypeValue,
   checkedNativeCallableValue,
   pathModuleValue,
@@ -283,6 +284,10 @@ import { dirname, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
 import { compilerOwnedFileName, tsgoPath } from "../dts-paths.js";
 import * as ts from "../ts7/adapter.js";
+import {
+  withoutParenthesesAssertionsNonNull,
+  withoutParenthesesTypeWrappers,
+} from "../outer-expressions.js";
 import { isBundledShimForwarder } from "../package-shims.js";
 import { erasedTypeOnlyImport } from "../type-only-imports.js";
 import { literalValues } from "../literal-values.js";
@@ -605,7 +610,6 @@ import {
   fencedBuiltinImportOf,
   esmImportBindingKind,
 } from "./builtins/module-bindings.js";
-import { stripTypeCasts } from "./builtins/arguments.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
 import { lowerTimersPromisesSetInterval, lowerTimeoutMethodCall } from "./builtins/timers.js";
 import {
@@ -4094,7 +4098,7 @@ export class Lowerer {
    * builtin, its display name and the location the twin is lowered at. */
   readonly builtinCheckedValues = new Map<
     string,
-    { fn: BuiltinModuleFn; display: string; loc: SrcLoc }
+    { fn: BuiltinModuleFn; display: string; loc: SrcLoc; type: IrType & { kind: "func" } }
   >();
   /** Optional-chain lowering state. While a chain body lowers, the guarded
    * receiver NODE reads as a chainRecv (typed by the narrowed arm) instead
@@ -8319,18 +8323,6 @@ export class Lowerer {
     );
     nanCoded.analyze();
     this.nanCodedReads = nanCoded;
-    const peel = (node: ts.Expression): ts.Expression => {
-      let e = node;
-      while (
-        ts.isParenthesizedExpression(e) ||
-        ts.isAsExpression(e) ||
-        ts.isTypeAssertion(e) ||
-        ts.isNonNullExpression(e)
-      ) {
-        e = e.expression;
-      }
-      return e;
-    };
     const callableSymbols = new Map<ts.Expression, ts.Symbol | null>();
     const callableSymbolOf = (node: ts.Expression): ts.Symbol | null => {
       const cached = callableSymbols.get(node);
@@ -8353,9 +8345,9 @@ export class Lowerer {
           declaration &&
           ts.isVariableDeclaration(declaration) &&
           declaration.initializer &&
-          ts.isIdentifier(peel(declaration.initializer))
+          ts.isIdentifier(withoutParenthesesAssertionsNonNull(declaration.initializer))
         ) {
-          symbol = symbolOf(peel(declaration.initializer));
+          symbol = symbolOf(withoutParenthesesAssertionsNonNull(declaration.initializer));
         } else break;
       }
       callableSymbols.set(node, symbol);
@@ -8538,7 +8530,7 @@ export class Lowerer {
       return e;
     };
     const isIndexedRead = (node: ts.Expression): boolean => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (!ts.isElementAccessExpression(e)) return false;
       const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
       if (kind === "string") return !this.stringIndexBounds.inBounds(e);
@@ -8603,7 +8595,7 @@ export class Lowerer {
     const genericMayBeOptional = (node: ts.Expression): boolean => {
       if (explicitlyNonNull(node)) return false;
       if (mayBeOptional(node)) return true;
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (ts.isConditionalExpression(e))
         return genericMayBeOptional(e.whenTrue) || genericMayBeOptional(e.whenFalse);
       if (ts.isBinaryExpression(e)) {
@@ -8632,7 +8624,7 @@ export class Lowerer {
       return genericIndexedRead(e);
     };
     const genericIndexedRead = (node: ts.Expression): boolean => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (!ts.isElementAccessExpression(e) || explicitlyNonNull(node)) return false;
       const read = typeOrNull(e);
       if (!read || (read.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Any)) !== 0) return false;
@@ -8655,13 +8647,13 @@ export class Lowerer {
         .some((info) => (info.keyType.flags & ts.TypeFlags.StringLike) !== 0);
     };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
-      const read = peel(node);
+      const read = withoutParenthesesAssertionsNonNull(node);
       if (!ts.isElementAccessExpression(read) || !ts.isIdentifier(read.expression)) return false;
       const source = symbolOf(read.expression);
       const declaration = source ? source.valueDeclaration : undefined;
       if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer)
         return false;
-      const init = peel(declaration.initializer);
+      const init = withoutParenthesesAssertionsNonNull(declaration.initializer);
       if (!ts.isCallExpression(init) || !ts.isPropertyAccessExpression(init.expression))
         return false;
       if (
@@ -8745,7 +8737,7 @@ export class Lowerer {
       // function/global ABI to `T | undefined`.
       if (explicitlyNonNull(node)) return false;
       if (assertsDefined(node)) return false;
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (isIndexedRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isRecordIndexPropertyRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
@@ -8815,7 +8807,10 @@ export class Lowerer {
       }
       // Awaiting a call of an async function whose promise settles with a
       // missing element answers that element.
-      if (ts.isAwaitExpression(e) && ts.isCallExpression(peel(e.expression)))
+      if (
+        ts.isAwaitExpression(e) &&
+        ts.isCallExpression(withoutParenthesesAssertionsNonNull(e.expression))
+      )
         return mayBeOptional(e.expression);
       if (ts.isBinaryExpression(e)) {
         const op = e.operatorToken.kind;
@@ -8832,7 +8827,7 @@ export class Lowerer {
       return false;
     };
     const optionalPrimitiveResultType = (node: ts.Expression): IrType | null => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
         return symbol ? (primitiveBindings.get(symbol) ?? null) : null;
@@ -8855,7 +8850,7 @@ export class Lowerer {
       }
       if (e.operatorToken.kind !== ts.SyntaxKind.PlusToken) return null;
       const stringRead = (part: ts.Expression): boolean => {
-        const p = peel(part);
+        const p = withoutParenthesesAssertionsNonNull(part);
         if (!ts.isElementAccessExpression(p)) return false;
         const t = this.mapTypeOf(this.typeOf(part));
         if (t?.kind !== "string") return false;
@@ -8875,7 +8870,7 @@ export class Lowerer {
       // templates and sums with such an operand are always strings; a
       // binding or call can hold a missing read.
       const definitelyString = (part: ts.Expression): boolean => {
-        const p = peel(part);
+        const p = withoutParenthesesAssertionsNonNull(part);
         if (ts.isStringLiteral(p) || ts.isNoSubstitutionTemplateLiteral(p)) return true;
         if (ts.isTemplateExpression(p)) return true;
         return (
@@ -8937,7 +8932,7 @@ export class Lowerer {
     // Runtime-optional record fields travel with the record value: a copy,
     // a spread or a parameter receives the source's optional fields.
     const fieldsOfValue = (node: ts.Expression): ReadonlySet<string> | undefined => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
         // A binding whose class reaches other storage keeps the declared
@@ -9171,7 +9166,7 @@ export class Lowerer {
     /** A return of a var that code can read before its first store. */
     const returnsEarlyVar = (fn: ts.FunctionLikeDeclaration): boolean => {
       const early = (e: ts.Expression): boolean => {
-        const read = peel(e);
+        const read = withoutParenthesesAssertionsNonNull(e);
         if (!ts.isIdentifier(read)) return false;
         const symbol = symbolOf(read);
         return symbol !== null && this.earlyReadVars.has(symbol);
@@ -9322,7 +9317,13 @@ export class Lowerer {
       seen.add(symbol);
       const declaration = symbol.valueDeclaration;
       if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer) {
-        if (promoteHofCallback(peel(declaration.initializer), parameterIndices, seen))
+        if (
+          promoteHofCallback(
+            withoutParenthesesAssertionsNonNull(declaration.initializer),
+            parameterIndices,
+            seen,
+          )
+        )
           changed = true;
       }
       const sig = signatureBySymbol.get(symbol);
@@ -9390,7 +9391,7 @@ export class Lowerer {
       callback: ts.Expression,
       parameterIndices: readonly number[],
     ): boolean => {
-      const fn = peel(callback);
+      const fn = withoutParenthesesAssertionsNonNull(callback);
       if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return false;
       let changed = false;
       for (const parameterIndex of parameterIndices) {
@@ -9427,7 +9428,7 @@ export class Lowerer {
       elem: IrType,
       index: number,
     ): boolean => {
-      const fn = peel(callback);
+      const fn = withoutParenthesesAssertionsNonNull(callback);
       let param: IrType | null;
       if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
         const parameter = fn.parameters.nodes[index];
@@ -9446,7 +9447,7 @@ export class Lowerer {
       callback: ts.Expression,
       seen = new Set<ts.Symbol>(),
     ): boolean => {
-      const node = peel(callback);
+      const node = withoutParenthesesAssertionsNonNull(callback);
       if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
         return bodyReturnsOptional(node);
       const symbol = symbolOf(ts.isPropertyAccessExpression(node) ? node.name : node);
@@ -9486,7 +9487,7 @@ export class Lowerer {
         checkerType = this.typeOf(node);
         checkerTypes.set(node, checkerType);
       }
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       // A binding the prepass widened stores its widened array ABI.
       const widened = ts.isIdentifier(e)
         ? (() => {
@@ -9574,7 +9575,7 @@ export class Lowerer {
       // A binding's declared type says whether it holds dynamic data; a flow
       // type such as `Array.isArray(x)`'s `any[]` only narrows it.
       const typedNode = (node: ts.Expression): ts.Node => {
-        const e = peel(node);
+        const e = withoutParenthesesAssertionsNonNull(node);
         const symbol = ts.isIdentifier(e) ? symbolOf(e) : null;
         const declaration = symbol ? symbol.valueDeclaration : undefined;
         return declaration &&
@@ -9688,7 +9689,7 @@ export class Lowerer {
     const standardLibraryReader = (node: ts.CallExpression | ts.NewExpression): boolean =>
       panicSafe(() => {
         if (!ts.isCallExpression(node)) return false;
-        const callee = peel(node.expression);
+        const callee = withoutParenthesesAssertionsNonNull(node.expression);
         if (ts.isIdentifier(callee))
           return [...readerFunctions].some((name) => this.isStdlibGlobal(callee, name));
         if (!ts.isPropertyAccessExpression(callee)) return false;
@@ -9700,8 +9701,8 @@ export class Lowerer {
           const replacer = node.arguments.nodes[1];
           return (
             replacer === undefined ||
-            ts.isArrayLiteralExpression(peel(replacer)) ||
-            peel(replacer).kind === ts.SyntaxKind.NullKeyword
+            ts.isArrayLiteralExpression(withoutParenthesesAssertionsNonNull(replacer)) ||
+            withoutParenthesesAssertionsNonNull(replacer).kind === ts.SyntaxKind.NullKeyword
           );
         }
         if (!utilReaders.has(member)) return false;
@@ -9815,10 +9816,10 @@ export class Lowerer {
     // const variable, or a readonly property with an initializer) is never
     // a view of a native array, even when its elements are dynamic.
     const freshDynamicStorage = (node: ts.Expression, depth: number): boolean => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (ts.isArrayLiteralExpression(e)) return true;
       if (ts.isNewExpression(e) || ts.isCallExpression(e)) {
-        const callee = peel(e.expression);
+        const callee = withoutParenthesesAssertionsNonNull(e.expression);
         if (ts.isIdentifier(callee)) return this.isStdlibGlobal(callee, "Array");
         return (
           ts.isPropertyAccessExpression(callee) &&
@@ -9859,7 +9860,7 @@ export class Lowerer {
       if (assignments === null) {
         const found = new Map<ts.Symbol, ts.Expression[] | null>();
         const add = (target: ts.Expression, value: ts.Expression | null): void => {
-          const e = peel(target);
+          const e = withoutParenthesesAssertionsNonNull(target);
           if (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e)) {
             // Destructuring: every target is written with a part of the value.
             ts.forEachChild(e, (child) => {
@@ -9954,7 +9955,7 @@ export class Lowerer {
           if (type === null || (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
             return true;
         }
-        const e = peel(node);
+        const e = withoutParenthesesAssertionsNonNull(node);
         if (!ts.isIdentifier(e)) return false;
         const symbol = symbolOf(e);
         return symbol !== null && iterationSymbols.has(symbol) && !provenPresent(e, symbol);
@@ -10008,7 +10009,7 @@ export class Lowerer {
         return type !== null && this.mapTypeOf(type)?.kind === "string";
       },
       isArrayLikeObject: (node) => {
-        if (ts.isObjectLiteralExpression(peel(node))) return true;
+        if (ts.isObjectLiteralExpression(withoutParenthesesAssertionsNonNull(node))) return true;
         const type = typeOrNull(node);
         const mapped = type === null ? null : this.mapTypeOf(type);
         return (
@@ -10020,7 +10021,7 @@ export class Lowerer {
         );
       },
       restKeys: (call) => {
-        const callee = peel(call.expression);
+        const callee = withoutParenthesesAssertionsNonNull(call.expression);
         if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
         const symbol = callableSymbolOf(callee);
         const sig = symbol ? signatureBySymbol.get(symbol) : undefined;
@@ -10029,7 +10030,7 @@ export class Lowerer {
         return rest?.type.kind === "array" ? [typeKey(rest.type.elem)] : [];
       },
       restStart: (call) => {
-        const callee = peel(call.expression);
+        const callee = withoutParenthesesAssertionsNonNull(call.expression);
         if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
         const symbol = callableSymbolOf(callee);
         const sig = symbol ? signatureBySymbol.get(symbol) : undefined;
@@ -10158,10 +10159,20 @@ export class Lowerer {
               }
             }
             if (ts.isIdentifier(node.name)) {
-              const valueSymbol = ts.isIdentifier(peel(node.initializer))
-                ? symbolOf(peel(node.initializer))
-                : ts.isPropertyAccessExpression(peel(node.initializer))
-                  ? symbolOf((peel(node.initializer) as ts.PropertyAccessExpression).name)
+              const valueSymbol = ts.isIdentifier(
+                withoutParenthesesAssertionsNonNull(node.initializer),
+              )
+                ? symbolOf(withoutParenthesesAssertionsNonNull(node.initializer))
+                : ts.isPropertyAccessExpression(
+                      withoutParenthesesAssertionsNonNull(node.initializer),
+                    )
+                  ? symbolOf(
+                      (
+                        withoutParenthesesAssertionsNonNull(
+                          node.initializer,
+                        ) as ts.PropertyAccessExpression
+                      ).name,
+                    )
                   : null;
               const symbol = symbolOf(node.name);
               const sourceSig = valueSymbol ? signatureBySymbol.get(valueSymbol) : undefined;
@@ -10198,7 +10209,7 @@ export class Lowerer {
             if (scanPattern(node.name, node.initializer)) changed = true;
             if (ts.isIdentifier(node.name)) {
               const symbol = symbolOf(node.name);
-              const init = peel(node.initializer);
+              const init = withoutParenthesesAssertionsNonNull(node.initializer);
               if (symbol && noteFieldsFrom(symbol, init)) {
                 provenance?.note("record-copy", node.name, node.initializer);
                 changed = true;
@@ -10214,9 +10225,11 @@ export class Lowerer {
             }
             if (
               ts.isIdentifier(node.name) &&
-              ts.isObjectLiteralExpression(peel(node.initializer))
+              ts.isObjectLiteralExpression(withoutParenthesesAssertionsNonNull(node.initializer))
             ) {
-              const object = peel(node.initializer) as ts.ObjectLiteralExpression;
+              const object = withoutParenthesesAssertionsNonNull(
+                node.initializer,
+              ) as ts.ObjectLiteralExpression;
               for (const prop of object.properties.nodes) {
                 if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop))
                   continue;
@@ -10418,7 +10431,7 @@ export class Lowerer {
           // never holds undefined or holes, is a present element: the slots
           // widened below keep their declared type for it.
           const provenPresentRead = (arg: ts.Expression): boolean => {
-            const read = peel(arg);
+            const read = withoutParenthesesAssertionsNonNull(arg);
             return (
               ts.isElementAccessExpression(read) &&
               mappedOrNull(read.expression)?.kind === "array" &&
@@ -10433,7 +10446,7 @@ export class Lowerer {
           // checks the value, as it did before, and the functions it reaches
           // keep their layouts.
           const precautionary = (arg: ts.Expression): boolean => {
-            const e = peel(arg);
+            const e = withoutParenthesesAssertionsNonNull(arg);
             if (!ts.isIdentifier(e)) return false;
             const bound = symbolOf(e);
             if (!bound) return false;
@@ -10477,7 +10490,7 @@ export class Lowerer {
             const value =
               nestedFunctionDeclaration(symbol) ??
               (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer
-                ? peel(declaration.initializer)
+                ? withoutParenthesesAssertionsNonNull(declaration.initializer)
                 : null);
             if (
               !value ||
@@ -10598,7 +10611,7 @@ export class Lowerer {
                 // The parameter's layout settles with its flow class once
                 // the fixed point ends. A literal or call argument only adds
                 // fields the declaration calls present.
-                const fresh = !ts.isIdentifier(peel(arg));
+                const fresh = !ts.isIdentifier(withoutParenthesesAssertionsNonNull(arg));
                 for (const field of fields) {
                   const slot = declared?.fields.find((f) => f.name === field);
                   if (!slot || (fresh && admitsUndefined(slot.type))) continue;
@@ -11111,7 +11124,7 @@ export class Lowerer {
         !isJsSourceFile(ts.getSourceFileOfNode(declaration))
       )
         continue;
-      const value = peel(declaration.right);
+      const value = withoutParenthesesAssertionsNonNull(declaration.right);
       if (!ts.isFunctionExpression(value) && !ts.isArrowFunction(value)) continue;
       global.type = {
         ...global.type,
@@ -11464,6 +11477,7 @@ export class Lowerer {
     // values it adds to the entry module are boxed with the rest.
     if (!library) installBuiltinStatics(this, functions);
     boxBuiltinValuesChecked(this, functions);
+    shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
@@ -18509,7 +18523,7 @@ export class Lowerer {
    * without type-only wrappers), or null for every other expression. */
   private stagedArgument(node: ts.Expression): IrExpr | null {
     if (this.stagedArguments.size === 0) return null;
-    node = stripTypeWrappers(node);
+    node = withoutParenthesesTypeWrappers(node);
     if (!this.stagedArguments.has(node)) return null;
     const slot = this.stagedArguments.get(node);
     if (!slot)
@@ -19439,7 +19453,7 @@ export class Lowerer {
       if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && decl.initializer) {
         const spec = requireSpecOf(decl.initializer);
         if (spec !== null) return canonicalBuiltinModule(spec);
-        const init = stripTypeCasts(decl.initializer);
+        const init = withoutParenthesesAssertionsNonNull(decl.initializer);
         if (ts.isCallExpression(init)) {
           const cr = createRequireSpecOf(this, init);
           if (cr !== null && cr.spec !== null) return canonicalBuiltinModule(cr.spec);
@@ -19486,7 +19500,7 @@ export class Lowerer {
     // `require("node:path").join(...)` through a createRequire binding
     // (the fallback-typed cast idiom strips: `(require("x") as T).m`).
     {
-      const inner = stripTypeCasts(expr);
+      const inner = withoutParenthesesAssertionsNonNull(expr);
       if (ts.isCallExpression(inner)) {
         const cr = createRequireSpecOf(this, inner);
         if (cr !== null && cr.spec !== null) return canonicalBuiltinModule(cr.spec);
@@ -19550,7 +19564,7 @@ export class Lowerer {
     expr: ts.Expression,
     seen = new Set<ts.Node>(),
   ): BuiltinModuleNamespaceFlavor {
-    const e = stripTypeCasts(expr);
+    const e = withoutParenthesesAssertionsNonNull(expr);
     // Awaiting a value answers that value unless it is a promise, so the
     // shape is the shape of the awaited expression. The traced promise is
     // the dynamic import call, whose resolved value is an ES module
@@ -20036,6 +20050,11 @@ export class Lowerer {
           : [{ kind: "return", value: call, loc }];
       this.liftedFns.push({
         name: fnName,
+        // The name an untyped box of the value reports when the boxing site
+        // does not know which builtin it holds.
+        ...(fn.valueNameMainThreadOnly
+          ? {}
+          : { displayName: fn.valueName ?? display.slice(display.lastIndexOf(".") + 1) }),
         params,
         returnType: fn.result,
         locals: params.map((param) => ({
@@ -20055,7 +20074,7 @@ export class Lowerer {
       // UnitEvents.touch), and the change is counted here instead of being
       // found by HeldTables.check as an unnamed write.
       if (this.builtinCheckedValues.has(fnName)) this.unitEvents?.touch(fnName);
-      this.builtinCheckedValues.set(fnName, { fn, display, loc });
+      this.builtinCheckedValues.set(fnName, { fn, display, loc, type: funcType });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };
   }

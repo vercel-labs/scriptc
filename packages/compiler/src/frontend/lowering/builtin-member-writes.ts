@@ -1032,7 +1032,9 @@ function endsAbruptly(stmt: ts.Statement): boolean {
 
 /** Whether `stmts[index]` is a guard that always leaves (`if
  * (Array.prototype.flat) return;`) in front of a refused write: the
- * statements after it never run. */
+ * statements after it never run. The guard itself lowers as any other
+ * `if`, so its test is evaluated, and an operand of it that runs
+ * (`Object.getPrototypeOf([effect()]).flat`) runs there. */
 export function isBuiltinPolyfillEarlyExit(
   lowerer: Lowerer,
   stmts: readonly ts.Statement[],
@@ -1041,7 +1043,7 @@ export function isBuiltinPolyfillEarlyExit(
   const stmt = stmts[index]!;
   if (!ts.isIfStatement(stmt) || stmt.elseStatement !== undefined) return false;
   if (!endsAbruptly(stmt.thenStatement)) return false;
-  if (builtinPresenceTest(lowerer, stmt.expression) !== true) return false;
+  if (builtinPresenceTest(lowerer, stmt.expression, 0, { operand: false }) !== true) return false;
   for (let i = index + 1; i < stmts.length; i++)
     if (containsBuiltinMemberWrite(lowerer, stmts[i]!)) {
       noteBuiltinFeatureTest(lowerer, stmt.expression);

@@ -57,6 +57,17 @@ Object.getPrototypeOf([note("keep-target")]).at =
   };
 console.log("keep", calls);
 
+// A guard that always leaves: its test is evaluated where the `if` is, and
+// the polyfill behind it is not lowered.
+function install(): void {
+  if (Object.getPrototypeOf([note("early")]).indexOf) return;
+  Array.prototype.indexOf = function () {
+    return -1;
+  };
+}
+install();
+console.log("early", calls, [1, 2].indexOf(2));
+
 let ran = 0;
 if (
   !Object.getPrototypeOf([]).at ||

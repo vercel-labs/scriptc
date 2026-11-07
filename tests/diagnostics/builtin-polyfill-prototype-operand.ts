@@ -21,18 +21,10 @@ Object.getPrototypeOf([note("nullish")]).includes ??
     return false;
   });
 
-function install(): void {
-  if (Object.getPrototypeOf([note("early")]).indexOf) return;
-  Array.prototype.indexOf = function () {
-    return -1;
-  };
-}
-install();
-
 if (!Object.getPrototypeOf({ __proto__: null }).toString) {
   Object.prototype.toString = function () {
     return "replaced";
   };
 }
 
-console.log(calls, [1, 2, 3].at(-1), [1].includes(1), [1].indexOf(1), String({}));
+console.log(calls, [1, 2, 3].at(-1), [1].includes(1), String({}));

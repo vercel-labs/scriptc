@@ -1,7 +1,7 @@
 // DEP0187 is reported through process.emitWarning, so a replacement that
-// throws propagates out of fs.existsSync: Node claims the report before it
-// emits, so the throw escapes the call and a later invalid value reports
-// nothing.
+// throws propagates out of fs.existsSync. Node records the report as made
+// after process.emitWarning returns, so the throw leaves it unrecorded and a
+// later invalid value reports again.
 import * as fs from "node:fs";
 
 const dynamic: any = JSON.parse("null");

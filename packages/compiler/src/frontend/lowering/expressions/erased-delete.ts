@@ -366,6 +366,11 @@ function recordDeletePlan(
       loc,
     };
     lowerer.recordSourcesPossible = true;
+    // The key must live in this record's own kept source. A value that is a
+    // view or a copy of a record declaring the key holds it in that record's
+    // slot instead, which this delete cannot reach: refused once every
+    // conversion is known (refuseSourceFieldDeletes).
+    lowerer.recordSourceDeletes.push({ shapeId: obj.type.shapeId, key: constantKey, loc });
     if (!withPresent) return { stmt: { kind: "exprStmt", expr: deleted, loc }, present: null };
     // `delete` in value position: the call answers whether the property is
     // gone, which IS the delete's value, so it is held once and the

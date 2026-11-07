@@ -509,7 +509,7 @@ function addComposer(lowerer: Lowerer, link: IrRecordLink, sourced: ReadonlySet<
 }
 
 /** The library calls that serialize, inspect or box their arguments. */
-const EXPOSING_LIB_CALLS = /^(json|insp|dyn|js)\.|^(child|process)\.send$/;
+export const EXPOSING_LIB_CALLS = /^(json|insp|dyn|js)\.|^(child|process)\.send$/;
 
 /** One walk over the module: the record types whose values can keep a
  * checked source (keptSourceTypes), and the types of the values it boxes

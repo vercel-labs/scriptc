@@ -119,7 +119,6 @@ const KNOWN: Record<string, Known> = {
   },
   "node24-timers-unref": { run: "SC2020" },
   "node24-url-factories": { run: "SC2020" },
-  "node24-url-mutation": { run: "SC1090" },
   "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
   "node24-util-types": { run: "SC1090" },
   "late-island-refusal": { island: true },

@@ -3013,7 +3013,7 @@ export function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExp
   return (
     classToStringConversion(lowerer, e, "default", node) ??
     classUnionToString(lowerer, e, "default", node) ??
-    lowerer.ensureString(e, node)
+    lowerer.ensureString(e, node, "default")
   );
 }
 

@@ -69,7 +69,11 @@ import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-static
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { errorToStringCall } from "../error-methods.js";
-import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
+import {
+  classToStringConversion,
+  classUnionToString,
+  type StringConversionHint,
+} from "../class-to-primitive.js";
 import {
   genericDeclarationBehindValue,
   noteDynamicIdentityComparison,
@@ -823,7 +827,12 @@ function lowerConstructorGlobalTypeofTest(
   return null;
 }
 
-export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+export function ensureString(
+  lowerer: Lowerer,
+  e: IrExpr,
+  node: ts.Node,
+  hint: StringConversionHint = "string",
+): IrExpr {
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };
@@ -939,7 +948,12 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
           node,
         );
     }
-    const viaClasses = classUnionToString(lowerer, e, "string", node);
+    // A union with a record or array arm reaches here only when every rule
+    // above declined; its arms convert under the operator's own hint (`+`
+    // passes "default" through concatOperand).
+    const plainArms =
+      def?.arms.some((arm) => arm.kind === "record" || arm.kind === "array") === true;
+    const viaClasses = classUnionToString(lowerer, e, plainArms ? hint : "string", node, true);
     if (viaClasses) return viaClasses;
     lowerer.unsupported(
       "SC1090",

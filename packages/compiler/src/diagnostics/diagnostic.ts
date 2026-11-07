@@ -1526,16 +1526,48 @@ export function unionMismatchDiag(
   expectedText: string,
   actualText: string,
   loc: SrcLoc,
+  ambiguous?: UnionWidthAmbiguity,
 ): ScrDiagnostic {
   return {
     code: "SC2003",
     message:
       `union conversion has no unambiguous layout mapping: expected '${expectedText}', got '${actualText}' ` +
-      `(each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)`,
+      `(each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)` +
+      (ambiguous !== undefined ? ` — ${unionWidthAmbiguityText(ambiguous)}` : ""),
     loc,
     milestone: "later",
-    hint: "narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's",
+    hint:
+      ambiguous !== undefined
+        ? "a union value is one arm at run time, and nothing in this record says which: type the slot with the record type itself (one record that declares every member), or give each arm a member with its own literal value"
+        : "narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's",
   };
+}
+
+/** A record that converts by width into several arms of a union with no
+ * discriminant (`{ a?: X; b?: Y }` into `{ a?: X } | { b?: Y }`): the
+ * conversion would have to pick one arm and the others' members would no
+ * longer be that value's. `arms` are the arms the record fits; `split` are
+ * source members declared by some of those arms but not by all; `homeless`
+ * are source members no arm declares. */
+export interface UnionWidthAmbiguity {
+  arms: number;
+  split: readonly string[];
+  homeless: readonly string[];
+}
+
+function unionWidthAmbiguityText(a: UnionWidthAmbiguity): string {
+  const list = (names: readonly string[]): string =>
+    names
+      .slice(0, 4)
+      .map((name) => `'${name}'`)
+      .join(", ") + (names.length > 4 ? `, and ${names.length - 4} more` : "");
+  return (
+    `the record fits ${a.arms} arms by width and the union has no discriminant member to choose one` +
+    (a.split.length > 0
+      ? `; ${list(a.split)} belong to some of those arms and not to others`
+      : "") +
+    (a.homeless.length > 0 ? `; no arm declares ${list(a.homeless)}` : "")
+  );
 }
 
 /** An object literal that SPREADS union-typed sources (`{ ...base,

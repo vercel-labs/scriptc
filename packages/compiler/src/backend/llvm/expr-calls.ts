@@ -804,6 +804,18 @@ export function emitCallExpr(
         B.line(`${entry} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 7`);
         B.line(`store ptr @${mangleBorrowedFunction(e.fnName)}, ptr ${entry}`);
       }
+      if (e.length !== undefined) {
+        // The function's own length, where its type carries parameters it
+        // does not declare: a closure that names itself as its identity
+        // root reports the recorded length from every box, as an adapter
+        // reports the length of the function it stands for.
+        const lengthPtr = B.tmp();
+        const identityPtr = B.tmp();
+        B.line(`${lengthPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 5`);
+        B.line(`store i32 ${e.length}, ptr ${lengthPtr}`);
+        B.line(`${identityPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 6`);
+        B.line(`store ptr ${c}, ptr ${identityPtr}`);
+      }
       e.captures.forEach((localId, i) => {
         const box = host.captureBox(localId);
         const retained = host.retainBox(box);

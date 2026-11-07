@@ -7,6 +7,7 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { noLinkFeatures } from "./native-link-info-core.js";
 import {
   effectiveRuntimeFeatures,
   evaluateRuntimePredicate,
@@ -37,52 +38,7 @@ const VERSION = compilerReleaseVersion();
  * is not a script interpreter line. */
 const PROGRAM_IMAGE = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00]);
 
-const BASE: NativeLinkFeatures = {
-  regex: false,
-  copying: false,
-  textDecoderLegacy: false,
-  bigintBytes: false,
-  fileHandle: false,
-  fetch: false,
-  zlib: false,
-  assert: false,
-  inspect: false,
-  dynInvoke: false,
-  dc: false,
-  dynAsync: false,
-  events: false,
-  emitter: false,
-  symbol: false,
-  bigint: false,
-  searchParams: false,
-  qs: false,
-  utilPromisify: false,
-  dynBuiltinClass: false,
-  dynBuiltinStream: false,
-  parseArgs: false,
-  stream: false,
-  net: false,
-  http: false,
-  http2: false,
-  dgram: false,
-  dnsPromises: false,
-  dgramDyn: false,
-  textCodecDyn: false,
-  watch: false,
-  watchFile: false,
-  foreignFfi: false,
-  nodeTest: false,
-  tls: false,
-  tlsCa: false,
-  cipher: false,
-  ecdh: false,
-  dh: false,
-  pki: false,
-  ed25519: false,
-  x509: false,
-  webcrypto: false,
-  perfLoop: false,
-};
+const BASE: NativeLinkFeatures = noLinkFeatures();
 
 async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-unit-"));

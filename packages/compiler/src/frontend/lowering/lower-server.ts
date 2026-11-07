@@ -1595,6 +1595,22 @@ function lowerNetServerMethodCall(
       type: F64,
       loc,
     });
+    // A number port: Node's validatePort accepts an integer from 0 to 65535
+    // and throws ERR_SOCKET_BAD_PORT for every other number (a fraction, a
+    // negative, NaN, 70000). A literal in that range needs no check; any
+    // other number takes the check an untyped port takes, so the bind never
+    // sees a value truncated into the range.
+    const validatedPort = (port: IrExpr): IrExpr => {
+      if (port.type.kind !== "f64") return port;
+      if (
+        port.kind === "numLit" &&
+        Number.isInteger(port.value) &&
+        port.value >= 0 &&
+        port.value <= 65535
+      )
+        return port;
+      return portOfUntyped(lowerer.coerceToExpected(port, DYN));
+    };
     if (args.length === 1 && untyped) {
       // An untyped single argument: a function is the callback on an
       // arbitrary port; any other value is the port.
@@ -1769,6 +1785,7 @@ function lowerNetServerMethodCall(
           "the supported options object is { port, host?, ipv6Only?, reusePort? } — port 0 binds an ephemeral port",
         );
       }
+      port = validatedPort(port);
       host ??= {
         kind: "strLit",
         value: "",
@@ -1851,7 +1868,7 @@ function lowerNetServerMethodCall(
     }
     const port = untyped
       ? portOfUntyped(lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN))
-      : lowerer.lowerExprExpecting(args[0]!, F64);
+      : validatedPort(lowerer.lowerExprExpecting(args[0]!, F64));
     // The optional middle host — listen(port, '127.0.0.1'[, cb]): a
     // string-typed second argument is the bind address (the net.connect
     // disambiguation), routed through the options-form entry.

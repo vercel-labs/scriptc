@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import * as packMatrix from "../runtime-pack-matrix.mjs";
 import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
 
 const matrix = createRuntimePackMatrix({
@@ -309,6 +310,18 @@ test("a unit has one build for every combination of the features its builds name
   // of every feature it has. Two features that each add a build column to
   // the same unit therefore need a build that carries both defines, also
   // when the columns were added by changes that did not know of each other.
+  // A combination no program can have needs none: a feature that implies
+  // another never comes without it. The matrix names those implications in
+  // RUNTIME_FEATURE_IMPLIES when it has any; without the table every
+  // combination is possible.
+  const implies: Record<string, string[]> =
+    Reflect.get(packMatrix, "RUNTIME_FEATURE_IMPLIES") ?? {};
+  const withImplied = (feature: string, seen = new Set<string>()): Set<string> => {
+    if (seen.has(feature)) return seen;
+    seen.add(feature);
+    for (const need of implies[feature] ?? []) withImplied(need, seen);
+    return seen;
+  };
   for (const { source } of matrix.runtime_units as { source: string }[]) {
     const variants: { id: string; when: Record<string, boolean>; defines: string[] }[] =
       variantsFor(source);
@@ -318,15 +331,21 @@ test("a unit has one build for every combination of the features its builds name
         .sort()
         .join("+");
     const features = [...new Set(variants.flatMap((variant) => Object.keys(variant.when)))].sort();
-    const alone = (feature: string): string[] =>
-      variants.find((variant) => named(variant.when) === feature)?.defines ?? [];
+    // A feature's own defines: those of the smallest build a program with
+    // that feature can link, the one naming it and what it implies.
+    const alone = (feature: string): string[] => {
+      const smallest = [...withImplied(feature)].sort().join("+");
+      return variants.find((variant) => named(variant.when) === smallest)?.defines ?? [];
+    };
     for (let mask = 0; mask < 1 << features.length; mask++) {
       const on = features.filter((_, index) => (mask & (1 << index)) !== 0);
+      const possible = on.every((name) => (implies[name] ?? []).every((need) => on.includes(need)));
       const builds = variants.filter((variant) => named(variant.when) === on.join("+"));
       expect(
         builds.map((variant) => variant.id),
         `${source} with ${on.join("+") || "no feature"}`,
-      ).toHaveLength(1);
+      ).toHaveLength(possible ? 1 : 0);
+      if (!possible) continue;
       expect([...builds[0]!.defines].sort(), `${source} with ${on.join("+")}`).toEqual(
         [...new Set(on.flatMap(alone))].sort(),
       );

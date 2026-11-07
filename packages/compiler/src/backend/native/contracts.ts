@@ -169,9 +169,15 @@ export interface CcOptions {
   /** Reflect.getPrototypeOf's primitive-target check: compiles
    * scr_dyn_reflect_proto.c. */
   reflectProtoTarget?: boolean;
+  /** `delete` of a key a record's type does not declare: compiles
+   * scr_record_source_delete.c. */
+  recordSourceDelete?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;
+  /** A generator function that reads `this` (dyn.generatorThis): compiles
+   * scr_gen_receiver.c. */
+  genReceiver?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -196,6 +202,9 @@ export interface CcOptions {
   /** createRequire's computed require and require.resolve: compiles
    * scr_require.c. */
   computedRequire?: boolean;
+  /** An untyped path of a synchronous fs function: compiles
+   * scr_fs_path_value.c. */
+  fsPathValue?: boolean;
   /** Builtin functions read as values: compiles scr_builtin_values.c. */
   builtinValues?: boolean;
   /** A standard library prototype object read as a value in a JavaScript

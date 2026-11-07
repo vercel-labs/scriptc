@@ -23,6 +23,7 @@
  */
 #include "scr_runtime.h"
 #include "scr_key.h"
+#include "scr_record_source_private.h"
 
 /* The JavaScript object model build asks scr_dyn_handle_props.c about a
  * runtime handle's own properties (a Date, RegExp, Map, Set, buffer or
@@ -4166,29 +4167,6 @@ ScrDyn *scr_dyn_new_buffer(const ScrBytes *b) {
  * view: every capsule for the record adopts it, so properties written
  * through untyped references persist after the capsule is gone, and the
  * typed serializers of such a record go through its capsule. */
-typedef struct {
-  void *rec;
-  ScrDyn *view;
-  /* The shape's declared names in declaration order, as static strided
-   * tables: the compiler's name/length arrays, or a JSON schema's fields. */
-  const char *names;
-  const char *lens;
-  size_t name_stride, len_stride, count;
-  /* A record view (scr_dyn_record_view) has an entry with no view and
-   * this: the capsule of the record it views (+1). Boxing the view answers
-   * that capsule (scr_dyn_typed_ref_new), and the view type's reflective
-   * surfaces go through it (scr_record_source_has). NULL for an ordinary
-   * source. */
-  ScrDyn *capsule;
-  /* A view's record (borrowed: the capsule holds it) and its byte offsets
-   * for the view type's fields. */
-  void *viewed;
-  const size_t *offsets;
-  /* The view holds properties a partial view's writes added, in the order
-   * the writes happened; reflection and serialization answer them after the
-   * record's own keys. */
-  bool extras;
-} ScrRecordSource;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
 /* Deleted slots keep this marker so probe runs stay intact without moving
@@ -4240,6 +4218,12 @@ static ScrDyn *scr_record_view_capsule(const void *rec) {
   ScrRecordSource *entry = scr_record_source_slot(rec);
   return entry ? entry->capsule : NULL;
 }
+
+/* The table entry of `rec`, a record view's entry included, or NULL: the
+ * way in for the gated units that add table operations
+ * (scr_record_source_private.h). This file's own lookups keep the static
+ * one. */
+ScrRecordSource *scr_record_source_entry(const void *rec) { return scr_record_source_slot(rec); }
 
 static void scr_record_view_forget(ScrDyn *capsule, const void *view);
 
@@ -4330,25 +4314,6 @@ static void scr_record_source_reserve(void) {
   }
   scr_record_source_deleted = 0;
   free(old);
-}
-
-/* The key's position in the shape's declaration order, or count. */
-static size_t scr_record_source_index(const ScrRecordSource *source, const char *key,
-                                      size_t key_len) {
-  for (size_t i = 0; i < source->count; i++) {
-    size_t len;
-    memcpy(&len, source->lens + i * source->len_stride, sizeof len);
-    if (len != key_len) continue;
-    const char *name;
-    memcpy(&name, source->names + i * source->name_stride, sizeof name);
-    if (memcmp(name, key, key_len) == 0) return i;
-  }
-  return source->count;
-}
-
-static bool scr_record_source_declared(const ScrRecordSource *source, const char *key,
-                                       size_t key_len) {
-  return scr_record_source_index(source, key, key_len) < source->count;
 }
 
 /* The source an entry keeps its properties in: its own for a record, the
@@ -7713,6 +7678,19 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
     scr_closure_release(clo);
     return original;
   }
+#ifdef SCR_NODE_ISLANDS
+  /* A signature adapter over a view of a Node island's function is still
+   * that function: its box is the island's own handle, so it compares equal
+   * to the function and crosses back into the island as it. */
+  if (clo->identity != NULL && scr_ni_dyn_ops != NULL &&
+      scr_ni_dyn_ops->function_of_identity != NULL) {
+    ScrDyn *island = scr_ni_dyn_ops->function_of_identity(clo->identity);
+    if (island != NULL) {
+      scr_closure_release(clo);
+      return island;
+    }
+  }
+#endif
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_FUNC);
   d->v.fn.clo = clo;
   d->v.fn.thunk = thunk;
@@ -11449,6 +11427,13 @@ int scr_dyn_function_kind(const ScrDyn *value) {
 void scr_dyn_adopt_identity(ScrClosure *adapter, const ScrDyn *value) {
   if (value->kind == SCR_DYN_FUNC && value->v.fn.class_obj == NULL)
     scr_closure_adopt_identity(adapter, value->v.fn.clo, value->v.fn.arity);
+#ifdef SCR_NODE_ISLANDS
+  /* A Node island's function is one function however many typed views the
+   * program holds of it: each view adopts the handle's identity root. */
+  else if (scr_ni_dyn_handle(value) && scr_ni_dyn_ops != NULL &&
+           scr_ni_dyn_ops->function_identity != NULL)
+    scr_closure_adopt_identity(adapter, scr_ni_dyn_ops->function_identity(value), 0);
+#endif
 }
 
 bool scr_dyn_is_object(const ScrDyn *d) {
@@ -11543,6 +11528,12 @@ static ScrStr *scr_dyn_string_tag(const ScrDyn *d) {
 }
 
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
+#ifdef SCR_NODE_ISLANDS
+  /* An island object answers from Node, which reads its builtin tag and
+   * its @@toStringTag: an island array is "[object Array]". */
+  if (scr_ni_dyn_handle(d) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->object_tag != NULL)
+    return scr_ni_dyn_ops->object_tag(d);
+#endif
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
     return NULL;
@@ -14546,6 +14537,13 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
   scr_dyn_path_render(&b, path);
   scr_jb_puts(&b, ", got ");
   scr_jb_puts(&b, scr_dyn_kind_name(got));
+#ifdef SCR_NODE_ISLANDS
+  /* The value has no wrong shape: it is a Node island's object, which this
+   * type has no way to hold. Say so, and what does hold it. */
+  if (scr_ni_dyn_handle(got))
+    scr_jb_puts(&b, " from a Node island (an island object stays an island value: declare the island's "
+                    "type or 'unknown' for it, or copy it with structuredClone)");
+#endif
   /* A real TypeError instance: catch bindings narrow it with instanceof
    * and read the path off e.message; the uncaught line ("Uncaught
    * TypeError: expected ...") is byte-identical to the old string form. */
@@ -16662,7 +16660,14 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
 ScrDyn *scr_json_parse_reviver(ScrStr *text, const ScrDyn *reviver) {
   ScrDyn *parsed = scr_json_parse(text);
   if (!parsed) return NULL; /* No callback runs on invalid input. */
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a reviver function. */
+  if (reviver->kind != SCR_DYN_FUNC &&
+      !(scr_ni_dyn_handle(reviver) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(reviver)))
+    return parsed;
+#else
   if (reviver->kind != SCR_DYN_FUNC) return parsed;
+#endif
   ScrDyn *holder = scr_dyn_new_obj();
   scr_dyn_obj_set(holder, "", 0, parsed);
   ScrStr *key = scr_str_new("", 0);
@@ -17110,6 +17115,14 @@ ScrDyn *scr_json_stringify_value(const ScrDyn *value, const ScrDyn *replacer, co
     size_t length = isnan(count) || count <= 0 ? 0 : count >= 10 ? 10 : (size_t)count;
     gap = scr_str_new("          ", length);
   } else gap = scr_str_new("", 0);
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a replacer function. */
+  if (scr_ni_dyn_handle(replacer) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(replacer)) {
+    ScrDyn *replaced = scr_json_stringify_replacer(value, replacer, gap);
+    scr_str_release(gap);
+    return replaced;
+  }
+#endif
   bool list = replacer->kind == SCR_DYN_ARR || (replacer->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(replacer));
   ScrDyn *result = scr_json_stringify_replacer(value, replacer->kind == SCR_DYN_FUNC || list ? replacer : scr_dyn_undefined(), gap);
   scr_str_release(gap);
@@ -19418,6 +19431,25 @@ static void scr_dyn_assign_linked_from(ScrDyn *target, const ScrDyn *src, bool d
 }
 
 static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
+#ifdef SCR_NODE_ISLANDS
+  /* An island object's own enumerable string keys, read in Node as
+   * Object.keys of one reads them: `{ ...islandObject }` and Object.assign
+   * copy them where they copied nothing. */
+  if (scr_ni_dyn_handle(src) && scr_ni_dyn_ops != NULL) {
+    ScrDyn *keys = scr_ni_dyn_ops->own_keys((ScrDyn *)src, 0);
+    if (keys == NULL) return;
+    for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
+      ScrDyn *key = keys->v.arr.items[i];
+      if (key->kind != SCR_DYN_STR) continue;
+      ScrDyn *value = scr_ni_dyn_ops->get((ScrDyn *)src, key);
+      if (value == NULL) break;
+      scr_dyn_copy_property(target, key->v.str, value, define);
+      scr_dyn_release(value);
+    }
+    scr_dyn_release(keys);
+    return;
+  }
+#endif
   if (scr_typed_ref_linked_copy(src)) {
     scr_dyn_assign_linked_from(target, src, define);
     return;

@@ -9,6 +9,7 @@ import {
   type GenericFnInfo,
   type GenericInstance,
 } from "./generic-functions.js";
+import { parameterIdentityUse } from "./divergences.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import type { Lowerer } from "./lowerer.js";
 
@@ -22,7 +23,14 @@ import type { Lowerer } from "./lowerer.js";
  * value, the call instead targets an instance of the function lowered with
  * that parameter bound to the argument's own type: the body reads and
  * writes the caller's storage. Instances are keyed by the parameter
- * layouts, so each layout combination compiles once. */
+ * layouts, so each layout combination compiles once.
+ *
+ * A record parameter the callee writes through or compares by identity also
+ * binds a record whose other fields are required, or an index-signature
+ * record, and so the arm a union argument is narrowed to at the call
+ * (`fill(last, detail)` after `last.kind === "note"`). No conversion between
+ * those layouts keeps the caller's object, so the copy would lose the writes
+ * and answer `===` false. */
 
 /** The argument expressions that can name a value another reference sees:
  * bindings, member reads and `this`. Fresh values (literals, calls) have no
@@ -86,6 +94,46 @@ function copies(lowerer: Lowerer, from: IrType, to: IrType): boolean {
   if (typeEquals(from, to) || !standsFor(lowerer, from, to)) return false;
   const plan = lowerer.widthLiftPlan(from, to);
   return plan !== null && (plan.how === "arr" || plan.how === "width");
+}
+
+/** Whether a record of layout `from` can be the value of a parameter of
+ * record layout `to` in a body that never assigns the parameter: it has
+ * every field of `to` at a layout that stands for it, and both keep
+ * undeclared keys the same way (neither has an index signature, or both
+ * have one of the same value type). Its other fields may be required. The
+ * body is written against `to`, so it never names them, and no value converts
+ * into the parameter's layout, so none needs them completed. A read or write
+ * by a runtime key lowers against `from` and follows its rules: the body
+ * does not lower where a key could meet a field of another type. */
+function carries(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (from.kind !== "record" || to.kind !== "record" || typeEquals(from, to)) return false;
+  const source = lowerer.shapes.get(from.shapeId);
+  const target = lowerer.shapes.get(to.shapeId);
+  if (!source || !target || source.tuple || target.tuple) return false;
+  const sourceValue = source.indexValue;
+  const targetValue = target.indexValue;
+  if (sourceValue === undefined || targetValue === undefined) {
+    if (sourceValue !== undefined || targetValue !== undefined) return false;
+  } else if (!typeEquals(sourceValue, targetValue)) return false;
+  return target.fields.every((field) => {
+    const kept = source.fields.find((f) => f.name === field.name);
+    return (
+      kept !== undefined &&
+      kept.optional === field.optional &&
+      standsFor(lowerer, kept.type, field.type)
+    );
+  });
+}
+
+/** Whether the body of `decl` writes through its parameter at `index` or
+ * compares it by identity, the uses a copy of the argument changes
+ * (divergences.ts reports the same uses as SC6001). Scanned once per
+ * declaration. */
+function usesParameterIdentity(info: GenericFnInfo, index: number): boolean {
+  const uses = (info.identityParams ??= info.decl.parameters.nodes.map((param) =>
+    ts.isIdentifier(param.name) ? parameterIdentityUse(info.decl, param.name.text) : false,
+  ));
+  return uses[index] === true;
 }
 
 /** The structural-instance info of a typed function declaration, created on
@@ -153,7 +201,13 @@ export function structuralCallInstance(
     if (!own || !typeEquals(own, declared.type)) return;
     const checker = preservedLayoutOf(lowerer, arg) ?? lowerer.typeOf(arg);
     const type = lowerer.mapTypeOf(checker);
-    if (type && copies(lowerer, type, declared.type)) bound.push({ index, type, checker });
+    if (!type) return;
+    if (
+      copies(lowerer, type, declared.type) ||
+      (carries(lowerer, type, declared.type) &&
+        usesParameterIdentity(structuralInfoOf(lowerer, decl, symbol), index))
+    )
+      bound.push({ index, type, checker });
   });
   if (bound.length === 0) return null;
   const info = structuralInfoOf(lowerer, decl, symbol);

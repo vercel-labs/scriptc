@@ -26,92 +26,134 @@ test.each([
   [
     "a compiler change",
     ["packages/compiler/src/backend/emit.ts"],
-    { linux: true, macos: false, effects: false, bootstrap: false, profile: true },
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true, islands: false },
   ],
   [
     "a compiler test",
     ["packages/compiler/test/emit.test.ts"],
-    { linux: true, macos: false, effects: false, bootstrap: false, profile: false },
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: false },
   ],
   [
     "a refreshed profile",
     ["packages/compiler/native/cli.profdata.gz"],
-    { linux: true, macos: false, effects: false, bootstrap: false, profile: true },
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true, islands: false },
   ],
   [
     "a runtime C change",
     ["packages/runtime/src/scr_array.c"],
-    { linux: true, macos: false, effects: false, bootstrap: false, profile: false },
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: false },
   ],
   [
     "a corpus program",
     ["tests/corpus/1234-example.ts"],
-    { linux: true, macos: false, effects: false, bootstrap: false, profile: false },
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: false },
   ],
   [
     "documentation only",
     ["docs/content/guide.mdx", "README.md"],
-    { linux: false, macos: false, effects: false, bootstrap: false, profile: false },
+    {
+      linux: false,
+      macos: false,
+      effects: false,
+      bootstrap: false,
+      profile: false,
+      islands: false,
+    },
   ],
   [
     "a darwin package",
     ["packages/runtime-darwin-arm64/scripts/build.mjs"],
-    { linux: true, macos: true, effects: false, bootstrap: false, profile: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: false, islands: false },
   ],
   [
     "the LLVM helper",
     ["native/llvm-codegen/src/emit.cpp"],
-    { linux: true, macos: true, effects: false, bootstrap: false, profile: true },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: true, islands: false },
   ],
   [
     "a darwin test file",
     ["tests/harness/ffi-frameworks.test.ts"],
-    { linux: true, macos: true, effects: false, bootstrap: false, profile: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: false, islands: false },
   ],
   [
     "the kqueue event loop",
     ["packages/runtime/src/scr_loop_kqueue.c"],
-    { linux: true, macos: true, effects: false, bootstrap: false, profile: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: false, islands: false },
   ],
   [
     "the runtime's platform header",
     ["packages/runtime/src/scr_platform.h"],
-    { linux: true, macos: true, effects: false, bootstrap: false, profile: false },
+    { linux: true, macos: true, effects: false, bootstrap: false, profile: false, islands: false },
   ],
   [
     "the Effect harness",
     ["tests/harness/effect.test.ts"],
-    { linux: true, macos: false, effects: true, bootstrap: false, profile: false },
+    { linux: true, macos: false, effects: true, bootstrap: false, profile: false, islands: false },
   ],
   [
     "the bootstrap scripts",
     ["scripts/build-native-cli.mts"],
-    { linux: true, macos: false, effects: false, bootstrap: true, profile: true },
+    { linux: true, macos: false, effects: false, bootstrap: true, profile: true, islands: false },
+  ],
+  [
+    "the island decision",
+    ["packages/compiler/src/node-islands/policy.ts"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true, islands: true },
+  ],
+  [
+    "the island boundary lowering",
+    ["packages/compiler/src/frontend/lowering/lower-node-island.ts"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true, islands: true },
+  ],
+  [
+    "an island runtime unit",
+    ["packages/runtime/src/scr_node_island_handle.c"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: true },
+  ],
+  [
+    "the island host script",
+    ["packages/runtime/src/scr_node_island_host.cjs"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: true },
+  ],
+  [
+    "the libnode bridge",
+    ["packages/libnode-common/bridge/scr_node_bridge.cc"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: true },
+  ],
+  [
+    "the island conformance list",
+    ["tests/harness/island-conformance/known-failures.json"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: true },
+  ],
+  [
+    "an npm suite package",
+    ["tests/fixtures/npm/node_modules/zod/index.js"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: true },
   ],
   [
     "CI configuration",
     [".github/workflows/ci.yml"],
-    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true, islands: true },
   ],
   [
     "this script",
     ["scripts/ci-lanes.mjs"],
-    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true, islands: true },
   ],
   [
     "the lockfile",
     ["pnpm-lock.yaml"],
-    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true, islands: true },
   ],
   [
     "a package manifest",
     ["packages/compiler/package.json"],
-    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true, islands: true },
   ],
   [
     "the shard partitioner",
     ["tests/harness/shard.ts"],
-    { linux: true, macos: true, effects: true, bootstrap: true, profile: true },
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true, islands: true },
   ],
 ])("CI lanes for %s", (_name, files, expected) => {
   expect(lanesOf(files)).toEqual(expected);
@@ -156,13 +198,13 @@ function runLanes(event: string) {
   }
 }
 
-test("pushes to main run every lane except macos; the nightly sweep and manual runs run every lane", () => {
+test("pushes to main run every lane except macos and islands; the nightly sweep and manual runs run every lane", () => {
   expect(runLanes("push")).toBe(
-    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\n",
+    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n",
   );
   for (const event of ["schedule", "workflow_dispatch"])
     expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\n",
+      "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n",
     );
   expect(workflow.on.workflow_dispatch.inputs["macos_suite"]).toEqual({
     description: "The test suite to run on macOS",

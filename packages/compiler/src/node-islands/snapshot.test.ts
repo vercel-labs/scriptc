@@ -292,10 +292,17 @@ describe("modules that share a file", () => {
     expect(decisions[1]!.reason).toContain("process.cwd()");
   });
 
-  test("snapshot no constants when the shared file read the clock", () => {
-    const { decisions, snapshots } = sharingProject({ volatile: ["Date.now()"] });
-    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
-    for (const text of snapshots) expect(text).not.toContain("4:info");
+  test("only the load that read the clock snapshots, and without constants", () => {
+    // The load whose own record names the clock defers with no constants.
+    // The other stays eager: a snapshot without constants still keeps the
+    // build's object flags and object links ("the effects of a file that
+    // modules share", below).
+    const { decisions, calls, snapshots } = sharingProject({ volatile: ["Date.now()"] });
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.require"]);
+    expect(decisions.find((d) => !d.deferred)!.reason).toContain(
+      "a load it shares a file with reads Date.now()",
+    );
+    expect(snapshots[0]).not.toContain("4:info");
   });
 });
 

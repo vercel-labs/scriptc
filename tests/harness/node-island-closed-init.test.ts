@@ -118,7 +118,9 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
     for (const module of modules) expect(module).toMatch(/^\[node-islands\] eager /);
     const printing = modules.filter((l) => /: its evaluation has effects.*process\.stdout/.test(l));
     expect(printing).toHaveLength(2);
-    expect(modules.filter((l) => l.includes(": it shares "))).toHaveLength(1);
+    expect(
+      modules.filter((l) => l.includes(": a load it shares a file with has effects")),
+    ).toHaveLength(1);
     const { stdout } = await run(binary);
     expect(stdout).toBe(
       "before\nshape-kit: making first\nbetween\nshape-kit: making second\nafter 1 2 3\n",

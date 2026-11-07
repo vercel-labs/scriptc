@@ -96,6 +96,17 @@ export function resolveImportMetaRuntime(
   return null;
 }
 
+/* What a build-time require.resolve depends on. The compiler's own resolver
+ * (cjs-resolve.ts) asks the tracked filesystem about every candidate, and
+ * records the host facts its legacy global lookup locations come from (the
+ * home directory, NODE_PATH, the compiler's installation prefix), so the
+ * frontend's input snapshot is complete and its result can be cached. A
+ * resolver the host supplies looks where it likes (its own global paths,
+ * loader hooks, its module cache) and reports none of it: a build that
+ * consults one declines cache publication. */
+const HOST_RESOLVER =
+  "a require.resolve call was answered by the host's module resolver, which does not report what it read";
+
 /** require.resolve under the containing file's CommonJS resolver. */
 export function resolveRequireRuntime(
   fromFile: string,
@@ -104,11 +115,9 @@ export function resolveRequireRuntime(
   paths?: readonly string[],
   services?: FrontendServices,
 ): RuntimeResolveResult {
-  // Legacy global lookup locations depend on the process environment and
-  // executable prefix, which are not part of the filesystem snapshot.
-  markFrontendInputsUnstable();
+  const resolver = services?.runtimeModuleResolver;
+  if (resolver !== undefined) markFrontendInputsUnstable(HOST_RESOLVER);
   try {
-    const resolver = services?.runtimeModuleResolver;
     const result: RuntimeResolveResult =
       resolver === undefined
         ? resolveCjsRuntime(fromFile, specifier, paths)
@@ -132,9 +141,9 @@ export function requireResolvePathsRuntime(
   targetPlatform: string,
   services?: FrontendServices,
 ): readonly string[] | null | RuntimeResolveError {
-  markFrontendInputsUnstable();
+  const resolver = services?.runtimeModuleResolver;
+  if (resolver !== undefined) markFrontendInputsUnstable(HOST_RESOLVER);
   try {
-    const resolver = services?.runtimeModuleResolver;
     const paths =
       resolver === undefined
         ? cjsResolvePaths(fromFile, specifier)

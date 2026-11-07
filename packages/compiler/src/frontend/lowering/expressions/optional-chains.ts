@@ -1,6 +1,7 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
 import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
+import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
 import { overloadValueResult } from "../lower-calls.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
@@ -265,6 +266,23 @@ export function lowerOptionalChain(
     lowerer.chainHandled.add(dotNode);
     try {
       return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
+  // `process.getBuiltinModule("node:os")?.arch()`, `ns?.member`: a builtin
+  // module's namespace object is never nullish, and its members lower at
+  // their access sites (the namespace has no value form to guard), so the
+  // guarded step is the plain member access. The member answers statically
+  // but the receiver still evaluates first: `loadOs()?.arch()` calls loadOs
+  // and keeps its side effects and exceptions, as Node does.
+  if (
+    ts.isPropertyAccessExpression(dotNode) &&
+    lowerer.builtinNamespaceModuleOf(recvNode) !== null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return reflectOverNamespaceExpr(lowerer, recvNode, lowerer.lowerExpr(expr), locOf(expr));
     } finally {
       lowerer.chainHandled.delete(dotNode);
     }

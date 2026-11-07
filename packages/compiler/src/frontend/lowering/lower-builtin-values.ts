@@ -507,7 +507,7 @@ export function lowerNumberParserValue(
 // These module values expose native callable lowerings and current-thread
 // metadata. Stored Worker constructors remain refused: native worker roots
 // must be resolved from the source at compilation time.
-const MODULES = ["path/posix", "path/win32", "os", "worker_threads", "util/types"] as const;
+const MODULES = ["path/posix", "path/win32", "os", "worker_threads", "util/types", "sea"] as const;
 
 const box = (value: IrExpr): IrExpr =>
   value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc: value.loc };
@@ -600,6 +600,12 @@ export function lowerUtilTypeValue(lowerer: Lowerer, member: string, loc: SrcLoc
 
 function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
   const cacheKey = `%builtin.module.get.${module}`;
+  // The modules served as a plain object holding all of Node's members.
+  const plainObjectKeys = module.startsWith("path/")
+    ? PATH_MODULE_KEYS
+    : module === "sea"
+      ? Object.keys(builtinModuleFns()[module] ?? {})
+      : null;
   let name = lowerer.builtinCallableValueFns.get(cacheKey);
   if (!name) {
     name = cacheKey;
@@ -643,19 +649,20 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
       for (const member of ["isInternalThread", "parentPort", "workerData"])
         add(member, lowerWorkerMetadata(member, loc)!);
     }
-    // A path family is the whole of Node's object, so another key is
-    // absent there too.
+    // A path family, like node:sea, is the whole of Node's object, so
+    // another key is absent there too.
     body.push({
       kind: "return",
-      value: module.startsWith("path/")
-        ? dynUndefinedExpr(loc)
-        : {
-            kind: "libCall",
-            fn: "process.builtinUnsupported",
-            args: [strLit(module, loc), key],
-            type: DYN,
-            loc,
-          },
+      value:
+        plainObjectKeys !== null
+          ? dynUndefinedExpr(loc)
+          : {
+              kind: "libCall",
+              fn: "process.builtinUnsupported",
+              args: [strLit(module, loc), key],
+              type: DYN,
+              loc,
+            },
       loc,
     });
     lowerer.liftedFns.push({
@@ -676,8 +683,8 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
   };
   // A path family is a plain object holding Node's members in Node's
   // order, so reflection over it (Object.keys, Object.assign, spreads,
-  // own-property checks) sees them.
-  if (module.startsWith("path/")) {
+  // own-property checks) sees them. node:sea is one too.
+  if (plainObjectKeys !== null) {
     return {
       kind: "libCall",
       fn: "process.builtinObject",
@@ -686,7 +693,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
         box(getter),
         {
           kind: "arrayLit",
-          elems: PATH_MODULE_KEYS.map((key) => strLit(key, loc)),
+          elems: plainObjectKeys.map((key) => strLit(key, loc)),
           type: arrayOf(STRING),
           loc,
         },
@@ -1093,11 +1100,12 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
 
 /** A JavaScript call of a builtin with named value parameters whose
  * arguments are not the native parameters' types or omit one
- * (`path.matchesGlob(123, glob)`, `path.toNamespacedPath()`): the call goes
- * through the checked
- * adapter (checkedNativeCallableValue), which applies Node's validation and
- * answers the value Node answers. Null for every other call, which keeps
- * the direct lowering. */
+ * (`path.matchesGlob(123, glob)`, `path.toNamespacedPath()`,
+ * `path.join("a", 1)`): the call goes through the checked adapter
+ * (checkedNativeCallableValue), which applies Node's validation and answers
+ * the value Node answers. A rest parameter takes every argument from its
+ * position on, as the adapter's untyped pack. Null for every other call,
+ * which keeps the direct lowering. */
 export function jsCheckedBuiltinCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1107,16 +1115,19 @@ export function jsCheckedBuiltinCall(
 ): IrExpr | null {
   const params = fn.valueParams;
   if (!params?.some((param) => param.name !== undefined)) return null;
-  if (params.some((param) => param.mode === "rest")) return null;
+  // Only a trailing rest parameter (Node's `...paths`) is a pack.
+  const restAt = params.findIndex((param) => param.mode === "rest");
+  if (restAt >= 0 && restAt !== params.length - 1) return null;
   if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
   const args = call.arguments.nodes;
-  if (args.length > params.length || args.some((arg) => ts.isSpreadElement(arg))) return null;
+  if (args.some((arg) => ts.isSpreadElement(arg))) return null;
+  if (restAt < 0 && args.length > params.length) return null;
   // An omitted required argument is undefined to Node's validation too.
   const required = params.filter((param) => param.mode === "required").length;
   const mismatch =
     args.length < required ||
     args.some((arg, index) => {
-      const want = params[index]!.type;
+      const want = params[restAt >= 0 && index > restAt ? restAt : index]!.type;
       if (want.kind === "dyn") return false;
       const type = lowerer.mapTypeOf(lowerer.typeOf(arg));
       return type === null || !typeEquals(type, want);
@@ -1127,9 +1138,15 @@ export function jsCheckedBuiltinCall(
   return {
     kind: "call",
     callee: adapter.fnName,
-    args: params.map((_, index) =>
-      index < args.length ? lowerer.lowerExprExpecting(args[index]!, DYN) : dynUndefinedExpr(loc),
-    ),
+    args: params.map((param, index): IrExpr => {
+      if (param.mode === "rest") {
+        const elems = args.slice(index).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+        return { kind: "dynArrLit", elems, type: DYN, loc };
+      }
+      return index < args.length
+        ? lowerer.lowerExprExpecting(args[index]!, DYN)
+        : dynUndefinedExpr(loc);
+    }),
     type: fn.checked?.result ?? fn.result,
     loc,
   };

@@ -1,26 +1,9 @@
 import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
+import { isLoweredConsoleMember } from "./builtins/console.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { staticCondition, staticallySelected } from "./static-typeof.js";
-
-function unparenthesized(e: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
-
-/** `e` without parentheses and type-only wrappers (as, satisfies, type
- * assertions, non-null assertions), which change no runtime value. */
-export function withoutTypeCasts(e: ts.Expression): ts.Expression {
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
-}
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
 import {
   BOOL,
@@ -2134,6 +2117,44 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // os.constants' groups, fs.constants and crypto.constants): bindings of
     // the module read it as a checked-dynamic value (builtinConstantsObject).
     constants: {},
+    // node:sea: a compiled program is not a Node single-executable
+    // application and holds no injected assets, so the module answers what
+    // Node answers outside one. isSea() is false; the asset readers check
+    // their arguments in lib/sea.js's order (getAsset's encoding when given,
+    // then the key) and throw ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION. The
+    // rows are in Node's key order, which the module object reports.
+    sea: {
+      isSea: { fn: "sea.isSea", params: [], result: BOOL, valueParams: [] },
+      getAsset: {
+        fn: "sea.getAsset",
+        params: [STRING, STRING],
+        result: DYN,
+        defaults: [""],
+        valueParams: [
+          { mode: "required", type: STRING, name: "key" },
+          { mode: "optional", type: STRING, defaultValue: "", name: "encoding" },
+        ],
+        valueOrder: [1, 0],
+        valueLength: 2,
+      },
+      getRawAsset: {
+        fn: "sea.getRawAsset",
+        params: [STRING],
+        result: DYN,
+        valueParams: [{ mode: "required", type: STRING, name: "key" }],
+      },
+      getAssetAsBlob: {
+        fn: "sea.getAssetAsBlob",
+        params: [STRING, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "required", type: STRING, name: "key" },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        valueLength: 2,
+      },
+      getAssetKeys: { fn: "sea.getAssetKeys", params: [], result: DYN, valueParams: [] },
+    },
     // node:readline: createInterface's options are entirely special-cased
     // (exactly { input: process.stdin, output?: process.stdout } — see
     // lowerBuiltinModuleCall); the entry carries the canonical shape. The
@@ -2389,6 +2410,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // file-descriptor data form.
     writeFileSync: [
       "fs.writeFileSyncBytes",
+      "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
@@ -2443,8 +2465,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode, flag } options forms.
-    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
+    // The string-data and Uint8Array/Buffer-data { mode, flag } options
+    // forms (and the Buffer-data two-argument write).
+    writeFile: [
+      "fsp.writeFileMode",
+      "fsp.writeFileFlags",
+      "fsp.writeFileBytes",
+      "fsp.writeFileBytesFlags",
+    ],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
@@ -2931,7 +2959,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "process.builtinObject",
         "process.builtinUnsupported",
       ],
-      note: "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020",
+      note: "a literal id of a supported module answers its namespace; a computed id serves the path families, os, util/types, node:sea and current-thread worker_threads metadata, answers undefined for an id Node does not have, and throws SC2020 for Node's other modules",
     },
     {
       id: "node-builtin.process.versions",
@@ -3246,6 +3274,7 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "rmdir",
   "unlink",
   "open",
+  "opendir",
   "close",
   "fstat",
   "ftruncate",
@@ -3562,7 +3591,14 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   // at runtime through the dyn/handle machinery — the keyed-read claim
   // below this fence answers, member-or-refusal ladder, so no compile
   // fence belongs here.
-  if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn") return;
+  // The global console is such a receiver too, but a direct call of a
+  // member with no lowering (`console.trace()`) has nothing to dispatch
+  // to: it keeps this fence and its hint in both type worlds.
+  if (
+    lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn" &&
+    !(lowerer.isStdlibGlobal(recv, "console") && !isLoweredConsoleMember(member))
+  )
+    return;
   // JavaScript reads web stream values (read results, sources, strategies)
   // as checked-dynamic objects (web-streams-dyn.ts).
   if (isWebStreamMemberInJavaScript(lowerer, access)) return;
@@ -3878,8 +3914,8 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // A cast of the global object (`(globalThis as { Buffer?: B }).Buffer`,
     // `(globalThis as any).Buffer`) changes only its static type: the
     // member is the global object's own.
-    const uncast = withoutTypeCasts(expr.expression);
-    if (uncast !== unparenthesized(expr.expression)) {
+    const uncast = withoutParenthesesTypeWrappers(expr.expression);
+    if (uncast !== withoutParentheses(expr.expression)) {
       if (!ts.isIdentifier(uncast) || stdlibGlobalNameOf(lowerer, uncast) !== "globalThis")
         return null;
       const member = lowerer.checker.getPropertyOfType(lowerer.typeOf(uncast), expr.name.text);
@@ -3892,7 +3928,7 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // member.
     const selected = staticallySelected(lowerer, expr.expression);
     const symbol =
-      selected === expr.expression || ts.isIdentifier(unparenthesized(expr.expression))
+      selected === expr.expression || ts.isIdentifier(withoutParentheses(expr.expression))
         ? lowerer.checker.getSymbolAtLocation(expr.name)
         : lowerer.checker.getPropertyOfType(lowerer.typeOf(selected), expr.name.text);
     if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
@@ -4040,11 +4076,13 @@ export function stdlibGlobalAliasDecl(
  * the left operand of `||` (stdlibGlobalAliasNameOf's guard), or copies an
  * alias made that way. Such an alias carries the cast's static type. */
 function castGlobalAliasSource(lowerer: Lowerer, init: ts.Expression): boolean {
-  let source = unparenthesized(init);
+  let source = withoutParentheses(init);
   if (ts.isBinaryExpression(source) && source.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-    source = unparenthesized(source.left);
+    source = withoutParentheses(source.left);
   if (ts.isPropertyAccessExpression(source))
-    return withoutTypeCasts(source.expression) !== unparenthesized(source.expression);
+    return (
+      withoutParenthesesTypeWrappers(source.expression) !== withoutParentheses(source.expression)
+    );
   if (ts.isIdentifier(source)) {
     const symbol = lowerer.checker.getSymbolAtLocation(source);
     return symbol !== undefined && lowerer.castGlobalAliases.has(symbol);

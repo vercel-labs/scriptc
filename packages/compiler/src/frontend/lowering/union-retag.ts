@@ -42,6 +42,10 @@ export type UnionRetagArm =
   | { kind: "discriminant"; field: string; fieldType: IrType; routes: UnionRetagRoute[] }
   | { kind: "classRoute"; routes: readonly UnionClassRoute[] };
 
+/** A source arm's routes by the values of one discriminant field, planned
+ * for one conversion from the checker types of its site. */
+export type UnionSiteRoute = UnionRetagArm & { kind: "discriminant" };
+
 export interface RecordUnionWrapPlan {
   field: string;
   fieldType: IrType;
@@ -138,6 +142,7 @@ export function planUnionRetag(
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   checkedLift?: (src: IrType, dst: IrType) => WidthLift | null,
+  siteRoutes?: ReadonlyMap<number, UnionSiteRoute>,
 ): UnionRetagArm[] | null {
   const result: UnionRetagArm[] = [];
   const target: IrType = { kind: "union", unionId: to.id };
@@ -246,7 +251,14 @@ export function planUnionRetag(
       );
       const checked =
         checkedLift === undefined || ordinaryArm ? null : uniqueCheckedArm(to, source, checkedLift);
-      if (checked === null) return null;
+      if (checked === null) {
+        // The conversion's own routes (site-discriminant.ts), asked only
+        // for an arm no rule above places.
+        const routed = siteRoutes?.get(tag);
+        if (routed === undefined) return null;
+        result.push(routed);
+        continue;
+      }
       result.push({ kind: "direct", route: checked });
       continue;
     }

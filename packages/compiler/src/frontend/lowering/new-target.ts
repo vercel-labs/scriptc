@@ -11,6 +11,7 @@
  * field initializers. Plain functions (constructible in JavaScript) keep
  * the refusal. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { BOOL, STRING, type IrExpr, type IrType, type SrcLoc } from "../../ir/ir.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
@@ -337,12 +338,8 @@ export function lowerNewTargetComparison(
     op !== ts.SyntaxKind.EqualsEqualsToken
   )
     return null;
-  const strip = (e: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    return e;
-  };
-  const left = strip(expr.left);
-  const right = strip(expr.right);
+  const left = withoutParentheses(expr.left);
+  const right = withoutParentheses(expr.right);
   const target = isNewTarget(left) ? left : isNewTarget(right) ? right : null;
   if (!target || bindingOf(target).kind !== "constructor") return null;
   const other = target === left ? right : left;

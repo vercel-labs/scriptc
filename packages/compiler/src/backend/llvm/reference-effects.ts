@@ -73,6 +73,7 @@ function expressionPreservesEdges(
     case "boolLit":
     case "strLit":
     case "unitLit":
+    case "constCell":
     case "varRef":
     case "bin":
     case "unary":

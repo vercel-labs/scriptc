@@ -1520,6 +1520,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               expr.left.argumentExpression,
               "indexing with non-number keys",
             );
+          // An element of a kept array rebuilds an assigned existing array
+          // into its own element layout, so a later write through the
+          // assigned name would reach only the copy (SC2021): the same
+          // refusal the statement form of this store makes.
+          if (recv.type.kind === "array")
+            refuseCopiedStore(lowerer, expr.left, recv.type.elem, expr.right);
           const key = lowerer.declareHiddenLocal("%setIndex", F64);
           const raw = lowerer.lowerExpr(expr.right);
           const value = lowerer.declareHiddenLocal("%setValue", raw.type);

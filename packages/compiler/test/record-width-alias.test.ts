@@ -357,3 +357,36 @@ export {};
   expect(messages).toEqual([]);
   expect(ok).toBe(true);
 });
+
+test("a store into an element of a kept array in expression position is refused", async () => {
+  const { messages } = await compileSource(`type Nested = { lists: number[][] };
+const seed = { lists: [[1]] as any[][] };
+const alias: Nested = seed;
+const existing: number[] = [5];
+const stored = (alias.lists[0] = existing);
+existing.push(6);
+console.log(stored.length);
+export {};
+`);
+  // The expression form stores the same value as the statement form, so the
+  // kept `any[][]` element slot rebuilds `existing` and a later push through
+  // it would not be seen through `alias.lists[0]`.
+  const refusal = messages.filter((m) => m.startsWith("SC2021"));
+  expect(refusal).toHaveLength(1);
+  expect(refusal[0]).toContain("'alias.lists[0]'");
+  expect(refusal[0]).toContain("'number[]'");
+});
+
+test("an expression store of a value already in the kept element layout still compiles", async () => {
+  const { ok, messages } = await compileSource(`type Nested = { lists: number[][] };
+const seed = { lists: [[1]] as any[][] };
+const alias: Nested = seed;
+const same = { lists: [[2]] as any[][] };
+const stored = (alias.lists[1] = same.lists[0]);
+console.log(stored.length);
+export {};
+`);
+  // `same.lists[0]` is a `unknown[]` array, the layout the store keeps.
+  expect(messages).toEqual([]);
+  expect(ok).toBe(true);
+});

@@ -623,8 +623,9 @@ struct ScrNetSocket {
    * receives it on the next tick. */
   const char *write_err_code, *write_err_msg;
   bool finish_pending; /* wr_done seen: fire finish_ls at the next sweep */
-  /* destroy() while the socket was still connecting: its pending write
-   * callbacks receive ERR_SOCKET_CLOSED_BEFORE_CONNECTION. */
+  /* The socket closed before it connected (destroy() while connecting,
+   * or a connect that failed): its queued write callbacks receive
+   * ERR_SOCKET_CLOSED_BEFORE_CONNECTION. */
   bool closed_before_connect;
   /* a connection an HTTP server accepted: its setEncoding throws
    * ERR_HTTP_SOCKET_ENCODING for good. */
@@ -1783,6 +1784,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
   socklen_t len = sizeof err;
   if (getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0) err = errno;
   s->connecting = false;
+  if (err == 0) s->closed_before_connect = false; /* a socket that connects again after a failure */
   if (err != 0 && s->dial_i < s->dial_n) {
     /* a caller-lookup dial with addresses left: record the failure
      * (last-wins, surfaced only on exhaustion) and retry QUIETLY — no
@@ -1799,6 +1801,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
     return;
   }
   if (err != 0) {
+    s->closed_before_connect = true;
     char msg[128];
     snprintf(msg, sizeof msg, "connect %s %s:%d", scr_net_errname(err), s->peer_ip,
              s->peer_port);
@@ -2958,6 +2961,7 @@ static void scr_net_sock_dial_peer(ScrNetSocket *s) {
     s->pending_err = scr_str_new(msg, strlen(msg));
     s->had_error = true;
     s->connecting = false;
+    s->closed_before_connect = true;
     scr_net_sock_close_fd(s);
   }
 }
@@ -6124,26 +6128,13 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     scr_als_dispatch_leave(prev);
     if (scr_exc_pending()) return false;
   }
-  if (sock->wcb_ls.n > 0 && (sock->wlen == sock->whead || sock->fd < 0)) {
+  if (!sock->closed_before_connect && sock->wcb_ls.n > 0 && (sock->wlen == sock->whead || sock->fd < 0)) {
     /* write(chunk, cb): the buffer drained (this surface's flush
      * moment) — the callbacks fire off the sweep, never the writing
      * stack. A dead socket fires them too (the buffered bytes are
      * gone either way; Node errors them — documented divergence,
      * the no-backpressure stance). */
-    ScrDyn *no_error;
-    if (sock->closed_before_connect) {
-      /* destroy() before the connection: Node's _writeGeneric answers
-       * the queued writes with this error. */
-      static const char text[] = "Socket closed before the connection was established";
-      ScrStr *msg = scr_str_new(text, sizeof text - 1);
-      ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
-      scr_str_release(msg);
-      scr_error_set_code(e, "ERR_SOCKET_CLOSED_BEFORE_CONNECTION");
-      no_error = scr_dyn_from_error(e);
-      scr_error_release(e);
-    } else {
-      no_error = scr_dyn_new_null();
-    }
+    ScrDyn *no_error = scr_dyn_new_null();
     scr_net_fire_arg_this(&sock->wcb_ls, no_error, sock, SCR_DYNH_NET_SOCKET);
     scr_dyn_release(no_error);
     if (scr_exc_pending()) return false;
@@ -6188,6 +6179,21 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     scr_als_dispatch_leave(prev);
     sock->pending_code = NULL;
     scr_str_release(msg);
+    if (scr_exc_pending()) return false;
+  }
+  if (sock->closed_before_connect && sock->wcb_ls.n > 0 && sock->fd < 0) {
+    /* The socket closed before it connected (destroy(), or a connect
+     * that failed): Node's _writeGeneric answers the queued writes with
+     * this error at 'close', after the 'error' event when there is one. */
+    static const char text[] = "Socket closed before the connection was established";
+    ScrStr *msg = scr_str_new(text, sizeof text - 1);
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+    scr_str_release(msg);
+    scr_error_set_code(e, "ERR_SOCKET_CLOSED_BEFORE_CONNECTION");
+    ScrDyn *error = scr_dyn_from_error(e);
+    scr_error_release(e);
+    scr_net_fire_arg_this(&sock->wcb_ls, error, sock, SCR_DYNH_NET_SOCKET);
+    scr_dyn_release(error);
     if (scr_exc_pending()) return false;
   }
   if (sock->emit_close && !sock->close_emitted && sock->fd < 0) {

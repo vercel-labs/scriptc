@@ -29,6 +29,11 @@ await new Promise((resolve) => {
   readable.on("data", (chunk) => console.log("data", String(chunk)));
   readable.on("end", () => {
     console.log("end");
+    // An empty chunk adds nothing, so it is not an error even now.
+    readable.unshift("");
+    readable.unshift(Buffer.alloc(0));
+    readable.unshift(undefined);
+    console.log("empty chunks", readable.destroyed, readable.errored === null);
     readable.unshift("again");
   });
   readable.on("close", () => {
@@ -38,6 +43,57 @@ await new Promise((resolve) => {
   readable.push("one");
   readable.push(null);
 });
+
+// unshift() in an 'end' listener, chunk by chunk: the three that add
+// nothing to a byte stream (empty string, empty Buffer, undefined) are
+// no-ops there and errors in object mode, where every value is a chunk;
+// a chunk with bytes is an error in both. Each stream stays in the scope
+// that creates it.
+const chunks = ["empty string", "empty buffer", "undefined", "string", "buffer"];
+for (let pick = 0; pick < chunks.length; pick++) {
+  await new Promise((resolve) => {
+    const readable = new Readable({ read() {} });
+    let error = "none";
+    readable.on("error", (e) => {
+      error = e.code;
+    });
+    readable.on("data", () => {});
+    readable.on("end", () => {
+      if (pick === 0) readable.unshift("");
+      else if (pick === 1) readable.unshift(Buffer.alloc(0));
+      else if (pick === 2) readable.unshift(undefined);
+      else if (pick === 3) readable.unshift("x");
+      else readable.unshift(Buffer.from("x"));
+    });
+    readable.on("close", () => {
+      console.log("bytes", chunks[pick], error, readable.destroyed);
+      resolve(undefined);
+    });
+    readable.push("a");
+    readable.push(null);
+  });
+  await new Promise((resolve) => {
+    const readable = new Readable({ objectMode: true, read() {} });
+    let error = "none";
+    readable.on("error", (e) => {
+      error = e.code;
+    });
+    readable.on("data", () => {});
+    readable.on("end", () => {
+      if (pick === 0) readable.unshift("");
+      else if (pick === 1) readable.unshift(Buffer.alloc(0));
+      else if (pick === 2) readable.unshift(undefined);
+      else if (pick === 3) readable.unshift("x");
+      else readable.unshift(Buffer.from("x"));
+    });
+    readable.on("close", () => {
+      console.log("objects", chunks[pick], error, readable.destroyed);
+      resolve(undefined);
+    });
+    readable.push("a");
+    readable.push(null);
+  });
+}
 
 // write() after end(), and after destroy().
 await new Promise((resolve) => {

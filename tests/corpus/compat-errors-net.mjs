@@ -138,6 +138,18 @@ await new Promise((resolve) => {
   });
 });
 
+// A write queued while the socket connects, and the connection is
+// refused: the socket's 'error', then the write's callback, then 'close'.
+await new Promise((resolve) => {
+  const socket = net.connect(1, "127.0.0.1");
+  socket.on("error", (e) => show("refused", e));
+  console.log(socket.write("x", (e) => show("write callback", e)));
+  socket.on("close", (hadError) => {
+    console.log("close", hadError);
+    resolve(undefined);
+  });
+});
+
 // A write queued while the socket connects, then destroy(): the write's
 // callback receives the error and nothing else is reported.
 await new Promise((resolve) => {

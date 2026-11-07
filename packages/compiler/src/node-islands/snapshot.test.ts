@@ -193,10 +193,16 @@ describe("environment boot guards", () => {
 /** A project whose entry imports the island modules `first` and `second`,
  * which both load `shared/index.js`. The probe loaded `first` first, so
  * what the shared file read is in `first`'s record (`reads`) and `second`'s
- * is empty, though its export `level` was computed from the shared file. */
-function sharingProject(reads: Partial<ProbeOutput["results"][number]>) {
+ * holds only its own reads (`secondReads`), though its export `level` was
+ * computed from the shared file. */
+function sharingProject(
+  reads: Partial<ProbeOutput["results"][number]>,
+  secondReads: Partial<ProbeOutput["results"][number]> = {},
+  scriptc: unknown = undefined,
+  level = "info",
+) {
   const root = scratch();
-  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app", scriptc }));
   const shared = join(root, "node_modules", "shared", "index.js");
   const paths = ["first", "second"].map((name) => join(root, "node_modules", name, "index.js"));
   for (const file of [shared, ...paths]) {
@@ -216,17 +222,17 @@ function sharingProject(reads: Partial<ProbeOutput["results"][number]>) {
   const probe: ProbeOutput = {
     results: [
       { ...record, ...reads, path: paths[0]!, root: 1, files: [paths[0]!, shared] },
-      { ...record, path: paths[1]!, root: 2, files: [paths[1]!, shared] },
+      { ...record, ...secondReads, path: paths[1]!, root: 2, files: [paths[1]!, shared] },
     ],
     objects: {
-      "1": { f: 0, p: false, m: [["level", { s: "info" }]] },
-      "2": { f: 0, p: false, m: [["level", { s: "info" }]] },
+      "1": { f: 0, p: false, m: [["level", { s: level }]] },
+      "2": { f: 0, p: false, m: [["level", { s: level }]] },
     },
   };
   const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
   // A load that stays eager loses its snapshot argument.
   const snapshots = calls.map((call) => (call.args[1] as { value: string } | undefined)?.value);
-  return { decisions, calls, snapshots };
+  return { decisions, calls, snapshots, text: JSON.stringify(mod) };
 }
 
 describe("modules that share a file", () => {
@@ -248,6 +254,34 @@ describe("modules that share a file", () => {
     expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
     expect(decisions[1]!.reason).toContain("LOG_LEVEL");
     expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+  });
+
+  test("stay eager together for a set variable another load saw unset", () => {
+    // The shared file read the value; `first` deleted the variable, so
+    // `second`'s own read found it unset, while its export holds the value.
+    const secret = "sk-build-only-0123456789";
+    const { decisions, calls, text } = sharingProject(
+      { env: [["API_TOKEN", secret]], effects: ["a delete of process.env.API_TOKEN"] },
+      { env: [["API_TOKEN", null]] },
+      undefined,
+      secret,
+    );
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("API_TOKEN");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+    expect(text).not.toContain(secret);
+  });
+
+  test("stay eager together for a publicEnv variable the loads read differently", () => {
+    const { decisions } = sharingProject(
+      { env: [["NODE_ENV", "production"]] },
+      { env: [["NODE_ENV", null]] },
+      { nodeIslands: { publicEnv: ["NODE_ENV"] } },
+    );
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain(
+      "read the environment variable NODE_ENV with different values",
+    );
   });
 
   test("stay eager together for an input no guard covers", () => {

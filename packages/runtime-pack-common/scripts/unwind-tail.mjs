@@ -224,8 +224,9 @@ function readCie(data, offset, end) {
       else if (letter === "L") at++;
       else if (letter === "P") at += 1 + encodedPointerSize(data[at]);
       // "S" (signal frame), "B" and "G" (AArch64 pointer authentication and
-      // memory tagging) carry no data. Data of any other letter follows the
-      // pointer encoding only if "R" came first, which the length covers.
+      // memory tagging) carry no data. The data of a letter this does not
+      // know cannot be skipped, so the walk ends there with the fields read
+      // so far; the length above still says where the instructions start.
       else if (!"SBG".includes(letter)) break;
     }
     at = instructions;

@@ -1,0 +1,4 @@
+- **Libnode pack:** A program with an island needs a libnode pack, Node.js built as a shared library, when it is built and when it runs.
+  The `@scriptc/libnode-<platform>` packages that carry one are not published yet, and installing `scriptc` does not install one, so a pack has to be built from the scriptc repository.
+  A build that finds no pack stops with `SC8005`.
+  The executable records the pack's absolute path unless it is built with `--libnode=beside`, so it is not a self-contained file.

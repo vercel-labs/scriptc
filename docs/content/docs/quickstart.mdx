@@ -7,7 +7,7 @@ In this guide you install scriptc, compile a small TypeScript program into an ex
 ## Prerequisites
 
 - A supported computer: macOS 15 or later (arm64 or x64), Linux (arm64 or x64), or Windows (x64). See [Platform Support](/docs/platforms) for details.
-- Node.js 24 or later and npm, to install scriptc. The compiler itself and the executables it builds run without Node.js. Standalone compiler archives are also available from [GitHub Releases](https://github.com/vercel-labs/scriptc/releases).
+- Node.js 24 or later and npm, to install scriptc. The compiler itself runs without Node.js, and so do the executables it builds, unless a program uses an npm package that runs in a [Node island](/docs/node-islands). Standalone compiler archives are also available from [GitHub Releases](https://github.com/vercel-labs/scriptc/releases).
 - A linker, to build executables. On macOS, install the Xcode Command Line Tools with `xcode-select --install`. On glibc-based Linux, install clang. On Windows and musl-based Linux, install [zig](https://ziglang.org).
 
 ## Install
@@ -93,7 +93,7 @@ $ ./demo
 hello
 ```
 
-The package compiles into the executable at build time, so the executable doesn't need `node_modules` when it runs. See [npm Dependencies](/docs/dependencies) for which packages compile and how to check them.
+The package compiles into the executable at build time, so the executable doesn't need `node_modules` when it runs. A package that scriptc can't compile to native code runs in a [Node island](/docs/node-islands) instead, and the build prints a note that says so. See [npm Dependencies](/docs/dependencies) for which packages compile and how to check them.
 
 ## Next steps
 

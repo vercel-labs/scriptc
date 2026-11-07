@@ -1,0 +1,3 @@
+- **Start-up and memory:** The first use of an island loads Node.js, which took about 50 ms and raised peak memory from 2.3 MB to 85 MB in the measurement on the [Node Islands](/docs/node-islands#cost) page.
+  Each call into an island costs more than a native call, about one microsecond more in the same measurement.
+  A program that never reaches its island pays neither cost.

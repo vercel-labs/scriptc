@@ -1,0 +1,812 @@
+---
+title: "Node Islands"
+---
+
+scriptc compiles your program and the npm packages it imports to native code. Some JavaScript can't be compiled ahead of time without changing what it does. A template library that builds a function from a string with `new Function`, for example, needs a JavaScript engine when it runs. scriptc runs such code in Node.js instead: the executable loads Node.js into its own process the first time that code is used, and everything else stays native. A package or module that runs this way is a Node island.
+
+Islands are on by default, and `scriptc build` prints a note for each one. A program without islands links none of this and never loads Node.js.
+
+An island needs a libnode pack, which is Node.js built as a shared library, when the program is built and when it runs. The packs are not published yet, so read [Get a libnode pack](#get-a-libnode-pack) before you try the example.
+
+## Example
+
+Create `greet.ts`:
+
+```ts:greet.ts
+import ejs from "ejs";
+
+const page = ejs.render("Hello, <%= name %>!", { name: "Ada" });
+console.log(page);
+```
+
+`ejs` turns a template into a JavaScript function with `new Function`, so it can't be compiled to native code. Install it with its type declarations, point `SCRIPTC_LIBNODE` at a libnode pack, and build:
+
+```console
+$ npm install ejs @types/ejs
+$ export SCRIPTC_LIBNODE=/work/scriptc/packages/libnode-linux-x64-gnu
+$ scriptc build greet.ts -o greet
+/work/app/greet.ts:1:1 - note SC8001: package 'ejs@7.0.2' runs in a Node island: runtime: R1.1 code from strings: new Function()
+
+  1 | import ejs from "ejs";
+    | ^~~~~~~~~~~~~~~~~~~~~~
+  2 | 
+
+  hint: it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error
+/work/app/greet
+$ ./greet
+Hello, Ada!
+```
+
+The build succeeds. The `SC8001` note names the package, the class of the reason (`runtime`), and the first construct that put it in an island. `greet` is a native executable whose call to `ejs.render` runs in Node.js, which the program loads when it reaches that call.
+
+## Get a libnode pack
+
+A libnode pack is a directory that holds Node.js built as a shared library, a bridge library that connects it to scriptc's runtime, and a manifest. The build records the pack's location in the executable, and the executable loads Node.js from there.
+
+Packs exist for Linux x64 and arm64 with glibc and for macOS arm64 and x64. A program built for another target, such as musl Linux, Windows, or WASI, can't have islands.
+
+The build looks for a pack in this order:
+
+1. The directory named by `--libnode=<directory>`.
+2. The directory named by the `SCRIPTC_LIBNODE` environment variable. The path must be absolute.
+3. An installed `@scriptc/libnode-<platform>` package, such as `@scriptc/libnode-linux-x64-gnu`, in the project's `node_modules` or next to the compiler.
+
+The `@scriptc/libnode-<platform>` packages are not on npm yet, and installing `scriptc` doesn't install one. Today the first build of a program with an island therefore stops with `SC8005`:
+
+```console
+$ scriptc build greet.ts -o greet
+/work/app/greet.ts:1:1 - error SC8005: this program calls into Node.js (@scriptc/node), but no libnode pack is installed: install @scriptc/libnode-linux-x64-gnu, set SCRIPTC_LIBNODE or pass --libnode=<pack directory>
+
+  1 | import ejs from "ejs";
+    | ^
+  2 | 
+
+  hint: point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1
+
+1 error.
+```
+
+The message names `@scriptc/node` because that is the package a program uses to [call Node.js directly](#call-nodejs-directly), and islands load Node.js the same way. The install it suggests fails until the packages are published, and the path in the hint is a file in the scriptc repository, not in your project.
+
+Until the packs are published, you build one from the [scriptc repository](https://github.com/vercel-labs/scriptc). In a checkout of the version of scriptc you use, after `pnpm install`, the pack package for your platform has a script that downloads the pinned Node.js release, builds it as a shared library, and assembles the pack in the package's directory. It needs a C and C++ compiler, Python, and Ninja:
+
+```console
+$ pnpm --filter @scriptc/libnode-linux-x64-gnu build:native
+$ ls -l packages/libnode-linux-x64-gnu
+-rw-r--r-- 1 ubuntu ubuntu    157609 Nov  7 01:26 LICENSE
+-rwxr-xr-x 1 ubuntu ubuntu 132415664 Nov  7 01:25 libnode.so.137
+-rwxr-xr-x 1 ubuntu ubuntu    172336 Nov  7 01:26 libscr_node_bridge.so
+-rw-r--r-- 1 ubuntu ubuntu       971 Nov  7 01:26 manifest.json
+$ du -sh packages/libnode-linux-x64-gnu
+127M	packages/libnode-linux-x64-gnu
+```
+
+The Node.js build took 38 minutes on an 8-core Linux machine. The script keeps the built library in a cache, so a later run only rebuilds the bridge.
+
+Point `SCRIPTC_LIBNODE` at that directory, as the example does. A pack is tied to the scriptc version it was built from: the build refuses a pack whose bridge doesn't match the compiler. A pack you build yourself is also linked against the C library of the machine that built it, so the machine that runs the program needs one at least as new.
+
+## What runs in an island
+
+With the default policy, `--node-islands=auto`:
+
+- An npm package runs in an island when scriptc can't compile it natively, or when it compiles but contains code that would fail at run time because it needs Node.js itself.
+- A JavaScript file of your own program runs in an island when it depends on semantics that only sloppy-mode JavaScript has, such as a `with` statement, or when it patches a built-in module.
+- Your TypeScript files always compile natively. Anything unsupported in them is a build error, as it is without islands.
+- The entry file is always native.
+
+Every island has a reason, and each reason belongs to one of these classes:
+
+<table>
+  <thead>
+    <tr><th>Class</th><th>Meaning</th><th>Typical constructs</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>runtime</code></td><td>The code needs the JavaScript runtime itself.</td><td>Code built from strings (<code>eval</code>, <code>new Function</code>, <code>node:vm</code>), <code>require()</code> or <code>import()</code> of a computed name, native addons, loader hooks, engine internals.</td></tr>
+    <tr><td><code>object-model</code></td><td>The code needs JavaScript's mutable object model.</td><td>Constructor functions and writes to a <code>prototype</code>, <code>Object.defineProperty</code> on objects the type checker can't follow, sloppy-mode <code>this</code>, <code>with</code>, patched built-ins.</td></tr>
+    <tr><td><code>gap</code></td><td>The code is within what scriptc means to compile, but it can't yet.</td><td>Any construct whose native compilation is still missing. These islands go away as the compiler improves.</td></tr>
+    <tr><td><code>packaging</code></td><td>The package can't be compiled as it is shipped.</td><td>A package that doesn't meet the requirements under <a href="/docs/dependencies#which-packages-compile">Which packages compile</a>.</td></tr>
+    <tr><td><code>marked</code></td><td>You asked for it.</td><td><code>--node-island</code> or a <code>package.json</code> setting.</td></tr>
+  </tbody>
+</table>
+
+A JavaScript file of your own becomes an island the same way a package does. Here `legacy.cjs` uses `with`, which strict-mode code can't express:
+
+```js:legacy.cjs
+function area(shape) {
+  with (shape) {
+    return width * height;
+  }
+}
+
+module.exports = { area };
+```
+
+```ts:legacy.d.cts
+export function area(shape: { width: number; height: number }): number;
+```
+
+```ts:shapes.ts
+import { area } from "./legacy.cjs";
+
+console.log(area({ width: 3, height: 4 }));
+```
+
+```console
+$ scriptc build shapes.ts -o shapes
+/work/app/legacy.cjs:1:1 - note SC8001: module '/work/app/legacy.cjs' runs in a Node island: object-model: R2.4 sloppy-mode semantics: a 'with' statement
+
+  1 | function area(shape) {
+    | ^
+  2 |   with (shape) {
+
+  hint: sloppy-mode code Node runs; --node-islands=off compiles this module natively instead
+/work/app/shapes
+$ ./shapes
+12
+```
+
+## See what runs in an island
+
+`scriptc build` prints one `SC8001` note per island on stderr, as in the example. `scriptc run` builds the same program but doesn't print the notes.
+
+`scriptc coverage` lists islands without building:
+
+```console
+$ scriptc coverage greet.ts
+
+  statements analyzed   2
+  compile statically    2  (100%)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  npm package compilation:
+    ejs  static
+
+  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+    runtime  ejs@7.0.2
+          node_modules/ejs/lib/esm/ejs.js:103:20: R1.1 code from strings: new Function()
+          +5 more reasons in 2 modules
+    hint: scriptc coverage --explain-island=<package> lists every reason
+
+  fully static — all analyzed statements compile to native code.
+```
+
+Read the report with three things in mind:
+
+- The `would-be, report-only` wording in the header is from the releases in which islands were only reported. Builds do run these packages in Node.js.
+- The statement counts and the `fully static` verdict describe your own files. The statement that calls into the island counts in the dynamic tier, because the values it passes are typed only at run time.
+- The list can be longer than what a build does. Coverage names every package in which it finds a construct of one of the classes above. A build moves a package into an island only when it can't compile the package natively, or when the compiled package would fail when that code runs. The `SC8001` notes of `scriptc build` are the record of what a build did.
+
+`--explain-island=<package>` prints the same report and then the first reason in each module of the package, the count of all reasons by class, and the places where your code imports it:
+
+```console
+$ scriptc coverage greet.ts --explain-island=ejs
+  Node island ejs@7.0.2   (would-be, report-only)
+    path        node_modules/ejs
+    class       runtime: needs the JavaScript runtime
+    decision    automatic (npm code outside the native subset)
+    evaluation  eager at its module position (deferred evaluation is decided by a later milestone)
+    reasons     (first per module; decisive class first)
+      runtime       node_modules/ejs/lib/esm/ejs.js:103:20
+        R1.1 code from strings: new Function()
+      object-model  node_modules/ejs/lib/esm/utils.js:113:5
+        R2.3 shape mutation outside the checker's view: 'Object.defineProperty()'
+    all reasons 6 (1 runtime, 4 object-model, 1 gap)
+    boundary    1 native import site:
+      greet.ts:1:1
+```
+
+To keep islands out of a program in CI, gate on the report. `--fail-on=node-islands` exits with status 1 when the report lists any island, and `--fail-on=island-gaps` only when it lists one of the `gap` class:
+
+```console
+$ scriptc coverage greet.ts --fail-on=node-islands >/dev/null; echo "exit status $?"
+exit status 1
+$ scriptc coverage greet.ts --fail-on=island-gaps >/dev/null; echo "exit status $?"
+exit status 0
+```
+
+## Choose where code runs
+
+<dl>
+  <dt><code>--node-islands &lt;auto|explicit|off&gt;</code></dt>
+  <dd>The policy. <code>auto</code> is the default described above. <code>explicit</code> allows only the packages and modules you mark. <code>off</code> allows none.</dd>
+
+  <dt><code>--node-island &lt;pkg-or-path&gt;</code></dt>
+  <dd>Mark an npm package, or a JavaScript module of your program named by a path or glob, to run in an island. Repeatable, and accepts a comma-separated list.</dd>
+
+  <dt><code>--native &lt;pkg&gt;</code></dt>
+  <dd>Keep an npm package out of islands. Repeatable.</dd>
+</dl>
+
+`build`, `run`, and `coverage` accept all three.
+
+### Move a package into an island
+
+A package that compiles natively can still run in an island, for example while you track down a difference from Node.js. `ms` compiles natively:
+
+```ts:duration.ts
+import ms from "ms";
+
+console.log(ms("2h"));
+```
+
+```console
+$ npm install ms @types/ms
+$ scriptc build duration.ts -o duration
+/work/app/duration
+$ scriptc build duration.ts -o duration-node --node-island=ms
+/work/app/duration.ts:1:1 - note SC8001: package 'ms@2.1.3' runs in a Node island: marked: marked with --node-island
+
+  1 | import ms from "ms";
+    | ^~~~~~~~~~~~~~~~~~~~
+  2 | 
+
+  hint: it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error
+/work/app/duration-node
+$ ./duration-node
+7200000
+```
+
+Marking works for the JavaScript files of your own program too, such as `--node-island=./legacy.cjs` or `--node-island='src/plugins/*.js'`. A TypeScript file can't be marked: the option leaves it native and prints nothing.
+
+### Keep a package native
+
+`--native=<pkg>` and `--node-islands=off` take packages out of islands, but they don't make a package compile. On this version the build doesn't stop either: it compiles the package natively, and each operation that needed Node.js becomes code that throws when it runs, as described under [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package). The `SC8001` hint that `--node-islands=off` "makes this an error" describes coverage, not the build.
+
+Coverage reports the conflict, `SC8003` for a package marked native and `SC8002` under `off`, and `--fail-on=node-islands` fails on either:
+
+```console
+$ scriptc coverage greet.ts --native=ejs
+  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+    none
+    SC8003  npm package 'ejs' is marked native but is outside the native subset: R1.1 code from strings: new Function()
+$ scriptc coverage greet.ts --node-islands=off --fail-on=node-islands >/dev/null; echo "exit status $?"
+exit status 1
+```
+
+So check with coverage before you rely on either option. To get a package out of an island for good, switch to a version or an alternative that compiles, or replace the call with your own code.
+
+With `--node-islands=off`, a JavaScript file of your own that needs sloppy-mode semantics is a build error.
+
+### Settings in package.json
+
+The same choices can live in the `scriptc` object of the `package.json` nearest your entry file:
+
+```json:package.json
+{
+  "scriptc": {
+    "packages": {
+      "ms": "node"
+    },
+    "nodeIslands": {
+      "modules": ["plain.cjs"]
+    }
+  }
+}
+```
+
+<dl>
+  <dt>`"packages": { "<name>": "node" }`</dt>
+  <dd>Run the package in an island, like <code>--node-island=&lt;name&gt;</code>.</dd>
+
+  <dt>`"packages": { "<name>": "native" }`</dt>
+  <dd>Keep the package out of islands, like <code>--native=&lt;name&gt;</code>.</dd>
+
+  <dt>`"nodeIslands": { "modules": [...] }`</dt>
+  <dd>JavaScript modules of your program that run in an island, as paths or globs relative to the <code>package.json</code>.</dd>
+
+  <dt>`"nodeIslands": { "auto": false }`</dt>
+  <dd>The <code>explicit</code> policy: only marked packages and modules run in islands.</dd>
+
+  <dt>`"nodeIslands": { "decision": true }`</dt>
+  <dd>Keep the island decision in a file and start each build from it. See <a href="#record-the-island-decision">Record the island decision</a>.</dd>
+</dl>
+
+Command-line options override these settings. A setting scriptc doesn't know is not ignored silently: the build prints an `SC8004` warning that names the key and goes on without it.
+
+## Record the island decision
+
+scriptc finds a program's islands by compiling it. It compiles everything natively, moves the packages that refused into Node.js, and compiles the program again, until nothing more refuses. Each repetition is a full pass over the program, and on a large program the passes that only find the islands are most of the build. The answer rarely changes from one build to the next, so scriptc can keep it in a file and start the next build from it.
+
+Turn it on in the `package.json` nearest your entry file:
+
+```json:package.json
+{
+  "name": "app",
+  "private": true,
+  "scriptc": {
+    "nodeIslands": {
+      "decision": true
+    }
+  }
+}
+```
+
+The first build decides as before, writes `scriptc-islands.json` beside the `package.json`, and says so:
+
+```console
+$ scriptc build greet.ts -o greet
+scriptc: recorded the Node island decision in scriptc-islands.json (1 package)
+  + ejs@7.0.2 (fence-report): R1.1 code from strings: new Function()
+/work/app/greet.ts:1:1 - note SC8001: package 'ejs@7.0.2' runs in a Node island: runtime: R1.1 code from strings: new Function()
+
+  1 | import ejs from "ejs";
+    | ^~~~~~~~~~~~~~~~~~~~~~
+  2 | 
+
+  hint: it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error
+/work/app/greet
+$ cat scriptc-islands.json
+{
+  "format": 2,
+  "decisions": [
+    {
+      "entry": "greet.ts",
+      "target": "linux",
+      "compiler": "0.4.9",
+      "outcome": "compiles",
+      "packages": [
+        {
+          "name": "ejs",
+          "version": "7.0.2",
+          "dir": "node_modules/ejs",
+          "rule": "fence-report",
+          "class": "runtime",
+          "reason": "R1.1 code from strings: new Function()"
+        }
+      ],
+      "modules": []
+    }
+  ]
+}
+```
+
+That build compiled the program twice: once natively, which failed, and once with `ejs` in an island. The next build starts with `ejs` in an island and compiles the program once. It produces the same executable and prints the same notes, and it says nothing about the file, because the decision stands:
+
+```console
+$ scriptc build greet.ts -o greet
+/work/app/greet.ts:1:1 - note SC8001: package 'ejs@7.0.2' runs in a Node island: runtime: R1.1 code from strings: new Function()
+
+  1 | import ejs from "ejs";
+    | ^~~~~~~~~~~~~~~~~~~~~~
+  2 | 
+
+  hint: it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error
+/work/app/greet
+$ ./greet
+Hello, Ada!
+```
+
+`build` and `run` read and write the file. `coverage` reads it, so its report describes the program a build compiles, and never writes it. Only the default policy, `--node-islands=auto`, records a decision.
+
+### What the file holds
+
+The file has one section for each entry file, target platform, and set of options that steer the decision (`--node-island`, `--native`, `--npm-static`, `--tier`), so one file serves every program of a project. A section lists every package and module the build ran in an island. Paths are relative to the file, so the file can be committed and the project can move.
+
+Each package records the rule that put it in the set:
+
+<table>
+  <thead>
+    <tr><th>Rule</th><th>The package is in an island because</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>load</code></td><td>The program can't even be loaded with it compiled, or you marked it. Every build decides these again when it loads the program, so they cost nothing to find.</td></tr>
+    <tr><td><code>refusal</code>, <code>preflight</code>, <code>lowering</code></td><td>Compiling the program found code in it, or an import of it, that can't be compiled.</td></tr>
+    <tr><td><code>esm-importer</code></td><td>One of its ES modules imports a CommonJS package that is an island. <code>follows</code> names that package.</td></tr>
+    <tr><td><code>fence-report</code></td><td>The native build failed, and the package has a reason to need Node.js.</td></tr>
+    <tr><td><code>fence-sure</code></td><td>The native build compiled, but the package holds code that would fail as soon as it runs.</td></tr>
+  </tbody>
+</table>
+
+`outcome` appears when a `fence-report` or `fence-sure` package is listed. It says whether the build that wrote the section compiled.
+
+### When a build decides again
+
+A build doesn't trust the file blindly. Before it uses a section, and while it builds, it checks what it can check cheaply:
+
+<table>
+  <thead>
+    <tr><th>What changed</th><th>What the next build does</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>You upgraded scriptc</td><td>Decides the section from scratch. A newer compiler may compile a package the old one could not.</td></tr>
+    <tr><td>The entry, the target, or one of the options above</td><td>Uses another section, or decides from scratch and adds one.</td></tr>
+    <tr><td>A listed package has another version, or is gone</td><td>Decides that package again, together with every <code>esm-importer</code> package that follows it.</td></tr>
+    <tr><td>The program no longer imports a listed package</td><td>Drops it. The package is not shipped in the executable.</td></tr>
+    <tr><td>The program imports a new package that can't compile</td><td>Compiles once more with it in an island, and adds it to the file.</td></tr>
+    <tr><td>The build failed when the section was written and compiles now, or the other way round</td><td>Decides the <code>fence-report</code> and <code>fence-sure</code> packages again, because those rules depend on whether the build fails.</td></tr>
+  </tbody>
+</table>
+
+A build that changes the file prints what it changed. Here the program stopped importing `ejs`:
+
+```console
+$ scriptc build greet.ts -o greet
+scriptc: updated the Node island decision in scriptc-islands.json (no islands)
+  ~ outcome: compiles -> none
+  - ejs@7.0.2: the program no longer imports it
+/work/app/greet
+```
+
+A build that stops before it compiles anything, for example at a type error, leaves the file as it is.
+
+One change a build can't notice: a listed package that would now compile natively. An edit to your program, or a new version of another package, can remove the reason a package was put in an island, and the only way to find out is to compile that package natively, which is the work the file saves. Such a package keeps running in Node.js, where it works, until you check.
+
+### Check the file
+
+`--node-island-decision-check` decides the islands from scratch, compares the result with the file, and builds nothing:
+
+```console
+$ scriptc build greet.ts --node-island-decision-check
+the Node island decision of greet.ts matches scriptc-islands.json (1 package, 0 modules)
+```
+
+It exits with status 1 and prints the difference when the file isn't what a build from scratch decides. This is the check made before the build above dropped `ejs`:
+
+```console
+$ scriptc build greet.ts --node-island-decision-check
+the Node island decision of greet.ts differs from scriptc-islands.json
+  ~ outcome: compiles -> none
+  - ejs@7.0.2
+a build from scratch decides 0 packages, 0 modules; "+" is an island the file lacks, "-" one a build from scratch does not run in Node
+to record the decision again, delete this entry from scriptc-islands.json (or the file) and build
+```
+
+The check takes as long as a build's compile passes without the file. Run it in CI rather than on every build.
+
+### Commit the file
+
+Commit `scriptc-islands.json`. It is a lockfile for the island decision: a fresh checkout builds in one pass, and a reviewer sees in the diff when a package starts or stops running in Node.js, with the rule and the reason. While a build is failing the file can hold the failing program's decision. It returns to the same bytes when the program compiles again.
+
+<dl>
+  <dt>`"nodeIslands": { "decision": true }`</dt>
+  <dd>Keep the decision in <code>scriptc-islands.json</code> beside the <code>package.json</code>. A string names another file, relative to the <code>package.json</code>.</dd>
+
+  <dt><code>--node-island-decision &lt;file&gt;</code></dt>
+  <dd>Use this file for one command, whatever the project says.</dd>
+
+  <dt><code>--ignore-node-island-decision</code></dt>
+  <dd>Don't read or write the project's file for one command. The build decides from scratch.</dd>
+
+  <dt><code>--node-island-decision-check</code></dt>
+  <dd>With <code>build</code>: compare the file with a decision made from scratch, as above.</dd>
+</dl>
+
+## Values that cross the boundary
+
+Native code and an island share one process but not one heap, so every value that passes between them crosses a boundary. The rule is that a value crosses by reference unless copying it can't be observed.
+
+- **Numbers, strings, booleans, bigints, `null`, and `undefined` are copied.** So is an object or array literal written at the call, because nothing else can hold it.
+- **Objects the island creates stay in Node.js.** Native code holds a handle to the object, and reading a member, calling a method, or using `new` on it goes to Node.js. This includes functions, class instances, and the module's exports.
+- **Objects, class instances, functions, and promises of your program cross by reference.** Code in the island reads and writes your object, not a copy, and calls your function.
+- **Promises and errors behave as in Node.js.** You can `await` a promise an island returns, and an error thrown in an island can be caught in native code with its class intact.
+
+Values that come back from an island are checked against the types the package declares, like any other value whose type is known only at run time; see [runtime type checks](/docs/limitations#runtime-type-checks). Keep island values typed by the package's own declarations: how an island object behaves when you assign it to an object type of your own is still changing.
+
+In this program the template function `welcome` is an island object, and the template's code changes the program's `User` and calls the program's `shout`:
+
+```ts:visits.ts
+import ejs from "ejs";
+
+class User {
+  name: string;
+  visits = 0;
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+
+const user = new User("Ada");
+const welcome = ejs.compile("<% user.visits += 1 %>Welcome back, <%= shout(user.name) %>.");
+
+console.log(welcome({ user, shout: (text: string) => text.toUpperCase() }));
+console.log(user.visits);
+```
+
+```console
+$ scriptc run visits.ts
+Welcome back, ADA.
+1
+```
+
+### When a value can't cross
+
+A value that can be neither copied exactly nor passed by reference is refused with `SC8010` at the place where it crosses. The set of refused values is getting smaller from release to release, so trust the diagnostic over a list. A `WeakMap` is one of them:
+
+```ts:labels.ts
+import ejs from "ejs";
+
+class User {
+  name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+
+const labels = new WeakMap<User, string>();
+const ada = new User("Ada");
+labels.set(ada, "admin");
+
+const line = ejs.compile("<%= user.name %> (<%= labels.get(user) %>)");
+console.log(line({ user: ada, labels }));
+```
+
+Mark the package with `--node-island` to see the refusal as an error:
+
+```console
+$ scriptc build labels.ts -o labels --node-island=ejs
+/work/app/labels.ts:15:31 - error SC8010: a 'WeakMap<User, string>' value (a native object would cross as a copy and lose its identity) cannot cross into or out of a Node island yet
+
+  14 | const line = ejs.compile("<%= user.name %> (<%= labels.get(user) %>)");
+  15 | console.log(line({ user: ada, labels }));
+     |                               ^~~~~~
+
+1 error.
+```
+
+Without the mark, the same build ends differently when the package also compiles natively, as `ejs` does. The build falls back to the native compilation, in which the operations that needed Node.js throw, and reports the refusal as an `SC8023` warning:
+
+```console
+$ scriptc build labels.ts -o labels
+/work/app/labels.ts:1:1 - warning SC8023: running 'ejs' in Node islands failed to compile (SC8010 at /work/app/labels.ts:314: a 'WeakMap<User, string>' value (a native object would cross as a copy and lose its identity) cannot cross into or out of a Node island yet); built natively instead, where their runtime fences throw when reached
+
+  1 | import ejs from "ejs";
+    | ^
+  2 | 
+
+  hint: fix the island build's error, or mark the packages with --node-island=<pkg> to see every error
+
+1 warning: the program compiled, but this site can behave differently from Node.
+/work/app/labels
+$ ./labels
+Uncaught Error: library functions as values (call 'fs.readFileSync' directly) are not supported yet [SC1090 at /work/app/node_modules/ejs/lib/esm/ejs.js:81]
+```
+
+Treat `SC8023` as an error: the executable it leaves behind fails as soon as it reaches the package's unsupported code.
+
+To resolve a refusal, keep the value on its own side and pass something that can cross. Here the `WeakMap` stays native and the template gets a function that reads it. The `user` the island passes back is the program's own object, so the lookup finds it:
+
+```ts:labels-fixed.ts
+import ejs from "ejs";
+
+class User {
+  name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+
+const labels = new WeakMap<User, string>();
+const ada = new User("Ada");
+labels.set(ada, "admin");
+
+const line = ejs.compile("<%= user.name %> (<%= labelOf(user) %>)");
+console.log(line({ user: ada, labelOf: (user: User) => labels.get(user) }));
+```
+
+```console
+$ scriptc run labels-fixed.ts
+Ada (admin)
+```
+
+## Worker threads
+
+Node.js runs on the program's main thread, and island values belong to that thread. A program can use [worker threads](/docs/threads) for native work while its main thread uses an island.
+
+Don't use an island from a worker. On this version the build accepts it, and the program ends when the worker reaches the island:
+
+```ts:worker.ts
+import { Worker, isMainThread, parentPort } from "node:worker_threads";
+import ejs from "ejs";
+
+if (isMainThread) {
+  const worker = new Worker(new URL(import.meta.url));
+  worker.on("message", (text: string) => console.log(text));
+  worker.on("error", (error: Error) => console.log(`worker failed: ${error.message}`));
+} else {
+  parentPort!.postMessage(ejs.render("Hello from <%= who %>.", { who: "a worker" }));
+}
+```
+
+```console
+$ ./worker
+scriptc: internal error: dyn handle ops not installed
+```
+
+Send the worker's result to the main thread and call the package there. A `@scriptc/node` call from a worker fails more gently: it throws an error that says Node islands run on the main thread only.
+
+## Cost
+
+An island that the build can defer costs nothing until the program uses it. The package isn't loaded when the program starts, and a run that never reaches it never loads Node.js. `lazy.ts` uses `ejs` only when it gets an argument:
+
+```ts:lazy.ts
+import ejs from "ejs";
+
+const name = process.argv[2];
+if (name === undefined) {
+  console.log("usage: lazy <name>");
+} else {
+  console.log(ejs.render("Hello, <%= name %>!", { name }));
+}
+```
+
+With `SCRIPTC_NODE_ISLANDS_TRACE=boot` in its environment, a program reports on stderr when it defers a package and when it starts Node.js:
+
+```console
+$ SCRIPTC_NODE_ISLANDS_TRACE=boot ./lazy
+[node-islands] deferred ./node_modules/ejs/lib/esm/ejs.js
+usage: lazy <name>
+$ SCRIPTC_NODE_ISLANDS_TRACE=boot ./lazy Ada
+[node-islands] deferred ./node_modules/ejs/lib/esm/ejs.js
+[node-islands] starting Node
+[node-islands] evaluating deferred ./node_modules/ejs/lib/esm/ejs.js
+Hello, Ada!
+```
+
+The first use loads Node.js and evaluates the package.
+
+Not every island can be deferred. In Node.js a package's top-level code runs at the import, and deferring the package moves that code to the first use. The build defers a package only when the move can't change what the program does: it loads the package once at build time and records what its top-level code does. A package whose top-level code has an effect outside the package, such as writing output, or reads something that differs from run to run, such as an environment variable or the command line, is evaluated at its import instead. A program with such an island starts Node.js when it starts, on every run, and pays the start-up time and memory measured below whether or not it reaches the package. `debug` reads the environment when it loads, so `log.ts` starts Node.js even to print its usage line:
+
+```ts:log.ts
+import createDebug from "debug";
+
+const debug = createDebug("app");
+const name = process.argv[2];
+if (name === undefined) {
+  console.log("usage: log <name>");
+} else {
+  debug("greeting %s", name);
+  console.log(`Hello, ${name}!`);
+}
+```
+
+```console
+$ SCRIPTC_NODE_ISLANDS_TRACE=boot ./log
+[node-islands] starting Node
+usage: log <name>
+```
+
+The trace tells the two cases apart: a deferred package is reported as `deferred` when the program starts, and a program with an island that isn't deferred reports `starting Node` before its own first line. The `SC8001` note is the same in both cases, and its hint says "on first use" for either.
+
+This run compares, on one machine, `duration.ts` from above with `ms` compiled natively (`duration`) and with `ms` in an island (`duration-node`), `lazy` without and with its argument, and Node.js running the same file:
+
+```console
+$ hyperfine -N --warmup 5 --runs 50 ./duration ./duration-node ./lazy './lazy Ada' 'node duration.ts'
+Benchmark 1: ./duration
+  Time (mean ± σ):     689.2 µs ±  48.6 µs    [User: 600.6 µs, System: 50.3 µs]
+Benchmark 2: ./duration-node
+  Time (mean ± σ):      50.3 ms ±   3.2 ms    [User: 41.9 ms, System: 9.0 ms]
+Benchmark 3: ./lazy
+  Time (mean ± σ):     657.5 µs ± 153.8 µs    [User: 542.4 µs, System: 71.5 µs]
+Benchmark 4: ./lazy Ada
+  Time (mean ± σ):      57.8 ms ±   3.7 ms    [User: 48.3 ms, System: 10.9 ms]
+Benchmark 5: node duration.ts
+  Time (mean ± σ):      83.9 ms ±   4.7 ms    [User: 78.5 ms, System: 24.0 ms]
+```
+
+<table>
+  <thead>
+    <tr><th>Program</th><th>Start to exit</th><th>Peak memory</th><th>Executable</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>duration</code>, <code>ms</code> native</td><td>0.69 ms</td><td>2.3 MB</td><td>603,896 bytes</td></tr>
+    <tr><td><code>duration-node</code>, <code>ms</code> in an island</td><td>50.3 ms</td><td>85.1 MB</td><td>691,368 bytes</td></tr>
+    <tr><td><code>lazy</code>, island never used</td><td>0.66 ms</td><td>2.4 MB</td><td></td></tr>
+    <tr><td><code>lazy Ada</code>, island used once</td><td>57.8 ms</td><td>88.4 MB</td><td></td></tr>
+    <tr><td><code>node duration.ts</code></td><td>83.9 ms</td><td>64.5 MB</td><td></td></tr>
+  </tbody>
+</table>
+
+These numbers are from Linux x64 (Intel Xeon at 2.50 GHz, 8 virtual CPUs) with scriptc 0.4.9 and a pack of Node.js 24.22.1 built as shown above. Peak memory is the maximum resident set size that `/usr/bin/time -f '%M KB'` reports for one run.
+
+- **Start-up.** The first use of an island took about 50 ms here. A program that doesn't reach a deferred island starts as fast as one without. A program with an island that isn't deferred pays this at every start.
+- **Memory.** Once Node.js is loaded, the process holds what a Node.js process holds: 85 MB here, against 2.3 MB for the native program.
+- **Calls.** Every call into an island crosses the boundary. A loop of 100,000 calls to `ms("2h")` took 43 ms natively and 161 ms with `ms` in an island, of which about 50 ms is the start-up, so each call cost roughly one microsecond more:
+
+```console
+$ hyperfine -N --warmup 3 --runs 20 ./calls ./calls-node 'node calls.ts'
+Benchmark 1: ./calls
+  Time (mean ± σ):      43.1 ms ±   0.3 ms    [User: 42.3 ms, System: 0.6 ms]
+Benchmark 2: ./calls-node
+  Time (mean ± σ):     160.7 ms ±   4.3 ms    [User: 130.8 ms, System: 35.8 ms]
+Benchmark 3: node calls.ts
+  Time (mean ± σ):      96.4 ms ±   5.2 ms    [User: 95.8 ms, System: 24.0 ms]
+```
+
+- **Size.** The island runtime and the package's JavaScript add to the executable: 87 KB for `ms`. The libnode pack is separate and much larger, 127 MB on Linux x64.
+
+A package on a hot path, or in a tool that must start instantly, is worth getting native. A package used once at start-up or behind a rarely used option usually isn't.
+
+## Ship an executable
+
+An executable with an island is not self-contained: it needs the libnode pack at run time.
+
+- By default the executable records the absolute path of the pack it was built with, and loads Node.js from that path. It runs on the build machine, and on another machine only when a pack is at the same path.
+- `SCRIPTC_LIBNODE`, set when the program runs, overrides the recorded path.
+- `--libnode=beside` copies the pack next to the executable as `<output>.libnode/` and records that relative location, so the two can be moved or packaged together.
+
+```console
+$ scriptc build greet.ts -o dist/greet --libnode=beside >/dev/null 2>&1
+$ ls dist/greet.libnode
+LICENSE
+libnode.so.137
+libscr_node_bridge.so
+manifest.json
+modules
+$ du -sh dist
+128M	dist
+$ mv dist /tmp/elsewhere
+$ unset SCRIPTC_LIBNODE
+$ /tmp/elsewhere/greet
+Hello, Ada!
+```
+
+The pack includes Node.js's license, which applies when you distribute it.
+
+The package's JavaScript travels inside the executable. The first run extracts it to `$XDG_CACHE_HOME/scriptc/node-islands/`, or `~/.cache/scriptc/node-islands/`, and every start checks the extracted files against the digests the build recorded. With `--libnode=beside` the files are in `<output>.libnode/modules/` instead.
+
+When the pack is missing at run time, the program stops when it first needs Node.js:
+
+```console
+$ SCRIPTC_LIBNODE=/nonexistent ./greet
+scriptc: cannot load Node.js for this program's Node islands: /nonexistent/libscr_node_bridge.so: cannot open shared object file: No such file or directory
+```
+
+A program running with elevated privileges ignores `SCRIPTC_LIBNODE` and refuses a pack beside the executable.
+
+## Call Node.js directly
+
+The `@scriptc/node` package is the explicit form of the same mechanism. `callSync` and `call` run a function that a JavaScript module exports, in Node.js, and copy JSON data both ways:
+
+```js:math.cjs
+exports.add = (a, b) => a + b;
+```
+
+```ts:sum.ts
+import { callSync } from "@scriptc/node";
+
+console.log(callSync<number>("./math.cjs", "add", 1, 2));
+```
+
+```console
+$ npm install @scriptc/node
+$ scriptc run sum.ts
+3
+```
+
+The module is named by a string literal, so the build can store it in the executable. Arguments and results are JSON copies, and the result is checked against the type you give. Under Node.js the package calls the function in the same process, so the program prints the same either way. A program that uses `@scriptc/node` needs a libnode pack like any program with an island.
+
+## Diagnostics
+
+<table>
+  <thead>
+    <tr><th>Code</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>SC8001</code></td><td>Note: a package or module runs in a Node island, with the class and first reason.</td></tr>
+    <tr><td><code>SC8002</code></td><td>Islands are off, or limited to marked ones, and a package is outside what compiles natively. Reported by coverage.</td></tr>
+    <tr><td><code>SC8003</code></td><td>A package marked native is outside what compiles natively. Reported by coverage.</td></tr>
+    <tr><td><code>SC8004</code></td><td>Warning: an unknown key or value in <code>scriptc.packages</code> or <code>scriptc.nodeIslands</code>. The build goes on without the setting.</td></tr>
+    <tr><td><code>SC8005</code></td><td>The program needs Node.js and the build found no usable libnode pack.</td></tr>
+    <tr><td><code>SC8006</code></td><td>The build can't collect the JavaScript an island needs, or a construct can't work across the boundary. Examples are a module named by a computed specifier in a <code>@scriptc/node</code> call, and an entry file that patches a built-in module.</td></tr>
+    <tr><td><code>SC8010</code></td><td>A value crosses the boundary in a form that has no exact copy and no reference.</td></tr>
+    <tr><td><code>SC8011</code></td><td>A class of your program extends a class an island owns, in a form that isn't supported.</td></tr>
+    <tr><td><code>SC8020</code></td><td>Warning: a module with state exists once in native code and once in an island, so each side sees its own copy.</td></tr>
+    <tr><td><code>SC8021</code></td><td>Note about when an island's modules are evaluated.</td></tr>
+    <tr><td><code>SC8022</code></td><td>Code in an island extends a class of a module the program compiles natively.</td></tr>
+    <tr><td><code>SC8023</code></td><td>Warning: building with a package in an island failed, and the program was built natively instead. The program fails when it reaches the package's unsupported code.</td></tr>
+  </tbody>
+</table>
+
+## Current limits
+
+- The libnode packs are not published, so a pack has to be built from the scriptc repository, and a build without one stops with `SC8005`.
+- Islands exist on Linux x64 and arm64 with glibc and on macOS arm64 and x64 only.
+- An island used from a worker thread ends the program.
+- A package in an island doesn't see the program's command-line arguments.
+- `JSON.stringify` of an object an island owns throws.
+- `--native` and `--node-islands=off` don't fail a build; coverage reports `SC8002` and `SC8003`.
+- A value that can't cross the boundary can leave a native build with an `SC8023` warning instead of an error.
+- The order of timers and other callbacks between native code and an island can differ from Node.js.
+- An executable with an island needs its libnode pack at run time, starts Node.js on first use, or at its own start when a package can't be deferred, and uses the memory of a Node.js process from then on.
+
+[Limitations](/docs/limitations#node-islands) lists these with the other differences from Node.js.

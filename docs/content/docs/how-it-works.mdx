@@ -32,6 +32,10 @@ Runtime pack and linker -> executable
 
 `comptime` calls run during the frontend stage in an isolated evaluator inside the compiler, based on QuickJS. Their results are embedded in the program as constants.
 
+### Node islands
+
+The pipeline above compiles code to native instructions. An npm package or JavaScript module that can't be compiled that way is not lowered: the frontend types the program's uses of it from its declarations and compiles them into calls through a bridge, and the build stores the package's JavaScript in the executable. At run time the executable loads Node.js from a libnode pack the first time one of those calls runs, and Node.js runs that JavaScript. A program with no such package links none of this. See [Node Islands](/docs/node-islands).
+
 ## Build parallelism
 
 Most of a build runs on one CPU core. The LLVM helper uses more cores when it compiles an executable in partitions, and when it generates code for an optimized executable that it optimizes whole.
@@ -186,6 +190,7 @@ Program objects define `main` and leave selected `scr_*` runtime functions undef
 - **Networking:** Supported `net`, `http`, `https`, `tls`, `dgram`, and `dns` APIs use native implementations. TLS uses vendored mbedTLS.
 - **Numbers:** Values use JavaScript's double-precision representation. Number-to-string formatting uses shortest-roundtrip output and is tested against Node.js.
 - **Regular expressions and Unicode:** The runtime uses QuickJS's regular-expression and Unicode libraries, linked into programs that use them.
+- **Node islands:** A program with a [Node island](/docs/node-islands) loads Node.js as a shared library on the island's first use, or when the program starts if a package in the island has to be evaluated at its import. Once Node.js is loaded, the runtime's event loop runs on Node.js's libuv loop. The order of callbacks between native code and an island can still differ from Node.js; see [Limitations](/docs/limitations#runtime-differences-from-nodejs).
 
 See [Limitations](/docs/limitations) for runtime differences and the [Node.js compatibility reference](/compatibility) for API support.
 

@@ -101,6 +101,10 @@
       {
         "text": "External host type declarations",
         "id": "external-host-type-declarations"
+      },
+      {
+        "text": "Node islands",
+        "id": "node-islands"
       }
     ]
   },
@@ -140,6 +144,64 @@
       {
         "text": "Type declarations and boundary restrictions",
         "id": "type-declarations-and-boundary-restrictions"
+      }
+    ]
+  },
+  {
+    "href": "/docs/node-islands",
+    "title": "Node Islands",
+    "headings": [
+      {
+        "text": "Example",
+        "id": "example"
+      },
+      {
+        "text": "Get a libnode pack",
+        "id": "get-a-libnode-pack"
+      },
+      {
+        "text": "What runs in an island",
+        "id": "what-runs-in-an-island"
+      },
+      {
+        "text": "See what runs in an island",
+        "id": "see-what-runs-in-an-island"
+      },
+      {
+        "text": "Choose where code runs",
+        "id": "choose-where-code-runs"
+      },
+      {
+        "text": "Record the island decision",
+        "id": "record-the-island-decision"
+      },
+      {
+        "text": "Values that cross the boundary",
+        "id": "values-that-cross-the-boundary"
+      },
+      {
+        "text": "Worker threads",
+        "id": "worker-threads"
+      },
+      {
+        "text": "Cost",
+        "id": "cost"
+      },
+      {
+        "text": "Ship an executable",
+        "id": "ship-an-executable"
+      },
+      {
+        "text": "Call Node.js directly",
+        "id": "call-nodejs-directly"
+      },
+      {
+        "text": "Diagnostics",
+        "id": "diagnostics"
+      },
+      {
+        "text": "Current limits",
+        "id": "current-limits"
       }
     ]
   },
@@ -571,6 +633,10 @@
       {
         "text": "Process events",
         "id": "process-events"
+      },
+      {
+        "text": "Node islands",
+        "id": "node-islands"
       },
       {
         "text": "Native addons",

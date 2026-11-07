@@ -33,11 +33,11 @@ const steps = [
   },
   {
     title: "Compile",
-    body: "LLVM generates machine code for your program and the npm packages it imports. Anything unsupported is reported with a code, a location, and a hint.",
+    body: "LLVM generates machine code for your program and the npm packages it imports. Packages that can't compile natively run in Node islands, and anything unsupported in your own code is reported with a code, a location, and a hint.",
   },
   {
     title: "Ship",
-    body: "The result is one executable for macOS, Linux, or Windows, or a WebAssembly module. It runs without Node.js installed.",
+    body: "The result is one executable for macOS, Linux, or Windows, or a WebAssembly module. A program compiled entirely to native code runs without Node.js installed.",
   },
 ];
 
@@ -48,7 +48,7 @@ const points = [
   },
   {
     title: "npm packages included",
-    body: "Packages your program imports compile into the executable, which doesn't read node_modules at runtime.",
+    body: "Packages your program imports are built into the executable, which doesn't read node_modules at runtime. Packages that can't compile to native code run in Node islands.",
   },
   {
     title: "Cross-compilation",

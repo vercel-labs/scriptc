@@ -1,0 +1,3 @@
+- **Keeping a package native:** `--native=<pkg>` and `--node-islands=off` do not fail a build when the package cannot compile natively.
+  The build compiles the package with each operation that needed Node.js as code that throws when it runs.
+  `scriptc coverage` reports `SC8003` and `SC8002` for these packages, and `--fail-on=node-islands` fails on them.

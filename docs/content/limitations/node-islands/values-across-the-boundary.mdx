@@ -1,0 +1,3 @@
+- **Values across the boundary:** A value that can be neither copied exactly nor passed by reference between native code and an island, such as a `WeakMap`, is refused with `SC8010`.
+  When the package also compiles natively, the build does not stop: it falls back to the native compilation with an `SC8023` warning, and the executable then fails when it reaches the package's unsupported code.
+  Mark the package with `--node-island=<pkg>` to get the error.

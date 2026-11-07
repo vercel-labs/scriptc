@@ -11,10 +11,14 @@
  *   - the package's `evaluate` setting (`scriptc.packages.<name>`):
  *     "eager" keeps the module eager; "lazy" defers it whatever else its
  *     load does (the user judged the effects benign);
- *   - environment reads: the boot guards record the build-time value of
- *     every environment variable the load read, so a load that read one
- *     not listed in `scriptc.nodeIslands.publicEnv` stays eager, "lazy"
- *     included, and no value of it reaches the executable;
+ *   - environment reads: the boot guards record every environment
+ *     variable the load read. One that was unset at build time is recorded
+ *     as unset (`E <key> 0`): the executable learns that the variable was
+ *     absent, never a value, and a run that sets it loads the module at
+ *     its import. One that had a value is recorded with it, which only
+ *     `scriptc.nodeIslands.publicEnv` allows: a load that read a set
+ *     variable not listed there stays eager, "lazy" included, and no value
+ *     of it reaches the executable;
  *   - the probe: one run of the build-time probe host
  *     (runtime src/tools/scr_node_island_probe.c) in a libnode environment
  *     from the same pack, which loads every candidate module under the
@@ -298,9 +302,12 @@ export function finalizeDeferredIslands(
         snapshotNames(probe, result.root, tree.root)
       )
         return "its exports hold a path of the build machine";
-      const privateEnv = result.env.map(([k]) => k).filter((k) => !publicEnv.has(k));
+      // A variable that was unset is guarded as unset: no value to record.
+      const privateEnv = result.env
+        .filter(([k, v]) => v !== null && !publicEnv.has(k))
+        .map(([k]) => k);
       if (privateEnv.length > 0)
-        return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, whose build-time values its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
+        return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, set at build time, whose value${privateEnv.length === 1 ? "" : "s"} its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
       if (c.lazy) return null;
       if (result.effects.length > 0) return `its load has effects: ${result.effects.join(", ")}`;
       if (result.inputs.length > 0) return `its load reads ${result.inputs.join(", ")}`;
@@ -353,7 +360,9 @@ export function finalizeDeferredIslands(
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     const notes = [
       d.why,
-      ...(r.env.length > 0 ? [`env guards ${r.env.map(([k]) => k).join(",")}`] : []),
+      ...(r.env.length > 0
+        ? [`env guards ${r.env.map(([k, v]) => (v === null ? `${k} (unset)` : k)).join(",")}`]
+        : []),
       ...(r.volatile.length > 0 ? [`volatile ${r.volatile.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
       lazyMode ? `per-module (component ${component.get(r.path)})` : "evaluated when Node starts",

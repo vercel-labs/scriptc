@@ -232,29 +232,41 @@ static bool nb_env_matches(const NbEnv *e) {
   return now != NULL && strlen(now) == e->value_len && memcmp(now, e->value, e->value_len) == 0;
 }
 
+typedef struct {
+  char *value; /* the program's value; NULL: unset */
+  bool swapped;
+} NbSavedEnv;
+
 /* The module evaluates against the environment it saw at its import
- * position (the boot guard checked those values then): keys the program
- * changed since are set back for the evaluation and restored after it. */
-static void nb_env_swap(NbModule *m, char **saved, bool restore) {
+ * position (the boot guard checked those values then, a key recorded as
+ * absent included): a key the program changed since is set back for the
+ * evaluation, and the program's value restored after it, as the program's
+ * write came after the import. A key the program left alone is left to
+ * the module: what its evaluation writes there stays. */
+static void nb_env_swap(NbModule *m, NbSavedEnv *saved, bool restore) {
   for (size_t i = 0; i < m->nenv; i++) {
     NbEnv *e = &m->env[i];
+    if (restore && !saved[i].swapped) continue;
+    if (!restore && nb_env_matches(e)) continue;
     char *key = nb_cstr(e->key, e->key_len);
     if (!restore) {
       const char *now = getenv(key);
-      saved[i] = now != NULL ? strdup(now) : NULL;
-      if (!nb_env_matches(e)) {
-        if (e->present) {
-          char *v = nb_cstr(e->value, e->value_len);
-          setenv(key, v, 1);
-          free(v);
-        } else {
-          unsetenv(key);
-        }
+      if (now != NULL) {
+        saved[i].value = strdup(now);
+        if (saved[i].value == NULL) nb_oom();
+      }
+      saved[i].swapped = true;
+      if (e->present) {
+        char *v = nb_cstr(e->value, e->value_len);
+        setenv(key, v, 1);
+        free(v);
+      } else {
+        unsetenv(key);
       }
     } else {
-      if (saved[i] != NULL) setenv(key, saved[i], 1);
+      if (saved[i].value != NULL) setenv(key, saved[i].value, 1);
       else unsetenv(key);
-      free(saved[i]);
+      free(saved[i].value);
     }
     free(key);
   }
@@ -264,7 +276,7 @@ static void nb_materialize(NbModule *m) {
   if (m->done) return;
   m->done = true;
   if (nb_tracing()) fprintf(stderr, "[node-islands] evaluating deferred %s\n", m->path);
-  char **saved = m->nenv > 0 ? calloc(m->nenv, sizeof *saved) : NULL;
+  NbSavedEnv *saved = m->nenv > 0 ? calloc(m->nenv, sizeof *saved) : NULL;
   if (m->nenv > 0 && saved == NULL) nb_oom();
   nb_env_swap(m, saved, false);
   ScrStr *path = scr_str_new(m->path, strlen(m->path));

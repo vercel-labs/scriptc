@@ -14,6 +14,27 @@ class Ticker extends Readable {
   }
 }
 
+class Guarded extends Readable {
+  _read(): void {}
+  async [Symbol.asyncDispose](): Promise<void> {
+    console.log("guarded dispose", this.destroyed);
+  }
+}
+class GuardedSink extends Writable {
+  _write(_chunk: Buffer, _encoding: string, callback: (error?: Error | null) => void): void {
+    callback();
+  }
+  async [Symbol.asyncDispose](): Promise<void> {
+    console.log("guarded sink dispose", this.destroyed);
+  }
+}
+
+let built = 0;
+function makeGuarded(): Guarded {
+  built += 1;
+  return new Guarded();
+}
+
 async function disposeReadable(value: Readable): Promise<void> {
   await value[Symbol.asyncDispose]();
 }
@@ -61,6 +82,34 @@ async function main(): Promise<void> {
   await turn();
   await ticker[Symbol.asyncDispose]();
   console.log("subclass", ticker.destroyed, ticker.ticks, describe(ticker.errored));
+
+  // A subclass that overrides [Symbol.asyncDispose] keeps its override when
+  // the value is held by a base-class binding.
+  const guarded = new Guarded();
+  const guardedBase: Readable = guarded;
+  await guardedBase[Symbol.asyncDispose]();
+  console.log("guarded base", guarded.destroyed, describe(guarded.errored));
+
+  const guardedSink = new GuardedSink();
+  const guardedSinkBase: Writable = guardedSink;
+  await guardedSinkBase[Symbol.asyncDispose]();
+  console.log("guarded sink base", guardedSink.destroyed, describe(guardedSink.errored));
+
+  const guardedScoped = new Guarded();
+  {
+    await using scopedBase: Readable = guardedScoped;
+    console.log("guarded using inside", scopedBase.destroyed);
+  }
+  console.log("guarded using", guardedScoped.destroyed, describe(guardedScoped.errored));
+
+  // The receiver is evaluated once.
+  await makeGuarded()[Symbol.asyncDispose]();
+  console.log("guarded once", built);
+
+  // A native stream under the same base type still takes the runtime path.
+  const nativeBase: Readable = Readable.from(["n"]);
+  await nativeBase[Symbol.asyncDispose]();
+  console.log("native base", nativeBase.destroyed, describe(nativeBase.errored));
 
   const failed = new Readable({ read() {} });
   failed.on("error", () => {});

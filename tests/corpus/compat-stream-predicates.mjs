@@ -160,8 +160,10 @@ function untyped(value) {
 
 // Primitives: nothing to read, so null for the side questions and false
 // for the others.
-for (const value of [undefined, null, 0, 1, "", "text", true, false, 10n]) {
+for (const value of [undefined, null, 0, 1, "", "text", true, false, 10n, Symbol("s")]) {
   console.log(typeof value, String(value), untyped(value));
 }
 console.log("literal", stream.isDestroyed(null), stream.isErrored(undefined), stream.isDisturbed(1));
 console.log("literal", stream.isReadable("text"), stream.isWritable(false), Readable.isDisturbed(null));
+console.log("literal", stream.isDestroyed(10n), stream.isErrored(10n), stream.isDisturbed(10n));
+console.log("literal", stream.isReadable(Symbol("r")), stream.isWritable(Symbol("w")));

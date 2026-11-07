@@ -3554,18 +3554,47 @@ function lowerStreamPredicate(
       argType.kind === "string" ||
       argType.kind === "f64" ||
       argType.kind === "bool" ||
+      argType.kind === "bigint" ||
+      argType.kind === "symbol" ||
       argType.kind === "nullT" ||
       argType.kind === "undefinedT");
   let answer: IrExpr;
   if (runtimeJudged) {
-    const value = argNode ? lowerer.lowerExprExpecting(argNode, DYN) : dynUndefinedExpr(loc);
-    answer = {
-      kind: "libCall",
-      fn: "stream.isDyn",
-      args: [value, numLit(which, loc)],
-      type: DYN,
-      loc,
-    };
+    const kind = argType!.kind;
+    const folded = kind === "bigint" || kind === "symbol";
+    if (folded) {
+      // A bigint or a symbol holds none of the properties Node's predicates
+      // read, so each predicate answers the same constant for every such
+      // value: false, or null where it reports a missing side. The index is
+      // the runtime's order, used by `stream.is` below: 1 is isErrored,
+      // 2 is isDisturbed.
+      const stmts: IrStmt[] = [];
+      if (argNode !== undefined) {
+        const value = lowerer.lowerExpr(argNode);
+        const pure =
+          value.kind === "strLit" ||
+          value.kind === "numLit" ||
+          value.kind === "boolLit" ||
+          value.kind === "unitLit" ||
+          value.kind === "varRef";
+        if (!pure) stmts.push({ kind: "exprStmt", expr: value, loc });
+      }
+      const result: IrExpr =
+        which === 1 || which === 2
+          ? boolLit(false, loc)
+          : { kind: "unitLit", unit: "null", type: { kind: "nullT" }, loc };
+      answer =
+        stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
+    } else {
+      const value = argNode ? lowerer.lowerExprExpecting(argNode, DYN) : dynUndefinedExpr(loc);
+      answer = {
+        kind: "libCall",
+        fn: "stream.isDyn",
+        args: [value, numLit(which, loc)],
+        type: DYN,
+        loc,
+      };
+    }
   } else {
     const node = argNode!;
     const value = isValueStream(lowerer, node)
@@ -3577,6 +3606,8 @@ function lowerStreamPredicate(
       value.type.kind === "string" ||
       value.type.kind === "f64" ||
       value.type.kind === "bool" ||
+      value.type.kind === "bigint" ||
+      value.type.kind === "symbol" ||
       value.type.kind === "nullT" ||
       value.type.kind === "undefinedT";
     if (streamSidesOf(lowerer, info)) {
@@ -7531,8 +7562,9 @@ export function lowerStreamMethodCall(
 /** `stream[Symbol.asyncDispose]()` on a receiver the checker types as a
  * stream class: Node's Readable.prototype and Writable.prototype define
  * it (a Duplex inherits Readable's). Null for other element-access calls;
- * a subclass's own [Symbol.asyncDispose] method is the caller's earlier
- * case. */
+ * a class that declares the method itself is the caller's earlier case,
+ * and a subclass declaring it below the receiver's class is dispatched in
+ * streamAsyncDisposeExpr. */
 export function lowerStreamAsyncDisposeCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -7552,16 +7584,88 @@ export function lowerStreamAsyncDisposeCall(
     return null;
   }
   if (classT?.kind !== "object") return null;
-  if (!streamSidesOf(lowerer, lowerer.classes.get(classT.className))) return null;
+  const info = lowerer.classes.get(classT.className);
+  if (!streamSidesOf(lowerer, info)) return null;
   if (call.arguments.nodes.length > 0) {
     lowerer.noLowering("a stream's [Symbol.asyncDispose] with arguments", call);
   }
-  return {
+  return streamAsyncDisposeExpr(
+    lowerer,
+    info!,
+    streamReceiverExpr(lowerer, access.expression),
+    locOf(call),
+  );
+}
+
+/** The stream subclasses below `info` that declare their own concrete
+ * [Symbol.asyncDispose], most-derived first. */
+function streamAsyncDisposeOverriders(info: ClassInfo): ClassInfo[] {
+  const out: ClassInfo[] = [];
+  const visit = (parent: ClassInfo): void => {
+    for (const child of parent.subclasses) {
+      visit(child);
+      const sig = child.methods.get("sym:asyncDispose");
+      if (sig !== undefined && sig.abstract !== true) out.push(child);
+    }
+  };
+  visit(info);
+  return out;
+}
+
+/** `value[Symbol.asyncDispose]()` for a value typed as a stream class, or
+ * the call a `using` statement makes: the runtime's destroy-and-wait,
+ * unless a stream subclass below the value's static class declares its own
+ * [Symbol.asyncDispose]. Node dispatches the symbol method on the prototype
+ * chain, so a value typed as a base class can hold a subclass whose
+ * override runs instead of the runtime teardown. The runtime cannot answer
+ * this, so the value's class is tested here, the receiver bound once when
+ * any such subclass exists. */
+export function streamAsyncDisposeExpr(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  receiver: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const type: IrType = { kind: "promise", inner: VOID };
+  const runtime = (recv: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "stream.asyncDispose",
-    args: [streamReceiverExpr(lowerer, access.expression)],
-    type: { kind: "promise", inner: VOID },
-    loc: locOf(call),
+    args: [recv],
+    type,
+    loc,
+  });
+  const overriders = streamAsyncDisposeOverriders(info);
+  if (overriders.length === 0) return runtime(receiver);
+  const slot = lowerer.declareHiddenLocal("%disposeRecv", receiver.type);
+  const recv = (): IrExpr => varRef(slot.id, receiver.type, loc);
+  let answer = runtime(recv());
+  // Least-derived first, so the most-derived class is tested first.
+  for (let i = overriders.length - 1; i >= 0; i--) {
+    const child = overriders[i]!;
+    const sig = child.methods.get("sym:asyncDispose")!;
+    const call = lowerer.accessorCall(
+      child.def.name,
+      "sym:asyncDispose",
+      { kind: "downcast", value: recv(), type: { kind: "object", className: child.def.name }, loc },
+      [],
+      sig.ret,
+      loc,
+    );
+    answer = {
+      kind: "ternary",
+      cond: { kind: "instanceOf", value: recv(), className: child.def.name, type: BOOL, loc },
+      then: lowerer.coerceToExpected(call, type),
+      else_: answer,
+      type,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: slot.id, init: receiver, loc }],
+    result: answer,
+    type,
+    loc,
   };
 }
 

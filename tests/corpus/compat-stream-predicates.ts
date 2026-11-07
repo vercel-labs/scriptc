@@ -109,11 +109,13 @@ async function main(): Promise<void> {
   await turn();
   console.log("after error", stream.isErrored(failing), asUnknown(failing));
 
-  // Primitives.
-  const values: unknown[] = [undefined, null, 0, "text", true];
+  // Primitives, including the bigint and symbol forms the checker knows.
+  const values: unknown[] = [undefined, null, 0, "text", true, 7n, Symbol("s")];
   for (const value of values) console.log(typeof value, String(value), asUnknown(value));
   console.log("literal", stream.isDestroyed(null), stream.isErrored(undefined), stream.isDisturbed(1));
   console.log("literal", stream.isReadable("text"), stream.isWritable(false));
+  console.log("literal", stream.isDestroyed(7n), stream.isErrored(7n), stream.isDisturbed(7n));
+  console.log("literal", stream.isReadable(Symbol("r")), stream.isWritable(Symbol("w")));
 }
 
 main();

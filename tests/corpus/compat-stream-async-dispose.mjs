@@ -163,3 +163,48 @@ async function settled(promise) {
   }
   console.log("using writable", sink.destroyed, describe(sink.errored));
 }
+
+// A subclass that overrides [Symbol.asyncDispose] keeps its override when
+// the value is held by a base-class binding.
+{
+  class Guarded extends Readable {
+    _read() {}
+    async [Symbol.asyncDispose]() {
+      console.log("guarded dispose", this.destroyed);
+    }
+  }
+  class GuardedSink extends Writable {
+    _write(_chunk, _encoding, callback) {
+      callback();
+    }
+    async [Symbol.asyncDispose]() {
+      console.log("guarded sink dispose", this.destroyed);
+    }
+  }
+  const guarded = new Guarded();
+  /** @type {Readable} */
+  const base = guarded;
+  await base[Symbol.asyncDispose]();
+  console.log("guarded base", guarded.destroyed, describe(guarded.errored));
+
+  const sink = new GuardedSink();
+  /** @type {Writable} */
+  const sinkBase = sink;
+  await sinkBase[Symbol.asyncDispose]();
+  console.log("guarded sink base", sink.destroyed, describe(sink.errored));
+
+  const scoped = new Guarded();
+  /** @type {Readable} */
+  const scopedBase = scoped;
+  {
+    await using bound = scopedBase;
+    console.log("guarded using inside", bound.destroyed);
+  }
+  console.log("guarded using", scoped.destroyed, describe(scoped.errored));
+
+  // A native stream under the same base type still takes the runtime path.
+  /** @type {Readable} */
+  const native = Readable.from(["n"]);
+  await native[Symbol.asyncDispose]();
+  console.log("native base", native.destroyed, describe(native.errored));
+}

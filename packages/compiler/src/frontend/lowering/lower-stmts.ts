@@ -264,6 +264,7 @@ import {
 } from "./lower-classes.js";
 import {
   lowerStreamUnderscoreAssign,
+  streamAsyncDisposeExpr,
   streamClassAliasDecl,
   streamSidesOf,
 } from "./lower-stream.js";
@@ -503,16 +504,7 @@ function cleanupCall(
       // Writable.prototype define [Symbol.asyncDispose] and nothing
       // synchronous.
       if (awaited && info && streamSidesOf(lowerer, info)) {
-        return {
-          call: {
-            kind: "libCall",
-            fn: "stream.asyncDispose",
-            args: [value],
-            type: { kind: "promise", inner: VOID },
-            loc,
-          },
-          async: true,
-        };
+        return { call: streamAsyncDisposeExpr(lowerer, info, value, loc), async: true };
       }
       return null;
     }

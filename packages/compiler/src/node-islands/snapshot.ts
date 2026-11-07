@@ -216,6 +216,53 @@ function traceDecision(d: DeferralDecision): void {
     );
 }
 
+/** What a module's load depends on from outside the island: its own reads
+ * and those of every probed module it shares a file with. */
+interface LoadReads {
+  env: [string, string | null][];
+  tty: [number, boolean][];
+  inputs: string[];
+  volatile: string[];
+}
+
+/** The reads each probed module's snapshot depends on. A file that two
+ * modules load evaluates once, in the load of whichever reaches it first,
+ * and what that evaluation read (an environment variable, the terminal,
+ * the clock, another input) is in that module's record only. The other
+ * module's exports can still hold values computed from it, so the modules
+ * of a group that shares files carry each other's reads: their guards, and
+ * the reasons that keep one of them eager. A module's own reads come
+ * first. */
+function loadReads(results: ProbeResult[]): Map<ProbeResult, LoadReads> {
+  const parent = results.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  const owner = new Map<string, number>();
+  results.forEach((r, i) => {
+    for (const f of r.files) {
+      const j = owner.get(f);
+      if (j === undefined) owner.set(f, i);
+      else parent[find(i)] = find(j);
+    }
+  });
+  const reads = new Map<ProbeResult, LoadReads>();
+  results.forEach((r, i) => {
+    const group = [r, ...results.filter((other, j) => j !== i && find(j) === find(i))];
+    const env = new Map<string, string | null>();
+    const tty = new Map<number, boolean>();
+    for (const m of group) {
+      for (const [k, v] of m.env) if (!env.has(k)) env.set(k, v);
+      for (const [fd, isTty] of m.tty) if (!tty.has(fd)) tty.set(fd, isTty);
+    }
+    reads.set(r, {
+      env: [...env],
+      tty: [...tty],
+      inputs: [...new Set(group.flatMap((m) => m.inputs))],
+      volatile: [...new Set(group.flatMap((m) => m.volatile))],
+    });
+  });
+  return reads;
+}
+
 export function finalizeDeferredIslands(
   mod: IrModule,
   entryPath: string,
@@ -265,6 +312,7 @@ export function finalizeDeferredIslands(
   // against its digests when it opens): only files outside it need guards.
   const tree = mod.nodeIsland?.modules;
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
+  const reads = loadReads(probe.results);
   const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === c.path);
@@ -279,14 +327,16 @@ export function finalizeDeferredIslands(
       )
         return "its exports hold a path of the build machine";
       // A variable that was unset is guarded as unset: no value to record.
-      const privateEnv = result.env
-        .filter(([k, v]) => v !== null && !publicEnv.has(k))
+      const privateEnv = reads
+        .get(result)!
+        .env.filter(([k, v]) => v !== null && !publicEnv.has(k))
         .map(([k]) => k);
       if (privateEnv.length > 0)
         return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, set at build time, whose value${privateEnv.length === 1 ? "" : "s"} its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
       if (c.lazy) return null;
       if (result.effects.length > 0) return `its load has effects: ${result.effects.join(", ")}`;
-      if (result.inputs.length > 0) return `its load reads ${result.inputs.join(", ")}`;
+      const inputs = reads.get(result)!.inputs;
+      if (inputs.length > 0) return `its load reads ${inputs.join(", ")}`;
       return null;
     })();
     if (why !== null || result === undefined) {
@@ -302,21 +352,22 @@ export function finalizeDeferredIslands(
   }
   for (const d of deferred) {
     const r = d.result;
+    const { env, tty, volatile } = reads.get(r)!;
     const guards = [
       ...packGuards,
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
-      ...r.env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
-      ...r.tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
+      ...env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
+      ...tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
     ];
-    const text = encodeSnapshot(probe, r.root!, guards, r.volatile.length === 0);
+    const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
     const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     const notes = [
       d.why,
-      ...(r.env.length > 0
-        ? [`env guards ${r.env.map(([k, v]) => (v === null ? `${k} (unset)` : k)).join(",")}`]
+      ...(env.length > 0
+        ? [`env guards ${env.map(([k, v]) => (v === null ? `${k} (unset)` : k)).join(",")}`]
         : []),
-      ...(r.volatile.length > 0 ? [`volatile ${r.volatile.join(",")}: no constants`] : []),
+      ...(volatile.length > 0 ? [`volatile ${volatile.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
       "evaluated when Node starts",
     ];

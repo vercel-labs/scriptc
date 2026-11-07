@@ -496,7 +496,7 @@ export async function analyzeCached(
 }
 
 // Island code resolves through Node (node-islands/resolve.ts; the
-// self-hosted compiler builds no islands).
+// self-hosted compiler resolves with the shared filesystem resolver).
 setIslandResolver((fromFile, spec) => createRequire(fromFile).resolve(spec));
 
 const nodeFrontend: FrontendFactory = (

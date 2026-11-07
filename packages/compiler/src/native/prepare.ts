@@ -41,6 +41,7 @@ import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
 import type { LibraryProfile } from "../library/library-profile.js";
 import type { IrModule } from "../ir/ir.js";
+import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
 import { deserializeModuleBytes, serializeModuleParts } from "../ir/serialize.js";
 import { contentDigest, NATIVE_STRING_BYTES, type NativeCache } from "./cache.js";
 import { batchTextParts, joinedParts } from "./text-file.js";
@@ -441,13 +442,51 @@ function preparedFromIr(
   path: string,
   entry: string,
   options: CompileRequestOptions,
-): { ok: true; mod: IrModule; sourceTexts: Map<string, string>; warnings: ScrDiagnostic[] } {
+): {
+  ok: true;
+  mod: IrModule;
+  sourceTexts: Map<string, string>;
+  warnings: ScrDiagnostic[];
+  /** As PreparedExecutableModule.islands; an IR artifact names none. */
+  islands?: { packages: string[]; modules: string[] };
+} {
   if ((options.outputKind ?? "exe") !== "exe" || options.strip !== true)
     throw new Error(`${BOOTSTRAP_IR_INPUT} requires a stripped executable build`);
   const mod = deserializeModuleBytes(readFileSync(path));
   if (resolve(mod.sourceFile) !== resolve(entry))
     throw new Error(`${BOOTSTRAP_IR_INPUT} was lowered from a different entry`);
   return { ok: true, mod, sourceTexts: new Map(), warnings: [] };
+}
+
+/** A program that calls into a Node island needs three build steps this
+ * driver does not have (index.ts runs them for the Node-hosted compiler): the
+ * record of the libnode pack the executable loads, the deferral probe, and
+ * the island module tree the executable ships. Without them the executable
+ * records a module manifest with no files and stops when it starts, so the
+ * build refuses, for every output kind: the IR and LLVM text would not be
+ * the Node-hosted compiler's either. */
+function nodeIslandRefusal(
+  mod: IrModule,
+  entry: string,
+  islands: { packages: string[]; modules: string[] } | undefined,
+): ScrDiagnostic | null {
+  if (mod.nodeIsland === undefined || !moduleRuntimeFeatures(mod).nodeIsland) return null;
+  // The SC8001 notes that name the islands ride a successful build only.
+  const named = [
+    ...(islands?.packages ?? []).map((name) => `package ${name}`),
+    ...(islands?.modules ?? []).map((file) => `module ${file}`),
+  ];
+  const shown = named.slice(0, 5).join(", ");
+  const names =
+    named.length === 0
+      ? ""
+      : ` (${shown}${named.length > 5 ? `, and ${named.length - 5} more` : ""})`;
+  return nativeCodegenDiag(
+    "SC3002",
+    `this program runs code in a Node island, which the natively compiled scriptc cannot build yet${names}`,
+    entry,
+    "build it with the Node-hosted compiler (from a source checkout: node packages/cli/dist/main.js build ...), or keep the program inside the native subset (--node-islands=off names what is outside it)",
+  );
 }
 
 /** Keep the checker and typed IR out of the native optimizer's live heap. */
@@ -539,6 +578,9 @@ export function prepareNativeExecutable(
         );
   if (!prepared.ok) return prepared;
   if (irInput !== "") timing("ir-input");
+  const islandRefusal = nodeIslandRefusal(prepared.mod, entry, prepared.islands);
+  if (islandRefusal !== null)
+    return { ok: false, diagnostics: [islandRefusal], sourceTexts: prepared.sourceTexts };
   const ir =
     outputKind === "ir" || options.emitIr
       ? batchTextParts(serializeModuleParts(prepared.mod, compilerOwnedFileRoots()))

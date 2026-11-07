@@ -289,3 +289,45 @@ test("an x86-64 level is refused for targets that are not x86-64 before the fron
     ]);
   }
 });
+
+test("a program with a Node island is refused by name, for every output kind", () => {
+  const f = fixture();
+  const pkg = join(f.root, "node_modules", "tiny");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(
+    join(pkg, "package.json"),
+    JSON.stringify({ name: "tiny", version: "1.0.0", main: "index.js", types: "index.d.ts" }),
+  );
+  writeFileSync(join(pkg, "index.js"), 'exports.greet = (name) => "hello " + name;\n');
+  writeFileSync(join(pkg, "index.d.ts"), "export declare function greet(name: string): string;\n");
+  writeFileSync(
+    join(f.root, "package.json"),
+    JSON.stringify({ type: "module", scriptc: { packages: { tiny: "node" } } }),
+  );
+  writeFileSync(f.entry, 'import { greet } from "tiny"; console.log(greet("island"));\n');
+  for (const outputKind of ["exe", "ir", "llvm", "obj"] as const) {
+    const result = prepareNativeExecutable(
+      f.entry,
+      { ...f.options, outputKind },
+      null,
+      fixtureToolchain(),
+      // The island set reaches the frontend through its options.
+      (path, npmStatic, externalTypes, libraryNpmStatic, options) =>
+        runFrontend(path, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options),
+      f.cache,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) continue;
+    expect(result.diagnostics.map((d) => [d.code, d.message])).toEqual([
+      [
+        "SC3002",
+        "this program runs code in a Node island, which the natively compiled scriptc cannot build yet (package tiny)",
+      ],
+    ]);
+  }
+  // Nothing was cached for the refused build: the same program without the
+  // island builds, and the island program is refused again.
+  writeFileSync(join(f.root, "package.json"), '{"type":"module"}');
+  writeFileSync(f.entry, 'import { value } from "./value.js"; console.log(value);\n');
+  expect(f.prepare().ok).toBe(true);
+});

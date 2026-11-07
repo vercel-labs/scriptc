@@ -486,6 +486,58 @@ test(
         expect(failed.status).toBe(1);
         expect(failed.stderr.toString()).toContain("not assignable");
         expect(readFileSync(retained, "utf8")).toBe("existing output");
+
+        // A program that needs a Node island: this compiler has no island
+        // build steps yet, so it refuses by name and writes no executable
+        // (one that could not start), whichever way the island came about.
+        const flagged = join(directory, "island-flag");
+        mkdirSync(join(flagged, "node_modules/tiny"), { recursive: true });
+        writeFileSync(join(flagged, "package.json"), '{ "type": "module" }\n');
+        writeFileSync(
+          join(flagged, "main.ts"),
+          'import { greet } from "tiny";\nconsole.log(greet("island"));\n',
+        );
+        writeFileSync(
+          join(flagged, "node_modules/tiny/package.json"),
+          '{ "name": "tiny", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+        );
+        writeFileSync(
+          join(flagged, "node_modules/tiny/index.js"),
+          '"use strict";\nexports.greet = (name) => "hello from " + name;\n',
+        );
+        writeFileSync(
+          join(flagged, "node_modules/tiny/index.d.ts"),
+          "export declare function greet(name: string): string;\n",
+        );
+        const islandPrograms: [string, string[]][] = [
+          // a package marked "node" in package.json
+          ["tests/corpus/6870-node-island-server-fibers/main.ts", []],
+          // a package whose lowering is refused
+          ["tests/corpus/8810-node-island-sdk-request-values/main.ts", []],
+          // a package the pre-scan finds outside the native subset
+          ["tests/corpus/6817-node-island-esm/main.ts", []],
+          // a package that would compile only with runtime fences
+          ["tests/corpus/6819-node-island-fenced/main.ts", []],
+          // a module of the program (sloppy-mode JavaScript)
+          ["tests/corpus/8424-sloppy-annexb-block-function-island/main.js", []],
+          // an explicit load through @scriptc/node, resolved by this compiler
+          ["tests/corpus/6850-node-island-shared-singleton/main.mjs", []],
+          // a package named on the command line
+          [join(flagged, "main.ts"), ["--node-island=tiny"]],
+        ];
+        for (const [program, extra] of islandPrograms) {
+          const island = executable("island");
+          const refused = spawnSync(
+            probe,
+            ["build", resolve(root, program), "-o", island, "--strip", ...extra],
+            nativeOptions,
+          );
+          expect(refused.status, program).toBe(1);
+          expect(refused.stderr.toString(), program).toContain(
+            "SC3002: this program runs code in a Node island, which the natively compiled scriptc cannot build yet",
+          );
+          expect(existsSync(island), program).toBe(false);
+        }
       };
       // The production chain owns the complete frontend and emitter proof:
       // compare the Node seed's IR and LLVM with the native self-rebuild, then

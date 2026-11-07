@@ -190,6 +190,77 @@ describe("environment boot guards", () => {
   });
 });
 
+/** A project whose entry imports the island modules `first` and `second`,
+ * which both load `shared/index.js`. The probe loaded `first` first, so
+ * what the shared file read is in `first`'s record (`reads`) and `second`'s
+ * is empty, though its export `level` was computed from the shared file. */
+function sharingProject(reads: Partial<ProbeOutput["results"][number]>) {
+  const root = scratch();
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
+  const shared = join(root, "node_modules", "shared", "index.js");
+  const paths = ["first", "second"].map((name) => join(root, "node_modules", name, "index.js"));
+  for (const file of [shared, ...paths]) {
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, "");
+  }
+  const calls = paths.map((file) => ({
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [
+      { kind: "strLit", value: file },
+      { kind: "strLit", value: "" },
+    ],
+  }));
+  const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+  const record = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
+  const probe: ProbeOutput = {
+    results: [
+      { ...record, ...reads, path: paths[0]!, root: 1, files: [paths[0]!, shared] },
+      { ...record, path: paths[1]!, root: 2, files: [paths[1]!, shared] },
+    ],
+    objects: {
+      "1": { f: 0, p: false, m: [["level", { s: "info" }]] },
+      "2": { f: 0, p: false, m: [["level", { s: "info" }]] },
+    },
+  };
+  const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
+  const snapshots = calls.map((call) => (call.args[1] as { value: string }).value);
+  return { decisions, calls, snapshots };
+}
+
+describe("modules that share a file", () => {
+  test("carry the guards of what the shared file read", () => {
+    const { decisions, snapshots } = sharingProject({
+      env: [["LOG_LEVEL", null]],
+      tty: [[1, false]],
+    });
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
+    for (const text of snapshots) {
+      expect(text).toContain("E 9:LOG_LEVEL 0 0:");
+      expect(text).toContain("T 1 0");
+    }
+  });
+
+  test("stay eager together for a set variable outside publicEnv", () => {
+    const { decisions, calls } = sharingProject({ env: [["LOG_LEVEL", "debug"]] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("LOG_LEVEL");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+  });
+
+  test("stay eager together for an input no guard covers", () => {
+    const { decisions } = sharingProject({ inputs: ["process.cwd() (shared/index.js:1:1)"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("process.cwd()");
+  });
+
+  test("snapshot no constants when the shared file read the clock", () => {
+    const { decisions, snapshots } = sharingProject({ volatile: ["Date.now()"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
+    for (const text of snapshots) expect(text).not.toContain("4:info");
+  });
+});
+
 describe("the order deferred loads are probed in", () => {
   const defer = (path: string) => ({
     kind: "libCall",

@@ -1,0 +1,6 @@
+{
+  "name": "node-island-view-member",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "view-pkg": "node" } }
+}

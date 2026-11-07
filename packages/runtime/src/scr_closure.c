@@ -202,6 +202,53 @@ ScrClosure *scr_closure_new(void *fn, size_t ncaps) {
   return c;
 }
 
+/* ── closures over captured values (scr_closure.h) ──────────────────── */
+
+static void scr_closure_values_trace(void *o, ScrTraceVisit visit, void *ctx) {
+  ScrClosure *c = (ScrClosure *)o;
+  scr_closure_trace(o, visit, ctx);
+  const ScrClosureValues *values = scr_closure_values(c);
+  void **slots = scr_closure_value_slots(c);
+  for (size_t i = 0; i < values->count; i++) {
+    if (values->refs[i].trace) visit(slots[i], ctx);
+  }
+}
+
+/* Teardown for the collector: the values the trace does not visit. */
+static void scr_closure_values_gcfree(void *o) {
+  ScrClosure *c = (ScrClosure *)o;
+  const ScrClosureValues *values = scr_closure_values(c);
+  void **slots = scr_closure_value_slots(c);
+  for (size_t i = 0; i < values->count; i++) {
+    if (!values->refs[i].trace && slots[i]) values->refs[i].release(slots[i]);
+  }
+  scr_closure_gcfree(o);
+}
+
+static void scr_closure_values_release(ScrClosure *c) {
+  const ScrClosureValues *values = scr_closure_values(c);
+  void **slots = scr_closure_value_slots(c);
+  for (size_t i = 0; i < values->count; i++) {
+    if (slots[i]) values->refs[i].release(slots[i]);
+  }
+}
+
+ScrClosure *scr_closure_new_values(void *fn, size_t ncaps, const ScrClosureValues *values,
+                                   size_t size) {
+  static ScrCycType cyc_type = { &scr_closure_values_trace, &scr_closure_values_gcfree,
+                                 SCR_CYC_KIND_CLOSURE };
+  ScrClosure *c = scr_cyc_alloc_inline(size, &cyc_type);
+  c->rc = 1;
+  c->fn = fn;
+  c->ncaps = ncaps;
+  c->function_kind = SCR_CLOSURE_KIND_VALUES;
+  c->caps[ncaps] = (ScrBox *)(void *)values;
+#ifdef SCR_RC_AUDIT
+  scr_live_closures++;
+#endif
+  return c;
+}
+
 bool scr_closure_identity_equal(ScrClosure *a, ScrClosure *b) {
   return scr_closure_identity(a) == scr_closure_identity(b);
 }
@@ -215,6 +262,7 @@ void scr_closure_adopt_identity(ScrClosure *adapter, ScrClosure *original, uint3
 static void scr_closure_destroy(void *object) {
   ScrClosure *c = object;
   for (size_t i = 0; i < c->ncaps; i++) scr_box_release(c->caps[i]);
+  if (c->function_kind & SCR_CLOSURE_KIND_VALUES) scr_closure_values_release(c);
   scr_box_release(c->props); /* NULL-tolerant */
 #ifdef SCR_RC_AUDIT
   scr_live_closures--;

@@ -2843,6 +2843,39 @@ void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn
   scr_child_stream_close_wait(c->err_stream);
 }
 
+/* A failed spawn's 'error' event carries Node's errnoException: one Error,
+ * the same object for every listener, with errno, code, syscall
+ * "spawn <file>", path and spawnargs (the arguments after the file), and a
+ * message that names the file Node ran (the shell, for a shell spawn). The
+ * settle path and the untyped handle table are linked by every program
+ * that uses child_process, so they reach this only through the hook below.
+ * A program that can register an 'error' listener installs it once at
+ * start (scr_child_error_event_install, emitted for the childErrorEvent
+ * program fact); every other program links none of the property code. +1.
+ * The pointer has external linkage on purpose: a static one that the unit
+ * stores once lets the compiler turn the settle path's call into a direct
+ * reference to the builder, which links it into every program. */
+ScrError *(*scr_child_spawn_error_hook)(ScrChild *c) = NULL;
+
+static ScrError *scr_child_spawn_error(ScrChild *c) {
+  const char *name = c->spawn_errname;
+  size_t cap = 6 + c->spawnfile->len + 1 + strlen(name) + 1;
+  char *text = malloc(cap);
+  if (!text) scr_child_oom();
+  int len = snprintf(text, cap, "spawn %s %s", c->spawnfile->data, name);
+  ScrStr *message = scr_str_new(text, (size_t)len);
+  free(text);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(error, name);
+  ScrArr *args = scr_arr_slice(c->spawnargs, 1, (double)scr_arr_len(c->spawnargs));
+  scr_child_error_spawn_fields(error, (double)c->spawn_uv_errno, "spawn", c->spawnfile, args);
+  scr_arr_release(args);
+  return error;
+}
+
+void scr_child_error_event_install(void) { scr_child_spawn_error_hook = &scr_child_spawn_error; }
+
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn) {
   if (c->settled) {
     scr_closure_release(cb);
@@ -3029,9 +3062,19 @@ static void scr_child_settle_in(ScrChild *c) {
       _Exit(1);
     }
     scr_child_err_code = c->spawn_errname;
+    /* With an 'error' listener the event carries Node's error object
+     * (scr_child_spawn_error); the adapters hand out the payload. */
+    ScrError *spawn_error =
+        scr_child_spawn_error_hook != NULL && c->n_err > 0 ? scr_child_spawn_error_hook(c) : NULL;
+    ScrError *outer_payload = scr_event_error_payload;
+    if (spawn_error != NULL) scr_event_error_payload = spawn_error;
     for (size_t i = 0; i < c->n_err; i++) {
       c->err_cbs[i].fn(c->err_cbs[i].cb, c->err_msg);
       if (scr_exc_pending()) break; /* the loop surfaces it */
+    }
+    if (spawn_error != NULL) {
+      scr_event_error_payload = outer_payload;
+      scr_error_release(spawn_error);
     }
     scr_child_err_code = NULL;
     if (!scr_exc_pending()) scr_exec_file_fire(c);
@@ -6053,6 +6096,39 @@ void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn
   scr_child_stream_close_wait(c->err_stream);
 }
 
+/* A failed spawn's 'error' event carries Node's errnoException: one Error,
+ * the same object for every listener, with errno, code, syscall
+ * "spawn <file>", path and spawnargs (the arguments after the file), and a
+ * message that names the file Node ran (the shell, for a shell spawn). The
+ * settle path and the untyped handle table are linked by every program
+ * that uses child_process, so they reach this only through the hook below.
+ * A program that can register an 'error' listener installs it once at
+ * start (scr_child_error_event_install, emitted for the childErrorEvent
+ * program fact); every other program links none of the property code. +1.
+ * The pointer has external linkage on purpose: a static one that the unit
+ * stores once lets the compiler turn the settle path's call into a direct
+ * reference to the builder, which links it into every program. */
+ScrError *(*scr_child_spawn_error_hook)(ScrChild *c) = NULL;
+
+static ScrError *scr_child_spawn_error(ScrChild *c) {
+  const char *name = scr_errname(c->spawn_errno);
+  size_t cap = 6 + c->spawnfile->len + 1 + strlen(name) + 1;
+  char *text = malloc(cap);
+  if (!text) scr_child_oom();
+  int len = snprintf(text, cap, "spawn %s %s", c->spawnfile->data, name);
+  ScrStr *message = scr_str_new(text, (size_t)len);
+  free(text);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(error, name);
+  ScrArr *args = scr_arr_slice(c->spawnargs, 1, (double)scr_arr_len(c->spawnargs));
+  scr_child_error_spawn_fields(error, -(double)c->spawn_errno, "spawn", c->spawnfile, args);
+  scr_arr_release(args);
+  return error;
+}
+
+void scr_child_error_event_install(void) { scr_child_spawn_error_hook = &scr_child_spawn_error; }
+
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn) {
   if (c->settled) {
     scr_closure_release(cb);
@@ -6249,9 +6325,19 @@ static void scr_child_settle_in(ScrChild *c) {
     /* Node's spawn-failure error is an errnoException: `code` carries the
      * errno name. The thunk reads this while the pass runs. */
     scr_child_err_code = scr_errname(c->spawn_errno);
+    /* With an 'error' listener the event carries Node's error object
+     * (scr_child_spawn_error); the adapters hand out the payload. */
+    ScrError *spawn_error =
+        scr_child_spawn_error_hook != NULL && c->n_err > 0 ? scr_child_spawn_error_hook(c) : NULL;
+    ScrError *outer_payload = scr_event_error_payload;
+    if (spawn_error != NULL) scr_event_error_payload = spawn_error;
     for (size_t i = 0; i < c->n_err; i++) {
       c->err_cbs[i].fn(c->err_cbs[i].cb, c->err_msg);
       if (scr_exc_pending()) break; /* the loop surfaces it */
+    }
+    if (spawn_error != NULL) {
+      scr_event_error_payload = outer_payload;
+      scr_error_release(spawn_error);
     }
     scr_child_err_code = NULL;
     if (!scr_exc_pending()) scr_exec_file_fire(c);
@@ -7709,9 +7795,15 @@ static void scr_child_dyn_exit(ScrClosure *cb, bool has_code, double code, const
   scr_dyn_release(args[1]);
 }
 static void scr_child_dyn_error(ScrClosure *cb, ScrStr *message) {
-  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
-  if (scr_child_err_code) scr_error_set_code(error, scr_child_err_code);
-  else if (scr_child_writer_err_code) scr_error_set_code(error, scr_child_writer_err_code);
+  ScrError *error;
+  if (scr_event_error_payload != NULL) {
+    /* A failed spawn's error object, shared by every listener. */
+    error = scr_error_retain(scr_event_error_payload);
+  } else {
+    error = scr_error_new(SCR_ERR_ERROR, message);
+    if (scr_child_err_code) scr_error_set_code(error, scr_child_err_code);
+    else if (scr_child_writer_err_code) scr_error_set_code(error, scr_child_writer_err_code);
+  }
   ScrDyn *arg = scr_dyn_from_error(error);
   scr_error_release(error);
   scr_child_dyn_fire(cb, &arg, 1);

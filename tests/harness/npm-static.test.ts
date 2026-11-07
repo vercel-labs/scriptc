@@ -190,6 +190,83 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
+  // A tsconfig path that maps a name onto an opted-in package's JavaScript
+  // is a project edge of whichever program file spells it. The package
+  // ships no declarations, so only its JavaScript types the import, and
+  // that file joins the program as a root: named from the entry and from a
+  // module the entry imports alike.
+  test.each(["direct", "through a helper module"])(
+    "a path alias into an opted-in package compiles (%s)",
+    async (shape) => {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-alias-root-"));
+      try {
+        const pkg = join(dir, "node_modules", "rawpad");
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(
+          join(pkg, "package.json"),
+          JSON.stringify({ name: "rawpad", version: "1.0.0", type: "module", main: "./index.js" }),
+        );
+        writeFileSync(
+          join(pkg, "index.js"),
+          [
+            "/**",
+            " * @param {string} text",
+            " * @param {number} width",
+            " * @returns {string}",
+            " */",
+            "export function pad(text, width) {",
+            '  return text.padStart(width, ".");',
+            "}",
+            "",
+          ].join("\n"),
+        );
+        writeFileSync(
+          join(dir, "tsconfig.json"),
+          JSON.stringify({
+            compilerOptions: {
+              strict: true,
+              module: "nodenext",
+              moduleResolution: "nodenext",
+              paths: { padding: ["./node_modules/rawpad/index.js"] },
+            },
+          }),
+        );
+        writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+        writeFileSync(
+          join(dir, "helper.ts"),
+          'import { pad } from "padding";\nexport const padded = (text: string): string => pad(text, 4);\n',
+        );
+        const entry = join(dir, "main.ts");
+        writeFileSync(
+          entry,
+          shape === "direct"
+            ? 'import { pad } from "padding";\nconsole.log(pad("a", 4));\n'
+            : 'import { padded } from "./helper.ts";\nconsole.log(padded("a"));\n',
+        );
+        const npmStatic = ["rawpad"];
+        const { coverage } = analyze(entry, { npmStatic });
+        expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+        expect(coverage.npmStatic).toEqual([{ package: "rawpad", status: "static" }]);
+        const outDir = join(dir, "out");
+        const result = await compile(entry, {
+          backend: "llvm",
+          npmStatic,
+          sanitize,
+          outDir,
+          outPath: join(outDir, "program"),
+        });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const run = await runBinary(result.binaryPath, []);
+        expect(run.stdout.toString("utf8")).toBe("...a\n");
+        expect(run.exitCode).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
   // A bare string that merely names a package is not a load. The type-only
   // reachability pass and the reexport planner over-approximate calls (any
   // call with a leading string literal is an edge), so a package named only

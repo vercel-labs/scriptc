@@ -846,13 +846,11 @@ function entryPackageProgramRoots7(
   const roots = new Set<string>();
   /** The file an edge adds to the roots, or null: a file the program
    * already holds, or an edge that names no compiled JavaScript. */
-  const rootOf = (
-    from: string,
-    spec: string,
-    kind: "import" | "require",
-    ownsProjectEdges: boolean,
-  ): string | null => {
-    const target = ownsProjectEdges ? resolveProjectModule(from, spec) : null;
+  const rootOf = (from: string, spec: string, kind: "import" | "require"): string | null => {
+    // The project edge, from any program file: a relative import, or a
+    // tsconfig path, that lands on the entry package's JavaScript or on an
+    // opted-in package's.
+    const target = resolveProjectModule(from, spec);
     if (
       target !== null &&
       (belongsToEntry(target) || npmStaticPackageOfPath(target) !== null) &&
@@ -885,17 +883,9 @@ function entryPackageProgramRoots7(
   };
   for (const sf of program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile) continue;
-    // The project edges of the entry package and of opted-in packages.
-    const ownsProjectEdges =
-      belongsToEntry(sf.fileName) || npmStaticPackageOfPath(sf.fileName) !== null;
     for (const specifier of sf.imports) {
       if (!ts.isStringLiteralLike(specifier)) continue;
-      const root = rootOf(
-        sf.fileName,
-        specifier.text,
-        moduleSpecifierKind7(specifier),
-        ownsProjectEdges,
-      );
+      const root = rootOf(sf.fileName, specifier.text, moduleSpecifierKind7(specifier));
       if (root !== null) roots.add(root);
     }
   }
@@ -904,7 +894,7 @@ function entryPackageProgramRoots7(
     for (const file of roots) {
       if (npmStaticPackageOfPath(file) === null) continue;
       for (const edge of packageRoots.edges(file)) {
-        const root = rootOf(file, edge.specifier, edge.kind, true);
+        const root = rootOf(file, edge.specifier, edge.kind);
         if (root !== null) roots.add(root);
       }
     }

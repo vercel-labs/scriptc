@@ -7678,6 +7678,19 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
     scr_closure_release(clo);
     return original;
   }
+#ifdef SCR_NODE_ISLANDS
+  /* A signature adapter over a view of a Node island's function is still
+   * that function: its box is the island's own handle, so it compares equal
+   * to the function and crosses back into the island as it. */
+  if (clo->identity != NULL && scr_ni_dyn_ops != NULL &&
+      scr_ni_dyn_ops->function_of_identity != NULL) {
+    ScrDyn *island = scr_ni_dyn_ops->function_of_identity(clo->identity);
+    if (island != NULL) {
+      scr_closure_release(clo);
+      return island;
+    }
+  }
+#endif
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_FUNC);
   d->v.fn.clo = clo;
   d->v.fn.thunk = thunk;

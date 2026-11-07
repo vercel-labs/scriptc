@@ -38,6 +38,17 @@ const loose: (n: number, extra?: string) => number = double;
 const wide: (n: number) => unknown = double;
 console.log(loose === view, wide === view, loose === wide);
 
+// A view assigned on to a slot of another signature is a second adapter over
+// the first. It is still the function: boxed, compared with the export, and
+// handed back to the island.
+const rewide: (n: number) => unknown = view;
+const again: unknown = rewide;
+console.log(again === double, isDouble(rewide), rewide === view, wide === double);
+const boxedWide: unknown = wide;
+const boxedLoose: unknown = loose;
+console.log(boxedWide === double, isDouble(wide), boxedLoose === double, isDouble(loose));
+console.log(isDouble(boxedLoose), typeof boxedWide, typeof rewide);
+
 // Held as unknown, and narrowed back.
 const hidden: unknown = double;
 console.log(hidden === double, hidden === view, hidden === compare, typeof hidden);

@@ -4238,6 +4238,8 @@ function buildLibFnSignatures() {
     "dyn.propertyKey": { argTypes: [DYN], result: DYN },
     "dyn.toNumeric": { argTypes: [DYN], result: DYN },
     "dyn.increment": { argTypes: [DYN, BOOL], result: DYN },
+    /** Unary minus: ToNumeric, then the negation of that number or BigInt. */
+    "dyn.negate": { argTypes: [DYN], result: DYN },
     /** JS ToNumber over a dyn value WITH the object protocol (number-hint
      * valueOf/toString ordering; user throws propagate). Borrowed dyn;
      * f64 result, or a throw. Used by statically lowered numeric coercions
@@ -4272,6 +4274,7 @@ function buildLibFnSignatures() {
     "js.compare": { argTypes: [JSVAL, JSVAL, STRING], result: BOOL },
     "js.toNumeric": { argTypes: [JSVAL], result: JSVAL },
     "js.increment": { argTypes: [JSVAL, BOOL], result: JSVAL },
+    "js.negate": { argTypes: [JSVAL], result: JSVAL },
     "js.toNumberCoerce": { argTypes: [JSVAL], result: F64 },
     // Always throws; the result is the READ's declared type (a typed dummy
     // the unwind abandons) — the libCall case skips the result check.

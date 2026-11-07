@@ -576,6 +576,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyKey",
   "dyn.toNumeric",
   "dyn.increment",
+  "dyn.negate",
   // The dynamic-tier operators run the same coercions (scr_js_value.c), and
   // js.toF64 throws dynCheck's TypeError for a non-number.
   "js.toF64",
@@ -585,6 +586,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "js.compare",
   "js.toNumeric",
   "js.increment",
+  "js.negate",
   "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",

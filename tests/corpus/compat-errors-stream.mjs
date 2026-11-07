@@ -39,6 +39,27 @@ await new Promise((resolve) => {
   readable.push(null);
 });
 
+// unshift() of a chunk that adds nothing — an empty string, an empty view,
+// undefined — in a byte-mode stream's 'end' listener reports nothing.
+await new Promise((resolve) => {
+  const readable = new Readable({ read() {} });
+  readable.on("error", (e) => show("unshift nothing after end", e));
+  readable.on("data", (chunk) => console.log("data", String(chunk)));
+  readable.on("end", () => {
+    console.log("end");
+    readable.unshift("");
+    readable.unshift(Buffer.alloc(0));
+    readable.unshift(undefined);
+    console.log("unshift nothing", readable.errored === null, readable.destroyed);
+  });
+  readable.on("close", () => {
+    console.log("closed", readable.destroyed, readable.errored !== null);
+    resolve(undefined);
+  });
+  readable.push("one");
+  readable.push(null);
+});
+
 // write() after end(), and after destroy().
 await new Promise((resolve) => {
   const writable = new Writable({ write(chunk, encoding, callback) { callback(); } });

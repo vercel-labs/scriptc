@@ -7038,6 +7038,9 @@ static bool scr_stream_unshift_after_end(ScrStream *s) {
 
 void scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
   ScrStreamState *st = s->st;
+  /* A byte-mode stream drops a chunk that adds nothing before the 'end'
+   * check, as readableAddChunkUnshiftByteMode returns early for one. */
+  if (!((st->has_r && st->r.object_entries) || chunk->len > 0)) return;
   if (scr_stream_unshift_after_end(s)) return;
   if (st->r.head_off > 0) {
     /* materialize the part-read head so the front slot is whole */
@@ -7073,8 +7076,12 @@ void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
     scr_stream_push_null(s);
     return;
   }
+  bool object = st->has_r && st->r.object_entries;
+  if (!object && (d->kind == SCR_DYN_UNDEF || (d->kind == SCR_DYN_STR && d->v.str->len == 0) ||
+                  (d->kind == SCR_DYN_BYTES && d->v.bytes->len == 0)))
+    return; /* nothing to add: Node answers without complaint, even after 'end' */
   if (scr_stream_unshift_after_end(s)) return;
-  if (st->has_r && st->r.object_entries) {
+  if (object) {
     void *entry;
     ScrEntryKind kind;
     if (d->kind == SCR_DYN_STR) {

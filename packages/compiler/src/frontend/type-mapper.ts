@@ -5847,6 +5847,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (viaMapped) return viaMapped;
     const viaAlias = mapGenericUtilityAlias(widened, ctx);
     if (viaAlias) return viaAlias;
+    const viaOmit = mapBoundOmitAlias(widened, ctx);
+    if (viaOmit !== undefined) return viaOmit;
     const record = mapRecordType(widened, ctx);
     if (record) return record;
   }
@@ -7835,6 +7837,86 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
     shapes.inheritDeclaredOrder(shapeId, originalOrder, bound.shapeId);
   }
   return { kind: "record", shapeId };
+}
+
+/** `Omit<X, K>` over a STILL-GENERIC source inside an instance body, with
+ * literal keys: X is one type parameter the instance binds to a closed
+ * record, alone or intersected with object types (the rest type of `const {
+ * a, ...rest } = item as T & { icons?: unknown }` is `Omit<T & { icons?:
+ * unknown }, "a" | "icons">`). The checker resolves the alias's members
+ * through the parameter's CONSTRAINT, so the member walk would build the
+ * constraint's fields and miss every field the binding adds: a rest copy
+ * typed that way drops them, where JavaScript copies every own property the
+ * pattern did not name. The binding names the real fields, and Omit keeps
+ * the ones outside K. A result with no field left is the top type (`{}`),
+ * as the checker's own rest type of a fully consumed source is.
+ *
+ * An intersected object type that contributes a member of its own to the
+ * result has no slot in the binding's layout: the type is unmapped (null)
+ * when the member walk would also lose one of the binding's fields, and
+ * left to that walk when it names them all. Undefined (the member walk
+ * decides, as before) for a source bound to anything but a closed record
+ * and for non-literal keys. `Pick<X, K>` needs no twin: its keys are keys
+ * of the constraint, and each member is `X[K]`, which already resolves
+ * against the binding. */
+function mapBoundOmitAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | null | undefined {
+  const { checker, resolveTypeParam, shapes } = ctx;
+  if (!resolveTypeParam) return undefined;
+  const alias = widened.getAliasSymbol();
+  if (!alias || ts.symbolName(alias) !== "Omit") return undefined;
+  const aliasArgs = widened.getAliasTypeArguments();
+  const source = aliasArgs[0];
+  const keys = aliasArgs[1];
+  if (aliasArgs.length !== 2 || !source || !keys) return undefined;
+  const parts = source.isIntersectionType() ? ts.constituentTypes(source) : [source];
+  const params = parts.filter((part) => (part.flags & ts.TypeFlags.TypeParameter) !== 0);
+  const param = params[0];
+  if (params.length !== 1 || !param) return undefined;
+  // Provenance: the STANDARD LIBRARY's alias, not a user's shadowing one.
+  const isLibAlias = alias.declarations.some(
+    (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+  );
+  if (!isLibAlias) return undefined;
+  const bound = resolveTypeParam(param);
+  if (!bound || bound.kind !== "record") return undefined;
+  const shape = shapes.get(bound.shapeId);
+  // Index-signature and tuple bindings keep their own rules; reserved
+  // slots (accessors, hidden members) are not data a key filter copies.
+  if (!shape || shape.tuple || shape.indexValue !== undefined) return undefined;
+  if (shape.fields.some((f) => f.name.startsWith("%"))) return undefined;
+  const omitted = new Set<string>();
+  for (const key of keys.isUnionType() ? ts.constituentTypes(keys) : [keys]) {
+    if (key.flags & ts.TypeFlags.Never) continue;
+    if (key.isStringLiteralType()) omitted.add(key.value);
+    else if (key.isNumberLiteralType()) omitted.add(String(key.value));
+    else return undefined;
+  }
+  const fields = shape.fields.filter((f) => !omitted.has(f.name)).map((f) => ({ ...f }));
+  // An intersected object type may only restate the binding's fields or
+  // declare members the filter removes (`icons` above).
+  const ownMember = parts.some(
+    (part) =>
+      part !== param &&
+      (!(part.flags & ts.TypeFlags.Object) ||
+        checker.getIndexInfosOfType(part).length > 0 ||
+        checker.getCallSignatures(part).length > 0 ||
+        checker.getConstructSignatures(part).length > 0 ||
+        checker
+          .getPropertiesOfType(part)
+          .some(
+            (property) =>
+              !omitted.has(ts.symbolName(property)) &&
+              !shape.fields.some((f) => f.name === ts.symbolName(property)),
+          )),
+  );
+  if (ownMember) {
+    const walked = new Set(checker.getPropertiesOfType(widened).map((p) => ts.symbolName(p)));
+    return fields.every((f) => walked.has(f.name)) ? undefined : null;
+  }
+  if (fields.length === 0) return DYN;
+  // Mapped types preserve property order: the binding's, filtered.
+  const order = shape.declaredOrder?.filter((name) => !omitted.has(name));
+  return { kind: "record", shapeId: shapes.intern(fields, false, undefined, order) };
 }
 
 /** The UNIT-ONLY slot type: the interned `null | undefined` union, the one

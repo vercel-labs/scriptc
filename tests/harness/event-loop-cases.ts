@@ -229,4 +229,16 @@ export const eventLoopCases: EventLoopCase[] = [
       end: true,
     },
   },
+  {
+    title: "stdin as a Readable: read() and async iteration yield Buffers",
+    fixture: "../node-types/stdin-readable-iteration.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "first\n" },
+        { delayMs: 150, data: "second\n" },
+        { delayMs: 150, data: "third\n" },
+      ],
+      end: true,
+    },
+  },
 ];

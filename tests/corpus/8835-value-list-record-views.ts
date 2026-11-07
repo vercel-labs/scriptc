@@ -4,8 +4,8 @@
 // skipped and a present undefined is listed.
 interface Slots {
   first: object;
-  second?: object;
   third: unknown;
+  second?: object;
 }
 const slots: Slots = { first: { n: 1 }, third: "three" };
 console.log(Object.values(slots).map((value) => JSON.stringify(value)).join(","));
@@ -16,7 +16,7 @@ console.log(
     .map((value) => (value as { n: number }).n)
     .join(","),
 );
-const explicit: Slots = { first: {}, second: undefined, third: undefined };
+const explicit: Slots = { first: {}, third: undefined, second: undefined };
 console.log(
   Object.values(explicit).length,
   Object.values(explicit).map((value) => String(value)).join(","),

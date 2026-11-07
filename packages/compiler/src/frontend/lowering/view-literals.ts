@@ -11,18 +11,20 @@
  * stores later, so the declared type decides what the literal's members
  * hold, as it does for a literal built at a record type:
  *
- * - A literal with no accessor is a record seen through a live reference.
- *   The record has the declared type's slots (viewLiteralStorage): a data
- *   member has the type the declared type gives it, and a member the
- *   declared type makes optional and the literal leaves out is a slot too,
- *   absent until a write through the view.
- * - A literal with an accessor is the dynamic object itself: an accessor is
- *   a property of that object, and a record's accessor slots have no live
- *   view (every read through one would copy the record). Its array and
- *   object members are built at their declared types and held by reference
- *   (lowerDeclaredMemberLiteral), so a typed read of the member answers the
- *   array the object holds, not a copy of a dynamic one. The same holds for
- *   a fresh literal stored into a member of a view later.
+ * - A literal with no accessor that is returned, passed or stored at the
+ *   declared type is a record seen through a live reference. The record has
+ *   the declared type's slots (viewLiteralStorage): a data member has the
+ *   type the declared type gives it, and a member the declared type makes
+ *   optional and the literal leaves out is a slot too, absent until a write
+ *   through the view.
+ * - A literal with an accessor, and any literal that initializes a
+ *   declaration annotated with the view, is the dynamic object itself: an
+ *   accessor is a property of that object, and a record's accessor slots
+ *   have no live view (every read through one would copy the record). Its
+ *   array and object members are built at their declared types and held by
+ *   reference (lowerDeclaredMemberLiteral), so a typed read of the member
+ *   answers the array the object holds, not a copy of a dynamic one. The
+ *   same holds for a fresh literal stored into a member of a view later.
  *
  * The literal's own key order is kept; added optional members follow it. */
 import { DYN, accessorSlotProp } from "../../ir/ir.js";
@@ -96,17 +98,14 @@ export function viewLiteralStorage(
       ownShape.fields.filter((field) => !field.name.startsWith("%")).map((field) => field.name)),
     ...added,
   ];
-  return { kind: "record", shapeId: lowerer.shapes.intern(fields, false, undefined, order) };
-}
-
-/** Whether `literal` flows into a view and has a record type of its own: it
- * then lowers as an expression (lowerObjectLiteral picks the record behind
- * the view or the dynamic object). A literal with no record of its own (a
- * method that reads `this`) builds as the dynamic object directly. */
-export function isViewLiteral(lowerer: Lowerer, literal: ts.ObjectLiteralExpression): boolean {
-  const contextual = lowerer.checker.getContextualType(literal);
-  if (contextual === undefined || viewTargetOf(lowerer, contextual) === null) return false;
-  return lowerer.mapTypeOf(lowerer.typeOf(literal))?.kind === "record";
+  const storage: RecordType = {
+    kind: "record",
+    shapeId: lowerer.shapes.intern(fields, false, undefined, order),
+  };
+  // The record is seen through a live reference, so it must be a value the
+  // checked-dynamic tier can hold; one that is not keeps the literal's own
+  // layout and whatever that layout's conversion reports.
+  return lowerer.dynConvertible(storage) ? storage : null;
 }
 
 /** A fresh array or object literal written into a member of a view (a

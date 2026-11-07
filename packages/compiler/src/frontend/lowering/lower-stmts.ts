@@ -70,7 +70,7 @@ import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
-import { isViewLiteral, lowerDeclaredMemberLiteral, viewTargetOf } from "./view-literals.js";
+import { lowerDeclaredMemberLiteral, viewTargetOf } from "./view-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
 import { nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
@@ -7763,12 +7763,13 @@ function lowerVariableInitializer(
   }
 
   if (expected?.kind === "dyn") {
-    // A declared type that is a checked-identity view: the literal lowers
-    // as it does when it is returned or passed at that type
-    // (view-literals.ts). A literal with no record of its own (a method
-    // that reads `this`) builds as the dynamic object.
-    const viewed = isViewLiteral(lowerer, value) ? tryLowerExpression(lowerer, node) : null;
-    return viewed ?? lowerDynObjectLiteral(lowerer, value);
+    // The dynamic object of a checked-identity view holds its array and
+    // object members at their declared types (view-literals.ts).
+    const contextual = isJsSourceFile(ts.getSourceFileOfNode(value))
+      ? undefined
+      : lowerer.checker.getContextualType(value);
+    const view = contextual !== undefined && viewTargetOf(lowerer, contextual) !== null;
+    return lowerDynObjectLiteral(lowerer, value, undefined, false, view);
   }
 
   const previous = new Map<ts.Expression, IrExpr | undefined>();

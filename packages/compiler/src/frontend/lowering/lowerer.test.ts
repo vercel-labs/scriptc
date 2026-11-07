@@ -525,6 +525,22 @@ test("the lifted-function index answers what a scan of the list answers", () => 
   const later = named("%helper.c");
   lowerer.liftedFns.push(later);
   expect(lowerer.liftedFnNamed("%helper.c")).toBe(later);
+  // record-links.ts removes helpers from the middle of the list
+  // (restoreStringConversions): the functions behind them move down, and one
+  // pushed afterwards lands where the index had already been.
+  lowerer.liftedFns.splice(before + 1, 1);
+  const afterRemoval = named("%helper.d");
+  lowerer.liftedFns.push(afterRemoval);
+  for (const name of ["%helper.a", "%helper.b", "%helper.c", "%helper.d"])
+    expect(lowerer.liftedFnNamed(name)).toBe(scanned(name));
+  expect(lowerer.liftedFnNamed("%helper.b")).toBeUndefined();
+  expect(lowerer.liftedFnNamed("%helper.d")).toBe(afterRemoval);
+  // Removing the first of two functions with one name leaves the second.
+  lowerer.liftedFns.splice(before, 1);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(scanned("%helper.a"));
+  expect(lowerer.liftedFnNamed("%helper.a")).not.toBe(first);
+  lowerer.liftedFns.splice(before, 0, first);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(first);
   // The unit journal cuts the list back and tells the index.
   const table = lowerer.journalTables().find((entry) => entry.name === "liftedFns")!;
   table.truncate!(before + 1);

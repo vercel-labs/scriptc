@@ -4514,10 +4514,13 @@ export class Lowerer {
   /** web-streams-dyn.ts's answer: whether a TypeScript source uses a web
    * stream operation the native streams lack; undefined until asked. */
   typedWebStreams: boolean | undefined = undefined;
-  /** The first lifted function of each name (liftedFnNamed), for the
-   * liftedFns indexed so far. liftedFns only grows. */
+  /** The first lifted function of each name (liftedFnNamed), for the first
+   * liftedFnsIndexed entries of liftedFns, and the last of those entries.
+   * liftedFns mostly grows; the unit journal cuts it back and record-links.ts
+   * removes helpers from its middle, and liftedFnNamed notices either. */
   private readonly liftedFnsByName = new Map<string, IrFunction>();
   private liftedFnsIndexed = 0;
+  private liftedFnsLast: IrFunction | undefined = undefined;
   /** Runtime-provided classes used as values (defineClassValueConstruct),
    * by IR class name. */
   readonly runtimeClassValues = new Map<string, ClassInfo>();
@@ -4806,13 +4809,25 @@ export class Lowerer {
     }
   }
   /** The first lifted function named `name`: the one a search of
-   * `liftedFns` from the front finds. Every lookup of a lifted function by
+   * `liftedFns` from the front finds, whatever was pushed to or removed from
+   * the list since the last lookup. Every lookup of a lifted function by
    * name goes through here; a search of the list reads each lifted function
    * of the program at every lookup (lowerer.test.ts keeps searches out). */
   liftedFnNamed(name: string | undefined): IrFunction | undefined {
-    for (; this.liftedFnsIndexed < this.liftedFns.length; this.liftedFnsIndexed++) {
-      const fn = this.liftedFns[this.liftedFnsIndexed]!;
-      if (!this.liftedFnsByName.has(fn.name)) this.liftedFnsByName.set(fn.name, fn);
+    const fns = this.liftedFns;
+    // Removing an indexed entry moves another function, or nothing, into the
+    // last indexed position: the index then describes a list that no longer
+    // exists, and is rebuilt.
+    if (this.liftedFnsIndexed > 0 && fns[this.liftedFnsIndexed - 1] !== this.liftedFnsLast) {
+      this.liftedFnsByName.clear();
+      this.liftedFnsIndexed = 0;
+    }
+    if (this.liftedFnsIndexed < fns.length) {
+      for (; this.liftedFnsIndexed < fns.length; this.liftedFnsIndexed++) {
+        const fn = fns[this.liftedFnsIndexed]!;
+        if (!this.liftedFnsByName.has(fn.name)) this.liftedFnsByName.set(fn.name, fn);
+      }
+      this.liftedFnsLast = fns[fns.length - 1];
     }
     return name === undefined ? undefined : this.liftedFnsByName.get(name);
   }
@@ -4868,6 +4883,7 @@ export class Lowerer {
         () => {
           this.liftedFnsByName.clear();
           this.liftedFnsIndexed = 0;
+          this.liftedFnsLast = undefined;
         },
       ),
       countTable("closureNameCounts", this.closureNameCounts),
@@ -5264,6 +5280,7 @@ export class Lowerer {
     "deferredModuleInitializers",
     "liftedFnsIndexed",
     "liftedFnsByName",
+    "liftedFnsLast",
     "reachable",
     "reachableForArtifacts",
     "constructedClasses",

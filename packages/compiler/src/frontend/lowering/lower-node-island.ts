@@ -1372,6 +1372,21 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
     return freshLiteral(lowerer, inner);
   }
+  // `console` passed into an island is the island's own console: Node's
+  // console object, which `require("console")` answers there. Island code
+  // then sees `logger === console`, and its calls print through Node's
+  // console in the same process. The native console is a handle, which
+  // has no by-reference export.
+  if (ts.isIdentifier(inner) && lowerer.isStdlibGlobal(inner, "console")) {
+    const loc = locOf(node);
+    return {
+      kind: "libCall",
+      fn: "nodeIsland.require",
+      args: [{ kind: "strLit", value: "console", type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+  }
   // The value as the dyn box the runtime crosses. A representation the
   // conversion cannot box (a union with a generator arm, an `Iterable<T>`
   // the program holds as one of several native kinds) has no island export:

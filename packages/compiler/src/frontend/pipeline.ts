@@ -53,6 +53,9 @@ import {
   isStringLiteral,
   isStringLiteralLike,
   SyntaxKind,
+  carriedSourceText,
+  sourceTextIncludes,
+  sourceTextMatches,
   type SourceFile,
 } from "./ts7/adapter.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
@@ -203,7 +206,9 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
     // the keyword has none. Package JavaScript loads its literal require()
     // calls the same way, nested ones included.
     const calls =
-      packageJs || sf.text.includes("import") ? moduleSourceCandidates(load.program, sf).calls : [];
+      packageJs || sourceTextIncludes(sf, "import")
+        ? moduleSourceCandidates(load.program, sf).calls
+        : [];
     for (const call of calls) {
       const arg = call.arguments.nodes[0];
       if (arg === undefined || !isStringLiteralLike(arg)) continue;
@@ -381,7 +386,7 @@ function detectAutoPackages(
       !sf.fileName.includes("/node_modules/") &&
       // Any spelling of a call (`require (`, a comment before the paren):
       // the syntax scan below decides.
-      /\brequire\b/.test(sf.text)
+      sourceTextMatches(sf, /\brequire\b/)
     ) {
       const topLevel = new Set(edges.map((e) => `${e.spec}@${e.loc.start}`));
       for (const call of moduleSourceCandidates(load.program, sf).calls) {
@@ -1189,7 +1194,7 @@ function loadFrontend(
           finalLoad.entry,
           ...finalLoad.moduleOrder,
           ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
-        ].map((sf) => [sf.fileName, sf.text]),
+        ].map((sf) => [sf.fileName, carriedSourceText(sf)]),
       );
       // SC8004 and type patch diagnostics point into the project's
       // package.json.

@@ -52,6 +52,16 @@ export interface FrontendInputExclusions {
   outputDirectories?: readonly string[];
 }
 
+/** The prefix of every scratch name the compiler creates beside an output
+ * while it builds: privateSiblingPath's `.scriptc-<label>-<pid>-<random>`
+ * files and the `.scriptc-native-`, `.scriptc-library-`, `.scriptc-dsym-`
+ * and `.scriptc-exe-bin-` staging entries. A build of the same project may
+ * be running, or may have died, at any time, so a directory that holds an
+ * output can hold such an entry whenever it is listed. No program reaches
+ * one through a listing: project file discovery skips names that start
+ * with a dot, and an import of one probes its exact path. */
+export const COMPILER_SCRATCH_PREFIX = ".scriptc-";
+
 function frontendSourceDigest(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
@@ -578,6 +588,8 @@ export function changedFrontendInput(
   const outputDirectories = new Set(
     [...(exclusions.outputDirectories ?? [])].map((path) => resolve(path)),
   );
+  // Directories that hold one of the build's outputs.
+  const outputParents = new Set([...outputPaths].map((output) => dirname(output)));
   const generatedOnlyDirectory = (directory: string): boolean => {
     const allowedFiles = new Set<string>();
     for (const output of outputPaths) {
@@ -592,6 +604,7 @@ export function changedFrontendInput(
     try {
       return readdirSync(directory).every((name) => {
         if (allowedFiles.has(name)) return true;
+        if (allowedFiles.size > 0 && name.startsWith(COMPILER_SCRATCH_PREFIX)) return true;
         const child = allowedDirectories.get(name);
         return child !== undefined && generatedOnlyDirectory(child);
       });
@@ -684,11 +697,15 @@ export function changedFrontendInput(
           }
           files.sort();
           directories.sort();
+          // The compiler's scratch entries beside an output come and go with
+          // each build, in the listing that was recorded and in this one.
+          const scratch = outputParents.has(probe.path);
+          const kept = (name: string): boolean =>
+            !ignored.has(name) && !(scratch && name.startsWith(COMPILER_SCRATCH_PREFIX));
           return (
-            JSON.stringify(files.filter((name) => !ignored.has(name))) ===
-              JSON.stringify(probe.files.filter((name) => !ignored.has(name))) &&
-            JSON.stringify(directories.filter((name) => !ignored.has(name))) ===
-              JSON.stringify(probe.directories.filter((name) => !ignored.has(name)))
+            JSON.stringify(files.filter(kept)) === JSON.stringify(probe.files.filter(kept)) &&
+            JSON.stringify(directories.filter(kept)) ===
+              JSON.stringify(probe.directories.filter(kept))
           );
         } catch {
           return false;

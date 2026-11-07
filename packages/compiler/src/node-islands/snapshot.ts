@@ -51,7 +51,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveBuildCacheRoot } from "../backend/cache-root.js";
-import type { IrExpr, IrModule } from "../ir/ir.js";
+import type { IrExpr, IrModule, IrStmt } from "../ir/ir.js";
 import { readProjectConfig } from "../project-config.js";
 import { effectGate } from "./effect-gate.js";
 import { packageDirOf } from "./origin.js";
@@ -76,6 +76,170 @@ function deferCalls(mod: IrModule): DeferCall[] {
   walk(mod.functions);
   walk(mod.globals);
   return found;
+}
+
+/** A module initializer (`%init.<n>`, lowerFileInit). */
+function isModuleInit(name: string): boolean {
+  return name.startsWith("%init");
+}
+
+/** A statement list as the statements control passes through in order:
+ * blocks and guarded bodies opened up. */
+function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] {
+  for (const s of stmts) {
+    if (s.kind === "block") flatStatements(s.body, out);
+    else if (s.kind === "tryCatch") {
+      flatStatements(s.tryBody, out);
+      if (s.finallyBody !== null) flatStatements(s.finallyBody, out);
+    } else out.push(s);
+  }
+  return out;
+}
+
+/** The deferred loads in the order the program reaches them while its
+ * modules evaluate, then the rest in IR order.
+ *
+ * The probe loads every candidate in one process, so the order is part of
+ * what it records: a file two candidates share evaluates in the load of
+ * whichever comes first, with its effects, inputs and environment reads,
+ * and the other's record of it is empty; and "a later island module's load
+ * changes its exports" compares against the modules loaded before. Both
+ * are only true of the program when the probe loads the modules in the
+ * program's order. IR order is not that order: a module's initializer
+ * comes after those of the modules it imports, so an importer's first
+ * island import would be probed after the island imports of its later
+ * dependencies.
+ *
+ * The walk follows the entry: each initializer's statements in order, into
+ * another module's initializer where it is called (`%init.<n>`, once, as
+ * the run-once guard has it), and through a sequence (`seqExpr`): an inline
+ * require() lowers to the required module's %init ahead of its export read,
+ * both at the require's position. Any other expression is followed through
+ * what it holds, in the order it is written, so a load is reached where its
+ * expression is (`typeof require("pkg").name === "function"`). A part of an
+ * expression that runs only when a condition holds (the right operand of
+ * `&&`, `||` or `??`, an arm of a `?:`, the body of an optional chain) is
+ * followed after the loads the walk reaches, in the order it is written: the
+ * program may not evaluate it, and ordering it ahead of the loads that do
+ * happen would let it take a shared file's effects from them. An
+ * initializer that awaits is left there and taken up again after the code
+ * that called it, in the order of the awaits, as module evaluation continues
+ * with later siblings while one is suspended. Loads the walk does not reach
+ * (inside functions, dynamic imports, loops) keep IR order after it.
+ *
+ * The order is a best guess wherever the program has a choice: the
+ * conditional part of an expression is placed last, both branches of a
+ * selection where they are written. A run that takes the other way
+ * evaluates a file two loads share in the other load, so the decisions do
+ * not rest on the order for that (loadReads). */
+export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
+  const functions = new Map<string, IrModule["functions"][number]>();
+  for (const fn of mod.functions) if (typeof fn.name === "string") functions.set(fn.name, fn);
+  const entered = new Set<string>();
+  const reached = new Set<DeferCall>();
+  const ordered: DeferCall[] = [];
+  const suspended: { stmts: IrStmt[]; at: number }[] = [];
+  const conditional: IrExpr[] = [];
+  /** Evaluates what the walk follows of `e`; true when it awaits. */
+  function evaluate(e: IrExpr): boolean {
+    if (e.kind === "libCall" && e.fn === "nodeIsland.defer") {
+      if (!reached.has(e)) {
+        reached.add(e);
+        ordered.push(e);
+      }
+      return false;
+    }
+    if (e.kind === "call" && isModuleInit(e.callee)) {
+      enter(e.callee);
+      return false;
+    }
+    if (e.kind === "seqExpr") {
+      // An inline require() lowers to the required module's %init ahead of
+      // the export read, both where the require is written.
+      for (const s of e.stmts) if (statement(s)) return true;
+      return evaluate(e.result);
+    }
+    if (e.kind === "awaitExpr") {
+      evaluate(e.value);
+      return true;
+    }
+    if (e.kind === "intrinsic" && e.name === "module.await") {
+      for (const arg of e.args) evaluate(arg);
+      return true;
+    }
+    // A part that the program evaluates only when a condition holds is kept
+    // for after the loads the walk reaches: it may not run at all, and where
+    // it does it cannot be placed ahead of a load that always does.
+    if (e.kind === "logical" || e.kind === "nullish" || e.kind === "orDefault") {
+      conditional.push(e.right);
+      return evaluate(e.left);
+    }
+    if (e.kind === "ternary") {
+      conditional.push(e.then, e.else_);
+      return evaluate(e.cond);
+    }
+    if (e.kind === "optChain") {
+      conditional.push(e.body);
+      return evaluate(e.receiver);
+    }
+    // Any other expression: what it holds, in the order it is written. A
+    // comparison, a member read, a `typeof`, a call's arguments: an inline
+    // require() inside any of them keeps its initializer there.
+    return within(e);
+  }
+  /** Follows the expressions `node` holds (a sequence is the only
+   * expression that holds statements); true when one of them awaits. */
+  function within(node: object): boolean {
+    let awaits = false;
+    const fields = node as Record<string, unknown>;
+    for (const key in fields) {
+      if (key === "loc" || key === "type") continue;
+      const value = fields[key];
+      for (const part of Array.isArray(value) ? value : [value]) {
+        if (part === null || typeof part !== "object") continue;
+        if (typeof (part as { kind?: unknown }).kind === "string")
+          awaits = evaluate(part as IrExpr) || awaits;
+        else awaits = within(part) || awaits;
+      }
+    }
+    return awaits;
+  }
+  /** Evaluates what the walk follows of `s`; true when it awaits. */
+  function statement(s: IrStmt): boolean {
+    if (s.kind === "exprStmt") return evaluate(s.expr);
+    if (s.kind === "assign") return evaluate(s.value);
+    if (s.kind === "varDecl") return s.init !== null && evaluate(s.init);
+    if (s.kind === "if") {
+      // The run-once guard returns on a revisit; a fork or worker root is
+      // one branch of a selection.
+      run(flatStatements(s.then), 0);
+      if (s.else_ !== null) run(flatStatements(s.else_), 0);
+    }
+    return false;
+  }
+  function run(stmts: IrStmt[], from: number): void {
+    for (let i = from; i < stmts.length; i++) {
+      const s = stmts[i]!;
+      if (s.kind === "return") return;
+      if (statement(s)) {
+        suspended.push({ stmts, at: i + 1 });
+        return;
+      }
+    }
+  }
+  function enter(name: string): void {
+    if (entered.has(name)) return;
+    entered.add(name);
+    const fn = functions.get(name);
+    if (fn !== undefined) run(flatStatements(fn.body), 0);
+  }
+  if (typeof mod.entry === "string") enter(mod.entry);
+  for (let i = 0; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
+  const resumed = suspended.length;
+  for (let i = 0; i < conditional.length; i++) evaluate(conditional[i]!);
+  for (let i = resumed; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
+  if (ordered.length === 0) return calls;
+  return [...ordered, ...calls.filter((c) => !reached.has(c))];
 }
 
 function pathOf(call: DeferCall): string {
@@ -110,6 +274,59 @@ function traceDecision(d: DeferralDecision): void {
     );
 }
 
+/** What a module's load depends on from outside the island: its own reads
+ * and those of every probed module it shares a file with. */
+interface LoadReads {
+  env: [string, string | null][];
+  tty: [number, boolean][];
+  inputs: string[];
+  volatile: string[];
+  effects: string[];
+}
+
+/** The reads each probed module's snapshot depends on, and the effects
+ * its load answers for. A file that two modules load evaluates once, in the
+ * load of whichever reaches it first, and what that evaluation read (an
+ * environment variable, the terminal, the clock, another input) or did is
+ * in that module's record only. The other module's exports can still hold
+ * values computed from it, and in a run that reaches the other module
+ * first (the first is written under a condition: `flag && require("a")`,
+ * an arm of `?:`, a branch, after an early `return`) the file evaluates,
+ * with its effects, in the other module's load. So the modules of a group
+ * that shares files carry each other's reads and effects: their guards,
+ * and the reasons that keep one of them eager. A module's own come
+ * first. */
+function loadReads(results: ProbeResult[]): Map<ProbeResult, LoadReads> {
+  const parent = results.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  const owner = new Map<string, number>();
+  results.forEach((r, i) => {
+    for (const f of r.files) {
+      const j = owner.get(f);
+      if (j === undefined) owner.set(f, i);
+      else parent[find(i)] = find(j);
+    }
+  });
+  const reads = new Map<ProbeResult, LoadReads>();
+  results.forEach((r, i) => {
+    const group = [r, ...results.filter((other, j) => j !== i && find(j) === find(i))];
+    const env = new Map<string, string | null>();
+    const tty = new Map<number, boolean>();
+    for (const m of group) {
+      for (const [k, v] of m.env) if (!env.has(k)) env.set(k, v);
+      for (const [fd, isTty] of m.tty) if (!tty.has(fd)) tty.set(fd, isTty);
+    }
+    reads.set(r, {
+      env: [...env],
+      tty: [...tty],
+      inputs: [...new Set(group.flatMap((m) => m.inputs))],
+      volatile: [...new Set(group.flatMap((m) => m.volatile))],
+      effects: [...new Set(group.flatMap((m) => m.effects))],
+    });
+  });
+  return reads;
+}
+
 /** Island loads lowering emitted at call sites (`require()`, `import()`). */
 function hasDynamicLoads(mod: IrModule): boolean {
   let found = false;
@@ -140,7 +357,7 @@ export function finalizeDeferredIslands(
   packDir: string | null,
   probeModules: (packDir: string, modules: string[]) => ProbeOutput | string = runProbe,
 ): DeferralDecision[] {
-  const calls = deferCalls(mod);
+  const calls = evaluationOrder(mod, deferCalls(mod));
   if (calls.length === 0) return [];
   const dynamicLoads = hasDynamicLoads(mod);
   const decisions: DeferralDecision[] = [];
@@ -185,6 +402,7 @@ export function finalizeDeferredIslands(
   // against its digests when it opens): only files outside it need guards.
   const tree = mod.nodeIsland?.modules;
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
+  const reads = loadReads(probe.results);
   const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === c.path);
@@ -198,12 +416,23 @@ export function finalizeDeferredIslands(
         snapshotNames(probe, result.root, tree.root)
       )
         return "its exports hold a path of the build machine";
-      const privateEnv = result.env.map(([k]) => k).filter((k) => !publicEnv.has(k));
+      const { env, inputs, volatile, effects } = reads.get(result)!;
+      const privateEnv = env.map(([k]) => k).filter((k) => !publicEnv.has(k));
       if (privateEnv.length > 0)
         return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, whose build-time values its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
       if (c.lazy) return null;
-      if (result.effects.length > 0) return `its load has effects: ${result.effects.join(", ")}`;
-      if (result.inputs.length > 0) return `its load reads ${result.inputs.join(", ")}`;
+      // Its own, or those of a load it shares a file with.
+      const whose = (own: string[]): string =>
+        own.length > 0 ? "its load" : "a load it shares a file with";
+      if (effects.length > 0) return `${whose(result.effects)} has effects: ${effects.join(", ")}`;
+      if (inputs.length > 0) return `${whose(result.inputs)} reads ${inputs.join(", ")}`;
+      // A snapshot written without constants keeps an object's flags and its
+      // object links, and those answer `typeof` without evaluating a module.
+      // An export's type can come from the read as its value can, so a load
+      // that read the clock or a random source does not let the other loads
+      // of its files keep theirs.
+      if (volatile.length > 0 && result.volatile.length === 0)
+        return `${whose(result.volatile)} reads ${volatile.join(", ")}: its snapshot would keep the build's object flags and object links`;
       return null;
     })();
     if (why !== null || result === undefined) {
@@ -241,20 +470,21 @@ export function finalizeDeferredIslands(
   }
   for (const d of deferred) {
     const r = d.result;
+    const { env, tty, volatile } = reads.get(r)!;
     const guards = [
       ...packGuards,
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
-      ...r.env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
-      ...r.tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
+      ...env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
+      ...tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
       ...(lazyMode ? [`M ${component.get(r.path)}`] : []),
     ];
-    const text = encodeSnapshot(probe, r.root!, guards, r.volatile.length === 0);
+    const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
     const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     const notes = [
       d.why,
-      ...(r.env.length > 0 ? [`env guards ${r.env.map(([k]) => k).join(",")}`] : []),
-      ...(r.volatile.length > 0 ? [`volatile ${r.volatile.join(",")}: no constants`] : []),
+      ...(env.length > 0 ? [`env guards ${env.map(([k]) => k).join(",")}`] : []),
+      ...(volatile.length > 0 ? [`volatile ${volatile.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
       lazyMode ? `per-module (component ${component.get(r.path)})` : "evaluated when Node starts",
     ];

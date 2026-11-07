@@ -11,7 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import type { IrModule } from "../ir/ir.js";
-import { finalizeDeferredIslands, probeHostDirectory, type ProbeOutput } from "./snapshot.js";
+import {
+  evaluationOrder,
+  finalizeDeferredIslands,
+  probeHostDirectory,
+  type ProbeOutput,
+} from "./snapshot.js";
 
 const saved = { ...process.env };
 const made: string[] = [];
@@ -135,5 +140,371 @@ describe("environment boot guards", () => {
     expect(decisions[0]!.deferred).toBe(true);
     expect(call.fn).toBe("nodeIsland.defer");
     expect(text).toContain("E 8:NODE_ENV 1 10:production");
+  });
+});
+
+describe("modules that share a file", () => {
+  /** Two island modules, `first` and `second`, probed in that order; the
+   * probe evaluated `common`, a file both load, in `first`'s load, and
+   * what that evaluation did and read is in `first`'s record (`record`). */
+  function sharing(
+    record: Partial<ProbeOutput["results"][number]>,
+    shared = true,
+    on: "first" | "second" = "first",
+  ) {
+    const root = scratch();
+    writeFileSync(join(root, "package.json"), '{ "name": "app" }');
+    const file = (name: string): string => {
+      const dir = join(root, "node_modules", name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name }));
+      writeFileSync(join(dir, "index.js"), "module.exports = {};\n");
+      return join(dir, "index.js");
+    };
+    const [first, second, common] = [file("first"), file("second"), file("common")];
+    const load = (path: string) => ({
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: path },
+        { kind: "strLit", value: "" },
+      ],
+    });
+    const calls = [load(first), load(second)];
+    const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+    const empty = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
+    const probe: ProbeOutput = {
+      results: [
+        {
+          ...empty,
+          ...(on === "first" ? record : {}),
+          path: first,
+          root: 1,
+          files: [first, common],
+        },
+        {
+          ...empty,
+          ...(on === "second" ? record : {}),
+          path: second,
+          root: 2,
+          files: shared ? [second, common] : [second],
+        },
+      ],
+      objects: {
+        "1": { f: 0, p: false, m: [["count", { s: "three" }]] },
+        "2": { f: 0, p: false, m: [["count", { s: "three" }]] },
+      },
+    };
+    const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
+    // An eager load has lost its snapshot argument.
+    const snapshots = calls.map((c) => c.args[1]?.value ?? "");
+    return { decisions, calls, snapshots };
+  }
+
+  test("neither defers when the load that evaluated the file has effects", () => {
+    // The probe reached `first` first, so the shared file's output is in
+    // its record and `second`'s is empty. A run that skips `first` (it is
+    // written under a condition) evaluates the file in `second`'s load.
+    const { decisions, calls } = sharing({ effects: ["process.stdout.write()"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[0]!.reason).toContain("its load has effects");
+    expect(decisions[1]!.reason).toContain("a load it shares a file with has effects");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+  });
+
+  test("it does not matter which of the two the probe reached first", () => {
+    // 41f67e22a1's case: the load with effects is probed after the one
+    // that shares its file.
+    const { decisions } = sharing({ effects: ["process.stdout.write()"] }, true, "second");
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[0]!.reason).toContain("a load it shares a file with has effects");
+  });
+
+  test("neither defers when the load that evaluated the file read an input", () => {
+    // `second`'s exports can hold what the shared file computed from the
+    // input (the arguments, the working directory): not a constant.
+    const { decisions } = sharing({ inputs: ["process.argv"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("a load it shares a file with reads process.argv");
+  });
+
+  test("a module that shares a file whose load read the clock does not defer", () => {
+    // A snapshot written without constants still keeps the object's flags and
+    // its object links, and those answer `typeof` without evaluating the
+    // module: an export's type can come from the read as its value can.
+    const { decisions, calls } = sharing({ volatile: ["Date.now()"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
+    // The module whose own load read the clock keeps its rule: no constants.
+    expect(decisions[1]!.reason).toContain("volatile Date.now(): no constants");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.require"]);
+
+    // The same when the probe reached the other module first.
+    const other = sharing({ volatile: ["Date.now()"] }, true, "second");
+    expect(other.decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(other.decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
+    expect(other.calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.defer"]);
+  });
+
+  test("a module that shares nothing with such a load still defers", () => {
+    for (const record of [{ effects: ["process.stdout.write()"] }, { inputs: ["process.argv"] }])
+      expect(sharing(record, false).decisions.map((d) => d.deferred)).toEqual([false, true]);
+  });
+
+  test("modules that share a file whose loads read nothing and do nothing both defer", () => {
+    expect(sharing({}).decisions.map((d) => d.deferred)).toEqual([true, true]);
+  });
+});
+
+describe("the order deferred loads are probed in", () => {
+  const defer = (path: string) => ({
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [
+      { kind: "strLit", value: path },
+      { kind: "strLit", value: "" },
+    ],
+  });
+  const load = (call: unknown) => ({ kind: "assign", localId: "%g.island.0", value: call });
+  const init = (callee: string) => ({
+    kind: "exprStmt",
+    expr: { kind: "call", callee, args: [] },
+  });
+  // The run-once guard of an initializer, `if (ran) return;` (parsed: an
+  // object literal with a `then` key reads as a thenable to the linter).
+  const guard: unknown = JSON.parse(
+    '{"kind":"if","cond":{},"then":[{"kind":"return","value":null}],"else_":null}',
+  );
+  const paths = (mod: unknown, calls: unknown[]): string[] =>
+    evaluationOrder(mod as IrModule, calls as Parameters<typeof evaluationOrder>[1]).map(
+      (c) => (c.args[0] as { value: string }).value,
+    );
+
+  test("is the program's evaluation order, not the order of the IR's functions", () => {
+    // main.ts: import "a"; import "./dep" (which imports "b"); then its body
+    // requires "c". The IR lists dep's initializer first.
+    const a = defer("a");
+    const b = defer("b");
+    const c = defer("c");
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.7", body: [guard, load(b)] },
+        { name: "%init.0", body: [load(a), init("%init.7"), { kind: "block", body: [load(c)] }] },
+        { name: "%main", body: [init("%init.0")] },
+      ],
+    };
+    expect(paths(mod, [b, a, c])).toEqual(["a", "b", "c"]);
+  });
+
+  test("an inline require() is walked through the sequence it lowers to", () => {
+    // A top-level `require("./dep")` lowers to seqExpr([%init.1 call], read):
+    // the loads inside the required module come where the require is written,
+    // ahead of the ones the rest of the initializer reaches.
+    const required = defer("required");
+    const later = defer("later");
+    const require = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(required)] },
+        { name: "%main", body: [{ kind: "exprStmt", expr: require }, load(later)] },
+      ],
+    };
+    expect(paths(mod, [later, required])).toEqual(["required", "later"]);
+  });
+
+  test("an inline require() inside a string comparison is walked at its position", () => {
+    // `"x" === require("./a")` keeps the require's sequence inside the
+    // comparison's right operand, and `require("./b") < "y"` inside its left
+    // one. Both comparisons are evaluated where they are written, so the
+    // loads inside the required modules come ahead of the later statement's.
+    const requiredA = defer("requiredA");
+    const requiredB = defer("requiredB");
+    const later = defer("later");
+    const requireA = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const requireB = {
+      kind: "seqExpr",
+      stmts: [init("%init.2")],
+      result: { kind: "varRef", localId: "%g.island.1" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(requiredA)] },
+        { name: "%init.2", body: [load(requiredB)] },
+        {
+          name: "%main",
+          body: [
+            {
+              kind: "varDecl",
+              localId: "same",
+              init: {
+                kind: "strEq",
+                negated: false,
+                left: { kind: "strLit", value: "x" },
+                right: requireA,
+              },
+            },
+            {
+              kind: "varDecl",
+              localId: "before",
+              init: {
+                kind: "strCmp",
+                op: "lt",
+                left: requireB,
+                right: { kind: "strLit", value: "y" },
+              },
+            },
+            load(later),
+          ],
+        },
+      ],
+    };
+    expect(paths(mod, [later, requiredB, requiredA])).toEqual(["requiredA", "requiredB", "later"]);
+  });
+
+  test("only the part of a conditional expression that always runs keeps its position", () => {
+    // main.js: `const v = require("a").name && require("b").name;`, then a
+    // load the initializer always reaches. Both inline require()s lower to
+    // sequences: the left operand is evaluated where it is written, while
+    // the right one runs only when the left is truthy. A load that may not
+    // happen cannot be ordered ahead of one that does: with a file shared
+    // between the two packages, the load that really evaluates it first has
+    // to keep its effects, or it is deferred past the native side effects
+    // that follow.
+    const left = defer("left");
+    const right = defer("right");
+    const later = defer("later");
+    const requireA = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const requireB = {
+      kind: "seqExpr",
+      stmts: [init("%init.2")],
+      result: { kind: "varRef", localId: "%g.island.1" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(left)] },
+        { name: "%init.2", body: [load(right)] },
+        {
+          name: "%main",
+          body: [
+            {
+              kind: "varDecl",
+              localId: "v",
+              init: {
+                kind: "logical",
+                op: "&&",
+                left: requireA,
+                right: requireB,
+              },
+            },
+            load(later),
+          ],
+        },
+      ],
+    };
+    expect(paths(mod, [left, right, later])).toEqual(["left", "later", "right"]);
+  });
+
+  test("an initializer that awaits continues after the code that called it", () => {
+    // dep awaits between its two loads; the importer starts its next
+    // dependency before waiting for either.
+    const first = defer("first");
+    const second = defer("second");
+    const sibling = defer("sibling");
+    const own = defer("own");
+    const pending = { kind: "awaitExpr", value: { kind: "varRef", localId: "p" } };
+    const mod = {
+      entry: "%main",
+      functions: [
+        {
+          name: "%init.1",
+          body: [load(first), { kind: "exprStmt", expr: pending }, load(second)],
+        },
+        { name: "%init.2", body: [load(sibling)] },
+        {
+          name: "%init.0",
+          body: [
+            { kind: "varDecl", localId: "d1", init: { kind: "call", callee: "%init.1", args: [] } },
+            init("%init.2"),
+            { kind: "exprStmt", expr: pending },
+            load(own),
+          ],
+        },
+        {
+          name: "%main",
+          body: [
+            {
+              kind: "exprStmt",
+              expr: { kind: "awaitExpr", value: { kind: "call", callee: "%init.0", args: [] } },
+            },
+          ],
+        },
+      ],
+    };
+    expect(paths(mod, [first, second, sibling, own])).toEqual([
+      "first",
+      "sibling",
+      "second",
+      "own",
+    ]);
+  });
+
+  test("a load inside an expression is reached where the expression is", () => {
+    // main.js: `const isA = require("a").name === "a";`, then `require("./dep")`
+    // (which requires "b"). The first load sits inside a member read inside
+    // a comparison inside a sequence expression.
+    const a = defer("a");
+    const b = defer("b");
+    const nested = {
+      kind: "bin",
+      op: "===",
+      left: {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: "m", init: a }],
+        result: { kind: "libCall", fn: "nodeIsland.get", args: [{ kind: "varRef", localId: "m" }] },
+      },
+      right: { kind: "strLit", value: "a" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.3", body: [load(b)] },
+        {
+          name: "%init.0",
+          body: [{ kind: "assign", localId: "%g.isA", value: nested }, init("%init.3")],
+        },
+        { name: "%main", body: [init("%init.0")] },
+      ],
+    };
+    expect(paths(mod, [b, a])).toEqual(["a", "b"]);
+  });
+
+  test("loads the walk does not reach keep the IR's order, after the others", () => {
+    const reachedLoad = defer("reached");
+    const inFunction = defer("in-function");
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "helper", body: [load(inFunction)] },
+        { name: "%init.0", body: [load(reachedLoad)] },
+        { name: "%main", body: [init("%init.0")] },
+      ],
+    };
+    expect(paths(mod, [inFunction, reachedLoad])).toEqual(["reached", "in-function"]);
   });
 });

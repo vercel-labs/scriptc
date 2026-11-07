@@ -9153,8 +9153,8 @@ export class Lowerer {
         }
       }, null);
     // Set while an instance asks about its own arrays after the fixed
-    // point (elementFacts.sourcesHoldMissing): an implicitly typed parameter
-    // has the type its instance binds, not the one cached here.
+    // point (elementFacts.sourcesHoldMissing): the answer is the instance's,
+    // not the one cached here.
     let instanceQuery = false;
     const arrayKeysUnsafe = (node: ts.Expression): readonly string[] | null => {
       let checkerType = instanceQuery ? undefined : checkerTypes.get(node);
@@ -9215,8 +9215,9 @@ export class Lowerer {
     // or a declaration around it (a function, a class, an interface, a type
     // alias), has type parameters. Such a body is judged without its
     // instances' element keys. The slots say which declared parameter types,
-    // and whether the declared result, mention a type parameter: a record or
-    // class instance passed or returned there can hold generic arrays.
+    // and whether the declared result, give the body a generic view of a
+    // record's or a class instance's fields (`box: { items: T[] }`, `Box<T>`,
+    // `v: B` with `B extends Box<T>`); a bare `v: T` is opaque to it.
     type GenericSlots = { params: readonly boolean[] | null; result: boolean };
     const genericCallees = new Map<ts.CallExpression | ts.NewExpression, GenericSlots | null>();
     const genericSlots = (symbol: ts.Symbol): GenericSlots | null => {
@@ -9228,7 +9229,7 @@ export class Lowerer {
           ts.isVariableDeclaration(declaration) && declaration.initializer
             ? peel(declaration.initializer)
             : declaration;
-        const names = new Set<string>();
+        const declared = new Map<string, ts.TypeParameterDeclaration>();
         for (let node: ts.Node | undefined = value; node; node = node.parent) {
           if (
             ts.isFunctionLike(node) ||
@@ -9238,22 +9239,35 @@ export class Lowerer {
             ts.isTypeAliasDeclaration(node)
           )
             for (const parameter of node.typeParameters?.nodes ?? [])
-              names.add(parameter.name.text);
+              if (!declared.has(parameter.name.text)) declared.set(parameter.name.text, parameter);
         }
-        if (names.size === 0) continue;
-        const mentions = (type: ts.Node | undefined): boolean => {
-          if (type === undefined) return true;
+        if (declared.size === 0) continue;
+        const mentions = (type: ts.Node): boolean => {
           let found = false;
           ts.walkPreorder(type, (node) => {
-            if (ts.isIdentifier(node) && names.has(node.text)) found = true;
+            if (ts.isIdentifier(node) && declared.has(node.text)) found = true;
             return undefined;
           });
           return found;
         };
+        const viewsFields = (type: ts.Node | undefined): boolean => {
+          // An inferred type is not known here.
+          if (type === undefined) return true;
+          if (
+            ts.isTypeReferenceNode(type) &&
+            ts.isIdentifier(type.typeName) &&
+            (type.typeArguments?.nodes.length ?? 0) === 0
+          ) {
+            const bare = declared.get(type.typeName.text);
+            if (bare !== undefined)
+              return bare.constraint !== undefined && mentions(bare.constraint);
+          }
+          return mentions(type);
+        };
         return ts.isFunctionLike(value)
           ? {
-              params: value.parameters.nodes.map((parameter) => mentions(parameter.type)),
-              result: mentions(value.type),
+              params: value.parameters.nodes.map((parameter) => viewsFields(parameter.type)),
+              result: viewsFields(value.type),
             }
           : { params: null, result: true };
       }
@@ -9700,7 +9714,7 @@ export class Lowerer {
       arrayKeys: arrayKeysOf,
       instanceTyped: (node) => {
         const type = typeOrNull(node);
-        return type !== null && (type.flags & (ts.TypeFlags.Instantiable | ts.TypeFlags.Any)) !== 0;
+        return type !== null && (type.flags & ts.TypeFlags.Instantiable) !== 0;
       },
       genericCallKeys: (call) => {
         const callee = peel(call.expression);

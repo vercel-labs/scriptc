@@ -7224,6 +7224,12 @@ static void scr_exec_limit_data(ScrClosure *cb) {
       ScrChildStream *streams[2] = {c->out_stream, c->err_stream};
       for (int i = 0; i < 2; i++) {
         if (streams[i] == NULL) continue;
+#ifdef SCR_CHILD_STREAM_FLOW
+        /* A stream with a flow state reads for its capture or below its
+         * high-water mark, not for its listeners (scr_child_stream_watching):
+         * its capture stays on, so the cut is read and the stream ends. */
+        if (streams[i]->flow.state == SCR_CHILD_FLOW_NONE)
+#endif
         streams[i]->capture = streams[i]->n_data == 0; /* a listener keeps it watched */
         scr_exec_stream_cut(streams[i]);
       }

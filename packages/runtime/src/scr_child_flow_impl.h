@@ -20,6 +20,7 @@ static void scr_child_stream_emit_posix(ScrChildStream *s, ScrBytes *bytes, ScrS
 #endif
 static void scr_child_stream_finish(ScrChildStream *s, bool fire_end);
 static void scr_children_closing_poll(void);
+static void scr_exec_limit_data(ScrClosure *cb);
 
 /* Applies a change of scr_child_stream_watching's answer to the loop's
  * watch count and the read filter, as the arm does when a stream's first
@@ -184,6 +185,28 @@ static void scr_child_flow_run_tick(void) {
   scr_child_stream_release(s);
 }
 
+/* exec() and execFile() count their maxBuffer in a 'data' listener
+ * (scr_exec_limit_data), and a stream that holds a chunk back runs no
+ * listener for it. The capture took the chunk all the same (the second
+ * limit in scr_child_flow.h), so the count is made here, when the chunk
+ * joins the queue: at the limit the capture is cut, both streams end and
+ * the child is killed, exactly as when a delivered chunk passes it.
+ * Otherwise a paused stream of such a child would read everything the
+ * child writes, with no bound. The listener counts what the capture holds,
+ * so the chunk counts for nothing more when it reaches the listeners. */
+static void scr_child_flow_count_held(ScrChildStream *s) {
+  if (!s->capture) return;
+  for (size_t i = 0; i < s->n_data; i++) {
+    ScrClosure *cb = s->data_ls[i].cb;
+    if (s->data_ls[i].kind != SCR_CHILD_DATA_ZERO) continue;
+    if (cb->fn != (void *)&scr_exec_limit_data) continue;
+    scr_closure_retain(cb);
+    scr_exec_limit_data(cb);
+    scr_closure_release(cb);
+    return;
+  }
+}
+
 /* ── what the arm calls ──────────────────────────────────────────────── */
 
 /* A chunk the pump read. False: the stream has no flow state and the pump
@@ -208,6 +231,7 @@ static bool scr_child_flow_take(ScrChildStream *s, const char *data, size_t len)
     bool was = scr_child_stream_watching(s);
     scr_child_flow_push(s, text == NULL ? bytes : NULL, text, len);
     scr_child_flow_rewatch(s, was);
+    scr_child_flow_count_held(s);
   }
   scr_str_release(text);
   scr_bytes_release(bytes);

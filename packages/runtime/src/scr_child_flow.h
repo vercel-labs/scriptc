@@ -37,7 +37,10 @@
  * runtime captures for an exec()/execFile() callback is read for that
  * capture while paused, so pausing it holds its listeners back but does
  * not block the child; what it holds back is delivered when the child
- * exits, before the callback.
+ * exits, before the callback. The call's maxBuffer bounds what is read
+ * that way: it is counted as the capture takes each chunk, so a child that
+ * writes past it while its stream is paused is ended with Node's maxBuffer
+ * error then, where Node ends it when the stream is resumed.
  */
 #ifndef SCR_CHILD_FLOW_H
 #define SCR_CHILD_FLOW_H

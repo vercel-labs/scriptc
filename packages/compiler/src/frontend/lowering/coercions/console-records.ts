@@ -162,28 +162,41 @@ const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "__lookupSetter__",
 ]);
 
+/** Every key `in` finds on console: its own keys, enumerable or not, and
+ * the members it inherits from Object.prototype. */
+const CONSOLE_IN_KEYS: readonly string[] = [
+  ...CONSOLE_KEY_ORDER,
+  ...CONSOLE_HIDDEN_KEYS,
+  ...OBJECT_PROTOTYPE_KEYS,
+];
+
 /** `key in console`: a key known at build time folds to Node's answer; a
- * string computed at run time is tested against console's own keys. Null
- * for a key of another type, which keeps the ordinary lowering. */
+ * string computed at run time is tested against the same set of keys, so
+ * the two spellings agree. The set is a table keyed by `"k:" + name`: the
+ * prefix keeps names such as `__proto__` and `constructor` ordinary table
+ * keys. Null for a key of another type, which keeps the ordinary
+ * lowering. */
 export function consoleHasKey(
   lowerer: Lowerer,
   keyNode: ts.Expression,
   loc: SrcLoc,
 ): IrExpr | null {
   const folded = lowerer.foldedStringKeyOf(keyNode);
-  if (folded !== null) {
-    const value =
-      CONSOLE_KEYS.has(folded) ||
-      CONSOLE_HIDDEN_KEYS.includes(folded) ||
-      OBJECT_PROTOTYPE_KEYS.has(folded);
-    return { kind: "boolLit", value, type: BOOL, loc };
-  }
+  if (folded !== null)
+    return { kind: "boolLit", value: CONSOLE_IN_KEYS.includes(folded), type: BOOL, loc };
   const key = lowerer.lowerExpr(keyNode);
   if (key.type.kind !== "string") return null;
-  const own: IrExpr = {
+  const prefix = (name: IrExpr): IrExpr => ({
+    kind: "strConcat",
+    left: { kind: "strLit", value: "k:", type: STRING, loc },
+    right: name,
+    type: STRING,
+    loc,
+  });
+  const table: IrExpr = {
     kind: "dynObjLit",
-    fields: [...CONSOLE_KEY_ORDER, ...CONSOLE_HIDDEN_KEYS].map((name) => ({
-      key: { kind: "strLit", value: name, type: STRING, loc },
+    fields: CONSOLE_IN_KEYS.map((name) => ({
+      key: { kind: "strLit", value: `k:${name}`, type: STRING, loc },
       value: lowerer.coerceToExpected({ kind: "boolLit", value: true, type: BOOL, loc }, DYN),
     })),
     type: DYN,
@@ -193,7 +206,7 @@ export function consoleHasKey(
     kind: "dynTest",
     test: "undefined",
     negated: true,
-    value: { kind: "dynKeyGet", value: own, key, type: DYN, loc },
+    value: { kind: "dynKeyGet", value: table, key: prefix(key), type: DYN, loc },
     type: BOOL,
     loc,
   };

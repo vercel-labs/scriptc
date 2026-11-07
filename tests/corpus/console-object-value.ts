@@ -36,6 +36,6 @@ console.log(typeof console.table, typeof console.profile === "function", !consol
 
 
 // Membership follows the keys Node's console has.
-const names = ["log", "table", "missing", "_stdout"];
-console.log("log" in console, "nope" in console, "toString" in console);
+const names = ["log", "table", "missing", "_stdout", "toString", "hasOwnProperty", "__proto__", "k:log"];
+console.log("log" in console, "nope" in console, "toString" in console, "__proto__" in console);
 console.log(names.map((name) => name in console).join(","));

@@ -1,0 +1,18 @@
+scriptc coverage tests/coverage-fixtures/dictionary-copies.ts
+
+  statements analyzed   15
+  compile statically    15  (100%)
+    in dynamic tier     5  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  fully static — all analyzed statements compile to native code.
+
+  differs from Node   3 sites (compiles; the native program can behave differently)
+      ×1  SC6001  passing a '{ [key: string]: number; }' where '{ [key: string]: string | number; }' is expected copies the object (converting to a dictionary type with another value type compiles as a copy of the ent…
+          at tests/coverage-fixtures/dictionary-copies.ts:28:7
+          hint: declare the parameter or binding with the value's own dictionary type ('{ [key: string]: number; }')
+      ×1  SC6001  storing a '{ [key: string]: { n: number; }; }' in a '{ [key: string]: { n: number; m?: string | undefined; }; }' binding copies the object (converting to a dictionary type with another value type com…
+          at tests/coverage-fixtures/dictionary-copies.ts:14:61
+          hint: declare the parameter or binding with the value's own dictionary type ('{ [key: string]: { n: number; }; }')
+      ×1  SC6001  storing a '{ [key: string]: number; }' in a '{ [key: string]: string | number; }' binding copies the object (converting to a dictionary type with another value type compiles as a copy of the entries)…
+          at tests/coverage-fixtures/dictionary-copies.ts:21:51
+          hint: declare the parameter or binding with the value's own dictionary type ('{ [key: string]: number; }')

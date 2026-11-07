@@ -4,6 +4,7 @@ import {
   isForeignType,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
+import { TypeSameness } from "./type-sameness.js";
 
 /** Index only program classes. Ambient declarations describe APIs, not
  * compiled implementations, and must not change a protocol's storage. */
@@ -18,8 +19,10 @@ export class ClassProtocols {
   /** What markIdentityFlows learned about the program, while it runs. */
   private facts: FlowFacts | null = null;
   /** The value types of the string-keyed dictionaries that keep checked
-   * identity (see markDictionaryViews). */
+   * identity (see markDictionaryViews), each as the one representative of
+   * its spellings: the checker has a type object per anonymous spelling. */
   private readonly dictionaryViews = new Set<ts.Type>();
+  private readonly sameness: TypeSameness;
   /** The structural types a lib Map or Set flows into while it answers one
    * of their members (see markIdentityFlows). They keep checked identity
    * without protocol dispatch: their members are invoked on the collection
@@ -37,7 +40,9 @@ export class ClassProtocols {
   constructor(
     private readonly checker: ts.TypeChecker,
     private readonly sources: readonly ts.SourceFile[],
-  ) {}
+  ) {
+    this.sameness = new TypeSameness(checker);
+  }
 
   private index(): Set<ts.Symbol> {
     if (this.implemented !== null) return this.implemented;
@@ -1354,7 +1359,11 @@ export class ClassProtocols {
    * checks would miss the original. When the program writes through, or
    * observes, a value of such a dictionary type, every dictionary with that
    * value type keeps checked identity instead (records with the same value
-   * type share one native layout, so values pass between them). A source
+   * type share one native layout, so values pass between them). The value
+   * type is the same type however and wherever it is spelled (TypeSameness):
+   * a dictionary type written in an alias and again in an annotation is one
+   * dictionary type, or a value passing from one spelling to the other
+   * would be copied after all. A source
    * counts when it is an existing object (a binding, member, element or
    * `this`, not a fresh literal or call result) whose type is a program
    * class instance or a record with declared properties, or a constant
@@ -1419,11 +1428,11 @@ export class ClassProtocols {
       for (const part of parts) {
         const value = this.dictionaryValueType(part);
         // A dictionary of `unknown` or `any` values is checked-dynamic already.
-        if (
-          value !== undefined &&
-          (value.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) === 0 &&
-          this.dictionaryValueType(sourceType) !== value
-        )
+        if (value === undefined || (value.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0)
+          continue;
+        // A source that is such a dictionary already is not converted.
+        const held = this.dictionaryValueType(sourceType);
+        if (held === undefined || this.sameness.canonical(held) !== this.sameness.canonical(value))
           received.add(value);
       }
     }
@@ -1439,7 +1448,14 @@ export class ClassProtocols {
         if (value !== undefined) seen.add(value);
       }
     }
-    for (const value of received) if (seen.has(value)) this.dictionaryViews.add(value);
+    // A value type received under one spelling and seen under another is
+    // one type: both sides are compared by their representative.
+    const seenTypes = new Set<ts.Type>();
+    for (const value of seen) seenTypes.add(this.sameness.canonical(value));
+    for (const value of received) {
+      const type = this.sameness.canonical(value);
+      if (seenTypes.has(type)) this.dictionaryViews.add(type);
+    }
   }
 
   /** Whether `source` holds an existing object that a dictionary
@@ -1785,15 +1801,25 @@ export class ClassProtocols {
     // A dictionary keeps checked identity when the protocols already mark
     // it (a literal whose methods read `this`) or when it receives existing
     // objects (markDictionaryViews).
-    const dictionaryValue = this.dictionaryValueType(type);
     const view = type.getSymbol();
     const answer =
       this.protocol(type) ||
-      (dictionaryValue !== undefined && this.dictionaryViews.has(dictionaryValue)) ||
+      this.dictionaryView(type) ||
       // A record view of a Map or Set answers through the collection itself.
       (view !== undefined && this.collectionViews.has(view));
     this.answers.set(type, answer);
     return answer;
+  }
+
+  /** Whether `type` is a string-keyed dictionary that keeps checked identity
+   * because dictionaries of its value type receive existing objects
+   * (markDictionaryViews), under any spelling of that type. A program that
+   * marks no dictionary asks the checker nothing here. */
+  dictionaryView(type: ts.Type): boolean {
+    this.index();
+    if (this.dictionaryViews.size === 0) return false;
+    const value = this.dictionaryValueType(type);
+    return value !== undefined && this.dictionaryViews.has(this.sameness.canonical(value));
   }
 
   private protocol(type: ts.Type): boolean {

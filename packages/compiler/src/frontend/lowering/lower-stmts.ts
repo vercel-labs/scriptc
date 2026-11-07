@@ -504,7 +504,7 @@ function cleanupCall(
       // Writable.prototype define [Symbol.asyncDispose] and nothing
       // synchronous.
       if (awaited && info && streamSidesOf(lowerer, info)) {
-        return { call: streamAsyncDisposeExpr(lowerer, info, value, loc), async: true };
+        return { call: streamAsyncDisposeExpr(lowerer, info, value, loc, node), async: true };
       }
       return null;
     }

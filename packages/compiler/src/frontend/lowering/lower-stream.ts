@@ -7594,6 +7594,7 @@ export function lowerStreamAsyncDisposeCall(
     info!,
     streamReceiverExpr(lowerer, access.expression),
     locOf(call),
+    call,
   );
 }
 
@@ -7619,12 +7620,15 @@ function streamAsyncDisposeOverriders(info: ClassInfo): ClassInfo[] {
  * chain, so a value typed as a base class can hold a subclass whose
  * override runs instead of the runtime teardown. The runtime cannot answer
  * this, so the value's class is tested here, the receiver bound once when
- * any such subclass exists. */
+ * any such subclass exists. The call passes no argument, as Node's does:
+ * an override's optional and defaulted parameters take what an omitted
+ * argument gives them (`site` is blamed for one that cannot be omitted). */
 export function streamAsyncDisposeExpr(
   lowerer: Lowerer,
   info: ClassInfo,
   receiver: IrExpr,
   loc: SrcLoc,
+  site: ts.Node,
 ): IrExpr {
   const type: IrType = { kind: "promise", inner: VOID };
   const runtime = (recv: IrExpr): IrExpr => ({
@@ -7647,7 +7651,7 @@ export function streamAsyncDisposeExpr(
       child.def.name,
       "sym:asyncDispose",
       { kind: "downcast", value: recv(), type: { kind: "object", className: child.def.name }, loc },
-      [],
+      lowerer.completeArgs([], sig.params, loc, site),
       sig.ret,
       loc,
     );

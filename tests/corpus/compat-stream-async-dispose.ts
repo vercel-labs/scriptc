@@ -29,6 +29,24 @@ class GuardedSink extends Writable {
   }
 }
 
+// Overrides whose parameters a call can omit: Node calls the method with no
+// argument, so an optional one is undefined and a defaulted one takes its
+// default.
+class Lenient extends Readable {
+  _read(): void {}
+  async [Symbol.asyncDispose](reason?: string): Promise<void> {
+    console.log("lenient dispose", reason === undefined ? "no reason" : reason, this.destroyed);
+  }
+}
+class LenientSink extends Writable {
+  _write(_chunk: Buffer, _encoding: string, callback: (error?: Error | null) => void): void {
+    callback();
+  }
+  async [Symbol.asyncDispose](mode = "default", ...rest: number[]): Promise<void> {
+    console.log("lenient sink dispose", mode, rest.length, this.destroyed);
+  }
+}
+
 let built = 0;
 function makeGuarded(): Guarded {
   built += 1;
@@ -101,6 +119,25 @@ async function main(): Promise<void> {
     console.log("guarded using inside", scopedBase.destroyed);
   }
   console.log("guarded using", guardedScoped.destroyed, describe(guardedScoped.errored));
+
+  // The same through overrides that declare parameters a call can omit.
+  const lenient = new Lenient();
+  const lenientBase: Readable = lenient;
+  await lenientBase[Symbol.asyncDispose]();
+  console.log("lenient base", lenient.destroyed, describe(lenient.errored));
+  const lenientSink = new LenientSink();
+  const lenientSinkBase: Writable = lenientSink;
+  await lenientSinkBase[Symbol.asyncDispose]();
+  console.log("lenient sink base", lenientSink.destroyed, describe(lenientSink.errored));
+  const lenientScoped = new Lenient();
+  {
+    await using scopedLenient: Readable = lenientScoped;
+    console.log("lenient using inside", scopedLenient.destroyed);
+  }
+  console.log("lenient using", lenientScoped.destroyed, describe(lenientScoped.errored));
+  // On its own type the override takes the arguments it is given.
+  await lenient[Symbol.asyncDispose]("asked");
+  await lenientSink[Symbol.asyncDispose]("explicit", 1, 2);
 
   // The receiver is evaluated once.
   await makeGuarded()[Symbol.asyncDispose]();

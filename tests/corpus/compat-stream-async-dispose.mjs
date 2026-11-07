@@ -202,6 +202,42 @@ async function settled(promise) {
   }
   console.log("guarded using", scoped.destroyed, describe(scoped.errored));
 
+  // Overrides that declare parameters: Node calls the method with no
+  // argument, so a plain parameter is undefined and a defaulted one takes
+  // its default.
+  class Lenient extends Readable {
+    _read() {}
+    async [Symbol.asyncDispose](reason) {
+      console.log("lenient dispose", reason === undefined ? "no reason" : reason, this.destroyed);
+    }
+  }
+  class LenientSink extends Writable {
+    _write(_chunk, _encoding, callback) {
+      callback();
+    }
+    async [Symbol.asyncDispose](mode = "default", ...rest) {
+      console.log("lenient sink dispose", mode, rest.length, this.destroyed);
+    }
+  }
+  const lenient = new Lenient();
+  /** @type {Readable} */
+  const lenientBase = lenient;
+  await lenientBase[Symbol.asyncDispose]();
+  console.log("lenient base", lenient.destroyed, describe(lenient.errored));
+  const lenientSink = new LenientSink();
+  /** @type {Writable} */
+  const lenientSinkBase = lenientSink;
+  await lenientSinkBase[Symbol.asyncDispose]();
+  console.log("lenient sink base", lenientSink.destroyed, describe(lenientSink.errored));
+  const lenientScoped = new Lenient();
+  /** @type {Readable} */
+  const lenientScopedBase = lenientScoped;
+  {
+    await using boundLenient = lenientScopedBase;
+    console.log("lenient using inside", boundLenient.destroyed);
+  }
+  console.log("lenient using", lenientScoped.destroyed, describe(lenientScoped.errored));
+
   // A native stream under the same base type still takes the runtime path.
   /** @type {Readable} */
   const native = Readable.from(["n"]);

@@ -676,6 +676,144 @@ describe("the order deferred loads are probed in", () => {
     expect(paths(mod, [left, right, later])).toEqual(["left", "later", "right"]);
   });
 
+  test("a load in the condition of an if comes before the branch's loads", () => {
+    // main.cjs: `if (require("a").flag) { require("b"); }`, then a load the
+    // initializer always reaches. The condition always runs, and it runs
+    // first: what a's load leaves in shared state (a global, a patched
+    // builtin) is there when b loads, so b's snapshot has to be recorded
+    // after a's load. Left out of the walk, a was probed after b and after
+    // the later load, and b was deferred with what it computed without a.
+    const a = defer("a");
+    const b = defer("b");
+    const later = defer("later");
+    const requireA = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const requireB = {
+      kind: "seqExpr",
+      stmts: [init("%init.2")],
+      result: { kind: "varRef", localId: "%g.island.1" },
+    };
+    // Parsed, like the guard above: an object literal with a `then` key
+    // reads as a thenable to the linter. The statement holds no load itself,
+    // only calls of the initializers by name, so a copy serves.
+    const cond = JSON.stringify({ kind: "member", object: requireA, name: "flag" });
+    const selection = (then: unknown[]): unknown =>
+      JSON.parse(`{"kind":"if","cond":${cond},"then":${JSON.stringify(then)},"else_":null}`);
+    const program = (then: unknown[]) => ({
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(a)] },
+        { name: "%init.2", body: [load(b)] },
+        { name: "%main", body: [selection(then), load(later)] },
+      ],
+    });
+    expect(paths(program([{ kind: "exprStmt", expr: requireB }]), [b, later, a])).toEqual([
+      "a",
+      "b",
+      "later",
+    ]);
+    // The same when the branch holds no load: the condition's load is still
+    // ahead of what follows the statement.
+    expect(paths(program([]), [later, a])).toEqual(["a", "later"]);
+  });
+
+  describe("what a statement always evaluates keeps its place", () => {
+    // main.cjs: one statement that holds `require("a")`, then a load the
+    // initializer always reaches. Whatever the statement is, the program
+    // evaluates a's load first whenever it evaluates that part at all.
+    const a = defer("a");
+    const later = defer("later");
+    const requireA = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const flag = { kind: "member", object: requireA, name: "flag" };
+    const yes = { kind: "boolLit", value: true };
+    const use = { kind: "exprStmt", expr: flag };
+    const order = (statement: unknown): string[] =>
+      paths(
+        {
+          entry: "%main",
+          functions: [
+            { name: "%init.1", body: [load(a)] },
+            { name: "%init.2", body: [statement] },
+            { name: "%main", body: [init("%init.2"), load(later)] },
+          ],
+        },
+        [later, a],
+      );
+
+    test.each<[string, unknown]>([
+      ["the condition of a while", { kind: "while", cond: flag, body: [] }],
+      [
+        "the initializer of a for",
+        {
+          kind: "for",
+          init: { kind: "varDecl", localId: "i", init: flag },
+          cond: yes,
+          update: null,
+          body: [],
+        },
+      ],
+      ["the condition of a for", { kind: "for", init: null, cond: flag, update: null, body: [] }],
+      ["the first pass of a do body", { kind: "doWhile", body: [use], cond: yes }],
+      ["the condition of a do", { kind: "doWhile", body: [], cond: flag }],
+      ["the iterable of a for-of", { kind: "forOf", localId: "x", iterable: flag, body: [] }],
+      ["the discriminant of a switch", { kind: "switch", disc: flag, cases: [] }],
+      [
+        "the first test of a switch",
+        {
+          kind: "switch",
+          disc: yes,
+          cases: [
+            { test: null, body: [] },
+            { test: flag, body: [] },
+          ],
+        },
+      ],
+      ["the operand of a throw", { kind: "throw", value: flag }],
+      ["the operand of a return", { kind: "return", value: flag }],
+      [
+        "the value of a member write",
+        { kind: "fieldSet", object: { kind: "varRef", localId: "o" }, name: "x", value: flag },
+      ],
+      [
+        "a block inside a sequence",
+        {
+          kind: "exprStmt",
+          expr: { kind: "seqExpr", stmts: [{ kind: "block", body: [use] }], result: yes },
+        },
+      ],
+    ])("%s", (_name, statement) => {
+      expect(order(statement)).toEqual(["a", "later"]);
+    });
+
+    test.each<[string, unknown]>([
+      ["the body of a while", { kind: "while", cond: yes, body: [use] }],
+      ["the body of a for", { kind: "for", init: null, cond: yes, update: null, body: [use] }],
+      ["the update of a for", { kind: "for", init: null, cond: yes, update: use, body: [] }],
+      ["the body of a for-of", { kind: "forOf", localId: "x", iterable: yes, body: [use] }],
+      [
+        "a later test of a switch",
+        {
+          kind: "switch",
+          disc: yes,
+          cases: [
+            { test: yes, body: [] },
+            { test: flag, body: [] },
+          ],
+        },
+      ],
+      ["the body of a case", { kind: "switch", disc: yes, cases: [{ test: yes, body: [use] }] }],
+    ])("%s may not run, and stays after the loads that do", (_name, statement) => {
+      expect(order(statement)).toEqual(["later", "a"]);
+    });
+  });
+
   test("an initializer that awaits continues after the code that called it", () => {
     // dep awaits between its two loads; the importer starts its next
     // dependency before waiting for either.

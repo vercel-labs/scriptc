@@ -134,11 +134,16 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * initializer that awaits is left there and taken up again after the code
  * that called it, in the order of the awaits, as module evaluation continues
  * with later siblings while one is suspended. Loads the walk does not reach
- * (inside functions, dynamic imports, loops) keep IR order after it.
+ * (inside functions, dynamic imports, the bodies of loops and of a switch)
+ * keep IR order after it.
  *
  * The order is a best guess wherever the program has a choice: the
  * conditional part of an expression is placed last, both branches of a
- * selection where they are written. A run that takes the other way
+ * selection where they are written. What a statement always evaluates is
+ * not a choice and keeps its place: the condition of a selection or of a
+ * loop, a `for`'s initializer, the first pass of a `do` body, the
+ * discriminant and first test of a switch, the operands of a write, a
+ * `throw` or a `return`. A run that takes the other way
  * evaluates a file two loads share in the other load, so the decisions do
  * not rest on the order for that (loadReads). */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
@@ -219,17 +224,56 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
     if (s.kind === "assign") return evaluate(s.value);
     if (s.kind === "varDecl") return s.init !== null && evaluate(s.init);
     if (s.kind === "if") {
+      // The condition always runs, so a load written in it keeps its place:
+      // ahead of the branches' loads and of every load after the statement
+      // (`if (require("a").flag) { require("b"); }` evaluates a first, and
+      // what a's load left in shared state is there for b's). Left out, it
+      // was reached by nothing and probed after all the others.
+      const awaits = evaluate(s.cond);
       // The run-once guard returns on a revisit; a fork or worker root is
       // one branch of a selection.
       run(flatStatements(s.then), 0);
       if (s.else_ !== null) run(flatStatements(s.else_), 0);
+      return awaits;
     }
-    return false;
+    // A loop or a switch: the part that runs whether or not a body does.
+    // The bodies, a `for`'s update and the later tests of a switch may not
+    // run, and stay with the loads the walk does not reach.
+    if (s.kind === "while") return evaluate(s.cond);
+    if (s.kind === "forOf") return evaluate(s.iterable);
+    if (s.kind === "for") {
+      const awaits = s.init !== null && statement(s.init);
+      return (s.cond !== null && evaluate(s.cond)) || awaits;
+    }
+    if (s.kind === "doWhile") {
+      // The body's first pass always runs, then the condition.
+      run(flatStatements(s.body), 0);
+      return evaluate(s.cond);
+    }
+    if (s.kind === "switch") {
+      // The discriminant, then the first test: a later test is evaluated
+      // only when the ones before it miss.
+      const awaits = evaluate(s.disc);
+      const first = s.cases.find((c) => c.test !== null);
+      return (first !== undefined && evaluate(first.test!)) || awaits;
+    }
+    // A block or a guarded body the caller did not open up (inside a
+    // sequence): its statements, where they are written.
+    if (s.kind === "block" || s.kind === "tryCatch") {
+      run(flatStatements([s]), 0);
+      return false;
+    }
+    // Any other statement holds no statements: a write, a throw. Its
+    // operands, in the order they are written.
+    return within(s);
   }
   function run(stmts: IrStmt[], from: number): void {
     for (let i = from; i < stmts.length; i++) {
       const s = stmts[i]!;
-      if (s.kind === "return") return;
+      if (s.kind === "return") {
+        if (s.value !== null) evaluate(s.value);
+        return;
+      }
       if (statement(s)) {
         suspended.push({ stmts, at: i + 1 });
         return;

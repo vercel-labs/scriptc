@@ -37,6 +37,22 @@
  *     wait for its own first use: a call into a module that evaluated
  *     can write island state (a global, a builtin) that a later load
  *     reads, and Node ran that load at its import, before any call;
+ *   - what its snapshot is true of: the probe loads every candidate in one
+ *     process, each once, in one order, and a load computes from whatever
+ *     the loads before it left in that process: a global, a prototype,
+ *     `process`, the exports or the private state of a module both use, the
+ *     module registry. The build cannot list what a load read of that, nor
+ *     everything a load wrote (a builtin's private state has no property to
+ *     compare), so it proves nothing about either. A snapshot instead says
+ *     which loads the probe had evaluated before it (`P`), and answers only
+ *     in a run that registered exactly those deferred loads, in that order,
+ *     before the module's import, with Node not started: there the island
+ *     would be in the state the probe's process was in. Any other run (a
+ *     branch not taken, an operand evaluated that the probe placed later, a
+ *     candidate before it that stayed eager) evaluates the module at its
+ *     import, as Node does. The order the probe takes (evaluationOrder)
+ *     therefore decides how often a run can use the snapshots, never what
+ *     the program computes;
  *
  * and rewrites the call: a deferred module keeps `nodeIsland.defer` with
  * its snapshot text (format: runtime scr_node_island_boot.c), any other
@@ -139,8 +155,10 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * The order is a best guess wherever the program has a choice: the
  * conditional part of an expression is placed last, both branches of a
  * selection where they are written. A run that takes the other way
- * evaluates a file two loads share in the other load, so the decisions do
- * not rest on the order for that (loadReads). */
+ * registers other loads before a module than the probe evaluated before
+ * it, and that module evaluates at its import instead of answering from
+ * its snapshot (the `P` guard every snapshot carries). The guess costs
+ * such a run its deferral from that load on, and nothing else. */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
   const functions = new Map<string, IrModule["functions"][number]>();
   for (const fn of mod.functions) if (typeof fn.name === "string") functions.set(fn.name, fn);
@@ -601,12 +619,13 @@ export function finalizeDeferredIslands(
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
       ...env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
       ...tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
-      // The program's own code computes from what earlier island code left
-      // behind, so its snapshot holds only in a run that registered, before
+      // A load computes from what the loads before it left in the island (a
+      // global, a prototype, a module both use), and so does the program's
+      // own code. The snapshot holds only in a run that registered, before
       // it, exactly the loads the probe evaluated before it. The runtime
       // compares (scr_node_island_boot.c); otherwise the module evaluates
       // at its position.
-      ...(own(fileOf(mod, pathOf(d.call))) ? [before.get(pathOf(d.call))!] : []),
+      before.get(pathOf(d.call))!,
     ];
     const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
     const arg = d.call.args[1];

@@ -230,11 +230,19 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
     expect(trace.filter(generated)).toHaveLength(1);
     expect(trace.filter(generated)[0]).toMatch(/^\[node-islands\] defer /);
     const { stdout, boot } = await run(binary);
-    // This run registered the plugin's package before it, so the guard
-    // fails and the constant sees what that package's load did.
+    // This run loads the plugin's package before the constant; the probe
+    // had evaluated the constant first. The package's load is the first
+    // whose history differs from the probe's: its guard fails, it evaluates
+    // at its import and Node starts. The constant, declared after it,
+    // evaluates where it is declared and sees what that load did.
     expect(stdout).toBe("start\nplugin plugin\ncount 1 plugin\n");
     expect(
-      boot.some((l) => l.includes("boot guard failed: the loads before ./.scriptc/closed/")),
+      boot.some((l) => l.includes("boot guard failed: the loads before ./node_modules/plug-kit/")),
+    ).toBe(true);
+    expect(
+      boot.some((l) =>
+        /evaluating \.\/\.scriptc\/closed\/.* eagerly: Node is already running/.test(l),
+      ),
     ).toBe(true);
   }, 300_000);
 

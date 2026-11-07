@@ -682,6 +682,19 @@ double scr_bytes_get_or_nan(const ScrBytes *b, double i) {
   return scr_bytes_get(b, i);
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The element at `i` as a JavaScript value (+1) for a visit that may outlive
+ * its bound (t262-dc2): past the live length — a buffer that shrank, or a
+ * detached one, under the loop — it is undefined, exactly Node's
+ * IntegerIndexedElementGet on a typed array. The registry keeps b->len
+ * current, so the test sees the shrink. Never touches storage out of
+ * bounds. */
+ScrDyn *scr_bytes_item_dyn(const ScrBytes *b, double i) {
+  if (!(i >= 0) || i != trunc(i) || i >= (double)b->len) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_dyn_new_num(scr_bytes_load(b, (size_t)i));
+}
+#endif
+
 /* Store v at a valid index with the element type's JS conversion. */
 static void scr_bytes_store(ScrBytes *b, size_t idx, double v) {
   if (b->shared) {
@@ -1145,17 +1158,23 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
 }
 
 void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
+  double t = (offset != offset) ? 0 : trunc(offset);
+  if (!(t >= 0)) {
+    static const char msg[] = "offset is out of bounds";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return;
+  }
 #ifdef SCR_JS_OBJECT_MODEL
   if (!scr_js_typed_method_ok(dst, "set")) return;
-  /* Node validates the source view before the offset: a detached source, or
-   * a fixed-length one whose buffer shrank out from under it, throws. */
+  /* Node validates the source view before the bounds: a detached source, or
+   * a fixed-length one whose buffer shrank out from under it, throws even
+   * when the copy would land out of range. */
   if (!scr_js_bytes_live(src)) {
     scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
     return;
   }
 #endif
-  double t = (offset != offset) ? 0 : trunc(offset);
-  if (!(t >= 0) || (double)src->len + t > (double)dst->len) {
+  if ((double)src->len + t > (double)dst->len) {
     static const char msg[] = "offset is out of bounds";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return;
@@ -1383,6 +1402,14 @@ void scr_bytes_set_from_dyn(ScrBytes *dst, const ScrDyn *src, double offset) {
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return;
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Node converts the offset and rejects a negative one before it validates
+   * the receiver: a detached target still reports the RangeError above. */
+  if (!scr_js_bytes_live(dst)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
+    return;
+  }
+#endif
   if (src->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(src);
     if (view->kind == SCR_DYN_BYTES || view->kind == SCR_DYN_ARR) scr_bytes_set_from_dyn(dst, view, t);
@@ -1425,6 +1452,29 @@ void scr_js_bytes_throw_detached(const char *label) {
   scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
 }
 
+/* V8's own label for %TypedArray%.prototype.findLastIndex's receiver check is
+ * "findIndexLast" (the C++ builtin's name), and Node prints the label
+ * verbatim, so the message names that text. */
+const char *scr_js_typed_detached_method(const char *method) {
+  return strcmp(method, "findLastIndex") == 0 ? "findIndexLast" : method;
+}
+
+/* A callback method's entry guard (t262-dc2): Node's ValidateTypedArray runs
+ * once before forEach/map/... reads %TypedArrayLength, so a detached or
+ * out-of-bounds receiver throws even when the visit would run no iterations.
+ * `method` names the %TypedArray%.prototype method for Node's message. */
+void scr_js_bytes_require_live(const ScrBytes *b, const ScrStr *method) {
+  if (scr_js_bytes_live(b)) return;
+  char name[48];
+  size_t len = method->len < sizeof name - 1 ? method->len : sizeof name - 1;
+  memcpy(name, method->data, len);
+  name[len] = '\0';
+  char label[96];
+  snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s",
+           scr_js_typed_detached_method(name));
+  scr_js_bytes_throw_detached(label);
+}
+
 /* Whether `b`'s length follows its owner (a view built without a length
  * over a resizable buffer); a subarray that runs to the end of one stays
  * tracking. */
@@ -1437,7 +1487,8 @@ bool scr_js_bytes_tracking(const ScrBytes *b) {
 static bool scr_js_typed_method_ok(const ScrBytes *b, const char *method) {
   if (scr_js_bytes_live(b)) return true;
   char label[96];
-  int length = snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+  int length = snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s",
+                        scr_js_typed_detached_method(method));
   scr_js_bytes_throw_detached(label);
   (void)length;
   return false;

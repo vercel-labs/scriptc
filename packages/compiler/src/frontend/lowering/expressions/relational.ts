@@ -55,6 +55,7 @@ import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import {
   inOperatorTypeError,
@@ -2126,6 +2127,16 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  // A mutable-buffer member name on the left of `in` in a JavaScript source
+  // is the mutableBuffers fact as well: `"transfer" in ab` asks for the
+  // buffer classes' method values, which only the fact's object-model build
+  // models (`"resize" in ab` must not answer false). Same name match and
+  // same bargain as a read of the member: a false positive costs only the
+  // invariant metadata of that one program.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const probe = lowerer.foldedStringKeyOf(expr.left);
+    if (probe !== null && MUTABLE_BUFFER_MEMBERS.has(probe)) lowerer.buffersMutable = true;
   }
   // `… in <global object>`: presence on the runtime's global object. Node HAS
   // the globals the native runtime does not implement, so the answer must not

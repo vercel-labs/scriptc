@@ -238,7 +238,7 @@ import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
-import { installMutableBuffersArm } from "./buffers.js";
+import { installMutableBuffersArm, programMentionsMutableBuffers } from "./buffers.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
@@ -5987,6 +5987,11 @@ export class Lowerer {
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
     registerBuiltinEventTargetClasses(this);
+    // The mutable-buffers fact is a name match over the program's JavaScript
+    // sources (buffers.ts), settled here rather than at the first lowered
+    // read: a callback helper lifted before the read that arms the fact must
+    // still emit the live-length checks the program needs.
+    this.buffersMutable = programMentionsMutableBuffers(this);
   }
 
   /** Whether preflight admitted the checker diagnostic `code` at `node`: a

@@ -20,6 +20,8 @@ import { typeKey, genResultRecord } from "../type-mapper.js";
 import type { Lowerer } from "./lowerer.js";
 import { extractIteratorValue, genStep, genValue, stepDrivable } from "./lower-generators.js";
 import { lowerSafeIndexRead } from "./array-values.js";
+import { requireLiveBytes } from "./buffers.js";
+import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 
 /** The conversion into an iterator-typed slot (a generator type): a
  * checked-dynamic iterator or a generator with other channel types steps
@@ -690,7 +692,20 @@ export function lowerBytesIteratorValue(
       loc,
     });
   }
-  return { kind: "call", callee: name, args: [receiver], type, loc };
+  // The factory validates the receiver where the iterator is created, not at
+  // the first `next()`: Node throws for a detached view even when the
+  // iterator is never advanced. The receiver is read once, before the check.
+  if (!lowerer.buffersMutable) return { kind: "call", callee: name, args: [receiver], type, loc };
+  let source = receiver;
+  const stmts: IrStmt[] = [];
+  if (!isSafeToRepeat(receiver)) {
+    const local = lowerer.declareHiddenLocal("%bytesIter", bytesT);
+    stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
+    source = varRef(local.id, bytesT, loc);
+  }
+  stmts.push(requireLiveBytes(source, method, loc));
+  const call: IrExpr = { kind: "call", callee: name, args: [source], type, loc };
+  return { kind: "seqExpr", stmts, result: call, type, loc };
 }
 
 /** `s[Symbol.iterator]()` on a string value: an interned generator over

@@ -80,6 +80,7 @@ const VALUES: Partial<Record<CliOptionName, string>> = {
   "external-types": `host=${declaration}`,
   tier: "static-only",
   "node-islands": "explicit",
+  "from-lowered-accept": "compiler",
 };
 
 function spelling(option: CliOptionName): string {
@@ -110,6 +111,14 @@ const NOT_EXECUTABLE = "is a build/run option";
 const TYPES_PATCH_ONLY = "--range and --dry-run are scriptc types patch options";
 const MERGE_ONLY = "--sparse is a merge-profiles option";
 const LIB_ONLY = "--lib is a build mode (scriptc build --lib --profile <p.json>)";
+/** The lowered-program options have a check of their own, before any command's (command.ts). */
+const LOWERED_ONLY =
+  "--emit-lowered, --from-lowered and --from-lowered-accept are options of an executable scriptc build";
+const LOWERED: Partial<Record<CliOptionName, string>> = {
+  "emit-lowered": LOWERED_ONLY,
+  "from-lowered": LOWERED_ONLY,
+  "from-lowered-accept": LOWERED_ONLY,
+};
 const TYPES_USAGE =
   'scriptc types takes "patch <package> <selector> <type>" (with --range or --dry-run) or "list"';
 const BUILD_AND_RUN: Partial<Record<CliOptionName, string>> = {
@@ -133,6 +142,7 @@ const REFUSALS: Record<string, { every?: string; by?: Partial<Record<CliOptionNa
   run: {
     by: {
       ...BUILD_AND_RUN,
+      ...LOWERED,
       print: "--print=diagnostics is a build/coverage option",
       lib: LIB_ONLY,
     },
@@ -155,21 +165,24 @@ const REFUSALS: Record<string, { every?: string; by?: Partial<Record<CliOptionNa
       range: TYPES_PATCH_ONLY,
       "dry-run": TYPES_PATCH_ONLY,
       lib: LIB_ONLY,
+      ...LOWERED,
     },
   },
   "build-lib": {
     every:
       "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
-    by: { sparse: MERGE_ONLY, range: TYPES_PATCH_ONLY, "dry-run": TYPES_PATCH_ONLY },
+    by: { sparse: MERGE_ONLY, range: TYPES_PATCH_ONLY, "dry-run": TYPES_PATCH_ONLY, ...LOWERED },
   },
-  "types-patch": {},
-  "types-list": { by: { range: TYPES_USAGE, "dry-run": TYPES_USAGE } },
+  "types-patch": { by: LOWERED },
+  "types-list": { by: { range: TYPES_USAGE, "dry-run": TYPES_USAGE, ...LOWERED } },
   "cache-warm": {
     every: "scriptc cache warm takes only native optimization/sanitizer options and profile names",
+    by: LOWERED,
   },
   "merge-profiles": {
     every:
       "scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles",
+    by: LOWERED,
   },
 };
 

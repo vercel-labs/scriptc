@@ -4,7 +4,7 @@
 // destroyed, the child is killed, and the error is a RangeError with code
 // ERR_CHILD_PROCESS_STDIO_MAXBUFFER and `cmd` (plus `stdout` and `stderr`
 // when promisified). The default is 1024 * 1024.
-import { exec, execFile } from "node:child_process";
+import { exec, execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
@@ -28,6 +28,15 @@ function runFile(file: string, args: string[], maxBuffer: number): Promise<strin
       resolve(`${describe(error)} stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`);
     });
   });
+}
+function reporter(
+  label: string,
+  done: () => void,
+): (error: Error | null, stdout: string, stderr: string) => void {
+  return (error, stdout) => {
+    console.log(label, describe(error), JSON.stringify(stdout));
+    done();
+  };
 }
 function thrown(run: () => unknown): string {
   try {
@@ -70,6 +79,15 @@ async function main(): Promise<void> {
       console.log("close:", code, signal);
       resolve();
     });
+  });
+
+  // A callback built by an expression that runs its own capture: that
+  // capture has its own limit (the default), not this call's.
+  await new Promise<void>((resolve) => {
+    exec("printf ab", { maxBuffer: 4 }, reporter(`nested ${execSync("printf abcdefghij").toString()}:`, resolve));
+  });
+  await new Promise<void>((resolve) => {
+    execFile("/bin/sh", ["-c", "printf ab"], { maxBuffer: 4 }, reporter(`nested file ${execSync("printf klmnopqrst").toString()}:`, resolve));
   });
 
   // The default limit, at it and one past it.

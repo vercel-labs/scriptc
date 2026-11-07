@@ -985,34 +985,33 @@ static void scr_cap_init(ScrCapBuf *b) {
   if (!b->data) scr_child_oom();
 }
 
-/* One drain pass over a capture pipe: everything PeekNamedPipe reports,
- * chunk by chunk. EOF (every writer closed — ERROR_BROKEN_PIPE) closes
- * the handle and flips *open_. Returns true when anything changed. */
+/* One read from a capture pipe: at most one chunk of what PeekNamedPipe
+ * reports, so the caller checks maxBuffer and the deadline after every
+ * chunk, as the POSIX arm does after every read. EOF (every writer closed
+ * — ERROR_BROKEN_PIPE) closes the handle and flips *open_. Returns true
+ * when anything changed. */
 static bool scr_win_cap_pump(HANDLE h, ScrCapBuf *b, bool *open_) {
-  bool progress = false;
-  for (;;) {
-    DWORD avail = 0;
-    if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL)) {
-      CloseHandle(h);
-      *open_ = false;
-      return true;
-    }
-    if (avail == 0) return progress;
-    if (avail > 65536) avail = 65536;
-    if (b->len + avail > b->cap) {
-      while (b->len + avail > b->cap) b->cap *= 2;
-      b->data = realloc(b->data, b->cap);
-      if (!b->data) scr_child_oom();
-    }
-    DWORD got = 0;
-    if (!ReadFile(h, b->data + b->len, avail, &got, NULL) || got == 0) {
-      CloseHandle(h);
-      *open_ = false;
-      return true;
-    }
-    b->len += got;
-    progress = true;
+  DWORD avail = 0;
+  if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL)) {
+    CloseHandle(h);
+    *open_ = false;
+    return true;
   }
+  if (avail == 0) return false;
+  if (avail > 65536) avail = 65536;
+  if (b->len + avail > b->cap) {
+    while (b->len + avail > b->cap) b->cap *= 2;
+    b->data = realloc(b->data, b->cap);
+    if (!b->data) scr_child_oom();
+  }
+  DWORD got = 0;
+  if (!ReadFile(h, b->data + b->len, avail, &got, NULL) || got == 0) {
+    CloseHandle(h);
+    *open_ = false;
+    return true;
+  }
+  b->len += got;
+  return true;
 }
 
 /* ── the synchronous run core ────────────────────────────────────────── */

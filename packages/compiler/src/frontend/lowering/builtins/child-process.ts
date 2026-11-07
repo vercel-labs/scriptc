@@ -1826,8 +1826,9 @@ export function lowerExecFileCall(
  * arguments are evaluated first, into hidden locals, so that a capture one
  * of them runs has finished; then cp.maxBuffer validates the limit
  * (Node's ERR_OUT_OF_RANGE for a negative or NaN value) and arms it for
- * the next capture, which is this call. Literals and function values stay
- * in place: evaluating them runs nothing. */
+ * the next capture, which is this call. Literals, closures and reads of a
+ * function-typed local stay in place: evaluating them runs nothing. Any
+ * other argument, a function-valued call included, is evaluated first. */
 export function withMaxBuffer(
   lowerer: Lowerer,
   call: Extract<IrExpr, { kind: "libCall" }>,
@@ -1841,7 +1842,8 @@ export function withMaxBuffer(
       arg.kind === "numLit" ||
       arg.kind === "strLit" ||
       arg.kind === "boolLit" ||
-      arg.type.kind === "func"
+      arg.kind === "closure" ||
+      (arg.kind === "varRef" && arg.type.kind === "func")
     )
       return arg;
     const local = lowerer.declareHiddenLocal("%captureArg", arg.type);

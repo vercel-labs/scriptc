@@ -3271,6 +3271,14 @@ static void scr_h2_setting_invalid(int kind, const char *key, const ScrDyn *valu
  * ERR_HTTP2_INVALID_SETTING_VALUE. False with the exception pending. */
 static bool scr_h2_settings_validate(const ScrDyn *settings) {
   if (settings == NULL || settings->kind != SCR_DYN_OBJ) return true;
+  /* Extension settings are not packed or sent here: a record that names
+   * any is refused rather than losing them. */
+  const ScrDyn *custom = scr_dyn_obj_get(settings, "customSettings", 14);
+  if (custom != NULL && custom->kind != SCR_DYN_UNDEF) {
+    static const char text[] = "HTTP/2 customSettings are not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, text, sizeof text - 1);
+    return false;
+  }
   for (size_t k = 0; k < SCR_H2_NSETTINGS; k++) {
     if (SCR_H2_SETTING_KEYS[k].boolean) continue;
     const char *key = SCR_H2_SETTING_KEYS[k].key;
@@ -3506,6 +3514,19 @@ void scr_http2_session_ping(ScrH2Session *s, ScrBytes *payload /*borrowed, nulla
   }
   scr_dyn_check_listener(cb, "callback");
   if (scr_exc_pending()) return;
+  /* Node keeps at most ten pings unanswered (maxOutstandingPings): one
+   * more is not sent, and its callback gets the cancel error at once. */
+  size_t open = 0;
+  for (size_t i = 0; i < s->npings; i++) open += s->pings[i].cancelled ? 0 : 1;
+  if (open >= 10) {
+    static const uint8_t none[8] = { 0 };
+    ScrClosure *closure = scr_dyn_listener_closure_fn(cb, (void *)&scr_h2_dyn_fire_ping);
+    scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+    scr_h2_dyn_fire_ping(closure, false, 0, none);
+    scr_dyn_this_pop();
+    scr_closure_release(closure);
+    return;
+  }
   if (s->npings == s->pings_cap) {
     s->pings_cap = s->pings_cap ? s->pings_cap * 2 : 2;
     s->pings = realloc(s->pings, s->pings_cap * sizeof *s->pings);

@@ -1,7 +1,8 @@
 // node:http2 session members: ping() with and without a payload and its
 // (err, duration, payload) callback, the 'ping' event on the peer, a ping
 // sent before the session connected (cancelled: the callback gets the
-// error alone), connecting, and getPackedSettings() and
+// error alone), the limit of ten unanswered pings (the eleventh is
+// cancelled at once), connecting, and getPackedSettings() and
 // getUnpackedSettings() with their errors. The two ends race, so each
 // records its own lines.
 import http2 from "node:http2";
@@ -72,6 +73,25 @@ await new Promise((resolve) => {
           client.close();
         });
       });
+    });
+  });
+});
+
+// Ten pings may be unanswered; the next ones are cancelled inside ping().
+await new Promise((resolve) => {
+  const server = http2.createServer();
+  server.listen(0, "127.0.0.1", () => {
+    const client = http2.connect(`http://127.0.0.1:${server.address().port}`);
+    client.on("connect", () => {
+      const lines = [];
+      for (let i = 0; i < 12; i++) {
+        client.ping((error, _duration, payload) => lines.push(`${i}:${error ? error.code : "ok"}:${payload === undefined ? "none" : payload.length}`));
+      }
+      lines.push("sent");
+      setTimeout(() => {
+        console.log(lines.join(" "));
+        client.close(() => server.close(() => resolve(undefined)));
+      }, 200);
     });
   });
 });

@@ -65,8 +65,13 @@ export default defineConfig({
     // hang detector, not a performance bound: under a merge gate sharing
     // the box with lane compiles, a legitimately compile-heavy corpus
     // entry can starve past 120s (1751 timed out twice on 2026-07-20 while
-    // passing in 3s isolated and uncached).
-    testTimeout: 300_000,
+    // passing in 3s isolated and uncached). The sanitized lane gets twice
+    // that: ASan runs the heavy tests at up to twice their plain time, and on
+    // 2026-11-04 five sanitized self-hosting tests that had been passing at
+    // 259 to 296 s on the shared 300 s went past it on slower runners (the
+    // same test varies by 20 to 40% from run to run). The longest sanitized
+    // test on this default now takes 186 s.
+    testTimeout: process.env["SCRIPTC_SAN"] === "1" ? 600_000 : 300_000,
     hookTimeout: 300_000,
     ...(effectConcurrency === "2" ? { maxConcurrency: 2 } : {}),
     env: {

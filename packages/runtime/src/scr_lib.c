@@ -16,6 +16,7 @@
  */
 #include "scr_runtime.h"
 #include "scr_system_errors.h"
+#include "scr_dir_private.h"
 
 #include <ctype.h>
 #ifdef SCR_WORKERS
@@ -47,7 +48,12 @@ static void scr_process_mask_init(void);
  * mingw-w64's CRT covers most of sync fs (open/read/write/stat/dirent —
  * the seams below note what it lacks: d_type, lstat, two-arg mkdir,
  * mkdtemp, O_SYNC) and the Win32 API covers the process/os surface
- * (GetTempPathA, GetUserNameA, RtlGetVersion, GetConsoleScreenBufferInfo).
+ * (GetTempPathW, GetUserNameW, RtlGetVersion, GetConsoleScreenBufferInfo).
+ * Every string the process surface reads or writes goes through the W
+ * forms: the A forms spell their text in the active ANSI code page, so a
+ * non-ASCII path or environment value garbles whenever that page is not
+ * UTF-8 (CP932, CP1251, …), while Node carries Windows strings as UTF-16
+ * throughout.
  * What has NO arm yet is stubbed honestly at its seam: process.kill and
  * getuid/getgid (needs-design: OpenProcess/TerminateProcess vs Node's
  * uv_kill; no uids exist on Windows — Node omits the members there),
@@ -65,7 +71,8 @@ static void scr_process_mask_init(void);
 #include <winioctl.h> /* FSCTL_GET_REPARSE_POINT */
 #define PSAPI_VERSION 2 /* K32GetProcessMemoryInfo, in kernel32 */
 #include <psapi.h>
-#include <lmcons.h>  /* UNLEN for GetUserNameA */
+#include <lmcons.h>  /* UNLEN for GetUserNameW */
+#include <wchar.h>   /* wcslen/wcschr over the UTF-16 environment block */
 #include "scr_win_stats.h"
 
 static WCHAR *scr_fs_win_wide(const ScrStr *path);
@@ -88,6 +95,29 @@ static ScrStr *scr_fs_win_utf8(const WCHAR *text, size_t length) {
   ScrStr *result = scr_str_new(bytes, (size_t)size);
   free(bytes);
   return result;
+}
+
+/* UTF-8 bytes → a NUL-terminated wide string for the W APIs: the reverse
+ * of scr_fs_win_utf8, and the conversion every UTF-8 argv into a Win32
+ * call needs (env names and values, paths). NULL, with the error left set,
+ * when the bytes are not valid UTF-8 or memory runs out. */
+static WCHAR *scr_win_wide_utf8(const char *text, size_t length) {
+  if (length > INT_MAX) {
+    SetLastError(ERROR_FILENAME_EXCED_RANGE);
+    return NULL;
+  }
+  int n = length > 0 ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)length, NULL, 0) : 0;
+  if (length > 0 && n == 0) return NULL;
+  WCHAR *wide = malloc(((size_t)n + 1) * sizeof *wide);
+  if (!wide) {
+    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    return NULL;
+  }
+  if (n > 0) {
+    (void)MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)length, wide, n);
+  }
+  wide[n] = L'\0';
+  return wide;
 }
 
 /* The CRT has no symlink view, so its internal lstat users degrade to stat.
@@ -1073,6 +1103,13 @@ ScrStr *scr_process_exec_path(void) {
   if (!scr_exec_path_str) {
     char raw[4096];
     raw[0] = '\0';
+#if defined(_WIN32)
+    /* Windows hands the path back as UTF-16 units; the W form (libuv's
+     * source of truth, and Node's spelling) then converts to the runtime's
+     * UTF-8. The result is already absolute, so the _fullpath below is
+     * skipped. */
+    bool absolute = false;
+#endif
 #if defined(__APPLE__)
     uint32_t size = sizeof(raw);
     extern int _NSGetExecutablePath(char *buf, uint32_t *bufsize);
@@ -1082,17 +1119,25 @@ ScrStr *scr_process_exec_path(void) {
     if (got > 0) raw[got] = '\0';
     else raw[0] = '\0';
 #elif defined(_WIN32)
-    /* uv_exepath's source of truth on Windows; already absolute, and
-     * spelled with backslashes like Node's own execPath there. */
-    DWORD got = GetModuleFileNameA(NULL, raw, sizeof(raw) - 1);
-    raw[got < sizeof(raw) ? got : 0] = '\0';
+    WCHAR wide[4096];
+    DWORD got = GetModuleFileNameW(NULL, wide, (DWORD)(sizeof wide / sizeof wide[0]));
+    if (got > 0 && got < sizeof wide / sizeof wide[0]) {
+      ScrStr *path = scr_fs_win_utf8(wide, got);
+      if (path) {
+        size_t n = path->len < sizeof(raw) - 1 ? path->len : sizeof(raw) - 1;
+        memcpy(raw, path->data, n);
+        raw[n] = '\0';
+        absolute = true;
+        scr_str_release(path);
+      }
+    }
 #endif
     if (raw[0] == '\0' && scr_lib_argc > 0) {
       snprintf(raw, sizeof(raw), "%s", scr_lib_argv[0]);
     }
     char resolved[PATH_MAX];
 #ifdef _WIN32
-    const char *use = _fullpath(resolved, raw, sizeof resolved) != NULL ? resolved : raw;
+    const char *use = absolute ? raw : (_fullpath(resolved, raw, sizeof resolved) != NULL ? resolved : raw);
 #else
     const char *use = realpath(raw, resolved) != NULL ? resolved : raw;
 #endif
@@ -1118,16 +1163,49 @@ ScrStr *scr_env_get(const ScrStr *name) {
 #ifdef _WIN32
   /* The WIN32 environment, not the CRT's startup snapshot — libuv's choice
    * too, and the one CreateProcess children inherit. Case-insensitive,
-   * like Node's process.env on Windows. */
-  DWORD need = GetEnvironmentVariableA(name->data, NULL, 0);
-  if (need == 0) return NULL; /* absent (an empty value still needs its NUL) */
-  char *buf = malloc(need);
-  if (!buf) {
+   * like Node's process.env on Windows. The W form keeps a non-ASCII name
+   * and value intact whatever the active ANSI code page is, and the name
+   * takes the same U+FFFD normalization scr_env_set applied when it stored
+   * the entry. */
+  char *owned;
+  const char *k = scr_str_utf8(name, &owned);
+  WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
+  scr_str_utf8_end(owned);
+  if (!wname) return NULL;
+  SetLastError(ERROR_SUCCESS); /* the query reports absence through the error */
+  DWORD need = GetEnvironmentVariableW(wname, NULL, 0);
+  if (need == 0) {
+    /* Only a failed query means the variable is absent. A present-but-empty
+     * value still needs room for its terminating NUL, so a zero size with no
+     * error is present too; Node reports it as '', not undefined. */
+    bool absent = GetLastError() == ERROR_ENVVAR_NOT_FOUND;
+    free(wname);
+    return absent ? NULL : scr_str_new("", 0);
+  }
+  WCHAR *wvalue = malloc((size_t)need * sizeof *wvalue);
+  if (!wvalue) {
+    free(wname);
     scr_trap("scriptc: out of memory\n");
   }
-  DWORD got = GetEnvironmentVariableA(name->data, buf, need);
-  ScrStr *s = scr_str_new(buf, got);
-  free(buf);
+  SetLastError(ERROR_SUCCESS);
+  DWORD got = GetEnvironmentVariableW(wname, wvalue, need);
+  DWORD error = got == 0 ? GetLastError() : ERROR_SUCCESS;
+  free(wname);
+  if (got == 0) {
+    /* A successful read reports the characters it stored, which is 0 for a
+     * present-but-empty value: the NUL went into the buffer and Node keeps
+     * the entry as ''. Only a failed read means the variable vanished
+     * between the query and this call. */
+    free(wvalue);
+    return error == ERROR_SUCCESS ? scr_str_new("", 0) : NULL;
+  }
+  if (got >= need) {
+    /* The value grew past the size the query reported: this read is stale. */
+    free(wvalue);
+    return NULL;
+  }
+  ScrStr *s = scr_fs_win_utf8(wvalue, got);
+  free(wvalue);
   return s;
 #else
   const char *v = scr_getenv(name->data);
@@ -1198,8 +1276,14 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #endif
 #ifdef _WIN32
   /* The WIN32 environment (see scr_env_get): an empty value stays a
-   * present-but-empty variable, and children inherit the write. */
-  SetEnvironmentVariableA(k, v);
+   * present-but-empty variable, and children inherit the write. The W form
+   * is UTF-16 like Node's; the A form would re-spell non-ASCII text in the
+   * active ANSI code page. */
+  WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
+  WCHAR *wvalue = scr_win_wide_utf8(v, strlen(v));
+  if (wname && wvalue) SetEnvironmentVariableW(wname, wvalue);
+  free(wname);
+  free(wvalue);
 #else
   setenv(k, v, 1);
 #endif
@@ -1219,7 +1303,12 @@ void scr_env_unset(const ScrStr *name) {
   if (scr_context_env_set(name->data, NULL)) return;
 #endif
 #ifdef _WIN32
-  SetEnvironmentVariableA(name->data, NULL);
+  char *owned;
+  const char *k = scr_str_utf8(name, &owned);
+  WCHAR *wname = scr_win_wide_utf8(k, strlen(k));
+  if (wname) SetEnvironmentVariableW(wname, NULL);
+  free(wname);
+  scr_str_utf8_end(owned);
 #else
   unsetenv(name->data);
 #endif
@@ -1476,19 +1565,27 @@ ScrArr *scr_env_pairs(void) {
 #endif
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
 #ifdef _WIN32
-  /* The WIN32 environment block (see scr_env_get): NUL-separated
-   * "K=V" entries, double-NUL terminated. Entries whose first byte is
-   * '=' are the hidden per-drive cwd variables ("=C:=..."), which libuv
-   * (and so Node's process.env) also skips. */
-  char *block = GetEnvironmentStringsA();
+  /* The WIN32 environment block (see scr_env_get): NUL-separated "K=V"
+   * entries, double-NUL terminated, read as UTF-16 and converted to the
+   * runtime's UTF-8. Entries whose first unit is '=' are the hidden
+   * per-drive cwd variables ("=C:=..."), which libuv (and so Node's
+   * process.env) also skips. */
+  WCHAR *block = GetEnvironmentStringsW();
   if (block != NULL) {
-    for (char *e = block; *e != '\0'; e += strlen(e) + 1) {
-      const char *eq = strchr(e, '=');
+    for (WCHAR *e = block; *e != L'\0'; e += wcslen(e) + 1) {
+      const WCHAR *eq = wcschr(e, L'=');
       if (!eq || eq == e) continue;
-      scr_arr_push_ref(out, scr_str_new(e, (size_t)(eq - e)));
-      scr_arr_push_ref(out, scr_str_new(eq + 1, strlen(eq + 1)));
+      ScrStr *key = scr_fs_win_utf8(e, (size_t)(eq - e));
+      ScrStr *value = scr_fs_win_utf8(eq + 1, wcslen(eq + 1));
+      if (key && value) {
+        scr_arr_push_ref(out, key); /* takes the +1 ref */
+        scr_arr_push_ref(out, value);
+      } else {
+        scr_str_release(key);
+        scr_str_release(value);
+      }
     }
-    FreeEnvironmentStringsA(block);
+    FreeEnvironmentStringsW(block);
   }
 #else
   for (char **e = environ; *e != NULL; e++) {
@@ -1841,12 +1938,16 @@ ScrStr *scr_os_homedir(void) {
 }
 
 ScrStr *scr_os_user_name(void) {
-  char buf[UNLEN + 1];
-  DWORD n = sizeof buf;
-  if (!GetUserNameA(buf, &n) || n == 0) {
+  WCHAR buf[UNLEN + 1];
+  DWORD n = (DWORD)(sizeof buf / sizeof buf[0]);
+  if (!GetUserNameW(buf, &n) || n == 0) {
     scr_trap("scriptc: os.userInfo() failed\n");
   }
-  return scr_str_new(buf, n - 1); /* n counts the NUL */
+  /* n counts the terminating NUL. The W form is UTF-16 like the name
+   * Node reads; the A form re-spells it in the ANSI code page. */
+  ScrStr *name = scr_fs_win_utf8(buf, n - 1);
+  if (!name) scr_trap("scriptc: os.userInfo() failed\n");
+  return name;
 }
 
 ScrStr *scr_os_user_shell(void) {
@@ -1907,16 +2008,19 @@ double scr_os_totalmem(void) {
 }
 
 ScrStr *scr_os_tmpdir(void) {
-  /* GetTempPathA is libuv's source (TMP → TEMP → USERPROFILE → windir),
-   * with Node's one-trailing-separator trim. */
-  char buf[MAX_PATH + 2];
-  DWORD n = GetTempPathA(sizeof buf, buf);
-  if (n == 0 || n >= sizeof buf) {
+  /* GetTempPathW is libuv's source (TMP → TEMP → USERPROFILE → windir),
+   * with Node's one-trailing-separator trim. Rendered from UTF-16 so a
+   * non-ASCII directory survives a non-UTF-8 ANSI code page. */
+  WCHAR buf[MAX_PATH + 2];
+  DWORD n = GetTempPathW((DWORD)(sizeof buf / sizeof buf[0]), buf);
+  if (n == 0 || n >= sizeof buf / sizeof buf[0]) {
     scr_trap("scriptc: os.tmpdir() failed\n");
   }
   size_t len = n;
-  if (len > 1 && (buf[len - 1] == '\\' || buf[len - 1] == '/')) len--;
-  return scr_str_new(buf, len);
+  if (len > 1 && (buf[len - 1] == L'\\' || buf[len - 1] == L'/')) len--;
+  ScrStr *dir = scr_fs_win_utf8(buf, len);
+  if (!dir) scr_trap("scriptc: os.tmpdir() failed\n");
+  return dir;
 }
 #elif defined(__wasi__)
 /* WASI has an inherited environment but no passwd database, uname, or
@@ -3925,7 +4029,7 @@ static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii)
       ScrStr *message = scr_jb_finish(&b);
       scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_INVALID_ARG_TYPE");
       scr_str_release(message);
-    } else scr_fs_throw(error, "read", path);
+    } else scr_fs_throw(error, "read", NULL); /* the read fails on the descriptor: Node names no path */
     return NULL;
   }
   if (ascii) *ascii = out.ascii;
@@ -3939,7 +4043,7 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
   ScrFileRead out;
   int error = scr_file_read_all(f, -1, false, &out);
   fclose(f);
-  if (error) { scr_fs_throw(error, "read", path); return NULL; }
+  if (error) { scr_fs_throw(error, "read", NULL); return NULL; }
   /* Node answers a Buffer: the brand is observable (Buffer.isBuffer,
    * .constructor, instanceof, inspect), so the read's bytes carry it. */
   ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);
@@ -5285,26 +5389,7 @@ void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
  * Win32 API rather than the active-code-page `A` form. */
 #ifdef _WIN32
 static WCHAR *scr_fs_win_wide(const ScrStr *path) {
-  if (path->len > INT_MAX) {
-    SetLastError(ERROR_FILENAME_EXCED_RANGE);
-    return NULL;
-  }
-  int n = path->len > 0
-    ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                          path->data, (int)path->len, NULL, 0)
-    : 0;
-  if (path->len > 0 && n == 0) return NULL;
-  WCHAR *wide = malloc(((size_t)n + 1) * sizeof *wide);
-  if (!wide) {
-    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-    return NULL;
-  }
-  if (n > 0) {
-    (void)MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                              path->data, (int)path->len, wide, n);
-  }
-  wide[n] = L'\0';
-  return wide;
+  return scr_win_wide_utf8(path->data, path->len);
 }
 
 /* The reachable fs subset of libuv's uv_translate_sys_error table. */
@@ -7473,14 +7558,29 @@ void scr_fs_scandir_free(ScrScandir *s) {
 
 /* ── fs.Dir ──────────────────────────────────────────────────────────
  * opendirSync and fs.promises.opendir: one open directory stream handing
- * out an entry at a time in OS order, like libuv's uv_fs_readdir (no "."
- * or ".."). Entry kinds use the scandir encoding above. A closed Dir
- * throws ERR_DIR_CLOSED; releasing the last reference closes the stream. */
+ * out entries in OS order, like libuv's uv_fs_readdir (no "." or "..").
+ * One readdir batch fills a buffer of up to `buffer_size` entries (Node's
+ * options.bufferSize, default 32); reads serve it one entry at a time.
+ * Entry kinds use the scandir encoding above. A closed Dir throws
+ * ERR_DIR_CLOSED; releasing the last reference closes the stream.
+ *
+ * Asynchronous reads and closes run their work when they are called and
+ * keep Node's delivery order: a read served from the buffer answers on a
+ * next-tick callback, one that filled a batch answers from the loop's
+ * deferred queue, and both leave the handle busy until the following
+ * next tick, so a sync call made from a callback throws
+ * ERR_DIR_CONCURRENT_OPERATION exactly where Node's operation queue is
+ * still set. Operations called while the handle is busy wait in a FIFO.
+ *
+ * The asynchronous forms live in scr_async.c beside the promise and loop
+ * machinery, the fs/promises convention; this unit keeps the handle, the
+ * entry batch and the synchronous operations, and the callback read's
+ * Dirent construction lives in scr_symbol.c with the Dirent prototype.
+ * scr_dir_private.h holds the layout the three units share. */
 
-struct ScrDir {
-  size_t rc;
-  ScrStr *path;
-  bool closed;
+/* The platform directory stream. Only this unit reads it; the other two
+ * close it through scr_dir_close_stream. */
+struct ScrDirStream {
 #ifdef _WIN32
   HANDLE search;
   WIN32_FIND_DATAW entry;
@@ -7490,15 +7590,40 @@ struct ScrDir {
 #endif
 };
 
-static void scr_dir_close_stream(ScrDir *d) {
+void scr_dir_batch_clear(ScrDir *d) {
+  for (size_t i = 0; i < d->batch_len; i++) scr_str_release(d->batch[i]);
+  free(d->batch);
+  free(d->kinds);
+  d->batch = NULL;
+  d->kinds = NULL;
+  d->batch_len = 0;
+  d->batch_pos = 0;
+}
+
+bool scr_dir_take(ScrDir *d, ScrStr **name, double *kind) {
+  *name = NULL;
+  *kind = 0;
+  if (d->batch_pos >= d->batch_len) return false;
+  /* The batch keeps its reference; the caller gets one of its own. */
+  *name = scr_str_retain(d->batch[d->batch_pos]);
+  *kind = d->kinds[d->batch_pos];
+  d->batch_pos++;
+  return true;
+}
+
+void scr_dir_close_stream(ScrDir *d) {
+  ScrDirStream *s = d->stream;
+  if (!s) return;
 #ifdef _WIN32
-  if (d->search != INVALID_HANDLE_VALUE) FindClose(d->search);
-  d->search = INVALID_HANDLE_VALUE;
-  d->pending = false;
+  if (s->search != INVALID_HANDLE_VALUE) FindClose(s->search);
+  s->search = INVALID_HANDLE_VALUE;
+  s->pending = false;
 #else
-  if (d->stream) closedir(d->stream);
-  d->stream = NULL;
+  if (s->stream) closedir(s->stream);
+  s->stream = NULL;
 #endif
+  free(s);
+  d->stream = NULL;
 }
 
 ScrDir *scr_dir_retain(ScrDir *d) {
@@ -7507,8 +7632,10 @@ ScrDir *scr_dir_retain(ScrDir *d) {
 }
 
 void scr_dir_release(ScrDir *d) {
-  if (!d || d->rc == SIZE_MAX || --d->rc) return;
+  if (!d || d->rc == SIZE_MAX) return;
+  if (--d->rc) return;
   scr_dir_close_stream(d);
+  scr_dir_batch_clear(d);
   scr_str_release(d->path);
   free(d);
 }
@@ -7518,15 +7645,20 @@ void scr_dir_release_v(void *p) { scr_dir_release(p); }
 
 ScrStr *scr_dir_path(ScrDir *d) { return scr_str_retain(d->path); }
 
-static void scr_dir_closed(void) {
+void scr_dir_closed(void) {
   static const char message[] = "Directory handle was closed";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_DIR_CLOSED");
+}
+
+static void scr_dir_concurrent(void) {
+  static const char message[] = "Cannot do synchronous work on directory handle with concurrent asynchronous operations";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_DIR_CONCURRENT_OPERATION");
 }
 
 /* Node opens the directory, then checks options.bufferSize (a uint32 of at
  * least 1) and closes the handle when it fails. Its opendir errors name the
  * syscall but no path. */
-static bool scr_dir_buffer_size_valid(double size) {
+bool scr_dir_buffer_size_ok(double size) {
   bool integer = isfinite(size) && trunc(size) == size;
   if (integer && size >= 1 && size <= 4294967295.0) return true;
   char received[48], msg[192];
@@ -7535,6 +7667,10 @@ static bool scr_dir_buffer_size_valid(double size) {
                    integer ? ">= 1 && <= 4294967295" : "an integer", received);
   scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
   return false;
+}
+
+void scr_dir_buffer_size_set(ScrDir *d, double size) {
+  d->buffer_size = (size_t)size;
 }
 
 /* A Dir in an 'unknown' slot: path reads and closeSync() calls; the other
@@ -7585,14 +7721,18 @@ static void scr_dir_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_DIR, &ops);
 }
 
-ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+/* Opens the directory and attaches its path: the stream half of
+ * opendir, without the options.bufferSize check (fs.opendir's callback
+ * form validates it after the open, from the completion callback). */
+ScrDir *scr_fs_opendir_raw(ScrStr *path) {
   if (!scr_fs_path_ok(path, "path")) return NULL;
-  scr_dir_dyn_install();
   ScrDir *d = calloc(1, sizeof *d);
   if (!d) scr_trap("scriptc: out of memory\n");
+  d->stream = calloc(1, sizeof *d->stream);
+  if (!d->stream) scr_trap("scriptc: out of memory\n");
   d->rc = 1;
 #ifdef _WIN32
-  d->search = INVALID_HANDLE_VALUE;
+  d->stream->search = INVALID_HANDLE_VALUE;
   WCHAR *wide = scr_fs_win_wide(path);
   int error = 0;
   DWORD attributes = wide ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
@@ -7606,34 +7746,53 @@ ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
     if (length && pattern[length - 1] != L'\\' && pattern[length - 1] != L'/') pattern[length++] = L'\\';
     pattern[length++] = L'*';
     pattern[length] = 0;
-    d->search = FindFirstFileW(pattern, &d->entry);
-    DWORD last = d->search == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-    if (d->search != INVALID_HANDLE_VALUE) d->pending = true;
+    d->stream->search = FindFirstFileW(pattern, &d->stream->entry);
+    DWORD last = d->stream->search == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    if (d->stream->search != INVALID_HANDLE_VALUE) d->stream->pending = true;
     else if (last != ERROR_FILE_NOT_FOUND) error = scr_fs_win_errno(last);
   }
   free(wide);
   if (error) {
+    free(d->stream);
     free(d);
     scr_fs_throw_nopath(error, "opendir");
     return NULL;
   }
 #else
-  d->stream = opendir(path->data);
-  if (!d->stream) {
+  d->stream->stream = opendir(path->data);
+  if (!d->stream->stream) {
     int error = errno;
+    free(d->stream);
     free(d);
     scr_fs_throw_nopath(error, "opendir");
     return NULL;
   }
 #endif
-  if (!scr_dir_buffer_size_valid(buffer_size)) {
+  d->path = scr_str_retain(path);
+  d->buffer_size = 32; /* Node's default entries per readdir batch */
+  return d;
+}
+
+ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+  scr_dir_dyn_install();
+  ScrDir *d = scr_fs_opendir_raw(path);
+  if (!d) return NULL;
+  if (!scr_dir_buffer_size_ok(buffer_size)) {
     scr_dir_close_stream(d);
+    scr_str_release(d->path);
     free(d);
     return NULL;
   }
-  d->path = scr_str_retain(path);
+  d->buffer_size = buffer_size;
   return d;
 }
+
+/* A Dir as a dynamic handle (fs.opendir's callback result). */
+ScrDyn *scr_dir_dyn_handle(ScrDir *d) {
+  scr_dir_dyn_install();
+  return scr_dyn_new_handle(d, SCR_DYNH_DIR);
+}
+
 
 #ifndef _WIN32
 /* The entry kind from d_type, with Node's lstat fallback for DT_UNKNOWN. */
@@ -7657,19 +7816,15 @@ static unsigned char scr_dir_entry_kind(const ScrDir *d, const struct dirent *en
 }
 #endif
 
-/* The next entry: true with a +1 name and its kind, false at the end (or
- * with ERR_DIR_CLOSED thrown). */
-bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind) {
+/* One entry straight from the stream: true with a +1 name and its kind,
+ * false at the end (or with the readdir error thrown). */
+static bool scr_dir_next_entry(ScrDir *d, ScrStr **name, double *kind) {
   *name = NULL;
   *kind = 0;
-  if (d->closed) {
-    scr_dir_closed();
-    return false;
-  }
 #ifdef _WIN32
-  while (d->pending) {
-    WIN32_FIND_DATAW entry = d->entry;
-    d->pending = FindNextFileW(d->search, &d->entry) != 0;
+  while (d->stream->pending) {
+    WIN32_FIND_DATAW entry = d->stream->entry;
+    d->stream->pending = FindNextFileW(d->stream->search, &d->stream->entry) != 0;
     if (wcscmp(entry.cFileName, L".") == 0 || wcscmp(entry.cFileName, L"..") == 0) continue;
     ScrStr *text = scr_fs_win_utf8(entry.cFileName, wcslen(entry.cFileName));
     if (!text) {
@@ -7685,7 +7840,7 @@ bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind) {
 #else
   for (;;) {
     errno = 0;
-    const struct dirent *ent = readdir(d->stream);
+    const struct dirent *ent = readdir(d->stream->stream);
     if (!ent) {
       if (errno) scr_fs_throw_nopath(errno, "scandir");
       return false;
@@ -7700,17 +7855,111 @@ bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind) {
 #endif
 }
 
+/* Fills the entry buffer with up to buffer_size entries: false with the
+ * readdir error thrown. */
+bool scr_dir_fill_batch(ScrDir *d) {
+  scr_dir_batch_clear(d);
+  size_t want = d->buffer_size > 0 && d->buffer_size <= 65536 ? (size_t)d->buffer_size : 1;
+  for (size_t i = 0; i < want; i++) {
+    ScrStr *name;
+    double kind;
+    if (!scr_dir_next_entry(d, &name, &kind)) return !scr_exc_pending();
+    ScrStr **names = realloc(d->batch, (d->batch_len + 1) * sizeof *names);
+    if (!names) scr_trap("scriptc: out of memory\n");
+    d->batch = names;
+    double *kinds = realloc(d->kinds, (d->batch_len + 1) * sizeof *kinds);
+    if (!kinds) scr_trap("scriptc: out of memory\n");
+    d->kinds = kinds;
+    d->batch[d->batch_len] = name;
+    d->kinds[d->batch_len] = kind;
+    d->batch_len++;
+  }
+  return true;
+}
+
+/* readSync(): a closed Dir throws ERR_DIR_CLOSED, one with an asynchronous
+ * operation outstanding ERR_DIR_CONCURRENT_OPERATION. */
+bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind) {
+  *name = NULL;
+  *kind = 0;
+  if (d->closed) {
+    scr_dir_closed();
+    return false;
+  }
+  if (d->inflight) {
+    scr_dir_concurrent();
+    return false;
+  }
+  if (d->batch_pos >= d->batch_len && !scr_dir_fill_batch(d)) return false;
+  return scr_dir_take(d, name, kind);
+}
+
 void scr_dir_close(ScrDir *d) {
   if (d->closed) {
     scr_dir_closed();
     return;
   }
+  if (d->inflight) {
+    scr_dir_concurrent();
+    return;
+  }
   d->closed = true;
   scr_dir_close_stream(d);
+  scr_dir_batch_clear(d);
 }
 
+/* The consume half of dir.read(): a closed Dir throws ERR_DIR_CLOSED; an
+ * asynchronous operation in flight does not block the caller (its result
+ * is delivered in order), unlike readSync. `buffered` reports whether the
+ * entry came from an earlier batch of this Dir rather than from a readdir
+ * call made now. */
+bool scr_dir_read_async(ScrDir *d, ScrStr **name, double *kind, bool *buffered) {
+  *name = NULL;
+  *kind = 0;
+  *buffered = false;
+  if (d->closed) {
+    scr_dir_closed();
+    return false;
+  }
+  if (d->batch_pos < d->batch_len) *buffered = true;
+  else if (!scr_dir_fill_batch(d)) return false;
+  bool took = scr_dir_take(d, name, kind);
+  return took;
+}
+
+/* dir[Symbol.dispose](): closeSync() when the Dir is still open. */
+void scr_dir_dispose(ScrDir *d) {
+  if (d->closed) return;
+  scr_dir_close(d);
+}
+
+#ifdef SCR_LIB
+/* Library links exclude the event-loop unit, so the callback forms cannot
+ * run there: they answer the same SC4005 as the other callback surfaces.
+ * The promise forms are refused before emission (a promise value). */
+static void scr_dir_callback_refused(void) {
+  static const char message[] = "Filesystem callbacks require an executable event loop";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC4005");
+}
+
+void scr_dir_read_callback(ScrDir *d, ScrDyn *callback) {
+  (void)d;
+  (void)callback;
+  scr_dir_callback_refused();
+}
+
+void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
+  (void)d;
+  (void)callback;
+  scr_dir_callback_refused();
+}
+#endif
+
 /* ── node:crypto ─────────────────────────────────────────────────────
- * Randomness comes from arc4random_buf. Hash/Hmac/PBKDF2 follow below;
+ * Randomness comes from arc4random_buf, the system's secure source, on
+ * every call: never from the generator behind Math.random, which is fast
+ * and predictable (tests/harness/math-random-boundary.test.ts holds that
+ * line). Hash/Hmac/PBKDF2 follow below;
  * Buffer allocation itself lives in scr_bytes_io.c, while this unit owns
  * the shared digest implementation and utility validation ladders. */
 
@@ -7718,10 +7967,10 @@ void scr_dir_close(ScrDir *d) {
  * Math.min/max at two arguments: the ECMA folds — C's fmin/fmax are NOT
  * these (they return the non-NaN operand where JS lets NaN poison, and
  * leave the ±0 order unspecified). Math.random(): a uniform double in
- * [0,1) at the spec's 53-bit granularity, drawn from arc4random_buf —
- * the same CSPRNG behind the crypto lowerings. Same distribution as
- * Node's, necessarily a different sequence (SEMANTICS.md 62); range and
- * granularity are pinned differentially by invariant, not by bytes. */
+ * [0,1) at the spec's 53-bit granularity, from a per-thread xorshift128+
+ * generator (scr_math_random below). Same distribution as Node's,
+ * necessarily a different sequence; range and granularity are pinned
+ * differentially by invariant, not by bytes. */
 
 double scr_math_min(double a, double b) {
   if (isnan(a) || isnan(b)) return (double)NAN;
@@ -7797,12 +8046,39 @@ double scr_math_imul(double a, double b) {
              : (double)bits;
 }
 
+/* Math.random's generator: xorshift128+ with the shifts V8 and
+ * JavaScriptCore use (23, 17, 26), one state per thread, seeded once per
+ * thread with 128 bits from the system's secure source. ECMA-262 asks only
+ * for an implementation-defined, approximately uniform distribution, and
+ * the engines' Math.random is not cryptographically secure either; a
+ * secure draw per number is a kernel call on glibc. The crypto functions
+ * (randomBytes, randomFill, randomInt, randomUUID, getRandomValues, key
+ * generation) never read this state: they call arc4random_buf themselves.
+ *
+ * The state is never zero once seeded: the step is an invertible linear map,
+ * so it takes nonzero states to nonzero states, and zero doubles as "not
+ * seeded yet". A worker thread has its own state (SCR_TL) and seeds it on
+ * its first call, so no two threads share a stream. */
+static SCR_TL uint64_t scr_math_random_state[2];
+
+static SCR_COLD void scr_math_random_seed(void) {
+  do arc4random_buf(scr_math_random_state, sizeof scr_math_random_state);
+  while ((scr_math_random_state[0] | scr_math_random_state[1]) == 0);
+}
+
 double scr_math_random(void) {
-  uint64_t r;
-  arc4random_buf(&r, sizeof r);
-  /* The top 53 bits scaled by 2^-53: every representable k/2^53 in [0,1)
-   * is equally likely — V8's own construction. */
-  return (double)(r >> 11) * 0x1.0p-53;
+  if ((scr_math_random_state[0] | scr_math_random_state[1]) == 0) scr_math_random_seed();
+  uint64_t s1 = scr_math_random_state[0];
+  uint64_t s0 = scr_math_random_state[1];
+  scr_math_random_state[0] = s0;
+  s1 ^= s1 << 23;
+  s1 ^= s1 >> 17;
+  s1 ^= s0 ^ (s0 >> 26);
+  scr_math_random_state[1] = s1;
+  /* The top 53 bits of the sum scaled by 2^-53: every representable k/2^53
+   * in [0,1) is equally likely. The sum's low bits are its weakest, and
+   * the shift drops them. */
+  return (double)((s0 + s1) >> 11) * 0x1.0p-53;
 }
 
 

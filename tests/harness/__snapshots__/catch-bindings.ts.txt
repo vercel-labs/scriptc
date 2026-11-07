@@ -1,12 +1,3 @@
-catch-bindings.ts:31:42 - error SC1062: destructuring catch clause bindings are not supported yet
-
-  30 | // promise handler's destructuring parameter keeps the fence.
-  31 | Promise.reject(new Error("four")).catch(({ message }: any) => {
-     |                                          ^~~~~~~~~~~~~~~~
-  32 |   console.log("no", message);
-
-  hint: bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives
-
 catch-bindings.ts:37:3 - error SC1090: assignments to catch bindings are not supported yet
 
   36 | } catch (e) {

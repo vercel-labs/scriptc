@@ -20,6 +20,7 @@ import {
 import { everyModuleNode, everyStmtList } from "./traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
+import { TEXT_DECODER_STREAM_CLASS } from "./webstream-classes.js";
 
 const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
   ["read", "write"].flatMap((rw) => [
@@ -100,6 +101,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webcrypto.object",
   // Web streams settle their promises with dyn values.
   "webstream.class",
+  "webstream.from",
   "webstream.instanceOf",
   "webstream.install",
   "dyn.promiseAll",
@@ -320,6 +322,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynTransformResult",
   "stream.unboxDynStage",
   "stream.handleStream",
+  "stream.handleWritable",
   "stream.unpipeDyn",
   "stream.workerStdio",
 ]);
@@ -495,6 +498,7 @@ const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Web streams answer async iteration through Symbol.asyncIterator.
   "webstream.class",
+  "webstream.from",
   "webstream.instanceOf",
   "webstream.install",
   // EventEmitter's kShapeMode and kCapture properties
@@ -574,11 +578,21 @@ interface TypeTables {
   classes: Map<string, IrClassDef>;
   /** mentionsDgramSocket's carriers, computed on first use. */
   dgramCarriers?: TypeCarriers;
+  /** mentionsChild's carriers. */
+  childCarriers?: TypeCarriers;
   /** mentionsTextCodec's and mentionsTextDecoder's carriers. */
   textCodecCarriers?: TypeCarriers;
   textDecoderCarriers?: TypeCarriers;
   /** mentionsU8Bytes's carriers. */
   u8BytesCarriers?: TypeCarriers;
+}
+
+/** Whether `t`, the record of a `Promise.withResolvers()`, holds a promise
+ * of a checked-dynamic value. */
+function resolversOfDyn(t: IrType, tables: TypeTables): boolean {
+  if (t.kind !== "record") return false;
+  const promise = tables.records.get(t.shapeId)?.fields.find((f) => f.name === "promise")?.type;
+  return promise?.kind === "promise" && promise.inner.kind === "dyn";
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
@@ -730,6 +744,16 @@ const dgramLeaf: CarrierLeaf = (t) => t.kind === "dgramSocket";
 function mentionsDgramSocket(t: IrType, tables: TypeTables): boolean {
   tables.dgramCarriers ??= leafCarriers(tables, dgramLeaf);
   return carriesLeaf(t, tables.dgramCarriers, dgramLeaf, tables);
+}
+
+const childLeaf: CarrierLeaf = (t) => t.kind === "child";
+
+/** Whether converting a value of type `t` to dyn boxes a ChildProcess: the
+ * child itself, or a function, collection, record, union, promise or class
+ * instance that carries one (the same carrier walk as dgram sockets). */
+function mentionsChild(t: IrType, tables: TypeTables): boolean {
+  tables.childCarriers ??= leafCarriers(tables, childLeaf);
+  return carriesLeaf(t, tables.childCarriers, childLeaf, tables);
 }
 
 const textCodecLeaf: CarrierLeaf = (t, tables) => {
@@ -1168,14 +1192,18 @@ function moduleWritesSparseIndex(mod: IrModule): boolean {
   return sparse;
 }
 
-/** The typed file reads that answer a ScrBytes: Node answers a Buffer, and
- * scr_lib.c's read entries brand it, so a typed read makes a Buffer value. */
+/** The typed reads that answer a ScrBytes: Node answers a Buffer, and
+ * scr_lib.c's read entries brand it, so a typed read makes a Buffer value.
+ * A spawnSync capture (spawnRes.stdoutBytes/stderrBytes) arrives from
+ * scr_child_capture.c, whose accessors stamp the same brand. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
   "fs.readFdSyncBytes",
   "fsp.readFileBytes",
   "fileHandle.readFileBytes",
+  "spawnRes.stdoutBytes",
+  "spawnRes.stderrBytes",
 ]);
 
 /** The entries that need the JavaScript object model build (t262-da §J):
@@ -1279,12 +1307,33 @@ const RUNTIME_FEATURE_RULES = {
   childOptionExt: rule({
     fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
   }),
+  /** A spawnSync capture read as a Buffer (spawnSync without an encoding
+   * option): scr_child_capture.c, a unit of its own so a program that never
+   * reads a capture keeps scr_child.c's layout — the memo's thread-local
+   * state and its functions would otherwise move every symbol the linker
+   * lays out after them. */
+  spawnCaptureBytes: rule({
+    fns: ["spawnRes.stdoutBytes", "spawnRes.stderrBytes"],
+  }),
   /** The spawnSync result's `.error` property answers Node's
    * errnoException fields (errno, syscall, path, spawnargs). The fields
    * ride a build of scr_child.c of their own (SCR_CHILD_ERR_FIELDS), so a
    * program that never reads `.error` keeps the default object and the
    * result container exactly as they were. */
   childErrorFields: rule({ fns: ["spawnRes.error"] }),
+  /** The program can register an 'error' listener on a ChildProcess: a
+   * typed or an untyped registration, or a child that converts to an
+   * untyped value, whose `on` the handle table serves. Such a program
+   * installs the builder of a failed spawn's error object at start
+   * (scr_child_error_event_install: errno, code, syscall, path and
+   * spawnargs, one object for every listener). The settle path reaches
+   * the builder only through that hook, so a program that spawns and can
+   * never listen for 'error' links none of the property code. No unit and
+   * no build of its own: the fact only decides the emitted call. */
+  childErrorEvent: rule({
+    fns: ["child.onError", "child.onDyn", "child.propsOnDyn"],
+    expr: (node, tables) => node.kind === "dynFrom" && mentionsChild(node.value.type, tables()),
+  }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -1356,7 +1405,11 @@ const RUNTIME_FEATURE_RULES = {
       // AggregateError list).
       (node.kind === "intrinsic" &&
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
-      (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
+      (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())) ||
+      // The resolve function of a promise of a checked-dynamic value that
+      // may be given a promise adopts it (scr_make_resolve_dyn).
+      (node.kind === "newPromise" && node.resolves === true) ||
+      (node.kind === "promiseWithResolvers" && resolversOfDyn(node.type, tables())),
   }),
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor (scr_js_promise_generic.c): NewPromiseCapability(C), the
@@ -1404,6 +1457,7 @@ const RUNTIME_FEATURE_RULES = {
       "buffer.prototypeObject",
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
       "webstream.class",
+      "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
       // scr_js_wrapper.c answers other values' tags through
@@ -1461,12 +1515,37 @@ const RUNTIME_FEATURE_RULES = {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically
    * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
   dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
+  /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
+   * a unit of its own so scr_json.c keeps its layout). */
+  reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** `delete` of a key a record's type does not declare, removed from the
+   * record's kept source (scr_record_source_delete.c, a unit of its own so
+   * scr_json.c keeps its layout). */
+  recordSourceDelete: rule({ fns: ["record.sourceDelete"] }),
+  /** A partial record assertion to a type whose values may be frozen
+   * (scr_record_view_frozen.c): a view of such a type shares the frozen bit
+   * with frozen records, and the unit tells the two apart. The frontend
+   * keeps the asserted type and the literal's own type freezable together
+   * (frozen-records.ts), so the asserted type decides. */
+  recordViewFrozen: rule({
+    expr: (node, tables) =>
+      node.kind === "dynCheck" &&
+      node.partialView === true &&
+      node.type.kind === "record" &&
+      tables().records.get(node.type.shapeId)?.freezable === true,
+  }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
   genBind: rule({
     initial: (mod) => mod.functions.some((fn) => fn.generator?.bindAtCall === true),
   }),
+  /** A generator function reads `this` (dyn.generatorThis): its body runs
+   * on the generator's fiber after the call returned, so the program's
+   * spawn wrappers record the call's receiver (scr_gen_capture_receiver).
+   * A program without the read records none: its generators take no
+   * dynamic value. */
+  genReceiver: rule({ fns: ["dyn.generatorThis"] }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -1491,6 +1570,10 @@ const RUNTIME_FEATURE_RULES = {
   /** createRequire's require and require.resolve with specifiers computed
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
+  /** An untyped path of a synchronous fs function in a JavaScript source
+   * (scr_fs_path_value.c): a unit of its own, so no other executable
+   * changes. */
+  fsPathValue: rule({ fns: ["dyn.validateFsPath"] }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({
     fns: [
@@ -1597,6 +1680,7 @@ const RUNTIME_FEATURE_RULES = {
       "bigint.inspect",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      "webstream.from",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",
@@ -1626,6 +1710,13 @@ const RUNTIME_FEATURE_RULES = {
   jsObjectModel: rule({ fns: [...JS_OBJECT_MODEL_LIB_FNS] }),
   legacyTextDecoder: rule({
     fns: [...LEGACY_TEXT_DECODER_LIB_FNS],
+    // A TextDecoderStream decodes whatever encoding it was constructed with:
+    // its transform calls scr_text_decode_stream, whose UTF-8 half is the
+    // default build and whose other encodings are the legacy one.
+    libCall: (node) =>
+      node.fn === "webstream.class" &&
+      node.args[0]?.kind === "numLit" &&
+      node.args[0].value === TEXT_DECODER_STREAM_CLASS,
     expr: (node, tables) =>
       (node.kind === "dynFrom" && mentionsTextDecoder(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsTextDecoder(node.type, tables())),
@@ -1726,10 +1817,11 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
-   * (scr_dyn_dirent_finish, defined in scr_symbol.c). */
+   * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
+   * builds its Dirent there. */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes.
@@ -1893,6 +1985,14 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.writeFileFlags",
     ],
   }),
+  /** The BYTE-data spellings of the options write and of
+   * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
+   * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
+   * for byte. The unit carries its own static copy of scr_fs_flags.c's
+   * mode validation, so it links alone. */
+  fsBytesWrites: rule({
+    fns: ["fs.writeFileSyncBytesFlags", "fsp.writeFileBytes", "fsp.writeFileBytesFlags"],
+  }),
   /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
    * scr_bytes_strdec_dyn.c. */
   strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
@@ -1961,6 +2061,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsFlags: false,
+    fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
     genBind: false,
@@ -2005,15 +2106,22 @@ function noRuntimeFeatures(): RuntimeFeatures {
     handleProps: false,
     childLifecycle: false,
     childOptionExt: false,
+    spawnCaptureBytes: false,
     childErrorFields: false,
+    childErrorEvent: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
     dynCollections: false,
     dynIntegrityQueries: false,
+    reflectProtoTarget: false,
+    recordSourceDelete: false,
+    recordViewFrozen: false,
     dynBuffer: false,
     dynBufferMembers: false,
+    genReceiver: false,
     bufferPrototypeObject: false,
+    fsPathValue: false,
     builtinValues: false,
     computedRequire: false,
     symbol: false,

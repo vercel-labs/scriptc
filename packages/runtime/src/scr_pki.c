@@ -3561,6 +3561,13 @@ typedef struct SpSigner {
   mbedtls_md_context_t md;
   mbedtls_md_type_t type;
   bool done; /* sign()/verify() ran: Node's "Not initialised" afterwards */
+  bool verifier; /* createVerify rather than createSign */
+  /* The Writable of a Sign or Verify used as a stream (+1) and its release
+   * (scr_stream.c). Its step holds the signer, so the signer is a
+   * collector-headered object behind a traced handle, and the pair is
+   * reclaimed as a cycle. */
+  void *stream;
+  void (*stream_release)(void *);
 } SpSigner;
 
 static void *sp_signer_retain(void *h) {
@@ -3568,11 +3575,34 @@ static void *sp_signer_retain(void *h) {
   return h;
 }
 
+static void sp_signer_trace(void *h, ScrTraceVisit visit, void *ctx) {
+  SpSigner *s = h;
+  if (s->stream) visit(s->stream, ctx);
+}
+
+/* The collector frees the stream itself; the rest is released here. */
+static void sp_signer_gcfree(void *h) {
+  SpSigner *s = h;
+  mbedtls_md_free(&s->md);
+  mbedtls_platform_zeroize(s, sizeof *s);
+  scr_obj_free_note();
+  scr_cyc_free(s);
+}
+
+static void sp_signer_destroy(void *h) {
+  SpSigner *s = h;
+  void *stream = s->stream;
+  s->stream = NULL;
+  if (stream) s->stream_release(stream);
+  sp_signer_gcfree(s);
+}
+
 static void sp_signer_release(void *h) {
   SpSigner *s = h;
-  if (--s->rc) return;
-  mbedtls_md_free(&s->md);
-  free(s);
+  if (--s->rc == 0) {
+    scr_cyc_dead(s);
+    scr_rc_destroy(s, sp_signer_destroy);
+  } else scr_cyc_released(s);
 }
 
 static void sp_not_initialised(void) {
@@ -3598,11 +3628,74 @@ static bool sp_signer_update(SpSigner *s, ScrDyn *const *args, size_t argc) {
   return true;
 }
 
+/* ── Sign and Verify as streams ─────────────────────────────────────────
+ * The stream unit builds a signer's Writable from these operations
+ * (ScrDynHandleWritable): each chunk goes through update(), as Node's
+ * Sign.prototype._write does. There is no final step, so ending the stream
+ * finishes it as soon as the last write completes. */
+
+static void *sp_signer_stream_get(void *h) {
+  return ((SpSigner *)h)->stream;
+}
+
+static void sp_signer_stream_set(void *h, void *stream, void (*release)(void *)) {
+  SpSigner *s = h;
+  s->stream = stream;
+  s->stream_release = release;
+}
+
+/* The handle's write(): the chunk's bytes go through update(). A sign() or
+ * verify() that already ran refuses as update() does ("Not initialised"),
+ * throwing out of the write. */
+static void sp_signer_stream_write(void *h, ScrBytes *chunk) {
+  SpSigner *s = h;
+  if (s->done) {
+    sp_not_initialised();
+    return;
+  }
+  SCR_BYTES_SNAPSHOT(chunk);
+  mbedtls_md_update(&s->md, chunk->data, (size_t)scr_bytes_byte_len(chunk));
+}
+
+static const ScrDynHandleWritable sp_writable_ops = {
+  sp_signer_stream_get, sp_signer_stream_set, sp_signer_stream_write, sp_signer_trace,
+};
+
+static const ScrDynHandleOps sp_sign_ops;
+static const ScrDynHandleOps sp_verify_ops;
+
+static const ScrDynHandleOps *sp_signer_ops_of(const SpSigner *s) {
+  return s->verifier ? &sp_verify_ops : &sp_sign_ops;
+}
+
 /* An output or signature encoding argument: a string encoding, or the
  * Buffer form for undefined, null and "buffer". */
 static const ScrStr *sp_encoding_arg(const ScrDyn *v) {
   if (v == NULL || v->kind != SCR_DYN_STR || sp_is_str(v, "buffer")) return NULL;
   return v->v.str;
+}
+
+/* Writable stream members a Sign or Verify inherits. */
+static bool sp_stream_member(const char *name) {
+  static const char *const members[] = {
+    "write", "end", "cork", "uncork", "setDefaultEncoding", "destroy",
+    "on", "once", "off", "addListener", "removeListener", "removeAllListeners",
+    "emit", "prependListener", "prependOnceListener", "listeners", "listenerCount",
+    "eventNames", "setMaxListeners", "getMaxListeners", "rawListeners",
+  };
+  for (size_t i = 0; i < sizeof members / sizeof *members; i++)
+    if (strcmp(name, members[i]) == 0) return true;
+  return false;
+}
+
+static void sp_stream_fence(void) {
+  static const char message[] =
+    "This Sign or Verify stream member has no lowering when called through an untyped value";
+  static const char streamless[] =
+    "Sign and Verify stream members called through an untyped value have no lowering in a program "
+    "that uses no streams";
+  if (scr_handle_stream_hooks) scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, streamless, sizeof streamless - 1, "SC2020");
 }
 
 static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
@@ -3672,6 +3765,16 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
     sp_key_release(k.key);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(ok);
   }
+  if (sp_stream_member(method)) {
+    /* The members a native stream answers run on the signer's Writable;
+     * the others have no lowering. */
+    ScrDyn *result = NULL;
+    if (scr_handle_stream_hooks &&
+        scr_handle_stream_hooks->call(sp_signer_ops_of(s), s, self, method, args, argc, &result))
+      return result;
+    sp_stream_fence();
+    return NULL;
+  }
   scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
 }
@@ -3686,9 +3789,12 @@ static ScrDyn *sp_verify_invoke(void *h, ScrDyn *self, const char *method, ScrDy
   return sp_signer_invoke(h, self, method, args, argc, what, true);
 }
 
-/* Sign and Verify have no modeled properties. */
+/* Sign and Verify model the stream properties of their Writable. */
 static ScrDyn *sp_signer_get(void *h, const char *name, size_t len) {
-  (void)h;
+  if (scr_handle_stream_hooks) {
+    ScrDyn *value = scr_handle_stream_hooks->get(sp_signer_ops_of(h), h, name, len);
+    if (value || scr_exc_pending()) return value;
+  }
   (void)name;
   (void)len;
   return NULL;
@@ -3715,6 +3821,7 @@ static const ScrDynHandleOps sp_sign_ops = {
     .get = sp_signer_get,
     .set = sp_signer_set,
     .inspect_view = sp_signer_inspect_view,
+    .writable = &sp_writable_ops,
 };
 
 static const ScrDynHandleOps sp_verify_ops = {
@@ -3725,6 +3832,7 @@ static const ScrDynHandleOps sp_verify_ops = {
     .get = sp_signer_get,
     .set = sp_signer_set,
     .inspect_view = sp_signer_inspect_view,
+    .writable = &sp_writable_ops,
 };
 
 /* createSign(algorithm) / createVerify(algorithm). */
@@ -3744,10 +3852,12 @@ static ScrDyn *sp_signer_new(ScrDyn *algorithm, bool verifier) {
     scr_dyn_handle_install(SCR_DYNH_SIGN, &sp_sign_ops);
     scr_dyn_handle_install(SCR_DYNH_VERIFY, &sp_verify_ops);
   }
-  SpSigner *s = calloc(1, sizeof *s);
-  if (!s) scr_trap("scriptc: out of memory\n");
+  static ScrCycType cyc_type = {&sp_signer_trace, &sp_signer_gcfree, SCR_CYC_KIND_NONE, 0};
+  SpSigner *s = scr_cyc_alloc(sizeof *s, &cyc_type);
   s->rc = 1;
+  scr_obj_alloc_note();
   s->type = md;
+  s->verifier = verifier;
   mbedtls_md_init(&s->md);
   mbedtls_md_setup(&s->md, mbedtls_md_info_from_type(md), 0);
   mbedtls_md_starts(&s->md);

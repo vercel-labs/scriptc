@@ -64,7 +64,17 @@ test("CI checks the committed profile in a build that keeps the committed layout
   };
   const job = workflow.jobs.native_profile!;
   expect(job.if).toContain("needs.lanes.outputs.profile == 'true'");
-  const build = job.steps.find((step) => step.run === "pnpm build:native-compiler")!;
+  // The build runs through the self-compile budget, which runs the script
+  // `pnpm build:native-compiler` runs and judges the build's own cost.
+  const build = job.steps.find(
+    (step) => step.run === "node scripts/self-compile-budget.mjs --native-build",
+  )!;
+  expect(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).toContain(
+    '"build:native-compiler": "node --max-old-space-size=8192 --import tsx scripts/build-native-cli.mts"',
+  );
+  expect(
+    readFileSync(new URL("../../scripts/self-compile-budget.mjs", import.meta.url), "utf8"),
+  ).toContain('"--import", "tsx", join(root, "scripts/build-native-cli.mts")');
   // The check reports the match and fails only when the profile cannot be
   // judged. The committed layout must stay in use: the profile was collected
   // with it, and a build without it matches fewer functions however fresh the
@@ -98,6 +108,22 @@ test("the nightly profile refresh collects a profile on main and opens a pull re
   const pipefail = build.run!.indexOf("set -o pipefail");
   expect(pipefail).toBeGreaterThanOrEqual(0);
   expect(pipefail).toBeLessThan(build.run!.indexOf("pnpm build:native-compiler"));
-  expect(steps.some((step) => step.run?.includes("git push"))).toBe(true);
-  expect(steps.some((step) => step.run?.includes("gh pr create"))).toBe(true);
+  // The repository refuses unsigned commits on every branch, and a commit
+  // made with git on the runner is unsigned: the job's push failed on each
+  // of its first five nights. GitHub signs a commit made through its API,
+  // and the step checks that it did before it moves the branch.
+  const open = steps.find((step) => step.run?.includes("gh pr create"))!;
+  expect(open.run).toContain("createCommitOnBranch");
+  expect(open.run).toContain(".commit.verification.verified");
+  expect(open.run).not.toMatch(/\bgit (commit|push)\b/);
+  expect(open.run!.indexOf(".commit.verification.verified")).toBeLessThan(
+    open.run!.indexOf("--method PATCH"),
+  );
+  // Whether the branch exists is asked by its exact name. The plural
+  // endpoint answers a name no branch has with the branches that start with
+  // it, which the scratch branch does: the first run would then try to move
+  // a branch that is not there.
+  expect(open.run).toContain('if gh api "$ref/heads/$branch"');
+  expect(open.run).toContain('ref="repos/$GITHUB_REPOSITORY/git/ref"');
+  expect(open.run).not.toMatch(/gh api "\$refs\/heads\//);
 });

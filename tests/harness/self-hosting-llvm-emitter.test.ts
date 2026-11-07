@@ -21,7 +21,7 @@ import {
   llvmEmitterRequest,
   type LlvmEmitterRequest,
 } from "./self-hosting-llvm-emitter-cases.js";
-import { skipUnownedTest } from "./shard.js";
+import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const entry = join(root, "tests/fixtures/self-hosting/llvm-emitter.ts");
@@ -114,12 +114,8 @@ const title = `the complete LLVM emitter bootstraps natively (${backend})`;
 
 // The bootstrap's two halves are separate tests so SCRIPTC_TEST_SHARD can run
 // them on different shards (tests/harness/shard.ts). Both need the seed: a
-// shard builds it once for whichever halves it owns. Milliseconds measured
-// under ASan, where the fixed point takes three times the cases' share.
-const halfCosts = {
-  [`${title}: emitter cases and programs`]: 232_000,
-  [`${title}: fixed point`]: 741_000,
-};
+// shard builds it once for whichever halves it owns.
+const halfCosts = suiteCosts(import.meta.filename);
 
 const dir = mkdtempSync(
   join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-llvm-emitter-"),
@@ -145,6 +141,10 @@ function buildSeed(): Promise<IrModule> {
     const { stdout } = await execFileAsync(
       process.execPath,
       [
+        // The seed's frontend peak is about 2.0 GB; the other self-hosting
+        // harnesses raise the bound too, and darwin's default heap is that
+        // size exactly (the plain macOS lane died at 2042 MB).
+        "--max-old-space-size=8192",
         "--import",
         "tsx",
         "--input-type=module",

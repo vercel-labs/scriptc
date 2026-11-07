@@ -171,7 +171,7 @@ function lowerFunctionSpreadCall(
 function functionConstructorValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   // A `%dyn.` helper: generated code, which the likely-hot report leaves out.
   const name = "%dyn.FunctionConstructor";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const values = varRef("values", DYN, loc);
     const index = varRef("index", F64, loc);
     const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });

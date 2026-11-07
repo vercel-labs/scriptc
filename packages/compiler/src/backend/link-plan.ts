@@ -33,6 +33,9 @@ export interface NativeLinkPlan {
   staticLink?: boolean;
   /** Program code large enough for text on huge pages (huge-text.ts). */
   hugeText?: boolean;
+  /** The program's start-up functions by symbol, first-reach order: the linker
+   * places their code first (function-layout.ts). */
+  startupSymbols?: readonly string[];
 }
 
 export async function createNativeLinkPlan(options: {
@@ -50,6 +53,7 @@ export async function createNativeLinkPlan(options: {
   profileLayout?: boolean;
   /** `false` keeps 4 KiB segment alignment for large program code. */
   hugeText?: boolean;
+  startupSymbols?: readonly string[];
   programObjectDependencies?: readonly NativeArtifactDependency[];
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
@@ -101,5 +105,8 @@ export async function createNativeLinkPlan(options: {
     runtimePack,
     ...(options.staticLink === true ? { staticLink: true } : {}),
     ...(hugeText ? { hugeText: true } : {}),
+    ...(options.startupSymbols === undefined || options.startupSymbols.length === 0
+      ? {}
+      : { startupSymbols: [...options.startupSymbols] }),
   };
 }

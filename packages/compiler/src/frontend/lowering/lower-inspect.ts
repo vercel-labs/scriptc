@@ -1766,6 +1766,20 @@ export function typeReachesCycle(lowerer: Lowerer, t: IrType): boolean {
   return walk(t);
 }
 
+/** True when a value of `t` can hold an untyped value: a type reachable
+ * from it is the checked dynamic. */
+function typeReachesUntyped(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    if (u.kind === "dyn") return true;
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
 /** True when a value of `t` can hold a function: `t` or any type
  * reachable from it is a function type. */
 export function typeReachesFunction(lowerer: Lowerer, t: IrType): boolean {
@@ -2195,9 +2209,14 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   // An accessor's getter answers any value — the walked value itself
   // included — which no declared field type shows, so a shape with a
   // getter keeps Node's circular bookkeeping on.
+  // An untyped value holds any object by reference, the walked value
+  // included, so a container that reaches one keeps the bookkeeping on too.
   const onCycle =
-    (t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
-    (typeReachesItself(lowerer, t) || (t.kind === "record" && shapeHasGetter(lowerer, t.shapeId)));
+    ((t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
+      (typeReachesItself(lowerer, t) ||
+        (t.kind === "record" && shapeHasGetter(lowerer, t.shapeId)))) ||
+    ((t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "set") &&
+      typeReachesUntyped(lowerer, t));
   const begin = (): IrStmt[] => [
     exprStmt({ kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: { kind: "void" }, loc }),
     ...(onCycle

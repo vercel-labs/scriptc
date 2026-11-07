@@ -256,6 +256,7 @@ import {
   type StringSliceSnapshot,
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
+import { type EnvironmentLayout, ValueCaptures } from "./value-captures.js";
 import { StackCaptures } from "./stack-captures.js";
 import {
   CLOSURE_KIND,
@@ -371,7 +372,12 @@ import {
   emitProcessLibCall,
   emitErrorsEventsLibCall,
 } from "./lib-process.js";
-import { FramePositions, memberFrameName } from "./frame-positions.js";
+import {
+  FramePositions,
+  frameText,
+  memberFrameName,
+  positionedFrameText,
+} from "./frame-positions.js";
 import { emitStreamLibCall } from "./lib-stream.js";
 import { emitNetworkHttpLibCall } from "./lib-network.js";
 import {
@@ -579,6 +585,10 @@ export interface LlvmTargetOptions {
   /** Linux (glibc and musl) executables: functions reached only by direct
    * calls propagate exceptions by unwinding the native stack (unwind-abi.ts). */
   unwindAbi?: boolean;
+  /** ELF targets whose linker places a named code section before the rest of
+   * the text: a function the layout's start-up tier lists goes in
+   * STARTUP_SECTION (function-layout.ts). */
+  startupSection?: boolean;
   /** Functions kept on the pending-flag ABI under `unwindAbi`: the ones an
    * earlier emission found breaking its rules (UnwindAbiViolation). */
   unwindExcluded?: ReadonlySet<string>;
@@ -607,6 +617,12 @@ export interface LlvmTargetOptions {
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
+  /** The output is linked with the report of failed checked conversions
+   * (scr_conversion_trace.c, runtime feature conversionTrace), so each
+   * conversion's failure path calls it with the conversion's position. Set
+   * together with that link feature, by the builds that decide both; it
+   * needs `debugSources` for the positions. */
+  conversionTrace?: boolean;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
   pointerBits?: 32 | 64;
   /** Unions emitted as tagged boxes whatever their arms, for tests of the
@@ -1824,8 +1840,17 @@ export class LlEmitter {
   readonly receiverReaders: AmbientReceiverReaders;
   readonly stackCaptures: StackCaptures;
   readonly lazyCaptures: LazyCaptures;
-  /** Unchanged captured parameters of the current function: each maps to
-   * the slot caching its box, NULL until the first closure needs it. */
+  readonly valueCaptures: ValueCaptures;
+  /** Bindings of the current function that the IR boxes and that hold
+   * their value in a plain slot here (value-captures.ts): stable bindings
+   * whose every capture copies the value, and captures this body receives
+   * by value. Closures read them like any local; nothing else reads or
+   * writes the slot. */
+  valueBindings: ReadonlySet<string> = new Set<string>();
+  /** Unchanged captured parameters of the current function, and captures
+   * it received by value, that a box-holding environment captures: each
+   * maps to the slot caching its box, NULL until the first such closure
+   * needs it. */
   readonly lazyCaptureBoxes = new Map<string, string>();
   readonly lazyStackBoxes = new Map<string, string>();
   borrowedParameters = new Set<string>();
@@ -1989,6 +2014,12 @@ export class LlEmitter {
   /** See moduleUsesDynBuiltinStream. */
   get usesDynBuiltinStream(): boolean {
     return this.runtimeFeatures.dynBuiltinStream;
+  }
+  /** The program links Node islands (IrModule.nodeIsland): a value an
+   * island made is a handle whose members live in Node, which the checked
+   * conversions read through. */
+  get nodeIslands(): boolean {
+    return this.mod.nodeIsland !== undefined;
   }
   /** A checked-dynamic for-await may hold a native stream: the program
    * links the stream unit (and the dyn-async one the loop needs). */
@@ -2220,7 +2251,8 @@ export class LlEmitter {
           local !== undefined &&
           !local.boxed &&
           !this.captureIds.has(id) &&
-          !this.lazyCaptureBoxes.has(id)
+          !this.lazyCaptureBoxes.has(id) &&
+          !this.valueBindings.has(id)
         );
       },
       leafId: () => `%spec.leaf.${this.speculativeLeaves++}`,
@@ -2384,6 +2416,12 @@ export class LlEmitter {
   readonly positionedFrames: boolean;
   /** The executable prints its frame chain when it aborts. */
   readonly abortFrames: boolean;
+  /** Checked conversions pass their position to their failure path, which
+   * reports the failure when the program is run with
+   * SCRIPTC_CONVERSION_TRACE (conversionTraceAt). */
+  readonly conversionTrace: boolean;
+  /** The frame name of the function being emitted (frameNameOf). */
+  currentFrameName: string | undefined = undefined;
   /** The positions of the frame of the function being emitted, when it has
    * a positioned frame. */
   framePositions: FramePositions | null = null;
@@ -2438,6 +2476,16 @@ export class LlEmitter {
     this.positionedFrames =
       options.debugSources !== undefined && options.sanitizeAttributes === false;
     this.stackTraces = this.positionedFrames || observesStacks(mod, this.nodeIndex);
+    // A build that carries debug sources can say where a checked conversion
+    // is, so its conversions report their failures (scr_conversion_trace.c).
+    // The build asks for it where it also links that unit: an emitter whose
+    // output is linked some other way must not call what the link lacks. A
+    // sanitized build reports too: it is one call on a path that runs only
+    // when a conversion fails. Library archives link a fixed runtime set.
+    this.conversionTrace =
+      options.conversionTrace === true &&
+      options.debugSources !== undefined &&
+      mod.lib === undefined;
     this.nullableUnions = new NullableUnions(
       mod,
       options.debugSources === undefined,
@@ -2736,6 +2784,7 @@ export class LlEmitter {
     this.receiverReaders = new AmbientReceiverReaders(this.fnByName, this.nodeIndex);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
+    this.valueCaptures = new ValueCaptures(this.fnByName, this.debug === null);
     const traced = computeTraced(mod, dynamicStores, cycleMutability);
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
@@ -2830,6 +2879,7 @@ export class LlEmitter {
       dynAbsentRef: () => this.dynAbsentRef(),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
+      nodeIslands: () => this.nodeIslands,
       jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
@@ -3637,6 +3687,37 @@ export class LlEmitter {
     return (this.memberFrameNamesValue = names);
   }
 
+  /** The name a frame line gives `fn`: a class member's in V8's spelling,
+   * otherwise the function's source name; undefined for module-level code
+   * and generated helpers. */
+  frameNameOf(fn: IrFunction): string | undefined {
+    return this.memberFrameNames.get(fn.name) ?? fn.sourceName;
+  }
+
+  /** The call a checked conversion at `loc` makes on its failure path, or
+   * undefined in a build that reports none. It passes the conversion's
+   * position as a frame line, the text a positioned frame would hold for a
+   * statement there (frame-positions.ts): the same position service and the
+   * same spelling, so the report and a stack trace name a place alike, and
+   * the conversion's own column where a frame has only its statement's. A
+   * position the sources do not hold falls back to the file. */
+  conversionTraceAt(loc: SrcLoc): (() => void) | undefined {
+    const debug = this.debug;
+    if (!this.conversionTrace || debug === null) return undefined;
+    const name = this.currentFrameName;
+    const pos = debug.position(loc);
+    const text =
+      pos !== null
+        ? positionedFrameText(name, pos)
+        : name === undefined
+          ? `    at ${loc.file}`
+          : frameText(name, loc.file);
+    return () => {
+      this.declare("declare void @scr_conversion_trace(ptr)");
+      this.B.line(`call void @scr_conversion_trace(ptr ${this.cstr(text)})`);
+    };
+  }
+
   /** The positions `fn`'s frame takes, or null when its frame (if it has
    * one) holds one constant line: builds without debug sources, the
    * functions `Error.captureStackTrace` names, and the constructors that
@@ -3650,7 +3731,7 @@ export class LlEmitter {
     if (!this.positionedFrames || debug === null) return null;
     if (this.frameAnchors.has(fn.name)) return null;
     if (this.frameCaptures.constructors.has(fn.name)) return null;
-    const name = this.memberFrameNames.get(fn.name) ?? fn.sourceName;
+    const name = this.frameNameOf(fn);
     if (name === undefined && !fn.name.startsWith("%init.")) return null;
     return new FramePositions(
       name,
@@ -5099,6 +5180,7 @@ export class LlEmitter {
       this.localUnionStorage.has(id) ||
       this.reboundOwnerSlots.has(id) ||
       this.lazyCaptureBoxes.has(id) ||
+      this.valueBindings.has(id) ||
       this.privateSplitLocals.has(id)
     );
   }
@@ -6377,6 +6459,94 @@ export class LlEmitter {
     return t;
   }
 
+  /** The LLVM type of a closure of lifted function `fnName` whose
+   * environment holds values (scr_closure.h, "captured values"): the
+   * header, the boxes, the values descriptor, the reference values and the
+   * scalar values. */
+  environmentType(layout: EnvironmentLayout): string {
+    const scalars = layout.scalars.map((type) => `, ${type}`).join("");
+    return `{ %ScrClosure, [${layout.boxes} x ptr], ptr, [${layout.references.length} x ptr]${scalars} }`;
+  }
+
+  /** The address of capture `index`'s value in an environment of `layout`
+   * at `closure`, and the type stored there. */
+  environmentValue(
+    layout: EnvironmentLayout,
+    closure: string,
+    index: number,
+  ): { ptr: string; type: "ptr" | "double" | "i8" } {
+    const slot = layout.slots[index]!;
+    if (slot.kind === "box")
+      throw new InternalCompilerError("llvm emitter bug: a boxed capture has no value slot");
+    const ptr = this.B.tmp();
+    const type = this.environmentType(layout);
+    if (slot.kind === "reference") {
+      this.B.line(
+        `${ptr} = getelementptr inbounds ${type}, ptr ${closure}, i32 0, i32 3, i32 ${slot.index}`,
+      );
+      return { ptr, type: "ptr" };
+    }
+    this.B.line(
+      `${ptr} = getelementptr inbounds ${type}, ptr ${closure}, i32 0, i32 ${4 + slot.index}`,
+    );
+    return { ptr, type: layout.scalars[slot.index]! };
+  }
+
+  /** The constant ScrClosureValues of `layout`: one row per reference
+   * value, with the release and trace entry points a box of its type
+   * carries. Named by content, so equal layouts share one. */
+  environmentValues(layout: EnvironmentLayout): string {
+    const rows = layout.references.map((type) => {
+      const adapters = vAdapters(this.shapeHost, type);
+      return `{ ptr, ptr } { ptr ${adapters.release}, ptr ${traceArg(this.shapeHost, type)} }`;
+    });
+    const count = rows.length;
+    const body = `{ ${this.sizeType}, [${count} x { ptr, ptr }] } { ${this.sizeType} ${count}, [${count} x { ptr, ptr }] [${rows.join(", ")}] }`;
+    const name = `@sc_env_values.${createHash("sha256").update(body).digest("hex").slice(0, 16)}`;
+    this.declare(`${name} = internal constant ${body}`);
+    return name;
+  }
+
+  /** Stores binding `localId` of the current function into capture `index`
+   * of a new environment of `layout` at `closure`. With `owned`, the
+   * environment takes a reference of its own; otherwise it borrows the
+   * binding's, which the caller keeps alive for the environment's life. */
+  storeEnvironmentValue(
+    layout: EnvironmentLayout,
+    closure: string,
+    index: number,
+    localId: string,
+    owned: boolean,
+    loc: SrcLoc,
+  ): void {
+    const local = this.currentLocals.get(localId);
+    if (local === undefined)
+      throw new InternalCompilerError(`llvm emitter bug: captured value ${localId} is not a local`);
+    // An ordinary read of the binding: whatever storage it has here (a
+    // plain slot, a box, an integer view) answers its current value.
+    const read: IrExpr = { kind: "varRef", localId, type: local.type, loc };
+    const B = this.B;
+    const slot = this.environmentValue(layout, closure, index);
+    if (slot.type === "ptr") {
+      if (owned) {
+        const value = this.emitExpr(read);
+        this.toHeap(value);
+        B.line(`store ptr ${value.name}, ptr ${slot.ptr}`);
+      } else {
+        B.line(`store ptr ${this.emitReadReceiver(read).name}, ptr ${slot.ptr}`);
+      }
+      return;
+    }
+    const value = this.emitExpr(read);
+    if (slot.type === "double") {
+      B.line(`store double ${value.name}, ptr ${slot.ptr}`);
+      return;
+    }
+    const byte = B.tmp();
+    B.line(`${byte} = zext i1 ${value.name} to i8`);
+    B.line(`store i8 ${byte}, ptr ${slot.ptr}`);
+  }
+
   /** The initializing write of a scalar TDZ box: mint the one-element
    * array cell holding the value and move it into the ARR-kind box
    * (set_ref releases nothing — the slot was the empty sentinel). */
@@ -6716,7 +6886,12 @@ export class LlEmitter {
       if (s.kind !== "varDecl") break;
       if (s.init?.kind !== "varRef" || s.init.type.kind !== "f64") continue;
       const source = s.init.localId;
-      if (this.captureIds.has(source) || this.lazyCaptureBoxes.has(source)) copies.push(s.localId);
+      if (
+        this.captureIds.has(source) ||
+        this.lazyCaptureBoxes.has(source) ||
+        this.valueBindings.has(source)
+      )
+        copies.push(s.localId);
     }
     return copies;
   }

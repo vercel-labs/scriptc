@@ -57,6 +57,9 @@ export interface NativeLinkFeatures {
   /** writeFile's `flag` disposition or copyFile's mode argument:
    * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
   fsFlags?: boolean;
+  /** existsSync over a path value that is not statically a string:
+   * scr_fs_exists_dyn.c. */
+  fsExistsValue?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -125,6 +128,10 @@ export interface NativeLinkFeatures {
   childErrorFields?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  /** The executable carries debug sources (`--optimization dev` without
+   * `--strip`): its checked conversions report their failures
+   * (scr_conversion_trace.c). Absent (false) for every other build. */
+  conversionTrace?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;

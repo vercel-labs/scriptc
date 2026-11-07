@@ -42,6 +42,8 @@ const cases: [string, Listen][] = [
   ["listen(0, optional cb)", (s, l) => { const cb: (() => void) | undefined = noHost === undefined ? l : undefined; s.listen(0, cb); }],
   ["listen(0, host, optional cb)", (s, l) => { const cb: (() => void) | undefined = noHost === undefined ? l : undefined; s.listen(0, loopback, cb); }],
   ["listen(0, absent cb)", (s, l) => { const cb: (() => void) | undefined = noHost === undefined ? undefined : l; s.once("listening", l); s.listen(0, cb); }],
+  ["listen(optional cb)", (s, l) => { const cb: (() => void) | undefined = noHost === undefined ? l : undefined; s.listen(cb); }],
+  ["listen(absent cb)", (s, l) => { const cb: (() => void) | undefined = noHost === undefined ? undefined : l; s.once("listening", l); s.listen(cb); }],
   ["listen(envPort, cb)", (s, l) => { s.listen(envPort, l); }],
   ["listen(defaultPort, host, cb)", (s, l) => { s.listen(defaultPort, "127.0.0.1", l); }],
   ["listen({ port })", (s, l) => { s.once("listening", l); s.listen({ port: 0 }); }],

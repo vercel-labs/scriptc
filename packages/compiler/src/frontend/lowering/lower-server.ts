@@ -272,11 +272,16 @@ function listenHostOf(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
       stmts: [
         { kind: "varDecl", localId: local.id, init: lowerer.coerceToExpected(value, DYN), loc },
       ],
+      // An untyped host: undefined and null are the absent host. Any
+      // other value must be a string: Node reads a number here as the
+      // backlog and rejects a non-string `options.host`, neither of which
+      // has a lowering, so the checked conversion throws instead of
+      // binding an address Node would not.
       result: {
         kind: "ternary",
-        cond: { kind: "dynTest", test: "string", value: ref(), type: BOOL, loc },
-        then: { kind: "dynCheck", value: ref(), type: STRING, loc },
-        else_: any(),
+        cond: { kind: "dynTest", test: "nullish", value: ref(), type: BOOL, loc },
+        then: any(),
+        else_: { kind: "dynCheck", value: ref(), type: STRING, loc },
         type: STRING,
         loc,
       },
@@ -309,7 +314,15 @@ function listenPortOf(
   if (value.type.kind === "dyn") return untypedPort(value);
   const picked = listenUnionArmOr(lowerer, value, F64, numLit(0, loc));
   if (picked !== null) return picked;
-  if (value.type.kind === "union" && lowerer.dynConvertible(value.type)) {
+  // `string | number` (process.env.PORT || 3000): validatePort's two
+  // kinds. A union with any other arm (a callback, an options record) is
+  // not a port.
+  if (
+    value.type.kind === "union" &&
+    (lowerer.unions.get(value.type.unionId)?.arms ?? []).every(
+      (arm) => arm.kind === "f64" || arm.kind === "string" || isUnitType(arm),
+    )
+  ) {
     return untypedPort(lowerer.coerceToExpected(value, DYN));
   }
   return null;
@@ -1748,6 +1761,21 @@ function lowerNetServerMethodCall(
         [],
       );
       return listenResult("net.listenCb", [receiver, numLit(0, loc), cb]);
+    }
+    // listen(cb) with an optional binding, `(() => void) | undefined`: the
+    // callback when it is one, and an unused port either way.
+    if (
+      args.length === 1 &&
+      first?.kind === "union" &&
+      listenArgRole(lowerer, args[0]!) === "func"
+    ) {
+      return listenResult("net.listenOptsCb", [
+        receiver,
+        numLit(0, loc),
+        strLit("", loc) /* "" = every interface */,
+        boolLit(false, loc),
+        lowerOptionalListenCallback(lowerer, args[0]!, loc),
+      ]);
     }
     // An untyped first argument takes its port from net.listenPortDyn,
     // Node's normalizeArgs and validatePort at run time: 0 for a function,

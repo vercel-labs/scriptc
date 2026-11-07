@@ -490,7 +490,7 @@ export class NodeIslandModuleCollector {
 
 /* ── module specifiers in JavaScript source ───────────────────────────── */
 
-interface Token {
+export interface Token {
   kind: "name" | "string" | "punct" | "other";
   value: string;
   at: number;
@@ -829,8 +829,10 @@ function clauseContinues(prev: Token | undefined, next: Token): boolean {
   );
 }
 
-export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
-  const tokens = moduleTokens(text);
+export function scanModuleSpecifiers(
+  text: string,
+  tokens: Token[] = moduleTokens(text),
+): ModuleSpecifierScan {
   const specifiers: string[] = [];
   const computed: { at: number; form: string }[] = [];
   const at = (k: number): Token | undefined => tokens[k];
@@ -1018,14 +1020,21 @@ export function nodeIslandManifest(modules: IrNodeIslandModules): string {
 }
 
 /** The tree's files concatenated in manifest order, each checked against
- * the digest the build recorded, or the reason one no longer matches. */
-export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array | string {
+ * the digest the build recorded, or the reason one no longer matches.
+ * `generated` holds the files the build made for the tree itself (the load
+ * plan, load-plan.ts), by path: they are on no disk. */
+export function readNodeIslandModules(
+  modules: IrNodeIslandModules,
+  generated: ReadonlyMap<string, Uint8Array> = new Map(),
+): Uint8Array | string {
   const parts: Uint8Array[] = [];
   let total = 0;
   for (const file of modules.files) {
     const path = join(modules.root, ...file.path.split("/"));
     let bytes: Uint8Array;
-    if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
+    const made = generated.get(file.path);
+    if (made !== undefined) bytes = made;
+    else if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
     else
       try {
         bytes = new Uint8Array(readFileSync(path));
@@ -1051,8 +1060,9 @@ export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array 
 export function placeNodeIslandModules(
   modules: IrNodeIslandModules,
   target: string,
+  generated: ReadonlyMap<string, Uint8Array> = new Map(),
 ): string | null {
-  const data = readNodeIslandModules(modules);
+  const data = readNodeIslandModules(modules, generated);
   if (typeof data === "string") return data;
   // Every path, and every link's target, stays inside the tree.
   const inside = resolve(target) + sep;

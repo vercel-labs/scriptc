@@ -623,18 +623,25 @@
   "clo-i2n/I.taker": "clone=wrong,ctor=unsupported,n1=unsupported,proto=wrong,rest=throws,str=unsupported,tag=wrong"
  },
  "async-iterable.p": {
-  "i2n/S.make": "exit",
-  "i2n2i/S.make": "exit",
-  "i2n2i/S.make2": "exit",
-  "clo-n2i/N.callback": "throws",
-  "clo-i2n/S.call": "exit"
+  "i2n/N.read.sum": "throws",
+  "i2n/T.json": "unsupported",
+  "i2n/U.json": "unsupported",
+  "i2n/U.forin": "unsupported",
+  "i2n/U.clone": "unsupported",
+  "i2n/N.param": "sum=throws",
+  "i2n2i/N.read@mixed.sum": "throws",
+  "clo-n2i/N.callback": "sum=throws",
+  "clo-i2n/N.read.sum": "throws",
+  "clo-i2n/U.json": "unsupported",
+  "clo-i2n/U.forin": "unsupported",
+  "clo-i2n/U.clone": "unsupported"
  },
  "async-iterable.u": {
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
   "i2n/U.clone": "unsupported",
-  "i2n/N.cast": "exit",
+  "i2n/N.cast.read.sum": "throws",
   "clo-n2i/N.callback": "clone=unsupported,forin=unsupported,json=unsupported",
   "clo-i2n/U.json": "unsupported",
   "clo-i2n/U.forin": "unsupported",

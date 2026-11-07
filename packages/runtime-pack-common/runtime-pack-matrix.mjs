@@ -223,6 +223,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_child_capture.c", "spawnCaptureBytes"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
+  // The report of failed checked conversions; dev executables link it.
+  ["scr_conversion_trace.c", "conversionTrace"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
   // Set.prototype method values, the ES2025 Set compositions and

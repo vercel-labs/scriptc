@@ -104,6 +104,7 @@ export interface EarlyExecutableNativeFeatures {
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  conversionTrace?: boolean;
   dynForAwait?: boolean;
   dynCollections?: boolean;
   dynIntegrityQueries?: boolean;

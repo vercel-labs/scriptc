@@ -197,7 +197,7 @@ import {
 } from "./frontend/provenance-registry.js";
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
-import { executableLinkFeatures } from "./backend/executable-features.js";
+import { carriesDebugSources, executableLinkFeatures } from "./backend/executable-features.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
 import { debugJsIcWays } from "./backend/llvm/js-ic.js";
@@ -703,11 +703,12 @@ function executableNativeFeatures(
   backend: "llvm",
   optimization: NativeOptimization,
   largePages: boolean,
+  strip: boolean,
 ): EarlyExecutableNativeFeatures {
   const features = {
     backend,
     ...optimizationField(optimization),
-    ...executableLinkFeatures(mod, largePages),
+    ...executableLinkFeatures(mod, largePages, carriesDebugSources(optimization, strip)),
   };
   // The executable cache record spells every boolean key (BOOLEAN_NATIVE_KEYS
   // in executable-cache.ts), and mutableBuffers is optional in the link
@@ -888,6 +889,7 @@ async function compileExecutableNative(
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
+    ...(features.conversionTrace ? { conversionTrace: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
@@ -1323,8 +1325,9 @@ async function prepareExecutableInput(
     ir: join(opts.outDir, `${stem}.ir.json`),
     llvm: join(opts.outDir, `${stem}.ll`),
   } as const;
-  const debugOptions =
-    opts.optimization === "dev" && !opts.strip ? { debugSources: sourceTexts } : {};
+  const debugOptions = carriesDebugSources(opts.optimization, opts.strip)
+    ? { debugSources: sourceTexts }
+    : {};
 
   if (outputKind === "ir") {
     await mkdir(dirname(opts.outPath), { recursive: true });
@@ -1401,6 +1404,7 @@ async function prepareExecutableInput(
               "llvm",
               opts.optimization ?? "release",
               opts.largePages === true,
+              opts.strip === true,
             ),
             ffi,
             optimization: opts.optimization ?? "release",
@@ -1464,6 +1468,7 @@ async function prepareExecutableInput(
     backend,
     opts.optimization ?? "release",
     opts.largePages === true,
+    opts.strip === true,
   );
   timing("link-features");
   const programSplit =

@@ -5,11 +5,29 @@ import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import { youngNurseryRequested } from "./young-nursery.js";
 
-export function executableLinkFeatures(mod: IrModule, largePages = false): NativeLinkFeatures {
+/** Whether a build hands the program's sources to the emitter
+ * (LlvmTargetOptions.debugSources): `--optimization dev` without
+ * `--strip`. Such a build keeps positions in its stack frames and passes
+ * each checked conversion's position to its failure path. */
+export function carriesDebugSources(
+  optimization: "release" | "dev" | "speed" | undefined,
+  strip: boolean | undefined,
+): boolean {
+  return optimization === "dev" && strip !== true;
+}
+
+/** `debugSources`: the build carries debug sources (carriesDebugSources),
+ * so its checked conversions call the report of their failures. */
+export function executableLinkFeatures(
+  mod: IrModule,
+  largePages = false,
+  debugSources = false,
+): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
   return {
     ...(mod.workers ? { workers: true } : {}),
     ...(largePages ? { largePages: true } : {}),
+    ...(debugSources && mod.lib === undefined ? { conversionTrace: true } : {}),
     ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
     regex: features.regex,
     copying: features.copying,

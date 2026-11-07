@@ -27,6 +27,12 @@ const built =
 // A profile older than the runtime sources loses the counts of every function
 // whose control flow changed since it was collected. More than this share of
 // the functions it describes means it is due for scripts/refresh-runtime-profile.mjs.
+// Functions are counted by profile name (scripts/profile-match.mjs): the pack
+// compiles some units more than once, and a function whose control flow
+// differs between two of those builds matches the profile in one of them
+// only, however fresh the profile is. Counted per object, those functions
+// alone were 7% of the functions a profile described on the day it was
+// collected, and no refresh could bring that number down.
 const MAX_MISMATCHED_SHARE = 0.1;
 // The same by the profile's counters: a changed hot function loses more of
 // the profile's gain than a changed cold one.
@@ -36,21 +42,22 @@ test.skipIf(!built)("the committed runtime profile still matches the runtime's s
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const match = manifest.flavors?.speed?.runtime_profile;
   expect(match, "the speed flavor was built without the committed runtime profile").toBeDefined();
-  const described = match.annotated + match.mismatched;
-  expect(match.annotated).toBeGreaterThan(0);
   expect(
-    match.mismatched / described,
-    `${match.mismatched} of the ${described} runtime functions the profile describes changed since it was collected; run node scripts/refresh-runtime-profile.mjs`,
+    match.annotated_names,
+    "the pack's manifest does not count the profile's functions by name; rebuild the runtime pack",
+  ).toBeDefined();
+  const described = match.annotated_names + match.mismatched_names;
+  expect(match.annotated_names).toBeGreaterThan(0);
+  expect(
+    match.mismatched_names / described,
+    `${match.mismatched_names} of the ${described} runtime functions the profile describes changed since it was collected (most counts: ${match.stale.join(", ")}); run node scripts/refresh-runtime-profile.mjs`,
   ).toBeLessThanOrEqual(MAX_MISMATCHED_SHARE);
-  // Helpers that list the matched functions also report their counters.
-  if (match.annotated_counts !== undefined) {
-    const counts = match.annotated_counts + match.mismatched_counts;
-    expect(counts).toBeGreaterThan(0);
-    expect(
-      match.mismatched_counts / counts,
-      `runtime functions that changed since the profile was collected hold ${((100 * match.mismatched_counts) / counts).toFixed(1)}% of its counts (most: ${match.stale.join(", ")}); run node scripts/refresh-runtime-profile.mjs`,
-    ).toBeLessThanOrEqual(MAX_MISMATCHED_COUNTS_SHARE);
-  }
+  const counts = match.annotated_counts + match.mismatched_counts;
+  expect(counts).toBeGreaterThan(0);
+  expect(
+    match.mismatched_counts / counts,
+    `runtime functions that changed since the profile was collected hold ${((100 * match.mismatched_counts) / counts).toFixed(1)}% of its counts (most: ${match.stale.join(", ")}); run node scripts/refresh-runtime-profile.mjs`,
+  ).toBeLessThanOrEqual(MAX_MISMATCHED_COUNTS_SHARE);
 });
 
 // The committed profile holds the runtime's records only. Training programs'

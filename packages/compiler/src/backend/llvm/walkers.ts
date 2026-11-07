@@ -1133,7 +1133,7 @@ export class LlWalkers {
 /** Branches for a record copy linked to its source (IrModule.recordLinks):
  * when the record `value` of shape `shapeId` links through one of the
  * module's pairs into that shape, `answer` emits the code for its composed
- * record (a +1 reference, released after `answer`) of the pair's source
+ * record (a +1 reference, released after `answer`) of the pair's composed
  * type and names the terminator. Unlinked records fall through. */
 export function emitLinkedRecordBranches(
   host: ShapeHost,
@@ -1151,6 +1151,10 @@ export function emitLinkedRecordBranches(
   for (const link of links) {
     const copyT: IrType = { kind: "record", shapeId };
     const sourceT: IrType & { kind: "record" } = { kind: "record", shapeId: link.from };
+    const composedT: IrType & { kind: "record" } = {
+      kind: "record",
+      shapeId: link.composed ?? link.from,
+    };
     const matches = B.tmp();
     const lLinked = B.newLabel("link.linked");
     const lNext = B.newLabel("link.unlinked");
@@ -1166,8 +1170,8 @@ export function emitLinkedRecordBranches(
     B.line(`${owned} = call ptr ${retainSym(host, sourceT)}(ptr ${source})`);
     B.line(`${copy} = call ptr ${retainSym(host, copyT)}(ptr ${value})`);
     B.line(`${composed} = call ptr @${mangleFunction(link.compose)}(ptr ${copy}, ptr ${owned})`);
-    const terminator = answer(sourceT, composed);
-    B.line(`call void ${releaseSym(host, sourceT)}(ptr ${composed})`);
+    const terminator = answer(composedT, composed);
+    B.line(`call void ${releaseSym(host, composedT)}(ptr ${composed})`);
     B.terminate(terminator);
     B.startBlock(lNext);
   }

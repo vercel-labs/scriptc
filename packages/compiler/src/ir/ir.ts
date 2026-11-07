@@ -1156,10 +1156,12 @@ export interface IrModule {
   /** The narrowing conversions that link a record copy to its source
    * (record.link): a conversion from record type `from` into the narrower
    * record type `to`, whose source has properties `to` does not declare.
-   * `compose(copy, source)` answers a record of type `from` with the
-   * copy's values for the fields both declare and the source's for the
-   * others: what the copy's reflective surfaces answer from. `pair` is
-   * the nonzero number the link stores. Absent when there are none. */
+   * `compose(copy, source)` answers a record with the copy's values for
+   * the fields both declare and the source's for the others: what the
+   * copy's reflective surfaces answer from. Its type is `from`, or
+   * `composed` when the two types declare a field at different types.
+   * `pair` is the nonzero number the link stores. Absent when there are
+   * none. */
   recordLinks?: IrRecordLink[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
@@ -1603,6 +1605,10 @@ export interface IrRecordLink {
   from: string;
   to: string;
   compose: string;
+  /** The record type `compose` answers when it is not `from`: `from` with
+   * the type `to` declares for each field the two declare differently, so
+   * the composed record holds the copy's value of every shared field. */
+  composed?: string;
 }
 
 export interface IrClassDef {

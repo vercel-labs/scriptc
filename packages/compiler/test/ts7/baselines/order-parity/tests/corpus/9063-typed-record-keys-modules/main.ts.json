@@ -1,0 +1,12 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9063-typed-record-keys-modules/shared.ts",
+  "<repo>/tests/corpus/9063-typed-record-keys-modules/m000.ts",
+  "<repo>/tests/corpus/9063-typed-record-keys-modules/m001.ts",
+  "<repo>/tests/corpus/9063-typed-record-keys-modules/m002.ts",
+  "<repo>/tests/corpus/9063-typed-record-keys-modules/m003.ts",
+  "<repo>/tests/corpus/9063-typed-record-keys-modules/m004.ts",
+  "<repo>/tests/corpus/9063-typed-record-keys-modules/main.ts"
+ ],
+ "diags": []
+}

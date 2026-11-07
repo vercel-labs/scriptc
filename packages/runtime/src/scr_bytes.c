@@ -1045,17 +1045,23 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
 }
 
 void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
+  double t = (offset != offset) ? 0 : trunc(offset);
+  if (!(t >= 0)) {
+    static const char msg[] = "offset is out of bounds";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return;
+  }
 #ifdef SCR_JS_OBJECT_MODEL
   if (!scr_js_typed_method_ok(dst, "set")) return;
-  /* Node validates the source view before the offset: a detached source, or
-   * a fixed-length one whose buffer shrank out from under it, throws. */
+  /* Node validates the source view before the bounds: a detached source, or
+   * a fixed-length one whose buffer shrank out from under it, throws even
+   * when the copy would land out of range. */
   if (!scr_js_bytes_live(src)) {
     scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
     return;
   }
 #endif
-  double t = (offset != offset) ? 0 : trunc(offset);
-  if (!(t >= 0) || (double)src->len + t > (double)dst->len) {
+  if ((double)src->len + t > (double)dst->len) {
     static const char msg[] = "offset is out of bounds";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return;
@@ -1271,20 +1277,20 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
 }
 
 void scr_bytes_set_from_dyn(ScrBytes *dst, const ScrDyn *src, double offset) {
-#ifdef SCR_JS_OBJECT_MODEL
-  /* Node validates the receiver before the offset: a detached or
-   * out-of-bounds target is a TypeError, not the RangeError below. */
-  if (!scr_js_bytes_live(dst)) {
-    scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
-    return;
-  }
-#endif
   double t = isnan(offset) ? 0 : trunc(offset);
   if (!(t >= 0)) {
     static const char msg[] = "offset is out of bounds";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return;
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Node converts the offset and rejects a negative one before it validates
+   * the receiver: a detached target still reports the RangeError above. */
+  if (!scr_js_bytes_live(dst)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
+    return;
+  }
+#endif
   if (src->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(src);
     if (view->kind == SCR_DYN_BYTES || view->kind == SCR_DYN_ARR) scr_bytes_set_from_dyn(dst, view, t);

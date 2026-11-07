@@ -60,3 +60,40 @@ console.log(Array.from(new Uint8Array([4, 5])).join(","));
 console.log(Array.from(new Uint8Array([4, 5]).keys()).join(","));
 console.log(Array.from(new Uint8Array([6, 7]).values()).join(","));
 console.log(Array.from(new Float64Array([2, 1, 3]).toSorted()).join(","));
+// The factory throws where it is created: no `next()` is needed.
+for (const name of names) {
+  const view = new Uint8Array(4);
+  view.buffer.transfer();
+  try {
+    view[name]();
+    console.log(name, "created");
+  } catch (e) {
+    console.log(name, "create", e.constructor.name, e.message);
+  }
+}
+// set() converts and range-checks the offset before it validates a view.
+{
+  const target = new Uint8Array(4);
+  target.buffer.transfer();
+  for (const offset of [-1, -0.5, 0, NaN, 1.5]) {
+    try {
+      target.set([1, 2], offset);
+      console.log("set offset", String(offset), "no throw");
+    } catch (e) {
+      console.log("set offset", String(offset), e.constructor.name, e.message);
+    }
+  }
+}
+{
+  const target = new Uint8Array(4);
+  const source = new Uint8Array([1, 2]);
+  source.buffer.transfer();
+  for (const offset of [-1, 0]) {
+    try {
+      target.set(source, offset);
+      console.log("set typed offset", offset, "no throw");
+    } catch (e) {
+      console.log("set typed offset", offset, e.constructor.name, e.message);
+    }
+  }
+}

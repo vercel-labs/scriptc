@@ -884,7 +884,10 @@ function moduleHasDeferredFence(mod: IrModule): boolean {
   everyModuleNode(mod, {
     expr: () => !found,
     stmt: (node) => {
-      if (node.kind === "runtimeFence" && isDeferredDiagnosticFence(node.code, node.message))
+      if (
+        node.kind === "runtimeFence" &&
+        isDeferredDiagnosticFence(node.code, node.message, node.loc.file)
+      )
         found = true;
       return !found;
     },

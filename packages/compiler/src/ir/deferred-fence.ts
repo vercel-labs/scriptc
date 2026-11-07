@@ -11,10 +11,18 @@
  *
  * The backend reports a deferred diagnostic on stderr the first time its
  * site fires (scr_deferred_fence.c), so a handler that catches the Error
- * cannot hide a refusal the compiler knew about. */
+ * cannot hide a refusal the compiler knew about. Only fences in JavaScript
+ * sources report. A TypeScript source's constructs are compile errors, and
+ * the fences it can still hold (a typed-array store through an index that
+ * is undefined at run time, a builtin function value with no lowering) keep
+ * the plain throw, so a typed program, the compiler's own source included,
+ * compiles to what it did. */
 
-/** Whether `message` ends with the tag of the diagnostic `code`. */
-export function isDeferredDiagnosticFence(code: string, message: string): boolean {
+/** Whether a runtimeFence at `file` with this code and message stands for
+ * a deferred diagnostic that reports: `message` ends with the tag of
+ * `code`, and `file` is a JavaScript source. */
+export function isDeferredDiagnosticFence(code: string, message: string, file: string): boolean {
+  if (!/\.[cm]?jsx?$/.test(file)) return false;
   if (!message.endsWith("]")) return false;
   const tag = message.lastIndexOf(`[${code}`);
   if (tag < 0) return false;

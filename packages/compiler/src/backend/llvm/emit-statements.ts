@@ -1988,7 +1988,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // it fires, keyed by the interned message constant: a handler that
       // catches the Error cannot hide the refusal.
       const bytes = Buffer.byteLength(s.message, "utf8");
-      if (isDeferredDiagnosticFence(s.code, s.message)) {
+      if (isDeferredDiagnosticFence(s.code, s.message, s.loc.file)) {
         emitter.declare(`declare void @scr_deferred_fence(ptr, ${emitter.sizeType}, ptr)`);
         B.line(
           `call void @scr_deferred_fence(ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,

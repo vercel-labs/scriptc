@@ -46,7 +46,9 @@ async function run(binary: string, env: Record<string, string> = {}): Promise<Ru
   try {
     const pending = execFileAsync(binary, [], {
       encoding: "utf8",
-      env: { ...process.env, ...env },
+      // The suites run compiled programs with the report off
+      // (vitest.config.ts); these tests are about the report.
+      env: { ...process.env, SCRIPTC_DEFERRED_REPORT: "1", ...env },
     });
     pending.child.stdin?.end();
     const { stdout, stderr } = await pending;

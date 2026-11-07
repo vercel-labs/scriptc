@@ -491,14 +491,21 @@ describe("runtime feature snapshots", () => {
     // A runtimeFence whose message carries its diagnostic's tag throws
     // through scr_deferred_fence.c; the traps the lowering writes itself
     // (no tag) leave the program without the unit.
-    const fenced = (message: string) => {
+    const fenced = (message: string, file = "/app/a.js") => {
       const mod = module();
-      mod.functions[0]!.body.push({ kind: "runtimeFence", code: "SC2020", message, loc });
+      mod.functions[0]!.body.push({
+        kind: "runtimeFence",
+        code: "SC2020",
+        message,
+        loc: { ...loc, file },
+      });
       return moduleRuntimeFeatures(mod).deferredFence;
     };
     expect(fenced("'unescape' has no scriptc lowering yet [SC2020 at /app/a.js:4]")).toBe(true);
     expect(fenced("'unescape' has no scriptc lowering yet [SC2020]")).toBe(true);
     expect(fenced("reading 'x' through an untyped value is not supported")).toBe(false);
+    // A TypeScript source's fences keep the plain throw.
+    expect(fenced("an undefined index [SC2020 at /app/a.ts:4]", "/app/a.ts")).toBe(false);
     expect(moduleRuntimeFeatures(module()).deferredFence).toBe(false);
   });
 

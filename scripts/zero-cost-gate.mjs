@@ -10,11 +10,11 @@
  * The good-code set: the runtime benchmark workloads (and benchmarks/builds
  * applications), the self-hosted compiler (IR and LLVM), and the TypeScript
  * corpus programs. A program whose sources match --allow (the change's
- * pattern signature) may differ. A program whose IR and LLVM are identical
- * and whose executable differs only through changed runtime objects is
- * "runtime-only", and a difference the baseline reproduces against itself is
- * "nondeterministic": both pass with a note unless --strict. Any other
- * difference fails the gate. */
+ * pattern signature) or that --allow-programs lists by id may differ. A
+ * program whose IR and LLVM are identical and whose executable differs only
+ * through changed runtime objects is "runtime-only", and a difference the
+ * baseline reproduces against itself is "nondeterministic": both pass with a
+ * note unless --strict. Any other difference fails the gate. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -34,6 +34,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { readWorkloads } from "../benchmarks/runtime/workloads.mjs";
 import {
+  allowProgramsLines,
+  allowProgramsSummary,
   artifactHash,
   cachedComparison,
   cachegrindCounts,
@@ -44,19 +46,19 @@ import {
   confinedToRuntime,
   DYNAMIC_WORKLOADS,
   definedFunctionNames,
-  dynamicTierSymbols,
+  elfPrivateConstants,
   linkedRuntimeFiles,
   objectFunctionHashes,
   median,
-  icuSymbols,
-  nodeIslandSymbols,
   nmOutput,
+  parseAllowPrograms,
   parseNm,
   programInputsHash,
   programLines,
   programVerdict,
   recordedBaseline,
   runtimePackDiff,
+  symbolCheck,
   timingGroups,
   timingVerdict,
 } from "./zero-cost-compare.mjs";
@@ -73,6 +75,8 @@ const { values } = parseArgs({
     shard: { type: "string" },
     only: { type: "string" },
     allow: { type: "string" },
+    "allow-programs": { type: "string" },
+    list: { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
     "timing-runs": { type: "string" },
     "self-timing-runs": { type: "string", default: "0" },
@@ -92,7 +96,8 @@ if (values.help || values.baseline === undefined) {
   console.log(`Usage: node scripts/zero-cost-gate.mjs --baseline=<checkout> [--candidate=<checkout>]
        [--programs=baseline|candidate|<dir>] [--set=bench,self,corpus] [--quick]
        [--corpus=ts|all] [--shard=i/n] [--only=<regex>] [--allow=<regex>]
-       [--strict] [--timing-runs=N] [--self-timing-runs=N]
+       [--allow-programs=<file>] [--list] [--strict] [--timing-runs=N]
+       [--self-timing-runs=N]
        [--fixture-timing-runs=N] [--max-time-growth=2] [--max-size-growth=0]
        [--cachegrind] [--jobs=N] [--json=<file>] [--keep]
        [--baseline-cache=<file>] [--record-baseline-cache=<file>]
@@ -112,6 +117,16 @@ into one verdict. --only filters program ids.
 
 --allow=<regex> is the change's pattern signature: programs whose source
 files match it may differ (reported as "allowed").
+--allow-programs=<file> names the programs that may differ by id instead:
+one id per line as the gate prints it (corpus/..., bench/..., self/cli,
+fixture/...); blank lines and lines that start with # are skipped. A listed
+program is allowed as if --allow matched it, and both options may be given.
+An id that names no program of the good-code set (of any --set and --corpus,
+before --only and --shard) is an error, so a stale list fails instead of
+passing. The summary counts the listed programs that differ and names the
+ones that are identical, which the list need not name.
+--list prints the ids of the programs the run would compare, one per line,
+and exits without building; with --allow-programs it checks the list first.
 
 Other differences are classified:
   runtime-only      IR and LLVM identical; the executable differs only
@@ -142,8 +157,11 @@ own work shows up there at a size the bench and corpus programs never reach.
 
 Dynamic-tier symbols (two-tier invariant I3): no executable may gain
 symbols under DYNAMIC_TIER_PREFIXES (scripts/zero-cost-compare.mjs) unless
-it matches --allow, and fully typed bench workloads (all but
+it is allowed, and fully typed bench workloads (all but
 DYNAMIC_WORKLOADS in scripts/zero-cost-compare.mjs) may define none.
+Likewise no executable may gain Node island symbols or symbols of the ICU
+archive unless it is allowed; a program that links them on both sides
+gained nothing.
 
 --cachegrind (Linux, valgrind on PATH) runs differing executables under
 cachegrind (bench workloads with their arguments, corpus programs without)
@@ -162,7 +180,8 @@ inputs changed since the record. The record applies only to the
 baseline revision and toolchain it was made with; otherwise it is ignored.
 The self program always builds both sides, since its builds are timed.
 
-Exit status: 0 when the gate passes, 1 when it fails.`);
+Exit status: 0 when the gate passes, 1 when it fails, 2 when the arguments
+are wrong, which includes an --allow-programs id that names no program.`);
   process.exit(values.help ? 0 : 2);
 }
 
@@ -189,6 +208,10 @@ assert.ok(Number.isInteger(jobs) && jobs >= 1, "--jobs must be >= 1");
 assert.ok(["ts", "all"].includes(values.corpus), "--corpus must be ts or all");
 const only = values.only ? new RegExp(values.only) : null;
 const allow = values.allow ? new RegExp(values.allow, "m") : null;
+const allowPrograms =
+  values["allow-programs"] === undefined
+    ? null
+    : parseAllowPrograms(readFileSync(values["allow-programs"], "utf8"));
 if (values.cachegrind)
   assert.equal(
     spawnSync("valgrind", ["--version"]).status,
@@ -234,58 +257,65 @@ function programInputs(entry) {
   return [...files];
 }
 
+/** Every program of the good-code set: all three sets, and every corpus
+ * entry whatever its language. `--set`, `--corpus`, `--only` and `--shard`
+ * select from it (`selectedPrograms`); --allow-programs may name any of it.
+ * A --programs directory need only hold the sets the run selects. */
 function goodCodeSet() {
   const programs = [];
-  if (sets.has("bench")) {
-    const suite = join(programsRoot, "benchmarks/runtime");
-    const seen = new Set();
-    for (const w of readWorkloads(suite)) {
-      const entry = join(suite, w.entry);
-      if (seen.has(entry)) continue;
-      seen.add(entry);
-      programs.push({ id: `bench/${w.name}`, entry, kind: "exe", workload: w });
-    }
+  const suite = join(programsRoot, "benchmarks/runtime");
+  const seen = new Set();
+  for (const w of sets.has("bench") || existsSync(suite) ? readWorkloads(suite) : []) {
+    const entry = join(suite, w.entry);
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    programs.push({ id: `bench/${w.name}`, set: "bench", entry, kind: "exe", workload: w });
   }
-  if (sets.has("self")) {
+  programs.push({
+    id: "self/cli",
+    set: "self",
+    entry: join(programsRoot, "packages/compiler/src/native/cli.ts"),
+    kind: "source",
+  });
+  // The self-hosting emitter fixtures lower the whole emitter over the
+  // compiler's complete IR surface. They are the timed programs that show a
+  // pass whose cost follows the module's size (the fs Buffer brand scan of
+  // #2636 spent most of a compile in one walk and left the IR unchanged).
+  for (const name of FIXTURE_PROGRAMS)
     programs.push({
-      id: "self/cli",
-      entry: join(programsRoot, "packages/compiler/src/native/cli.ts"),
-      kind: "source",
+      id: `fixture/${name}`,
+      set: "self",
+      entry: join(programsRoot, "tests/fixtures/self-hosting", `${name}.ts`),
+      kind: "fixture",
     });
-    // The self-hosting emitter fixtures lower the whole emitter over the
-    // compiler's complete IR surface. They are the timed programs that show a
-    // pass whose cost follows the module's size (the fs Buffer brand scan of
-    // #2636 spent most of a compile in one walk and left the IR unchanged).
-    for (const name of FIXTURE_PROGRAMS)
-      programs.push({
-        id: `fixture/${name}`,
-        entry: join(programsRoot, "tests/fixtures/self-hosting", `${name}.ts`),
-        kind: "fixture",
-      });
+  const corpus = join(programsRoot, "tests/corpus");
+  // A directory's entry is its main.ts, or without one its first JavaScript
+  // main; --corpus=ts keeps the TypeScript entries.
+  const exts = ["ts", "js", "mjs", "cjs"];
+  for (const name of sets.has("corpus") || existsSync(corpus) ? readdirSync(corpus).sort() : []) {
+    const path = join(corpus, name);
+    let entry = null;
+    if (statSync(path).isDirectory())
+      entry = exts.map((ext) => join(path, `main.${ext}`)).find((p) => existsSync(p)) ?? null;
+    else if (exts.some((ext) => name.endsWith(`.${ext}`))) entry = path;
+    if (entry !== null)
+      programs.push({ id: `corpus/${relative(corpus, entry)}`, set: "corpus", entry, kind: "exe" });
   }
-  if (sets.has("corpus")) {
-    const corpus = join(programsRoot, "tests/corpus");
-    const exts = values.corpus === "all" ? ["ts", "js", "mjs", "cjs"] : ["ts"];
-    const entries = [];
-    for (const name of readdirSync(corpus).sort()) {
-      const path = join(corpus, name);
-      if (statSync(path).isDirectory()) {
-        const main = exts.map((ext) => join(path, `main.${ext}`)).find((p) => existsSync(p));
-        if (main !== undefined) entries.push(main);
-      } else if (exts.some((ext) => name.endsWith(`.${ext}`))) entries.push(path);
-    }
-    for (const entry of entries) {
-      const head = readFileSync(entry, "utf8").split("\n", 2);
-      const speed = head.some((line) => /^\/\/ @optimization:\s*speed\s*$/.test(line));
-      programs.push({
-        id: `corpus/${relative(corpus, entry)}`,
-        entry,
-        kind: "exe",
-        optimization: speed ? "speed" : "release",
-      });
-    }
+  return programs;
+}
+
+/** The programs this run compares. */
+function selectedPrograms(all) {
+  const selected = all
+    .filter((p) => sets.has(p.set))
+    .filter((p) => p.set !== "corpus" || values.corpus === "all" || p.entry.endsWith(".ts"))
+    .filter((p) => only === null || only.test(p.id));
+  for (const program of selected) {
+    if (program.set !== "corpus") continue;
+    const head = readFileSync(program.entry, "utf8").split("\n", 2);
+    const speed = head.some((line) => /^\/\/ @optimization:\s*speed\s*$/.test(line));
+    program.optimization = speed ? "speed" : "release";
   }
-  const selected = programs.filter((p) => only === null || only.test(p.id));
   if (!values.shard) return selected;
   const [index, count] = values.shard.split("/").map(Number);
   assert.ok(
@@ -390,34 +420,22 @@ function nm(binary) {
 /** Names of the functions an executable defines. */
 const definedFunctions = (binary) => definedFunctionNames(nm(binary));
 
-/** The I3 symbol check. Every executable may not gain dynamic-tier symbols
- * over the baseline (unless the program matches --allow); a fully typed
- * bench workload may contain none at all. */
+/** The symbol check (two-tier invariant I3, the Node island runtime and the
+ * ICU archive). No executable may gain dynamic-tier, Node island or ICU
+ * symbols over the baseline (unless the program is allowed); a fully typed
+ * bench workload may contain no dynamic-tier symbol at all. An identical
+ * executable gained nothing, so only a typed one is read. */
 function dynamicTierCheck(program, baseline, candidate, artifacts, allowed) {
   if (!baseline.exe || !artifacts.exe) return null;
   const typed = program.id.startsWith("bench/") && !DYNAMIC_WORKLOADS.has(program.id);
   if (artifacts.exe.identical && !typed) return null;
-  const after = dynamicTierSymbols(definedFunctions(candidate.exe));
-  const before = artifacts.exe.identical
-    ? after
-    : dynamicTierSymbols(definedFunctions(baseline.exe));
-  const added = after.filter((name) => !before.includes(name));
-  const failures = [];
-  // No good-code program calls into Node.js, so none may link its runtime.
-  const nodeIsland = nodeIslandSymbols(definedFunctions(candidate.exe));
-  if (nodeIsland.length > 0 && !allowed)
-    failures.push(`links Node island symbols: ${nodeIsland.slice(0, 5).join(", ")}`);
-  // Intl over ICU is linked only into programs whose IR lowers to it. A
-  // program that legitimately calls it names the pattern in --allow.
-  const icu = icuSymbols(definedFunctions(candidate.exe));
-  if (icu.length > 0 && !allowed) failures.push(`links ICU symbols: ${icu.slice(0, 5).join(", ")}`);
-  if (typed && after.length > 0)
-    failures.push(
-      `fully typed program links dynamic-tier symbols: ${after.slice(0, 5).join(", ")}`,
-    );
-  if (added.length > 0 && !allowed)
-    failures.push(`gained dynamic-tier symbols: ${added.slice(0, 5).join(", ")}`);
-  return { typed, count: after.length, added, failures };
+  const after = definedFunctions(candidate.exe);
+  return symbolCheck({
+    typed,
+    allowed,
+    baseline: artifacts.exe.identical ? after : definedFunctions(baseline.exe),
+    candidate: after,
+  });
 }
 
 function compareBuilds(baseline, candidate) {
@@ -505,9 +523,10 @@ function llvmObjdump() {
  * null when no object or archive does: the changed pack files, whether the
  * LLVM helper is the same, the symbols the changed objects define (on either
  * side), and the functions whose code changed in the changed release and
- * speed objects. Bitcode, which packs built before 0.4.7 also list, is not
- * a change: it records the checkout's source path, so it differs between
- * any two checkouts. */
+ * speed objects (their instructions, the symbols those name, or the private
+ * constants they read). Bitcode, which packs built before 0.4.7 also list,
+ * is not a change: it records the checkout's source path, so it differs
+ * between any two checkouts. */
 function runtimeChanges() {
   const pack = (root) =>
     readdirSync(join(root, "packages"))
@@ -566,7 +585,7 @@ function runtimeChanges() {
         encoding: "utf8",
         maxBuffer: 1 << 30,
       });
-      return objectFunctionHashes(out.stdout ?? "");
+      return objectFunctionHashes(out.stdout ?? "", elfPrivateConstants(readFileSync(file)));
     };
     const delta = changedFunctions(text(trees.baseline), text(trees.candidate));
     for (const kind of ["changed", "added", "removed"])
@@ -681,8 +700,32 @@ if (recordPath === undefined && values["baseline-cache"] !== undefined) {
     );
 }
 
-const programs = goodCodeSet().filter((p) => recordPath === undefined || p.kind === "exe");
+const goodCode = goodCodeSet();
+if (allowPrograms !== null) {
+  // A list that names a program the good-code set does not have is stale:
+  // the program was renamed or removed, or the id is misspelled.
+  const known = new Set(goodCode.map((p) => p.id));
+  const unknown = allowPrograms.filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    console.error(
+      `--allow-programs ${values["allow-programs"]}: ${unknown.length} of ${allowPrograms.length} ` +
+        `listed ids name no program of the good-code set in ${programsRoot}:`,
+    );
+    for (const id of unknown) console.error(`  ${id}`);
+    rmSync(work, { recursive: true, force: true });
+    process.exit(2);
+  }
+}
+const listedPrograms = new Set(allowPrograms ?? []);
+const programs = selectedPrograms(goodCode).filter(
+  (p) => recordPath === undefined || p.kind === "exe",
+);
 assert.ok(programs.length > 0, "the selected good-code set is empty");
+if (values.list) {
+  for (const program of programs) console.log(program.id);
+  rmSync(work, { recursive: true, force: true });
+  process.exit(0);
+}
 const runtime = recordPath === undefined ? runtimeChanges() : null;
 const report = {
   schema: 1,
@@ -693,6 +736,8 @@ const report = {
   ),
   programsRoot,
   allow: values.allow ?? null,
+  allowPrograms:
+    allowPrograms === null ? null : { file: values["allow-programs"], ids: allowPrograms },
   strict: values.strict,
   runtime:
     runtime === null
@@ -823,8 +868,9 @@ await pool(
         if (settled !== null) report.baselineCache.used++;
       }
       const allowed =
-        allow !== null &&
-        programInputs(program.entry).some((f) => allow.test(readFileSync(f, "utf8")));
+        listedPrograms.has(program.id) ||
+        (allow !== null &&
+          programInputs(program.entry).some((f) => allow.test(readFileSync(f, "utf8"))));
       const artifacts =
         settled?.artifacts ??
         (baseline.ok && candidate.ok ? compareBuilds(baseline, candidate) : {});
@@ -1028,6 +1074,9 @@ else console.log(`artifacts kept in ${work}`);
 const noted = report.programs.filter((p) =>
   ["runtime-only", "nondeterministic"].includes(p.verdict),
 );
+if (allowPrograms !== null)
+  for (const line of allowProgramsLines(allowProgramsSummary(allowPrograms, report.programs)))
+    console.log(line);
 console.log(
   `zero-cost gate: ${failed ? "FAIL" : noted.length ? "PASS with notes" : "PASS"} — ${Object.entries(
     counts,

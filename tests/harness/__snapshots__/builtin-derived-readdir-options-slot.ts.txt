@@ -1,0 +1,13 @@
+builtin-derived-readdir-options-slot.ts:16:27 - error SC1090: library functions as values in a slot that passes more arguments than their lowering takes ('readdir' enters a slot passing 2 arguments; the supported form takes 1 argument — call it directly) are not supported yet
+
+  15 | }
+  16 | console.log(await entries(readdir));
+     |                           ^~~~~~~
+  17 | console.log(entriesSync(readdirSync));
+
+builtin-derived-readdir-options-slot.ts:17:25 - error SC1090: library functions as values in a slot that passes more arguments than their lowering takes ('readdirSync' enters a slot passing 2 arguments; the supported form takes 1 argument — call it directly) are not supported yet
+
+  16 | console.log(await entries(readdir));
+  17 | console.log(entriesSync(readdirSync));
+     |                         ^~~~~~~~~~~
+  18 | 

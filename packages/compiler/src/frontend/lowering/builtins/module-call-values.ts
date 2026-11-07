@@ -28,7 +28,13 @@ export const DERIVED_VALUE_MODULES: ReadonlySet<string> = new Set([
  * value would bypass the validation the call site performs (the utf8-only
  * read, the Dirent option, a descriptor where a path is declared). They keep
  * the by-name refusal unless the row carries an explicit `valueParams`
- * contract. Keep in sync with the branches of lowerBuiltinModuleCall. */
+ * contract. Keep in sync with the branches of lowerBuiltinModuleCall.
+ *
+ * A member whose only such branch tests for an argument past the row's own
+ * parameters is not listed: `readdir(path, options)` picks the Dirent or
+ * recursive form from its second argument, and with the row's one argument
+ * the call is the table tail. derivedValueSiteUse admits no slot that passes
+ * the second argument, so the value's calls are exactly the row's. */
 export const CALL_SHAPE_MEMBERS: Readonly<Record<string, ReadonlySet<string>>> = {
   fs: new Set([
     "_toUnixTimestamp",
@@ -53,7 +59,6 @@ export const CALL_SHAPE_MEMBERS: Readonly<Record<string, ReadonlySet<string>>> =
     "opendirSync",
     "readFileSync",
     "readSync",
-    "readdirSync",
     "readlinkSync",
     "readvSync",
     "realpathSync",
@@ -82,7 +87,6 @@ export const CALL_SHAPE_MEMBERS: Readonly<Record<string, ReadonlySet<string>>> =
     "open",
     "opendir",
     "readFile",
-    "readdir",
     "readlink",
     "rm",
     "statfs",

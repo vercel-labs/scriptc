@@ -93,6 +93,24 @@ describe("builtin function-value derivation", () => {
     });
   });
 
+  test("a member dispatched only by an argument past its row derives the row", () => {
+    // readdir's Dirent and recursive forms are chosen by a second argument
+    // (lowerBuiltinModuleCall); with the row's one path the call is the table
+    // tail, and no slot the value enters passes the second argument
+    // (derivedValueSiteUse), so the value is the names listing.
+    const readdir = derive("fs/promises", "readdir");
+    expect(readdir?.fn).toBe("fsp.readdir");
+    expect(readdir?.valueParams).toEqual([{ mode: "required", type: { kind: "string" } }]);
+    expect(readdir?.result).toEqual({
+      kind: "promise",
+      inner: { kind: "array", elem: { kind: "string" } },
+    });
+    const readdirSync = derive("fs", "readdirSync");
+    expect(readdirSync?.fn).toBe("fs.readdirSync");
+    expect(readdirSync?.valueParams).toEqual([{ mode: "required", type: { kind: "string" } }]);
+    expect(readdirSync?.result).toEqual({ kind: "array", elem: { kind: "string" } });
+  });
+
   test("does not mutate the table row it derives from", () => {
     const before = row("fs/promises", "lstat");
     derive("fs/promises", "lstat");

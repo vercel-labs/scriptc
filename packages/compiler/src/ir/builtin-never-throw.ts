@@ -46,4 +46,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // path that is not there is the answer false, and the probe reports no
   // error.
   "fs.existsSyncBytes",
+  // scr_insp_numeric_separator stores one flag and answers its previous
+  // value.
+  "insp.numericSeparator",
 ]);

@@ -2412,17 +2412,25 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
-    // The bytes-data form and the { mode } options form.
-    // The bytes-data form, the { mode } options form, and the
-    // file-descriptor data form.
+    // The bytes-data form, the { mode } options form, the file-descriptor
+    // data form, and the { encoding, mode, flag } option-record forms over
+    // string and bytes data.
     writeFileSync: [
       "fs.writeFileSyncBytes",
       "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
+      "fs.writeFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
     ],
-    appendFileSync: ["fs.appendFileSyncBytes"],
+    // The bytes-data form and the { encoding, mode, flag } option-record
+    // forms over string and bytes data.
+    appendFileSync: [
+      "fs.appendFileSyncBytes",
+      "fs.appendFileOptionsSync",
+      "fs.appendFileBytesOptionsSync",
+    ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
       "fs.fsStreamBytes",

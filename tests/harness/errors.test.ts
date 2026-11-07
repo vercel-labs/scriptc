@@ -3355,7 +3355,7 @@ console.log("unreachable");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("x\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: Object\.defineProperty on a numeric property of a native array is not supported yet\n$/,
+      /^Uncaught Error: Object\.defineProperty on a numeric property of a native array is not supported yet \[SC2020\]\n$/,
     );
   });
 
@@ -3459,7 +3459,7 @@ console.log(new B().a());
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("same prototype A.a\n");
     expect(r.stderr).toBe(
-      "Uncaught Error: Object.setPrototypeOf with this value is not supported yet\n",
+      "Uncaught Error: Object.setPrototypeOf with this value is not supported yet [SC2020]\n",
     );
   });
 });

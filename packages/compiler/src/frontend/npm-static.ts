@@ -25,6 +25,8 @@ import {
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
 import { packageSourceText, typePatchSuppliesTypes } from "./type-patches/layer.js";
 import { isFrontendIsland } from "../node-islands/boundary.js";
+import { nodeModulesPackageDir } from "./npm-static-shadow-paths.js";
+import { ambientProjectedExport, clearNpmStaticAmbientCoverage } from "./npm-static-ambient.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -103,6 +105,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   clearVirtualSources();
   untypedPkgCache.clear();
   esmPkgCache.clear();
+  clearNpmStaticAmbientCoverage();
   transformedPkgTexts.clear();
   realpathProbed.clear();
   aliasNames.clear();
@@ -413,18 +416,6 @@ function packageIsUntyped(path: string): boolean {
   return untyped;
 }
 
-/** The installed package directory a node_modules path belongs to, or null
- * outside node_modules. */
-function nodeModulesPackageDir(path: string): string | null {
-  const norm = path.split("\\").join("/");
-  const idx = norm.lastIndexOf("/node_modules/");
-  if (idx === -1) return null;
-  const parts = norm.slice(idx + "/node_modules/".length).split("/");
-  const first = parts[0] ?? "";
-  const dirName = first.startsWith("@") ? `${first}/${parts[1] ?? ""}` : first;
-  return `${norm.slice(0, idx)}/node_modules/${dirName}`;
-}
-
 /** Whether the package installs its `.js` files as ES modules (`"type":
  * "module"`): the any-surface stub is CommonJS-shaped, so an ESM package's
  * file keeps its own text. Cached per package directory. */
@@ -492,8 +483,35 @@ export interface NpmStaticFsShadow {
  * flag is off, so flagless compiles keep the exact host behavior. */
 export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow | null {
   if (!npmStaticActive()) return null;
+  /** A typed package's JavaScript subpath its own declarations cover through
+   * an ambient `declare module` block: the checker types that module from the
+   * declaration, never from the JavaScript the flag put in the program
+   * (npm-static-ambient.ts). The projection keeps the body and adds only the
+   * declared export type. */
+  const ambientProjected = (path: string): string | undefined => {
+    if ((!path.endsWith(".js") && !path.endsWith(".cjs")) || !isNodeModulesPathNorm(path))
+      return undefined;
+    if (trackedExists(path.replace(/\.(js|cjs)$/, ".d.ts"))) return undefined;
+    try {
+      const text = trackedReadFile(path);
+      if (text === null) return undefined;
+      // A declaration the flag hid types nothing: its names are not in the
+      // program, so such a package keeps the implicit-any surface.
+      return (
+        ambientProjectedExport(services, path, text, (entry) => {
+          const target = shadowTargetOf(entry);
+          return target === null || target.viaTypes;
+        }) ?? undefined
+      );
+    } catch {
+      return undefined;
+    }
+  };
   return {
     readFile: (path) => {
+      // The declared module type, in both branches below.
+      const declared = ambientProjected(path);
+      if (declared !== undefined) return declared;
       const target = shadowTargetOf(path);
       /* NON-OPTED node_modules JS: maxNodeModuleJsDepth (set only on
        * --npm-static loads) admits third-party JS the flagless build never

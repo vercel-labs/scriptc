@@ -1015,12 +1015,13 @@ function loadFrontend(
   // declaration-only members, or a .d.ts type-GUARD an inferred JS
   // function cannot reproduce). Those SC0001s anchor in USER files no
   // offender or
-  // message attribution reaches, so each package is probed by LEAVE-ONE-OUT
-  // (n is the opt-in count — a handful of extra analysis loads): the set
-  // minus that package is exactly the load that would follow dropping it. A
-  // package whose removal clears or changes the errors is a culprit and
-  // falls back with a note. A package whose absence leaves the errors
-  // untouched is not; and when NO package attributes, the flag's own typing
+  // message attribution reaches, so packages are probed by LEAVE-ONE-OUT
+  // (halved, so a handful of extra analysis loads): the set minus a group is
+  // the load that would follow dropping it, and a group whose absence
+  // changes the errors splits until one package remains. A package whose
+  // removal clears or changes the errors is a culprit and falls back with a
+  // note. A package whose absence leaves the errors untouched is not; and
+  // when NO package attributes, the flag's own typing
   // produced the diagnostic, so the set keeps every package and the error is
   // reported as the one diagnostic it is. Explicit opt-ins degrade the same
   // way — the ratified stance for bundle-shaped dists is graceful
@@ -1053,7 +1054,15 @@ function loadFrontend(
     // error is reported as the one diagnostic it is (the splice at the end
     // of this function has the same stance for a program that only fails
     // after the drop).
-    const diagKey = (d: ScrDiagnostic): string => `${d.code}|${d.loc.file}|${d.loc.start}`;
+    //
+    // Identity is the diagnostic's whole text, not its span: two SC0001s at
+    // one location are different errors when they say different things
+    // (another package's inferred export surface produces a different
+    // complaint at the same call site). Comparing spans alone made a drop
+    // that replaces an error look like a drop that changes nothing, which
+    // is exactly the evidence the halving below relies on.
+    const diagKey = (d: ScrDiagnostic): string =>
+      `${d.code}|${d.loc.file}|${d.loc.start}|${d.message}`;
     let baselineKeys: Set<string> | null = null;
     // Each load installs its own package set as npm-static's live state
     // (program.ts), and lowering and the program-source classification read
@@ -1095,14 +1104,42 @@ function loadFrontend(
           .join("\n");
       const loadKeys = sc0001Keys(preflight);
       const culprits: string[] = [];
-      for (const p of [...effective]) {
-        const rest = [...effective].filter((q) => q !== p);
+      // No probe is skipped for want of a budget: a cut-off is what let the
+      // second of two packages go unprobed (the group probe above it spent
+      // the budget the leaf needed), turning a recoverable fallback into a
+      // reported error. The search visits the interior group of each split
+      // it follows, at most n-1 of them, plus the n leaves: 2n-1 loads in
+      // the worst case, and one load for the shape the attribution exists
+      // for (an error no subset removes, where the whole-set probe prunes
+      // every package at once).
+      const changes = (group: readonly string[]): boolean => {
+        const rest = [...effective].filter((q) => !group.includes(q));
         const probe = loadProgram(entryPath, { npmStatic: rest, externalTypes });
         probeStateStale = true;
         const probeDiags = checkPreflight(probe);
         probe.dispose();
-        if (sc0001Keys(probeDiags) !== loadKeys) culprits.push(p);
-      }
+        return sc0001Keys(probeDiags) !== loadKeys;
+      };
+      // Attribute by halving: dropping a WHOLE group is one load, and a group
+      // whose absence leaves every diagnostic identical — same code, span and
+      // text — is pruned without probing its members one by one. A group
+      // whose absence does change them splits in two until a single package
+      // is left, and a leaf is always probed: that comparison is the
+      // leave-one-out one the linear scan made, so a package whose own drop
+      // changes the errors is named however its neighbours behaved. pi's
+      // shape (21 packages, every single drop unchanged) costs one load for
+      // the whole set.
+      const attribute = (group: readonly string[]): void => {
+        if (group.length === 0 || !changes(group)) return;
+        if (group.length === 1) {
+          culprits.push(group[0]!);
+          return;
+        }
+        const mid = Math.ceil(group.length / 2);
+        attribute(group.slice(0, mid));
+        attribute(group.slice(mid));
+      };
+      attribute([...effective]);
       if (culprits.length > 0) {
         for (const p of culprits) dropWithNote(p);
         if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);

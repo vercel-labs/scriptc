@@ -1010,6 +1010,14 @@ int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *co
  * member nodes. null/undefined receivers throw Node's catchable
  * TypeError. */
 ScrDyn *scr_dyn_obj_keys(const ScrDyn *v);
+/* A checked conversion's view of a value an island made (scr_json.c): the
+ * array's elements read through the handle into a native array, holes left
+ * absent; the object's own enumerable string keys read into a native object.
+ * Both answer +1, or NULL with an exception pending from a getter or a proxy
+ * trap. An array view of a value that is not an array answers NULL with
+ * nothing pending. */
+ScrDyn *scr_dyn_island_array(ScrDyn *value);
+ScrDyn *scr_dyn_island_object(ScrDyn *value);
 ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v);
 /* for-in keys as a native string[] (+1); NULL with an exception pending. */
 ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v);
@@ -1582,6 +1590,13 @@ void *scr_record_link_source(const void *copy);
  * that order. Undeclared keys are not copied, as the literal copies none. */
 void scr_record_source_spread(void *dst, const void *src, const char *const *names,
                               const size_t *lens, size_t count);
+/* `delete rec.key` of a key the record's declared layout does not hold
+ * (scr_record_source_delete.c, a gated unit): removes the own property
+ * from the record's kept source (a record view deletes from the record it
+ * views). Answers `delete`'s boolean: true when the property is gone, false
+ * when it survives — a frozen or non-configurable property, which strict
+ * code (`strict`) refuses with Node's TypeError instead. Borrows both. */
+bool scr_record_source_delete(void *rec, const char *key, size_t key_len, bool strict);
 /* Object.freeze of a record a program may freeze: sets SCR_RC_FROZEN in its
  * rc word (immortal records are left as they are). */
 void scr_record_freeze(void *record);
@@ -2712,6 +2727,8 @@ void scr_dyn_this_pop(void);
  * handle whose tag has no installed ops — a unit that fires without its
  * dyn half never binds). */
 ScrDyn *scr_dyn_this_get(void);
+/* The receiver the current generator's spawn recorded
+ * (scr_gen_capture_receiver), or undefined (+1). */
 ScrDyn *scr_gen_receiver(void);
 
 /* The data-chunk encoding window (setEncoding — scr_json.c's note): the

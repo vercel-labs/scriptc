@@ -1542,6 +1542,44 @@ test("recursive JSON types cross into Node", async () => {
   expect(ir).toContain("nodeIsland.callSync");
 }, 300_000);
 
+// A view member declared with an instantiation that grows at every level
+// (`next: Chain<T[]>`) has no type that repeats, so only the depth bound ends
+// the walk over its members. IR output needs no libnode pack.
+test("a view that names itself with a growing instantiation crosses into Node", async () => {
+  const dir = join(outDir, "growing-view");
+  rmSync(dir, { recursive: true, force: true });
+  cpSync(
+    join(repoRoot, "tests/diagnostics/node-island-view-member/node_modules"),
+    join(dir, "node_modules"),
+    { recursive: true },
+  );
+  cpSync(
+    join(repoRoot, "tests/diagnostics/node-island-view-member/package.json"),
+    join(dir, "package.json"),
+  );
+  writeFileSync(
+    join(dir, "main.ts"),
+    [
+      'import { make } from "view-pkg";',
+      "",
+      "interface Chain<T> {",
+      "  label: string;",
+      "  next: Chain<T[]>;",
+      "}",
+      "",
+      "const head = make<Chain<number>>();",
+      "console.log(head.label);",
+      "",
+    ].join("\n"),
+  );
+  const outPath = join(dir, "main.ir.json");
+  const result = await compile(join(dir, "main.ts"), { outPath, outDir: dir, outputKind: "ir" });
+  if (!result.ok)
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
+  expect(ir).toContain("nodeIsland.apply");
+}, 300_000);
+
 // When a build fails and the packages it compiled with runtime fences then
 // fail as islands too, the island build's errors are reported. That build
 // types the user code from the packages' declarations; the native one

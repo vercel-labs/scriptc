@@ -35,6 +35,7 @@ import type { IndexMergeContributor } from "../containers/indexed-objects.js";
 import type { KeyOrderSegment, WidthSegment } from "../key-order-witness.js";
 import { lowerEnumObjectValue } from "../enum-objects.js";
 import { recordMayKeepSource } from "../record-sources.js";
+import { widthFromOverflow } from "../coercions/structural-plans.js";
 import {
   PERF_ENTRY_MARKER,
   X509_PUBLIC_KEY_FIELD,
@@ -1552,15 +1553,23 @@ export function lowerObjectLiteral(
   }
   // An enclosing literal that built at its OWN type (its context had no
   // layout) asks for the matching own layout of this nested literal. When
-  // this literal's contextual layout cannot reach that slot, build at it:
-  // the enclosing literal's coercion then decides, and the width lifts
-  // (the index-signature overflow capture included) carry the whole tree
-  // into the real destination. Otherwise the two layers disagree and the
+  // this literal's contextual layout cannot reach that slot, build at the
+  // requested layout: the enclosing literal's coercion then decides, and
+  // the width lifts (the index-signature overflow capture included) carry
+  // the whole tree into the real destination. A plain-property literal
+  // whose checker type IS the destination builds there directly when the
+  // contextual layout would only supply a field from its overflow — the
+  // copy adds nothing, since every value the literal writes lands in the
+  // same field either way. Otherwise the two layers disagree and the
   // SC2002 names the source literal's own type as the expected one.
+  const plainProperties = expr.properties.nodes.every(
+    (p) => ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p),
+  );
   const layout: IrType & { kind: "record" } =
     expected &&
     !typeEquals(mapped, expected) &&
-    lowerer.widthLiftPlan(mapped, expected) === null &&
+    (lowerer.widthLiftPlan(mapped, expected) === null ||
+      (plainProperties && widthFromOverflow(lowerer, mapped, expected))) &&
     typeEquals(lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? mapped, expected)
       ? expected
       : mapped;

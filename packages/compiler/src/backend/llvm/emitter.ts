@@ -2320,10 +2320,15 @@ export class LlEmitter {
     // process computes it (startInt32Slots).
     if (int32Analysis !== null) this.int32SlotsValue = int32Analysis.slots;
     else this.startInt32Slots(dynamicStores);
-    // A build that carries debug sources keeps a positioned frame in every
-    // function (frame-positions.ts), whether or not the program reads a
-    // stack: its uncaught-error report names the failing statement.
-    this.positionedFrames = options.debugSources !== undefined;
+    // A build that carries debug sources keeps a positioned frame in the
+    // functions that can raise an error (frame-positions.ts), whether or
+    // not the program reads a stack: its uncaught-error report names the
+    // failing statement. A sanitized build keeps the frames of a release
+    // build: AddressSanitizer instruments every store into a frame, and
+    // the sanitized builds of large programs took past the test lanes'
+    // limits with a store per statement.
+    this.positionedFrames =
+      options.debugSources !== undefined && options.sanitizeAttributes === false;
     this.stackTraces = this.positionedFrames || observesStacks(mod, this.nodeIndex);
     this.nullableUnions = new NullableUnions(
       mod,

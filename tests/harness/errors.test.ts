@@ -338,7 +338,9 @@ new Promise((resolve, reject) => reject(make()));
 // the runtime, then names the statement that raised it and, for each
 // caller, the statement whose call was running. The position is the
 // statement's start, where Node reports the call or `new` expression.
-describe(`source positions in dev builds${sanitize ? " (sanitized)" : ""}`, () => {
+// A sanitized build keeps the frames of a release build, so these run in
+// the plain lane only.
+describe.skipIf(sanitize)("source positions in dev builds", () => {
   /** `text` with the directory removed from every path. */
   const located = (text: string): string => text.replace(/(?:[A-Za-z]:)?[\\/][^\s()]*[\\/]/g, "");
   const dev = (name: string, source: string, extraFiles: Record<string, string> = {}) =>

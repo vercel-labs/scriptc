@@ -2843,6 +2843,39 @@ void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn
   scr_child_stream_close_wait(c->err_stream);
 }
 
+/* A failed spawn's 'error' event carries Node's errnoException: one Error,
+ * the same object for every listener, with errno, code, syscall
+ * "spawn <file>", path and spawnargs (the arguments after the file), and a
+ * message that names the file Node ran (the shell, for a shell spawn). The
+ * settle path and the untyped handle table are linked by every program
+ * that uses child_process, so they reach this only through the hook below.
+ * A program that can register an 'error' listener installs it once at
+ * start (scr_child_error_event_install, emitted for the childErrorEvent
+ * program fact); every other program links none of the property code. +1.
+ * The pointer has external linkage on purpose: a static one that the unit
+ * stores once lets the compiler turn the settle path's call into a direct
+ * reference to the builder, which links it into every program. */
+ScrError *(*scr_child_spawn_error_hook)(ScrChild *c) = NULL;
+
+static ScrError *scr_child_spawn_error(ScrChild *c) {
+  const char *name = c->spawn_errname;
+  size_t cap = 6 + c->spawnfile->len + 1 + strlen(name) + 1;
+  char *text = malloc(cap);
+  if (!text) scr_child_oom();
+  int len = snprintf(text, cap, "spawn %s %s", c->spawnfile->data, name);
+  ScrStr *message = scr_str_new(text, (size_t)len);
+  free(text);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(error, name);
+  ScrArr *args = scr_arr_slice(c->spawnargs, 1, (double)scr_arr_len(c->spawnargs));
+  scr_child_error_spawn_fields(error, (double)c->spawn_uv_errno, "spawn", c->spawnfile, args);
+  scr_arr_release(args);
+  return error;
+}
+
+void scr_child_error_event_install(void) { scr_child_spawn_error_hook = &scr_child_spawn_error; }
+
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn) {
   if (c->settled) {
     scr_closure_release(cb);
@@ -3029,9 +3062,19 @@ static void scr_child_settle_in(ScrChild *c) {
       _Exit(1);
     }
     scr_child_err_code = c->spawn_errname;
+    /* With an 'error' listener the event carries Node's error object
+     * (scr_child_spawn_error); the adapters hand out the payload. */
+    ScrError *spawn_error =
+        scr_child_spawn_error_hook != NULL && c->n_err > 0 ? scr_child_spawn_error_hook(c) : NULL;
+    ScrError *outer_payload = scr_event_error_payload;
+    if (spawn_error != NULL) scr_event_error_payload = spawn_error;
     for (size_t i = 0; i < c->n_err; i++) {
       c->err_cbs[i].fn(c->err_cbs[i].cb, c->err_msg);
       if (scr_exc_pending()) break; /* the loop surfaces it */
+    }
+    if (spawn_error != NULL) {
+      scr_event_error_payload = outer_payload;
+      scr_error_release(spawn_error);
     }
     scr_child_err_code = NULL;
     if (!scr_exc_pending()) scr_exec_file_fire(c);
@@ -6053,6 +6096,39 @@ void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn
   scr_child_stream_close_wait(c->err_stream);
 }
 
+/* A failed spawn's 'error' event carries Node's errnoException: one Error,
+ * the same object for every listener, with errno, code, syscall
+ * "spawn <file>", path and spawnargs (the arguments after the file), and a
+ * message that names the file Node ran (the shell, for a shell spawn). The
+ * settle path and the untyped handle table are linked by every program
+ * that uses child_process, so they reach this only through the hook below.
+ * A program that can register an 'error' listener installs it once at
+ * start (scr_child_error_event_install, emitted for the childErrorEvent
+ * program fact); every other program links none of the property code. +1.
+ * The pointer has external linkage on purpose: a static one that the unit
+ * stores once lets the compiler turn the settle path's call into a direct
+ * reference to the builder, which links it into every program. */
+ScrError *(*scr_child_spawn_error_hook)(ScrChild *c) = NULL;
+
+static ScrError *scr_child_spawn_error(ScrChild *c) {
+  const char *name = scr_errname(c->spawn_errno);
+  size_t cap = 6 + c->spawnfile->len + 1 + strlen(name) + 1;
+  char *text = malloc(cap);
+  if (!text) scr_child_oom();
+  int len = snprintf(text, cap, "spawn %s %s", c->spawnfile->data, name);
+  ScrStr *message = scr_str_new(text, (size_t)len);
+  free(text);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(error, name);
+  ScrArr *args = scr_arr_slice(c->spawnargs, 1, (double)scr_arr_len(c->spawnargs));
+  scr_child_error_spawn_fields(error, -(double)c->spawn_errno, "spawn", c->spawnfile, args);
+  scr_arr_release(args);
+  return error;
+}
+
+void scr_child_error_event_install(void) { scr_child_spawn_error_hook = &scr_child_spawn_error; }
+
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn) {
   if (c->settled) {
     scr_closure_release(cb);
@@ -6249,9 +6325,19 @@ static void scr_child_settle_in(ScrChild *c) {
     /* Node's spawn-failure error is an errnoException: `code` carries the
      * errno name. The thunk reads this while the pass runs. */
     scr_child_err_code = scr_errname(c->spawn_errno);
+    /* With an 'error' listener the event carries Node's error object
+     * (scr_child_spawn_error); the adapters hand out the payload. */
+    ScrError *spawn_error =
+        scr_child_spawn_error_hook != NULL && c->n_err > 0 ? scr_child_spawn_error_hook(c) : NULL;
+    ScrError *outer_payload = scr_event_error_payload;
+    if (spawn_error != NULL) scr_event_error_payload = spawn_error;
     for (size_t i = 0; i < c->n_err; i++) {
       c->err_cbs[i].fn(c->err_cbs[i].cb, c->err_msg);
       if (scr_exc_pending()) break; /* the loop surfaces it */
+    }
+    if (spawn_error != NULL) {
+      scr_event_error_payload = outer_payload;
+      scr_error_release(spawn_error);
     }
     scr_child_err_code = NULL;
     if (!scr_exc_pending()) scr_exec_file_fire(c);
@@ -6734,6 +6820,158 @@ static void scr_child_fire_spawn_in(ScrChild *c) {
   free(callbacks);
 }
 
+/* ── Node's argument checks before a child starts ───────────────────────
+ *
+ * child_process validates what it hands to the operating system before it
+ * starts a process (normalizeSpawnArguments and normalizeExecArgs in
+ * lib/child_process.js): the file or command, each argument, the working
+ * directory and each environment key and value hold no NUL, because the
+ * operating system reads each of them up to the first one, and the file is
+ * not empty. Each failure is Node's ERR_INVALID_ARG_VALUE TypeError. */
+
+/* util.inspect's rendering of a string, as ERR_INVALID_ARG_VALUE prints
+ * the received value: a string longer than 76 UTF-16 units is quoted line
+ * by line (split after each line feed, joined by " +\n  "), and the text
+ * is cut to 128 units plus "...". +1. */
+static ScrStr *scr_child_arg_received(ScrStr *s /*borrowed*/) {
+  ScrStr *text;
+  if (scr_str_utf16_len(s) <= 76) {
+    text = scr_str_inspect_quoted(s, false);
+  } else {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    size_t start = 0;
+    while (start < s->len) {
+      const char *nl = memchr(s->data + start, '\n', s->len - start);
+      size_t end = nl != NULL ? (size_t)(nl - s->data) + 1 : s->len;
+      ScrStr *line = scr_str_new(s->data + start, end - start);
+      ScrStr *quoted = scr_str_inspect_quoted(line, false);
+      if (start > 0) scr_jb_puts(&b, " +\n  ");
+      scr_jb_put_str(&b, quoted);
+      scr_str_release(quoted);
+      scr_str_release(line);
+      start = end;
+    }
+    text = scr_jb_finish(&b);
+  }
+  if (scr_str_utf16_len(text) > 128) {
+    ScrStr *head = scr_str_slice(text, 0, 128);
+    ScrStr *dots = scr_str_new("...", 3);
+    scr_str_release(text);
+    text = scr_str_concat(head, dots);
+    scr_str_release(head);
+    scr_str_release(dots);
+  }
+  return text;
+}
+
+/* Throws ERR_INVALID_ARG_VALUE for `value` under the name name[0..len):
+ * "The argument '<name>' <reason>. Received <value>", with "property" for
+ * a dotted name, as errors.js chooses. */
+static void scr_child_arg_fail(const char *name, size_t len, const char *reason,
+                               ScrStr *value /*borrowed*/) {
+  ScrStr *received = scr_child_arg_received(value);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, memchr(name, '.', len) != NULL ? "The property '" : "The argument '");
+  scr_jb_write(&b, name, len);
+  scr_jb_puts(&b, "' ");
+  scr_jb_puts(&b, reason);
+  scr_jb_puts(&b, ". Received ");
+  scr_jb_put_str(&b, received);
+  scr_str_release(received);
+  ScrStr *msg = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(msg);
+}
+
+static bool scr_child_arg_has_nul(const ScrStr *s) {
+  return memchr(s->data, '\0', s->len) != NULL;
+}
+
+static const char SCR_CHILD_NO_NUL[] = "must be a string without null bytes";
+
+/* The file or command, then each argument. `form` says where Node's
+ * `file` or `command` is: 0, `cmd` is the file and `args` its arguments;
+ * 1, the shell form of exec and execSync, whose command is args[1] (the
+ * launch is /bin/sh -c command); 2, the same launch for execFile with
+ * shell: true, whose args[1] is Node's file; 3, fork, which has no file to
+ * check and whose arguments follow the module path in the list Node
+ * spawns, so args[i] is Node's args[i + 1]. False with the exception
+ * pending. */
+static bool scr_child_check_file_args(int form, ScrStr *cmd /*borrowed*/, ScrArr *args /*borrowed*/) {
+  size_t n = (size_t)scr_arr_len(args);
+  ScrStr *file = form == 0                           ? scr_str_retain(cmd)
+                 : (form == 1 || form == 2) && n > 1 ? (ScrStr *)scr_arr_get_ref(args, 1)
+                                                     : NULL;
+  if (file != NULL) {
+    bool nul = scr_child_arg_has_nul(file);
+    if (nul) {
+      if (form == 1) scr_child_arg_fail("command", 7, SCR_CHILD_NO_NUL, file);
+      else scr_child_arg_fail("file", 4, SCR_CHILD_NO_NUL, file);
+    } else if (file->len == 0) {
+      scr_child_arg_fail("file", 4, "cannot be empty", file);
+    }
+    bool bad = nul || file->len == 0;
+    scr_str_release(file);
+    if (bad) return false;
+  }
+  if (form != 0 && form != 3) return true;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *arg = (ScrStr *)scr_arr_get_ref(args, (double)i);
+    bool nul = scr_child_arg_has_nul(arg);
+    if (nul) {
+      char name[40];
+      int len = snprintf(name, sizeof name, "args[%zu]", form == 3 ? i + 1 : i);
+      scr_child_arg_fail(name, (size_t)len, SCR_CHILD_NO_NUL, arg);
+    }
+    scr_str_release(arg);
+    if (nul) return false;
+  }
+  return true;
+}
+
+/* options.cwd, as getValidatedPath checks it. */
+static bool scr_child_check_cwd(ScrStr *cwd /*borrowed, nullable*/) {
+  if (cwd == NULL || !scr_child_arg_has_nul(cwd)) return true;
+  scr_child_arg_fail("options.cwd", 11, "must be a string, Uint8Array, or URL without null bytes", cwd);
+  return false;
+}
+
+/* One environment entry: the key, then the value, both under the name
+ * options.env['<key>']. */
+static bool scr_child_check_env_entry(ScrStr *key /*borrowed*/, ScrStr *value /*borrowed*/) {
+  ScrStr *bad = scr_child_arg_has_nul(key) ? key : scr_child_arg_has_nul(value) ? value : NULL;
+  if (bad == NULL) return true;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "options.env['");
+  scr_jb_write(&b, key->data, key->len);
+  scr_jb_puts(&b, "']");
+  ScrStr *name = scr_jb_finish(&b);
+  scr_child_arg_fail(name->data, name->len, SCR_CHILD_NO_NUL, bad);
+  scr_str_release(name);
+  return false;
+}
+
+/* cp.checkArgs: the checks above over one launch's values, in Node's
+ * order: the file or command and the arguments, the working directory
+ * ("" when the option is absent), then the environment's [key, value, ...]
+ * pairs (empty when the child inherits ours). Throws before the launch
+ * that follows it; all arguments are borrowed. */
+void scr_child_check_args(double form, ScrStr *cmd, ScrArr *args, ScrArr *env_pairs, ScrStr *cwd) {
+  if (!scr_child_check_file_args((int)form, cmd, args) || !scr_child_check_cwd(cwd)) return;
+  size_t n = env_pairs != NULL ? (size_t)scr_arr_len(env_pairs) : 0;
+  for (size_t i = 0; i + 1 < n; i += 2) {
+    ScrStr *key = (ScrStr *)scr_arr_get_ref(env_pairs, (double)i);
+    ScrStr *value = (ScrStr *)scr_arr_get_ref(env_pairs, (double)(i + 1));
+    bool ok = scr_child_check_env_entry(key, value);
+    scr_str_release(key);
+    scr_str_release(value);
+    if (!ok) return;
+  }
+}
+
 /* Options produced by JavaScript helpers use the same native spawn core
  * as inline options. Materialize typed views only for normalization;
  * descriptor reads still execute getters and propagate their exceptions. */
@@ -6791,6 +7029,8 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
   bool detached = false, shell = false, has_env = false;
   double modes[3] = {3, 3, 3}, fds[3] = {0, 0, 0};
   if (!view) goto done;
+  /* Node checks the file and the arguments before it reads the options */
+  if (!scr_child_check_file_args(0, cmd, args)) goto done;
   if (view->kind != SCR_DYN_UNDEF &&
       (view->kind == SCR_DYN_NULL || !scr_dyn_is_object(view))) {
     scr_dyn_arg_type_fail("options", "of type object", view);
@@ -6829,6 +7069,7 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
       goto done;
     }
     scr_str_release(cwd); cwd = scr_str_retain(value->v.str);
+    if (!scr_child_check_cwd(cwd)) goto done;
   }
   scr_dyn_release(value); value = NULL;
   static const char *const booleans[] = {"detached", "shell", "windowsHide"};
@@ -6887,13 +7128,15 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
     if (!keys || scr_exc_pending()) goto done;
     for (size_t i = 0; i < keys->v.arr.len; i++) {
       ScrStr *key = keys->v.arr.items[i]->v.str;
-      value = scr_spawn_option(env, key->data);
+      /* the key's own length: it may hold a NUL, which the check refuses */
+      value = scr_dyn_obj_read(env, key->data, key->len);
       if (!value || scr_exc_pending()) goto done;
       if (value->kind != SCR_DYN_UNDEF) {
         ScrStr *text = scr_dyn_string_coerce_js(value);
         if (!text) goto done;
         scr_arr_push_ref(pairs, scr_str_retain(key));
         scr_arr_push_ref(pairs, text);
+        if (!scr_child_check_env_entry(key, text)) goto done;
       }
       scr_dyn_release(value); value = NULL;
     }
@@ -7709,9 +7952,15 @@ static void scr_child_dyn_exit(ScrClosure *cb, bool has_code, double code, const
   scr_dyn_release(args[1]);
 }
 static void scr_child_dyn_error(ScrClosure *cb, ScrStr *message) {
-  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
-  if (scr_child_err_code) scr_error_set_code(error, scr_child_err_code);
-  else if (scr_child_writer_err_code) scr_error_set_code(error, scr_child_writer_err_code);
+  ScrError *error;
+  if (scr_event_error_payload != NULL) {
+    /* A failed spawn's error object, shared by every listener. */
+    error = scr_error_retain(scr_event_error_payload);
+  } else {
+    error = scr_error_new(SCR_ERR_ERROR, message);
+    if (scr_child_err_code) scr_error_set_code(error, scr_child_err_code);
+    else if (scr_child_writer_err_code) scr_error_set_code(error, scr_child_writer_err_code);
+  }
   ScrDyn *arg = scr_dyn_from_error(error);
   scr_error_release(error);
   scr_child_dyn_fire(cb, &arg, 1);

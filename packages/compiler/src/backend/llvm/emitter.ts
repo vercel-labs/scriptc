@@ -10,6 +10,7 @@ import { JsIcSites } from "../../ir/js-ic.js";
 import type { JsGroup, JsGroupPlan } from "../../ir/js-groups.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
+import { assertNoThreadLocalAddressConstant } from "./thread-local-constants.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
 import {
   CYC_BUF,
@@ -3206,7 +3207,12 @@ export class LlEmitter {
             this.cpuCopies,
             this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
           );
-    return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    const module =
+      this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    // A thread-local's address in an initializer is a refused link, a crash
+    // or a wrong answer, depending on the link (thread-local-constants.ts).
+    assertNoThreadLocalAddressConstant(module);
+    return module;
   }
 
   /** The entry point and JavaScript name of each named function the

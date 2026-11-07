@@ -480,6 +480,17 @@ test("removable functions reach each other only from a reached one", () => {
   expect(namesOf(withoutUnreachedFunctions(mod, all))).toEqual(["%live.a", "%live.b", "%main"]);
 });
 
+test("an identity root is reached from an instance that adopts it, when the instance is", () => {
+  const instance: IrFunction = { ...target, name: "%m0.instance", identityRoot: TARGET };
+  const call = exprStmt({ kind: "call", callee: instance.name, args: [], type: VOID, loc });
+  const both = new Set([TARGET, instance.name]);
+  const reached: IrModule = { ...module(), functions: [target, instance, entry([call])] };
+  expect(withoutUnreachedFunctions(reached, both)).toBe(reached);
+  // An instance nothing reaches does not keep its root.
+  const unreached: IrModule = { ...module(), functions: [target, instance, entry()] };
+  expect(namesOf(withoutUnreachedFunctions(unreached, both))).toEqual(["%main"]);
+});
+
 test("the functions the emitter looks up by name and class members stay", () => {
   const named = [errorReaderName("name"), errorReaderName("message"), CLASS_NORMALIZER];
   const members = ["%%m0.Cell.constructor", "%%m0.Cell.get:value"];

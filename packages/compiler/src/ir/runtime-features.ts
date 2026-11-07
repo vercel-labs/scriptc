@@ -20,6 +20,7 @@ import {
 import { everyModuleNode, everyStmtList } from "./traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
+import { TEXT_DECODER_STREAM_CLASS } from "./webstream-classes.js";
 
 const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
   ["read", "write"].flatMap((rw) => [
@@ -100,6 +101,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webcrypto.object",
   // Web streams settle their promises with dyn values.
   "webstream.class",
+  "webstream.from",
   "webstream.instanceOf",
   "webstream.install",
   "dyn.promiseAll",
@@ -320,6 +322,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynTransformResult",
   "stream.unboxDynStage",
   "stream.handleStream",
+  "stream.handleWritable",
   "stream.unpipeDyn",
   "stream.workerStdio",
 ]);
@@ -495,6 +498,7 @@ const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Web streams answer async iteration through Symbol.asyncIterator.
   "webstream.class",
+  "webstream.from",
   "webstream.instanceOf",
   "webstream.install",
   // EventEmitter's kShapeMode and kCapture properties
@@ -581,6 +585,14 @@ interface TypeTables {
   textDecoderCarriers?: TypeCarriers;
   /** mentionsU8Bytes's carriers. */
   u8BytesCarriers?: TypeCarriers;
+}
+
+/** Whether `t`, the record of a `Promise.withResolvers()`, holds a promise
+ * of a checked-dynamic value. */
+function resolversOfDyn(t: IrType, tables: TypeTables): boolean {
+  if (t.kind !== "record") return false;
+  const promise = tables.records.get(t.shapeId)?.fields.find((f) => f.name === "promise")?.type;
+  return promise?.kind === "promise" && promise.inner.kind === "dyn";
 }
 
 /** Whether boxing a value of type `t` as dyn boxes a promise, which goes
@@ -1389,7 +1401,11 @@ const RUNTIME_FEATURE_RULES = {
       // AggregateError list).
       (node.kind === "intrinsic" &&
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
-      (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())),
+      (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())) ||
+      // The resolve function of a promise of a checked-dynamic value that
+      // may be given a promise adopts it (scr_make_resolve_dyn).
+      (node.kind === "newPromise" && node.resolves === true) ||
+      (node.kind === "promiseWithResolvers" && resolversOfDyn(node.type, tables())),
   }),
   /** The Promise statics through Function.prototype.call with a foreign
    * constructor (scr_js_promise_generic.c): NewPromiseCapability(C), the
@@ -1437,6 +1453,7 @@ const RUNTIME_FEATURE_RULES = {
       "buffer.prototypeObject",
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
       "webstream.class",
+      "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
       // scr_js_wrapper.c answers other values' tags through
@@ -1659,6 +1676,7 @@ const RUNTIME_FEATURE_RULES = {
       "bigint.inspect",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      "webstream.from",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",
@@ -1688,6 +1706,13 @@ const RUNTIME_FEATURE_RULES = {
   jsObjectModel: rule({ fns: [...JS_OBJECT_MODEL_LIB_FNS] }),
   legacyTextDecoder: rule({
     fns: [...LEGACY_TEXT_DECODER_LIB_FNS],
+    // A TextDecoderStream decodes whatever encoding it was constructed with:
+    // its transform calls scr_text_decode_stream, whose UTF-8 half is the
+    // default build and whose other encodings are the legacy one.
+    libCall: (node) =>
+      node.fn === "webstream.class" &&
+      node.args[0]?.kind === "numLit" &&
+      node.args[0].value === TEXT_DECODER_STREAM_CLASS,
     expr: (node, tables) =>
       (node.kind === "dynFrom" && mentionsTextDecoder(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsTextDecoder(node.type, tables())),

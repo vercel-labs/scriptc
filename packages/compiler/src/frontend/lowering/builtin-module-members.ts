@@ -26,7 +26,20 @@ import {
  * below returns null for it and the caller keeps its fence. */
 export type BuiltinModuleNamespaceFlavor = "cjs" | "esm" | "unknown";
 
+/** Namespaces whose own members come from the platform's C library and
+ * headers rather than from Node's JavaScript. node:constants merges the
+ * dlopen, errno, priority and signals groups of os.constants with
+ * fs.constants and crypto.constants, and those tables differ by platform:
+ * Darwin has O_SYMLINK and RTLD_FIRST, Linux has O_NOATIME, O_DIRECT and
+ * RTLD_DEEPBIND, Windows has UV_FS_O_FILEMAP. The census is one table
+ * taken from the machine that generated it, so it cannot answer for a
+ * program that runs somewhere else: these namespaces get no census answer
+ * and the lowering keeps the runtime test, which asks the namespace the
+ * program actually loaded. */
+const PLATFORM_DEPENDENT_NAMESPACES: ReadonlySet<string> = new Set(["constants"]);
+
 export function builtinModuleMemberCensus(module: string): BuiltinModuleMemberCensus | null {
+  if (PLATFORM_DEPENDENT_NAMESPACES.has(module)) return null;
   return Object.hasOwn(BUILTIN_MODULE_MEMBERS, module)
     ? (BUILTIN_MODULE_MEMBERS[module] ?? null)
     : null;

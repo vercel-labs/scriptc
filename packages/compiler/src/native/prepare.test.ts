@@ -815,3 +815,33 @@ test("an edit of a file a warning names runs the frontend again", () => {
   const result = rebuilt(WARNED, { "hot.ts": "// Sums untyped values.\n" + HOT });
   expect(result).toEqual({ frontendRuns: 1, changed: false });
 });
+
+/* An enum another file can name is looked for in every file of the program
+ * (enum-objects.ts): whether a file's text names it is a question the entry
+ * records and asks again, not a read of the whole text. */
+const COLORS = {
+  "main.ts":
+    'import { Color, keys } from "./color.js";\nimport { value } from "./value.js";\nconsole.log(keys(Color), Color.Green, value);\n',
+  "color.ts":
+    'export enum Color {\n  Red,\n  Green,\n}\nexport function keys(colors: object): string {\n  return Object.keys(colors).join(",");\n}\n',
+  "value.ts": VALUE,
+};
+
+test("a comment edit is answered from the cache in a program that declares an exported enum", () => {
+  // In a file that does not name the enum, and in the files that do.
+  for (const edit of [
+    { "value.ts": "// The exported value.\n" + VALUE },
+    { "main.ts": "/* entry */\n" + COLORS["main.ts"] + "// end\n" },
+    { "color.ts": COLORS["color.ts"] + "// The colors.\n" },
+  ])
+    expect(rebuilt(COLORS, edit)).toEqual({ frontendRuns: 0, changed: false });
+});
+
+test("a comment that names an exported enum in a file that did not runs the frontend again", () => {
+  // The text now names the enum, and the lookup goes on to its identifiers:
+  // there is none, and the output is the same.
+  expect(rebuilt(COLORS, { "value.ts": "// Not a Color.\n" + VALUE })).toEqual({
+    frontendRuns: 1,
+    changed: false,
+  });
+});

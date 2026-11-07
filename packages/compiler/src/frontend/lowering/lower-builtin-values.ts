@@ -5,9 +5,11 @@ import {
   DYN,
   F64,
   STRING,
+  SYMBOL_T,
   UNDEFINED_T,
   VOID,
   arrayOf,
+  funcOf,
   type IrExpr,
   type IrFunction,
   type IrLibFn,
@@ -125,6 +127,17 @@ export function builtinPrototypeMethod(
   return owner;
 }
 
+/** Whether `expr` reads a member of the `Reflect` namespace object — one of
+ * the checked-dynamic member function values builtin-namespaces.ts installs
+ * for it. */
+export function reflectMemberValueRead(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(expr) && lowerer.stdlibGlobalMember(expr, "Reflect") !== null
+  );
+}
+
 /** These native callables own their argument checks. Unannotated JS aliases
  * keep the checked value instead of narrowing it to the ambient signature.
  * This selects storage only: reassignment still updates a real runtime slot. */
@@ -197,7 +210,7 @@ export function isNativeBuiltinValueInitializer(
         lowerer.stdlibGlobalMember(expr.expression, "process") === "hrtime") ||
       lowerer.stdlibGlobalMember(expr, "Array") === "isArray" ||
       lowerer.stdlibGlobalMember(expr, "Array") === "from" ||
-      lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys" ||
+      lowerer.stdlibGlobalMember(expr, "Reflect") !== null ||
       ["fromCharCode", "fromCodePoint"].includes(
         lowerer.stdlibGlobalMember(expr, "String") ?? "",
       ) ||
@@ -271,7 +284,7 @@ export function lowerStringCodesValue(
   loc: SrcLoc,
 ): IrExpr {
   const name = `%builtin.String.${member}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const values = varRef("values", DYN, loc),
       index = varRef("index", F64, loc),
       codes = varRef("codes", arrayOf(F64), loc),
@@ -409,7 +422,7 @@ export function lowerCheckedPredicateValue(
   predicate?: IrLibFn,
 ): IrExpr {
   const name = `%builtin.${display}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value = varRef("value", DYN, loc);
     const matches: IrExpr = { kind: "dynTest", test, value, type: BOOL, loc };
     const result: IrExpr = predicate
@@ -453,7 +466,7 @@ export function lowerNumberParserValue(
 ): IrExpr {
   const name = `%builtin.Number.${member}`;
   const types = member === "parseInt" ? [DYN, DYN] : [DYN];
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = types.map((type, index) => ({ localId: `p.${index}`, name: `p${index}`, type }));
     const text: IrExpr = {
       kind: "libCall",
@@ -737,7 +750,7 @@ const PATH_MODULE_KEYS = [
  * Module handles cache values and preserve aliases without a JS engine. */
 export function lowerObjectAssignValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%builtin.Object.assign";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [
@@ -877,6 +890,138 @@ export function builtinConstantsObject(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     loc,
   };
   return { kind: "libCall", fn: "constants.object", args: [box(table)], type: DYN, loc };
+}
+
+/** The ES module namespace of the deprecated node:constants module: its
+ * export names are the CommonJS object's own enumerable keys plus "default",
+ * sorted by code unit, with a null prototype and no hasOwnProperty. The names
+ * come from the platform's C library, so neither the compiler nor a census
+ * can list them: the runtime sorts the keys of the merged constants object,
+ * and a getter answers each read — "default" is the CommonJS object itself,
+ * every other name a member of it. */
+export function builtinConstantsEsmNamespace(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const name = "%builtin.constants.esm";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const member = (): IrExpr => varRef("constants", DYN, loc);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "key.0", name: "key", type: STRING }],
+      returnType: DYN,
+      locals: [
+        { id: "key.0", name: "key", type: STRING, mutable: false },
+        { id: "constants", name: "constants", type: DYN, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "constants",
+          init: builtinConstantsObject(lowerer, loc),
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "strEq",
+            negated: false,
+            left: varRef("key.0", STRING, loc),
+            right: strLit("default", loc),
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "return", value: member(), loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "dynKeyGet",
+            value: member(),
+            key: varRef("key.0", STRING, loc),
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  const keys = lowerer.declareHiddenLocal("%constantsKeys", arrayOf(STRING));
+  const keyRef = (): IrExpr => varRef(keys.id, arrayOf(STRING), loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: keys.id,
+        init: {
+          kind: "libCall",
+          fn: "dyn.objKeyStrings",
+          args: [builtinConstantsObject(lowerer, loc)],
+          type: arrayOf(STRING),
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "arrIntrinsic",
+          method: "push",
+          receiver: keyRef(),
+          args: [strLit("default", loc)],
+          type: F64,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: {
+      kind: "libCall",
+      fn: "module.namespaceDyn",
+      args: [
+        strLit("builtin:constants", loc),
+        {
+          kind: "arrIntrinsic",
+          method: "sortPrimitive",
+          receiver: keyRef(),
+          args: [],
+          type: arrayOf(STRING),
+          loc,
+        },
+        {
+          kind: "dynFrom",
+          value: {
+            kind: "closure",
+            fnName: name,
+            captures: [],
+            type: funcOf([STRING], DYN),
+            loc,
+          },
+          type: DYN,
+          loc,
+        },
+        {
+          kind: "dynFrom",
+          value: {
+            kind: "libCall",
+            fn: "sym.wellKnown",
+            args: [strLit("toStringTag", loc)],
+            type: SYMBOL_T,
+            loc,
+          },
+          type: DYN,
+          loc,
+        },
+      ],
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
 }
 
 /** The untyped-caller twin of a builtin function value whose parameters

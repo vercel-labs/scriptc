@@ -26,4 +26,4 @@ export function precompiledRuntimePackTarget(
 export { checkerCacheIdentity } from "./frontend/ts7/checker-backend.js";
 export { readCoverageVerdict } from "./coverage/verdict-startup.js";
 export { coverageEnvelope, coveragePasses, renderCoverage } from "./coverage/report.js";
-export { renderPerformanceWarnings } from "./diagnostics/dynamic-tier.js";
+export { isPerformanceCode, renderPerformanceWarnings } from "./diagnostics/dynamic-tier.js";

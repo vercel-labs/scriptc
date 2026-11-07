@@ -1,0 +1,13 @@
+unassigned-let-listener-arity.ts:16:24 - error SC1090: error listeners with more than 1 parameter (use (err) or ()) is not supported yet
+
+  15 |     server.on("error", one);
+  16 |     server.on("error", two);
+     |                        ^~~
+  17 |   };
+
+unassigned-let-listener-arity.ts:32:35 - error SC1090: listen callbacks that may be undefined (pass a function: test the value first, or wrap it in an arrow function) is not supported yet
+
+  31 |   const arm = (): void => {
+  32 |     server.listen(0, "127.0.0.1", ready);
+     |                                   ^~~~~
+  33 |   };

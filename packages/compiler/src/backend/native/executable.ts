@@ -411,6 +411,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
+  // A dev executable's report of failed checked conversions.
+  unit((u) => u.opts.conversionTrace === true, "scr_conversion_trace.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
   // The keyed collections' prototype objects, member values, their
@@ -530,10 +532,10 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
-  // The wave's prepend registrations and stdin.isRaw (scr_events.c,
-  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
-  // (scr_fs_cp.c). The source build compiles these units from source, so the
-  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  // The wave's prepend registrations and stdin.isRaw (scr_async_dyn.c),
+  // server.off (scr_net.c) and copyFile's mode form (scr_fs_cp.c). The source
+  // build compiles these units from source, so the defines must name the same
+  // builds runtime-pack-matrix.mjs selects.
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
@@ -543,7 +545,6 @@ const RUNTIME_DEFINES: readonly {
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
-  // scr_events.c's typed process output write slot.
   // scr_async.c's native promise reactions, which the web streams unit uses,
   // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
   // bodies of its streams.

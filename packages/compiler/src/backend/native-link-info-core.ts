@@ -45,10 +45,11 @@ export interface NativeLinkFeatures {
    * (t262-da §J). Absent for every other program, so their objects stay
    * identical. */
   jsObjectModel?: boolean;
-  /** The program resizes, grows or detaches an ArrayBuffer: compiles the
-   * buffer views registry, scr_js_buffers.c, whose arming call the program's
-   * %main emits. The fact ORs into jsObjectModel, so the unit's definition
-   * of the JavaScript object model build is already on. */
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
+   * registry those operations maintain. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
   mutableBuffers?: boolean;
   /** writeFile's `flag` disposition or copyFile's mode argument:
    * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
@@ -118,6 +119,10 @@ export interface NativeLinkFeatures {
   childErrorFields?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  /** The executable carries debug sources (`--optimization dev` without
+   * `--strip`): its checked conversions report their failures
+   * (scr_conversion_trace.c). Absent (false) for every other build. */
+  conversionTrace?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;

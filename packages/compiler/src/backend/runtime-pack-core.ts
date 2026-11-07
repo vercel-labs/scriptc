@@ -100,6 +100,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   childErrorFields: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
+  conversionTrace: boolean;
   dynForAwait: boolean;
   dynCollections: boolean;
   dynIntegrityQueries: boolean;
@@ -141,10 +142,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
    * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
    * dynTier. */
   jsObjectModel: boolean;
-  /** The program resizes, grows or detaches an ArrayBuffer: compiles the
-   * buffer views registry, scr_js_buffers.c, whose arming call the program's
-   * %main emits. The fact ORs into jsObjectModel, so the unit's definition
-   * of the JavaScript object model build is already on. */
+  /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
+   * JavaScript source resizes, grows or detaches an ArrayBuffer. */
   mutableBuffers?: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
@@ -371,6 +370,7 @@ export function effectiveRuntimeFeatures(
     childErrorFields: features.childErrorFields === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
+    conversionTrace: features.conversionTrace === true,
     dynForAwait: features.dynForAwait === true,
     dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,

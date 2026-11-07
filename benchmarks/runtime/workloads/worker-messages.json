@@ -2,5 +2,6 @@
   "entry": "workloads/worker-messages.ts",
   "args": [
     "100000"
-  ]
+  ],
+  "scaleArg": 0
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9762-promise-executor-resolves-promise-js.mjs"
+ ],
+ "diags": []
+}

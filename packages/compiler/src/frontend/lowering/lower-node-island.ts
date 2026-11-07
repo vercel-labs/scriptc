@@ -28,6 +28,7 @@ import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import {
   BOOL,
   DYN,
+  DYN_HANDLE_KINDS,
   FOREIGN,
   NULL_T,
   STRING,
@@ -41,6 +42,8 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { islandValueOrigin, ORIGIN_SEPARATOR } from "./decl-origin.js";
+import { claimKey } from "./type-claims.js";
 import { classMethodValue } from "./class-method-values.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { resolveBareModule } from "../resolve.js";
@@ -843,8 +846,56 @@ function islandUnitComparison(
 
 /** An island value (dyn) at the declared type of `node`: island handles
  * stay dyn (FOREIGN), primitives and strings meet their declared type
- * through the checked conversion. */
+ * through the checked conversion. A coverage analysis also records the
+ * package declaration that types the value, for the type-claims report
+ * (type-claims.ts); the lowered code is the same either way. */
 function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
+  const out = islandValueAt(lowerer, raw, node);
+  if (lowerer.typeClaims) noteIslandClaim(lowerer, out, node, node);
+  // The conversion names the declaration that types the value, so its
+  // TypeError carries the type patch that would admit it (decl-origin.ts).
+  // A declaration no selector reaches (an empty patch range) is left out,
+  // as every generic declaration is.
+  if (out.kind !== "dynCheck" || out.origin !== undefined || out === raw) return out;
+  const origin = islandOriginOf(lowerer, node, node);
+  if (origin === null || origin.split(ORIGIN_SEPARATOR)[2] === "") return out;
+  return { ...out, origin: lowerer.declOriginIndex(origin) };
+}
+
+function islandOriginOf(
+  lowerer: Lowerer,
+  declaredBy: ts.Node,
+  typed: ts.Expression,
+  argument?: number,
+): string | null {
+  try {
+    return islandValueOrigin(
+      lowerer.checker,
+      declaredBy,
+      lowerer.typeOf(typed),
+      (file) => lowerer.program.isSourceFileDefaultLibrary(file),
+      argument,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Coverage's type claims: `value` is an island's, or a function an island
+ * calls, typed by the declaration of `declaredBy` (type-claims.ts). */
+function noteIslandClaim(
+  lowerer: Lowerer,
+  value: IrExpr,
+  declaredBy: ts.Node,
+  typed: ts.Expression,
+  argument?: number,
+): void {
+  const key = claimKey(value.loc);
+  if (lowerer.islandClaimOrigins.has(key)) return;
+  lowerer.islandClaimOrigins.set(key, islandOriginOf(lowerer, declaredBy, typed, argument) ?? "");
+}
+
+function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
   if (node === rawIslandRead) return raw;
   const tsType = lowerer.typeOf(node);
   const islands = lowerer.nodeIslands!;
@@ -1429,6 +1480,15 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       const crossByReference = (): IrExpr => {
         const lowered = lowerer.lowerExpr(node);
         const value = boxed(lowered);
+        // A function the island calls: the call it is an argument of
+        // declares the parameters its thunk checks.
+        if (lowerer.typeClaims && lowered.type.kind === "func") {
+          const call = node.parent;
+          if (call !== undefined && (ts.isCallExpression(call) || ts.isNewExpression(call))) {
+            const index = (call.arguments?.nodes ?? []).indexOf(node);
+            if (index >= 0) noteIslandClaim(lowerer, value, call, node, index);
+          }
+        }
         return lowered.type.kind === "object"
           ? withClassMethods(lowerer, value, lowered.type.className, node)
           : value;
@@ -1440,6 +1500,19 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       // arm through its dyn box. The runtime exports objects by reference
       // and copies primitives, so the representation is already exact.
       const mapped = lowerer.mapTypeOf(type);
+      // What the export table does not hold is refused first: a WeakMap is a
+      // checked-dynamic value natively, so its representation alone would
+      // let it through to the runtime's own refusal. A value the island
+      // made is its handle and goes back as one.
+      const unexported = islandMade(lowerer, inner) ? null : unexportedNative(lowerer, type);
+      if (unexported !== null)
+        return boundaryFail(
+          lowerer,
+          unexported === type
+            ? `a '${lowerer.checker.typeToString(type)}' value (its native representation has no island export)`
+            : `a '${lowerer.checker.typeToString(type)}' value (its '${lowerer.checker.typeToString(unexported)}' arm has no island export)`,
+          node,
+        );
       if (mapped !== null && crossesByRepresentation(lowerer, mapped)) return crossByReference();
       // NI-5: closures, promises, records and class instances cross by
       // reference (scr_node_island_export.c): their dyn boxes keep the
@@ -1633,6 +1706,73 @@ function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
   const name = type.getSymbol()?.escapedName;
   if (name === "WeakMap" || name === "WeakSet") return false;
   return true;
+}
+
+/** Whether `node` is visibly a value an island made: an island read, call
+ * or construction, a name imported from an island module (`import {
+ * registry } from "pkg"`: the island's own export), or a `const`
+ * initialized with one of those. A slot whose native type is
+ * checked-dynamic (a WeakMap's) holds such a value as the island's handle. */
+function islandMade(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (islandValue(lowerer, node)) return true;
+  const name = withoutParenthesesTypeWrappers(node);
+  if (!ts.isIdentifier(name)) return false;
+  const declaration = lowerer.resolveValueSymbol(name)?.valueDeclaration;
+  return (
+    declaration !== undefined &&
+    ts.isVariableDeclaration(declaration) &&
+    declaration.initializer !== undefined &&
+    (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 &&
+    islandValue(lowerer, declaration.initializer)
+  );
+}
+
+/** Whether `node` reads a value out of an island where it stands: an island
+ * read, call or construction, or a name an island module exports. */
+function islandValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (islandRooted(lowerer, node)) return true;
+  const name = withoutParenthesesTypeWrappers(node);
+  return ts.isIdentifier(name) && islandBindingOf(lowerer, name) !== null;
+}
+
+/** The runtime handle tags the island export table holds: `scr_ni_exportable`
+ * (scr_node_island_export.c) accepts a handle only with the Map or the Set
+ * tag. lower-node-island.test.ts reads that function and fails when the two
+ * lists differ, so a handle the runtime starts to export (a class that
+ * crosses as a twin, say) is added here, and the build-time refusal below
+ * cannot drift from the run-time one. */
+export const ISLAND_EXPORTED_HANDLE_TAGS: ReadonlySet<string> = new Set([
+  "SCR_DYNH_MAP",
+  "SCR_DYNH_SET",
+]);
+
+/** The part of `type` whose native value the island export table does not
+ * hold, or null: a WeakMap or WeakSet (weak storage has no export), or a
+ * stateful I/O handle of DYN_HANDLE_KINDS (a ChildProcess, a socket, a
+ * server), whose checked-dynamic box is a runtime handle with a tag the
+ * table does not take. The runtime refuses each of them when it crosses
+ * (`this native object cannot cross into a Node island yet`); a statically
+ * typed one is refused here, by name, alone or as an arm of a union. */
+function unexportedNative(lowerer: Lowerer, type: ts.Type): ts.Type | null {
+  if (type.isUnionType()) {
+    for (const part of ts.constituentTypes(type)) {
+      const found = unexportedNative(lowerer, part);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  // A refined handle (`ServerResponse & { req: IncomingMessage }`,
+  // `ChildProcess & { label: string }`) is the native object of its handle
+  // part, so it has that part's missing export.
+  if (type.isIntersectionType()) {
+    for (const part of ts.constituentTypes(type))
+      if (unexportedNative(lowerer, part) !== null) return type;
+    return null;
+  }
+  if ((type.flags & ts.TypeFlags.Object) === 0) return null;
+  if (lowerer.weakCollectionNamesOf(type) !== null) return type;
+  const handle = DYN_HANDLE_KINDS.get(lowerer.mapTypeOf(type)?.kind ?? "");
+  return handle !== undefined && !ISLAND_EXPORTED_HANDLE_TAGS.has(handle.tag) ? type : null;
 }
 
 /** Whether a value of native IR type `t` crosses INTO an island by
@@ -2240,7 +2380,9 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
                 },
           loc,
         });
-        const result = fromIsland(lowerer, v, expr);
+        // The assignment answers the value the program wrote, at the
+        // member's declared type: the program's own, not an island's claim.
+        const result = islandValueAt(lowerer, v, expr);
         return { kind: "seqExpr", stmts, result, type: result.type, loc };
       }
       return null;
@@ -2318,7 +2460,9 @@ function islandCompoundAssign(
           },
     loc,
   });
-  const result = fromIsland(lowerer, next, expr);
+  // The value written is not noted as an island's: where the member's old
+  // value flows into it, the claims pass finds that read by itself.
+  const result = islandValueAt(lowerer, next, expr);
   return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 

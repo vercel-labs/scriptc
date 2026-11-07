@@ -33248,6 +33248,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/2195-require-missing-package/main.mjs",
           "tests/corpus/2564-stream-promises-finished.ts",
           "tests/corpus/2570-buffer-arg-validation.cjs",
           "tests/corpus/2597-dgram-send-ladders.cjs",
@@ -33297,6 +33298,12 @@
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-errors-core.mjs",
+          "tests/corpus/compat-errors-crypto.mjs",
+          "tests/corpus/compat-errors-http.mjs",
+          "tests/corpus/compat-errors-net.mjs",
+          "tests/corpus/compat-errors-stream.mjs",
+          "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
@@ -33890,8 +33897,11 @@
       "anchor": "erroropensslerrorstack",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.error.opensslErrorStack",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33926,8 +33936,11 @@
       "anchor": "errorlibrary",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.error.library",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33944,8 +33957,11 @@
       "anchor": "errorreason",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.error.reason",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33980,8 +33996,11 @@
       "anchor": "abort_err",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ABORT_ERR",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34034,8 +34053,11 @@
       "anchor": "err_arg_not_iterable",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_ARG_NOT_ITERABLE",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34778,8 +34800,11 @@
       "anchor": "err_crypto_invalid_jwk",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_JWK",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35165,8 +35190,11 @@
       "anchor": "err_crypto_sign_key_required",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_SIGN_KEY_REQUIRED",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35654,8 +35682,11 @@
       "anchor": "err_fs_cp_fifo_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_FIFO_PIPE",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35693,8 +35724,11 @@
       "anchor": "err_fs_cp_socket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_SOCKET",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35711,8 +35745,11 @@
       "anchor": "err_fs_cp_symlink_to_subdirectory",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36806,8 +36843,11 @@
       "anchor": "err_http_socket_encoding",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_HTTP_SOCKET_ENCODING",
+        "tests": [
+          "tests/corpus/compat-errors-http.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36824,8 +36864,11 @@
       "anchor": "err_http_trailer_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_HTTP_TRAILER_INVALID",
+        "tests": [
+          "tests/corpus/compat-errors-http.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37706,8 +37749,11 @@
       "anchor": "err_invalid_tuple",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_TUPLE",
+        "tests": [
+          "tests/corpus/compat-errors-core.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39007,8 +39053,11 @@
       "anchor": "err_server_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SERVER_NOT_RUNNING",
+        "tests": [
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39043,8 +39092,11 @@
       "anchor": "err_socket_already_bound",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_ALREADY_BOUND",
+        "tests": [
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39160,8 +39212,11 @@
       "anchor": "err_socket_closed_before_connection",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_CLOSED_BEFORE_CONNECTION",
+        "tests": [
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39385,8 +39440,11 @@
       "anchor": "err_stream_cannot_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_CANNOT_PIPE",
+        "tests": [
+          "tests/corpus/compat-errors-http.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39484,8 +39542,11 @@
       "anchor": "err_stream_push_after_eof",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_PUSH_AFTER_EOF",
+        "tests": [
+          "tests/corpus/compat-errors-stream.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39502,8 +39563,11 @@
       "anchor": "err_stream_unable_to_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_UNABLE_TO_PIPE",
+        "tests": [
+          "tests/corpus/compat-errors-stream.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39520,8 +39584,11 @@
       "anchor": "err_stream_unshift_after_end_event",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_UNSHIFT_AFTER_END_EVENT",
+        "tests": [
+          "tests/corpus/compat-errors-stream.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40878,8 +40945,11 @@
       "anchor": "err_worker_unsupported_operation",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_WORKER_UNSUPPORTED_OPERATION",
+        "tests": [
+          "tests/corpus/compat-errors-worker.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40956,8 +41026,11 @@
       "anchor": "hpe_header_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.HPE_HEADER_OVERFLOW",
+        "tests": [
+          "tests/corpus/compat-errors-http.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40992,8 +41065,11 @@
       "anchor": "module_not_found",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.MODULE_NOT_FOUND",
+        "tests": [
+          "tests/corpus/2195-require-missing-package/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

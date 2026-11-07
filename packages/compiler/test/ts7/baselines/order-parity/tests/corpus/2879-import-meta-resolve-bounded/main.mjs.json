@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/2879-import-meta-resolve-bounded/main.mjs"
+ ],
+ "diags": []
+}

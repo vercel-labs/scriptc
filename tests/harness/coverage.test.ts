@@ -1105,8 +1105,12 @@ test("a package a build islands by its module-init fence is the same island here
   const { coverage } = analyze(entry);
   expect(coverage.diagnostics).toEqual([]);
   expect(coverage.stats.statementsFailed).toBe(0);
+  // A class extending a host class needs the runtime's own class (Promise,
+  // WebSocket, ...), not a patch to the native subset: the refusal carries
+  // the host-class-base reason, whose rule R1.6 classes the package as
+  // runtime. A gap would say fixing the compiler alone would make it native.
   expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
-    ["ni-sdk", "gap"],
+    ["ni-sdk", "runtime"],
   ]);
   // The build decides the same island: its SC8001 note names the package the
   // report lists.

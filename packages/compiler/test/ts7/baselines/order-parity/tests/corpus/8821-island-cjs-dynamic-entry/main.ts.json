@@ -1,0 +1,34 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8821-island-cjs-dynamic-entry/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'hljs/lib/core.js'. '<repo>/tests/corpus/8821-island-cjs-dynamic-entry/node_modules/hljs/lib/core.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/hljs` if it exists or add a new declaration (.d.ts) file containing `declare module 'hljs/lib/core.js';`",
+   "loc": {
+    "file": "<repo>/tests/corpus/8821-island-cjs-dynamic-entry/main.ts",
+    "start": 556,
+    "end": 574
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'hljs/lib/languages/easy.js'. '<repo>/tests/corpus/8821-island-cjs-dynamic-entry/node_modules/hljs/lib/languages/easy.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/hljs` if it exists or add a new declaration (.d.ts) file containing `declare module 'hljs/lib/languages/easy.js';`",
+   "loc": {
+    "file": "<repo>/tests/corpus/8821-island-cjs-dynamic-entry/main.ts",
+    "start": 593,
+    "end": 621
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'hljs/lib/index.js'. '<repo>/tests/corpus/8821-island-cjs-dynamic-entry/node_modules/hljs/lib/index.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/hljs` if it exists or add a new declaration (.d.ts) file containing `declare module 'hljs/lib/index.js';`",
+   "loc": {
+    "file": "<repo>/tests/corpus/8821-island-cjs-dynamic-entry/main.ts",
+    "start": 736,
+    "end": 755
+   }
+  }
+ ]
+}

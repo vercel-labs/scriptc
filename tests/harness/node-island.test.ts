@@ -1448,3 +1448,108 @@ test("a star re-export of a path-mapped island package reports the island bounda
     "SC8010 main.ts",
   ]);
 }, 300_000);
+
+// A typed island package's shipped JS stays out of the checker in every
+// program a build with statically compiled packages creates, the authored
+// project world included (npm-static.ts: isIslandRuntimeFile). That world
+// checks user code while another package is still compiled statically.
+// Reading the island's JS there types `hljs` by its JSDoc, the
+// `registerLanguage` call its declarations accept fails to check, and the
+// failure is blamed on the static package ("the program does not typecheck
+// against its inferred surface"), which then runs in an island as well. With
+// many static packages the build runs out of packages to blame and fails
+// with the type error instead.
+test.skipIf(skip).each([
+  ["the default package selection", undefined],
+  ["an explicit --npm-static list", ["hljs", "plainpkg"]],
+] as const)(
+  "a typed island beside a static package leaves that package compiled (%s)",
+  async (_name, npmStatic) => {
+    const dir = join(outDir, `island-beside-static-${npmStatic === undefined ? "auto" : "list"}`);
+    rmSync(dir, { recursive: true, force: true });
+    cpSync(join(repoRoot, "tests/corpus/8826-island-typed-beside-static"), dir, {
+      recursive: true,
+    });
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(dir, "main"),
+      outDir: dir,
+      sanitize,
+      ...(npmStatic === undefined ? {} : { npmStatic: [...npmStatic] }),
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    expect(result.islands?.packages).toEqual(["hljs"]);
+  },
+  300_000,
+);
+
+// The checker cannot read a typed island package's shipped JS, so a subpath
+// the package does not declare reports "cannot find module" where the
+// flagless build reports "no declaration file"; both are the same fact and
+// the import types as any. A subpath with no file at all is still an error.
+test.skipIf(skip)(
+  "an island subpath with no runtime file is still a missing module",
+  async () => {
+    const dir = join(outDir, "island-beside-static-missing");
+    rmSync(dir, { recursive: true, force: true });
+    cpSync(join(repoRoot, "tests/corpus/8826-island-typed-beside-static"), dir, {
+      recursive: true,
+    });
+    const main = join(dir, "main.ts");
+    writeFileSync(main, `${readFileSync(main, "utf8")}void import("hljs/lib/absent.js");\n`);
+    const result = await compile(main, { outPath: join(dir, "main"), outDir: dir, sanitize });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n")).toContain(
+      "hljs/lib/absent.js",
+    );
+  },
+  300_000,
+);
+
+// A build that fails is tried again with more of the program in Node
+// islands, and an island is typed by its declarations: the retry's program
+// can fail to type-check where the build before it did not. Reported alone,
+// those checker errors replace every diagnostic of the build the user wrote
+// against. Here `hljs` is compiled statically first (its JavaScript takes
+// any `code`), the dynamic import of its own CommonJS module refuses, and
+// the retry islands it, where its declarations want a string. The build
+// reports the refusal it had before the retry, and a note carries the
+// retry's first error.
+test.skipIf(skip)(
+  "an island retry that does not type-check reports the build before it",
+  async () => {
+    const dir = join(outDir, "island-retry-typecheck");
+    rmSync(dir, { recursive: true, force: true });
+    cpSync(join(repoRoot, "tests/corpus/8826-island-typed-beside-static"), dir, {
+      recursive: true,
+    });
+    const main = join(dir, "main.ts");
+    writeFileSync(
+      main,
+      `${readFileSync(main, "utf8")}console.log(hljs.highlight(42, { language: "easy" }).value);\n`,
+    );
+    const result = await compile(main, {
+      outPath: join(dir, "main"),
+      outDir: dir,
+      sanitize,
+      npmStatic: ["hljs", "plainpkg"],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const codes = result.diagnostics.map((d) => d.code);
+    expect(codes).not.toContain("SC0001");
+    expect(codes.at(-1)).toBe("SC8024");
+    expect(result.diagnostics.slice(0, -1).map((d) => `${d.code}: ${d.message}`)).toEqual([
+      expect.stringMatching(
+        /^SC1090: dynamic import of the program's own CommonJS module 'hljs\/lib\/index\.js'/,
+      ),
+    ]);
+    const note = result.diagnostics.at(-1)!.message;
+    expect(note).toContain("running 'hljs' in a Node island was tried and did not type-check");
+    expect(note).toContain(
+      "Argument of type 'number' is not assignable to parameter of type 'string'",
+    );
+  },
+  300_000,
+);

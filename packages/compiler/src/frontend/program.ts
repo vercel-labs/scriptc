@@ -39,7 +39,7 @@
  *    JSON.parse's wording rather than tsc's, the one message-text delta on
  *    that path (no snapshot pins it). */
 
-import { isFrontendIsland } from "../node-islands/boundary.js";
+import { frontendIslandTypeRoots, isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -68,6 +68,7 @@ import {
 } from "./resolve.js";
 import { probeNodeImportRefusal, probeNodeRequireRefusal } from "./npm.js";
 import {
+  isIslandRuntimeFile,
   isNpmStaticPackage,
   npmStaticActive,
   npmStaticFsShadow,
@@ -967,6 +968,10 @@ function loadProgram7(
   const coreRoots = [
     entryPath,
     ambientDtsPath(),
+    // An island package's declaration entry types its subpath imports
+    // (node-islands/boundary.ts: frontendIslandTypeRoots). A .d.ts root
+    // adds declarations, never a runtime module.
+    ...frontendIslandTypeRoots(),
     ...(nodeTypes === null
       ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
       : [nodeTypes]),
@@ -1408,7 +1413,16 @@ export function loadProgram(
   let authoredLoad: ReturnType<typeof loadProgram7> | null = null;
   const authored = (): ReturnType<typeof loadProgram7> => {
     if (!authoredLoad) {
-      authoredHost = services.createProgramHost({ cwd: dirname(entryPath) });
+      // The authored world reads the files as published, with one exception
+      // it shares with the lowering world: an island package's shipped JS
+      // stays out of the checker (npm-static.ts: isIslandRuntimeFile). The
+      // flag admits node_modules JS to this world too, and a real file
+      // shadows the ambient declarations the island is typed by, so user
+      // code would be checked against the island's JSDoc instead.
+      authoredHost = services.createProgramHost({
+        cwd: dirname(entryPath),
+        fsShadow: { readFile: () => undefined, hideFile: isIslandRuntimeFile },
+      });
       authoredLoad = loadProgram7(authoredHost, entryPath, externalTypes);
     }
     return authoredLoad;
@@ -5768,7 +5782,14 @@ function npmStaticProgramFile(program: ts.Program, resolvedFile: string): ts.Sou
 /** The PROGRAM source file an opted-in --npm-static package's resolved
  * entry maps to, or null with the package marked an offender (resolution
  * still answering declarations, or the file missing from the type-checked
- * program — a path-identity mismatch between the two resolvers). */
+ * program — a path-identity mismatch between the two resolvers).
+ *
+ * `reportMiss` is false for the HEURISTIC graph walks (the type-only
+ * reachability and reexport planners): they over-count edges on purpose
+ * (any call with a leading string literal is a loading edge), so an
+ * unrelated file's `registerLanguage("diff", …)` must not resolve the
+ * literal `"diff"` through the require condition and classify that PACKAGE
+ * an offender. Only a real import edge decides a package's fate. */
 function npmStaticProgramDep(
   program: ts.Program,
   packageName: string,
@@ -7236,16 +7257,42 @@ function preflightGate7(load: LoadResult): PreflightGate {
     return sf !== undefined && isCjsJsFile7(sf, p);
   };
 
-  const workspaceImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
+  // A resolved JavaScript module without declarations (7016) whose package
+  // scriptc owns: a workspace package, or a SUBPATH of a NODE ISLAND package.
+  // An island package runs in the island's own Node process, so its modules
+  // cross into the program as handles; a missing `.d.ts` for one of its own
+  // subpaths (highlight.js declares `lib/core.js` but not `lib/index.js`) is
+  // a fact about the package the island loads, not a program type error.
+  // Node loads the file like any other module, and the binding types as any
+  // so every use takes the dynamic paths. The package's ROOT specifier keeps
+  // its 7016: a bare import of a package that ships no declarations is the
+  // typed-import case the `scriptc types patch` workflow exists for, and it
+  // refuses until the project declares the surface it uses.
+  //
+  // Under --npm-static the island's shipped JS is hidden from the checker
+  // (npm-static.ts: isIslandRuntimeFile), so the same undeclared subpath
+  // reports "cannot find module" (2307) instead: the file Node loads is
+  // there, the checker just may not read it. That is the same fact and gets
+  // the same answer. A subpath with no runtime file keeps its 2307.
+  const packageModuleImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+    if (
+      (d.code !== 7016 && d.code !== 2307) ||
+      d.fileName === undefined ||
+      d.pos === undefined ||
+      d.end === undefined
+    )
       return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
     const spec = ts.sourceTextRange(sf, d.pos, d.end).replace(/^['"]|['"]$/g, "");
-    const prefix = spec.startsWith("@")
-      ? spec.split("/").slice(0, 2).join("/")
-      : spec.split("/")[0]!;
-    return isWorkspacePackageName(prefix);
+    const pkg = packageNameOfSpecifier(spec);
+    if (d.code === 7016 && isWorkspacePackageName(pkg)) return true;
+    if (spec === pkg || !isFrontendIsland(pkg)) return false;
+    if (d.code === 7016) return true;
+    const runtime =
+      resolveBareModule(d.fileName, spec, "js-only") ??
+      resolveBareModule(d.fileName, spec, "js-only", "require");
+    return runtime !== null && isIslandRuntimeFile(runtime.typesFile);
   };
   // A JavaScript file that TypeScript checks keeps the type errors that
   // protect its JSDoc types: a value of another type reaching a typed slot,
@@ -7326,7 +7373,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
       !nodeModulesJsSuppressed(d) &&
       (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
       !namespaceCalleeSuppressed(p, d) &&
-      !workspaceImplicitAnySuppressed(p, d) &&
+      !packageModuleImplicitAnySuppressed(p, d) &&
       !cjsTopLevelReturnSuppressed(p, d) &&
       !jsdocTypeSuppressed(p, d, commentDup);
     // Every filter except the opinion admission, in its historical order.

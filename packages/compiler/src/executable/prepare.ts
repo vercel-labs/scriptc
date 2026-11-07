@@ -14,6 +14,7 @@ import {
   nodeIslandReaderStripDiag,
   nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
+  nodeIslandRetryTypecheckDiag,
   nodeIslandUnmatchedMarkDiag,
   nodeIslandUnmatchedPackageDiag,
   npmStaticRefusalDiag,
@@ -54,6 +55,7 @@ import {
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
+import { trackedReadFile } from "../frontend/input-tracker.js";
 import type { NodeIslandScan } from "../node-islands/scan.js";
 import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
@@ -90,8 +92,8 @@ export function prepareExecutableModule(
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
 ): PreparedExecutableModule | CompileFailure {
   // The island decision reads the detector's scan unless islands are off.
-  const islandScan =
-    nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode !== "off";
+  const islandMode = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode;
+  const islandScan = islandMode !== "off";
   let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
   timing("frontend-load");
   // Node islands (scope-B NI-4): packages refused natively run in Node,
@@ -114,6 +116,7 @@ export function prepareExecutableModule(
         ? { islandModules: new Set(islandDecision.modules.keys()) }
         : {}),
       islandScan,
+      islandTypeRoots: islandTypeRootsOf(entryPath, islandDecision.packages),
     });
     timing("frontend-island-reload");
   }
@@ -160,24 +163,7 @@ export function prepareExecutableModule(
       // too (the `retry`/`proper-lockfile` shape) — is islanded here under
       // the automatic policy, and the program is analysed once more.
       const late = refusalIslands(entryPath, opts, fe, refused, islanded);
-      if (late !== null) {
-        fe.dispose();
-        frontendDisposed();
-        disposed = true;
-        return prepareExecutableModule(
-          entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
-          late,
-          retryFences,
-          unitStore,
-          lowerModules,
-        );
-      }
-      return fail(
+      const refusals = fail(
         refused.map((entry) =>
           npmStaticRefusalDiag(
             entry.package,
@@ -187,6 +173,30 @@ export function prepareExecutableModule(
           ),
         ),
       );
+      if (late !== null) {
+        fe.dispose();
+        frontendDisposed();
+        disposed = true;
+        return reportedBeforeRetry(
+          refusals,
+          prepareExecutableModule(
+            entryPath,
+            opts,
+            ffi,
+            buildPlatform,
+            createFrontend,
+            timing,
+            late,
+            retryFences,
+            unitStore,
+            lowerModules,
+          ),
+          lowerIslands,
+          late,
+          entryPath,
+        );
+      }
+      return refusals;
     }
     if (fe.preflight.length > 0) {
       // An import of a natively compiled package that preflight refuses
@@ -195,30 +205,38 @@ export function prepareExecutableModule(
       const growth = growthOf();
       const grown =
         growth === null ? null : growIslandSet(growth, lowerIslands, { preflight: fe.preflight });
+      const preflightFailure = fail(fe.preflight);
       if (grown !== null) {
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareExecutableModule(
-          entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
+        return reportedBeforeRetry(
+          preflightFailure,
+          prepareExecutableModule(
+            entryPath,
+            opts,
+            ffi,
+            buildPlatform,
+            createFrontend,
+            timing,
+            grown,
+            retryFences,
+            unitStore,
+            lowerModules,
+          ),
+          lowerIslands,
           grown,
-          retryFences,
-          unitStore,
-          lowerModules,
+          entryPath,
         );
       }
-      return fail(fe.preflight);
+      return preflightFailure;
     }
 
     try {
       lowered = fe.lower(
         {
           ...(islandDecision !== null ? { nodeIslands: islandDecision } : {}),
+          nodeIslandMode: islandMode,
           targetPlatform: buildPlatform,
           ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
           ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
@@ -240,30 +258,52 @@ export function prepareExecutableModule(
       // Packages whose own modules refused to lower run in Node islands
       // too (the authoritative lowering, DESIGN.md §1.4): build again with
       // them as islands.
+      // A computed import() of the program's own CommonJS module names a
+      // package that runs in an island whole (SPEC §5.6). It joins the
+      // packages the lowering rules (node-islands/growth.ts) grow from the
+      // same diagnostics: one retry with every island this round found,
+      // never a round of its own (on pi that round was a whole extra load
+      // and lowering of the program).
       const growth = growthOf();
+      const namespaces = cjsNamespaceIslands(
+        entryPath,
+        opts,
+        fe,
+        lowered.diagnostics,
+        lowerIslands,
+      );
       const grown =
-        growth === null
+        (growth === null
           ? null
-          : growIslandSet(growth, lowerIslands, { diagnostics: lowered.diagnostics });
+          : growIslandSet(growth, namespaces ?? lowerIslands, {
+              diagnostics: lowered.diagnostics,
+            })) ?? namespaces;
       // Sloppy user modules the lowering refused join the same retry
       // (DESIGN.md note 1 §3.2): one reload with every island at once,
       // never one round per module.
       const grownModules = loweringModules(entryPath, opts, lowered.diagnostics, lowerModules);
       if (grown !== null || grownModules !== null) {
+        const loweringFailure = fail(lowered.diagnostics);
         fe.dispose();
         frontendDisposed();
         disposed = true;
-        return prepareExecutableModule(
+        return reportedBeforeRetry(
+          loweringFailure,
+          prepareExecutableModule(
+            entryPath,
+            opts,
+            ffi,
+            buildPlatform,
+            createFrontend,
+            timing,
+            grown ?? lowerIslands,
+            retryFences,
+            unitStore,
+            grownModules ?? lowerModules,
+          ),
+          lowerIslands,
+          grown,
           entryPath,
-          opts,
-          ffi,
-          buildPlatform,
-          createFrontend,
-          timing,
-          grown ?? lowerIslands,
-          retryFences,
-          unitStore,
-          grownModules ?? lowerModules,
         );
       }
       // A failed program whose compiled packages need the runtime or a
@@ -415,6 +455,44 @@ export function prepareExecutableModule(
     }
   }
   return prepared;
+}
+
+/** The answer of a build that failed and was tried again with more of the
+ * program in Node islands. An island is typed by its declarations, so the
+ * retry's program can fail to type-check where the build before it did not.
+ * Those checker errors describe the retry's program alone: reported by
+ * themselves they replace every diagnostic of the build the user wrote
+ * against ("1 error" for a program with dozens of sites to fix). When the
+ * retry fails with checker errors the build before it did not have, the
+ * build reports what it had before the retry, and a note (SC8024) names the
+ * retry's first error. A retry that fails for any other reason, or
+ * succeeds, is the answer as before. */
+function reportedBeforeRetry(
+  before: CompileFailure,
+  retried: PreparedExecutableModule | CompileFailure,
+  known: ReadonlyMap<string, IslandPackage>,
+  grown: ReadonlyMap<string, IslandPackage> | null,
+  entryPath: string,
+): PreparedExecutableModule | CompileFailure {
+  if (retried.ok) return retried;
+  const checker = retried.diagnostics.filter((d) => d.code === "SC0001");
+  if (checker.length === 0 || before.diagnostics.some((d) => d.code === "SC0001")) return retried;
+  const added = grown === null ? [] : [...grown.keys()].filter((name) => !known.has(name)).sort();
+  const sourceTexts = new Map(before.sourceTexts);
+  for (const [file, text] of retried.sourceTexts)
+    if (!sourceTexts.has(file)) sourceTexts.set(file, text);
+  return {
+    ok: false,
+    diagnostics: [
+      ...before.diagnostics,
+      nodeIslandRetryTypecheckDiag(added, checker[0]!, checker.length, {
+        file: entryPath,
+        start: 0,
+        end: 0,
+      }),
+    ],
+    sourceTexts,
+  };
 }
 
 /** Whether two spellings name the same file (the checker resolves through
@@ -1043,6 +1121,71 @@ function islandGrowth(
     ...(Array.isArray(opts.npmStatic) ? { explicitNpmStatic: opts.npmStatic } : {}),
     sourceTexts: () => fe.sourceTexts(),
   };
+}
+
+/** The declaration entries the island packages need rooted: a package whose
+ * declarations are ambient `declare module "<pkg>/..."` blocks in one file
+ * (highlight.js 10.7.3 ships only types/index.d.ts, naming its subpaths)
+ * types its subpath imports only when that file is part of the program. A
+ * root of that shape adds declarations of the islanded package alone,
+ * never a runtime module and never another package's surface. */
+function islandTypeRootsOf(
+  entryPath: string,
+  packages: ReadonlyMap<string, IslandPackage>,
+): string[] {
+  const roots: string[] = [];
+  for (const name of packages.keys()) {
+    const resolved = resolveBareModule(entryPath, name, "types-only");
+    if (resolved === null || resolved.packageName !== name) continue;
+    if (!/\.d\.(?:ts|mts|cts)$/.test(resolved.typesFile)) continue;
+    const text = trackedReadFile(resolved.typesFile);
+    if (text === null) continue;
+    const ambient = new RegExp(
+      `declare module\\s+["']${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`,
+    );
+    if (ambient.test(text)) roots.push(resolved.typesFile);
+  }
+  return roots.sort();
+}
+
+/** The packages whose CommonJS modules a computed `import()` of the
+ * program's own graph names (`--node-islands=auto` only, SPEC §5.6): the
+ * module's namespace comes from module.exports through Node's CJS lexer, so
+ * the package that owns it runs in an island whole, and the import() becomes
+ * a namespace import of an island package. Null when there are none. */
+function cjsNamespaceIslands(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  fe: ReturnType<FrontendFactory>,
+  diagnostics: readonly ScrDiagnostic[],
+  known: ReadonlyMap<string, IslandPackage>,
+): Map<string, IslandPackage> | null {
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  if (policy.mode !== "auto" || known.size > 16) return null;
+  const compiled = new Set(fe.npmStatic.filter((e) => e.status === "static").map((e) => e.package));
+  if (compiled.size === 0) return null;
+  const grown = new Map(known);
+  for (const d of diagnostics) {
+    if (d.code !== "SC1090") continue;
+    const named = /^dynamic import of the program's own CommonJS module '([^']+)'/.exec(d.message);
+    if (named === null) continue;
+    const spec = named[1]!;
+    const js =
+      resolveBareModule(d.loc.file, spec, "js-only") ??
+      resolveBareModule(d.loc.file, spec, "js-only", "require");
+    const at = js === null ? null : packageDirOf(js.typesFile);
+    if (at === null || !compiled.has(at.name) || grown.has(at.name)) continue;
+    if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
+    const reason = classifyDiagnostic(d, "refusal");
+    grown.set(at.name, {
+      name: at.name,
+      version: packageVersionOf(at.dir),
+      dir: at.dir,
+      class: reason.class,
+      reason: describe(reason),
+    });
+  }
+  return grown.size === known.size ? null : grown;
 }
 
 /** The island modules grown by the lowering's refusals in user JavaScript

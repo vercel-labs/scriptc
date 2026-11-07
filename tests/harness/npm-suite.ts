@@ -50,6 +50,9 @@ const KNOWN: Record<string, Known> = {
   "bytes-exit": { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
+  // The package's own CommonJS entry, loaded at run time, shares the
+  // singleton its compiled core.js opened (SPEC §5.6).
+  "cjs-registry": { island: true },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
   "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },
@@ -121,7 +124,6 @@ const KNOWN: Record<string, Known> = {
   "node24-url-factories": { run: "SC2020" },
   "node24-url-mutation": { run: "SC1090" },
   "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
-  "node24-util-types": { run: "SC1090" },
   "late-island-refusal": { island: true },
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
@@ -130,7 +132,6 @@ const KNOWN: Record<string, Known> = {
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },
   // `class Upper extends TransformStream`: extending a builtin class from JavaScript.
-  "web-streams": { run: "SC1090" },
   "workspace-copied": { island: true },
   // The SYMLINKED twin of workspace-copied: the automatic island policy
   // places the refused package from its workspace realpath.

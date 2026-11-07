@@ -7,10 +7,13 @@
  * apply as written warn (SC8030-SC8033). The `.d.ts`, `@types`, replaced
  * file and supplied entry cases run in npm.test.ts (type-patch-dts,
  * type-patch-types-twin, type-patch-files, type-patch-types-entry); here
- * their unpatched copies show the patches are what makes them compile, and
- * a failing check names the declaration and the patch (scr_type_origin.c,
- * frontend/lowering/decl-origin.ts), its own package's also when two
- * packages declare a record of one name and shape. And
+ * their unpatched copies show what the patches add: the supplied
+ * declarations' entry, whose unpatched bare import has no declaration file
+ * and refuses, because the 7016 relaxation covers a Node island package's
+ * subpaths and not its root (8821-island-cjs-dynamic-entry pins the
+ * subpath). A failing check names the declaration and the patch
+ * (scr_type_origin.c, frontend/lowering/decl-origin.ts), its own package's
+ * also when two packages declare a record of one name and shape. And
  * commander-calc carries the HelpContext.helpWidth patch. */
 import { execFile } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -165,7 +168,19 @@ describe("type patches", () => {
           outDir,
           sanitize,
         });
+        // A bare import of a package that ships no declarations is the
+        // typed-import case the patch exists for, so it keeps its
+        // declaration-file refusal even when the package runs in a Node
+        // island: only the island package's own subpaths type as dynamic
+        // (8821-island-cjs-dynamic-entry). The supplied declarations are
+        // what compile the same code statically (npm.test.ts
+        // type-patch-types-entry).
         expect(result.ok).toBe(false);
+        if (!result.ok) {
+          const [diag] = result.diagnostics;
+          expect(diag?.code).toBe("SC0001");
+          expect(diag?.message).toContain("Could not find a declaration file for module 'pointjs'");
+        }
       } finally {
         rmSync(copy, { recursive: true, force: true });
       }

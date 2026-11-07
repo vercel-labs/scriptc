@@ -93,18 +93,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["createsWrappers"],
   },
   {
-    name: "names-array-buffer-view",
-    file: `${SRC}/frontend/lowering/array-buffer-view.ts`,
-    symbol: "programNamesArrayBufferView",
-    source: "spelling",
-    scope: "program",
-    setBy: "any identifier spelled `ArrayBufferView` in a compiled source",
-    gates: "the mapping of the ES lib interface to the checked-dynamic value, for every value",
-    narrower: "the type of the value, with builtin declarations that do not depend on it",
-    tracked: "pi-decisions DECISIONS.md 2026-11-05 (the mapping, not the gate); #3067",
-    lowererFields: ["namesArrayBufferView"],
-  },
-  {
     name: "typed-web-streams",
     file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
     symbol: "programUsesTypedWebStreams",
@@ -495,11 +483,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "closed-world",
     "whether one function is ever read as a value",
-  ),
-  decides(
-    "frontend/lowering/array-buffer-view.ts#programNamesArrayBufferView",
-    2,
-    "names-array-buffer-view",
   ),
   scan(
     "frontend/lowering/assertion-members.ts#extendAssertedRecordMembers",

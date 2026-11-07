@@ -86,6 +86,7 @@ import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/
 import * as ts from "../ts7/adapter.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
+import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
@@ -5272,6 +5273,17 @@ function stdlibGlobalTokenDestructure(
     let alias: string | null = null;
     let value: IrExpr | null = null;
     if (globalName === "globalThis") {
+      // A CommonJS module binding is a variable of each module, not a
+      // property of the global object: Node binds undefined, in every
+      // module kind, and the binding's slot has the type the declaration
+      // gives the name, which cannot hold it.
+      if (COMMONJS_MODULE_BINDINGS.has(propName)) {
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          `destructuring '${propName}' from the global object (Node binds undefined: the CommonJS module bindings are variables of each module, not properties of the global object)`,
+        );
+      }
       // The member must BE a stdlib global (user script vars are
       // properties of `typeof globalThis` too — their values are real
       // and this rule has none to give).

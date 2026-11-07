@@ -1541,6 +1541,26 @@ export type Other = string;
     );
   });
 
+  test("a builtin's named import of a name its exports object does not enumerate", async () => {
+    // node:zlib owns the deprecated Z_* constants without enumerating them:
+    // they are not exports, and the first missing binding by local name is
+    // reported, before any module evaluates.
+    const r = await compileAndRun(
+      "esm-builtin-link",
+      `import './side.ts';
+import { Z_NO_FLUSH, gzipSync, Z_BEST_COMPRESSION as best } from 'node:zlib';
+console.log('never runs', Z_NO_FLUSH, best, gzipSync('a').length);
+`,
+      "ts",
+      { "side.ts": "console.log('side evaluated');\n" },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module 'node:zlib' does not provide an export named 'Z_NO_FLUSH'\n",
+    );
+  });
+
   test("native compilation retains the ESM link failure", async () => {
     const r = await compileAndRun(
       "esm-type-link-dynamic",

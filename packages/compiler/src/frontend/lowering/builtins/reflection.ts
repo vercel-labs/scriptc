@@ -4,6 +4,7 @@ import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { lowerInGlobalObject } from "../expressions/relational.js";
 import {
   BOOL,
   DYN,
@@ -185,6 +186,17 @@ export function lowerReflectCall(
     !call.arguments.nodes.some(ts.isSpreadElement)
   ) {
     const loc = locOf(call);
+    // The global object answers `in` through its own presence query
+    // (lowerInGlobalObject): Reflect.has is the same question.
+    {
+      const inGlobal = lowerInGlobalObject(
+        lowerer,
+        call.arguments.nodes[1]!,
+        call.arguments.nodes[0]!,
+        loc,
+      );
+      if (inGlobal !== null) return inGlobal;
+    }
     const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
     const primitive =
       isUnitType(target.type) ||

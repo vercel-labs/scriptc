@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/esm-builtin-named-import-not-exported/side.mjs",
+  "<repo>/tests/corpus/esm-builtin-named-import-not-exported/main.mjs"
+ ],
+ "diags": []
+}

@@ -4295,8 +4295,10 @@ function buildLibFnSignatures() {
      * implement (host-globals.ts): the compiler's derived name table. */
     "global.hostAbsent": { argTypes: [arrayOf(STRING)], result: VOID },
     /** `key in globalThis`: the host-global check, then the global object's
-     * own presence answer (scr_global_host_absent.c). */
-    "dyn.globalHas": { argTypes: [STRING], result: BOOL },
+     * presence answer: the program's own global properties, then the names
+     * Node's global object has (lower-global-value.ts
+     * globalObjectPresentNamesArg; scr_global_host_absent.c). */
+    "dyn.globalHas": { argTypes: [STRING, arrayOf(STRING)], result: BOOL },
     /** Installs the program's builtin-global lookup (global-values.ts). */
     "global.installValues": { argTypes: [DYN], result: VOID },
     /** Installs the program's static-member lookup for builtin constructor

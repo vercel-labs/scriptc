@@ -77,17 +77,25 @@ void scr_record_marked_freeze(void *record) {
   scr_record_freeze(record);
 }
 
-/* scr_dyn_record_view for a freezable view target type: the view a capsule
- * already has is answered first, also once the record it views is frozen.
- * scr_dyn_record_view itself declines a frozen record, whose conversion
- * would then copy it and lose the object's identity. */
+/* scr_dyn_record_view for a freezable view target type. scr_dyn_record_view
+ * declines a frozen record, because a view of a type without frozen-write
+ * guards could write it; its conversion then copies the record, and the
+ * copy is another object. A freezable target's writes do ask
+ * (scr_record_marked_frozen), so a frozen record is viewed like any other:
+ * the view a capsule already has is answered first, and a capsule whose
+ * views were all released gets a new one. The bit is lifted for the call
+ * only; nothing in it reads the record or runs program code. */
 void *scr_dyn_record_view_kept(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
                                const char *key, size_t key_len, void *(*alloc)(void)) {
-  if (d->kind == SCR_DYN_TYPED_REF) {
-    for (ScrDynTypedCast *cast = d->v.typed_ref.casts; cast; cast = cast->next)
-      if (cast->borrowed && cast->type_key_len == key_len &&
-          memcmp(cast->type_key, key, key_len) == 0)
-        return cast->retain(cast->ptr);
-  }
-  return scr_dyn_record_view(d, sources, count, key, key_len, alloc);
+  if (d->kind != SCR_DYN_TYPED_REF) return NULL;
+  for (ScrDynTypedCast *cast = d->v.typed_ref.casts; cast; cast = cast->next)
+    if (cast->borrowed && cast->type_key_len == key_len &&
+        memcmp(cast->type_key, key, key_len) == 0)
+      return cast->retain(cast->ptr);
+  void *record = d->v.typed_ref.ptr;
+  bool frozen = record && scr_rc_frozen(record);
+  if (frozen) *(size_t *)record &= ~SCR_RC_FROZEN;
+  void *view = scr_dyn_record_view(d, sources, count, key, key_len, alloc);
+  if (frozen) *(size_t *)record |= SCR_RC_FROZEN;
+  return view;
 }

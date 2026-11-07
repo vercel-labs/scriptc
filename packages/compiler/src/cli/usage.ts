@@ -105,12 +105,13 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
   "fail-on": {
     entries: [
       {
-        term: "--fail-on <blockers|divergences|dynamic|dynamic-slots|node-islands|eager-node-islands|island-gaps>",
+        term: "--fail-on <blockers|divergences|dynamic|dynamic-slots|type-claims|node-islands|eager-node-islands|island-gaps>",
         help: [
           "coverage only: exit 1 when the entry path has blockers",
           "(a build would fail), or also when it has Node",
           "divergences, likely-hot functions that use untyped",
-          "values (SC6101), dynamic slots (SC6104), any Node",
+          "values (SC6101), dynamic slots (SC6104), checked",
+          "conversions that trust an unverified type, any Node",
           "island (eager-node-islands is the same until deferred",
           "evaluation lands), or a gap island (a package scriptc",
           "should compile but cannot yet)",

@@ -15,6 +15,9 @@ import { canonShadowHook, mapCanonical, type CanonMapNotes } from "../canon-map.
 import { Normalizer } from "../canon.js";
 import { resolveEntryExportSymbol } from "../lib-exports.js";
 import { compactDeclOrigins, recordOrigin, slotOrigin, type RecordOrigin } from "./decl-origin.js";
+import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js";
+import { isDeclBoundaryTypeNode } from "../decl-projection.js";
+import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { LiteralTexts } from "./literal-texts.js";
 import {
@@ -1040,6 +1043,9 @@ export interface LowerResult {
   /** Localized failure: the checked dynamic slots the commit points
    * created (each also an SC6104 in `performance`), present when any. */
   dynamicSlots?: DynamicSlotEntry[];
+  /** Coverage only: the checked conversions that trust a type no build
+   * can verify (type-claims.ts), present when any. */
+  typeClaims?: TypeClaimSite[];
   /** Functions lowering placed in the dynamic tier (ir/tiers.ts), present
    * when there are any. */
   dynamicFunctions?: DynamicFunction[];
@@ -1257,6 +1263,11 @@ export interface LowererMode {
    * storage, for the report (runtime-optional-report.ts). Report-only:
    * lowering does not change. */
   runtimeOptionalReport?: boolean;
+  /** Coverage: collect the program's type claims (type-claims.ts), and
+   * record the declaration that types each Node island value
+   * (Lowerer.islandClaimOrigins). Report-only: no build sets it, and the
+   * lowered code is the same with and without it. */
+  typeClaims?: boolean;
   /** Node's startup refusal (preflight's resolution walk / named-import
    * link checks): %main opens with exactly this throw, before any
    * module init — Node refuses the whole graph before anything evaluates,
@@ -1470,6 +1481,8 @@ function lowerToIrWithIslands(
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const tierMode = options.tierMode ?? "auto";
   const runtimeOptionalReport = options.tierReport !== undefined;
+  // Coverage lists the program's type claims (lowering/type-claims.ts).
+  const typeClaims = options.coverage === true;
   // One island round lowers the same program through several passes:
   // validation, reachable emit, the whole-slot comparison, the stream
   // relowers, historical order and the coverage remainder. They differ only
@@ -1507,6 +1520,7 @@ function lowerToIrWithIslands(
     abortOnStreamFlags: abortReplacedPasses,
     tierMode,
     runtimeOptionalReport,
+    typeClaims,
   });
   const ffiValidation = validateFfiImports(validation);
   timing("ffi-validate");
@@ -1535,6 +1549,7 @@ function lowerToIrWithIslands(
           externalTypeSpecifiersByFile,
           tierMode,
           runtimeOptionalReport,
+          typeClaims,
           ffiBindingSymbols: ffiValidation.symbolsByName,
           abortOnStreamFlags: abortReplacedPasses,
         });
@@ -1601,6 +1616,7 @@ function lowerToIrWithIslands(
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      typeClaims,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       wholeSlotDegradation: true,
     });
@@ -1647,6 +1663,7 @@ function lowerToIrWithIslands(
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      typeClaims,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       ...(resultLowerer.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(resultLowerer.dynNodeStreams ? { dynNodeStreams: true } : {}),
@@ -1686,6 +1703,7 @@ function lowerToIrWithIslands(
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      typeClaims,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
       // The general pass of a program that asks for checked-dynamic slots
@@ -1769,6 +1787,7 @@ function lowerToIrWithIslands(
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      typeClaims,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
       ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
@@ -1808,6 +1827,7 @@ function lowerToIrWithIslands(
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      typeClaims,
       wholeSlotDegradation: true,
       ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
     });
@@ -1872,6 +1892,8 @@ function lowerToIrWithIslands(
       dynamicSlots,
     };
   }
+  if (resultLowerer.typeClaimSites.length > 0)
+    result = { ...result, typeClaims: resultLowerer.typeClaimSites };
   // Contract types (@scriptc/types): written annotations, checked against
   // the IR by the compile pipeline (contracts/check.ts).
   // Acyclic object types name the IR unit the program lowered them to; a
@@ -5201,6 +5223,7 @@ export class Lowerer {
     "remainder",
     "tierMode",
     "runtimeOptionalReport",
+    "typeClaims",
     "generalNodeStreams",
     "dynNodeStreams",
     "dynAsyncProtocol",
@@ -5267,6 +5290,13 @@ export class Lowerer {
     // storage decisions and the narrowed reads they explain.
     "runtimeOptionalProvenance",
     "runtimeOptionalNarrowings",
+    // Coverage's type claims, read off the final bodies when the pass ends,
+    // and the island positions they name declarations for: a report's
+    // side table, which no lowering decision reads.
+    "typeClaimSites",
+    "islandClaimOrigins",
+    "assertedClaims",
+    "boundaryClaims",
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
@@ -5544,6 +5574,20 @@ export class Lowerer {
   readonly tierMode: TierMode;
   /** LowererMode.runtimeOptionalReport. */
   readonly runtimeOptionalReport: boolean;
+  /** LowererMode.typeClaims. */
+  readonly typeClaims: boolean;
+  /** Coverage (typeClaims): the claim sites of the final bodies. */
+  typeClaimSites: TypeClaimSite[] = [];
+  /** Coverage (typeClaims): each Node island value, and each function an
+   * island calls, by source position (type-claims.ts's claimKey), with the
+   * origin of the declaration that types it ("" when none can be named). */
+  readonly islandClaimOrigins = new Map<string, string>();
+  /** Coverage (typeClaims): the positions of the checked conversions a
+   * type assertion asked for. */
+  readonly assertedClaims = new Set<string>();
+  /** Coverage (typeClaims): the positions of the declaration-typed
+   * boundary's casts. */
+  readonly boundaryClaims = new Set<string>();
   readonly generalNodeStreams: boolean;
   readonly dynNodeStreams: boolean;
   readonly dynAsyncProtocol: boolean;
@@ -5993,6 +6037,7 @@ export class Lowerer {
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.tierMode = mode.tierMode ?? "auto";
     this.runtimeOptionalReport = mode.runtimeOptionalReport === true;
+    this.typeClaims = mode.typeClaims === true;
     this.runtimeOptionalProvenance = this.runtimeOptionalReport
       ? RuntimeOptionalProvenance.forReport()
       : RuntimeOptionalProvenance.fromEnvironment();
@@ -11623,6 +11668,22 @@ export class Lowerer {
       module.functions = withoutUnreachedFunctions(module, lifted).functions;
     }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
+    // Before the origin table is compacted: the claims index the lowering's.
+    if (this.typeClaims) {
+      const globals = new Map<string, IrGlobal>();
+      for (const global of this.globalsInTableOrder()) globals.set(global.id, global);
+      this.typeClaimSites = collectTypeClaims({
+        functions,
+        globals,
+        declOrigins: this.declOrigins,
+        islandOrigins: this.islandClaimOrigins,
+        asserted: this.assertedClaims,
+        boundary: this.boundaryClaims,
+        declaredUntyped: declaredUntypedIn(this.program, this.checker),
+        unionArms: (id) => this.unions.get(id)?.arms,
+        fmt: (type) => this.fmt(type),
+      });
+    }
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
     if (module) checkCycleBindingAccesses(this, module);
     if (module) bindCompletionCallbacks(module);
@@ -18769,7 +18830,22 @@ export class Lowerer {
   }
 
   lowerAsExpression(expr: ts.AsExpression | ts.TypeAssertion): IrExpr {
-    return lowerAsExpression(this, expr);
+    const out = lowerAsExpression(this, expr);
+    // Coverage's type claims: the conversion is what the assertion claims.
+    // A cast that adopts its value converts it in a statement sequence.
+    if (this.typeClaims) {
+      const claims = isDeclBoundaryTypeNode(expr.type) ? this.boundaryClaims : this.assertedClaims;
+      const note = (e: IrExpr): void => {
+        if (e.kind === "dynCheck") claims.add(claimKey(e.loc));
+        else if (e.kind === "seqExpr") {
+          for (const stmt of e.stmts)
+            if (stmt.kind === "varDecl" && stmt.init !== null) note(stmt.init);
+          note(e.result);
+        }
+      };
+      note(out);
+    }
+    return out;
   }
 
   lowerPrefixUnary(expr: ts.PrefixUnaryExpression): IrExpr {

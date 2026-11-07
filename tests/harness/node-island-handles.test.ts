@@ -210,6 +210,37 @@ describe.skipIf(skip)("Node island handles", () => {
     );
   }, 300_000);
 
+  test("an island value that contradicts its declaration names the declaration and its patch", async () => {
+    // The conversion at the crossing carries the origin of the declaration
+    // that types the island's value, so the TypeError says which
+    // declaration to patch. A declaration inside a namespace is named
+    // through it, as `scriptc types patch` reaches it, and an element read
+    // names the element of what its receiver declares.
+    const dir = join(outDir, "declared-origin");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(
+      join(repoRoot, "tests/coverage-fixtures/node-islands-type-claims/lie.ts"),
+      { outPath: join(dir, "lie"), outDir: dir, sanitize },
+    );
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    expect(stdout).toBe(
+      "ttl expected number at $, got undefined\n" +
+        "    tc-island@3.1.0 declares Session.ttl as number (index.d.ts:3)\n" +
+        "    if that declaration is wrong, patch it: scriptc types patch tc-island Session.ttl '| undefined'\n" +
+        "max expected number at $, got undefined\n" +
+        "    tc-island@3.1.0 declares limits.Quota.max as number (index.d.ts:12)\n" +
+        "    if that declaration is wrong, patch it: scriptc types patch tc-island limits.Quota.max '| undefined'\n" +
+        "size expected number at $, got string\n" +
+        "    tc-island@3.1.0 declares sizes()[] as number (index.d.ts:16)\n" +
+        "    if that declaration is wrong, patch it: scriptc types patch tc-island 'sizes()[]' '| string'\n" +
+        "ttl by key expected number at $, got undefined\n" +
+        "    tc-island@3.1.0 declares Session.ttl as number (index.d.ts:3)\n" +
+        "    if that declaration is wrong, patch it: scriptc types patch tc-island Session.ttl '| undefined'\n",
+    );
+  }, 300_000);
+
   test("an island record that contradicts its declaration throws at the read", async () => {
     // The program record type the island's value is declared with is a
     // checked-identity view (wave-2 6 = C), so the value keeps its identity

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8605-namespace-member-writes.js"
+ ],
+ "diags": []
+}

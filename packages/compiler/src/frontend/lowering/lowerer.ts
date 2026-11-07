@@ -205,6 +205,7 @@ import {
 } from "./runtime-optional-report.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
 import { NarrowingStability, widenedReceiver } from "./narrowing-stability.js";
+import { NamespaceMemberWrites } from "./namespace-member-writes.js";
 import { ArrayElementStates } from "./runtime-optional-elements.js";
 import { indexReadInBounds } from "./runtime-optional-bounds.js";
 import { ArrayOwnership } from "./runtime-optional-ownership.js";
@@ -3268,6 +3269,14 @@ export class Lowerer {
    * binding still holds at its use (calls do not reset TypeScript's
    * narrowing). Stale ones read the declared storage or check it. */
   readonly narrowing = new NarrowingStability(this);
+  /** Whether the members of the `Math`, `JSON` and `Reflect` namespace
+   * objects may be replaced or deleted through the object: the program
+   * spells no member read or call that the object's live table would not
+   * answer (namespace-member-writes.ts). */
+  readonly namespaceMemberWrites = new NamespaceMemberWrites(this);
+  /** Whether a generator of the program yields in a finally block
+   * (lower-generators.ts programYieldsInFinally); null until asked. */
+  generatorYieldsInFinally: boolean | null = null;
   /** All storage slots widened for runtime absence, including slots whose
    * current control-flow branch has temporarily narrowed the value. */
   readonly runtimeOptionalStorageLocals = new Set<IrLocal>();
@@ -5319,6 +5328,7 @@ export class Lowerer {
     // caches made when first needed
     "nanCodedReads",
     "mentionsProcessVersions",
+    "generatorYieldsInFinally",
     "createsWrappers",
     "memberReceivers",
     "stringIndexBoundsCache",
@@ -11401,6 +11411,7 @@ export class Lowerer {
   run(): LowerResult {
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
+    this.namespaceMemberWrites.setFiles(parts.map((fp) => fp.sf));
     // The coverage remainder deliberately visits every body that reachable
     // emit skipped. Those files are already phase-managed, so an ordinary
     // checker miss would stay a one-node IPC query instead of falling back
@@ -12019,6 +12030,7 @@ export class Lowerer {
     this.deferredModuleInitializers = new DeferredModuleInitializers();
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
+    this.namespaceMemberWrites.setFiles(parts.map((fp) => fp.sf));
     // Direct lowering callers do not necessarily run program preflight.
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.

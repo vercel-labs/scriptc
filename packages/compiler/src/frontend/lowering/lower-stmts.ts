@@ -2857,13 +2857,22 @@ export function lowerDestructuringDecl(
   // name ("null is not iterable"); a parenthesized one gets the generic
   // runtime wording, so only the bare keyword qualifies.
   const src = decl.initializer!;
-  const dynSpell = ts.isIdentifier(src)
+  let dynSpell: string | undefined = ts.isIdentifier(src)
     ? `${src.text} is not iterable`
     : ts.isCallExpression(src) && ts.isIdentifier(src.expression)
       ? `${src.expression.text} is not a function or its return value is not iterable`
       : unitSource === "nullT" && src.kind === ts.SyntaxKind.NullKeyword
         ? "null is not iterable"
         : undefined;
+  // V8's declaration form spells a BARE `void 0` array source "(void 0) is
+  // not iterable"; `undefined` needs no entry because the identifier rule
+  // above already spells it, and a parenthesized or nested source keeps the
+  // runtime kind wording the dyn arm produces on its own.
+  if (unitSource !== null && ts.isArrayBindingPattern(decl.name) && dynSpell === undefined) {
+    const unit = decl.initializer!;
+    if (ts.isVoidExpression(unit))
+      dynSpell = `(void ${unit.expression.getText()}) is not iterable`;
+  }
   // JS: a union source with exactly ONE destructurable arm beside unit
   // arms (`nameAndArgs.match(re)` — `RegExpMatchArray | null`, the
   // always-matches idiom) destructures through a VALIDATED narrow: the
@@ -3101,6 +3110,20 @@ export function lowerBindingPattern(
   dynSpell?: string,
   allowDynObject = false,
 ): void {
+  // A source the checker proved null or undefined at a binding position
+  // that is not a declaration's initializer — a for-of head over a unit
+  // element (`for (const { a } of [null])`), a catch parameter for a
+  // thrown unit (`catch ({}) {}`), a pattern nested over a unit property
+  // (`for ([{ a }] of [[null]])`): Node throws the destructuring
+  // TypeError before anything binds, in every form including the empty
+  // pattern. The checked-dynamic form raises exactly that error, so the
+  // pattern re-enters with a dyn source. Only a JavaScript source takes
+  // this path: a typed binding pattern keeps its own diagnostic.
+  if (isUnitType(srcType) && isJsSourceFile(ts.getSourceFileOfNode(pattern))) {
+    const coerced = lowerer.coerceToExpected(srcRef(), DYN);
+    lowerer.lowerBindingPattern(pattern, () => coerced, DYN, isLet, out, dynSpell, allowDynObject);
+    return;
+  }
   if (ts.isObjectBindingPattern(pattern)) {
     const patternType = lowerer.typeOf(pattern);
     const patternSymbol = patternType.getSymbol();
@@ -4203,6 +4226,12 @@ function patternSourceValue(
   const unionId = value.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
   const present = arms?.filter((arm) => !isUnitType(arm));
+  // Every arm is null or undefined (`[[ _ ]] = [null]` over a
+  // `null | undefined` element): the destructuring has no arm left to
+  // narrow to, so it can never succeed. Take the checked-dynamic form and
+  // let the dyn checks raise Node's TypeError with the message the arm
+  // that actually shows up spells.
+  if (arms && !present?.length) return lowerer.coerceToExpected(value, DYN);
   if (
     !arms ||
     !present?.length ||
@@ -10823,6 +10852,15 @@ function destrSpellingOf(rhs: ts.Expression): string | null {
   }
   if (ts.isIdentifier(e)) return e.text;
   if (e.kind === ts.SyntaxKind.ThisKeyword) return "this";
+  // A null literal is its own spelling (`const { a } = null` names 'null'
+  // in the destructuring TypeError); `undefined` needs no entry — it is an
+  // identifier — and a `void` operand prints as V8's `(void <source>)`
+  // (`const { a } = void 0` reads "Cannot destructure property 'a' of
+  // '(void 0)' as it is undefined."). The ARRAY form spells neither: its
+  // short wording is dynSpell's, and a parenthesized source keeps the
+  // runtime kind wording.
+  if (e.kind === ts.SyntaxKind.NullKeyword) return "null";
+  if (ts.isVoidExpression(e)) return `(void ${e.expression.getText()})`;
   // V8 prints an awaited or yielded operand as "(intermediate value)".
   if (ts.isAwaitExpression(e) || ts.isYieldExpression(e)) return "(intermediate value)";
   if (ts.isPropertyAccessExpression(e) && !e.questionDotToken) {
@@ -10920,6 +10958,11 @@ function destructuringAssignInto(
   blame: ts.Node,
   loc: SrcLoc,
 ): { stmts: IrStmt[]; value: IrExpr } {
+  // As in the declaration form: a source the checker proved null or
+  // undefined (`({ a } = null)`, `[x] = nothing?.a`) throws Node's
+  // destructuring TypeError before anything is read, so it takes the
+  // checked-dynamic form and the dyn arm raises it.
+  if (isUnitType(init.type)) init = lowerer.coerceToExpected(init, DYN);
   if (init.type.kind === "union") {
     const source = lowerer.declareHiddenLocal("%destrSource", init.type);
     const out: IrStmt[] = [{ kind: "varDecl", localId: source.id, init, loc }];

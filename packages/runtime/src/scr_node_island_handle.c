@@ -1814,12 +1814,15 @@ bool scr_node_island_instanceof(ScrDyn *value, ScrDyn *ctor) {
   return scr_ni_instanceof(value, ctor) == 1;
 }
 
+static bool nh_dyn_is_array(const ScrDyn *value) { return scr_ni_is_array((ScrDyn *)value); }
+
 static const ScrNiDynOps nh_dyn_ops = {
     .get = scr_ni_get,
     .get_str = scr_ni_get_str,
     .has = scr_ni_has,
     .delete_key = scr_ni_delete,
     .own_keys = scr_ni_own_keys,
+    .is_array = nh_dyn_is_array,
     .call = scr_ni_call,
     .construct = scr_ni_construct,
     .type_of = scr_ni_typeof,
@@ -1829,7 +1832,6 @@ static const ScrNiDynOps nh_dyn_ops = {
     .is_function = scr_ni_is_function,
     .error_constructor = nh_error_constructor,
     .object_tag = nh_object_tag,
-    .is_array = scr_ni_is_array,
     .json_query = nh_json_query,
 };
 

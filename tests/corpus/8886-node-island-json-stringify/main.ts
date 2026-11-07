@@ -15,6 +15,7 @@ import {
   makeKeyList,
   makeKeys,
   makeList,
+  makeOdd,
   makeOrdered,
   makeRaw,
   makeRedacted,
@@ -96,3 +97,7 @@ console.log("%j", { native: box });
 const listed = { a: "x", n: 1, label: "l" };
 console.log(JSON.stringify(listed, makeKeyList()));
 console.log(JSON.stringify(box, makeKeyList()));
+
+// 10. A symbol in an island array is null, as a native one is; a Map and a
+// Set have no own enumerable keys; a hole, NaN and -0 are V8's answers.
+console.log(JSON.stringify(makeOdd()));

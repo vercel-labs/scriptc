@@ -89,13 +89,16 @@ import {
   ensureIcuArchive,
   lreObjectPaths,
   zlibObjectPaths,
+  zstdObjectPaths,
   stageVendorInputs,
   ensureTlsArchive,
   ensureBrotliArchive,
   ensureLreObjects,
   ensureZlibObjects,
+  ensureZstdObjects,
   vendorEngineDir,
   vendorZlibDir,
+  vendorZstdDir,
   vendorTlsDir,
   vendorBrotliDir,
 } from "./vendor.js";
@@ -125,6 +128,7 @@ interface RuntimeUnitContext {
   pki: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
+  zstdObjects: readonly string[];
   tlsArchive: string | null;
   brotliArchive: string | null;
   icuArchive: string | null;
@@ -223,14 +227,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.stdlibPrototypeValue === true && u.opts.dynInvoke,
     "scr_dyn_stdlib_prototype.c",
   ),
-  // Array.prototype's generic algorithms over array-like receivers, and the
-  // Number/Boolean prototype objects as values: the dynamic tier's gated
-  // units, whose work is JavaScript-only.
+  // DataView.prototype as a value in a JavaScript source: the getter/setter
+  // family's prototype object, the dynamic tier's gated unit.
+  unit((u) => u.opts.dataViewPrototypeValue === true && u.opts.dynInvoke, "scr_data_view_proto.c"),
+  // Array.prototype's generic algorithms over array-like receivers: the
+  // dynamic tier's gated unit, whose work is JavaScript-only.
   unit((u) => u.opts.arrayLikeDispatch === true && u.opts.dynInvoke, "scr_dyn_array_like.c"),
-  unit(
-    (u) => u.opts.builtinPrototypeValue === true && u.opts.dynInvoke,
-    "scr_dyn_builtin_prototype.c",
-  ),
+  unit((u) => u.opts.builtinMethodValue === true && u.opts.dynInvoke, "scr_dyn_builtin_methods.c"),
   // createRequire's computed require and require.resolve.
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
@@ -251,6 +254,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
+  // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).
+  unit((u) => u.opts.iteratorProto === true, "scr_js_iterator.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||
@@ -260,7 +265,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.fileHandle ||
       u.nativeFetch ||
       // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
-      u.opts.nodeIsland === true,
+      u.opts.nodeIsland === true ||
+      // t.waitFor polls a dyn condition and returns a dyn promise
+      // (scr_test.c's waitFor entry).
+      u.opts.nodeTest,
     "scr_async_dyn.c",
   ),
   // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
@@ -296,6 +304,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           u.brotliArchive,
         ]
       : [],
+  ),
+  // zstd (scr_zstd.c) plugs into the zlib engine and links the vendored
+  // zstd objects.
+  unitArgs((u) =>
+    u.zstdObjects.length === 0
+      ? []
+      : ["-I", join(vendorZstdDir(), "lib"), u.rt(join(u.rtDir, "scr_zstd.c")), ...u.zstdObjects],
   ),
   // Intl over ICU (scr_intl.c): ICU's C API only, at the default locale,
   // reading its data file from beside the executable. The ICU headers come
@@ -383,6 +398,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // The keyed collections' prototype objects, member values, their
+  // constructors' adder lookup and the ES2025 Set compositions.
+  unit((u) => u.opts.dynCollections === true, "scr_dyn_collections.c"),
   // for await over checked-dynamic values that may hold native streams.
   unit(
     (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
@@ -456,6 +474,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
+  // The dynamic global object's answer for the Node globals the native
+  // runtime does not implement (host-globals.ts).
+  unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -477,6 +498,12 @@ const RUNTIME_DEFINES: readonly {
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
+  // scr_async.c's reject closure for a checked-dynamic promise reason.
+  { define: "SCR_PROMISE_REJECT_DYN", when: (opts) => opts.promiseRejectDyn },
+  // scr_node_builtin.c's dynamic global read throws for the plain Node
+  // globals the native runtime does not implement; a program with a computed
+  // global read or `… in globalThis` selects that build (host-globals.ts).
+  { define: "SCR_GLOBAL_HOST_ABSENT", when: (opts) => opts.hostAbsentGlobals },
   // The JavaScript object model build (t262-da §J): the code the runtime
   // features only a JavaScript source reaches share. Its objects are separate
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
@@ -503,7 +530,14 @@ const RUNTIME_DEFINES: readonly {
   // bodies of its streams.
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
+  // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
+  // as Content-Type when the request sets none.
+  { define: "SCR_WEB_BODIES", when: (opts) => opts.webBodies },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
+  // scr_child.c's spawnSync result keeps the spawn errno and argv so
+  // `.error` answers Node's errnoException fields (errno, syscall, path,
+  // spawnargs); a program that never reads `.error` keeps the default build.
+  { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 
@@ -536,6 +570,7 @@ export async function compileCInternal(
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
   const brotli = (opts.zlib ?? false) && opts.brotli === true;
+  const zstd = (opts.zlib ?? false) && opts.zstd === true;
   const icu = opts.intl ?? false;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
@@ -810,6 +845,11 @@ export async function compileCInternal(
     (opts.zlib ?? false) || nativeFetch
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
+  // zstd rides the same rule: the vendored library Node bundles, so its
+  // frames match Node's.
+  let zstdObjects = zstd
+    ? zstdObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : [];
   const materializeVendorPrerequisites = async (
     stageRoot?: string,
     materializeCacheRoot: string = vendorCacheRoot,
@@ -893,6 +933,21 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "zlib"));
     }
+    if (zstdObjects.length > 0) {
+      for (const object of zstdObjectPaths(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      ))
+        protectCachedArtifact(cacheWarmPaths, object);
+      const materialize = async (): Promise<string[]> =>
+        await ensureZstdObjects(sanitize, driver, vendorBuildIdentity, materializeCacheRoot);
+      zstdObjects =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "zstd"));
+    }
   };
   // rt() maps each runtime source's path on the command line: identity for
   // the historical single invocation, cached-.o substitution on cache misses.
@@ -948,6 +1003,7 @@ export async function compileCInternal(
       pki,
       lreObjects,
       zlibObjects,
+      zstdObjects,
       tlsArchive,
       brotliArchive,
       icuArchive,

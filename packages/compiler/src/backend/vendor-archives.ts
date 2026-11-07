@@ -66,6 +66,7 @@ import {
   MBEDTLS_VERSION,
   ZLIB_VERSION,
   BROTLI_VERSION,
+  ZSTD_VERSION,
   ICU_VERSION,
   ICU_SOURCE_URL,
   ICU_SOURCE_SHA256,
@@ -73,17 +74,21 @@ import {
   ICU_CXX_TARGET,
   LRE_SOURCES,
   ZLIB_SOURCES,
+  ZSTD_SOURCES,
   icuSourceList,
   zlibInputs,
+  zstdInputs,
 } from "./vendor-inputs.js";
 export {
   QJS_COMMIT,
   MBEDTLS_VERSION,
   ZLIB_VERSION,
   BROTLI_VERSION,
+  ZSTD_VERSION,
   ICU_VERSION,
   LRE_SOURCES,
   ZLIB_SOURCES,
+  ZSTD_SOURCES,
 } from "./vendor-inputs.js";
 
 export interface VendorArchiveContext {
@@ -298,9 +303,9 @@ export function createVendorArchives(context: VendorArchiveContext) {
    * per target; the gzFile file-I/O units are never compiled, nothing in
    * scr_zlib.c references the gzFile API). */
 
-  /** The triple zlibInputs reads for a driver: its explicit target, else
-   * the host. */
-  function zlibTriple(driver: Pick<CcDriver, "target">): string {
+  /** The triple zlibInputs and zstdInputs read for a driver: its explicit
+   * target, else the host. */
+  function vendorTriple(driver: Pick<CcDriver, "target">): string {
     if (driver.target !== null) return driver.target;
     const cpu =
       process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch;
@@ -318,7 +323,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
       (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
       `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
     const cacheDir = join(cacheRoot, `zlib-${ZLIB_VERSION}-${flavor}`);
-    return zlibInputs(zlibTriple(driver)).sources.map((f) => join(cacheDir, vendorObjectName(f)));
+    return zlibInputs(vendorTriple(driver)).sources.map((f) => join(cacheDir, vendorObjectName(f)));
   }
 
   /** The zlib objects for one flavor, compiled lazily on the first zlib-using
@@ -340,7 +345,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
       (sanitize ? "asan" : "plain") +
       (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
       `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
-    const inputs = zlibInputs(zlibTriple(driver));
+    const inputs = zlibInputs(vendorTriple(driver));
     return ensureVendorObjects({
       sanitize,
       driver,
@@ -351,6 +356,61 @@ export function createVendorArchives(context: VendorArchiveContext) {
       sources: inputs.sources,
       objects: zlibObjectPaths(sanitize, driver, buildIdentity, cacheRoot),
       flags: [...(sanitize ? [] : ["-O3"]), ...inputs.defines.map((define) => `-D${define}`)],
+    });
+  }
+
+  function vendorZstdDir(): string {
+    return join(runtimeSrcDir(), "..", "vendor", "zstd");
+  }
+
+  function zstdObjectPaths(
+    sanitize: boolean,
+    driver: CcDriver,
+    buildIdentity: string,
+    cacheRoot: string = vendorBuildCacheRoot(),
+  ): string[] {
+    const flavor =
+      (sanitize ? "asan" : "plain") +
+      (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
+      `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    const cacheDir = join(cacheRoot, `zstd-${ZSTD_VERSION}-${flavor}`);
+    return zstdInputs(vendorTriple(driver)).sources.map((f) => join(cacheDir, vendorObjectName(f)));
+  }
+
+  /** The zstd objects for one flavor, compiled lazily on the first
+   * zstd-using C-lane build and cached beside the zlib objects —
+   * <build-cache>/vendor/zstd-<version>-<flavor>-<target>-<toolchain>/*.o —
+   * with the same atomic-rename publish. zstd compresses whole frames in one
+   * pass, so the archive is larger than zlib's and takes a few seconds the
+   * first time. Plain is -O3 and multi-threaded exactly as Node builds it;
+   * asan matches the final link so the sanitized lane instruments the codec
+   * too. */
+  async function ensureZstdObjects(
+    sanitize: boolean,
+    driver: CcDriver,
+    buildIdentity: string,
+    cacheRoot: string = vendorBuildCacheRoot(),
+  ): Promise<string[]> {
+    const flavor =
+      (sanitize ? "asan" : "plain") +
+      (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
+      `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    const inputs = zstdInputs(vendorTriple(driver));
+    return ensureVendorObjects({
+      sanitize,
+      driver,
+      cacheRoot,
+      flavor,
+      name: "zstd",
+      // The sources are relative to lib/, and zstd.h sits beside them.
+      vendor: join(vendorZstdDir(), "lib"),
+      sources: inputs.sources,
+      objects: zstdObjectPaths(sanitize, driver, buildIdentity, cacheRoot),
+      flags: [
+        ...(sanitize ? [] : ["-O3"]),
+        ...inputs.compileFlags,
+        ...inputs.defines.map((define) => `-D${define}`),
+      ],
     });
   }
 
@@ -854,9 +914,13 @@ export function createVendorArchives(context: VendorArchiveContext) {
     vendorZlibDir,
     zlibObjectPaths,
     ensureZlibObjects,
+    vendorZstdDir,
+    zstdObjectPaths,
+    ensureZstdObjects,
     tlsArchivePath,
     ensureTlsArchive,
     LRE_SOURCES,
     ZLIB_SOURCES,
+    ZSTD_SOURCES,
   };
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8988-string-prototype-extra-call-typed.ts"
+ ],
+ "diags": []
+}

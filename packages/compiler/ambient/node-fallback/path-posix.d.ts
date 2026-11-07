@@ -13,8 +13,14 @@ declare module "path/posix" {
   export function matchesGlob(path: string, pattern: string): boolean;
   export function parse(path: string): import("path").ParsedPath;
   export function format(pathObject: import("path").FormatInputPathObject): string;
+  /* Node's deprecated alias of toNamespacedPath (identity on posix). */
+  export function _makeLong(path: string): string;
   export const sep: "/";
   export const delimiter: ":";
+  /* Node's posix object carries the other namespace too (the same object
+   * require("path/posix") answers). */
+  export const posix: typeof import("path/posix");
+  export const win32: typeof import("path/win32");
 }
 
 declare module "node:path/posix" {

@@ -287,7 +287,27 @@ export const UNWIND_PERSONALITY = "personality ptr @__gcc_personality_v0";
 /** An unwind leaving the function: a raise, or a landing pad's resume. */
 const UNWINDS = /call void @scr_unwind_raise\(\)|call void @scr_unwind_resume\(/;
 /** A pending-flag test: the thread's exception word, the active cell, or the runtime query. */
-const PENDING_TEST = /@scr_exc_flag\b|%exc\.cell\b|@scr_exc_active\b|@scr_exc_pending\(/;
+const PENDING_TEST = /@scr_exc_flag\b|%exc\.cell\b|@scr_exc_pending\(/;
+const ACTIVE_CELL = "@scr_exc_active";
+/** The inline source-frame push (emit-function.ts) reads the active cell for
+ * its frame chain, not for the pending flag. */
+const SOURCE_FRAME_CELL = "%source_frame.cell = load ptr, ptr @scr_exc_active";
+
+/** Whether a function's text tests the pending flag. A function whose only
+ * read of the active cell is its source-frame push does not: counting that
+ * read sent every such function that an invoke reaches and that neither
+ * raises nor tests the flag back to the pending-flag ABI, and emission ran
+ * again for the whole module. */
+function testsPendingFlag(chunk: string): boolean {
+  if (PENDING_TEST.test(chunk)) return true;
+  for (let at = chunk.indexOf(ACTIVE_CELL); at >= 0; at = chunk.indexOf(ACTIVE_CELL, at + 1)) {
+    const end = at + ACTIVE_CELL.length;
+    if (end < chunk.length && isNameCode(chunk.charCodeAt(end))) continue;
+    const start = chunk.lastIndexOf("\n", at) + 1;
+    if (chunk.slice(start, end).trim() !== SOURCE_FRAME_CELL) return true;
+  }
+  return false;
+}
 
 /** Functions emission found breaking the unwinding ABI's rules
  * (bridgePlainUnwindCalls), by symbol: the caller emits the module again
@@ -416,7 +436,7 @@ export function bridgePlainUnwindCalls(parts: string[]): string[] {
   for (const chunks of split)
     for (const chunk of chunks) {
       const m = DEFINE_NAME.exec(chunk);
-      if (m !== null && PENDING_TEST.test(chunk)) testsFlag.add(m[1]!);
+      if (m !== null && testsPendingFlag(chunk)) testsFlag.add(m[1]!);
       for (const c of chunk.matchAll(/ invoke [^@\n]*@([\w.$%-]+)\(/g)) invoked.add(c[1]!);
     }
   const resumers = new Set<string>();

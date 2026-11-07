@@ -11,6 +11,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if defined(_WIN32) || defined(__wasi__) || defined(__wasm__)
+#define SCR_SHARED_MMAP 0
+#else
+#include <sys/mman.h>
+#define SCR_SHARED_MMAP 1
+#endif
 #if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
 #ifdef _WIN32
 #include <windows.h>
@@ -24,8 +30,36 @@ struct ScrSharedBytes {
   atomic_size_t references;
   size_t length;
   uint8_t *data;
+  size_t mapped; /* bytes the data holds in a mapping of its own; 0 from the allocator */
   size_t held; /* the owner's count, moved to the shared bytes (scr_array_buffers_share) */
 };
+
+/* A shared buffer of SCR_SHARED_MAP_AFTER bytes or more gets a mapping of its
+ * own rather than allocator storage. A program that creates its shared
+ * buffers before it starts threads (a type checker's result tables, say)
+ * otherwise grows the brk heap past the point where scr_sa_large_note raises
+ * the process's malloc thresholds, and every thread's arena then keeps
+ * megabytes the default policy returns. A mapping never moves the heap.
+ * Its pages are resident once written, as a block's are, and come back in
+ * one call at release. */
+#define SCR_SHARED_MAP_AFTER ((size_t)1 << 20)
+
+/* `capacity` bytes of zeroed storage for a shared buffer, and the bytes it
+ * holds in a mapping of its own (0 from the allocator, and everywhere there
+ * is no mmap). NULL when the storage cannot be allocated. */
+static uint8_t *scr_shared_storage(size_t capacity, size_t *mapped) {
+  size_t bytes = capacity ? capacity : 1;
+  *mapped = 0;
+#if SCR_SHARED_MMAP
+  if (capacity < SCR_SHARED_MAP_AFTER) return calloc(bytes, 1);
+  void *data = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (data == MAP_FAILED) return NULL;
+  *mapped = bytes;
+  return data;
+#else
+  return calloc(bytes, 1);
+#endif
+}
 
 void scr_shared_load(void *dst, const void *src, size_t n) {
   uint8_t *out = dst;
@@ -58,21 +92,42 @@ ScrSharedBytes *scr_shared_retain(ScrSharedBytes *storage) {
 void scr_shared_release(ScrSharedBytes *storage) {
   if (!storage || atomic_fetch_sub_explicit(&storage->references, 1, memory_order_acq_rel) != 1) return;
   scr_array_buffers_sub(true, storage->held);
+#if SCR_SHARED_MMAP
+  if (storage->mapped) munmap(storage->data, storage->mapped);
+  else free(storage->data);
+#else
   free(storage->data);
+#endif
   free(storage);
 }
 
-void scr_bytes_make_shared(ScrBytes *bytes) {
+static void scr_bytes_make_shared_with(ScrBytes *bytes, size_t mapped) {
   if (bytes->backing || bytes->shared || bytes->external) scr_trap("scriptc: invalid shared storage owner\n");
   ScrSharedBytes *storage = malloc(sizeof(*storage));
   if (!storage) scr_trap("scriptc: out of memory\n");
   atomic_init(&storage->references, 1);
   storage->length = bytes->len * scr_bytes_elem_size(bytes->elem);
   storage->data = bytes->data;
+  storage->mapped = mapped;
   storage->held = scr_bytes_held(bytes);
   scr_array_buffers_share(storage->held);
   scr_bytes_set_held(bytes, 0);
   bytes->shared = storage;
+}
+
+void scr_bytes_make_shared(ScrBytes *bytes) { scr_bytes_make_shared_with(bytes, 0); }
+
+/* The owner of a shared buffer of `bytes` bytes over `capacity` bytes of
+ * storage this allocates (scr_shared_storage); NULL when the storage cannot
+ * be allocated. */
+ScrBytes *scr_bytes_new_shared(size_t bytes, size_t capacity) {
+  size_t mapped = 0;
+  uint8_t *data = scr_shared_storage(capacity, &mapped);
+  if (!data) return NULL;
+  ScrBytes *owner = scr_bytes_take_data(data, capacity);
+  owner->len = bytes; /* the reserved bytes past the length read 0 */
+  scr_bytes_make_shared_with(owner, mapped);
+  return owner;
 }
 
 ScrBytes *scr_shared_wrap(ScrSharedBytes *storage) {

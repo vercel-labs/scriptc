@@ -66,12 +66,12 @@ static void scr_dyn_namespace_member_fence(void) {
 static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
   if (value && value == scr_builtin_object_prototype) {
     static const char message[] = "scriptc: Object.prototype reflection and mutation are not supported yet";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "SC1090");
     return true;
   }
   if (!value || value->kind != SCR_DYN_FUNC || !value->v.fn.class_obj || value->v.fn.class_obj->static_data) return false;
   static const char message[] = "scriptc: class reflection through unknown is not supported";
-  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "SC1090");
   return true;
 }
 
@@ -1931,7 +1931,21 @@ bool scr_dyn_field_eq_num(const ScrDyn *d, const ScrStr *key, double value) {
 int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
                                   size_t count) {
   if (!d) return -1;
-  if (d->kind == SCR_DYN_TYPED_REF) return -2;
+  if (d->kind == SCR_DYN_TYPED_REF) {
+    /* A record's declared fields are data, so one read answers what each
+     * literal test would (scr_dyn_field_eq_str): a field that is absent or
+     * not a string passes none. Any other capsule (a class instance, whose
+     * member can be a getter) is left to the tests, which read the member
+     * once each, as they always have. */
+    if (!d->v.typed_ref.record) return -2;
+    ScrDyn *member = scr_dyn_discriminant(d, key);
+    int32_t found = -1;
+    if (member && member->kind == SCR_DYN_STR)
+      for (size_t k = 0; k < count && found < 0; k++)
+        if (scr_str_eq(member->v.str, values[k])) found = (int32_t)k;
+    scr_dyn_release(member);
+    return found;
+  }
   if (d->kind != SCR_DYN_OBJ) return -1;
   if (d->v.obj.layout) {
     ScrDyn **slot = scr_dyn_layout_slot(d, key->data, key->len);
@@ -3018,7 +3032,7 @@ static void scr_dyn_prototype_unsupported(const char *operation) {
   scr_jb_init(&b);
   scr_jb_puts(&b, operation);
   scr_jb_puts(&b, " with this value is not supported yet");
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+  { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
@@ -3084,7 +3098,7 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     return NULL;
   }
   static const char message[] = "Object.getPrototypeOf on this value is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return NULL;
 }
 
@@ -3579,7 +3593,7 @@ void scr_dyn_proxy_unsupported(const char *operation) {
   scr_jb_init(&msg);
   scr_jb_puts(&msg, operation);
   scr_jb_puts(&msg, " on a native Proxy is not supported yet");
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&msg));
+  { ScrStr *refused = scr_jb_finish(&msg); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 static ScrDynEntry *scr_dyn_entry(ScrDyn *obj, const ScrStr *key);
@@ -5173,7 +5187,7 @@ static void scr_dyn_typed_ref_preserve_children(
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr) {
   (void)ptr;
   static const char message[] = "class fields cannot be represented as checked-dynamic properties";
-  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "SC1090");
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
@@ -7536,7 +7550,7 @@ static ScrDyn *dyn_bytes_method_value_call(ScrClosure *closure, ScrDyn *const *a
       scr_jb_puts(&b, "'TypedArray.prototype.");
       scr_jb_puts(&b, method->data);
       scr_jb_puts(&b, "' through a method value is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+      { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
     }
   } else {
     static const char message[] = "this is not a typed array.";
@@ -7608,7 +7622,7 @@ ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
       }
 #endif
       static const char message[] = "DataView's constructor through unknown is not supported yet";
-      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
       return NULL;
     }
     return scr_dyn_retain(scr_dyn_undefined());
@@ -8626,7 +8640,7 @@ static void scr_dyn_handle_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   scr_jb_puts(&b, "' on a dynamic ");
   scr_jb_puts(&b, ops->cls);
   scr_jb_puts(&b, " is not supported yet");
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+  { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 /* Public obj insertion copies a new key only when needed, owns the value,
@@ -10552,7 +10566,7 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators) {
     iterator = NULL;
     static const char msg[] =
         "Readable.from over an object whose iterator method is a generator method is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   }
   if (!iterator) *kind = -1;
   return iterator;
@@ -11100,7 +11114,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
                        : scr_arr_numeric_key(key->v.str->data, key->v.str->len, &number);
     if (numeric) {
       static const char message[] = "Object.defineProperty on a numeric property of a native array is not supported yet";
-      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
       return NULL;
     }
   }
@@ -11154,7 +11168,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     scr_str_release(name);
     if (special) {
       static const char message[] = "Object.defineProperty on an array index or length is not supported yet";
-      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
       return NULL;
     }
     if (!target->v.arr.properties) target->v.arr.properties = scr_dyn_new_obj();
@@ -11392,7 +11406,7 @@ ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
   }
   if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_PROXY && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR && target->kind != SCR_DYN_STR && target->kind != SCR_DYN_BOOL && target->kind != SCR_DYN_NUM && target->kind != SCR_DYN_TYPED_REF && target->kind != SCR_DYN_BYTES) {
     static const char msg[] = "Object.getOwnPropertyDescriptor on this value is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
   }
   ScrStr *name = scr_dyn_property_key(key);
@@ -11605,7 +11619,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
       const char *gen_tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(d->v.typed_ref.ptr);
       if (gen_tag[0] == '!') {
         static const char message[] = "Object.prototype.toString of this iterator is not supported yet";
-        scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+        scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
         return NULL;
       }
       ScrJsonBuf b;
@@ -11677,7 +11691,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   case SCR_DYN_PROMISE: tag = "[object Promise]"; break;
   default: {
     const char *msg = "Object.prototype.toString.call on this checked-dynamic kind is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, strlen(msg));
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, strlen(msg), "SC2020");
     return NULL;
   }
   }
@@ -11844,7 +11858,7 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
     /* fall through */
   default: {
     const char *msg = "JSON.stringify of a runtime handle is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, strlen(msg));
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, strlen(msg), "SC2020");
     return true; /* pending exception; caller checks */
   }
   }
@@ -16704,7 +16718,7 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
         /* The checked-dynamic array ABI is dense. Do not pretend that an
          * undefined element is a hole: hasOwn/keys would be observably wrong. */
         const char *message = "JSON.parse reviver deleting array elements is not supported yet";
-        scr_throw_error_msg(SCR_ERR_ERROR, message, strlen(message));
+        scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
         scr_dyn_release(replacement);
         scr_dyn_release(value);
         return NULL;
@@ -17621,7 +17635,7 @@ static void scr_function_constructors_cleanup(void) {
 static ScrDyn *scr_function_constructor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure; (void)args; (void)argc;
   static const char message[] = "constructing functions from source text is not supported in static code";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1050");
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2010");
   return NULL;
 }
 
@@ -17699,7 +17713,7 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
   if (scr_dyn_builtin_static_fn && !d->v.fn.class_obj) return scr_dyn_builtin_static_fn(d, key, key_len, false);
   if (d->v.fn.class_obj && !d->v.fn.class_obj->static_data) {
     static const char message[] = "scriptc: class properties through unknown other than name and length are not supported";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "SC1090");
   }
   return NULL;
 }
@@ -17944,7 +17958,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
       if (p->node == v) {
         static const char msg[] =
             "structuredClone of cyclic values (the checked-dynamic tree cannot represent cycles) is not supported yet";
-        scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
         return NULL;
       }
     }
@@ -18003,7 +18017,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
        * by its parent's identity. */
       for (const ScrScParent *p = up; p != NULL; p = p->up) {
         if (p->node->kind == SCR_DYN_HANDLE && p->node->v.handle.ptr == v->v.handle.ptr) {
-          scr_throw_error_msg(SCR_ERR_ERROR, scr_sc_cycle_message, sizeof scr_sc_cycle_message - 1);
+          scr_throw_error_msg_code(SCR_ERR_ERROR, scr_sc_cycle_message, sizeof scr_sc_cycle_message - 1, "SC2020");
           return NULL;
         }
       }
@@ -18675,7 +18689,7 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
     return NULL;
   }
   static const char message[] = "Object.getOwnPropertyNames on this value is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return NULL;
 }
 
@@ -18736,7 +18750,7 @@ ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object) {
 #endif
   if (object->kind == SCR_DYN_PROXY || object->kind == SCR_DYN_HANDLE) {
     static const char message[] = "Object.getOwnPropertyDescriptors on this value is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
   ScrDyn *names = scr_dyn_get_own_property_names(object);
@@ -19227,7 +19241,7 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
     return scr_dyn_new_arr();
   default: {
     static const char msg[] = "for-in over this checked-dynamic kind is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC1090");
     return NULL;
   }
   }
@@ -20128,7 +20142,7 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     if (SCR_HP(v) && scr_dyn_handle_props_hooks->has_own(v, key, false, &out)) return out;
 #endif
     const char *m = "Own-property checks on this checked-dynamic kind are not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, m, strlen(m));
+    scr_throw_error_msg_code(SCR_ERR_ERROR, m, strlen(m), "SC1090");
     return false;
   }
   return false;
@@ -20638,7 +20652,7 @@ static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method
     return result;
   }
   static const char msg[] = "ArrayBuffer method is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return NULL;
 }
 
@@ -21062,6 +21076,12 @@ ScrDyn *scr_dyn_mark_snapshot(ScrDyn *value) {
   return value;
 }
 
+/* Island objects as weak keys: wherever a program can hold one (the island
+ * handle unit builds empty on the other targets). */
+#if defined(SCR_NODE_ISLANDS) && !defined(_WIN32) && !defined(__wasi__)
+#define SCR_WEAK_ISLAND_KEYS 1
+#endif
+
 typedef struct ScrWeakMap ScrWeakMap;
 typedef struct ScrWeakEntry {
   void *key; /* borrowed native identity, never retained */
@@ -21074,7 +21094,15 @@ typedef struct ScrWeakEntry {
   struct ScrWeakEntry *next, *prev, *key_next, *key_prev;
 } ScrWeakEntry;
 
-struct ScrWeakMap { size_t rc; ScrWeakEntry *entries; bool is_set; };
+struct ScrWeakMap {
+  size_t rc; ScrWeakEntry *entries; bool is_set;
+#ifdef SCR_WEAK_ISLAND_KEYS
+  /* The WeakMap or WeakSet inside the Node island that holds this
+   * collection's entries keyed by island objects (+1; NULL until the first
+   * such entry): scr_node_island_gc.c. */
+  ScrDyn *island;
+#endif
+};
 /* Weak observers borrow key identities. Values are traced strong edges;
  * value-to-key cycles require explicit deletion or container disposal.
  *
@@ -21254,6 +21282,9 @@ static void scr_weak_remove(ScrWeakEntry *entry) {
 static void scr_weak_map_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   for (ScrWeakEntry *entry = ((ScrWeakMap *)ptr)->entries; entry; entry = entry->next)
     visit(entry->value, ctx);
+#ifdef SCR_WEAK_ISLAND_KEYS
+  if (((ScrWeakMap *)ptr)->island) visit(((ScrWeakMap *)ptr)->island, ctx);
+#endif
 }
 
 static void scr_weak_map_gcfree(void *ptr) {
@@ -21281,6 +21312,11 @@ static void scr_weak_map_release(void *ptr) {
   scr_cyc_dead(map);
   scr_weak_dispose(map);
   while (map->entries) scr_weak_remove(map->entries);
+#ifdef SCR_WEAK_ISLAND_KEYS
+  /* The island collection goes with this one: V8 then frees its entries,
+   * and with them the cells of their native values. */
+  scr_dyn_release(map->island);
+#endif
   scr_cyc_free(map);
 }
 
@@ -21324,7 +21360,22 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   }
 }
 
+#ifdef SCR_WEAK_ISLAND_KEYS
+/* An object a Node island made is no key of the table above: the program
+ * holds it through a handle that goes when the program drops it, while the
+ * object lives on for as long as island code reaches it. Its entries are
+ * kept inside the island (scr_node_island_gc.c, "weak collections keyed by
+ * island objects"), in the collection `island` names. */
+static inline bool scr_weak_island_key(const ScrDyn *key) { return scr_ni_dyn_handle(key); }
+/* The kind a FinalizationRegistry reads for an island target or token: no
+ * entry of the native table has it. */
+#define SCR_WEAK_ISLAND_KIND (~0u)
+#endif
+
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
+#ifdef SCR_WEAK_ISLAND_KEYS
+  if (scr_weak_island_key(key)) return scr_ni_weak_set(&map->island, map->is_set, key, value);
+#endif
   void *ptr = NULL;
   unsigned kind = 0;
   int supported = scr_weak_key(key, &ptr, &kind);
@@ -21368,6 +21419,13 @@ static ScrDyn *scr_weak_map_invoke(void *ptr, ScrDyn *self, const char *method,
     return scr_dyn_retain(self);
   }
   if ((!map->is_set && strcmp(method, "get") == 0) || strcmp(method, "has") == 0 || strcmp(method, "delete") == 0) {
+#ifdef SCR_WEAK_ISLAND_KEYS
+    if (scr_weak_island_key(key)) {
+      if (strcmp(method, "get") == 0) return scr_ni_weak_get(map->island, key);
+      int found = scr_ni_weak_test(map->island, map->is_set, key, strcmp(method, "delete") == 0);
+      return found < 0 ? NULL : scr_dyn_new_bool(found);
+    }
+#endif
     void *identity = NULL;
     unsigned kind = 0;
     int supported = scr_weak_key(key, &identity, &kind);
@@ -21522,6 +21580,24 @@ static void scr_finalization_type_error(const char *message) {
  * the TypeError (or the SC2020 refusal) pending. */
 static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind,
                                  const char *invalid) {
+#ifdef SCR_WEAK_ISLAND_KEYS
+  /* An island object is a target or a token the way it is a weak key (kind
+   * SCR_WEAK_ISLAND_KIND: the island keeps the entry). An island symbol is
+   * refused as a native one is. */
+  if (scr_weak_island_key(value)) {
+    ScrStr *type = scr_ni_dyn_ops->type_of((ScrDyn *)value);
+    bool symbol = type->len == 6 && memcmp(type->data, "symbol", 6) == 0;
+    scr_str_release(type);
+    if (!symbol) {
+      *ptr = NULL;
+      *kind = SCR_WEAK_ISLAND_KIND;
+      return true;
+    }
+    static const char message[] = "FinalizationRegistry with symbol targets or tokens is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+#endif
   if (value->kind == SCR_DYN_SYMBOL) {
     static const char message[] = "FinalizationRegistry with symbol targets or tokens is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
@@ -21573,6 +21649,16 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
     }
     if (token->kind != SCR_DYN_UNDEF) {
       if (!scr_finalization_key(token, &identity, &kind, NULL)) return NULL;
+#ifdef SCR_WEAK_ISLAND_KEYS
+      if (kind == SCR_WEAK_ISLAND_KIND) {
+        /* Nothing reads a token's count but the next registration, so an
+         * island token's entry is not read back to be counted. */
+        ScrDyn *registered = scr_dyn_new_num(1);
+        bool ok = scr_ni_weak_set(&tokens->island, false, token, registered);
+        scr_dyn_release(registered);
+        return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+      }
+#endif
       ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
       double count = entry && entry->value->kind == SCR_DYN_NUM ? entry->value->v.num : 0;
       ScrDyn *next = scr_dyn_new_num(count + 1);
@@ -21584,6 +21670,12 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
   }
   if (strcmp(method, "unregister") == 0) {
     if (!scr_finalization_key(first, &identity, &kind, NULL)) return NULL;
+#ifdef SCR_WEAK_ISLAND_KEYS
+    if (kind == SCR_WEAK_ISLAND_KIND) {
+      int found = scr_ni_weak_test(tokens->island, false, first, true);
+      return found < 0 ? NULL : scr_dyn_new_bool(found);
+    }
+#endif
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
     if (entry) scr_weak_remove(entry);
     return scr_dyn_new_bool(entry != NULL);

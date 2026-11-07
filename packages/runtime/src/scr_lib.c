@@ -4236,6 +4236,17 @@ bool scr_fs_exists(ScrStr *path) {
   return access(path->data, F_OK) == 0;
 }
 
+bool scr_fs_exists_bytes(ScrBytes *bytes) {
+  /* A statically typed Buffer path: decode it to the string the probe runs
+   * on. The value form (scr_fs_exists_dyn.c) converts the same way, and a
+   * typed path reaches this entry point without boxing, so a program whose
+   * paths are all typed links no dynamic tier. */
+  ScrStr *path = scr_bytes_string(bytes, 0, bytes->len);
+  bool found = scr_fs_exists(path);
+  scr_str_release(path);
+  return found;
+}
+
 void scr_fs_mkdir(ScrStr *path) {
   if (!scr_fs_path_ok(path, "path")) return;
   if (scr_sys_mkdir(path->data, 0777) != 0) scr_fs_throw(errno, "mkdir", path);
@@ -7686,7 +7697,7 @@ static ScrDyn *scr_dir_dyn_invoke(void *h, ScrDyn *self, const char *method, Scr
     return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
   }
   static const char msg[] = "Dir method calls through an 'unknown' value are not supported yet — narrow the value to Dir first";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return NULL;
 }
 

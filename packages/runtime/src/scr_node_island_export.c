@@ -1484,7 +1484,7 @@ int scr_ni_host_shared_get(uint32_t mod, uint32_t slot, int mode, ScrNodeValue *
     scr_dyn_release(v);
     static const char message[] =
         "scriptc: an array exported by a shared module cannot cross into a Node island yet";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "SC8010");
     return ni_threw(out);
   }
   if (mode == 1 || mode == 2) ni_shared_bind(m, slot, v, 1);

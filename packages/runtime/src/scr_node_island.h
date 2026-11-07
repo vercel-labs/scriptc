@@ -7,6 +7,7 @@
 
 #include "scr_async.h"
 #include "scr_dyn.h"
+#include "scr_events.h"
 
 /* Records the build-time configuration: the libnode pack directory
  * (absolute, or `$ORIGIN/`-relative to the executable) and the Node version
@@ -65,17 +66,16 @@ void scr_loop_hosted_microtasks_done(void);
 void scr_node_island_leave_stack(uintptr_t sp);
 
 /* Process events island code listens to (SCR_NODE_EVENT_* of the bridge
- * ABI). Their listeners sit in the runtime's registries (the
- * SCR_NODE_ISLANDS build of scr_events.c) at their registration position,
- * and a delivery calls them through scr_node_island_emit: a signal with
- * its number, exit with the code.
+ * ABI). Their listeners sit in scr_events.c's registries at their
+ * registration position, and a delivery calls them through
+ * scr_node_island_emit: a signal with its number, exit with the code.
  *
  * SCR_NODE_ISLAND_EVENT_TURN is not an event and has no listener: the
  * bootstrap answers it by running the rest of Node's current turn (the
  * hosted loop's deciding tick, scr_async.c). */
 enum {
-  SCR_NODE_ISLAND_EVENT_SIGNAL = 1,
-  SCR_NODE_ISLAND_EVENT_EXIT = 2,
+  SCR_NODE_ISLAND_EVENT_SIGNAL = SCR_EVENTS_ISLAND_SIGNAL,
+  SCR_NODE_ISLAND_EVENT_EXIT = SCR_EVENTS_ISLAND_EXIT,
   SCR_NODE_ISLAND_EVENT_TURN = 3,
 };
 void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg);
@@ -375,6 +375,13 @@ struct ScrNodeGcResult;
 int scr_ni_host_gc_analyze(const uint32_t *exports, size_t nexports,
                            struct ScrNodeGcResult *out);
 void scr_ni_gc_cleanup(void); /* at exit */
+/* Weak collections keyed by island objects (scr_node_island_gc.c): the
+ * entries of a native WeakMap, WeakSet or FinalizationRegistry whose key
+ * is an island object live in a WeakMap or WeakSet inside the island,
+ * `collection` (NULL until the first such entry; `set`: a WeakSet). */
+ScrDyn *scr_ni_weak_get(ScrDyn *collection, ScrDyn *key); /* +1; undefined: no entry */
+int scr_ni_weak_test(ScrDyn *collection, bool set, ScrDyn *key, bool remove); /* 1, 0; -1: threw */
+bool scr_ni_weak_set(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
 
 /* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
  * nodeIsland.defer(path, snapshot): a statically imported island module the

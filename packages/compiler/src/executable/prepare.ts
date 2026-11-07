@@ -73,6 +73,9 @@ export interface PreparedExecutableModule {
    * reasons): packages by name, modules by file. A cached build repeats
    * them. */
   islands?: { packages: string[]; modules: string[] };
+  /** The first place the program reached into Node (LowerResult), for
+   * SC8005's hint when no pack can be recorded. */
+  nodeIslandUse?: { file: string; api: string };
 }
 
 /** Release the parser/checker before native object generation begins.
@@ -377,6 +380,7 @@ export function prepareExecutableModule(
     mod: lowered.module!,
     sourceTexts,
     stats: lowered.stats,
+    ...(lowered.nodeIslandUse !== undefined ? { nodeIslandUse: lowered.nodeIslandUse } : {}),
     warnings: [
       ...(islandDecision?.notes ?? []),
       ...(fe.warnings ?? []),

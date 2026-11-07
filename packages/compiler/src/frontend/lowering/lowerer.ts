@@ -1133,6 +1133,10 @@ export interface LowerResult {
   dynamicFunctions?: DynamicFunction[];
   /** LowerOptions.tierReport: the report-only tier assignment. */
   tiers?: TierReport;
+  /** The first place the program reaches into Node: the module that does and
+   * what it uses there (Lowerer.nodeIslandUse). The executable build's SC8005
+   * hint names it. */
+  nodeIslandUse?: { file: string; api: string };
   /** LIBRARY mode (LowerOptions.libRoots): each root name resolved through
    * the entry module's export table to the unit that supplies it — the
    * entry's own unit for a direct export, the module-tagged unit of the
@@ -4391,6 +4395,18 @@ export class Lowerer {
   /** The program calls into Node.js (@scriptc/node): the module carries
    * the nodeIsland record, which the executable build fills in. */
   usesNodeIsland = false;
+  /** The first place the program reaches into Node: the module that does and
+   * what it uses there (@scriptc/node surface, or the island import). The
+   * executable build's SC8005 hint names it, so a program that cannot install
+   * a pack can avoid the island instead. */
+  nodeIslandUse: { file: string; api: string } | undefined;
+
+  /** Records that `file` reaches into Node through `api`, and marks the
+   * program as an island user. */
+  noteNodeIslandUse(file: string, api: string): void {
+    this.usesNodeIsland = true;
+    this.nodeIslandUse ??= { file, api };
+  }
   /** The program's Node island packages (scope-B NI-4), or null. */
   readonly nodeIslands: NodeIslandSet | null = activeNodeIslands();
   /** Island module loads, by the importing file and specifier: the module
@@ -5505,6 +5521,11 @@ export class Lowerer {
     "activeStmtLists",
     "constructorReturnPlans",
     "mixinFnShapes",
+    // SC8005's hint names the first reach into Node (file and API). It is
+    // guidance for a build that cannot record a pack, not lowering state: a
+    // unit reused from a record does not lower, so the hint falls back to
+    // the generic install line.
+    "nodeIslandUse",
   ];
 
   /** The fields a unit must leave as they were, and the flags it may set
@@ -12007,6 +12028,7 @@ export class Lowerer {
       ...(this.dynamicFunctions.length > 0 ? { dynamicFunctions: this.dynamicFunctions } : {}),
       ...(this.statsByFile.size > 0 ? { statsByFile: this.statsByFile } : {}),
       ...(this.provenanceElided.length > 0 ? { provenanceElided: this.provenanceElided } : {}),
+      ...(this.nodeIslandUse !== undefined ? { nodeIslandUse: this.nodeIslandUse } : {}),
     };
   }
 

@@ -32,7 +32,7 @@ import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
-import { runStep, type Track } from "./step-timeout.js";
+import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
@@ -486,9 +486,15 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
   // live-spawned Node itself can hang under heavy box load (1751's
   // fs.watch stalled five gates on 2026-07-20 while the compiled binary
   // answered in milliseconds every time).
+  //
+  // timeout: the case's hang detector, above the longest chain of steps it
+  // runs — the oracle starts beside the compile, whose run follows it, so two
+  // step deadlines deep. The shared 300 s default is not a bound for a case
+  // that can spend a full deadline in each of two steps; a step that stalls
+  // still reports itself at its own deadline, naming the processes it left.
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
-    { retry: 1 },
+    { retry: 1, timeout: STEP_TIMEOUT_MS * 2 },
     async ([rel, file], { skip }) => {
       // `// @requires-libnode`: the binary loads Node from a libnode pack,
       // required in the Linux CI lanes (libnode.ts), else skipped without one.

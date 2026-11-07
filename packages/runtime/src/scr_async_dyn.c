@@ -85,7 +85,7 @@ static ScrDyn *scr_als_option(ScrDyn *options, const char *key, size_t key_len) 
     snprintf(message, sizeof message,
              "AsyncLocalStorage options whose class declares '%s' are not supported yet", key);
     scr_str_release(name);
-    scr_throw_error_msg(SCR_ERR_ERROR, message, strlen(message));
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
     return NULL;
   }
   ScrDyn *key_value = scr_dyn_new_str(name);

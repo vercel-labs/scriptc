@@ -4094,6 +4094,10 @@ export class Lowerer {
   /** Method adapter names are owned by class-method-values. Looking them
    * up must not scan and retain every unrelated lifted function. */
   readonly classMethodValueHelpers = new Set<string>();
+  /** The method value adapters (`%method.value:…`) of methods whose source
+   * reads `this` or `super`: each checks its receiver on every call, even
+   * when no read of the receiver is left in the method's lowered body. */
+  readonly receiverReadingMethodValues = new Set<string>();
   /** Reflected class methods whose lambda is lowering right now (null
    * until lowerLambda named it), with the closure it will produce: a
    * method that reads itself as a value inside its own body
@@ -4992,6 +4996,7 @@ export class Lowerer {
       mapTable("assertHelpers", this.assertHelpers),
       mapTable("inspectHelpers", this.inspectHelpers),
       setTable("classMethodValueHelpers", this.classMethodValueHelpers),
+      setTable("receiverReadingMethodValues", this.receiverReadingMethodValues),
       setTable("freshClosureAdapters", this.freshClosureAdapters),
       mapTable("iterDrainHelpers", this.iterDrainHelpers),
       mapTable("mapHofHelpers", this.mapHofHelpers),

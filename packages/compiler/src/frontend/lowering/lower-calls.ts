@@ -433,6 +433,45 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
   return right;
 }
 
+/** The `c.m` of a call whose callee is `c.m` under parentheses, non-null
+ * assertions or type assertions, or null. JavaScript keeps the reference
+ * through parentheses, and the assertions are erased, so such a call passes
+ * `c` as the receiver. `m` is a method the program declares, or a member of
+ * an `any` receiver: a function-typed field of a class or a record and a
+ * member an index signature answers keep their call through the value, and
+ * the standard library's methods keep their own refusals as values. */
+function assertedMethodCallee(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): ts.PropertyAccessExpression | null {
+  if (call.questionDotToken) return null;
+  let callee = call.expression;
+  if (ts.isPropertyAccessExpression(callee)) return null;
+  while (
+    ts.isParenthesizedExpression(callee) ||
+    ts.isNonNullExpression(callee) ||
+    ts.isAsExpression(callee) ||
+    ts.isSatisfiesExpression(callee) ||
+    ts.isTypeAssertion(callee)
+  )
+    callee = callee.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(callee.name);
+  // No member symbol: an untyped receiver, whose member call passes it. A
+  // member an index signature answers is a value of the signature's type.
+  if (symbol === undefined)
+    return (lowerer.typeOf(callee.expression).flags & ts.TypeFlags.Any) !== 0 ? callee : null;
+  // A member of a union of classes is a property symbol over each arm's
+  // method, so the declarations decide, not the symbol's flags.
+  return symbol.declarations.length > 0 &&
+    symbol.declarations.every(
+      (d) => ts.isMethodDeclaration(d) || ts.isMethodSignatureDeclaration(d),
+    ) &&
+    !lowerer.isStdlibSymbol(symbol)
+    ? callee
+    : null;
+}
+
 /** `fn.member(args)` where `member` is a key of the callable's own-property
  * table: the member read through the table (checked back into the declared
  * member type, like every other table read) yields the function value, and
@@ -2265,6 +2304,21 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       memberSym,
     );
     if (prim) return prim;
+  }
+  // `(c.m)()`, `c.m!()` and `(c.m as F)()`: parentheses, a non-null
+  // assertion and a type assertion around a member callee leave the
+  // reference to the member intact, so the method is called on `c`. Read as
+  // a value it would run without its receiver.
+  {
+    const member = assertedMethodCallee(lowerer, expr);
+    const methodCall =
+      member === null
+        ? null
+        : (lowerDynReceiverMethodCall(lowerer, expr, member) ??
+          lowerer.lowerObjectMethodCall(expr, member) ??
+          lowerDynReceiverMethodCall(lowerer, expr, member, true) ??
+          lowerUnionReceiverMethodCall(lowerer, expr, member));
+    if (methodCall) return methodCall;
   }
   // A member of a record, a tuple or an array called through its value
   // (`x["f"]()`, `x[i]()`, `x.f!()`, `(x.f)()`): JavaScript passes `x` as

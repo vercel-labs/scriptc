@@ -39,7 +39,7 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
-import { islandValueOrigin } from "./decl-origin.js";
+import { islandValueOrigin, ORIGIN_SEPARATOR } from "./decl-origin.js";
 import { claimKey } from "./type-claims.js";
 import { classMethodValue } from "./class-method-values.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
@@ -842,7 +842,33 @@ function islandUnitComparison(
 function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
   const out = islandValueAt(lowerer, raw, node);
   if (lowerer.typeClaims) noteIslandClaim(lowerer, out, node, node);
-  return out;
+  // The conversion names the declaration that types the value, so its
+  // TypeError carries the type patch that would admit it (decl-origin.ts).
+  // A declaration no selector reaches (an empty patch range) is left out,
+  // as every generic declaration is.
+  if (out.kind !== "dynCheck" || out.origin !== undefined || out === raw) return out;
+  const origin = islandOriginOf(lowerer, node, node);
+  if (origin === null || origin.split(ORIGIN_SEPARATOR)[2] === "") return out;
+  return { ...out, origin: lowerer.declOriginIndex(origin) };
+}
+
+function islandOriginOf(
+  lowerer: Lowerer,
+  declaredBy: ts.Node,
+  typed: ts.Expression,
+  argument?: number,
+): string | null {
+  try {
+    return islandValueOrigin(
+      lowerer.checker,
+      declaredBy,
+      lowerer.typeOf(typed),
+      (file) => lowerer.program.isSourceFileDefaultLibrary(file),
+      argument,
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** Coverage's type claims: `value` is an island's, or a function an island
@@ -856,19 +882,7 @@ function noteIslandClaim(
 ): void {
   const key = claimKey(value.loc);
   if (lowerer.islandClaimOrigins.has(key)) return;
-  let origin: string | null = null;
-  try {
-    origin = islandValueOrigin(
-      lowerer.checker,
-      declaredBy,
-      lowerer.typeOf(typed),
-      (file) => lowerer.program.isSourceFileDefaultLibrary(file),
-      argument,
-    );
-  } catch {
-    origin = null;
-  }
-  lowerer.islandClaimOrigins.set(key, origin ?? "");
+  lowerer.islandClaimOrigins.set(key, islandOriginOf(lowerer, declaredBy, typed, argument) ?? "");
 }
 
 function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {

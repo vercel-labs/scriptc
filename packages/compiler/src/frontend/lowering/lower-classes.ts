@@ -6365,6 +6365,27 @@ export function lowerClassExpressionInfo(
       "function-local classes with statics, decorators, or generic members",
     );
   }
+  // An Array subclass's methods build their results through the class's
+  // species helper, which constructs the class by name; a function-local
+  // class is constructed from the class value of its evaluation.
+  if (
+    local &&
+    expr.heritageClauses?.nodes.some(
+      (clause) =>
+        clause.token === ts.SyntaxKind.ExtendsKeyword &&
+        clause.types.nodes.some(
+          (base) =>
+            ts.isIdentifier(base.expression) && lowerer.isStdlibGlobal(base.expression, "Array"),
+        ),
+    )
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "Array subclasses declared inside functions",
+      "declare the class at module level",
+    );
+  }
   lowerer.collectingExprClasses.add(expr);
   try {
     if (

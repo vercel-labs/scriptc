@@ -31,5 +31,5 @@ The stdin stream receives each chunk once, beside any listener registered on `pr
 Listeners registered on `process.stdin` and listeners registered on the stream are kept separately, so for one event their relative order can differ from Node's registration order.
 For the same reason `process.stdin.isPaused()` does not report a `pause()` of the stream, and `listenerCount` does not include the listeners Node itself attaches to a pipe or a terminal.
 A process stream held as an untyped value does not convert to a stream class: asserting or passing it as `Readable` or `Writable` throws a TypeError.
-Passing `process.stdin` where `Duplex`, `net.Socket` or `EventEmitter` is declared throws the same TypeError.
+Passing `process.stdin` where `Duplex` or `EventEmitter` is declared throws the same TypeError.
 The bundled declarations declare `process.stdin` by its own members, so these conversions need `@types/node`.

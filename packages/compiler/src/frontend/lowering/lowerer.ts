@@ -817,6 +817,8 @@ import {
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
 import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
+import { packageKeyOf } from "../../node-islands/origin.js";
+import { isRelativeSpecifier, packageNameOfSpecifier } from "../workspace-registry.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -17761,7 +17763,85 @@ export class Lowerer {
         );
       }
     }
-    this.unsupported("SC1090", node, fallback);
+    // A binding form with no lowering. When the name is an export of an
+    // npm package other than the site's own, the package's compiled module
+    // did not provide that export as a binding, and the refusal is the
+    // package's (ScrDiagnostic.exportOf).
+    const diag = unsupportedDiag("SC1090", locOf(node), fallback);
+    const exporter = this.exportingPackageOf(symbol, node);
+    if (exporter !== null) diag.exportOf = { package: exporter, name };
+    this.pushDiag(diag);
+    throw new PoisonError();
+  }
+
+  /** The npm package that exports the binding `node` reads, when it is not
+   * the package of `node`'s own file: the package the import declaration
+   * of the binding (or of the receiver it is read through) names, or else
+   * the one package that declares `symbol`. Null for a binding of the
+   * program's own modules and for a builtin.
+   *
+   * Null too when the module the import loads does not have the export at
+   * all: a name its ES module does not export, or one Node's lexer does not
+   * find in its CommonJS module. Node refuses that import before the
+   * program runs, in a Node island as natively, so the refusal is the
+   * program's own and no package moves for it. */
+  private exportingPackageOf(symbol: ts.Symbol | null, node: ts.Node): string | null {
+    const own = packageKeyOf(ts.getSourceFileOfNode(node).fileName);
+    let exporter: string | null = null;
+    // A member read through the package's whole export or its namespace
+    // (`_.groupBy` of a default import) is an export of the package the
+    // receiver's import names.
+    let subject = node;
+    let member: string | null = null;
+    if (ts.isIdentifier(node) && node.parent !== undefined) {
+      const access = node.parent;
+      if (ts.isPropertyAccessExpression(access) && access.name === node) {
+        let root: ts.Expression = access.expression;
+        while (ts.isPropertyAccessExpression(root)) root = root.expression;
+        if (ts.isIdentifier(root)) {
+          subject = root;
+          if (access.expression === root) member = node.text;
+        }
+      }
+    }
+    const local = ts.isIdentifier(subject) ? this.checker.getSymbolAtLocation(subject) : undefined;
+    if (local && (local.flags & ts.SymbolFlags.Alias) !== 0) {
+      for (const declaration of local.declarations) {
+        let at: ts.Node | undefined = declaration;
+        while (at !== undefined && !ts.isImportDeclaration(at)) at = at.parent;
+        if (at === undefined || !ts.isStringLiteral(at.moduleSpecifier)) continue;
+        const specifier = at.moduleSpecifier.text;
+        if (isRelativeSpecifier(specifier) || specifier.startsWith("/")) continue;
+        if (specifier.startsWith("#") || specifier.startsWith("node:")) continue;
+        // The export the import asks the module for: a named import's name,
+        // `default`, or the member read off a namespace import.
+        const requested = ts.isImportSpecifier(declaration)
+          ? (declaration.propertyName ?? declaration.name).text
+          : ts.isImportClause(declaration)
+            ? "default"
+            : member;
+        const from = ts.getSourceFileOfNode(at);
+        const dep =
+          resolveImport(this.program, from, specifier) ??
+          npmStaticDepSf7(this.program, from, specifier);
+        if (requested !== null && dep !== null && isJsSourceFile(dep)) {
+          const provided = isNodeEsmFile(dep, this.program)
+            ? this.runtimeExportNames(dep)
+            : this.cjsNamespaceOf(dep).names;
+          if (!provided.has(requested)) return null;
+        }
+        exporter = packageNameOfSpecifier(specifier);
+        break;
+      }
+    }
+    if (exporter === null && symbol !== null) {
+      for (const declaration of symbol.declarations) {
+        const name = packageKeyOf(ts.getSourceFileOfNode(declaration).fileName);
+        if (name === null || (exporter !== null && exporter !== name)) return null;
+        exporter = name;
+      }
+    }
+    return exporter !== null && exporter !== own ? exporter : null;
   }
 
   lowerScopedBlock(stmt: ts.Statement): IrStmt[] {

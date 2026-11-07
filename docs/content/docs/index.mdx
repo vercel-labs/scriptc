@@ -2,7 +2,7 @@
 title: "Introduction"
 ---
 
-scriptc is a compiler that turns TypeScript and JavaScript into native executables and WebAssembly modules. It uses the types checked by the TypeScript compiler to generate machine code, and the output runs without Node.js installed.
+scriptc is a compiler that turns TypeScript and JavaScript into native executables and WebAssembly modules. It uses the types checked by the TypeScript compiler to generate machine code. A program that compiles entirely to native code runs without Node.js installed; npm packages that can't compile that way run in [Node islands](/docs/node-islands), inside Node.js that the executable loads when it first needs it.
 
 scriptc is experimental. It supports a subset of JavaScript, TypeScript, and the Node.js APIs, and it tells you at build time when a program uses something outside that subset.
 
@@ -10,7 +10,7 @@ scriptc is experimental. It supports a subset of JavaScript, TypeScript, and the
 
 - **Native output.** `scriptc build` produces an executable for macOS, Linux, or Windows, or a WebAssembly module.
 - **Standard TypeScript.** Programs are type-checked by the TypeScript compiler using your `tsconfig.json`. No annotations or language extensions are required.
-- **npm dependencies.** Packages your program imports compile to native code together with your own code.
+- **npm dependencies.** Packages your program imports compile to native code together with your own code. A package that can't compile natively runs in a [Node island](/docs/node-islands), and the build tells you which ones do.
 - **Coverage reports.** [`scriptc coverage`](/docs/coverage) shows what compiles and explains anything that doesn't, with a diagnostic code, a source location, and usually a rewrite hint.
 
 ## What you can build
@@ -107,5 +107,6 @@ HELLO
 - [Quickstart](/docs/quickstart): install scriptc and build your first executable.
 - [Coverage Reports](/docs/coverage): check whether an existing program compiles.
 - [npm Dependencies](/docs/dependencies): use packages in compiled programs.
+- [Node Islands](/docs/node-islands): how packages that can't compile natively run, and what that costs.
 - [Platform Support](/docs/platforms): build for other operating systems and WebAssembly.
 - [CLI Reference](/docs/cli): every command and option.

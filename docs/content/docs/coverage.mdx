@@ -43,12 +43,19 @@ When a program has unsupported operations, the report adds a group for each root
     <tr><td><code>in unreached code</code></td><td>Blockers in code the entry never reaches. A build never compiles that code, so these cannot fail it.</td></tr>
     <tr><td><code>differs from Node</code></td><td>Sites that compile but can behave differently from Node.js. See <a href="#node-divergences">Node divergences</a>.</td></tr>
     <tr><td><code>npm package compilation</code></td><td>Native package compilation outcomes and refusal reasons.</td></tr>
+    <tr><td><code>Node islands</code></td><td>The npm packages and modules that have a reason to run in a Node island instead of compiling natively, with the class of the reason and the first site. See <a href="#node-islands">Node islands</a>.</td></tr>
   </tbody>
 </table>
 
-Blockers in unreached code and deferred operations in JavaScript packages are listed separately because they don't fail a build. A deferred operation throws a runtime error if it runs, so a successful build doesn't mean every API of a package works; see [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package).
+Blockers in unreached code and deferred operations in JavaScript packages are listed separately because they don't fail a build. A deferred operation throws a runtime error if it runs, so a successful build doesn't mean every API of a package works; see [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package). A program with deferred operations it can reach isn't reported as fully static, and each package that has them gets an `SC6006` [divergence warning](#node-divergences).
 
 If a function's signature can't compile, the statements in its body count as not compiling, so the percentage reflects how much of the program compiles. The report still lists the diagnostics of those statements; a use of a parameter whose type can't compile reports `SC2004` back to the signature.
+
+## Node islands
+
+An npm package that can't compile natively runs in a [Node island](/docs/node-islands): the executable loads Node.js and runs the package there. The report lists such packages under `Node islands`, each with the class of its reason (`runtime`, `object-model`, `gap`, `packaging` or `marked`) and the first construct that put it there. `--explain-island=<package>` adds every module's first reason and the places where your code imports the package.
+
+The statement counts and the `fully static` verdict describe your program's own files, so a program can be fully static and still run a package in an island. The list can also be longer than what a build does: coverage names every package in which it finds such a construct, and `scriptc build` moves a package into an island only when it can't compile the package natively or the compiled package would fail when that code runs. The `SC8001` notes that `scriptc build` prints are the record of what a build did. [Node Islands](/docs/node-islands#see-what-runs-in-an-island) shows a report and explains each part.
 
 <span id="programs-that-require-dynamic-execution" />
 <span id="analyze-with-dynamic" />
@@ -126,6 +133,7 @@ Coverage and `scriptc build` report the same diagnostic codes. Common ones inclu
 - `SC2012`: this API form cannot compile natively.
 - `SC2013`: a package cannot compile natively; inspect the package-specific reason and the [dependency guide](/docs/dependencies).
 - `SC1100`: a value whose type is only known at runtime, such as `unknown`, is used where scriptc needs a specific type. Narrow or cast the value as the diagnostic suggests.
+- `SC8001`: a note, not an error: a package or module runs in a [Node island](/docs/node-islands). The other `SC80xx` codes are listed under [Node island diagnostics](/docs/node-islands#diagnostics).
 
 ## Node divergences
 
@@ -135,6 +143,7 @@ Some code compiles but can behave differently than under Node.js. Coverage repor
 - `SC6002`: values of one record type are built in key orders scriptc cannot track per value, so the type keeps its declaration order, an object literal's key order differs from it, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
 - `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
+- `SC6006`: an npm package compiles with operations your program can reach that scriptc can't compile. Each throws a runtime error when it runs, where Node.js runs it; see [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package).
 
 ## Gating builds and CI
 
@@ -144,7 +153,7 @@ By default, `scriptc coverage` exits with status 0 whenever the program type-che
 $ scriptc coverage src/main.ts --fail-on=blockers
 ```
 
-`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences, `--fail-on=dynamic` also fails on the `SC6101` warning for [untyped code that likely runs often](#untyped-code-that-likely-runs-often), and `--fail-on=dynamic-slots` also fails on [dynamic slots](#dynamic-slots). A program that doesn't type-check always exits with status 1.
+`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences, `--fail-on=dynamic` also fails on the `SC6101` warning for [untyped code that likely runs often](#untyped-code-that-likely-runs-often), and `--fail-on=dynamic-slots` also fails on [dynamic slots](#dynamic-slots). `--fail-on=node-islands` also fails when the report lists any [Node island](#node-islands), and `--fail-on=island-gaps` when it lists one of the `gap` class, a package scriptc is meant to compile but can't yet. A program that doesn't type-check always exits with status 1.
 
 Coverage caches its result. Running it again on an unchanged program, or after edits that only touch comments, reuses the previous verdict. Set `SCRIPTC_NO_CACHE=1` to turn the cache off.
 

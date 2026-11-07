@@ -9,7 +9,7 @@ import type { NpmStaticStatus } from "../coverage/report.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import { isEsmFile } from "../frontend/lowering/lower-node-island.js";
 import type { IslandModule, IslandPackage } from "./boundary.js";
-import { packageDirOf, packageVersionOf } from "./origin.js";
+import { packageDirOf, packageKeyOf, packageVersionOf } from "./origin.js";
 import type { NodeIslandPolicy } from "./policy.js";
 import type { NodeIslandScan, PackageEdge } from "./scan.js";
 
@@ -92,6 +92,156 @@ export function outsideGraphIslands(
   return grown;
 }
 
+/** The packages only Node islands load, by name (unless islands are off):
+ * a package that no natively compiled code imports, and that an island
+ * package, an island module, or another such package imports, runs in the
+ * island's Node by construction. It is part of the island set, so a value
+ * of one of its declared types is an island value like any other: without
+ * it, an object an island returns under such a type is checked into a
+ * native record and refused at run time, and which of these packages a
+ * build names depends on which rule looked at them first.
+ *
+ * The answer is a property of the program's import graph and of `islands`
+ * alone, so every round derives it again from the first load's scan:
+ * `scan.edges` holds the imports of every module the program loaded, and
+ * `scan.insideEdges` those of the modules that left the program together
+ * with a package the load refused.
+ *
+ * A package of `islands` itself is answered too when only islands load it
+ * (a rule found a refusal of its own while its importer still compiled): it
+ * is described the same way, so what a build says about a package inside
+ * an island does not depend on whether a rule looked at it first. The
+ * exception is a package whose importer is an island only because of it
+ * (`follows`): that package is the reason for both and keeps it. A
+ * package the policy marks keeps its marking. A build names them all in one
+ * note (nodeIslandContainedNoteDiag).
+ *
+ * "Natively imported" is reachability from the program's own native modules
+ * through packages that are not islands, over every import including the
+ * deferred ones (a require() in a function, an import()): a package native
+ * code may load is not inside an island, whatever else loads it. One that
+ * both sides load stays what the other rules make it. A package the policy
+ * keeps native or unloaded is left alone, as every other rule leaves it. */
+export function containedIslands(
+  policy: NodeIslandPolicy,
+  scan: NodeIslandScan,
+  islands: ReadonlyMap<string, IslandPackage>,
+  modules: ReadonlyMap<string, IslandModule>,
+): Map<string, IslandPackage> {
+  const contained = new Map<string, IslandPackage>();
+  if (policy.mode === "off" || (islands.size === 0 && modules.size === 0)) return contained;
+  // An island installed outside node_modules (a linked workspace member)
+  // has no package name in its files' paths: its directory names it.
+  const linked: { dir: string; name: string }[] = [];
+  for (const island of islands.values()) {
+    const dir = island.dir.replaceAll("\\", "/").replace(/\/+$/, "");
+    if (packageDirOf(`${dir}/package.json`) === null) linked.push({ dir, name: island.name });
+  }
+  const linkedOwner = (file: string): string | null => {
+    if (linked.length === 0) return null;
+    const path = file.replaceAll("\\", "/");
+    return linked.find((l) => path.startsWith(`${l.dir}/`))?.name ?? null;
+  };
+  const dropped = new Set<string>();
+  for (const m of scan.modules) if (m.dropped) dropped.add(m.file);
+  // Who imports what: the program's native modules, the island modules, and
+  // each package. A native module's imports are roots of the native side; an
+  // island module's are roots of the island side.
+  const nativeRoots: PackageEdge[] = [];
+  const islandRoots: PackageEdge[] = [];
+  const imports = new Map<string, PackageEdge[]>();
+  const push = (name: string, edge: PackageEdge): void => {
+    const known = imports.get(name);
+    if (known === undefined) imports.set(name, [edge]);
+    else known.push(edge);
+  };
+  for (const edge of [...scan.edges, ...(scan.insideEdges ?? [])]) {
+    if (edge.shim || edge.toDir === null) continue;
+    if (modules.has(edge.fromFile)) {
+      islandRoots.push(edge);
+      continue;
+    }
+    const from = packageKeyOf(edge.fromFile) ?? linkedOwner(edge.fromFile);
+    if (from !== null) push(from, edge);
+    else if (!dropped.has(edge.fromFile)) nativeRoots.push(edge);
+  }
+  const walk = (roots: readonly PackageEdge[], enter: (edge: PackageEdge) => boolean): void => {
+    const queue: string[] = [];
+    for (const edge of roots) if (enter(edge)) queue.push(edge.to);
+    while (queue.length > 0) {
+      const name = queue.pop()!;
+      for (const edge of imports.get(name) ?? []) if (enter(edge)) queue.push(edge.to);
+    }
+  };
+  // The native side: the packages native code reaches without passing
+  // through an island, and the islands it imports (the boundary).
+  const native = new Set<string>();
+  const boundary = new Set<string>();
+  walk(nativeRoots, (edge) => {
+    if (islands.has(edge.to)) {
+      // An island that is in the set only because its ES module imports a
+      // CommonJS island (growEsmImporters) would compile without that
+      // island, and its import would be a native one. So the island it
+      // follows is on the boundary with it, and keeps the reason that made
+      // both of them islands.
+      let at: string | undefined = edge.to;
+      while (at !== undefined && islands.has(at) && !boundary.has(at)) {
+        boundary.add(at);
+        at = islands.get(at)?.follows;
+      }
+      return false;
+    }
+    if (native.has(edge.to)) return false;
+    native.add(edge.to);
+    return true;
+  });
+  // The island side: everything an island reaches that the native side does
+  // not, with the islands, island modules and contained packages that load
+  // it.
+  const loaders = new Map<string, { dir: string; by: Set<string> }>();
+  const enter = (edge: PackageEdge): boolean => {
+    const name = edge.to;
+    if (native.has(name) || boundary.has(name)) return false;
+    if (policy.forcedNative.has(name) || policy.unloaded.has(name)) return false;
+    if (policy.forcedNode.has(name)) return false;
+    const by = modules.has(edge.fromFile)
+      ? edge.fromFile
+      : (packageKeyOf(edge.fromFile) ?? linkedOwner(edge.fromFile) ?? edge.fromFile);
+    if (by === name) return false;
+    const known = loaders.get(name);
+    if (known !== undefined) {
+      known.by.add(by);
+      return false;
+    }
+    loaders.set(name, { dir: edge.toDir!, by: new Set([by]) });
+    // An island's own imports are roots of this walk already.
+    return !islands.has(name);
+  };
+  const islandEdges: PackageEdge[] = [...islandRoots];
+  for (const name of islands.keys())
+    for (const edge of imports.get(name) ?? []) islandEdges.push(edge);
+  walk(islandEdges, enter);
+  for (const name of [...loaders.keys()].sort()) {
+    const loader = loaders.get(name)!;
+    const dir = islands.get(name)?.dir ?? loader.dir;
+    const names = [...loader.by].sort();
+    contained.set(name, {
+      name,
+      version: packageVersionOf(dir),
+      dir,
+      class: "packaging",
+      reason:
+        names.length === 1
+          ? `only '${names[0]!}', which runs in a Node island, loads it`
+          : `only code that runs in a Node island loads it (${names
+              .slice(0, 3)
+              .map((n) => `'${n}'`)
+              .join(", ")}${names.length > 3 ? ", …" : ""})`,
+    });
+  }
+  return contained;
+}
+
 /** An importer that grows along a sure island is sure too. */
 export interface ESMGrowthOptions {
   /** The set the growth round started from: a package already islanded
@@ -135,6 +285,7 @@ export function growEsmImporters(
         dir: at.dir,
         class: "packaging",
         reason: `an ES module of the package imports the CommonJS island package '${name}'`,
+        follows: name,
       });
       // It goes wherever that island goes, the sure-fence retry included.
       if (sureOf !== undefined && sureOf.sure !== undefined) {

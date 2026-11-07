@@ -1,0 +1,1 @@
+{ "name": "cjs-member-alias-writes", "private": true, "scriptc": { "packages": { "metrics": "native" } } }

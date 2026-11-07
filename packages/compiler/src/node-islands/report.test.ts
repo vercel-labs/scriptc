@@ -114,6 +114,78 @@ describe("decisions", () => {
     ]);
   });
 
+  test("a use of a compiled package's export is that package's refusal", () => {
+    const { scan, fences } = program();
+    const unbound = (loc: string, pkg: string): ScrDiagnostic => ({
+      code: "SC1090",
+      message: "the reference to 'counter' (a binding form with no lowering) is not supported yet",
+      loc: { file: loc, start: 40, end: 47 },
+      exportOf: { package: pkg, name: "counter" },
+    });
+    const build = (diagnostics: ScrDiagnostic[], npm: NpmOutcome[]) =>
+      buildNodeIslandReport({
+        entry: "/app/main.ts",
+        scan,
+        npm,
+        diagnostics,
+        fences,
+        policy: nodeIslandPolicy(emptyProjectConfig(), {}),
+      });
+    // The use is in the program's own module, which names no package, and
+    // the package's own modules refuse nothing: the attribution is the
+    // exporting package's, as the growth rule's is.
+    const own = build([unbound("/app/main.ts", "c")], [{ package: "c", status: "static" }]);
+    expect(own.islands.map((i) => [i.package, i.class])).toEqual([
+      ["b", "gap"],
+      ["c", "gap"],
+      ["a", "object-model"],
+    ]);
+    expect(own.islands[1]!.reason).toContain("the reference to 'counter'");
+    // A use inside another package is the exporter's refusal too, not the
+    // importing package's.
+    const inside = build([unbound(`${NM}/a/index.js`, "c")], [{ package: "c", status: "static" }]);
+    const a = inside.islands.find((i) => i.package === "a")!;
+    expect(a.reasons).toHaveLength(1);
+    expect(inside.islands.map((i) => i.package)).toContain("c");
+    // A package the analysis does not compile is not this rule's: the use
+    // names no package, so no package gains a reason from it.
+    const uncompiled = build([unbound("/app/main.ts", "c")], []);
+    expect(uncompiled.islands.map((i) => i.package)).toEqual(["b", "a"]);
+  });
+
+  test("what a package's own modules report comes before a use of its export", () => {
+    const { scan, fences } = program();
+    const unbound = (pkg: string): ScrDiagnostic => ({
+      code: "SC1090",
+      message: "the reference to 'counter' (a binding form with no lowering) is not supported yet",
+      loc: { file: "/app/main.ts", start: 40, end: 47 },
+      exportOf: { package: pkg, name: "counter" },
+    });
+    const build = (pkg: string, options: NodeIslandOptions = {}) =>
+      buildNodeIslandReport({
+        entry: "/app/main.ts",
+        scan,
+        npm: [{ package: pkg, status: "static" }],
+        diagnostics: [unbound(pkg)],
+        fences,
+        policy: nodeIslandPolicy(emptyProjectConfig(), options),
+      });
+    // b has a fence of its own in the same class: it stays b's first reason,
+    // as it stays the reason of the island a build makes of b (growth.ts).
+    const b = build("b").islands.find((i) => i.package === "b")!;
+    expect(b.reason).toBe("SC1090: a builtin function alias as an escaping value");
+    expect(b.reasons.map((r) => r.message)).toEqual([
+      "a builtin function alias as an escaping value",
+      "the reference to 'counter' (a binding form with no lowering) is not supported yet",
+    ]);
+    // Marked native, the package cannot meet its mark: the would-be SC8003.
+    const marked = build("c", { native: ["c"] });
+    expect(marked.islands.map((i) => i.package)).toEqual(["b", "a"]);
+    expect(
+      marked.violations.map((v) => [v.code, v.message.includes("'c' is marked native")]),
+    ).toEqual([["SC8003", true]]);
+  });
+
   test("forced native turns reasons into SC8003; forced node islands a clean package", () => {
     const r = report({ native: ["a"], islands: ["c"] });
     expect(r.islands.map((i) => [i.package, i.class, i.decision])).toEqual([

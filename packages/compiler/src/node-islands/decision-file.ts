@@ -105,6 +105,8 @@ export function serializeIslandDecision(
       dir: recorded(base, p.dir),
       class: p.class,
       reason: p.reason,
+      ...(p.named === true ? { named: true } : {}),
+      ...(p.follows !== undefined ? { follows: p.follows } : {}),
     }));
   const modules = [...state.modules.values()]
     .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
@@ -165,6 +167,7 @@ export function readIslandDecision(
     const dir = entry["dir"];
     const cls = entry["class"];
     const reason = entry["reason"];
+    const follows = entry["follows"];
     if (
       typeof name !== "string" ||
       (version !== null && typeof version !== "string") ||
@@ -181,7 +184,15 @@ export function readIslandDecision(
       packageVersionOf(at) !== version
     )
       continue;
-    packages.set(name, { name, version, dir: at, class: cls, reason });
+    packages.set(name, {
+      name,
+      version,
+      dir: at,
+      class: cls,
+      reason,
+      ...(entry["named"] === true ? { named: true as const } : {}),
+      ...(typeof follows === "string" ? { follows } : {}),
+    });
   }
   const modules = new Map<string, IslandModule>();
   for (const entry of listedModules) {

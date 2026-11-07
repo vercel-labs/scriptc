@@ -18,6 +18,10 @@ export interface NodeIslandReason {
   message: string;
   loc: SrcLoc | null;
   source: NodeIslandReasonSource;
+  /** The reason is a use of the package's export somewhere else in the
+   * program (ScrDiagnostic.exportOf), not a finding in its own modules:
+   * those come first. */
+  exported?: true;
 }
 
 export type IslandDecision = "auto" | "config" | "cli";

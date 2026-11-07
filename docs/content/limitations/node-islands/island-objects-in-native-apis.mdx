@@ -1,0 +1,2 @@
+- **Island objects in native APIs:** An object that an island owns is a handle in native code, and not every native API accepts one.
+  `JSON.stringify` of such an object throws `JSON.stringify of a runtime handle is not supported yet` when it runs.

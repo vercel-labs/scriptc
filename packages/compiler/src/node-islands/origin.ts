@@ -43,6 +43,17 @@ export function packageDirOf(file: string): { name: string; dir: string } | null
   return { name: first, dir: parts.slice(0, i + 2).join("/") };
 }
 
+/** The package name an island set keys a file's package by: `@types/<name>`
+ * declarations type the package `<name>` (boundary.ts's
+ * islandPackageOfFile). Null for a file outside node_modules. */
+export function packageKeyOf(file: string): string | null {
+  const at = packageDirOf(file);
+  if (at === null) return null;
+  if (!at.name.startsWith("@types/")) return at.name;
+  const bare = at.name.slice("@types/".length);
+  return bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+}
+
 /** The `version` field of a package directory's package.json. */
 export function packageVersionOf(dir: string): string | null {
   let version: string | null = null;

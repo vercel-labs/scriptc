@@ -58,7 +58,7 @@ For C++, export the function with `extern "C"` so it keeps an unmangled name. Pa
 
 ## Replace a Node-API addon
 
-Compiled programs can't load Node-API (`.node`) addons, because those depend on Node.js itself. To keep using an addon's native code, move the operation into a plain C function and call it through FFI. If you also publish the addon for Node.js, keep the Node-API registration and value conversion in a separate wrapper.
+Native code can't load Node-API (`.node`) addons, because those depend on Node.js itself; an npm package that loads one runs in a [Node island](/docs/node-islands). To keep using an addon's native code without Node.js, move the operation into a plain C function and call it through FFI. If you also publish the addon for Node.js, keep the Node-API registration and value conversion in a separate wrapper.
 
 For example, a program that calls a small numeric helper from an addon:
 

@@ -417,7 +417,13 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
 
   const unreachedDiags = [...(un?.diagnostics ?? []), ...(un?.runtimeFences ?? [])];
   if (failed === 0 && input.diagnostics.length === 0 && unreachedDiags.length === 0) {
-    out.push(`  ${c(GREEN, "fully static")} — all analyzed statements compile to native code.`);
+    // Deferred operations the entry reaches compile to throws: the program
+    // builds, and those statements are not native code that runs.
+    out.push(
+      fences.length === 0
+        ? `  ${c(GREEN, "fully static")} — all analyzed statements compile to native code.`
+        : `  ${c(YELLOW, "builds")} — every other analyzed statement compiles to native code; the ${fences.length === 1 ? "site" : `${fences.length} sites`} above ${fences.length === 1 ? "throws" : "throw"} if the program reaches ${fences.length === 1 ? "it" : "them"}.`,
+    );
     if (divergences.length > 0) {
       out.push("");
       renderDivergences();

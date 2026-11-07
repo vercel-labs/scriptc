@@ -208,6 +208,15 @@ function featureEntries(compat) {
     if (entry.status === "not-implemented" && (entry.evidence?.length ?? 0) > 0) {
       validateEvidence(entry.evidence, `${entry.chapter} compatibility features`);
     }
+    // A by-design entry takes its policy from another chapter: the errors
+    // chapter lists the codes that node:vm, the inspector and the other
+    // by-design chapters raise. It names that chapter, whose policy must
+    // be by-design.
+    if (entry.status === "by-design" && compat.chapterPolicies[entry.policy] !== "by-design") {
+      throw new Error(
+        `${entry.chapter} compatibility features: a by-design entry names a by-design chapter as its 'policy'`,
+      );
+    }
   }
   return compat.features ?? [];
 }
@@ -339,7 +348,10 @@ function classifyStatic(row, chapter, ctx, parentSignature) {
   const feature = featureOf(row, ctx.staticFeatures, parentSignature);
   if (feature)
     return tier(feature.status, "", {
-      source: `compiler-feature:${row.chapter}.${row.apiSymbol}`,
+      source:
+        feature.status === "by-design"
+          ? `compiler-chapter-policy:${feature.policy}`
+          : `compiler-feature:${row.chapter}.${row.apiSymbol}`,
       tests: feature.evidence,
     });
   for (const candidate of symbolCandidates(row)) {

@@ -1338,6 +1338,29 @@ export function noLoweringDiag(
   };
 }
 
+/** A TypeScript read, through an ES module namespace of a builtin module
+ * (`import * as zlib from "node:zlib"; zlib.Z_NO_FLUSH`), of a name the
+ * module's exports object owns without enumerating it. The namespace object
+ * has exactly the module's exports, so Node reads undefined, and the
+ * declaration, which describes the exports object, gives the name a type
+ * that cannot hold undefined. */
+export function namespaceNonExportDiag(
+  module: string,
+  member: string,
+  hasConstants: boolean,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${module}.${member}' is not an export of node:${module}: read through an ES module namespace (import * as) it is undefined in Node, which its declared type does not allow`,
+    loc,
+    milestone: "later",
+    hint: hasConstants
+      ? `the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it (${module}.constants.${member} for one of the module's constants)`
+      : "the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it",
+  };
+}
+
 /** A use of a Node 24 global the native runtime does not implement
  * (host-globals.ts): constructing or calling its constructor value, or
  * reading one of its members. A bare read compiles and answers the

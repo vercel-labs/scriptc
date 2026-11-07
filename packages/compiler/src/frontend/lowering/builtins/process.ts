@@ -645,6 +645,9 @@ export function processDataMemberValue(
       return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
     case "execArgv":
       return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
+    case "release":
+      // One object, the one the spelled `process.release` reads.
+      return { kind: "libCall", fn: "process.release", args: [], type: DYN, loc };
     case "allowedNodeEnvironmentFlags":
       return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
     case "versions":

@@ -459,7 +459,12 @@ import {
   appendForkModules,
   appendWorkerModules,
 } from "./lower-modules.js";
-import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
+import {
+  isNodeModuleHandle,
+  prepareCjsModuleGraph,
+  untypedModuleValueFence,
+  usesCjsTopLevelThis,
+} from "./lower-node-module.js";
 import {
   type SplitRequireBinding,
   cjsHasLiveMemberExports,
@@ -612,6 +617,7 @@ import {
   createRequireSpecOf,
   fencedBuiltinImportOf,
   esmImportBindingKind,
+  namespaceNonExportRead,
 } from "./builtins/module-bindings.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
 import { lowerTimersPromisesSetInterval, lowerTimeoutMethodCall } from "./builtins/timers.js";
@@ -15584,6 +15590,19 @@ export class Lowerer {
 
   private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    // The CommonJS module object is a handle (a number) wherever its type
+    // is known; an untyped slot would hold that number, where Node holds
+    // the object (`typeof` of it is "object", its keys are the module's).
+    // Only a program with a CommonJS module record has such a value, so
+    // every other program skips the type query.
+    if (
+      expected.kind === "dyn" &&
+      this.cjsModuleIdOf.size > 0 &&
+      (expr.type.kind === "f64" || expr.type.kind === "union") &&
+      isNodeModuleHandle(this, node)
+    ) {
+      untypedModuleValueFence(this, node);
+    }
     // A binding the checker types as the console object (`const c =
     // console`, a `Console` parameter) into a record of its members: the
     // same member-by-name copy the direct `console` spelling takes
@@ -19999,6 +20018,15 @@ export class Lowerer {
     }
     const bi = this.builtinMemberOf(expr);
     if (!bi) return null;
+    // A TypeScript read through an ES module namespace of a name Node's
+    // namespace object does not export (`zlib.Z_NO_FLUSH`): refused by name.
+    {
+      const refusal = namespaceNonExportRead(this, expr, bi.module, bi.member);
+      if (refusal !== null) {
+        this.pushDiag(refusal);
+        throw new PoisonError();
+      }
+    }
     if (
       (bi.module === "path" || bi.module === "path/posix" || bi.module === "path/win32") &&
       (bi.member === "posix" || bi.member === "win32")

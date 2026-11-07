@@ -1,6 +1,7 @@
 /* typeof expressions and the typeof tests they lower to. */
 import * as ts from "../../ts7/adapter.js";
 import { withoutParentheses } from "../../outer-expressions.js";
+import { isUnresolvedCjsExports } from "../cjs-exports-object.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
@@ -274,7 +275,10 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
         return { kind: "strLit", value: "function", type: STRING, loc };
     }
   }
-  if (ts.isIdentifier(tested)) {
+  // `typeof exports` in a CommonJS module that assigns no member of it: the
+  // module's exports object answers below (cjs-exports-object.ts), not the
+  // undeclared-name fold.
+  if (ts.isIdentifier(tested) && !isUnresolvedCjsExports(lowerer, tested)) {
     const sym = lowerer.checker.getSymbolAtLocation(tested);
     if (!sym) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
@@ -605,7 +609,8 @@ export function lowerDynTypeofTest(
       if (
         ts.isIdentifier(operand) &&
         isJsSourceFile(ts.getSourceFileOfNode(operand)) &&
-        lowerer.resolveValueSymbol(operand) === null
+        lowerer.resolveValueSymbol(operand) === null &&
+        !isUnresolvedCjsExports(lowerer, operand)
       )
         return {
           kind: "boolLit",

@@ -1910,8 +1910,10 @@ ScrDyn *scr_global_object(void);
 void scr_global_host_absent_install(ScrArr *names);
 /* True when the name is one of them — the error is pending in that case. */
 bool scr_global_host_absent_check(const char *key, size_t length);
-/* `key in <global object>`: the check above, then the global object's answer. */
-bool scr_global_host_absent_has(ScrStr *key);
+/* `key in <global object>`: the check above, then the global object's
+ * answer: the program's own properties and the names of Node's global
+ * object (`present`, the compiler's table). */
+bool scr_global_host_absent_has(ScrStr *key, ScrArr *present);
 /* The program's builtin-global lookup, a dyn function (borrowed); the first
  * installation stands. */
 void scr_global_values_install(ScrDyn *lookup);

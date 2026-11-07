@@ -8,7 +8,9 @@
 // What the prefix reports is a subset of what the whole pass reports, and
 // the rules only add islands for what they are shown, so the early decision
 // names nothing the whole pass would not; the round after it asks every
-// rule again. These tests compile fixtures through prepareExecutableModule
+// rule again. A pass that another pass of the round may replace (a stream
+// pass, the protocol pass, the whole-slot pass) is not asked: the round
+// reports from the pass that stands. These tests compile fixtures through prepareExecutableModule
 // both ways and require the same build: the same islands, warnings and
 // serialized IR, or the same diagnostics, with one whole lowering fewer.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -237,4 +239,74 @@ console.log(shout(kind()));
   expect(early.rounds).toEqual(late.rounds);
   expect(early.passes).toEqual(late.passes);
   expect(early.passes).not.toContain("stop-after-declarations");
+}, 600_000);
+
+// The class implements the async-iteration protocol in an AsyncIterable
+// slot: the round's first pass refuses that in the program's top-level code,
+// and the protocol pass of the same round compiles it.
+const PROTOCOL = `
+class Counter implements AsyncIterable<number> {
+  async *[Symbol.asyncIterator](): AsyncIterator<number> {
+    yield 1;
+    yield 2;
+  }
+}
+async function sum(source: AsyncIterable<number>): Promise<number> {
+  let total = 0;
+  for await (const n of source) total += n;
+  return total;
+}
+`;
+
+// The prefix of a pass that another pass of the round may replace is not
+// what the round reports. Here the first pass fails in the program's own
+// top-level code, which made the fenced package's island final, and the
+// build with that island fails (the program replaces process.stdout.write).
+// The round's protocol pass compiles the program, so the whole round makes
+// the island tentative and keeps the native build. The first pass has met
+// the protocol spelling by the end of its declarations, so it is not asked.
+test("a prefix that a later pass of the round may replace is not asked", () => {
+  const dir = program(
+    `import { kind } from "surefence";
+${PROTOCOL}
+const original = process.stdout.write;
+const seen: string[] = [];
+process.stdout.write = function (chunk: any): boolean {
+  seen.push(String(chunk).length + "");
+  return (original as (chunk: string) => boolean).call(process.stdout, String(chunk));
+} as any;
+
+sum(new Counter()).then((total) => console.log("sum", total, kind(), seen.length));
+`,
+    [fenced],
+  );
+  const early = build(dir, true);
+  const late = build(dir, false);
+  expect(late.ok).toBe(true);
+  expect(late.islands).toEqual([]);
+  expect(late.warnings?.some((w) => w.startsWith("SC8023 "))).toBe(true);
+  expect(outcome(early)).toEqual(outcome(late));
+  expect(early.rounds).toEqual(late.rounds);
+  expect(early.passes).toEqual(late.passes);
+  expect(early.passes).not.toContain("stop-after-declarations");
+}, 600_000);
+
+// The same for a package refusal beside it: the prefix names `shaped`, and
+// the pass that reports it may be replaced, so the round decides `shaped`
+// from the pass that stands, with the same result.
+test("a package the prefix names is decided by the whole round when the pass may be replaced", () => {
+  const dir = program(
+    `import { wait } from "shaped";
+${PROTOCOL}
+void wait(3).then((value) => sum(new Counter()).then((total) => console.log(value, total)));
+`,
+    [shaped],
+  );
+  const early = build(dir, true);
+  const late = build(dir, false);
+  expect(early.ok).toBe(true);
+  expect(early.islands).toEqual(["shaped"]);
+  expect(outcome(early)).toEqual(outcome(late));
+  expect(early.rounds).toEqual(late.rounds);
+  expect(early.passes).toEqual(late.passes);
 }, 600_000);

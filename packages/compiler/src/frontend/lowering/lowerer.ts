@@ -1133,6 +1133,13 @@ export interface LowerOptions {
    * runs with those islands, instead of once here and once there. Not asked
    * when a unit store or coverage reads the whole pass. */
   stopAfterDeclarations?: ((prefix: LowerResult) => boolean) | undefined;
+  /** Told, in place of asking stopAfterDeclarations, that the first pass
+   * has given a pass that replaces it a reason to run (Lowerer.replacingPass):
+   * what the pass has reported is then not what the round reports, and the
+   * round is decided from its whole lowering. */
+  declarationsNotAsked?:
+    | ((replacing: "stream" | "async-protocol" | "whole-slot") => void)
+    | undefined;
 }
 
 interface RuntimeFenceFallback {
@@ -1574,6 +1581,15 @@ function lowerToIrWithIslands(
   // LowerOptions.stopAfterDeclarations, for the first pass only: the passes
   // that replace it start over, and a round that reaches them has already
   // declined to stop here.
+  //
+  // The question is asked only of a pass whose result this round can still
+  // keep. A stream pass, the protocol pass and the whole-slot pass each lower
+  // the program again in a mode that clears refusals this pass reports, and
+  // the round reports from the pass that stands (see stopAfterPushDown
+  // below). A prefix that has already given one of them a reason to run
+  // (Lowerer.replacingPass) is therefore not yet what the round reports: a
+  // package it names may compile, and a failure of the program's own may
+  // disappear. Such a round is decided from its whole lowering, as before.
   const stopAfterDeclarations = options.stopAfterDeclarations;
   const firstPass = pushDownEmit;
   const afterDeclarations =
@@ -1582,6 +1598,11 @@ function lowerToIrWithIslands(
     options.coverage === true
       ? null
       : (): void => {
+          const replacing = firstPass.replacingPass();
+          if (replacing !== null) {
+            options.declarationsNotAsked?.(replacing);
+            return;
+          }
           const prefix: LowerResult = {
             module: null,
             diagnostics: [...firstPass.diags],
@@ -4122,6 +4143,31 @@ export class Lowerer {
     if (this.dynNodeStreams) return null;
     if (this.generalNodeStreams) return this.requiresDynNodeStreams ? { dyn: true } : null;
     return this.requiresGeneralNodeStreams ? { dyn: this.requiresDynNodeStreams } : null;
+  }
+  /** The pass of this round that may still replace this one's result, as far
+   * as this pass has seen, or null: a stream pass (this pass asked for a
+   * stream mode), the protocol pass (it met an async-iteration protocol
+   * spelling) or the whole-slot pass (it degraded a type that the whole-slot
+   * mode holds differently). Each lowers the program again in a mode that
+   * can clear what this pass reported.
+   *
+   * The protocol mode and the whole-slot mode change a lowering only where
+   * this pass raises the flag read here (the mapper's protocol spellings and
+   * the protocol slots in convert; the non-canonical degraded type at a
+   * commit point), so a pass that has raised neither has lowered exactly as
+   * those modes would have so far. */
+  replacingPass(): "stream" | "async-protocol" | "whole-slot" | null {
+    if (
+      this.requiresGeneralNodeStreams ||
+      this.requiresDynNodeStreams ||
+      this.requestedStreamMode() !== null
+    )
+      return "stream";
+    if (this.requiresDynAsyncProtocol) return "async-protocol";
+    if (this.partialDegradedTypesMapped) return "whole-slot";
+    for (const degraded of this.degradedTypes.values())
+      if (degraded.canonical !== true) return "whole-slot";
+    return null;
   }
   /** Between units, and before the fixpoint: the pass settles the stream
    * mode it asks for, and a pass whose result that mode's pass replaces

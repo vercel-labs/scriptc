@@ -620,6 +620,13 @@ function prepareRound(
   // then lowered once, with those islands, instead of once here and once
   // there.
   //
+  // The prefix is asked only while it is what the round can still report:
+  // a pass that has given a stream pass, the protocol pass or the
+  // whole-slot pass a reason to run is replaced by a pass that can clear
+  // its refusals, so the lowering does not ask (LowerOptions.
+  // declarationsNotAsked) and the round is decided from the pass that
+  // stands, as before.
+  //
   // The fence rule joins when the program's own code already fails in the
   // prefix. Then the build fails with or without the fenced packages
   // native, so their islands are final, exactly as a whole failing pass
@@ -779,6 +786,11 @@ function prepareRound(
                 stopAfterDeclarations: (prefix: LowerResult) => {
                   declared.retry = decideDeclared(prefix);
                   return declared.retry !== null;
+                },
+                declarationsNotAsked: (replacing: string) => {
+                  traceIslandRound(
+                    `round ${round} declarations not asked: the round's ${replacing} pass may replace this one`,
+                  );
                 },
               }
             : {}),

@@ -83,6 +83,11 @@
 typedef struct {
   uint32_t id;
   ScrPromise *promise; /* owned */
+  /* The call, kept until it settles: it is made once more when its module
+   * did not load for a file the installed tree had lost (ni_settle). */
+  ScrStr *file, *specifier, *name; /* owned */
+  ScrDyn *json;                    /* owned */
+  bool repeated;
 } NiPending;
 
 #if defined(__has_feature)
@@ -1210,16 +1215,47 @@ static ScrDyn *ni_outcome(const char *outcome, size_t len) {
 
 /* ── the host side of the bridge ──────────────────────────────────────── */
 
+static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, ScrStr *name,
+                     ScrDyn *json, size_t *len);
+
 static void ni_settle(uint32_t id, const char *outcome, size_t len) {
   for (size_t i = 0; i < ni_npending; i++) {
     if (ni_pending[i].id != id) continue;
-    ScrPromise *p = ni_pending[i].promise;
-    ni_pending[i] = ni_pending[--ni_npending];
+    size_t repairs = ni_repaired;
+    ni_load_failed = false;
     ScrDyn *value = ni_outcome(outcome, len);
+    if (value == NULL && ni_load_failed && ni_repaired != repairs && !ni_pending[i].repeated) {
+      /* The module did not load because the installed tree had lost a
+       * file, and the file is back: the call once more, under the same id
+       * (its function never ran). */
+      scr_caught_release(scr_exc_take());
+      ni_pending[i].repeated = true;
+      /* The call may settle before it returns, which releases the entry:
+       * its strings are held here meanwhile. */
+      ScrStr *file = scr_str_retain(ni_pending[i].file);
+      ScrStr *specifier = scr_str_retain(ni_pending[i].specifier);
+      ScrStr *name = scr_str_retain(ni_pending[i].name);
+      ScrDyn *json = scr_dyn_retain(ni_pending[i].json);
+      size_t again_len = 0;
+      char *again = ni_call(id, false, file, specifier, name, json, &again_len);
+      if (again != NULL) ni_bridge->release(again);
+      scr_str_release(file);
+      scr_str_release(specifier);
+      scr_str_release(name);
+      scr_dyn_release(json);
+      return;
+    }
+    NiPending done = ni_pending[i];
+    ni_pending[i] = ni_pending[--ni_npending];
     if (value != NULL)
-      scr_promise_fulfill_ref(p, value, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-    scr_promise_reject_pending(p); /* no-op unless an error is pending */
-    scr_promise_release(p);
+      scr_promise_fulfill_ref(done.promise, value, scr_dyn_retain_v, scr_dyn_release_v,
+                              scr_dyn_trace_v);
+    scr_promise_reject_pending(done.promise); /* no-op unless an error is pending */
+    scr_promise_release(done.promise);
+    scr_str_release(done.file);
+    scr_str_release(done.specifier);
+    scr_str_release(done.name);
+    scr_dyn_release(done.json);
     return;
   }
 }
@@ -2016,8 +2052,13 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
   }
   uint32_t id = ni_next_id++;
   if (ni_next_id == 0) ni_next_id = 1;
-  ni_pending[ni_npending].id = id;
-  ni_pending[ni_npending].promise = scr_promise_retain(p);
+  ni_pending[ni_npending] = (NiPending){id,
+                                        scr_promise_retain(p),
+                                        scr_str_retain(file),
+                                        scr_str_retain(specifier),
+                                        scr_str_retain(name),
+                                        scr_dyn_retain(json),
+                                        false};
   ni_npending++;
   size_t len = 0;
   char *outcome = ni_call(id, false, file, specifier, name, json, &len);

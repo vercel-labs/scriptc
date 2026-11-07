@@ -1,0 +1,133 @@
+arguments-length-escapes.ts:9:7 - error SC2009: values of type '(a: string, b: string, c: string) => number' cannot be compiled: the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity
+
+   8 | // Boxed to a dynamic value, then called with four arguments: Node answers 4.
+   9 | const boxed = function (a: string, b: string, c: string): number {
+     |       ^~~~~
+  10 |   return arguments.length;
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+arguments-length-escapes.ts:10:10 - error SC1090: 'arguments.length' in a function expression bound to a variable and used as a value where no function type is expected (the count each call passes is not known) is not supported yet
+
+   9 | const boxed = function (a: string, b: string, c: string): number {
+  10 |   return arguments.length;
+     |          ^~~~~~~~~~~~~~~~
+  11 | };
+
+arguments-length-escapes.ts:12:20 - error SC2004: uses of 'boxed' inherit the blocker on its declaration
+
+  11 | };
+  12 | const asAny: any = boxed;
+     |                    ^~~~~
+  13 | console.log("boxed", boxed("a", "b", "c"), asAny("a", "b", "c", "d"));
+
+  hint: the declaration of 'boxed' did not compile — fix the diagnostic reported there and these sites clear with it
+
+arguments-length-escapes.ts:13:22 - error SC2004: uses of 'boxed' inherit the blocker on its declaration
+
+  12 | const asAny: any = boxed;
+  13 | console.log("boxed", boxed("a", "b", "c"), asAny("a", "b", "c", "d"));
+     |                      ^~~~~
+  14 | 
+
+  hint: the declaration of 'boxed' did not compile — fix the diagnostic reported there and these sites clear with it
+
+arguments-length-escapes.ts:16:7 - error SC2009: values of type '(a: number) => number' cannot be compiled: the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity
+
+  15 | // Stored in a wider function type: calls through the slot pass two.
+  16 | const narrow = function (a: number): number {
+     |       ^~~~~~
+  17 |   return arguments.length;
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+arguments-length-escapes.ts:17:10 - error SC1090: 'arguments.length' in a function expression bound to a variable and used as a value through a function type with a different parameter count (the count varies per call) is not supported yet
+
+  16 | const narrow = function (a: number): number {
+  17 |   return arguments.length;
+     |          ^~~~~~~~~~~~~~~~
+  18 | };
+
+arguments-length-escapes.ts:19:49 - error SC2004: uses of 'narrow' inherit the blocker on its declaration
+
+  18 | };
+  19 | const wider: (a: number, b: number) => number = narrow;
+     |                                                 ^~~~~~
+  20 | console.log("wider", wider(1, 2));
+
+  hint: the declaration of 'narrow' did not compile — fix the diagnostic reported there and these sites clear with it
+
+arguments-length-escapes.ts:23:7 - error SC2009: values of type '(a: number) => number' cannot be compiled: the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity
+
+  22 | // Stored in a slot with an optional tail: the count varies per call.
+  23 | const optional = function (a: number): number {
+     |       ^~~~~~~~
+  24 |   return arguments.length;
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+arguments-length-escapes.ts:24:10 - error SC1090: 'arguments.length' in a function expression bound to a variable and used as a value where the expected function type has optional or rest parameters (the count varies per call) are not supported yet
+
+  23 | const optional = function (a: number): number {
+  24 |   return arguments.length;
+     |          ^~~~~~~~~~~~~~~~
+  25 | };
+
+arguments-length-escapes.ts:26:51 - error SC2004: uses of 'optional' inherit the blocker on its declaration
+
+  25 | };
+  26 | const varies: (a: number, b?: number) => number = optional;
+     |                                                   ^~~~~~~~
+  27 | console.log("varies", varies(1), varies(1, 2));
+
+  hint: the declaration of 'optional' did not compile — fix the diagnostic reported there and these sites clear with it
+
+arguments-length-escapes.ts:31:7 - error SC2009: values of type '(a: string, b: string, c: string) => number' cannot be compiled: the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity
+
+  30 | // count later, so the constant is no longer the whole story.
+  31 | const copied = boxed;
+     |       ^~~~~~
+  32 | console.log("copied", copied("a", "b", "c"));
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+arguments-length-escapes.ts:31:16 - error SC2004: uses of 'boxed' inherit the blocker on its declaration
+
+  30 | // count later, so the constant is no longer the whole story.
+  31 | const copied = boxed;
+     |                ^~~~~
+  32 | console.log("copied", copied("a", "b", "c"));
+
+  hint: the declaration of 'boxed' did not compile — fix the diagnostic reported there and these sites clear with it
+
+arguments-length-escapes.ts:32:23 - error SC2004: uses of 'copied' inherit the blocker on its declaration
+
+  31 | const copied = boxed;
+  32 | console.log("copied", copied("a", "b", "c"));
+     |                       ^~~~~~
+  33 | 
+
+  hint: the declaration of 'copied' did not compile — fix the diagnostic reported there and these sites clear with it
+
+arguments-length-escapes.ts:37:7 - error SC2009: values of type '(a: number) => number' cannot be compiled: the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity
+
+  36 | // typed-arguments-length-calls).
+  37 | const viaCall = function (a: number): number {
+     |       ^~~~~~~
+  38 |   return arguments.length;
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+arguments-length-escapes.ts:38:10 - error SC1090: 'arguments.length' in a function expression bound to a variable and used as a value where no function type is expected (the count each call passes is not known) is not supported yet
+
+  37 | const viaCall = function (a: number): number {
+  38 |   return arguments.length;
+     |          ^~~~~~~~~~~~~~~~
+  39 | };
+
+arguments-length-escapes.ts:40:21 - error SC1090: Function.prototype.call on a function whose signature cannot cross the checked-value boundary (call 'viaCall(...)' directly) is not supported yet
+
+  39 | };
+  40 | console.log("call", viaCall.call(undefined, 1), viaCall.name);
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  41 | 

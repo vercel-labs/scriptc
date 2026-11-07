@@ -1464,26 +1464,39 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  // Ineligible packages remain declaration-only during analysis and receive
-  // a refusal, while eligible dependencies can still be analyzed natively.
-  test("an ineligible untyped package is refused alongside a compiled dependency", () => {
-    const { coverage } = analyze(join(pilotRoot, "typegap-mix.ts"), {
-      npmStatic: ["escape-string-regexp"],
-    });
-    expect(coverage.preflightFailed).toBe(false);
-    expect(coverage.npmStatic).toEqual([
-      {
-        package: "typegapped",
-        status: "refused",
-        detail: "it ships no own .d.ts declaration surface",
-        hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
-      },
+  // A package that is not compiled is typed the same whether or not another
+  // package compiles beside it: typegapped ships no declarations, so its
+  // import is the implicit-any error and the package refusal in both
+  // programs, and its JavaScript (which does not typecheck) is in neither.
+  test("an untyped package is reported the same beside a compiled dependency", () => {
+    const refused = {
+      package: "typegapped",
+      status: "refused",
+      detail: "it ships no own .d.ts declaration surface",
+      hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
+    };
+    const about = (entry: string, npmStatic: string[]) => {
+      const { coverage } = analyze(join(pilotRoot, entry), { npmStatic });
+      return {
+        preflightFailed: coverage.preflightFailed,
+        statuses: coverage.npmStatic,
+        diagnostics: coverage.diagnostics.map((d) => [
+          d.code,
+          d.message.replace(/'[^']*node_modules/, "'node_modules"),
+        ]),
+      };
+    };
+    const alone = about("typegap-only.ts", []);
+    const beside = about("typegap-mix.ts", ["escape-string-regexp"]);
+    expect(alone.statuses).toEqual([refused]);
+    expect(beside.statuses).toEqual([
+      refused,
       { package: "escape-string-regexp", status: "static" },
     ]);
-    // Report package eligibility rather than errors in unselected source.
-    expect(
-      coverage.diagnostics.some((d) => d.code === "SC2013" && d.message.includes("typegapped")),
-    ).toBe(true);
+    expect(alone.diagnostics.map(([code]) => code)).toEqual(["SC0001", "SC2013"]);
+    expect(alone.diagnostics[0]?.[1]).toContain("implicitly has an 'any' type");
+    expect(beside.diagnostics).toEqual(alone.diagnostics);
+    expect(beside.preflightFailed).toBe(alone.preflightFailed);
   }, 120_000);
 
   test("opted-in npm packages retain imports deeper than four JavaScript modules", async () => {
@@ -1507,8 +1520,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   // "did not join the type-checked program"): uuid's node condition with
   // declarations in another tree, tldts's package-root TypeScript source
   // beside `main`, express's same-version copies of one package (tsgo's
-  // package-id redirect), and get-intrinsic's dependency chain deeper than
-  // maxNodeModuleJsDepth.
+  // package-id redirect), and get-intrinsic's long dependency chain.
   test.each([
     ["split-node-types-cli.ts", ["split-node-types"]],
     ["ts-root-source-cli.ts", ["ts-root-source"]],

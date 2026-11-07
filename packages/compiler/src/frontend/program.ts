@@ -767,66 +767,130 @@ export function entryPackageFilePredicate(entryPath: string): (file: string) => 
   };
 }
 
-/** maxNodeModuleJsDepth can omit relative imports within an admitted
- * package, and opted-in packages deep in the dependency graph. Discover
- * their runtime sources to a fixpoint so the checker and module resolver
- * see the same graph regardless of import traversal order or depth. */
+/** A module edge of a file: its specifier and the resolution kind preflight
+ * uses for it. */
+export interface ModuleEdge {
+  specifier: string;
+  kind: "import" | "require";
+}
+
+/** The module edges tsgo counts in a JavaScript file: import and export
+ * declarations, `import x = require()`, and every literal `require()` and
+ * `import()` call. Read from the file's syntax alone, for a file no program
+ * holds yet. */
+export function moduleEdgesOfSyntax(sf: ts.SourceFile): ModuleEdge[] {
+  const edges: ModuleEdge[] = [];
+  const literal = (node: ts.Node | undefined): string | null =>
+    node !== undefined && ts.isStringLiteralLike(node) ? node.text : null;
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      const specifier = literal(node.moduleSpecifier);
+      if (specifier !== null) edges.push({ specifier, kind: "import" });
+      return;
+    }
+    if (ts.isImportEqualsDeclaration(node)) {
+      const reference = node.moduleReference;
+      const specifier = ts.isExternalModuleReference(reference)
+        ? literal(reference.expression)
+        : null;
+      if (specifier !== null) edges.push({ specifier, kind: "require" });
+      return;
+    }
+    if (ts.isCallExpression(node)) {
+      const specifier = literal(node.arguments.nodes[0]);
+      if (specifier !== null) {
+        if (node.expression.kind === ts.SyntaxKind.ImportKeyword)
+          edges.push({ specifier, kind: "import" });
+        else if (ts.isIdentifier(node.expression) && node.expression.text === "require")
+          edges.push({ specifier, kind: "require" });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return edges;
+}
+
+/** The runtime JavaScript the program compiles that tsgo's own import walk
+ * does not load. tsgo adds a JavaScript file under node_modules only as a
+ * root (maxNodeModuleJsDepth stays 0, so a package that is not compiled is
+ * typed exactly as it is without any compiled package), so the files of the
+ * packages that DO compile are named here: the entry package's own
+ * JavaScript, an opted-in package's internal edges, and the runtime file of
+ * every bare edge into an opted-in package.
+ *
+ * `unloadedEdges` (the shadowed lowering world's) reads the edges of a file
+ * the program does not hold yet, so one call follows an opted-in package's
+ * whole import graph instead of one level of it per program. The caller's
+ * fixpoint over rebuilt programs stays the authority: an edge the syntax
+ * read misses is found in the next program's own import list. */
 function entryPackageProgramRoots7(
   program: ts.Program,
   entryPath: string,
-  rootNpmStaticEdges: boolean,
+  unloadedEdges: ((file: string) => readonly ModuleEdge[]) | null,
 ): string[] {
   const belongsToEntry = entryPackageFilePredicate(entryPath);
   const roots = new Set<string>();
-  for (const sf of program.getImplementationSourceFiles()) {
+  /** The file an edge adds to the roots, or null: a file the program
+   * already holds, or an edge that names no compiled JavaScript. */
+  const rootOf = (
+    from: string,
+    spec: string,
+    kind: "import" | "require",
+    ownsProjectEdges: boolean,
+  ): string | null => {
+    const target = ownsProjectEdges ? resolveProjectModule(from, spec) : null;
     if (
-      sf.isDeclarationFile ||
-      (!belongsToEntry(sf.fileName) && npmStaticPackageOfPath(sf.fileName) === null)
+      target !== null &&
+      (belongsToEntry(target) || npmStaticPackageOfPath(target) !== null) &&
+      isJsSourceFileName(target)
     )
-      continue;
+      return program.getSourceFile(target) === undefined ? target : null;
+    // A bare edge into an opted-in package, from any program file (a
+    // program module, a workspace source package, another opted-in
+    // package): root the runtime file the edge lowers to (preflight's own
+    // resolution and miss rule), however deep in the dependency graph the
+    // importer sits. A project answer that is the package's declaration
+    // file (a tsconfig path mapped onto an installed package) is the same
+    // edge. Only the shadowed lowering world does this: the authored world
+    // checks user code against declarations.
+    // (resolveBareModule directly: resolveNpmImport7's workspace
+    // registration stays with preflight's own walk.)
+    if (unloadedEdges === null || isRelativeSpecifier(spec)) return null;
+    if (target !== null && !(isNodeModulesPath(target) && !isJsSourceFileName(target))) return null;
+    if (spec.startsWith("#") || canonicalBuiltinModule(spec) !== null) return null;
+    const npm = resolveBareModule(from, spec, undefined, kind);
+    return npm !== null &&
+      isNpmStaticPackage(npm.packageName) &&
+      (isNodeModulesPath(npm.typesFile) || npm.workspaceDir !== undefined) &&
+      isJsSourceFileName(npm.typesFile) &&
+      npmStaticProgramFile(program, npm.typesFile) === null
+      ? tsgoPath(resolve(npm.typesFile))
+      : null;
+  };
+  for (const sf of program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    // The project edges of the entry package and of opted-in packages.
+    const ownsProjectEdges =
+      belongsToEntry(sf.fileName) || npmStaticPackageOfPath(sf.fileName) !== null;
     for (const specifier of sf.imports) {
       if (!ts.isStringLiteralLike(specifier)) continue;
-      const target = resolveProjectModule(sf.fileName, specifier.text);
-      if (
-        target !== null &&
-        (belongsToEntry(target) || npmStaticPackageOfPath(target) !== null) &&
-        isJsSourceFileName(target) &&
-        program.getSourceFile(target) === undefined
-      )
-        roots.add(target);
-      // An opted-in package's bare edge counts against the same depth
-      // budget: tsgo charges every node_modules JS hop, so express's
-      // body-parser → qs → side-channel → get-intrinsic chain runs out of
-      // depth before its leaves load. Root the runtime file this edge
-      // lowers to (preflight's own resolution and miss rule) so the leaf
-      // joins like a shallow one; complete programs add nothing. Only
-      // the shadowed lowering world does this (the authored world checks
-      // user code against declarations), and only from package files: a
-      // program file's own edges are never deeper than one hop.
-      // (resolveBareModule directly: resolveNpmImport7's workspace
-      // registration stays with preflight's own walk.)
-      if (
-        target === null &&
-        rootNpmStaticEdges &&
-        npmStaticPackageOfPath(sf.fileName) !== null &&
-        !isRelativeSpecifier(specifier.text)
-      ) {
-        const spec = specifier.text;
-        if (spec.startsWith("#") || canonicalBuiltinModule(spec) !== null) continue;
-        const npm = resolveBareModule(
-          sf.fileName,
-          spec,
-          undefined,
-          moduleSpecifierKind7(specifier),
-        );
-        if (
-          npm !== null &&
-          isNpmStaticPackage(npm.packageName) &&
-          (isNodeModulesPath(npm.typesFile) || npm.workspaceDir !== undefined) &&
-          isJsSourceFileName(npm.typesFile) &&
-          npmStaticProgramFile(program, npm.typesFile) === null
-        )
-          roots.add(tsgoPath(resolve(npm.typesFile)));
+      const root = rootOf(
+        sf.fileName,
+        specifier.text,
+        moduleSpecifierKind7(specifier),
+        ownsProjectEdges,
+      );
+      if (root !== null) roots.add(root);
+    }
+  }
+  if (unloadedEdges !== null) {
+    // Insertion order: the set grows while it is walked.
+    for (const file of roots) {
+      if (npmStaticPackageOfPath(file) === null) continue;
+      for (const edge of unloadedEdges(file)) {
+        const root = rootOf(file, edge.specifier, edge.kind, true);
+        if (root !== null) roots.add(root);
       }
     }
   }
@@ -926,8 +990,9 @@ function loadProgram7(
   host: ts.Ts7Host,
   entryPath: string,
   externalTypes: ReadonlyMap<string, string> = new Map(),
-  /** The --npm-static lowering world: root opted-in packages' deep edges. */
-  rootNpmStaticEdges = false,
+  /** The --npm-static lowering world: the module edges of an opted-in
+   * package file no program holds yet (entryPackageProgramRoots7). */
+  unloadedEdges: ((file: string) => readonly ModuleEdge[]) | null = null,
   /** The declaration-typed boundary's projection (decl-projection.ts):
    * answers rewritten user files for the lowering world, or null. */
   projector?: (program: ts.Program) => DeclProjection | null,
@@ -951,13 +1016,12 @@ function loadProgram7(
   let options: ts.Ts7CompilerOptions = nodeTypes
     ? { ...config.options, skipLibCheck: true }
     : { ...config.options };
-  // --npm-static: opted-in packages' shipped JS must be TYPE-INCLUDED (not
-  // just resolved) — without maxNodeModuleJsDepth, node_modules JS types as
-  // an implicit-any module (TS7016) and nothing infers. Only flagged
-  // compiles pay this; flagless builds keep the exact historical options.
-  // Eight levels retain package-internal re-export chains such as Effect's;
-  // the former four-level cap left valid bindings outside the checker graph.
-  if (npmStaticActive()) options.maxNodeModuleJsDepth = 8;
+  // Opted-in packages' shipped JavaScript must be TYPE-INCLUDED (not just
+  // resolved): otherwise it types as an implicit-any module (TS7016) and
+  // nothing infers. It joins as program roots (entryPackageProgramRoots7),
+  // never through maxNodeModuleJsDepth: that option is program-wide, and
+  // would type every other package's JavaScript too, so compiling one
+  // package would change how the rest of the program checks.
   // --provenance-sources: the registered entries become tsconfig "paths"
   // so tsgo's OWN resolution of the bare specifiers lands on the same
   // source files the preflight resolver answers — the checker types the
@@ -1002,7 +1066,7 @@ function loadProgram7(
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
         ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
-        ...entryPackageProgramRoots7(program, entryPath, rootNpmStaticEdges),
+        ...entryPackageProgramRoots7(program, entryPath, unloadedEdges),
         ...createRequireProgramRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
         ...workerTargetPaths(program, program.getImplementationSourceFiles()),
@@ -1465,11 +1529,23 @@ export function loadProgram(
     // of the same build, which preflight can create after the overlay
     // rounds, so it leaves the registry as this load set it.
     resetShapeOverlay();
+    // The edges of a package file as the host serves it (its rewritten
+    // text), read once per load.
+    const edgesOfUnloaded = new Map<string, readonly ModuleEdge[]>();
+    const unloadedEdges = (file: string): readonly ModuleEdge[] => {
+      let edges = edgesOfUnloaded.get(file);
+      if (edges === undefined) {
+        const text = host.sourceText(file);
+        edges = text === null ? [] : moduleEdgesOfSyntax(services.parse(file, text, "js"));
+        edgesOfUnloaded.set(file, edges);
+      }
+      return edges;
+    };
     const load = loadProgram7(
       host,
       entryPath,
       externalTypes,
-      npmStaticPackages.length > 0,
+      npmStaticPackages.length > 0 ? unloadedEdges : null,
       projector,
       (npmStaticPackages.length > 0 && shapeOverlayEnabled()) ||
         (jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0")
@@ -6045,8 +6121,8 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
     : runtimeFiles;
   program.getTypeChecker().prefetchSourceFileStructures(userFiles);
 
-  // Unselected node_modules JS is not native program source even when
-  // maxNodeModuleJsDepth pulled it into the checker (nodeModulesJsSuppressed).
+  // Unselected node_modules JS is not native program source even when a
+  // root put it in the checker's program (nodeModulesJsSuppressed).
   // Node stops at the nearest package.json even when it is malformed, and
   // an explicit CommonJS scope (or .cjs/.cts extension) disables ambiguous-
   // file syntax detection entirely. TypeScript's bundler checker models
@@ -6348,7 +6424,7 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
       }
       // --npm-static: an opted-in package's import is a PROGRAM-MODULE
       // edge — its resolution (types stripped) answered the shipped JS,
-      // which allowJs + maxNodeModuleJsDepth pulled into the program, so
+      // which root discovery put in the program (allowJs), so
       // the entry joins the module order like any user module and the
       // clause fences below apply to it as to program JS. A miss (the
       // resolution still answers declarations, or the file never joined

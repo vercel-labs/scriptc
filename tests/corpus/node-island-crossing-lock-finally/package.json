@@ -1,0 +1,1 @@
+{ "name": "island-lock-finally", "private": true, "type": "module", "scriptc": { "packages": { "lock-pkg": "node" } } }

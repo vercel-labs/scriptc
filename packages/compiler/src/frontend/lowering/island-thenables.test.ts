@@ -47,6 +47,45 @@ test("a program with Node islands adopts island thenables at every dynamic await
   expect(resolve.args[1]).toMatchObject({ kind: "varRef" });
 });
 
+test("a program with Node islands resolves a dynamic Promise.resolve through the runtime", () => {
+  const promiseOfDyn = { kind: "promise", inner: DYN } as const;
+  const resolve = {
+    kind: "intrinsic",
+    name: "promise.resolve",
+    args: [operand()],
+    type: promiseOfDyn,
+    loc,
+  } as IrExpr;
+  // A promise of nothing, or of a typed value, is never a thenable's.
+  const empty = { kind: "intrinsic", name: "promise.resolve", args: [], type: promiseOfDyn, loc };
+  const functions = [
+    fn(ENTRY_NAME, [
+      { kind: "exprStmt", expr: resolve, loc },
+      { kind: "exprStmt", expr: empty as IrExpr, loc },
+    ]),
+  ];
+  adoptIslandThenables({ usesNodeIsland: true } as unknown as Lowerer, functions);
+  expect(resolve).toEqual({
+    kind: "libCall",
+    fn: "nodeIsland.promiseResolve",
+    args: [{ kind: "varRef", localId: "%v", type: DYN, loc }],
+    type: promiseOfDyn,
+    loc,
+  });
+  expect(empty).toMatchObject({ kind: "intrinsic", name: "promise.resolve" });
+  const kept = {
+    kind: "intrinsic",
+    name: "promise.resolve",
+    args: [operand()],
+    type: promiseOfDyn,
+    loc,
+  };
+  adoptIslandThenables({ usesNodeIsland: false } as unknown as Lowerer, [
+    fn(ENTRY_NAME, [{ kind: "exprStmt", expr: kept as IrExpr, loc }]),
+  ]);
+  expect(kept).toMatchObject({ kind: "intrinsic", name: "promise.resolve" });
+});
+
 test("a program without Node islands keeps the plain dynamic await", () => {
   const call = awaitDyn();
   adoptIslandThenables({ usesNodeIsland: false } as unknown as Lowerer, [

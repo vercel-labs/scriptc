@@ -416,7 +416,7 @@ export function finalizeDeferredIslands(
         snapshotNames(probe, result.root, tree.root)
       )
         return "its exports hold a path of the build machine";
-      const { env, inputs, effects } = reads.get(result)!;
+      const { env, inputs, volatile, effects } = reads.get(result)!;
       const privateEnv = env.map(([k]) => k).filter((k) => !publicEnv.has(k));
       if (privateEnv.length > 0)
         return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, whose build-time values its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
@@ -426,6 +426,13 @@ export function finalizeDeferredIslands(
         own.length > 0 ? "its load" : "a load it shares a file with";
       if (effects.length > 0) return `${whose(result.effects)} has effects: ${effects.join(", ")}`;
       if (inputs.length > 0) return `${whose(result.inputs)} reads ${inputs.join(", ")}`;
+      // A snapshot written without constants keeps an object's flags and its
+      // object links, and those answer `typeof` without evaluating a module.
+      // An export's type can come from the read as its value can, so a load
+      // that read the clock or a random source does not let the other loads
+      // of its files keep theirs.
+      if (volatile.length > 0 && result.volatile.length === 0)
+        return `${whose(result.volatile)} reads ${volatile.join(", ")}: its snapshot would keep the build's object flags and object links`;
       return null;
     })();
     if (why !== null || result === undefined) {

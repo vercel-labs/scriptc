@@ -228,12 +228,22 @@ describe("modules that share a file", () => {
     expect(decisions[1]!.reason).toContain("a load it shares a file with reads process.argv");
   });
 
-  test("neither snapshot has constants when the load that evaluated the file read the clock", () => {
-    const { decisions, snapshots } = sharing({ volatile: ["Date.now()"] });
-    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
-    for (const d of decisions) expect(d.reason).toContain("volatile Date.now(): no constants");
-    const plain = sharing({});
-    expect(plain.snapshots[1]).not.toBe(snapshots[1]);
+  test("a module that shares a file whose load read the clock does not defer", () => {
+    // A snapshot written without constants still keeps the object's flags and
+    // its object links, and those answer `typeof` without evaluating the
+    // module: an export's type can come from the read as its value can.
+    const { decisions, calls } = sharing({ volatile: ["Date.now()"] });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
+    // The module whose own load read the clock keeps its rule: no constants.
+    expect(decisions[1]!.reason).toContain("volatile Date.now(): no constants");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.require"]);
+
+    // The same when the probe reached the other module first.
+    const other = sharing({ volatile: ["Date.now()"] }, true, "second");
+    expect(other.decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(other.decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
+    expect(other.calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.defer"]);
   });
 
   test("a module that shares nothing with such a load still defers", () => {

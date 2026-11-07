@@ -855,6 +855,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  // scr_record_source_delete.c, a gated unit.
+  "record.sourceDelete": "scr_record_source_delete",
   "record.sourceSpread": "scr_record_source_spread",
   "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",
@@ -966,6 +968,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",
   "spawnRes.stderr": "scr_spawn_res_stderr",
+  "spawnRes.stdoutBytes": "scr_spawn_res_stdout_bytes",
+  "spawnRes.stderrBytes": "scr_spawn_res_stderr_bytes",
   "child.killed": "scr_child_killed",
   "child.spawnfile": "scr_child_spawnfile",
   "child.spawnargs": "scr_child_spawnargs",
@@ -1219,6 +1223,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.primitiveDelete": "scr_dyn_primitive_delete",
   "dyn.reflectDeleteProperty": "scr_dyn_reflect_delete_property",
   "dyn.reflectHasTarget": "scr_dyn_reflect_has_target",
+  "dyn.reflectGetPrototypeTarget": "scr_dyn_reflect_get_prototype_target",
   "dyn.hasKeyComputed": "scr_dyn_has_key_computed",
   "dyn.hasOwnComputed": "scr_dyn_has_own_computed",
   "dyn.propertyIsEnumerableComputed": "scr_dyn_property_is_enumerable_computed",

@@ -153,8 +153,13 @@ export interface CcOptions {
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
+  /** A spawnSync capture read as a Buffer: compiles scr_child_capture.c. */
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  /** A dev executable's report of failed checked conversions: compiles
+   * scr_conversion_trace.c. */
+  conversionTrace?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
   /** The keyed collections' prototype objects and member values, their
@@ -164,9 +169,21 @@ export interface CcOptions {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
+  /** Reflect.getPrototypeOf's primitive-target check: compiles
+   * scr_dyn_reflect_proto.c. */
+  reflectProtoTarget?: boolean;
+  /** `delete` of a key a record's type does not declare: compiles
+   * scr_record_source_delete.c. */
+  recordSourceDelete?: boolean;
+  /** A partial record assertion to a type whose values may be frozen:
+   * compiles scr_record_view_frozen.c. */
+  recordViewFrozen?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;
+  /** A generator function that reads `this` (dyn.generatorThis): compiles
+   * scr_gen_receiver.c. */
+  genReceiver?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -191,6 +208,9 @@ export interface CcOptions {
   /** createRequire's computed require and require.resolve: compiles
    * scr_require.c. */
   computedRequire?: boolean;
+  /** An untyped path of a synchronous fs function: compiles
+   * scr_fs_path_value.c. */
+  fsPathValue?: boolean;
   /** Builtin functions read as values: compiles scr_builtin_values.c. */
   builtinValues?: boolean;
   /** A standard library prototype object read as a value in a JavaScript
@@ -235,6 +255,9 @@ export interface CcOptions {
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
    * (scr_fs_flags.c and that build of scr_fs_cp.c). */
   fsFlags?: boolean;
+  /** The BYTE-data spellings of the options write and
+   * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
+  fsBytesWrites?: boolean;
   /** string_decoder's checked-dynamic chunk forms: compiles
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
@@ -327,8 +350,9 @@ export interface CcOptions {
    * moduleUsesNet answers true for whenever this does. */
   http?: boolean;
   /** The program uses the REAL node:http2 surface (moduleUsesHttp2 on
-   * the IR): compiles scr_http2.c — always alongside scr_net.c, which
-   * moduleUsesNet answers true for whenever this does. */
+   * the IR): compiles scr_http2.c — always alongside scr_net.c and
+   * scr_http.c, which the link features turn on with it
+   * (LINK_FEATURE_REQUIREMENTS). */
   http2?: boolean;
   /** The program uses the node:dgram or node:dns surface (moduleUsesDgram
    * on the IR): compiles scr_dgram.c into the binary — the net gating

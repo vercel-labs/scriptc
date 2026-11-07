@@ -19505,6 +19505,10 @@
           "tests/corpus/7155-cipher-aes-ccm.cjs",
           "tests/corpus/7156-cipher-key-wrap.cjs",
           "tests/corpus/7157-crypto-cipher-info-typed.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20212,6 +20216,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20265,6 +20273,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20322,6 +20334,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20352,6 +20368,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20489,6 +20509,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20519,6 +20543,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -21421,6 +21449,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -21478,6 +21510,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23489,6 +23525,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23519,6 +23559,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23664,6 +23708,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23694,6 +23742,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23724,6 +23776,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23754,6 +23810,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23784,6 +23844,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23814,6 +23878,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -26515,7 +26583,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75894,7 +75963,8 @@
           "tests/corpus/5147-path-matches-glob-extglob.ts",
           "tests/corpus/5148-path-matches-glob-classes.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -75948,7 +76018,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75979,7 +76050,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76010,7 +76082,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76037,6 +76110,7 @@
         "evidence": "surface-manifest:node-builtin.path.format",
         "tests": [
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
           "packages/runtime/test/path.test.ts"
         ]
       },
@@ -76098,7 +76172,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76129,7 +76204,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76160,7 +76236,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76187,6 +76264,7 @@
         "evidence": "surface-manifest:node-builtin.path.parse",
         "tests": [
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
           "packages/runtime/test/path.test.ts"
         ]
       },
@@ -76218,7 +76296,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76249,7 +76328,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76280,7 +76360,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76311,7 +76392,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76342,7 +76424,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76373,7 +76456,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76404,7 +76488,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -85753,8 +85838,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85960,8 +86049,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.isSea",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86075,8 +86168,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAsset",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86098,8 +86195,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAssetAsBlob",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86121,8 +86222,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getRawAsset",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86144,8 +86249,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAssetKeys",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

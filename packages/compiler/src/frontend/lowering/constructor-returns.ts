@@ -27,6 +27,7 @@
  * primitive. That TypeError covers every primitive, `null` included, and
  * is decided statically whenever the returned expression's type is one. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import {
   BOOL,
@@ -70,12 +71,6 @@ const PRIMITIVE_FLAGS =
  * variables and intersections (a branded `string & { tag }` is a string). */
 const OPEN_FLAGS =
   ts.TypeFlags.AnyOrUnknown | ts.TypeFlags.InstantiableNonPrimitive | ts.TypeFlags.Intersection;
-
-function unparenthesized(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
 
 /** Whether a value of this checker type can be an object: "never",
  * "always", or "maybe" (open types and primitive/object unions). */
@@ -188,14 +183,14 @@ function returnsThis(
     e = e.expression;
   if (e.kind === ts.SyntaxKind.ThisKeyword) return true;
   if (!ts.isCallExpression(e)) return false;
-  const callee = unparenthesized(e.expression);
+  const callee = withoutParentheses(e.expression);
   if (
     !ts.isPropertyAccessExpression(callee) ||
     callee.questionDotToken !== undefined ||
     !ts.isIdentifier(callee.name)
   )
     return false;
-  const receiver = unparenthesized(callee.expression).kind;
+  const receiver = withoutParentheses(callee.expression).kind;
   if (receiver !== ts.SyntaxKind.ThisKeyword && receiver !== ts.SyntaxKind.SuperKeyword)
     return false;
   const name = callee.name.text;
@@ -254,7 +249,7 @@ export function constructorReturnPlan(
   if (ctor?.body !== undefined && info.decl !== null) {
     const returns = new Map<ts.ReturnStatement, ReturnKind>();
     for (const stmt of ownValueReturns(ctor)) {
-      const value = unparenthesized(stmt.expression!);
+      const value = withoutParentheses(stmt.expression!);
       if (returnsThis(lowerer, info, value)) continue;
       const type = lowerer.typeOf(value);
       const shape = objectness(type);
@@ -500,7 +495,7 @@ function mayReturnPrimitive(lowerer: Lowerer, info: ClassInfo): boolean {
   if (info.base === null || ctor?.body === undefined || info.decl === null) return false;
   const js = isJsSourceFile(ts.getSourceFileOfNode(ctor));
   for (const stmt of ownValueReturns(ctor)) {
-    const value = unparenthesized(stmt.expression!);
+    const value = withoutParentheses(stmt.expression!);
     if (returnsThis(lowerer, info, value)) continue;
     const type = lowerer.typeOf(value);
     const shape = objectness(type);
@@ -572,7 +567,7 @@ export function constructedValue(lowerer: Lowerer, info: ClassInfo, constructed:
   const loc = constructed.loc;
   const type = instanceType(info);
   const name = `%${info.def.name}.%constructed`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const instance = { id: "instance.0", name: "instance", type, mutable: false };
     const returned = {
       id: "returned.0",
@@ -696,7 +691,7 @@ export function superIntoResultSlot(
   const loc = locOf(blame);
   const type = instanceType(base);
   const name = `%${sub.def.name}.%superResult`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const instance = { id: "instance.0", name: "instance", type, mutable: false };
     const returned = {
       id: "returned.0",

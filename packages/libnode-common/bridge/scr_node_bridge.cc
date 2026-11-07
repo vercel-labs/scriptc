@@ -93,6 +93,9 @@ Global<Function> g_set_timer, g_clear_timer, g_ref_timer, g_refresh_timer;
 Global<Function> g_set_immediate, g_clear_immediate, g_ref_immediate;
 Global<Function> g_next_tick, g_emit;
 Global<Function> g_load; // the bootstrap's module loader (NI-4)
+// The prototypes of the island classes whose objects native code adopts
+// (the bootstrap's twinPrototypes): a handle of one is flagged SCR_NVF_TWIN.
+std::vector<Global<Object>> g_twin_prototypes;
 Global<Function> g_shared_push; // the loader hooks' binding updates (NI-6)
 void SharedTable(const FunctionCallbackInfo<Value> &info);
 void SharedGet(const FunctionCallbackInfo<Value> &info);
@@ -355,6 +358,15 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
       !TakeFunction(isolate, context, d, "load", &g_load) ||
       !TakeFunction(isolate, context, d, "sharedPush", &g_shared_push))
     return Copy("the Node island bootstrap left an incomplete dispatcher", nullptr);
+  Local<Value> prototypes;
+  if (d->Get(context, Utf8(isolate, "twinPrototypes")).ToLocal(&prototypes) && prototypes->IsArray()) {
+    Local<v8::Array> list = prototypes.As<v8::Array>();
+    for (uint32_t i = 0; i < list->Length(); i++) {
+      Local<Value> prototype;
+      if (list->Get(context, i).ToLocal(&prototype) && prototype->IsObject())
+        g_twin_prototypes.emplace_back(isolate, prototype.As<Object>());
+    }
+  }
   global->Delete(context, Utf8(isolate, "__scriptcNodeIsland")).FromMaybe(false);
   global->Delete(context, Utf8(isolate, "__scriptcNodeIslandHost")).FromMaybe(false);
   return nullptr;
@@ -720,6 +732,7 @@ void Stop() {
   node::Stop(g_setup->env());
   g_call.Reset();
   g_load.Reset();
+  g_twin_prototypes.clear();
   StopCollector(isolate);
   DropAllHandles();
   DropAllExports();
@@ -1770,6 +1783,37 @@ Local<Object> CollectionView(Isolate *isolate, Local<Context> context, Local<Val
   return Object::New(isolate);
 }
 
+// ── twin exports: a native object of a platform class whose island
+// receivers test its brand (an AbortSignal) is a real object of the
+// island's own class, made by the bootstrap's makeTwin from the class name.
+// The twin asks its native object through `op` (host->export_op,
+// SCR_NODE_TWIN_*). makeTwin reads no native state: startTwin does, once the
+// twin is the export's representative, so that state which names the native
+// object itself (a signal aborted with itself as the reason) finds it.
+// An export may instead adopt an island object that reached native code
+// (FromV8 flags the classes the bootstrap lists): that object becomes the
+// representative, and adoptTwin gives it its `op`.
+Local<Value> TwinHelper(Isolate *isolate, Local<Context> context, const char *name, int argc,
+                        Local<Value> *argv) {
+  TryCatch try_catch(isolate);
+  Local<Value> helpers, fn, result;
+  Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+  if (g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) &&
+      helpers->IsObject() &&
+      helpers.As<Object>()->Get(context, Utf8(isolate, name)).ToLocal(&fn) && fn->IsFunction() &&
+      fn.As<Function>()->Call(context, helpers, argc, argv).ToLocal(&result))
+    return result;
+  return v8::Undefined(isolate);
+}
+
+Local<Object> TwinObject(Isolate *isolate, Local<Context> context, Local<Value> data,
+                         const ScrNodeValue *in) {
+  Local<Value> argv[] = {FromWtf8(isolate, in->u.exp.name, in->u.exp.name_len),
+                         Function::New(context, CollectionOp, data).ToLocalChecked()};
+  Local<Value> twin = TwinHelper(isolate, context, "makeTwin", 2, argv);
+  return twin->IsObject() ? twin.As<Object>() : Object::New(isolate);
+}
+
 Local<Object> ArrayProxy(Isolate *isolate, Local<Context> context, Local<Value> data) {
   Local<Object> handler = Object::New(isolate);
   struct Trap {
@@ -1859,6 +1903,7 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     return existing;
   }
   Local<Object> obj;
+  bool adopted = false;
   Local<Value> data = v8::Integer::NewFromUnsigned(isolate, id);
   if (in->flags & SCR_NVF_FUNCTION) {
     Local<Function> fn =
@@ -1882,6 +1927,12 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     obj = resolver->GetPromise();
   } else if (in->flags & (SCR_NVF_MAP | SCR_NVF_SET)) {
     obj = CollectionView(isolate, context, data, (in->flags & SCR_NVF_MAP) != 0);
+  } else if (in->flags & SCR_NVF_TWIN) {
+    // The island object the export adopts, or a twin the bootstrap makes.
+    Local<Value> island =
+        in->u.exp.length != 0 ? HandleValue(isolate, in->u.exp.length) : Local<Value>();
+    adopted = !island.IsEmpty() && island->IsObject();
+    obj = adopted ? island.As<Object>() : TwinObject(isolate, context, data, in);
   } else if (in->flags & SCR_NVF_ARRAY) {
     obj = ArrayProxy(isolate, context, data);
     g_proxy_ids.emplace(obj->GetIdentityHash(), id);
@@ -1901,6 +1952,15 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
   slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
                v8::WeakCallbackType::kParameter);
   if (in->flags & SCR_NVF_PROMISE) g_host->export_watch(id);
+  if (in->flags & SCR_NVF_TWIN) {
+    if (adopted) {
+      Local<Value> adopt_argv[] = {FromWtf8(isolate, in->u.exp.name, in->u.exp.name_len), obj,
+                                   Function::New(context, CollectionOp, data).ToLocalChecked()};
+      TwinHelper(isolate, context, "adoptTwin", 3, adopt_argv);
+    }
+    Local<Value> argv[] = {obj};
+    TwinHelper(isolate, context, "startTwin", 1, argv);
+  }
   RefreshMirror(isolate, context, id, in->flags, obj);
   return obj;
 }
@@ -2098,8 +2158,28 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
     if (v.As<Function>()->IsConstructor()) flags |= SCR_NVF_CONSTRUCTOR;
   }
   if (v->IsNativeError()) flags |= SCR_NVF_ERROR;
-  if (v->IsArray()) flags |= SCR_NVF_ARRAY;
+  // Array.isArray follows a proxy to its target; IsArray() stops at the
+  // proxy. A revoked proxy answers false here rather than throwing.
+  {
+    Local<Value> tested = v;
+    while (tested->IsProxy()) {
+      Local<v8::Proxy> proxy = tested.As<v8::Proxy>();
+      if (proxy->IsRevoked()) break;
+      tested = proxy->GetTarget();
+      if (tested.IsEmpty()) break;
+    }
+    if (tested->IsArray()) flags |= SCR_NVF_ARRAY;
+  }
   if (v->IsPromise()) flags |= SCR_NVF_PROMISE;
+  if (!g_twin_prototypes.empty() && v->IsObject() && !v->IsFunction() && !v->IsProxy()) {
+    Local<Value> prototype = v.As<Object>()->GetPrototypeV2();
+    for (Global<Object> &twin : g_twin_prototypes) {
+      if (twin.Get(isolate)->StrictEquals(prototype)) {
+        flags |= SCR_NVF_TWIN;
+        break;
+      }
+    }
+  }
   out->flags = flags;
   out->u.handle = Import(isolate, v);
 }
@@ -2446,14 +2526,39 @@ void OnSettled(const FunctionCallbackInfo<Value> &info, int rejected) {
 void OnFulfilled(const FunctionCallbackInfo<Value> &info) { OnSettled(info, 0); }
 void OnRejected(const FunctionCallbackInfo<Value> &info) { OnSettled(info, 1); }
 
-// await of a value: PromiseResolve (a native promise is itself) and one
-// reaction, as `await` does in JavaScript.
+// Whether `await` takes promise `v` as itself: PromiseResolve does when its
+// `constructor` is the intrinsic Promise. An instance of a Promise subclass
+// (an SDK's request promise, whose constructor takes something other than
+// an executor and whose `then` starts the request) is resolved like any
+// thenable instead: its own `then` runs, from a promise job. Reading
+// `constructor` can throw; the caller reports that as the await's rejection.
+bool AwaitsAsItself(Op &op, Local<v8::Promise> v, bool *threw) {
+  Local<Value> ctor, intrinsic;
+  Local<v8::Promise::Resolver> plain;
+  if (!v->Get(op.e.context, Utf8(op.e.isolate, "constructor")).ToLocal(&ctor)) {
+    *threw = true;
+    return false;
+  }
+  // The intrinsic: what a promise V8 makes itself answers.
+  if (!v8::Promise::Resolver::New(op.e.context).ToLocal(&plain) ||
+      !plain->GetPromise()->Get(op.e.context, Utf8(op.e.isolate, "constructor")).ToLocal(&intrinsic))
+    return true;
+  return ctor->StrictEquals(intrinsic);
+}
+
+// await of a value: PromiseResolve (a promise whose constructor is the
+// intrinsic Promise is itself; anything else, a Promise subclass instance
+// included, is resolved through its `then`) and one reaction, as `await`
+// does in JavaScript.
 int Then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *out) {
   Op op;
   Local<Value> v = op.V(value);
   Local<v8::Promise> promise;
-  if (v->IsPromise()) {
+  bool threw = false;
+  if (v->IsPromise() && AwaitsAsItself(op, v.As<v8::Promise>(), &threw)) {
     promise = v.As<v8::Promise>();
+  } else if (threw) {
+    return op.Finish(Local<Value>(), false, out);
   } else {
     Local<v8::Promise::Resolver> resolver;
     if (!v8::Promise::Resolver::New(op.e.context).ToLocal(&resolver) ||

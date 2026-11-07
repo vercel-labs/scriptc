@@ -10,6 +10,7 @@
   6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080
 
 #include "scr_runtime.h"
+#include "scr_abort_signal.h"
 #include "scr_system_errors.h"
 #include "scr_url_internal.h"
 
@@ -25,8 +26,6 @@ static void sf_signal_install(void);
 #endif
 
 typedef struct SfTransfer SfTransfer;
-typedef struct SfSignal SfSignal;
-typedef struct SfSignalWatch SfSignalWatch;
 typedef struct SfStream SfStream;
 typedef struct SfReader SfReader;
 typedef struct SfResponse SfResponse;
@@ -53,30 +52,6 @@ struct SfReadRequest {
 struct SfTypedRef {
   ScrDyn *value;
   SfTypedRef *next;
-};
-
-struct SfSignalWatch {
-  SfSignal *source; /* weak; NULL after the source fires */
-  void *owner;      /* owner keeps source alive */
-  void (*fire)(SfSignalWatch *, SfSignal *);
-  SfSignalWatch *next;
-};
-
-struct SfSignal {
-  size_t rc;
-  bool aborted;
-  ScrDyn *reason;
-  ScrError *error_reason;
-  bool reason_self;
-  ScrDynHandleTag reason_self_tag;
-  bool reason_tracked;
-  SfSignal *reason_next;
-  ScrEventTargetCore core; /* listeners and the onabort attribute */
-  SfSignalWatch *watchers;
-  SfSignal **sources;
-  SfSignalWatch **source_watches;
-  size_t source_count;
-  double timer_id;
 };
 
 struct SfReader {

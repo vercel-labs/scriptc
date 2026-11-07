@@ -1,0 +1,20 @@
+for-of-iterable-kind-union.ts:12:23 - error SC2001: values of type 'string[] | Set<string>' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  11 |   let count = 0;
+  12 |   for (const entry of mixed(flag)) count += entry.length;
+     |                       ^~~~~~~~~~~
+  13 |   return count;
+
+for-of-iterable-kind-union.ts:22:23 - error SC2001: values of type 'string | string[]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  21 |   let count = 0;
+  22 |   for (const entry of texts(flag)) count += entry.length;
+     |                       ^~~~~~~~~~~
+  23 |   return count;
+
+for-of-iterable-kind-union.ts:32:3 - error SC1070: 'for await' over this value (supported: typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams) is not supported yet
+
+  31 |   let count = 0;
+  32 |   for await (const entry of lists(flag)) count += typeof entry === "number" ? entry : entry.length;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  33 |   return count;

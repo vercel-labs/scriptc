@@ -37,11 +37,12 @@ import {
   type TargetCpu,
 } from "../backend/target-cpu.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
+import { isLoweredDependency, LOWERED_DEPENDENCIES } from "../executable/lowered.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
 import { serveMcp } from "./mcp.js";
-import { CLI_OPTIONS, USAGE } from "./usage.js";
+import { CLI_OPTIONS, firstUnacceptedOption, USAGE } from "./usage.js";
 
 /* The exit discipline: NEVER process.exit() after writing output. stdout/
  * stderr to a PIPE are async streams — process.exit() drops whatever libuv
@@ -104,6 +105,26 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
 
   const [command, inputArg] = positionals;
+  if (
+    (values["emit-lowered"] !== undefined ||
+      values["from-lowered"] !== undefined ||
+      (values["from-lowered-accept"] ?? []).length > 0) &&
+    (command !== "build" || values.lib)
+  ) {
+    fail(
+      `--emit-lowered, --from-lowered and --from-lowered-accept are options of an executable scriptc build\n\n${USAGE}`,
+    );
+  }
+  const loweredAccept = (values["from-lowered-accept"] ?? [])
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter((value) => value !== "");
+  for (const kind of loweredAccept) {
+    if (!isLoweredDependency(kind))
+      fail(
+        `unknown --from-lowered-accept value "${kind}" (supported: ${LOWERED_DEPENDENCIES.join(", ")})\n\n${USAGE}`,
+      );
+  }
   if (command === "mcp") {
     if (args.length !== 1) fail(`scriptc mcp takes no arguments\n\n${USAGE}`);
     return serveMcp(host);
@@ -112,34 +133,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
     if (inputArg !== "warm")
       fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);
     if (
-      values.lib ||
-      values.backend !== undefined ||
-      values.emit !== undefined ||
-      values.print !== undefined ||
-      values["fail-on"] !== undefined ||
-      values.ffi !== undefined ||
-      values.profile !== undefined ||
-      values.strip ||
-      values.static ||
-      values["windows-subsystem"] !== undefined ||
-      values["detached-exit"] ||
-      values["large-pages"] ||
-      values["stdout-buffering"] ||
-      values.exceptions !== undefined ||
-      values["target-cpu"] !== undefined ||
-      values["cpu-dispatch"] !== undefined ||
-      values["profile-generate"] !== undefined ||
-      values["profile-use"] !== undefined ||
-      values.sparse ||
-      (values["npm-static"] ?? []).length > 0 ||
-      values["provenance-sources"] ||
-      externalTypeArgs.length > 0 ||
-      values.out !== undefined ||
-      values["emit-ir"] ||
-      values.tier !== undefined ||
-      values["explain-dynamic"] !== undefined ||
-      hasNodeIslandFlags(values) ||
-      !values["keep-llvm"]
+      // The command table says which options `cache warm` takes (cli/usage.ts).
+      firstUnacceptedOption("cache-warm", values) !== undefined
     ) {
       fail(
         `scriptc cache warm takes only native optimization/sanitizer options and profile names\n\n${USAGE}`,
@@ -174,36 +169,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (command === "merge-profiles") {
     const inputs = positionals.slice(1);
-    const others =
-      values.lib ||
-      values.backend !== undefined ||
-      values.emit !== undefined ||
-      values.print !== undefined ||
-      values["fail-on"] !== undefined ||
-      values.optimization !== undefined ||
-      values.ffi !== undefined ||
-      values.profile !== undefined ||
-      values.strip ||
-      values.static ||
-      values.sanitize ||
-      values["windows-subsystem"] !== undefined ||
-      values["detached-exit"] ||
-      values["large-pages"] ||
-      values["stdout-buffering"] ||
-      values.exceptions !== undefined ||
-      values["target-cpu"] !== undefined ||
-      values["cpu-dispatch"] !== undefined ||
-      values["profile-generate"] !== undefined ||
-      values["profile-use"] !== undefined ||
-      (values["npm-static"] ?? []).length > 0 ||
-      values["provenance-sources"] ||
-      externalTypeArgs.length > 0 ||
-      (values.wasm ?? []).length > 0 ||
-      values["emit-ir"] ||
-      values.tier !== undefined ||
-      values["explain-dynamic"] !== undefined ||
-      hasNodeIslandFlags(values) ||
-      !values["keep-llvm"];
+    const others = firstUnacceptedOption("merge-profiles", values) !== undefined;
     if (values.out === undefined || inputs.length === 0 || others) {
       fail(
         `scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles\n\n${USAGE}`,
@@ -273,30 +239,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
     if (inputArg) {
       fail("scriptc build --lib takes no input positional: the profile names the entry module");
     }
-    if (
-      values.backend !== undefined ||
-      values.emit !== undefined ||
-      values.print !== undefined ||
-      values["fail-on"] !== undefined ||
-      values.optimization !== undefined ||
-      values.strip ||
-      values.static ||
-      values.ffi !== undefined ||
-      values["windows-subsystem"] !== undefined ||
-      values["detached-exit"] ||
-      values["large-pages"] ||
-      values["stdout-buffering"] ||
-      values.exceptions !== undefined ||
-      values["target-cpu"] !== undefined ||
-      values["cpu-dispatch"] !== undefined ||
-      values["profile-generate"] !== undefined ||
-      values["profile-use"] !== undefined ||
-      (values["npm-static"] ?? []).length > 0 ||
-      externalTypeArgs.length > 0 ||
-      values.tier !== undefined ||
-      values["explain-dynamic"] !== undefined ||
-      hasNodeIslandFlags(values)
-    ) {
+    if (firstUnacceptedOption("build-lib", values) !== undefined) {
       fail(
         "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
@@ -557,6 +500,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (output !== null && !output.ok) fail(`${output.message}\n\n${USAGE}`);
   const backend = output === null ? undefined : output.backend;
 
+  // An option the command does not take is refused by name above. This refuses
+  // one that has no check of its own, so a new option is never silently ignored.
+  const stray = firstUnacceptedOption(command, values);
+  if (stray !== undefined) fail(`--${stray} is not a ${command} option\n\n${USAGE}`);
+
   // --npm-static: repeatable and comma-splittable; the literal "auto"
   // switches to eligibility-based detection (mixing "auto" with names
   // is rejected — the shapes answer different questions).
@@ -694,6 +642,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
       ...(tier !== undefined ? { tier } : {}),
+      ...(values["emit-lowered"] === undefined
+        ? {}
+        : { emitLowered: resolve(values["emit-lowered"]) }),
+      ...(values["from-lowered"] === undefined
+        ? {}
+        : { fromLowered: resolve(values["from-lowered"]) }),
+      ...(loweredAccept.length === 0 ? {} : { fromLoweredAccept: loweredAccept }),
     });
     if (!result.ok) {
       if (printDiagnostics) {
@@ -796,19 +751,6 @@ async function main(args: string[], host: CliHost): Promise<number> {
     process.stdout.write(`${binary}\n`);
   }
   return 0;
-}
-
-/** Whether any Node island flag is present (they belong to build, run and
- * coverage). */
-function hasNodeIslandFlags(values: ReturnType<typeof parseCli>["values"]): boolean {
-  return (
-    values["node-islands"] !== undefined ||
-    (values["node-island"] ?? []).length > 0 ||
-    (values.native ?? []).length > 0 ||
-    values.node !== undefined ||
-    values["explain-island"] !== undefined ||
-    values["strict-user-js"]
-  );
 }
 
 /** Both installed and seed commands use this argument and diagnostic contract. */

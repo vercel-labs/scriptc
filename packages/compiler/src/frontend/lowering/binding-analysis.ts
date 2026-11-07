@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import { dynFallbackType } from "./lowerer.js";
@@ -200,32 +201,12 @@ export function isValueIdentifier(node: ts.Identifier): boolean {
   return true;
 }
 
-/** Strips the value-preserving wrappers off an expression: parens,
- * non-null assertions, `as`/`satisfies`/angle-bracket casts. What
- * remains is the expression that actually evaluates. */
-export function stripValueWrappers(e: ts.Expression): ts.Expression {
-  let v: ts.Expression = e;
-  for (;;) {
-    if (
-      ts.isParenthesizedExpression(v) ||
-      ts.isNonNullExpression(v) ||
-      ts.isAsExpression(v) ||
-      ts.isSatisfiesExpression(v) ||
-      ts.isTypeAssertion(v)
-    ) {
-      v = v.expression;
-      continue;
-    }
-    return v;
-  }
-}
-
 /** The nullish unit `e` provably evaluates to: a bare null/undefined
  * literal (assertion-wrapped — `null as any`, `null!`), or a read of a
  * registered NULLISH binding (nullishGenericBindingUnitOf). Null when
  * the value could be anything else. */
 export function nullishExprUnitOf(lowerer: Lowerer, e: ts.Expression): "null" | "undefined" | null {
-  const v = stripValueWrappers(e);
+  const v = withoutParenthesesTypeWrappers(e);
   if (v.kind === ts.SyntaxKind.NullKeyword) return "null";
   if (ts.isIdentifier(v)) {
     if (v.text === "undefined" && (lowerer.typeOf(v).flags & ts.TypeFlags.Undefined) !== 0) {
@@ -437,7 +418,7 @@ function allWritesNullish(lowerer: Lowerer, sym: ts.Symbol, decl: ts.Node): bool
  * unobservable. Bare identifier reads stay OUT (a read above a `let`
  * declaration is a TDZ throw Node WOULD serve). */
 function sideEffectFreeValueExpr(lowerer: Lowerer, e: ts.Expression): boolean {
-  const v = stripValueWrappers(e);
+  const v = withoutParenthesesTypeWrappers(e);
   if (ts.isArrowFunction(v) || ts.isFunctionExpression(v)) return true;
   if (
     ts.isLiteralExpression(v) ||

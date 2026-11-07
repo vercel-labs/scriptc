@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/inspect-untyped-cycles.ts"
+ ],
+ "diags": []
+}

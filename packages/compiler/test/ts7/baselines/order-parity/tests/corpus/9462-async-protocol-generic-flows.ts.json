@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9462-async-protocol-generic-flows.ts"
+ ],
+ "diags": []
+}

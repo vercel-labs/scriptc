@@ -7358,7 +7358,10 @@ static bool scr_stream_write_chunk_desc(ScrStream *s, ScrBytes *chunk /*borrowed
                                         const ScrStreamTypedDesc *desc) {
   ScrStreamState *st = s->st;
   if (!st->has_w || st->destroyed || st->w.ending) {
-    ScrError *e = st->has_w && !st->destroyed
+    /* Node's write() checks state.ending before state.destroyed, so a write
+     * after end() keeps answering ERR_STREAM_WRITE_AFTER_END even once the
+     * stream the failed write destroyed is gone. */
+    ScrError *e = st->w.ending
         ? scr_stream_mkerr("ERR_STREAM_WRITE_AFTER_END", "write after end")
         : scr_stream_mkerr("ERR_STREAM_DESTROYED", "Cannot call write after a stream was destroyed");
     if (cb) {
@@ -8561,9 +8564,9 @@ static void scr_handle_step_destroy(ScrClosure *cb, ScrStream *s, ScrError *err)
   scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
 }
 
-static ScrClosure *scr_handle_step(const ScrDynHandleOps *ops, void *h) {
+static ScrClosure *scr_handle_step(const ScrDynHandleOps *ops, void *h, ScrTraceFn trace) {
   ScrClosure *step = scr_closure_new(NULL, 2);
-  step->caps[0] = scr_box_new_obj(ops->retain, ops->release, ops->transform->trace);
+  step->caps[0] = scr_box_new_obj(ops->retain, ops->release, trace);
   scr_box_set_ref(step->caps[0], ops->retain(h));
   step->caps[1] = scr_box_new_obj(scr_handle_ops_retain, scr_handle_ops_release, NULL);
   scr_box_set_ref(step->caps[1], (void *)ops);
@@ -8576,21 +8579,57 @@ static ScrStream *scr_handle_transform(const ScrDynHandleOps *ops, void *h) {
   ScrStream *s = t->stream(h);
   if (!s) {
     s = scr_stream_new_transform(-1, -1, true, true, true, true, true,
-                                 scr_handle_step(ops, h), scr_handle_step_transform,
-                                 scr_handle_step(ops, h), scr_handle_step_flush,
-                                 scr_handle_step(ops, h), scr_handle_step_destroy);
+                                 scr_handle_step(ops, h, t->trace), scr_handle_step_transform,
+                                 scr_handle_step(ops, h, t->trace), scr_handle_step_flush,
+                                 scr_handle_step(ops, h, t->trace), scr_handle_step_destroy);
     s->cls = ops->cls;
     t->set_stream(h, s, scr_stream_release_v);
   }
   return scr_stream_retain(s);
 }
 
-/* The native stream of a checked-dynamic Transform handle (+1), or NULL
- * when the value is not one. */
+/* ── handles that are Writables (Sign, Verify) ───────────────────────────
+ * A Writable handle (ScrDynHandleOps.writable) used as a stream gets one
+ * native Writable, built here on first use and kept in the handle's slot.
+ * Each chunk goes through the handle's write() as Node's _write does, and
+ * the write completes as soon as it returns: there is no _final, so end()
+ * finishes the stream at once. The step shares the handle (held, and
+ * traced: the handle and its stream form a cycle the collector reclaims)
+ * and the handle's static ops. */
+
+static void scr_handle_wstep_write(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  /* A throwing write() leaves the exception pending: it throws out of the
+   * write, which is where Node's _write throw surfaces too. */
+  scr_handle_step_handle_ops(cb)->writable->write(scr_handle_step_handle(cb), chunk);
+  if (!scr_exc_pending()) scr_stream_write_done(s, NULL);
+}
+
+/* The Writable of handle h (+1), built on first use. */
+static ScrStream *scr_handle_writable(const ScrDynHandleOps *ops, void *h) {
+  const ScrDynHandleWritable *w = ops->writable;
+  ScrStream *s = w->stream(h);
+  if (!s) {
+    s = scr_stream_new_writable(-1, true, true,
+                                scr_handle_step(ops, h, w->trace), scr_handle_wstep_write,
+                                NULL, NULL, NULL, NULL);
+    s->cls = ops->cls;
+    w->set_stream(h, s, scr_stream_release_v);
+  }
+  return scr_stream_retain(s);
+}
+
+/* The native stream of a stream handle (+1): its Transform or Writable. */
+static ScrStream *scr_handle_stream_build(const ScrDynHandleOps *ops, void *h) {
+  return ops->transform ? scr_handle_transform(ops, h) : scr_handle_writable(ops, h);
+}
+
+/* The native stream of a checked-dynamic stream handle (+1), or NULL when
+ * the value is not one. */
 ScrStream *scr_stream_of_handle(const ScrDyn *value) {
   if (value->kind != SCR_DYN_HANDLE) return NULL;
   const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(value);
-  return ops->transform ? scr_handle_transform(ops, value->v.handle.ptr) : NULL;
+  if (!ops->transform && !ops->writable) return NULL;
+  return scr_handle_stream_build(ops, value->v.handle.ptr);
 }
 
 /* A boxed native stream (+1), or NULL for any other value. */
@@ -8835,15 +8874,40 @@ static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t 
   return result;
 }
 
+/* The stream members and properties a Writable-only handle (Sign, Verify)
+ * answers: its Writable and emitter side. Its Readable side is absent, as
+ * it is on a Writable in Node. */
+static bool scr_handle_writable_method(const char *name) {
+  static const char *const methods[] = {
+    "on", "once", "addListener", "prependListener", "prependOnceListener",
+    "off", "removeListener", "removeAllListeners", "listenerCount", "eventNames",
+    "write", "end", "destroy", "cork", "uncork", "setDefaultEncoding",
+  };
+  for (size_t i = 0; i < sizeof methods / sizeof *methods; i++)
+    if (strcmp(name, methods[i]) == 0) return true;
+  return false;
+}
+
+static bool scr_handle_writable_property(const char *name) {
+  static const char *const properties[] = {
+    "writable", "writableEnded", "writableFinished", "writableLength",
+    "writableHighWaterMark", "writableNeedDrain", "destroyed", "closed",
+  };
+  for (size_t i = 0; i < sizeof properties / sizeof *properties; i++)
+    if (strcmp(name, properties[i]) == 0) return true;
+  return false;
+}
+
 /* ScrHandleStreamHooks.call: a member a native stream answers to
- * checked-dynamic calls, on the handle's Transform. Members that answer
- * the stream answer `self`. */
+ * checked-dynamic calls, on the handle's Transform (or Writable). Members
+ * that answer the stream answer `self`. */
 static bool scr_handle_stream_call(const ScrDynHandleOps *ops, void *h, ScrDyn *self,
                                    const char *method, ScrDyn *const *args, size_t argc,
                                    ScrDyn **result) {
   for (size_t i = 0; i < sizeof scr_stream_dyn_methods / sizeof *scr_stream_dyn_methods; i++) {
     if (strcmp(method, scr_stream_dyn_methods[i]) != 0) continue;
-    ScrStream *stream = scr_handle_transform(ops, h);
+    if (!ops->transform && !scr_handle_writable_method(method)) return false;
+    ScrStream *stream = scr_handle_stream_build(ops, h);
     *result = scr_stream_dyn_call(stream, self, method, args, argc);
     scr_stream_release(stream);
     return true;
@@ -8864,13 +8928,15 @@ static ScrDyn *scr_stream_dyn_property(ScrStream *stream, const char *name) {
   return number ? scr_dyn_new_num(value) : scr_dyn_new_bool(value != 0);
 }
 
-/* ScrHandleStreamHooks.get: a stream property of the handle's Transform. */
+/* ScrHandleStreamHooks.get: a stream property of the handle's Transform
+ * (or Writable). */
 static ScrDyn *scr_handle_stream_get(const ScrDynHandleOps *ops, void *h, const char *key,
                                      size_t key_len) {
   for (size_t i = 0; i < sizeof scr_stream_dyn_properties / sizeof *scr_stream_dyn_properties; i++) {
     const char *name = scr_stream_dyn_properties[i];
     if (strlen(name) != key_len || memcmp(name, key, key_len) != 0) continue;
-    ScrStream *stream = scr_handle_transform(ops, h);
+    if (!ops->transform && !scr_handle_writable_property(name)) return NULL;
+    ScrStream *stream = scr_handle_stream_build(ops, h);
     ScrDyn *value = scr_stream_dyn_property(stream, name);
     scr_stream_release(stream);
     return value;

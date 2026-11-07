@@ -1389,18 +1389,57 @@ static int re_parse_class_set_operand(REParseState *s, REStringList *cr, const u
     return 0;
 }
 
+/* scriptc: the single characters and ranges of a class are collected in
+   'iv' ([first, last + 1) pairs in source order) and united with the class
+   once, instead of rebuilding the whole class for each of them. A union
+   does not depend on the order of its operands, so the class is the same
+   set. */
+static int re_interval_cmp(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a;
+    uint32_t y = *(const uint32_t *)b;
+    return (x > y) - (x < y);
+}
+
+/* cr = cr union iv; iv is left empty */
+static int re_class_add_intervals(REStringList *cr, CharRange *iv)
+{
+    uint32_t *pt = iv->points;
+    int i, k, len = iv->len;
+
+    if (len == 0)
+        return 0;
+    qsort(pt, len / 2, 2 * sizeof(pt[0]), re_interval_cmp);
+    /* merge the intervals that overlap or touch */
+    k = 0;
+    for(i = 2; i < len; i += 2) {
+        if (pt[i] <= pt[k + 1]) {
+            if (pt[i + 1] > pt[k + 1])
+                pt[k + 1] = pt[i + 1];
+        } else {
+            k += 2;
+            pt[k] = pt[i];
+            pt[k + 1] = pt[i + 1];
+        }
+    }
+    iv->len = 0;
+    return cr_op1(&cr->cr, pt, k + 2, CR_OP_UNION);
+}
+
 static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_t **pp)
 {
     const uint8_t *p;
     uint32_t c1, c2;
     int ret;
     REStringList cr1_s, *cr1 = &cr1_s;
+    CharRange iv_s, *iv = &iv_s; /* scriptc: see re_class_add_intervals() */
     bool invert, is_first;
 
     if (lre_check_stack_overflow(s->opaque, 0))
         return re_parse_error(s, "stack overflow");
 
     re_string_list_init(s, cr);
+    cr_init(iv, s->opaque, lre_realloc);
     p = *pp;
     p++;    /* skip '[' */
 
@@ -1463,7 +1502,7 @@ static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_
                     }
                     cr_free(cr2);
                 } else {
-                    if (cr_union_interval(&cr->cr, c1, c2))
+                    if (cr_add_interval(iv, c1, c2 + 1))
                         goto memory_error;
                 }
                 is_first = false; /* union operation */
@@ -1478,7 +1517,7 @@ static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_
                 } else {
                     if (s->ignore_case)
                         c1 = lre_canonicalize(c1, s->is_unicode);
-                    if (cr_union_interval(&cr->cr, c1, c1))
+                    if (cr_add_interval(iv, c1, c1 + 1))
                         goto memory_error;
                 }
             }
@@ -1486,6 +1525,8 @@ static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_
         if (s->unicode_sets && is_first) {
             if (*p == '&' && p[1] == '&' && p[2] != '&') {
                 /* handle '&&' */
+                if (re_class_add_intervals(cr, iv))
+                    goto memory_error;
                 for(;;) {
                     if (*p == ']') {
                         break;
@@ -1503,6 +1544,8 @@ static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_
                 }
             } else if (*p == '-' && p[1] == '-') {
                 /* handle '--' */
+                if (re_class_add_intervals(cr, iv))
+                    goto memory_error;
                 for(;;) {
                     if (*p == ']') {
                         break;
@@ -1525,6 +1568,8 @@ static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_
         is_first = false;
     }
 
+    if (re_class_add_intervals(cr, iv))
+        goto memory_error;
     p++;    /* skip ']' */
     *pp = p;
     if (invert) {
@@ -1538,10 +1583,12 @@ static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_
         if (cr_invert(&cr->cr))
             goto memory_error;
     }
+    cr_free(iv);
     return 0;
  memory_error:
     re_parse_out_of_memory(s);
  fail:
+    cr_free(iv);
     re_string_list_free(cr);
     return -1;
 }

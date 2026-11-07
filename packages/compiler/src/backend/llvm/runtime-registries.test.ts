@@ -206,7 +206,10 @@ test("ISLAND_ADOPTED_KINDS names conversions the runtime defines", () => {
     const defined = (signature: RegExp, name: string) =>
       expect(signature.test(unit), `${name} in scr_node_island_${kind}.c`).toBe(true);
     defined(
-      new RegExp(`^\\w+ \\*${adoption.unbox}\\(const ScrDyn \\*\\w+, const ScrDynPath \\*\\w+, const char \\*\\w+\\) \\{`, "m"),
+      new RegExp(
+        `^\\w+ \\*${adoption.unbox}\\(const ScrDyn \\*\\w+, const ScrDynPath \\*\\w+, const char \\*\\w+\\) \\{`,
+        "m",
+      ),
       adoption.unbox,
     );
     defined(new RegExp(`^ScrDyn \\*${adoption.box}\\(\\w+ \\*\\w+\\) \\{`, "m"), adoption.box);
@@ -220,7 +223,8 @@ test("every entry point that takes a child handle hands an island's to the islan
   // read its fields would answer for a child that does not exist: each one
   // that takes a child, one of its streams or its writer starts with the
   // island guard. Reference counting is the same for both.
-  const counted = /^scr_child(?:_stream|_writer)?_(?:retain|release)_v$|^scr_child(?:_stream|_writer)?_retain$/;
+  const counted =
+    /^scr_child(?:_stream|_writer)?_(?:retain|release)_v$|^scr_child(?:_stream|_writer)?_retain$/;
   const made = /^scr_child(?:_stream|_writer)?_island_new$/;
   for (const file of ["scr_child.c", "scr_child_lifecycle.c"]) {
     const text = source(file);
@@ -240,7 +244,8 @@ test("every entry point that takes a child handle hands an island's to the islan
       const start = match.index! + match[0].length;
       const body = posix.slice(start, posix.indexOf("\n}", start) + 1);
       const oneLine = posix.slice(start, posix.indexOf("\n", start));
-      if (!(oneLine.trimEnd().endsWith("}") ? oneLine : body).includes("SCR_IF_ISLAND(")) unguarded.push(name);
+      if (!(oneLine.trimEnd().endsWith("}") ? oneLine : body).includes("SCR_IF_ISLAND("))
+        unguarded.push(name);
     }
     expect(seen, file).toBeGreaterThan(file === "scr_child.c" ? 35 : 5);
     expect(unguarded, file).toEqual([]);

@@ -263,9 +263,11 @@ static void nc_group_close(NcGroup *group) {
   free(dyns);
 }
 
+/* A value the island delivered that the listener's type cannot take: a
+ * TypeError where the listener would have run. */
 SCR_COLD static void nc_refuse(const char *what) {
-  char text[200];
-  int len = snprintf(text, sizeof text, "scriptc: %s of a child process made in a Node island", what);
+  char text[240];
+  int len = snprintf(text, sizeof text, "scriptc: %s (a child process made in a Node island)", what);
   scr_throw_error_msg(SCR_ERR_TYPE, text, (size_t)len);
 }
 
@@ -345,7 +347,8 @@ static ScrDyn *nc_listener_thunk(ScrClosure *clo, ScrDyn *const *args, size_t ar
     }
     case SCR_CHILD_EV_ERROR:
     case SCR_CHILD_EV_WRITE_ERROR: {
-      ScrError *error = nc_error_of(a0, "an 'error' event that carries no Error");
+      ScrError *error =
+          nc_error_of(a0, "an 'error' listener that takes an Error got a value that is not one");
       if (error == NULL) break;
       /* The adapters take a message and make the Error; with the payload
        * set they hand over this one (scr_child_err_thunk_error). */
@@ -359,14 +362,19 @@ static ScrDyn *nc_listener_thunk(ScrClosure *clo, ScrDyn *const *args, size_t ar
     case SCR_CHILD_EV_DATA:
       if (l->fn == (void *)&scr_child_stream_thunk0) scr_child_stream_thunk0(cb, NULL);
       else if (a0->kind == SCR_DYN_BYTES) ((ScrChildStreamDataFn)l->fn)(cb, a0->v.bytes);
-      else nc_refuse("a string chunk for a 'data' listener that takes a Buffer (an encoding was set in the island)");
+      else
+        nc_refuse("a 'data' listener that takes a Buffer got a string: an encoding is set on the "
+                  "island's stream");
       break;
     case SCR_CHILD_EV_DATA_STR:
       if (a0->kind == SCR_DYN_STR) ((ScrChildStreamDataStrFn)l->fn)(cb, a0->v.str);
-      else nc_refuse("a Buffer chunk for a 'data' listener that takes a string (no encoding is set in the island)");
+      else
+        nc_refuse("a 'data' listener that takes a string got a Buffer: no encoding is set on the "
+                  "island's stream");
       break;
     case SCR_CHILD_EV_MESSAGE: {
-      ScrDyn *message = a0->kind == SCR_DYN_STR ? scr_json_parse(a0->v.str) : scr_dyn_retain(scr_dyn_undefined());
+      ScrDyn *message = a0->kind == SCR_DYN_STR ? scr_json_parse(a0->v.str)
+                                                : scr_dyn_retain(scr_dyn_undefined());
       if (message != NULL) ((ScrIpcMessageFn)l->fn)(cb, message);
       scr_dyn_release(message);
       break;

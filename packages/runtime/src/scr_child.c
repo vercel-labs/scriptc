@@ -5519,7 +5519,8 @@ void scr_child_writer_on_finish(ScrChildWriter *w, ScrClosure *cb /*moves*/,
 
 void scr_child_writer_on_error(ScrChildWriter *w, ScrClosure *cb /*moves*/,
                                ScrChildErrFn fn, bool once) {
-  SCR_IF_ISLAND(w, scr_child_island_ops->on(w->island, SCR_CHILD_EV_WRITE_ERROR, cb, (void *)fn, once); return);
+  SCR_IF_ISLAND(w, scr_child_island_ops->on(w->island, SCR_CHILD_EV_WRITE_ERROR, cb, (void *)fn, once);
+                return);
   (void)once; /* a writer emits at most one terminal error */
   if ((w->destroyed && !w->finished && !w->error_pending) ||
       (w->err_msg != NULL && !w->error_pending)) {
@@ -6001,7 +6002,8 @@ bool scr_child_has_pid(ScrChild *c) {
   return c->state != SCR_CHILD_SPAWN_FAILED;
 }
 double scr_child_pid(ScrChild *c) {
-  SCR_IF_ISLAND(c, double pid = 0; scr_child_island_ops->number(c->island, SCR_CHILD_PROP_PID, &pid); return pid);
+  SCR_IF_ISLAND(c, double pid = 0; scr_child_island_ops->number(c->island, SCR_CHILD_PROP_PID, &pid);
+                return pid);
   return (double)c->pid;
 }
 
@@ -6009,7 +6011,8 @@ double scr_child_pid(ScrChild *c) {
  * code after a normal exit; -errno once a spawn failure SETTLED (Node
  * flips it when the "error" event fires — before that it reads null). */
 bool scr_child_has_exit_code(ScrChild *c) {
-  SCR_IF_ISLAND(c, double code; return scr_child_island_ops->number(c->island, SCR_CHILD_PROP_EXIT_CODE, &code));
+  SCR_IF_ISLAND(c, double code;
+                return scr_child_island_ops->number(c->island, SCR_CHILD_PROP_EXIT_CODE, &code));
   if (c->state == SCR_CHILD_EXITED) return c->has_code;
   return c->state == SCR_CHILD_SPAWN_FAILED && c->settled;
 }

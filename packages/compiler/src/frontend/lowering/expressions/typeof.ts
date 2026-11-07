@@ -1,5 +1,6 @@
 /* typeof expressions and the typeof tests they lower to. */
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
@@ -570,16 +571,12 @@ export function lowerDynTypeofTest(
       // a missing key answers undefined and the guard goes false,
       // Node-exact — never the checked cast (validating T here would
       // throw on exactly the values the guard exists to reject).
-      const unparen = (e: ts.Expression): ts.Expression => {
-        while (ts.isParenthesizedExpression(e)) e = e.expression;
-        return e;
-      };
       let keyed: IrExpr | null = null;
-      const pn = unparen(a.expression);
+      const pn = withoutParentheses(a.expression);
       if (ts.isPropertyAccessExpression(pn) && !pn.questionDotToken && ts.isIdentifier(pn.name)) {
-        const recv = unparen(pn.expression);
+        const recv = withoutParentheses(pn.expression);
         if (ts.isAsExpression(recv) || ts.isTypeAssertion(recv)) {
-          const inner = unparen(recv.expression);
+          const inner = withoutParentheses(recv.expression);
           const obj = tryLowerExpression(lowerer, inner);
           if (obj?.type.kind === "dyn") {
             keyed = {

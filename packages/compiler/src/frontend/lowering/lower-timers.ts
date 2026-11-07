@@ -1,6 +1,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
@@ -791,7 +792,7 @@ function withTimerThis(lowerer: Lowerer, node: ts.Expression, cb: IrExpr, loc: S
 }
 
 function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
-  let callback = unparenthesized(node);
+  let callback = withoutParentheses(node);
   const seen = new Set<ts.Node>();
   for (;;) {
     if (ts.isArrowFunction(callback)) return false;
@@ -812,14 +813,8 @@ function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
     )
       return true;
     seen.add(declaration);
-    callback = unparenthesized(declaration.initializer);
+    callback = withoutParentheses(declaration.initializer);
   }
-}
-
-function unparenthesized(node: ts.Expression): ts.Expression {
-  let expression = node;
-  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-  return expression;
 }
 
 /** Whether a function reads its own `this`: in its body, or in the

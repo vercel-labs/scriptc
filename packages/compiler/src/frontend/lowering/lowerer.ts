@@ -9043,7 +9043,10 @@ export class Lowerer {
       if (ts.isPropertyAccessExpression(e) && isOptionalReadlineCursorRead(this, e)) return true;
       if (isOptionalProcessVersionsRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
-      if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
+      if (
+        ts.isPropertyAccessExpression(e) &&
+        isOsConstantsSymbol(symbolOf(e.expression), this.osConstantsCtx())
+      )
         return true;
       if (ts.isCallExpression(e)) {
         siteDependencies?.read(e);
@@ -19298,7 +19301,23 @@ export class Lowerer {
    * members by name + this provenance, and everything else those files
    * declare hits the SC2020-family fence). The file half of every
    * supported-surface provenance check. */
-  readonly isStdlibFile = (sf: ts.SourceFile): boolean => this.facts.isStdlibFile(sf);
+  // A method, like pathOf below, and not a function-valued field: the
+  // compiler lowers its own source, and while this was a field the Lowerer
+  // itself could stand in for a record with an `isStdlibFile` member (the
+  // os.constants predicates took it that way). Every call of the field then
+  // handed the Lowerer over as a dynamic value, which made the Lowerer and
+  // each class its fields reach a class of the dynamic tier: 9,000 functions
+  // of the compiler's own build. Where a function is wanted, pass
+  // `(sf) => lowerer.isStdlibFile(sf)`.
+  isStdlibFile(sf: ts.SourceFile): boolean {
+    return this.facts.isStdlibFile(sf);
+  }
+
+  /** The slice of the type mapper's context the os.constants predicates
+   * read: a record, not the Lowerer (see isStdlibFile). */
+  osConstantsCtx(): Pick<TypeMapperCtx, "checker" | "isStdlibFile"> {
+    return { checker: this.checker, isStdlibFile: (sf: ts.SourceFile) => this.isStdlibFile(sf) };
+  }
 
   /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by
    * symbol. A symbol's declarations are fixed for one loaded program, and
@@ -19310,7 +19329,7 @@ export class Lowerer {
   /** SCRIPTC_LOWERING_FACTS_VERIFY: the shared provenance memo answered, so
    * recompute it and fail on a disagreement (lowering-facts.ts). */
   private verifySymbolProvenanceAnswer(sym: ts.Symbol, answer: SymbolProvenance): void {
-    const fresh = computeSymbolProvenance(sym, this.isStdlibFile);
+    const fresh = computeSymbolProvenance(sym, (sf: ts.SourceFile) => this.isStdlibFile(sf));
     // The two lazily filled answers (`??=` on a hit) are declaration-only
     // too, so recompute the ones an answer carries. The pass that filled one
     // stored the value it computed, and this comparison catches a later pass
@@ -19318,11 +19337,15 @@ export class Lowerer {
     const freshWebAssembly =
       answer.webAssembly === undefined
         ? undefined
-        : declaresWebAssemblyNamespace(sym.declarations, this.isStdlibFile);
+        : declaresWebAssemblyNamespace(sym.declarations, (sf: ts.SourceFile) =>
+            this.isStdlibFile(sf),
+          );
     const freshLegacyUrl =
       answer.legacyUrl === undefined
         ? undefined
-        : declaresLegacyUrl(sym.declarations, { isStdlibFile: this.isStdlibFile });
+        : declaresLegacyUrl(sym.declarations, {
+            isStdlibFile: (sf: ts.SourceFile) => this.isStdlibFile(sf),
+          });
     const same =
       fresh.stdlibInterface === answer.stdlibInterface &&
       fresh.stdlibClass === answer.stdlibClass &&
@@ -19348,7 +19371,9 @@ export class Lowerer {
 
   /** tsgoPath(resolve(sf.fileName)): the path spelling the module tables
    * key by. A source file's path cannot change while the program lowers. */
-  readonly pathOf = (sf: ts.SourceFile): string => this.facts.pathOf(sf);
+  pathOf(sf: ts.SourceFile): string {
+    return this.facts.pathOf(sf);
+  }
 
   /** Whether values of `type` are island handles (boundary.ts's
    * isForeignType; the answers and their invalidation live in

@@ -347,8 +347,9 @@ export interface CcOptions {
    * moduleUsesNet answers true for whenever this does. */
   http?: boolean;
   /** The program uses the REAL node:http2 surface (moduleUsesHttp2 on
-   * the IR): compiles scr_http2.c — always alongside scr_net.c, which
-   * moduleUsesNet answers true for whenever this does. */
+   * the IR): compiles scr_http2.c — always alongside scr_net.c and
+   * scr_http.c, which the link features turn on with it
+   * (LINK_FEATURE_REQUIREMENTS). */
   http2?: boolean;
   /** The program uses the node:dgram or node:dns surface (moduleUsesDgram
    * on the IR): compiles scr_dgram.c into the binary — the net gating

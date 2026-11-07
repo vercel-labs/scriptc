@@ -12,6 +12,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "./ir.js";
+import type { IrLibFn } from "./builtin-signatures.js";
 import { numLit, strLit, varRef } from "./build.js";
 import { everyStmtList, mapExprChildren, mapStmtChildren, transformStmtList } from "./traverse.js";
 import { reparseExpr, reparseStmt } from "./serialize.js";
@@ -46,10 +47,10 @@ interface PropertyOp {
 /** The dynamic operations that read a value's properties without retaining
  * it or observing its identity, so a capsule built for them is
  * interchangeable with the one the caller passed. */
-const PROPERTY_OBSERVERS: ReadonlySet<string> = new Set(["dyn.in", "dyn.hasKeyComputed"]);
+const PROPERTY_OBSERVERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["dyn.in", "dyn.hasKeyComputed"]);
 
 /** The conversion calls that wrap a static value before a dynamic store. */
-const STORE_CONVERSIONS: ReadonlySet<string> = new Set([
+const STORE_CONVERSIONS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "js.fromF64",
   "js.fromStr",
   "js.fromBool",

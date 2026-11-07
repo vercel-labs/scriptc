@@ -1791,6 +1791,10 @@ export class LlDyn {
    * record builder that notes it, or a JSON schema of a closed record
    * (alloc.ts RECORD_SOURCES_GATE). */
   keepsRecordSources = false;
+  /** The record types those helpers keep a source for, by shape id: none
+   * may be a type whose source tests the frontend removed
+   * (IrModule.recordSourcesFolded, LlvmEmitter.disposeObserverGates). */
+  readonly keptSourceShapes = new Set<string>();
 
   /** Targets the one-pass parser (scr_json_parse_schema) can build
    * directly: number, boolean and string leaves inside arrays and records
@@ -1940,7 +1944,10 @@ export class LlDyn {
         // The order index is no key: parsed values keep the table's order
         // and their source's own order.
         const order = recordSourceFieldOrder(shape).filter((name) => name !== KEY_ORDER_FIELD);
-        if (recordMayKeepSource(shape)) this.keepsRecordSources = true;
+        if (recordMayKeepSource(shape)) {
+          this.keepsRecordSources = true;
+          this.keptSourceShapes.add(t.shapeId);
+        }
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
           const field = shape.fields[index.get(fieldName)! - base]!;
@@ -2090,6 +2097,7 @@ export class LlDyn {
     const host = this.host;
     const shape = host.recordsById.get(shapeId)!;
     this.keepsRecordSources = true;
+    this.keptSourceShapes.add(shapeId);
     const names = this.recordNameTable(shapeId, shape);
     host.declare(`declare void @scr_record_source_spread(ptr, ptr, ptr, ptr, ${host.sizeType})`);
     B.line(
@@ -2103,6 +2111,7 @@ export class LlDyn {
     const host = this.host;
     const shape = host.recordsById.get(shapeId)!;
     this.keepsRecordSources = true;
+    this.keptSourceShapes.add(shapeId);
     const names = this.recordNameTable(shapeId, shape);
     host.declare(`declare void @scr_record_source_note(ptr, ptr, ptr, ptr, ${host.sizeType})`);
     B.line(
@@ -2961,6 +2970,7 @@ export class LlDyn {
         // surfaces still observe them (scr_record_source_note).
         if (recordMayKeepSource(shape)) {
           this.keepsRecordSources = true;
+          this.keptSourceShapes.add(t.shapeId);
           const names = this.recordNameTable(t.shapeId, shape);
           host.declare(
             `declare void @scr_record_source_note(ptr, ptr, ptr, ptr, ${host.sizeType})`,

@@ -13,6 +13,7 @@ import { nodeThrowExpr } from "../../ir/build.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -316,6 +317,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         "llvm emitter bug: record.sourceDelete strictness is not a literal",
       );
     host.dyn.keepsRecordSources = true;
+    if (e.args[0]!.type.kind === "record") host.dyn.keptSourceShapes.add(e.args[0]!.type.shapeId);
     host.declare(`declare zeroext i1 @scr_record_source_delete(ptr, ptr, ${host.sizeType}, i1)`);
     const keyLen = Buffer.byteLength(key.value, "utf8");
     const t = B.tmp();
@@ -338,6 +340,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);
     host.dyn.keepsRecordSources = true;
+    if (e.args[0]!.type.kind === "record") host.dyn.keptSourceShapes.add(e.args[0]!.type.shapeId);
     host.declare(`declare void @scr_record_source_share(ptr, ptr)`);
     B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
     return { name: "", type: e.type };
@@ -1097,7 +1100,7 @@ function emitSameValueF64(host: LlvmEmitterContext, a: string, b: string): strin
  * runtime's test: SameValue (equal bits, or both NaN) and `==`. */
 function emitAssertFailing(
   host: LlvmEmitterContext,
-  fn: string,
+  fn: IrLibFn,
   args: readonly LlValue[],
 ): string | null {
   const B = host.B;
@@ -1126,7 +1129,7 @@ function emitAssertFailing(
 /** Runtime string functions that only read their string arguments and keep
  * no reference to them: their operands are lent (a comparator's
  * `a.name.localeCompare(b.name)` reads both fields without retaining). */
-const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
+const READ_ONLY_STRING_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["str.localeCompare"]);
 
 /** The most parameters scr_regex_replace_fn calls a replacer with
  * (SCR_REPLACER_MAX_ARITY), the first bit of its string-or-undefined

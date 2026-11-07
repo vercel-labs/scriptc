@@ -543,6 +543,9 @@ const RUNTIME_DEFINES: readonly {
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
+  // scr_fs_stream.c's `signal` option, whose abort listener comes from the
+  // event-target unit.
+  { define: "SCR_FS_STREAM_SIGNAL", when: (opts) => opts.fsStreamSignal },
   // scr_events.c's typed process output write slot.
   { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,

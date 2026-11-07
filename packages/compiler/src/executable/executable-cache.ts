@@ -79,6 +79,8 @@ export interface EarlyExecutableNativeFeatures {
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
+  /** fs stream options that can hold a signal: SCR_FS_STREAM_SIGNAL. */
+  fsStreamSignal?: boolean;
   /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
   stdioWriteSlot?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */

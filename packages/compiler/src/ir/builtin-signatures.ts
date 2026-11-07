@@ -3682,6 +3682,25 @@ function buildLibFnSignatures() {
       argTypes: [DYN, DYN],
       result: { kind: "object", className: "%Writable" },
     },
+    /** The same four constructors where the options can hold a `signal`
+     * (fsStreamOptionsMayHoldSignal): the same runtime entries, in the
+     * SCR_FS_STREAM_SIGNAL build of the unit, which applies the signal. */
+    "fs.createReadStreamSignal": {
+      argTypes: [DYN, DYN],
+      result: { kind: "object", className: "%Readable" },
+    },
+    "fs.createWriteStreamSignal": {
+      argTypes: [DYN, DYN],
+      result: { kind: "object", className: "%Writable" },
+    },
+    "fileHandle.createReadStreamSignal": {
+      argTypes: [FILEHANDLE_T, DYN],
+      result: { kind: "object", className: "%Readable" },
+    },
+    "fileHandle.createWriteStreamSignal": {
+      argTypes: [FILEHANDLE_T, DYN],
+      result: { kind: "object", className: "%Writable" },
+    },
     "fs.fsStreamBytes": { argTypes: [null], result: F64 },
     "fs.fsStreamPending": { argTypes: [null], result: BOOL },
     "fs.fsStreamPath": { argTypes: [null], result: DYN },

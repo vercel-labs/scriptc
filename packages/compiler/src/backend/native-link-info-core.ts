@@ -69,6 +69,10 @@ export interface NativeLinkFeatures {
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
+  /** An fs.ReadStream or fs.WriteStream whose options can hold a `signal`:
+   * links the SCR_FS_STREAM_SIGNAL build of the fs stream unit, and the
+   * event-target unit its abort listener comes from. */
+  fsStreamSignal?: boolean;
   /** The program reaches the process output streams' write slot: links the
    * SCR_STDIO_WRITE_SLOT build of the events unit. */
   stdioWriteSlot?: boolean;

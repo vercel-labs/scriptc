@@ -264,6 +264,9 @@ export interface CcOptions {
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
+  /** SCR_FS_STREAM_SIGNAL: fs.ReadStream and fs.WriteStream apply their
+   * options' `signal` (a program whose stream options can hold one). */
+  fsStreamSignal?: boolean;
   /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
    * (the write method as a value, its replacement, run-time-typed chunks). */
   stdioWriteSlot?: boolean;

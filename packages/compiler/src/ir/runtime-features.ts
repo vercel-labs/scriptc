@@ -250,6 +250,10 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "events.onceSignal",
+  "fileHandle.createReadStreamSignal",
+  "fileHandle.createWriteStreamSignal",
+  "fs.createReadStreamSignal",
+  "fs.createWriteStreamSignal",
   "http.clientSignal",
   "http.requestDyn",
   "http.requestDynCb",
@@ -295,9 +299,13 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashStream",
   "crypto.hashStreamPiped",
   "fileHandle.createReadStream",
+  "fileHandle.createReadStreamSignal",
   "fileHandle.createWriteStream",
+  "fileHandle.createWriteStreamSignal",
   "fs.createReadStream",
+  "fs.createReadStreamSignal",
   "fs.createWriteStream",
+  "fs.createWriteStreamSignal",
   "rl.inputFromDyn",
   "rl.outputFromDyn",
   "sp.finished",
@@ -1775,6 +1783,20 @@ const RUNTIME_FEATURE_RULES = {
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  /** An fs.ReadStream or fs.WriteStream whose options can hold a `signal`
+   * (the options name it, or their type admits it): the
+   * SCR_FS_STREAM_SIGNAL build of scr_fs_stream.c applies the signal as
+   * Node's stream constructors do. The same calls link the event-target
+   * unit (ABORT_SIGNAL_LIB_FNS), whose addAbortListener that build calls.
+   * Every other program keeps the default fs stream unit, byte for byte. */
+  fsStreamSignal: rule({
+    fns: [
+      "fs.createReadStreamSignal",
+      "fs.createWriteStreamSignal",
+      "fileHandle.createReadStreamSignal",
+      "fileHandle.createWriteStreamSignal",
+    ],
+  }),
   /** The program reaches the process output streams' write slot — the
    * write method as a value (process.stdioSlot), its replacement, a patched
    * program's typed writes, a run-time-typed chunk
@@ -2070,6 +2092,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdioExtended: false,
     stdioWriteSlot: false,
     streamWriteErrors: false,
+    fsStreamSignal: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,

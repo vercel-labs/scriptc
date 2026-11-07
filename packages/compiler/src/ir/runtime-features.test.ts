@@ -536,6 +536,35 @@ describe("runtime feature snapshots", () => {
     });
   });
 
+  test("gates the fs streams' signal option on options that can hold one", () => {
+    // The `...Signal` entries select scr_fs_stream.c's SCR_FS_STREAM_SIGNAL
+    // build and the event-target unit its abort listener comes from; the
+    // plain entries keep the default fs stream unit and link no event target.
+    for (const fn of [
+      "fs.createReadStreamSignal",
+      "fs.createWriteStreamSignal",
+      "fileHandle.createReadStreamSignal",
+      "fileHandle.createWriteStreamSignal",
+    ] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod)).toMatchObject({
+        stream: true,
+        fsStreamSignal: true,
+        eventTarget: true,
+      });
+    }
+    for (const fn of ["fs.createReadStream", "fileHandle.createWriteStream"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod)).toMatchObject({
+        stream: true,
+        fsStreamSignal: false,
+        eventTarget: false,
+      });
+    }
+  });
+
   test("installs a failed spawn's error object only where an 'error' listener can be registered", () => {
     // The fact decides the emitted scr_child_error_event_install call: a
     // program that only spawns keeps the settle path's hook empty and links

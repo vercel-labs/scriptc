@@ -358,6 +358,7 @@ async function build() {
           "SCR_WARNING_REPLACE",
           "SCR_STDIO_EXTENDED",
           "SCR_STREAM_WRITE_ERRORS",
+          "SCR_FS_STREAM_SIGNAL",
           "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",

@@ -17537,6 +17537,114 @@ static ScrDyn *scr_function_constructor(uint32_t kind) {
   return scr_dyn_retain(scr_function_constructors[kind]);
 }
 
+#ifdef SCR_FN_MEMBER_PROPS
+/* Function.prototype's call, bind and toString as VALUES. A function with
+ * no own property of that name inherits the member, so reading it answers a
+ * function (`typeof fn.call`, `const c = fn.call`), also after the own
+ * property that shadowed it is deleted. The default build answers a member
+ * call through the native call/bind lowering and has no value for the
+ * member itself (the read answers undefined); the programs that can tell
+ * link this build (runtime-features.ts fnMemberProps): they write, define
+ * or delete an own property with one of these names, or spell one as a
+ * dynamic read key. `apply` has a value in every build
+ * (scr_dyn_function_apply).
+ *
+ * Each value runs the builtin over its `this`, as Node's does:
+ * `fn.call.call(fn, thisArg, ...args)`. Function.prototype.toString has no
+ * native source text to answer, so its value keeps the refusal the member
+ * call `fn.toString()` gives (scr_dyn_invoke.c). */
+enum {
+  SCR_FN_INHERITED_BIND,
+  SCR_FN_INHERITED_CALL,
+  SCR_FN_INHERITED_TO_STRING,
+  SCR_FN_INHERITED_COUNT,
+};
+static SCR_TL ScrDyn *scr_fn_inherited_values[SCR_FN_INHERITED_COUNT];
+static SCR_TL bool scr_fn_inherited_registered;
+
+static void scr_fn_inherited_cleanup(void) {
+  for (size_t i = 0; i < SCR_FN_INHERITED_COUNT; i++) {
+    scr_dyn_release(scr_fn_inherited_values[i]);
+    scr_fn_inherited_values[i] = NULL;
+  }
+  scr_fn_inherited_registered = false;
+}
+
+/* The function a builtin value was called on (+1), or NULL with Node's
+ * TypeError pending when `this` is not callable. */
+static ScrDyn *scr_fn_inherited_receiver(const char *what) {
+  ScrDyn *receiver = scr_dyn_this_get();
+  if (receiver->kind == SCR_DYN_FUNC) return receiver;
+  scr_dyn_release(receiver);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, what);
+  scr_jb_puts(&b, " was called on a non-callable value");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+static ScrDyn *scr_fn_inherited_bind_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.bind");
+  if (!receiver) return NULL;
+  ScrDyn *bound = scr_dyn_bind(receiver, args, argc);
+  scr_dyn_release(receiver);
+  return bound;
+}
+
+static ScrDyn *scr_fn_inherited_call_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.call");
+  if (!receiver) return NULL;
+  scr_dyn_this_push_dyn(argc ? args[0] : scr_dyn_undefined());
+  ScrDyn *result = scr_dyn_call(receiver, argc > 1 ? args + 1 : NULL, argc > 1 ? argc - 1 : 0,
+    "Function.prototype.call");
+  scr_dyn_this_pop();
+  scr_dyn_release(receiver);
+  return result;
+}
+
+static ScrDyn *scr_fn_inherited_to_string_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.toString");
+  if (!receiver) return NULL;
+  scr_dyn_release(receiver);
+  static const char message[] = "'Function.prototype.toString' on a dynamic value is not supported yet";
+  scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+  return NULL;
+}
+
+/* The inherited value of `key` (+1), or NULL for every other name. */
+static ScrDyn *scr_fn_inherited_value(const char *key, size_t key_len) {
+  static const struct {
+    const char *name;
+    size_t len;
+    ScrDynThunk call;
+    uint32_t arity;
+    const char *location;
+  } members[SCR_FN_INHERITED_COUNT] = {
+    [SCR_FN_INHERITED_BIND] = {"bind", 4, scr_fn_inherited_bind_call, 1, "native:Function.prototype.bind"},
+    [SCR_FN_INHERITED_CALL] = {"call", 4, scr_fn_inherited_call_call, 1, "native:Function.prototype.call"},
+    [SCR_FN_INHERITED_TO_STRING] = {"toString", 8, scr_fn_inherited_to_string_call, 0,
+                                    "native:Function.prototype.toString"},
+  };
+  for (size_t i = 0; i < SCR_FN_INHERITED_COUNT; i++) {
+    if (key_len != members[i].len || memcmp(key, members[i].name, key_len) != 0) continue;
+    if (!scr_fn_inherited_values[i]) {
+      scr_fn_inherited_values[i] = scr_dyn_new_func(scr_closure_new(NULL, 0), members[i].call,
+        members[i].arity, members[i].location, members[i].name);
+      if (!scr_fn_inherited_registered) {
+        scr_atexit(scr_fn_inherited_cleanup);
+        scr_fn_inherited_registered = true;
+      }
+    }
+    return scr_dyn_retain(scr_fn_inherited_values[i]);
+  }
+  return NULL;
+}
+#endif
+
 /* Keyed read on a FUNC node (see scr_runtime.h): own props first, then
  * the function-instance built-ins name/length. +1 or NULL. */
 ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
@@ -17593,6 +17701,14 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
     return scr_dyn_new_num((double)d->v.fn.arity);
   }
   if (key_len == 5 && memcmp(key, "apply", 5) == 0) return scr_dyn_function_apply();
+#ifdef SCR_FN_MEMBER_PROPS
+  /* No own property of this name: the member Function.prototype gives every
+   * function (a deleted own `call` reveals it again). */
+  {
+    ScrDyn *inherited = scr_fn_inherited_value(key, key_len);
+    if (inherited) return inherited;
+  }
+#endif
   if (scr_dyn_builtin_static_fn && !d->v.fn.class_obj) return scr_dyn_builtin_static_fn(d, key, key_len, false);
   if (d->v.fn.class_obj && !d->v.fn.class_obj->static_data) {
     static const char message[] = "scriptc: class properties through unknown other than name and length are not supported";
@@ -21815,6 +21931,14 @@ static ScrStr *scr_dyn_to_string_method_args(const ScrDyn *d, const ScrStr *enc,
   if (d->kind == SCR_DYN_FUNC || object_method) {
     ScrDyn *member = object_method ? scr_dyn_obj_read(d, "toString", 8) : scr_dyn_fn_get(d, "toString", 8);
     if (scr_exc_pending()) { scr_dyn_release(member); return NULL; }
+#ifdef SCR_FN_MEMBER_PROPS
+    /* The inherited builtin is not a formatter the program installed: the
+     * conversion keeps its own answer for a function. */
+    if (member && member == scr_fn_inherited_values[SCR_FN_INHERITED_TO_STRING]) {
+      scr_dyn_release(member);
+      member = NULL;
+    }
+#endif
     if (member && (object_method || member->kind != SCR_DYN_UNDEF)) {
       scr_dyn_this_push_dyn(d);
       ScrDyn *value = scr_dyn_call(member, args, argc, what->data);

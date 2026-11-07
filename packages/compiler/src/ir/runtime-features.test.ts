@@ -101,6 +101,17 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(mod).genBind).toBe(true);
   });
 
+  test("gates the kept-source read unit on the record width copy's libCall", () => {
+    const mod = module();
+    expect(moduleRuntimeFeatures(mod).recordSourceGet).toBe(false);
+    mod.functions[0]!.body.push(call("record.sourceGet"));
+    expect(moduleRuntimeFeatures(mod).recordSourceGet).toBe(true);
+    // The per-key presence test lives in the same unit.
+    const probe = module();
+    probe.functions[0]!.body.push(call("record.sourceHasKey"));
+    expect(moduleRuntimeFeatures(probe).recordSourceGet).toBe(true);
+  });
+
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("http2.streamNoop"));

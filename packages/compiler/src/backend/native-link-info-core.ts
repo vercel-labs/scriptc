@@ -152,6 +152,12 @@ export interface NativeLinkFeatures {
   /** A generator function that reads `this`: scr_gen_receiver.c. Absent
    * (false) for programs without one. */
   genReceiver?: boolean;
+  /** A record-to-record conversion reads a field the source type does not
+   * declare through the kept-source table (frontend/lowering/
+   * record-sources.ts): scr_record_source_get.c. Absent (false) for every
+   * program, including one that only casts records, so a cast alone keeps
+   * its runtime objects byte for byte. */
+  recordSourceGet?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;

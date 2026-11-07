@@ -111,6 +111,9 @@ export interface EarlyExecutableNativeFeatures {
   recordViewFrozen?: boolean;
   genBind?: boolean;
   genReceiver?: boolean;
+  /** The kept-source read of a record-to-record conversion:
+   * scr_record_source_get.c. Absent (false) otherwise. */
+  recordSourceGet?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;

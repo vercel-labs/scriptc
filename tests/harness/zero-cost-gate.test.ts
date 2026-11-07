@@ -434,6 +434,39 @@ test("the zero-cost gate allows listed programs and refuses a stale list", () =>
       { encoding: "utf8" },
     );
     expect(Number(piped.stdout.trim())).toBe(programs + 1);
+
+    // So does a merged report: one line per program that is not identical,
+    // the verdict, and one line per failure.
+    const shard = {
+      schema: 1,
+      trees: { baseline: { revision: "a" }, candidate: { revision: "b" } },
+      programs: Array.from({ length: programs }, (_, index) => ({
+        id: `corpus/a-program-with-a-long-name-${index}.ts`,
+        verdict: "differs",
+        artifacts: { exe: { identical: false, first: "resized main" } },
+      })),
+      failures: Array.from(
+        { length: programs },
+        (_, index) => `corpus/a-program-with-a-long-name-${index}.ts: differs`,
+      ),
+      globalFailures: [],
+      timing: null,
+      elapsedMs: 1,
+    };
+    write(join(root, "shard.json"), JSON.stringify(shard));
+    const merged = spawnSync(
+      "sh",
+      [
+        "-c",
+        '"$@" | (sleep 1; wc -l)',
+        "sh",
+        process.execPath,
+        fileURLToPath(new URL("../../scripts/zero-cost-merge.mjs", import.meta.url)),
+        join(root, "shard.json"),
+      ],
+      { encoding: "utf8" },
+    );
+    expect(Number(merged.stdout.trim())).toBe(2 * programs + 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -50,6 +50,9 @@ console.log(
     .join(", ")} over ${report.shards} shards (longest ${(report.elapsedMs / 1000).toFixed(2)}s` +
     `${cached ? `, ${cached} baselines from the cache` : ""})`,
 );
-for (const failure of report.failures) console.log(`  ${failure}`);
 if (values.json) writeFileSync(values.json, JSON.stringify(report, null, 2) + "\n");
-process.exit(report.verdict === "pass" ? 0 : 1);
+// Exit once the output is written: a pipe can take a write asynchronously,
+// and process.exit drops what is still queued.
+process.stdout.write(report.failures.map((failure) => `  ${failure}\n`).join(""), () =>
+  process.exit(report.verdict === "pass" ? 0 : 1),
+);

@@ -1125,5 +1125,8 @@ if (nondeterministicPrograms.length > 0)
     `  note: ${nondeterministicPrograms.length} nondeterministic programs, whose baseline rebuild differs too: ` +
       nondeterministicPrograms.map((p) => p.id).join(", "),
   );
-for (const failure of report.failures) console.log(`  ${failure}`);
-process.exit(failed ? 1 : 0);
+await writeAndExit(
+  process.stdout,
+  report.failures.map((failure) => `  ${failure}\n`).join(""),
+  failed ? 1 : 0,
+);

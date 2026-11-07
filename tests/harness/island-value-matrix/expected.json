@@ -1466,7 +1466,6 @@
   "clo-i2n/U.json": "wrong"
  },
  "fn-async.control.-": {
-  "T.json": "refused:SC1090",
   "T.clone": "message",
   "U.json": "wrong",
   "U.tag": "wrong",

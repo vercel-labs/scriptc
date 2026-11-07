@@ -509,7 +509,7 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(module()).deferredFence).toBe(false);
     // So do a library's: its archive carries no reporter.
     const library = module();
-    library.lib = { profileName: "p" } as IrModule["lib"];
+    library.lib = { profileName: "p" } as NonNullable<IrModule["lib"]>;
     library.functions[0]!.body.push({
       kind: "runtimeFence",
       code: "SC2020",

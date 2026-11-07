@@ -879,13 +879,17 @@ async function compileExecutableNative(
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
+    ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
+    ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
+    ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
@@ -1293,6 +1297,7 @@ async function prepareExecutableInput(
         // Textual output shows the code an executable gets; objects keep
         // the pending flag, since their link may not add an unwinder.
         unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
+        timing,
         ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
         objectAudit: opts.sanitize === true,
         sanitizeAttributes: opts.sanitize === true,
@@ -1306,9 +1311,11 @@ async function prepareExecutableInput(
       if (!(err instanceof LlvmUnsupportedError)) throw err;
       return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
     }
+    timing("llvm-emit");
     if (outputKind === "llvm") {
       await mkdir(dirname(opts.outPath), { recursive: true });
       await writeTextParts(opts.outPath, llvm);
+      timing("llvm-write");
     } else {
       try {
         await emitNativeArtifact({

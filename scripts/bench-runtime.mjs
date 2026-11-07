@@ -131,7 +131,6 @@ assert.ok(
 
 const allWorkloads = readWorkloads(suiteRoot);
 const selected = values.workloads ? new Set(values.workloads.split(",")) : null;
-const workloads = allWorkloads.filter((w) => selected === null || selected.has(w.name));
 if (selected) {
   for (const name of selected)
     assert.ok(
@@ -139,10 +138,48 @@ if (selected) {
       `unknown workload ${name}`,
     );
 }
+/* What a workload needs beyond a built checkout and is missing here.
+ * "libnode": the program has Node islands, whose executables load a libnode
+ * pack from SCRIPTC_LIBNODE. Such a workload is left out of the run, with a
+ * line that says so (also when it was named: runners that split the set
+ * name every workload). */
+function missingRequirement(w) {
+  for (const need of w.requires ?? []) {
+    assert.equal(need, "libnode", `${w.name}: unknown requirement ${need}`);
+    if (!process.env.SCRIPTC_LIBNODE) return "a libnode pack in SCRIPTC_LIBNODE";
+  }
+  return null;
+}
+const skipped = [];
+const workloads = allWorkloads.filter((w) => {
+  if (selected !== null && !selected.has(w.name)) return false;
+  const missing = missingRequirement(w);
+  if (missing === null) return true;
+  console.error(`skipping ${w.name}: needs ${missing}`);
+  skipped.push({ name: w.name, reason: `needs ${missing}` });
+  return false;
+});
 
 const work = mkdtempSync(
   join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-bench-runtime-"),
 );
+// Programs with Node islands install their island modules below the cache
+// directory on their first launch: this run's own, so every contender starts
+// from an empty cache and the timed launches find the modules installed. A
+// workload with `"cache": "cold"` measures that first launch instead: each
+// of its timed launches gets an empty cache directory.
+if (workloads.some((w) => (w.requires ?? []).includes("libnode")))
+  process.env.XDG_CACHE_HOME = join(work, "cache");
+let coldCaches = 0;
+function launchEnv(w) {
+  if (w.cache !== "cold") return { env: process.env, done: () => {} };
+  const cache = join(work, `cold-cache-${coldCaches++}`);
+  mkdirSync(cache, { recursive: true });
+  return {
+    env: { ...process.env, XDG_CACHE_HOME: cache },
+    done: () => rmSync(cache, { recursive: true, force: true }),
+  };
+}
 
 /* ── code-layout perturbation ──────────────────────────────────────────── */
 // Layout k > 0 links a retained k*16-byte padding object before every other
@@ -596,6 +633,8 @@ const report = {
   layouts,
   contenders: contenders.map((c) => ({ ...c, revision: revision(c.root) })),
   workloads: [],
+  // Workloads left out because the host lacks what they need.
+  skipped,
 };
 
 /* Workload kinds: "process" (default) times whole launches; `launches` > 1
@@ -612,6 +651,10 @@ for (const w of workloads) {
       Number.isInteger(w.scaleArg) && Number.isFinite(Number(w.args[w.scaleArg] ?? "x")),
       `${w.name}: scaleArg must be the index of a numeric argument`,
     );
+  assert.ok(
+    w.cache === undefined || w.cache === "warm" || w.cache === "cold",
+    `${w.name}: cache must be "warm" or "cold"`,
+  );
 }
 
 /** One timing sample: { ms } on success, { failed } otherwise. */
@@ -626,7 +669,9 @@ async function sample(w, command, args) {
   // per launch is easily disturbed by unrelated activity on the host.
   const times = [];
   for (let i = 0; i < (w.launches ?? 1); i++) {
-    const result = run(command, args);
+    const launch = launchEnv(w);
+    const result = run(command, args, { env: launch.env });
+    launch.done();
     if (result.timedOut || result.status !== 0)
       return { failed: result.timedOut ? "timeout" : "unstable-exit" };
     times.push(result.ms);

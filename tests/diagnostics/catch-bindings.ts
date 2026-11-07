@@ -26,11 +26,11 @@ try {
     console.log("no");
   }
 }
-// The catch CLAUSE form of this pattern compiles now (corpus 8603); a
-// promise handler's destructuring parameter keeps the fence.
-Promise.reject(new Error("four")).catch(({ message }: any) => {
-  console.log("no", message);
-});
+// Destructuring catch bindings compile now. The catch CLAUSE form is corpus
+// 8603. A promise handler's destructuring parameter is corpus 8747: the
+// handler is then called as a function value, the way
+// `p.then(undefined, handler)` calls it, and its parameter destructures
+// like any other.
 try {
   throw 5;
 } catch (e) {

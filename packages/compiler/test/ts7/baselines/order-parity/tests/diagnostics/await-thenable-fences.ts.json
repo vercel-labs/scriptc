@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/await-thenable-fences.ts"
+ ],
+ "diags": []
+}

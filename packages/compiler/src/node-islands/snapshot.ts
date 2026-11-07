@@ -29,11 +29,13 @@
  *     boot guards (the determinism argument in probe-recorder.ts). The static
  *     effect gate (effect-gate.ts) is reported alongside, as the tier that
  *     needs no recording;
- *   - per-module mode (NI-7b): when every static island import defers,
- *     none mutates builtin state and no island module loads at a call site,
- *     Node starting evaluates nothing by itself; components of deferred
- *     modules that share files evaluate on first use. Otherwise every
- *     deferred module evaluates when Node starts (in import order);
+ *   - when it evaluates: every deferred module evaluates when Node
+ *     starts, in import order, before the operation that needed Node. No
+ *     island code other than deferred loads runs before a deferred load,
+ *     so the island sees the loads in Node's order. A module does not
+ *     wait for its own first use: a call into a module that evaluated
+ *     can write island state (a global, a builtin) that a later load
+ *     reads, and Node ran that load at its import, before any call;
  *
  * and rewrites the call: a deferred module keeps `nodeIsland.defer` with
  * its snapshot text (format: runtime scr_node_island_boot.c), any other
@@ -114,30 +116,6 @@ function traceDecision(d: DeferralDecision): void {
     );
 }
 
-/** Island loads lowering emitted at call sites (`require()`, `import()`). */
-function hasDynamicLoads(mod: IrModule): boolean {
-  let found = false;
-  const seen = new Set<object>();
-  const walk = (v: unknown): void => {
-    if (found || v === null || typeof v !== "object" || seen.has(v)) return;
-    seen.add(v);
-    if (Array.isArray(v)) {
-      for (const x of v) walk(x);
-      return;
-    }
-    const o = v as Record<string, unknown>;
-    if (
-      o["kind"] === "libCall" &&
-      (o["fn"] === "nodeIsland.require" || o["fn"] === "nodeIsland.import")
-    )
-      found = true;
-    for (const k in o) if (k !== "loc" && k !== "type") walk(o[k]);
-  };
-  walk(mod.functions);
-  walk(mod.globals);
-  return found;
-}
-
 export function finalizeDeferredIslands(
   mod: IrModule,
   entryPath: string,
@@ -146,7 +124,6 @@ export function finalizeDeferredIslands(
 ): DeferralDecision[] {
   const calls = deferCalls(mod);
   if (calls.length === 0) return [];
-  const dynamicLoads = hasDynamicLoads(mod);
   const decisions: DeferralDecision[] = [];
   const decide = (call: DeferCall, deferred: boolean, reason: string): void => {
     const d = { path: fileOf(mod, pathOf(call)), deferred, reason };
@@ -177,7 +154,6 @@ export function finalizeDeferredIslands(
       gate: gate.ok ? "" : `${gate.reason} in ${gate.file}`,
     });
   }
-  let allDeferred = candidates.length === calls.length;
   if (candidates.length === 0) return decisions;
   const probe = probeModules(packDir, [...new Set(candidates.map((c) => c.path))]);
   if (typeof probe === "string") {
@@ -214,7 +190,6 @@ export function finalizeDeferredIslands(
       return null;
     })();
     if (why !== null || result === undefined) {
-      allDeferred = false;
       decide(c.call, false, why ?? "");
       continue;
     }
@@ -225,27 +200,6 @@ export function finalizeDeferredIslands(
         : `recorded load is deterministic (static gate: ${c.gate})`;
     deferred.push({ call: c.call, result, why: how });
   }
-  // Per-module evaluation once Node runs (no materialize-all at start):
-  // every static island import is deferred, none mutates builtin state,
-  // and the program loads no island module at a call site. Deferred
-  // modules whose closures share files form one component, evaluated
-  // together in import order.
-  const lazyMode =
-    allDeferred && !dynamicLoads && deferred.every((d) => d.result.mutations.length === 0);
-  const component = new Map<string, number>();
-  if (lazyMode) {
-    const parent = deferred.map((_, i) => i);
-    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
-    const owner = new Map<string, number>();
-    deferred.forEach((d, i) => {
-      for (const f of d.result.files) {
-        const j = owner.get(f);
-        if (j === undefined) owner.set(f, i);
-        else parent[find(i)] = find(j);
-      }
-    });
-    deferred.forEach((d, i) => component.set(d.result.path, find(i) + 1));
-  }
   for (const d of deferred) {
     const r = d.result;
     const guards = [
@@ -253,7 +207,6 @@ export function finalizeDeferredIslands(
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
       ...r.env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
       ...r.tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
-      ...(lazyMode ? [`M ${component.get(r.path)}`] : []),
     ];
     const text = encodeSnapshot(probe, r.root!, guards, r.volatile.length === 0);
     const arg = d.call.args[1];
@@ -265,7 +218,7 @@ export function finalizeDeferredIslands(
         : []),
       ...(r.volatile.length > 0 ? [`volatile ${r.volatile.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
-      lazyMode ? `per-module (component ${component.get(r.path)})` : "evaluated when Node starts",
+      "evaluated when Node starts",
     ];
     decide(d.call, true, notes.join("; "));
   }

@@ -292,8 +292,7 @@ bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real) {
 }
 
 /* A stub whose Node value is needed: starting Node materializes every
- * deferred module (scr_node_island_boot.c), or in per-module mode the
- * boot unit evaluates the stub's component; then the ref is real.
+ * deferred module (scr_node_island_boot.c); then the ref is real.
  * False with the module's load error pending. */
 ScrDyn *scr_ni_lazy_subclass_new(ScrDyn *const *args) {
   ScrNodeRef *ref = calloc(1, sizeof *ref);
@@ -346,9 +345,6 @@ static bool nh_live(ScrNodeRef *ref) {
   if (ref->stub == NULL) return true;
   void *stub = ref->stub;
   scr_ni_bridge();
-  /* Per-module mode (NI-7b): Node starting evaluated nothing; the stub's
-   * own component evaluates now. */
-  if (ref->stub != NULL) scr_ni_boot_materialize(stub);
   if (ref->stub == NULL) return true;
   scr_ni_boot_stub_failed(stub);
   return false;

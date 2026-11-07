@@ -8402,8 +8402,67 @@ export class Lowerer {
     // A constrained type parameter keeps the checker's binding, since the
     // body may use what the constraint promises.
     type BareSlots = { params: (ts.Symbol | null)[]; result: ts.Symbol | null };
+    /** What the slots are read from: the function-like a call instantiates
+     * and the symbols of its own type parameters. */
+    type GenericCallee = Pick<GenericFnInfo, "decl" | "typeParams" | "implicitParams">;
+    // A generic member of a class (a method, a static method, a field that
+    // holds a generic function) is instantiated per call as a generic
+    // function is, through the same genericCallInstance. Its GenericFnInfo
+    // is made when its class lowers, and a generic class makes one for each
+    // of its instantiations, some of them after this scan. The slots depend
+    // on the declaration alone, so the callee is read from it. An overloaded
+    // method keeps the checker's bindings: its calls instantiate through the
+    // overload they resolve to.
+    const genericMembers = new Map<ts.Symbol, GenericCallee | null>();
+    const genericMemberOf = (symbol: ts.Symbol): GenericCallee | null => {
+      const cached = genericMembers.get(symbol);
+      if (cached !== undefined) return cached;
+      const compute = (): GenericCallee | null => {
+        const declaration = symbol.valueDeclaration;
+        if (
+          !declaration ||
+          !(ts.isMethodDeclaration(declaration) || ts.isPropertyDeclaration(declaration)) ||
+          !declaration.parent ||
+          !(ts.isClassDeclaration(declaration.parent) || ts.isClassExpression(declaration.parent))
+        )
+          return null;
+        // A field names the function it holds directly: an assertion around
+        // the function gives the field that type, not the function's own
+        // type parameters.
+        let decl: ts.Node | undefined = declaration;
+        if (ts.isPropertyDeclaration(declaration)) {
+          decl = declaration.initializer;
+          while (decl && ts.isParenthesizedExpression(decl)) decl = decl.expression;
+        }
+        if (
+          !decl ||
+          !(
+            ts.isMethodDeclaration(decl) ||
+            ts.isArrowFunction(decl) ||
+            ts.isFunctionExpression(decl)
+          ) ||
+          !decl.body ||
+          (decl.typeParameters?.nodes.length ?? 0) === 0 ||
+          symbol.declarations.length !== 1
+        )
+          return null;
+        const typeParams: ts.Symbol[] = [];
+        for (const parameter of decl.typeParameters!.nodes) {
+          const typeParameter = symbolOf(parameter.name);
+          if (!typeParameter) return null;
+          typeParams.push(typeParameter);
+        }
+        return { decl, typeParams };
+      };
+      const member = panicSafe(compute, null);
+      genericMembers.set(symbol, member);
+      return member;
+    };
+    /** The generic function or member a call of `symbol` instantiates. */
+    const genericCalleeOf = (symbol: ts.Symbol): GenericCallee | null =>
+      this.genericFnsBySymbol.get(symbol) ?? genericMemberOf(symbol);
     const bareSlots = new Map<ts.Node, BareSlots | null>();
-    const bareTypeParameterSlots = (info: GenericFnInfo): BareSlots | null => {
+    const bareTypeParameterSlots = (info: GenericCallee): BareSlots | null => {
       const decl = info.decl;
       const cached = bareSlots.get(decl);
       if (cached !== undefined) return cached;
@@ -8480,7 +8539,7 @@ export class Lowerer {
       if (!ts.isIdentifier(call.expression) && !ts.isPropertyAccessExpression(call.expression))
         return false;
       const symbol = callableSymbolOf(call.expression);
-      const info = symbol ? this.genericFnsBySymbol.get(symbol) : undefined;
+      const info = symbol ? genericCalleeOf(symbol) : null;
       const result = info ? bareTypeParameterSlots(info)?.result : null;
       return !!result && bound.has(result);
     };
@@ -10447,10 +10506,11 @@ export class Lowerer {
             return ts.isCallExpression(use.parent) && use.parent.expression !== use;
           };
           if (!sig) {
-            // A generic function has one signature per instance. A possibly
-            // missing argument at a slot declared as a bare type parameter
-            // binds that parameter with undefined for this call's instance.
-            const generic = this.genericFnsBySymbol.get(symbol);
+            // A generic function or member has one signature per instance.
+            // A possibly missing argument at a slot declared as a bare type
+            // parameter binds that parameter with undefined for this call's
+            // instance.
+            const generic = genericCalleeOf(symbol);
             if (generic) {
               const slots = bareTypeParameterSlots(generic);
               if (!slots || node.arguments.nodes.some(ts.isSpreadElement)) return;

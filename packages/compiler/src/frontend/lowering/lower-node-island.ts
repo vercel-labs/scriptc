@@ -33,6 +33,7 @@ import {
   VOID,
   type IrExpr,
   type IrGlobal,
+  type IrLibFn,
   type IrLocal,
   type IrStmt,
   type IrType,
@@ -588,6 +589,110 @@ function islandGet(target: IrExpr, key: string, loc: SrcLoc): IrExpr {
     type: DYN,
     loc,
   };
+}
+
+/** A value held for the two arms of a member operation: each call answers
+ * a fresh read, so the arms share the local and not an expression node. */
+type Held = () => IrExpr;
+
+function holdForArms(
+  lowerer: Lowerer,
+  stmts: IrStmt[],
+  label: string,
+  init: IrExpr,
+  loc: SrcLoc,
+): Held {
+  const local = lowerer.declareHiddenLocal(label, init.type);
+  stmts.push({ kind: "varDecl", localId: local.id, init, loc });
+  return () => varRef(local.id, init.type, loc);
+}
+
+/** The member key of an island operation: a name, or a held computed key. */
+type MemberKey = string | Held;
+
+/** `recv.k` / `recv[k]`, read, where `recv` is typed by an island's
+ * declarations.
+ *
+ * The type does not say where the value lives: an island alias or
+ * interface may annotate a native Map, typed array or class instance, an
+ * island module may export a string, and one parameter may receive either
+ * origin. So the read follows the value at run time, in two arms.
+ *
+ * - An island object's member is read through the bridge.
+ * - Any other value takes the ordinary checked-dynamic member read, the one
+ *   node the rest of the compiler lowers `value.k` to. The passes that
+ *   rewrite that node answer what has no stored property to look up at run
+ *   time: a Map's or Set's `size`, a typed array's `length` and elements, a
+ *   class's accessor, a string's `length`; a null or undefined receiver
+ *   throws Node's TypeError. */
+function islandReadArms(recv: Held, key: MemberKey, loc: SrcLoc): IrExpr {
+  const name = (): IrExpr =>
+    typeof key === "string" ? { kind: "strLit", value: key, type: STRING, loc } : key();
+  return {
+    kind: "ternary",
+    cond: { kind: "libCall", fn: "nodeIsland.isHandle", args: [recv()], type: BOOL, loc },
+    then: {
+      kind: "libCall",
+      fn: typeof key === "string" ? "nodeIsland.get" : "nodeIsland.getKey",
+      args: [recv(), name()],
+      type: DYN,
+      loc,
+    },
+    else_: { kind: "dynKeyGet", value: recv(), key: name(), type: DYN, loc },
+    type: DYN,
+    loc,
+  };
+}
+
+/** `recv.k = value` / `recv[k] = value`, with the same two arms as
+ * islandReadArms: the bridge for an island object, the ordinary
+ * checked-dynamic member write for any other value (a class's setter is
+ * dispatched by the passes that rewrite that write). */
+function islandWriteArms(recv: Held, key: MemberKey, value: Held, loc: SrcLoc): IrStmt {
+  const write = (named: IrLibFn, keyed: IrLibFn): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: typeof key === "string" ? named : keyed,
+      args: [
+        recv(),
+        typeof key === "string" ? { kind: "strLit", value: key, type: STRING, loc } : key(),
+        value(),
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  return {
+    kind: "if",
+    cond: { kind: "libCall", fn: "nodeIsland.isHandle", args: [recv()], type: BOOL, loc },
+    then: [write("nodeIsland.set", "nodeIsland.setKey")],
+    else_: [write("dyn.keySet", "dyn.keySetComputed")],
+    loc,
+  };
+}
+
+/** islandReadArms as one expression: the receiver (and a computed key)
+ * evaluate once, in that order, before the read. */
+function islandMemberRead(
+  lowerer: Lowerer,
+  target: IrExpr,
+  key: string | IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const stmts: IrStmt[] = [];
+  // A variable read by name needs no local: nothing runs between its reads.
+  const recv: Held =
+    typeof key === "string" && target.kind === "varRef"
+      ? () => ({ ...target })
+      : holdForArms(lowerer, stmts, "%islandRecv", target, loc);
+  const read = islandReadArms(
+    recv,
+    typeof key === "string" ? key : holdForArms(lowerer, stmts, "%islandKey", key, loc),
+    loc,
+  );
+  return stmts.length > 0 ? { kind: "seqExpr", stmts, result: read, type: DYN, loc } : read;
 }
 
 export type IslandBinding =
@@ -1893,7 +1998,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
     lowerer.usesNodeIsland = true;
     const target = islandReceiver(lowerer, expr.expression, expr.name.text, loc);
     if (target.direct !== undefined) return fromIsland(lowerer, target.direct, expr);
-    return fromIsland(lowerer, islandGet(target.value, expr.name.text, loc), expr);
+    return fromIsland(lowerer, islandMemberRead(lowerer, target.value, expr.name.text, loc), expr);
   }
   if (ts.isElementAccessExpression(expr)) {
     if (!isForeignExpr(lowerer, expr.expression)) return null;
@@ -1902,11 +2007,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
     // (the read meets the member's declared type in fromIsland below).
     const target = lowerer.lowerExpr(stripTypeWrappers(expr.expression));
     const key = toIsland(lowerer, expr.argumentExpression);
-    return fromIsland(
-      lowerer,
-      { kind: "libCall", fn: "nodeIsland.getKey", args: [target, key], type: DYN, loc },
-      expr,
-    );
+    return fromIsland(lowerer, islandMemberRead(lowerer, target, key, loc), expr);
   }
   if (ts.isCallExpression(expr) && isIslandPromisifyCall(lowerer, expr)) {
     lowerer.usesNodeIsland = true;
@@ -2096,49 +2197,20 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
         lowerer.usesNodeIsland = true;
         // JavaScript's order: the receiver, then the key, then the value.
         const stmts: IrStmt[] = [];
-        const hold = (name: string, init: IrExpr, type: IrType): IrExpr => {
-          const local = lowerer.declareHiddenLocal(name, type);
-          stmts.push({ kind: "varDecl", localId: local.id, init, loc });
-          return varRef(local.id, type, loc);
-        };
+        const hold = (name: string, init: IrExpr): Held =>
+          holdForArms(lowerer, stmts, name, init, loc);
         // `(p as V).k = v`: write the HANDLE the assertion views, not the
         // asserted record the conversion would build.
-        const target = lowerer.lowerExpr(stripTypeWrappers(left.expression));
-        const receiver = hold("%islandSetTarget", target, target.type);
-        const key = ts.isPropertyAccessExpression(left)
-          ? null
-          : hold("%islandSetKey", toIsland(lowerer, left.argumentExpression), DYN);
-        const v = hold("%islandSet", toIsland(lowerer, expr.right), DYN);
-        stmts.push({
-          kind: "exprStmt",
-          expr:
-            key === null
-              ? {
-                  kind: "libCall",
-                  fn: "nodeIsland.set",
-                  args: [
-                    receiver,
-                    {
-                      kind: "strLit",
-                      value: (left as ts.PropertyAccessExpression).name.text,
-                      type: STRING,
-                      loc,
-                    },
-                    v,
-                  ],
-                  type: { kind: "void" },
-                  loc,
-                }
-              : {
-                  kind: "libCall",
-                  fn: "nodeIsland.setKey",
-                  args: [receiver, key, v],
-                  type: { kind: "void" },
-                  loc,
-                },
-          loc,
-        });
-        const result = fromIsland(lowerer, v, expr);
+        const receiver = hold(
+          "%islandSetTarget",
+          lowerer.lowerExpr(stripTypeWrappers(left.expression)),
+        );
+        const key: MemberKey = ts.isPropertyAccessExpression(left)
+          ? left.name.text
+          : hold("%islandSetKey", toIsland(lowerer, left.argumentExpression));
+        const v = hold("%islandSet", toIsland(lowerer, expr.right));
+        stmts.push(islandWriteArms(receiver, key, v, loc));
+        const result = fromIsland(lowerer, v(), expr);
         return { kind: "seqExpr", stmts, result, type: result.type, loc };
       }
       return null;
@@ -2171,49 +2243,20 @@ function islandCompoundAssign(
 ): IrExpr {
   lowerer.usesNodeIsland = true;
   const stmts: IrStmt[] = [];
-  const hold = (name: string, init: IrExpr): IrExpr => {
-    const local = lowerer.declareHiddenLocal(name, DYN);
-    stmts.push({ kind: "varDecl", localId: local.id, init, loc });
-    return varRef(local.id, DYN, loc);
-  };
+  const hold = (name: string, init: IrExpr): Held => holdForArms(lowerer, stmts, name, init, loc);
   // `(p as V).k op= v`: the view is erased, so the handle is the receiver.
   const target = hold(
     "%islandObj",
     lowerer.coerceToExpected(lowerer.lowerExpr(stripTypeWrappers(left.expression)), DYN),
   );
-  const key = ts.isPropertyAccessExpression(left)
-    ? null
+  const key: MemberKey = ts.isPropertyAccessExpression(left)
+    ? left.name.text
     : hold("%islandKey", toIsland(lowerer, left.argumentExpression));
-  const name: IrExpr | null = ts.isPropertyAccessExpression(left)
-    ? { kind: "strLit", value: left.name.text, type: STRING, loc }
-    : null;
-  const old: IrExpr =
-    name !== null
-      ? { kind: "libCall", fn: "nodeIsland.get", args: [target, name], type: DYN, loc }
-      : { kind: "libCall", fn: "nodeIsland.getKey", args: [target, key!], type: DYN, loc };
+  const old = islandReadArms(target, key, loc);
   const rhs = lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN);
   const next = hold("%islandNext", dynCompoundValue(op, old, rhs, loc));
-  stmts.push({
-    kind: "exprStmt",
-    expr:
-      name !== null
-        ? {
-            kind: "libCall",
-            fn: "nodeIsland.set",
-            args: [target, name, next],
-            type: { kind: "void" },
-            loc,
-          }
-        : {
-            kind: "libCall",
-            fn: "nodeIsland.setKey",
-            args: [target, key!, next],
-            type: { kind: "void" },
-            loc,
-          },
-    loc,
-  });
-  const result = fromIsland(lowerer, next, expr);
+  stmts.push(islandWriteArms(target, key, next, loc));
+  const result = fromIsland(lowerer, next(), expr);
   return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 

@@ -1549,6 +1549,44 @@ export function isIslandPromisifyCall(lowerer: Lowerer, node: ts.Node): node is 
 
 /** A value crossing INTO the island (an argument or an assigned value), as
  * dyn. */
+/** What a value's type says a worker thread cannot pass into its Node
+ * island, each of which the runtime refuses by name at the crossing
+ * (scr_node_island_handle.c): a function the island would call back, bytes,
+ * a promise. Null when the type leaves it open: `any`, or a union with an
+ * arm that crosses. */
+function workerBoundValueKind(lowerer: Lowerer, type: ts.Type): string | null {
+  if (callableType(lowerer, type)) return "a function";
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  let kind: string | null = null;
+  for (const part of parts) {
+    if ((part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
+      continue;
+    const mapped = (part.flags & ts.TypeFlags.Object) !== 0 ? lowerer.mapTypeOf(part) : null;
+    const found =
+      mapped?.kind === "bytes"
+        ? "bytes (a typed array or a Buffer)"
+        : mapped?.kind === "promise"
+          ? "a promise"
+          : mapped?.kind === "func"
+            ? "a function"
+            : null;
+    if (found === null) return null;
+    kind ??= found;
+  }
+  return kind;
+}
+
+/** SC8012 for a value a module that runs only on worker threads passes into
+ * a Node island, when its type is one a worker thread cannot pass. A value
+ * the island made goes back as its handle and is not one. */
+function workerOnlyValueFence(lowerer: Lowerer, node: ts.Expression, inner: ts.Expression): void {
+  if (lowerer.workerOnlyModules.size === 0) return;
+  if (!lowerer.workerOnlyModules.has(ts.getSourceFileOfNode(node))) return;
+  if (islandMade(lowerer, inner)) return;
+  const kind = workerBoundValueKind(lowerer, lowerer.typeOf(node));
+  if (kind !== null) lowerer.refuseIslandWorkerValue(node, kind);
+}
+
 function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const islands = lowerer.nodeIslands!;
   const inner = withoutParenthesesTypeWrappers(node);
@@ -1590,6 +1628,7 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
     isIslandHandleExpr(lowerer, inner)
   )
     return boxed(lowerer.lowerExpr(node));
+  workerOnlyValueFence(lowerer, node, inner);
   const crossing = crossingOf(islands, lowerer.typeOf(node), lowerer.checker);
   switch (crossing) {
     case "copy":

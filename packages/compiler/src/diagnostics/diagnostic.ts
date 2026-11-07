@@ -94,7 +94,8 @@
  *            object-model constructs in user JavaScript (SC8101–SC8105,
  *            behind --strict-user-js); programs that call into Node.js
  *            where the build finds no usable libnode pack (SC8005), or
- *            a Node island as a native worker's entry (SC8012), or
+ *            a Node island as a native worker's entry, or a value a
+ *            worker-only module cannot pass to an island (SC8012), or
  *            cannot collect the modules a call loads (SC8006); and type
  *            patches from `scriptc.typePatches` that did not apply as
  *            written (SC8030–SC8033, warnings)
@@ -391,6 +392,21 @@ export function nodeIslandWorkerThreadDiag(loc: SrcLoc): ScrDiagnostic {
       "the Worker's entry module runs in a Node island, so a native worker thread cannot run it",
     loc,
     hint: "give the worker an entry the build compiles natively: island modules run only in Node, and a worker thread runs the compiled program",
+  };
+}
+
+/** SC8012 — a module that only worker threads run passes a Node island a
+ * value a worker thread cannot pass: a function the island would call back,
+ * bytes, or a promise. The island belongs to the main thread and such a
+ * value to the worker's heap, so the runtime refuses the crossing by name
+ * (ERR_SCRIPTC_ISLAND_WORKER_VALUE); where the module and the value's type
+ * already say so, the build does. `kind` names the value. */
+export function nodeIslandWorkerValueDiag(loc: SrcLoc, kind: string): ScrDiagnostic {
+  return {
+    code: "SC8012",
+    message: `this module runs on worker threads only, and a worker thread cannot pass ${kind} to a Node island`,
+    loc,
+    hint: "the island belongs to the main thread and this value to the worker's heap: pass what the island can copy (strings, numbers, plain objects and arrays of those) or island values, or make the call on the main thread",
   };
 }
 

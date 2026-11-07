@@ -130,7 +130,7 @@ export const DIAGNOSTIC_CODES = {
   SC8006: "Node island modules the build cannot collect",
   SC8010: "value crossing a Node island boundary in a form without an exact copy",
   SC8011: "native class extending a Node island class outside the supported forms",
-  SC8012: "a Node island as a native worker entry",
+  SC8012: "a Node island use a native worker thread cannot make",
   SC8020: "stateful module duplicated across the Node island boundary",
   SC8021: "Node island evaluation notes (deferred or at startup)",
   SC8022: "island code extends a class of a compiled module",

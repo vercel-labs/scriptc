@@ -217,6 +217,24 @@ function contextualTypeParameterSymbols(
   return symbols;
 }
 
+/** True when the arrow is the callee of a call: it runs where the call
+ * appears, not later, when whoever received it invokes it. */
+function invokedOnTheSpot(node: ts.ArrowFunction): boolean {
+  let callee: ts.Node = node;
+  for (let parent = callee.parent; parent; callee = parent, parent = parent.parent) {
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isTypeAssertion(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isNonNullExpression(parent)
+    )
+      continue;
+    return ts.isCallExpression(parent) && parent.expression === callee;
+  }
+  return false;
+}
+
 /** True when a nested function in `node` reads the function expression's
  * own name. The body's direct reads lower to `selfRef` (the running
  * closure), which a nested closure cannot use: its running closure is its
@@ -508,6 +526,28 @@ export function lowerLambda(
         funcType.restAbi === undefined &&
         !shapes.some((s) => s.mode === "dynRest"),
     );
+    // An async arrow a field initializer calls on the spot is where a
+    // membership test inside it can land on either side of a suspension:
+    // the fields defined after the initializer exist only once the
+    // constructor has returned, and an await that runs defers past that
+    // point. Record every suspension the arrow reaches so such a test can
+    // ask whether it has resumed yet.
+    if (
+      isAsync &&
+      ts.isArrowFunction(node) &&
+      lowerer.fieldInitializer !== null &&
+      invokedOnTheSpot(node)
+    ) {
+      const suspended = lowerer.declareHiddenLocal("%suspended", BOOL);
+      suspended.mutable = true;
+      prologue.push({
+        kind: "varDecl",
+        localId: suspended.id,
+        init: { kind: "boolLit", value: false, type: BOOL, loc },
+        loc,
+      });
+      fnCtx.suspendedFlag = suspended;
+    }
     // The name binding exists before the parameters evaluate, as Node
     // creates it when the function object does: a default that reads the
     // name (`(x = self) => …`) sees the function.

@@ -229,6 +229,9 @@ const REGEX_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.globTypes",
   "path.matchesGlob",
   "path.win32MatchesGlob",
+  // `slice.index` / `slice.input` on a match-slice-typed value reads the
+  // match source through scr_regex_result_prop.
+  "regex.resultProp",
   "regexp.escape",
   "rl.cursorPos",
   "rl.keypressStdin",
@@ -358,6 +361,22 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
 const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "readable.op"];
 
+/** The keyed-collection entry points of scr_dyn_collections.c: the
+ * %Set.prototype%/%Map.prototype%/weak-collection prototypes, their member
+ * values, the constructors' adder lookup and the ES2025 Set compositions.
+ * The unit delegates prototype members through the dyn-invoke unit and
+ * interns Symbol.iterator/Symbol.toStringTag through the symbol unit, so
+ * every rule that selects this unit also selects those two. */
+const DYN_COLLECTION_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "dyn.collectionMethod",
+  "dyn.collectionPrototype",
+  "dyn.collectionGetPrototype",
+  "dyn.setCombine",
+  "dyn.collectionForEach",
+  "dyn.collectionConstruct",
+  "dyn.setValues",
+]);
+
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
@@ -390,6 +409,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNativePipe",
   "stream.pipeDyn",
   "stream.unpipeDyn",
+  ...DYN_COLLECTION_LIB_FNS,
 ]);
 
 /** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
@@ -486,6 +506,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.constructor",
   "buffer.staticValue",
   "buffer.prototypeMember",
+  ...DYN_COLLECTION_LIB_FNS,
   "buffer.prototypeObject",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
@@ -1430,6 +1451,13 @@ const RUNTIME_FEATURE_RULES = {
   typeOrigins: rule({ initial: (mod) => (mod.declOrigins?.length ?? 0) > 0 }),
   /** for await over checked-dynamic values (scr_dyn_for_await.c). */
   dynForAwait: rule({ fns: ["dyn.asyncIteratorOpen", "dyn.asyncIteratorWasSync"] }),
+  /** A keyed collection's prototype as a value, Map.prototype's members,
+   * the constructors' adder lookup and the ES2025 Set compositions over a
+   * set-like (scr_dyn_collections.c). The unit calls into the dyn-invoke
+   * unit for prototype members and the symbol unit for Symbol.iterator and
+   * Symbol.toStringTag, so each of those rules lists these entry points
+   * too. */
+  dynCollections: rule({ fns: [...DYN_COLLECTION_LIB_FNS] }),
   /** Object.isExtensible and Object.isSealed of a value typed dynamically
    * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
   dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
@@ -1698,10 +1726,11 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
-   * (scr_dyn_dirent_finish, defined in scr_symbol.c). */
+   * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
+   * builds its Dirent there. */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes.
@@ -1981,6 +2010,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
+    dynCollections: false,
     dynIntegrityQueries: false,
     dynBuffer: false,
     dynBufferMembers: false,

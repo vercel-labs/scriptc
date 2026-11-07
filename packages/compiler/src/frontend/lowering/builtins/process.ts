@@ -380,7 +380,7 @@ export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): 
 function programMentionsVersions(lowerer: Lowerer): boolean {
   lowerer.mentionsProcessVersions ??= lowerer.program
     .getImplementationSourceFiles()
-    .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
+    .some((sf) => !sf.isDeclarationFile && ts.sourceTextIncludes(sf, "versions"));
   return lowerer.mentionsProcessVersions;
 }
 
@@ -643,6 +643,8 @@ export function processDataMemberValue(
       return { kind: "libCall", fn: "process.pid", args: [], type: F64, loc };
     case "execPath":
       return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
+    case "execArgv":
+      return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
     case "allowedNodeEnvironmentFlags":
       return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
     case "versions":

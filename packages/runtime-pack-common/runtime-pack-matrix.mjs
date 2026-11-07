@@ -62,11 +62,15 @@ export const BASE_RUNTIME_SOURCES = [
 export const OPTIONAL_RUNTIME_SOURCES = [
   // The call-time parameter bind of a generator (fn.generator.bindAtCall).
   ["scr_gen_bind.c", "genBind"],
+  // The receiver a generator function's body reads (dyn.generatorThis).
+  ["scr_gen_receiver.c", "genReceiver"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
   // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
   ["scr_fs_flags.c", "fsFlags"],
+  // The BYTE-data spellings of the option write and fs.promises.writeFile.
+  ["scr_fs_bytes_write.c", "fsBytesWrites"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
   // typed twins so a typed program keeps that object byte for byte.
   ["scr_bytes_strdec_dyn.c", "strdecDyn"],
@@ -94,6 +98,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
   ["scr_builtin_values.c", "builtinValues"],
+  // An untyped path of a synchronous fs function in a JavaScript source; a
+  // unit of its own so no other executable changes.
+  ["scr_fs_path_value.c", "fsPathValue"],
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
@@ -202,9 +209,18 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Object.isExtensible and Object.isSealed of a value typed dynamically; a
   // unit of its own so scr_json.c keeps its layout for every other program.
   ["scr_dyn_integrity.c", "dynIntegrityQueries"],
+  // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
+  // scr_json.c keeps its layout for every program that never reflects.
+  ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // `delete` of a key a record's type does not declare, removed from the
+  // record's kept source; a unit of its own so scr_json.c keeps its layout
+  // for every other program.
+  ["scr_record_source_delete.c", "recordSourceDelete"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
+  // The spawnSync capture Buffers; a unit of its own for the same reason.
+  ["scr_child_capture.c", "spawnCaptureBytes"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.
@@ -258,6 +274,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
+  // A native AbortSignal's twin in an island: programs with islands and
+  // native signals (the signal unit or the fetch unit).
+  ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived

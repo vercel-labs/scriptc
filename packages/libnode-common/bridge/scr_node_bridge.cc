@@ -2234,6 +2234,28 @@ Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *
       if (found != g_exports.end()) {
         Touch(id);
         Local<Object> existing = found->second.Get(isolate);
+        // What the V8 Error holds is the native error's as of this crossing:
+        // native code may have changed its message, name, stack or code
+        // since the Error was made. The values are read before any
+        // JavaScript runs (below, the same rule).
+        const struct {
+          const char *key;
+          const char *data;
+          size_t len;
+        } held[] = {{"message", in->u.error.message, in->u.error.message_len},
+                    {"name", in->u.error.name, in->u.error.name_len},
+                    {"stack", in->u.error.stack, in->u.error.stack_len},
+                    {"code", in->u.error.code, in->u.error.code_len}};
+        Local<Value> now[4];
+        for (int i = 0; i < 4; i++)
+          if (held[i].data != nullptr) now[i] = FromWtf8(isolate, held[i].data, held[i].len);
+        for (int i = 0; i < 4; i++) {
+          if (now[i].IsEmpty()) continue;
+          Local<String> key = Utf8(isolate, held[i].key);
+          Local<Value> was;
+          if (existing->Get(context, key).ToLocal(&was) && was->StrictEquals(now[i])) continue;
+          existing->Set(context, key, now[i]).FromMaybe(false);
+        }
         SyncErrorFields(isolate, context, id, existing);
         return existing;
       }

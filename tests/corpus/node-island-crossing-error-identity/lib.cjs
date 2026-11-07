@@ -22,6 +22,7 @@ exports.keep = (e) => {
   kept = e;
 };
 exports.same = (e) => e === kept;
+exports.read = (e) => `${e === kept} ${e.name}: ${e.message} | ${String(e.stack).split("\n")[0]} | ${e.code} | ${e.status}`;
 exports.kept = () => kept;
 exports.describe = (fn, Cls) => {
   try {

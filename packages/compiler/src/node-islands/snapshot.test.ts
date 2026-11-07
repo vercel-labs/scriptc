@@ -512,6 +512,148 @@ describe("state an earlier load wrote", () => {
   });
 });
 
+describe("a package file a generated module's load evaluated first", () => {
+  /** A package `kit` whose `config.js` reads a private environment value,
+   * and a module the build wrote for a statement of the program
+   * (`kit.use();`), which loads the package's files. The probe evaluates a
+   * file in the first load that reaches it, so `config.js`'s read is in the
+   * record of whichever of the two the probe loaded first, and the other's
+   * record is empty with the file in its list.
+   *   "package first": the import of `kit` comes before the statement, as a
+   *     program has it.
+   *   "generated first": the probe reached the statement's module first.
+   *   "package unreached": the import of `kit` sits where the order walk
+   *     does not reach, so the probe loads it after the others. */
+  function evaluatedFirst(order: "package first" | "generated first" | "package unreached") {
+    const root = scratch();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
+    const dir = join(root, "node_modules", "kit");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), '{ "name": "kit" }');
+    writeFileSync(join(dir, "config.js"), "exports.token = process.env.TOKEN;\n");
+    writeFileSync(
+      join(dir, "index.js"),
+      'const { token } = require("./config.js");\nmodule.exports = { token, use() {} };\n',
+    );
+    const [index, config] = [join(dir, "index.js"), join(dir, "config.js")];
+    const defer = (path: string) => ({
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: path },
+        { kind: "strLit", value: "" },
+      ],
+    });
+    const load = (call: unknown) => ({ kind: "assign", localId: "%g.island.0", value: call });
+    const loads = {
+      kit: "./node_modules/kit/index.js",
+      statement: "./.scriptc/closed/main.0000000000.0.mjs",
+    };
+    const kit = defer(loads.kit);
+    const statement = defer(loads.statement);
+    const init =
+      order === "package first"
+        ? [load(kit), load(statement)]
+        : order === "generated first"
+          ? [load(statement), load(kit)]
+          : [load(statement)];
+    const mod = {
+      entry: "%main",
+      functions: [
+        ...(order === "package unreached" ? [{ name: "later", body: [load(kit)] }] : []),
+        { name: "%init.0", body: init },
+        {
+          name: "%main",
+          body: [{ kind: "exprStmt", expr: { kind: "call", callee: "%init.0", args: [] } }],
+        },
+      ],
+      globals: [],
+      nodeIsland: {
+        libnode: "",
+        nodeVersion: "",
+        modules: {
+          root,
+          files: [
+            {
+              path: loads.statement.slice(2),
+              size: 0,
+              sha256: "",
+              generated: 'import kit from "../../node_modules/kit/index.js";\nkit.use();\n',
+            },
+            { path: "node_modules/kit/index.js", size: 0, sha256: "" },
+            { path: "node_modules/kit/config.js", size: 0, sha256: "" },
+          ],
+          links: [],
+        },
+      },
+    } as unknown as IrModule;
+    const secret = "sk-live-0123456789";
+    const probed: string[] = [];
+    const decisions = finalizeDeferredIslands(
+      mod,
+      join(root, "main.ts"),
+      root,
+      (_pack, modules) => {
+        probed.push(...modules);
+        return {
+          results: modules.map((path, i) => ({
+            path,
+            // The package's value holds the token; the statement's is empty.
+            root: path === index ? 1 : 2,
+            inputs: [],
+            volatile: [],
+            effects: [],
+            mutations: [],
+            // The load the probe reached first evaluated `config.js`.
+            env: (i === 0 ? [["TOKEN", secret]] : []) as [string, string | null][],
+            tty: [],
+            files: [path, index, config],
+          })),
+          objects: {
+            "1": {
+              f: 0,
+              p: false,
+              m: [
+                ["token", { s: secret }],
+                ["use", { o: 3 }],
+              ],
+            },
+            "2": { f: 0, p: false, m: [] },
+            "3": { f: 1, p: false, m: [] },
+          },
+        };
+      },
+    );
+    const of = (end: string) => decisions.find((d) => d.path.endsWith(end))!;
+    return {
+      probed: probed.map((path) => (path === index ? "package" : "generated")),
+      packageDecision: of("kit/index.js"),
+      generatedDecision: of("main.0000000000.0.mjs"),
+      calls: [kit, statement],
+      text: JSON.stringify(mod),
+      secret,
+    };
+  }
+
+  test.each(["package first", "generated first", "package unreached"] as const)(
+    "neither defers and no value is kept (%s)",
+    (order) => {
+      const { probed, packageDecision, generatedDecision, calls, text, secret } =
+        evaluatedFirst(order);
+      expect(probed).toEqual(
+        order === "package first" ? ["package", "generated"] : ["generated", "package"],
+      );
+      // The package's snapshot would hold the token, whichever load read it.
+      expect(packageDecision.deferred).toBe(false);
+      expect(packageDecision.reason).toContain("TOKEN");
+      expect(generatedDecision.deferred).toBe(false);
+      expect(generatedDecision.reason).toContain("TOKEN");
+      expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+      expect(text).not.toContain(secret);
+    },
+  );
+});
+
 describe("the order deferred loads are probed in", () => {
   const defer = (path: string) => ({
     kind: "libCall",
@@ -916,7 +1058,9 @@ describe("generated island modules (closed-island-init.ts)", () => {
    * generated modules: one where the entry's own statements reach it, one
    * inside a function. The probe's stand-in records what it was given and
    * answers a deterministic load for every module. */
-  function generatedProject() {
+  function generatedProject(
+    options: { statement?: boolean; volatile?: string[]; effects?: string[] } = {},
+  ) {
     const root = scratch();
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
     mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
@@ -924,6 +1068,8 @@ describe("generated island modules (closed-island-init.ts)", () => {
     writeFileSync(join(root, "node_modules", "dep", "index.js"), "exports.make = () => ({});\n");
     const text = (name: string) =>
       `import dep from "../../node_modules/dep/index.js";\nexport const ${name} = dep.make();\n`;
+    // A statement of the program the island evaluates: no export.
+    const statement = `import dep from "../../node_modules/dep/index.js";\ndep.make();\n`;
     const defer = (path: string) => ({
       kind: "libCall",
       fn: "nodeIsland.defer",
@@ -959,7 +1105,12 @@ describe("generated island modules (closed-island-init.ts)", () => {
           root,
           files: [
             { path: loads.first.slice(2), size: 0, sha256: "", generated: text("a") },
-            { path: loads.second.slice(2), size: 0, sha256: "", generated: text("b") },
+            {
+              path: loads.second.slice(2),
+              size: 0,
+              sha256: "",
+              generated: options.statement === true ? statement : text("b"),
+            },
             { path: "node_modules/dep/index.js", size: 0, sha256: "" },
           ],
           links: [],
@@ -984,8 +1135,9 @@ describe("generated island modules (closed-island-init.ts)", () => {
             path,
             root: i + 1,
             inputs: [],
-            volatile: [],
-            effects: [],
+            volatile: i === 0 ? [] : (options.volatile ?? []),
+            // The second generated module's own.
+            effects: i === 2 ? (options.effects ?? []) : [],
             mutations: [],
             env: [],
             tty: [],
@@ -1039,5 +1191,39 @@ describe("generated island modules (closed-island-init.ts)", () => {
     // A package's entry point is not: its load does not compute from what
     // other modules left behind.
     expect(snapshot(dep)).not.toMatch(/^P /m);
+  });
+
+  test("a statement defers like a constant, with nothing in its snapshot but its guards", () => {
+    const { decisions, second, snapshot } = generatedProject({ statement: true });
+    const decision = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
+    expect(decision.deferred).toBe(true);
+    expect(snapshot(second)).toMatch(/^P 2 \d+$/m);
+  });
+
+  test("a statement that read the clock stays where it stands; a constant that did still waits", () => {
+    // A constant that fails when it finally evaluates raises its error
+    // where its value is used. A statement has no value: its evaluation
+    // must be the probe's, and one that read the clock is not.
+    const { decisions } = generatedProject({ statement: true, volatile: ["Date.now()"] });
+    const constant = decisions.find((d) => d.path.endsWith("main.0000000000.0.mjs"))!;
+    const statement = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
+    expect(constant.deferred).toBe(true);
+    expect(constant.reason).toContain("volatile Date.now(): no constants");
+    expect(statement.deferred).toBe(false);
+    expect(statement.reason).toContain("its evaluation reads Date.now()");
+    // The package they both name read nothing: its import still waits.
+    expect(decisions.find((d) => d.path.endsWith("dep/index.js"))!.deferred).toBe(true);
+  });
+
+  test("a generated module's effects are its own: the package it names and its neighbour still wait", () => {
+    // The second module prints through the package's function. The
+    // package's file evaluated in the package's own import, before it, and
+    // did nothing; the first module does not import the second.
+    const { decisions } = generatedProject({ effects: ["process.stdout.write()"] });
+    const of = (end: string) => decisions.find((d) => d.path.endsWith(end))!;
+    expect(of("dep/index.js").deferred).toBe(true);
+    expect(of("main.0000000000.0.mjs").deferred).toBe(true);
+    expect(of("main.0000000000.1.mjs").deferred).toBe(false);
+    expect(of("main.0000000000.1.mjs").reason).toContain("its load has effects");
   });
 });

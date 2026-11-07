@@ -118,6 +118,14 @@ static void nb_loads_add(const char *path) {
   nb_loads_hash = (h ^ (uint8_t)'\n') * 16777619u;
   nb_loads_count++;
 }
+
+/* Whether a deferred load of this path is registered. */
+static bool nb_registered(const char *path, size_t len) {
+  for (size_t i = 0; i < nb_nmodules; i++)
+    if (strlen(nb_modules[i]->path) == len && memcmp(nb_modules[i]->path, path, len) == 0)
+      return true;
+  return false;
+}
 static int nb_trace = -1;
 
 static bool nb_tracing(void) {
@@ -499,7 +507,13 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       uint32_t count = (uint32_t)nb_uint(&c);
       uint32_t hash = (uint32_t)nb_uint(&c);
       if (c.bad) break;
-      if (count != nb_loads_count || hash != nb_loads_hash) {
+      /* A module of the program is imported wherever it is used. Its first
+       * import passed this guard and registered the load, and that is where
+       * the module evaluates when Node starts; a later import of it adds
+       * nothing to the loads, and the count has moved on by then (by this
+       * very load at least). */
+      if (!nb_registered(path->data, path->len) &&
+          (count != nb_loads_count || hash != nb_loads_hash)) {
         if (nb_tracing())
           fprintf(stderr, "[node-islands] boot guard failed: the loads before %.*s\n",
                   (int)path->len, path->data);
@@ -617,10 +631,7 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
     nb_modules = grown;
     nb_modules_cap = mcap;
   }
-  bool registered = false;
-  for (size_t i = 0; i < nb_nmodules && !registered; i++)
-    registered = strcmp(nb_modules[i]->path, m->path) == 0;
-  if (!registered) nb_loads_add(m->path);
+  if (!nb_registered(m->path, strlen(m->path))) nb_loads_add(m->path);
   nb_modules[nb_nmodules++] = m;
   if (nb_tracing()) fprintf(stderr, "[node-islands] deferred %s\n", m->path);
   return scr_dyn_retain(root->box);

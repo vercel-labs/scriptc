@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9355-node-island-program-module-two-importers/patch.ts",
+  "<repo>/tests/corpus/9355-node-island-program-module-two-importers/reader.ts",
+  "<repo>/tests/corpus/9355-node-island-program-module-two-importers/main.ts"
+ ],
+ "diags": []
+}

@@ -359,24 +359,64 @@ interface LoadReads {
  * with its effects, in the other module's load. So the modules of a group
  * that shares files carry each other's reads and effects: their guards,
  * and the reasons that keep one of them eager. A module's own come
- * first. */
+ * first.
+ *
+ * A module the build wrote for the program (`generated`: a constant or a
+ * statement the island evaluates, by the path the probe loaded it from)
+ * loads the files of the packages it names. A file it got from an earlier
+ * load evaluated in that load, so what the generated module read or did
+ * there is its own body's: it carries the reads and effects of the loads
+ * whose files it loads and of the generated modules it imports (its value
+ * can come from theirs), and gives its own to the generated modules that
+ * import it, not to those earlier loads. A statement of the program that
+ * prints through a package's function has effects, and the package's
+ * import, which evaluated the package's files quietly, still waits.
+ *
+ * A file that no earlier load lists evaluated in the generated module's
+ * own load (`results` is in the probe's order): the package's import comes
+ * later in the probe's order, or only a call of the generated module
+ * reaches the file. What the file read is then in the generated module's
+ * record, and every other load of that file shares it both ways, as two
+ * packages do. */
 function loadReads(
   results: ProbeResult[],
   publicEnv: ReadonlySet<string>,
+  generated: ReadonlySet<string> = new Set(),
 ): Map<ProbeResult, LoadReads> {
   const parent = results.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  /** The first load, in the probe's order, that lists each file: the load
+   * the file evaluated in. */
   const owner = new Map<string, number>();
   results.forEach((r, i) => {
+    const own = generated.has(r.path);
     for (const f of r.files) {
       const j = owner.get(f);
       if (j === undefined) owner.set(f, i);
-      else parent[find(i)] = find(j);
+      else if (!own) parent[find(i)] = find(j);
     }
   });
+  /** Adds to `seen` the loads whose reads and effects load `i` answers
+   * for: the loads it shares a file with, and for a generated module the
+   * loads that evaluated the files it loads, with theirs. */
+  const collect = (i: number, seen: Set<number>): void => {
+    results.forEach((_, j) => {
+      if (find(j) === find(i)) seen.add(j);
+    });
+    if (!generated.has(results[i]!.path)) return;
+    for (const f of results[i]!.files) {
+      const from = owner.get(f);
+      if (from === undefined || seen.has(from)) continue;
+      seen.add(from);
+      collect(from, seen);
+    }
+  };
   const reads = new Map<ProbeResult, LoadReads>();
   results.forEach((r, i) => {
-    const group = [r, ...results.filter((other, j) => j !== i && find(j) === find(i))];
+    // A module's own come first.
+    const seen = new Set([i]);
+    collect(i, seen);
+    const group = [...seen].map((j) => results[j]!);
     const env = new Map<string, string | null>();
     const tty = new Map<number, boolean>();
     const privateEnv = new Set<string>();
@@ -463,10 +503,16 @@ export function finalizeDeferredIslands(
   const tree = mod.nodeIsland?.modules;
   // Modules the build wrote (generated.ts), by their place under the tree
   // root: the constants of the program whose initializers the island
-  // evaluates.
+  // evaluates, and its statements the island evaluates. A statement's
+  // module exports nothing.
   const generated = new Set<string>();
-  for (const file of tree?.files ?? [])
-    if (file.generated !== undefined) generated.add(join(tree!.root, ...file.path.split("/")));
+  const statements = new Set<string>();
+  for (const file of tree?.files ?? []) {
+    if (file.generated === undefined) continue;
+    const place = join(tree!.root, ...file.path.split("/"));
+    generated.add(place);
+    if (!/^export /m.test(file.generated)) statements.add(place);
+  }
   // Modules of the program the static gate admits (below).
   const program = new Set<string>();
   /** A module whose code is the program's own: the probe withholds what it
@@ -556,7 +602,7 @@ export function finalizeDeferredIslands(
   // The probe's copy of a generated module stands for the tree's file.
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
   for (const copy of scratch?.copies.values() ?? []) shipped.add(copy);
-  const reads = loadReads(probe.results, publicEnv);
+  const reads = loadReads(probe.results, publicEnv, new Set(scratch?.copies.values() ?? []));
   // The probe loads every candidate in one process, in the order the program
   // evaluates them, so shared state one load writes (a global, a builtin, a
   // prototype, the environment) is there for every load after it. A load
@@ -615,6 +661,12 @@ export function finalizeDeferredIslands(
         own.length > 0 ? "its load" : "a load it shares a file with";
       if (effects.length > 0) return `${whose(result.effects)} has effects: ${effects.join(", ")}`;
       if (inputs.length > 0) return `${whose(result.inputs)} reads ${inputs.join(", ")}`;
+      // A statement evaluated when Node starts has to end as the probe's
+      // evaluation did: a constant that fails then raises its error where
+      // its value is used, and a statement has no value to be used. One
+      // that read the clock or random numbers can end differently.
+      if (statements.has(c.path) && result.volatile.length > 0)
+        return `its evaluation reads ${result.volatile.join(", ")}: a statement evaluated later could end differently, and nothing reads how it ended`;
       // A snapshot written without constants keeps an object's flags and its
       // object links, and those answer `typeof` without evaluating a module.
       // An export's type can come from the read as its value can, so a load

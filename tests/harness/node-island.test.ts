@@ -331,25 +331,37 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect(await run(order, [], env)).toEqual(intact);
   }, 300_000);
 
-  test("an asynchronous call is repeated after its module's lost file is put back", async () => {
+  test("asynchronous calls are repeated after their modules' lost files are put back", async () => {
+    // Two calls pending together, each into a module whose file is gone:
+    // the first outcome repairs the tree, and both calls are made again.
     const dir = join(outDir, "async-repair");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "later.cjs"), "exports.later = async (n) => n + 1;\n");
+    writeFileSync(join(dir, "twice.cjs"), "exports.twice = async (n) => n * 2;\n");
     writeFileSync(
       join(dir, "main.ts"),
-      `import { call } from "@scriptc/node";\nconsole.log(await call<number>("./later.cjs", "later", 41));\n`,
+      [
+        'import { call } from "@scriptc/node";',
+        "const [a, b] = await Promise.all([",
+        '  call<number>("./later.cjs", "later", 41),',
+        '  call<number>("./twice.cjs", "twice", 21),',
+        "]);",
+        "console.log(a, b);",
+        "",
+      ].join("\n"),
     );
     const program = await build("async-repair-out", undefined, join(dir, "main.ts"));
     const cache = join(outDir, "async-repair-cache");
     rmSync(cache, { recursive: true, force: true });
     const env = { ...process.env, XDG_CACHE_HOME: cache };
-    expect(await run(program, [], env)).toEqual({ stdout: "42\n", stderr: "", code: 0 });
+    expect(await run(program, [], env)).toEqual({ stdout: "42 42\n", stderr: "", code: 0 });
     const islands = join(cache, "scriptc/node-islands");
     const root = join(islands, readdirSync(islands)[0]!);
     rmSync(fileBelow(root, "later.cjs"));
+    rmSync(fileBelow(root, "twice.cjs"));
     expect(await run(program, [], env)).toEqual({
-      stdout: "42\n",
-      stderr: `scriptc: reinstalled 1 Node island module file missing from ${root}\n`,
+      stdout: "42 42\n",
+      stderr: `scriptc: reinstalled 2 Node island module files missing from ${root}\n`,
       code: 0,
     });
   }, 300_000);

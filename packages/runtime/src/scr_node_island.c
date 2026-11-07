@@ -87,6 +87,7 @@ typedef struct {
    * did not load for a file the installed tree had lost (ni_settle). */
   ScrStr *file, *specifier, *name; /* owned */
   ScrDyn *json;                    /* owned */
+  size_t repairs; /* files the process had put back when the call was made */
   bool repeated;
 } NiPending;
 
@@ -1221,13 +1222,14 @@ static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, Sc
 static void ni_settle(uint32_t id, const char *outcome, size_t len) {
   for (size_t i = 0; i < ni_npending; i++) {
     if (ni_pending[i].id != id) continue;
-    size_t repairs = ni_repaired;
     ni_load_failed = false;
     ScrDyn *value = ni_outcome(outcome, len);
-    if (value == NULL && ni_load_failed && ni_repaired != repairs && !ni_pending[i].repeated) {
+    if (value == NULL && ni_load_failed && ni_repaired != ni_pending[i].repairs &&
+        !ni_pending[i].repeated) {
       /* The module did not load because the installed tree had lost a
-       * file, and the file is back: the call once more, under the same id
-       * (its function never ran). */
+       * file, and files were put back since the call was made (by this
+       * outcome, or by that of another call that was pending with it): the
+       * call once more, under the same id (its function never ran). */
       scr_caught_release(scr_exc_take());
       ni_pending[i].repeated = true;
       /* The call may settle before it returns, which releases the entry:
@@ -2058,6 +2060,7 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
                                         scr_str_retain(specifier),
                                         scr_str_retain(name),
                                         scr_dyn_retain(json),
+                                        ni_repaired,
                                         false};
   ni_npending++;
   size_t len = 0;

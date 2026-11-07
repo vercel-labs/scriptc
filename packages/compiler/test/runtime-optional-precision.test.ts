@@ -373,12 +373,18 @@ console.log(total(items, weigh), total(words, (word) => word.length));
 });
 
 test("an array a generic function builds carries its argument's holes", async () => {
-  // The copy holds the holes as present undefined elements, so the
-  // callback over it takes the element or undefined.
+  // The copy holds the holes as present undefined elements, so what visits
+  // it takes the element or undefined. An arrow written at the call is no
+  // function of the module once the loop has taken its body (nothing else
+  // reaches it), so the loop's own read tells; a named function stays, and
+  // its parameter tells.
   const visits = (fill: string): Promise<string[]> =>
     lower(`${ITEM}
 function clone<T>(xs: readonly T[]): T[] {
   return [...xs];
+}
+function tally(item: Item): number {
+  return item === undefined ? 0 : weigh(item);
 }
 const items: Item[] = [];
 ${fill}
@@ -387,12 +393,45 @@ let sum = 0;
 copy.forEach((item) => {
   sum += item === undefined ? 0 : weigh(item);
 });
-console.log(sum);
-`).then((module) =>
-      module.functions
-        .filter((fn) => fn.params.length > 0 && fn.name !== "weigh" && !fn.name.startsWith("clone"))
-        .map((fn) => signature(module, fn.name).replace(/^[^(]*/, "")),
-    );
-  expect(await visits("items[2] = new Item(3);")).toContain("(Item|undefined): void");
-  expect(await visits("items.push(new Item(3));")).toContain("(Item): void");
+console.log(sum, copy.map(tally).join(","));
+`).then((module) => [
+      signature(module, "tally"),
+      ...module.functions
+        .filter((fn) => fn.name.startsWith("%arr.loop."))
+        .map((fn) =>
+          JSON.stringify(fn.body).includes('"kind":"arrayState"')
+            ? "the loop tests the element's state"
+            : "the loop reads the element directly",
+        ),
+      ...module.functions
+        .filter(
+          (fn) =>
+            fn.params.length === 1 &&
+            fn.returnType.kind === "void" &&
+            !fn.name.startsWith("%") &&
+            !fn.name.startsWith("clone"),
+        )
+        .map((fn) => signature(module, fn.name).replace(/^[^(]*/, "callback")),
+    ]);
+  // Whichever holds the arrow's body: the loop, or the arrow itself.
+  const holed = await visits("items[2] = new Item(3);");
+  expect(holed[0]).toBe("tally(Item|undefined): f64");
+  expect(holed.slice(1)).toSatisfy(
+    (seen: string[]) =>
+      seen.length > 0 &&
+      seen.every(
+        (item) =>
+          item === "the loop tests the element's state" ||
+          item === "callback(Item|undefined): void",
+      ),
+  );
+  const dense = await visits("items.push(new Item(3));");
+  expect(dense[0]).toBe("tally(Item): f64");
+  expect(dense.slice(1)).toSatisfy(
+    (seen: string[]) =>
+      seen.length > 0 &&
+      seen.every(
+        (item) => item === "the loop reads the element directly" || item === "callback(Item): void",
+      ),
+  );
 });

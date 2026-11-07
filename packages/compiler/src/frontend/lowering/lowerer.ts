@@ -634,7 +634,7 @@ import {
   lowerProcessEnvGet,
   refuseHeldEnvWrite,
 } from "./builtins/environment.js";
-import { lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
+import { jsonResultTextOnly, lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
 import { lowerCryptoComposedCall, lowerCryptoModuleCall } from "./builtins/crypto.js";
 import {
   legacyUrlClassValue,
@@ -4150,6 +4150,10 @@ export class Lowerer {
   /** Method adapter names are owned by class-method-values. Looking them
    * up must not scan and retain every unrelated lifted function. */
   readonly classMethodValueHelpers = new Set<string>();
+  /** The method value adapters (`%method.value:…`) of methods whose source
+   * reads `this` or `super`: each checks its receiver on every call, even
+   * when no read of the receiver is left in the method's lowered body. */
+  readonly receiverReadingMethodValues = new Set<string>();
   /** Reflected class methods whose lambda is lowering right now (null
    * until lowerLambda named it), with the closure it will produce: a
    * method that reads itself as a value inside its own body
@@ -5070,6 +5074,7 @@ export class Lowerer {
       mapTable("assertHelpers", this.assertHelpers),
       mapTable("inspectHelpers", this.inspectHelpers),
       setTable("classMethodValueHelpers", this.classMethodValueHelpers),
+      setTable("receiverReadingMethodValues", this.receiverReadingMethodValues),
       setTable("freshClosureAdapters", this.freshClosureAdapters),
       mapTable("iterDrainHelpers", this.iterDrainHelpers),
       mapTable("mapHofHelpers", this.mapHofHelpers),
@@ -9073,6 +9078,30 @@ export class Lowerer {
         this.isStdlibGlobal(e.expression.expression, "JSON")
       )
         return true;
+      // An untyped root can serialize to undefined; the result keeps it
+      // unless every use reads it as text (jsonResultTextOnly).
+      if (
+        ts.isCallExpression(e) &&
+        e.arguments.nodes.length > 0 &&
+        ts.isPropertyAccessExpression(e.expression) &&
+        e.expression.name.text === "stringify" &&
+        this.isStdlibGlobal(e.expression.expression, "JSON") &&
+        !ts.isSpreadElement(e.arguments.nodes[0]!) &&
+        !jsonResultTextOnly(this, e)
+      ) {
+        // A JavaScript parameter has no mapping yet: its checker type says.
+        // An instance of a class with a toJSON method serializes what the
+        // method returns, which can be undefined too.
+        const root = this.typeOf(e.arguments.nodes[0]!);
+        const mapped = this.mapTypeOf(root);
+        if (
+          mapped?.kind === "dyn" ||
+          (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) ||
+          (mapped?.kind === "object" &&
+            this.findMethodOn(this.classes.get(mapped.className) ?? null, "toJSON") !== null)
+        )
+          return true;
+      }
       if (
         ts.isCallExpression(e) &&
         ts.isPropertyAccessExpression(e.expression) &&
@@ -16555,11 +16584,14 @@ export class Lowerer {
     return this.coerceInto(node, e, expected);
   }
 
-  /** An unannotated empty collection has no existing elements or aliases
-   * that constrain its layout. An explicit type argument still wins. */
-  emptyCollectionFor(node: ts.Expression, expected: IrType): IrExpr | null {
+  /** What `node` builds when it is a fresh empty container with no type of
+   * its own: `[]`, or `new Map()` / `new Set()` with no arguments and no
+   * type arguments. Null for every other expression. */
+  freshEmptyContainer(node: ts.Expression): "array" | "map" | "set" | null {
     let value = node;
     while (ts.isParenthesizedExpression(value)) value = value.expression;
+    if (ts.isArrayLiteralExpression(value))
+      return value.elements.nodes.length === 0 ? "array" : null;
     if (
       !ts.isNewExpression(value) ||
       !ts.isIdentifier(value.expression) ||
@@ -16569,9 +16601,16 @@ export class Lowerer {
       return null;
     const symbol = this.resolveValueSymbol(value.expression);
     if (!symbol || !this.isStdlibSymbol(symbol)) return null;
-    const kind =
-      ts.symbolName(symbol) === "Map" ? "map" : ts.symbolName(symbol) === "Set" ? "set" : null;
-    if (!kind) return null;
+    return ts.symbolName(symbol) === "Map" ? "map" : ts.symbolName(symbol) === "Set" ? "set" : null;
+  }
+
+  /** An unannotated empty collection has no existing elements or aliases
+   * that constrain its layout. An explicit type argument still wins. */
+  emptyCollectionFor(node: ts.Expression, expected: IrType): IrExpr | null {
+    let value = node;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    const kind = this.freshEmptyContainer(value);
+    if (kind !== "map" && kind !== "set") return null;
     const arms =
       expected.kind === "union" ? (this.unions.get(expected.unionId)?.arms ?? []) : [expected];
     const candidates = arms.filter((arm) => arm.kind === kind);

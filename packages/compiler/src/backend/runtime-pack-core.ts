@@ -157,6 +157,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   zstd: boolean;
   moduleNamespace: boolean;
   moduleNamespaceDyn: boolean;
+  cjsExports: boolean;
   primitiveWrapper: boolean;
   iteratorProto: boolean;
   nativeFetch: boolean;
@@ -412,6 +413,7 @@ export function effectiveRuntimeFeatures(
     zstd: features.zstd === true,
     moduleNamespace: features.moduleNamespace === true,
     moduleNamespaceDyn: features.moduleNamespaceDyn === true,
+    cjsExports: features.cjsExports === true,
     primitiveWrapper: features.primitiveWrapper === true,
     iteratorProto: features.iteratorProto === true,
     nativeFetch,

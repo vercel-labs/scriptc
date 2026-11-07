@@ -54,6 +54,7 @@ export function executableLinkFeatures(
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
+    ...(features.cjsExports ? { cjsExports: true } : {}),
     ...(features.primitiveWrapper ? { primitiveWrapper: true } : {}),
     ...(features.iteratorProto ? { iteratorProto: true } : {}),
     zlib: features.zlib,

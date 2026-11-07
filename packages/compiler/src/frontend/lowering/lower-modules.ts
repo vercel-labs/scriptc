@@ -1732,6 +1732,14 @@ export function collectGlobals(
             const shape = lowerer.shapes.get(t.shapeId);
             if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
           }
+          // `exports.ns = require("./m.cjs")`: the value is the re-exported
+          // module's exports OBJECT — one object per module, read live —
+          // not a record copy of the members its type names.
+          {
+            let rhs: ts.Node = typeNode;
+            while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+            if (lowerer.cjsLocalModuleBindingOf(rhs as ts.Expression)) t = DYN;
+          }
           // An immutable export source shares its live storage and native
           // callable ABI. Mutable sources need a separate snapshot slot:
           // later writes to the binding do not change the exported value.
@@ -1927,6 +1935,25 @@ export function collectGlobals(
       if (cjs?.kind === "table" && cjs.obj) {
         for (const prop of cjs.obj.properties.nodes) {
           if (ts.isShorthandPropertyAssignment(prop)) continue; // alias plumbing
+          // A non-computed `__proto__` member names no export: it gives the
+          // exports object its prototype (B.3.1). The statement lowering
+          // stores its value when the table is built, and every reader of
+          // the namespace hands that stored value to the runtime.
+          if (
+            ts.isPropertyAssignment(prop) &&
+            !ts.isComputedPropertyName(prop.name) &&
+            prop.name.text === "__proto__"
+          ) {
+            const g: IrGlobal = {
+              id: `%g.${tag}%proto`,
+              name: "__proto__",
+              type: DYN,
+              mutable: false,
+            };
+            lowerer.cjsProtoGlobals.set(lowerer.pathOf(sf), g);
+            lowerer.globalsList.push(g);
+            continue;
+          }
           if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.initializer)) continue;
           if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) {
             registerExport(prop.name, prop.name.text, prop.initializer);

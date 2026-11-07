@@ -1918,6 +1918,8 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
+  /** A CommonJS module's exports object as a value (scr_cjs_exports.c). */
+  cjsExports: rule({ fns: ["module.cjsExports"] }),
   /** Primitive wrapper objects (scr_js_wrapper.c), which also own
    * Number.prototype and Boolean.prototype: the value a JavaScript source
    * reads through dyn.builtinPrototype, and the compiled constructor's
@@ -2035,6 +2037,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     bigstats: false,
     childProcess: false,
     cipher: false,
+    cjsExports: false,
     copying: false,
     dc: false,
     dgram: false,

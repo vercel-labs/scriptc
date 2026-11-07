@@ -822,6 +822,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.builtinUnsupported",
   "module.requireComputed",
   "module.resolveComputed",
+  // Building the exports object applies the table literal's `__proto__`
+  // value as its prototype, which can refuse at run time.
+  "module.cjsExports",
   "fs.callbackValue",
   "fs.callbackCall",
   "dyn.keyDelete",

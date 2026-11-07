@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-esm-namespace/esm.mjs",
+  "<repo>/tests/corpus/cjs-exports-esm-namespace/index.cjs",
+  "<repo>/tests/corpus/cjs-exports-esm-namespace/main.cjs"
+ ],
+ "diags": []
+}

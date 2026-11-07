@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-proto-identity/lib.cjs",
+  "<repo>/tests/corpus/cjs-exports-proto-identity/reader.cjs",
+  "<repo>/tests/corpus/cjs-exports-proto-identity/main.cjs"
+ ],
+ "diags": []
+}

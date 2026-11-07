@@ -1,0 +1,12 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-object-value/parse.cjs",
+  "<repo>/tests/corpus/cjs-exports-object-value/state.cjs",
+  "<repo>/tests/corpus/cjs-exports-object-value/table.cjs",
+  "<repo>/tests/corpus/cjs-exports-object-value/defaults.cjs",
+  "<repo>/tests/corpus/cjs-exports-object-value/chain.cjs",
+  "<repo>/tests/corpus/cjs-exports-object-value/index.cjs",
+  "<repo>/tests/corpus/cjs-exports-object-value/main.cjs"
+ ],
+ "diags": []
+}

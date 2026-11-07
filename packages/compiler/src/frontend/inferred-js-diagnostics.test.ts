@@ -310,3 +310,25 @@ for (const { name, source, checkJs, ts } of CHECKER_OPINION_TWINS) {
     else expect(kept.some((message) => message.includes(checkJs))).toBe(true);
   });
 }
+
+test.for(["/\\1/", "/(a)\\2/", "/\\8/", "/(a)\\12/", "/[\\1]/"])(
+  "JavaScript admits a regex decimal escape without its group outside Unicode mode: %s",
+  (literal) => {
+    expect(diagnostics(`export const pattern = ${literal};`, 'import "./library.js";')).toEqual([]);
+  },
+);
+
+test.for(["/\\1/u", "/\\1/v", "/(a)\\2/u", "/(a)\\2/v", "/[\\1]/u"])(
+  "a Unicode-mode regex keeps the missing-group error: %s",
+  (literal) => {
+    const result = diagnostics(`export const pattern = ${literal};`, 'import "./library.js";');
+    expect(result.some((d) => d.code === "SC0001" && d.message.includes("backreference"))).toBe(
+      true,
+    );
+  },
+);
+
+test("TypeScript keeps the missing-group error of a non-Unicode regex", () => {
+  const result = diagnostics("export const pattern = /\\1/;", 'import "./library.js";', "ts");
+  expect(result.some((d) => d.message.includes("backreference"))).toBe(true);
+});

@@ -1636,14 +1636,14 @@ void scr_ni_twin_tell(uint32_t id, const char *event, ScrDyn *value) {
                      value != NULL ? value : scr_dyn_undefined()};
   scr_str_release(cs);
   scr_str_release(es);
-  ScrDyn *answer = ni_helper("tellTwin", args, 4);
+  ScrDyn *answer = scr_ni_helper("tellTwin", args, 4);
   if (answer == NULL && scr_exc_pending()) {
     ScrCaught *caught = scr_exc_take();
     ScrDyn *thrown = scr_caught_to_dyn(caught);
     scr_caught_release(caught);
     if (thrown != NULL) {
       args[3] = thrown;
-      answer = ni_helper("tellTwin", args, 4);
+      answer = scr_ni_helper("tellTwin", args, 4);
       scr_dyn_release(thrown);
     }
     if (scr_exc_pending()) scr_exc_clear();
@@ -1669,7 +1669,7 @@ ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle) {
   if (!adopting) return NULL;
   ScrCaught *saved = scr_exc_pending() ? scr_exc_take() : NULL;
   ScrDyn *native = NULL;
-  ScrDyn *name = ni_helper("twinClassOf", &island, 1);
+  ScrDyn *name = scr_ni_helper("twinClassOf", &island, 1);
   const ScrNiTwinClass *cls = NULL;
   /* Adopted since this handle was made: the native object that did. */
   if (name != NULL && ni_twin_class(name) != NULL) {
@@ -1691,7 +1691,7 @@ ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle) {
     uint32_t id = scr_ni_export_id(native);
     ni_exports[id].adopts = handle;
     ni_exports[id].adopted = true;
-    ScrDyn *ready = ni_helper("twinReady", &native, 1);
+    ScrDyn *ready = scr_ni_helper("twinReady", &native, 1);
     bool ok = ready != NULL && ready->kind == SCR_DYN_BOOL && ready->v.b;
     scr_dyn_release(ready);
     if (ni_exports[id].value == native) ni_exports[id].adopts = 0;

@@ -102626,6 +102626,7 @@
           "tests/corpus/inspect-hidden-properties.cjs",
           "tests/corpus/inspect-max-array-length.ts",
           "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/node24-deep-equality-properties.js",
@@ -103815,6 +103816,7 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/util-format-json-error.ts"
         ]
       },
@@ -103846,6 +103848,7 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/util-format-json-error.ts"
         ]
       },
@@ -104045,6 +104048,7 @@
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-hidden-properties.cjs"
         ]
       },

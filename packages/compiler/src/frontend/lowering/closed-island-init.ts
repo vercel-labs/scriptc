@@ -226,8 +226,8 @@ function newScan(lowerer: Lowerer, statement: ts.Statement): Scan {
   };
 }
 
-/** The decisions in progress for one lowerer. */
-interface Deciding {
+/** The decisions in progress for one lowerer (Lowerer.closedIslandDeciding). */
+export interface ClosedDeciding {
   /** The statements being decided: one that names itself through a cycle
    * of constants is not closed. */
   active: Set<ts.Statement>;
@@ -236,12 +236,8 @@ interface Deciding {
   assumed: Map<ts.Statement, ClosedConstant> | null;
 }
 
-const decisions = new WeakMap<Lowerer, Deciding>();
-
-function deciding(lowerer: Lowerer): Deciding {
-  let state = decisions.get(lowerer);
-  if (state === undefined) decisions.set(lowerer, (state = { active: new Set(), assumed: null }));
-  return state;
+function deciding(lowerer: Lowerer): ClosedDeciding {
+  return lowerer.closedIslandDeciding;
 }
 
 /** Records that `node` keeps the expression from being closed. */
@@ -657,10 +653,10 @@ function tableShaped(statement: ts.Statement): statement is ts.VariableStatement
   return ts.isObjectLiteralExpression(value) || ts.isArrayLiteralExpression(value);
 }
 
-/** The identifiers of `file` by their text: where a name could be meant. */
-const mentions = new WeakMap<ts.SourceFile, Map<string, ts.Identifier[]>>();
-
-function mentionsOf(file: ts.SourceFile, name: string): ts.Identifier[] {
+/** The identifiers of `file` spelled `name`: where the name could be meant
+ * (Lowerer.closedIslandMentions keeps each file's identifiers by text). */
+function mentionsOf(lowerer: Lowerer, file: ts.SourceFile, name: string): ts.Identifier[] {
+  const mentions = lowerer.closedIslandMentions;
   let byName = mentions.get(file);
   if (byName === undefined) {
     const found = new Map<string, ts.Identifier[]>();
@@ -749,7 +745,7 @@ function privateTable(
     return answer;
   };
   try {
-    for (const mention of mentionsOf(file, name)) {
+    for (const mention of mentionsOf(lowerer, file, name)) {
       if (mention === declaration.name) continue;
       if (!evaluated(topLevelStatementOf(mention))) {
         outside = mention;

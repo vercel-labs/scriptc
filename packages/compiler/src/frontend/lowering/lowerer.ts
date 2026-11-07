@@ -4445,6 +4445,14 @@ export class Lowerer {
     ts.SourceFile,
     import("./closed-island-init.js").ClosedFile
   >();
+  /** The decisions in progress, and each file's identifiers by their text
+   * (closed-island-init.ts: a table and the statements that name it are
+   * decided together). */
+  readonly closedIslandDeciding: import("./closed-island-init.js").ClosedDeciding = {
+    active: new Set(),
+    assumed: null,
+  };
+  readonly closedIslandMentions = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
@@ -5412,6 +5420,10 @@ export class Lowerer {
     // the same.
     "closedIslandStatements",
     "closedIslandFiles",
+    // A file's identifiers by their text: syntax. The decisions in progress
+    // are empty whenever no decision is being taken.
+    "closedIslandMentions",
+    "closedIslandDeciding",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.

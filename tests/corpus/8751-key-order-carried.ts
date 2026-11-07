@@ -102,3 +102,19 @@ const cloned: Pair = { ...narrowed, a: 5 };
 show("clone of narrowed", cloned);
 const reparsed = JSON.parse('{"b":1,"a":2}') as Pair;
 show("clone of parsed pair", { ...reparsed, a: 5 });
+
+// A type that a rest copy produces and a literal also builds in another
+// order: a copy of a parsed or cloned value keeps that value's key order.
+interface Trio { a: number; b: number; c: number }
+type Duo = { b: number; c: number };
+function withoutA(trio: Trio): Duo {
+  const { a, ...duo } = trio;
+  return duo;
+}
+const parsedTrio = JSON.parse('{"c":1,"b":2,"a":3}') as Trio;
+const clonedTrio: Trio = { ...parsedTrio, a: 9 };
+const madeDuo: Duo = { c: 5, b: 6 };
+show("duo of parsed", withoutA(parsedTrio));
+show("duo of cloned", withoutA(clonedTrio));
+show("duo literal", madeDuo);
+show("duo of plain", withoutA({ a: 1, b: 2, c: 3 }));

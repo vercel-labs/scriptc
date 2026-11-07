@@ -52,3 +52,15 @@ const named: { first: string } = { first: "a" };
 const byName: Record<string, string> = named;
 byName[named.first] = "b";
 console.log(JSON.stringify(named));
+
+// A type with a member typed `object` holds checked-dynamic objects, which
+// keep their keys in creation order: an optional key declared before a
+// required one and assigned after the literal is no divergence.
+interface Slots {
+  first: object;
+  second?: object;
+  third: unknown;
+}
+const slots: Slots = { first: { n: 1 }, third: "three" };
+slots.second = { n: 2 };
+console.log(Object.keys(slots).join(","));

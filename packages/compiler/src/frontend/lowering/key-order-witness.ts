@@ -2147,7 +2147,9 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     for (const c of f.copies) {
       if (c.source === id) continue;
       const source = result.get(c.source);
-      if (source === undefined || source === "unknown") ok = false;
+      // A copy of a value that can keep its own key list takes that list
+      // when it runs: no index names it.
+      if (source === undefined || source === "unknown" || sourced(c.source)) ok = false;
       else add(source.order.filter((k) => c.keys.has(k)));
     }
     if (!ok || orders.length > MAX_ORDERS || !closeUnderMoves(id, orders, candidate.moving))

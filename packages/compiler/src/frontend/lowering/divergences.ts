@@ -1010,6 +1010,10 @@ function keyOrderFinding(
   // Values of a shape with orderVariants enumerate in the order their
   // literal wrote (key-order-witness.ts).
   const mapped = safely(() => lowerer.mapTypeOf(contextual));
+  // A type whose values are checked-dynamic objects (a member typed
+  // `object` or `unknown` among them) has no table: such an object keeps
+  // its keys in creation order.
+  if (mapped?.kind === "dyn") return null;
   if (mapped?.kind === "record" && lowerer.shapes.get(mapped.shapeId)?.orderVariants !== undefined)
     return null;
   // So do values of a tracked shape, which keep their own key list.

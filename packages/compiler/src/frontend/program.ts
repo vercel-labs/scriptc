@@ -811,6 +811,18 @@ export function moduleEdgesOfSyntax(sf: ts.SourceFile): ModuleEdge[] {
   return edges;
 }
 
+/** How a load roots opted-in packages' JavaScript. */
+export interface PackageRoots {
+  /** The module edges of a package file no program holds yet, read from
+   * the text the load's host serves. */
+  edges: (file: string) => readonly ModuleEdge[];
+  /** The project world, which checks authored code against the packages'
+   * published declarations: an edge roots its runtime file only where no
+   * declaration answers the specifier (a package that ships none is typed
+   * from its JavaScript there too). The lowering world roots every edge. */
+  declared: boolean;
+}
+
 /** The runtime JavaScript the program compiles that tsgo's own import walk
  * does not load. tsgo adds a JavaScript file under node_modules only as a
  * root (maxNodeModuleJsDepth stays 0, so a package that is not compiled is
@@ -819,15 +831,16 @@ export function moduleEdgesOfSyntax(sf: ts.SourceFile): ModuleEdge[] {
  * JavaScript, an opted-in package's internal edges, and the runtime file of
  * every bare edge into an opted-in package.
  *
- * `unloadedEdges` (the shadowed lowering world's) reads the edges of a file
- * the program does not hold yet, so one call follows an opted-in package's
- * whole import graph instead of one level of it per program. The caller's
- * fixpoint over rebuilt programs stays the authority: an edge the syntax
- * read misses is found in the next program's own import list. */
+ * `packageRoots` is null for a load with no opted-in package. Its `edges`
+ * reads the edges of a file the program does not hold yet, so one call
+ * follows an opted-in package's whole import graph instead of one level of
+ * it per program. The caller's fixpoint over rebuilt programs stays the
+ * authority: an edge the syntax read misses is found in the next program's
+ * own import list. */
 function entryPackageProgramRoots7(
   program: ts.Program,
   entryPath: string,
-  unloadedEdges: ((file: string) => readonly ModuleEdge[]) | null,
+  packageRoots: PackageRoots | null,
 ): string[] {
   const belongsToEntry = entryPackageFilePredicate(entryPath);
   const roots = new Set<string>();
@@ -852,13 +865,15 @@ function entryPackageProgramRoots7(
     // resolution and miss rule), however deep in the dependency graph the
     // importer sits. A project answer that is the package's declaration
     // file (a tsconfig path mapped onto an installed package) is the same
-    // edge. Only the shadowed lowering world does this: the authored world
-    // checks user code against declarations.
+    // edge. The project world asks for the declaration first and roots
+    // the JavaScript only where there is none.
     // (resolveBareModule directly: resolveNpmImport7's workspace
     // registration stays with preflight's own walk.)
-    if (unloadedEdges === null || isRelativeSpecifier(spec)) return null;
+    if (packageRoots === null || isRelativeSpecifier(spec)) return null;
     if (target !== null && !(isNodeModulesPath(target) && !isJsSourceFileName(target))) return null;
     if (spec.startsWith("#") || canonicalBuiltinModule(spec) !== null) return null;
+    if (packageRoots.declared && resolveBareModule(from, spec, "types-only", kind) !== null)
+      return null;
     const npm = resolveBareModule(from, spec, undefined, kind);
     return npm !== null &&
       isNpmStaticPackage(npm.packageName) &&
@@ -884,11 +899,11 @@ function entryPackageProgramRoots7(
       if (root !== null) roots.add(root);
     }
   }
-  if (unloadedEdges !== null) {
+  if (packageRoots !== null) {
     // Insertion order: the set grows while it is walked.
     for (const file of roots) {
       if (npmStaticPackageOfPath(file) === null) continue;
-      for (const edge of unloadedEdges(file)) {
+      for (const edge of packageRoots.edges(file)) {
         const root = rootOf(file, edge.specifier, edge.kind, true);
         if (root !== null) roots.add(root);
       }
@@ -990,9 +1005,9 @@ function loadProgram7(
   host: ts.Ts7Host,
   entryPath: string,
   externalTypes: ReadonlyMap<string, string> = new Map(),
-  /** The --npm-static lowering world: the module edges of an opted-in
-   * package file no program holds yet (entryPackageProgramRoots7). */
-  unloadedEdges: ((file: string) => readonly ModuleEdge[]) | null = null,
+  /** How this load roots opted-in packages' JavaScript
+   * (entryPackageProgramRoots7); null with no opted-in package. */
+  packageRoots: PackageRoots | null = null,
   /** The declaration-typed boundary's projection (decl-projection.ts):
    * answers rewritten user files for the lowering world, or null. */
   projector?: (program: ts.Program) => DeclProjection | null,
@@ -1066,7 +1081,7 @@ function loadProgram7(
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
         ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
-        ...entryPackageProgramRoots7(program, entryPath, unloadedEdges),
+        ...entryPackageProgramRoots7(program, entryPath, packageRoots),
         ...createRequireProgramRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
         ...workerTargetPaths(program, program.getImplementationSourceFiles()),
@@ -1483,12 +1498,34 @@ export function loadProgram(
       (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
+  // The edges of a package file as a host serves it (the lowering world's
+  // rewritten text, the project world's text as written), read once per
+  // load and host.
+  const edgesOfUnloaded = (from: ts.Ts7Host): ((file: string) => readonly ModuleEdge[]) => {
+    const known = new Map<string, readonly ModuleEdge[]>();
+    return (file) => {
+      let edges = known.get(file);
+      if (edges === undefined) {
+        const text = from.sourceText(file);
+        edges = text === null ? [] : moduleEdgesOfSyntax(services.parse(file, text, "js"));
+        known.set(file, edges);
+      }
+      return edges;
+    };
+  };
   let authoredHost: ts.Ts7Host | null = null;
   let authoredLoad: ReturnType<typeof loadProgram7> | null = null;
   const authored = (): ReturnType<typeof loadProgram7> => {
     if (!authoredLoad) {
       authoredHost = services.createProgramHost({ cwd: dirname(entryPath) });
-      authoredLoad = loadProgram7(authoredHost, entryPath, externalTypes);
+      authoredLoad = loadProgram7(
+        authoredHost,
+        entryPath,
+        externalTypes,
+        npmStaticPackages.length > 0
+          ? { edges: edgesOfUnloaded(authoredHost), declared: true }
+          : null,
+      );
     }
     return authoredLoad;
   };
@@ -1529,23 +1566,11 @@ export function loadProgram(
     // of the same build, which preflight can create after the overlay
     // rounds, so it leaves the registry as this load set it.
     resetShapeOverlay();
-    // The edges of a package file as the host serves it (its rewritten
-    // text), read once per load.
-    const edgesOfUnloaded = new Map<string, readonly ModuleEdge[]>();
-    const unloadedEdges = (file: string): readonly ModuleEdge[] => {
-      let edges = edgesOfUnloaded.get(file);
-      if (edges === undefined) {
-        const text = host.sourceText(file);
-        edges = text === null ? [] : moduleEdgesOfSyntax(services.parse(file, text, "js"));
-        edgesOfUnloaded.set(file, edges);
-      }
-      return edges;
-    };
     const load = loadProgram7(
       host,
       entryPath,
       externalTypes,
-      npmStaticPackages.length > 0 ? unloadedEdges : null,
+      npmStaticPackages.length > 0 ? { edges: edgesOfUnloaded(host), declared: false } : null,
       projector,
       (npmStaticPackages.length > 0 && shapeOverlayEnabled()) ||
         (jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0")
@@ -7326,16 +7351,22 @@ function preflightGate7(load: LoadResult): PreflightGate {
     return sf !== undefined && isCjsJsFile7(sf, p);
   };
 
-  const workspaceImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
+  // A resolved JavaScript module without declarations (7016) says nothing
+  // about the program when scriptc does not compile the module from that
+  // import: a workspace package (a deployment tree ships runtime files
+  // only), and a subpath of a package that runs in a Node island, whose
+  // modules reach the program as handles whether or not a declaration
+  // covers them. The binding types as `any` and its uses take the dynamic
+  // paths. A bare import of a package that ships no declarations keeps the
+  // error: that is the typed import a declaration or a type patch answers.
+  const packageModuleImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
     if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
       return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
     const spec = sf.text.slice(d.pos, d.end).replace(/^['"]|['"]$/g, "");
-    const prefix = spec.startsWith("@")
-      ? spec.split("/").slice(0, 2).join("/")
-      : spec.split("/")[0]!;
-    return isWorkspacePackageName(prefix);
+    const pkg = packageNameOfSpecifier(spec);
+    return isWorkspacePackageName(pkg) || (spec !== pkg && isFrontendIsland(pkg));
   };
   // A JavaScript file that TypeScript checks keeps the type errors that
   // protect its JSDoc types: a value of another type reaching a typed slot,
@@ -7416,7 +7447,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
       !nodeModulesJsSuppressed(d) &&
       (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
       !namespaceCalleeSuppressed(p, d) &&
-      !workspaceImplicitAnySuppressed(p, d) &&
+      !packageModuleImplicitAnySuppressed(p, d) &&
       !cjsTopLevelReturnSuppressed(p, d) &&
       !jsdocTypeSuppressed(p, d, commentDup);
     // Every filter except the opinion admission, in its historical order.

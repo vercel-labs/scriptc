@@ -1207,7 +1207,9 @@ test("a host-global fence inside a function body keeps its package native", asyn
 // parameter that block leaves optional. Were the plugin typed from its
 // JavaScript because padleft compiles, the program would stop typechecking
 // and padleft, whose removal clears the error, would become an island too.
-// IR output needs no libnode pack.
+// A module of the island that no declaration covers is untyped in both
+// programs, not an error in one and inferred in the other. IR output needs
+// no libnode pack.
 test("a compiled package does not change how an island package is typed", async () => {
   const dir = join(outDir, "compiled-beside-island");
   rmSync(dir, { recursive: true, force: true });
@@ -1259,6 +1261,9 @@ test("a compiled package does not change how an island package is typed", async 
       "",
     ].join("\n"),
   );
+  // A module of the island no declaration covers: its import is untyped
+  // either way.
+  write("node_modules/plugboard/extra.js", 'export const label = "extra";\n');
   write(
     "node_modules/padleft/package.json",
     JSON.stringify({
@@ -1290,7 +1295,9 @@ test("a compiled package does not change how an island package is typed", async 
   const island = [
     'import { register } from "plugboard";',
     'import alpha from "plugboard/plugs/alpha.js";',
+    'import * as extra from "plugboard/extra.js";',
     'console.log(register("alpha", alpha));',
+    "console.log(String(extra.label));",
   ];
   write("alone.ts", [...island, ""].join("\n"));
   write(

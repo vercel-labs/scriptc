@@ -883,7 +883,7 @@ async function compileExecutableNative(
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
-    ...(features.nodeIsland && features.childProcess ? { islandChild: true } : {}),
+    ...(features.islandChild ? { islandChild: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
     ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),

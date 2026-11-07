@@ -60755,18 +60755,13 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/compat-http2-abort.mjs",
           "tests/corpus/compat-http2-basics.mjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs"
+          "tests/corpus/compat-http2-compat-members.mjs",
+          "tests/corpus/compat-http2-event-order.mjs",
+          "tests/corpus/compat-http2-headers.mjs",
+          "tests/corpus/compat-http2-settings.mjs",
+          "tests/corpus/compat-http2-state.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -61160,8 +61155,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2session.destroy",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61298,8 +61296,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2session.settings",
+        "tests": [
+          "tests/corpus/compat-http2-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61367,8 +61368,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.closed",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -61413,8 +61417,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.destroyed",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -61459,8 +61466,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.localSettings",
+        "tests": [
+          "tests/corpus/compat-http2-settings.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -61505,8 +61515,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.pendingSettingsAck",
+        "tests": [
+          "tests/corpus/compat-http2-settings.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -61528,8 +61541,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.remoteSettings",
+        "tests": [
+          "tests/corpus/compat-http2-settings.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -61750,8 +61766,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'localSettings'",
+        "tests": [
+          "tests/corpus/compat-http2-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61796,8 +61815,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'remoteSettings'",
+        "tests": [
+          "tests/corpus/compat-http2-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61983,8 +62005,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.clienthttp2session.request",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -62144,8 +62169,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2stream.close",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs",
+          "tests/corpus/compat-http2-state.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -62236,8 +62265,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.aborted",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs",
+          "tests/corpus/compat-http2-state.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -62282,8 +62315,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.closed",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs",
+          "tests/corpus/compat-http2-state.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -62305,8 +62342,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.destroyed",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs",
+          "tests/corpus/compat-http2-state.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -62397,8 +62438,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.rstCode",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs",
+          "tests/corpus/compat-http2-state.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -62538,8 +62583,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'aborted'",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs",
+          "tests/corpus/compat-http2-state.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -62561,8 +62610,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'close'",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs",
+          "tests/corpus/compat-http2-state.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -62814,8 +62867,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'response'",
+        "tests": [
+          "tests/corpus/compat-http2-headers.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -62906,8 +62962,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2stream.respond",
+        "tests": [
+          "tests/corpus/compat-http2-state.mjs",
+          "tests/corpus/compat-http2-headers.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -62975,8 +63035,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.headersSent",
+        "tests": [
+          "tests/corpus/compat-http2-state.mjs",
+          "tests/corpus/compat-http2-headers.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -63045,16 +63109,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "evidence": "compiler-feature:http2.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/compat-http2-event-order.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -63146,13 +63203,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:timeout",
-        "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-feature:http2.timeout"
       },
       "anchorSource": "ancestor"
     },
@@ -63197,8 +63249,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'connection'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63220,8 +63275,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'request'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63243,8 +63301,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'session'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63289,8 +63350,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'stream'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63359,16 +63423,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "evidence": "compiler-feature:http2.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/compat-http2-event-order.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -63437,13 +63494,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:timeout",
-        "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-feature:http2.timeout"
       },
       "anchorSource": "ancestor"
     },
@@ -63488,8 +63540,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'connection'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63511,8 +63566,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'request'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63534,8 +63592,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'session'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63580,8 +63641,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'stream'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63675,8 +63739,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2.createSecureServer",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63724,8 +63791,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2.getDefaultSettings",
+        "tests": [
+          "tests/corpus/compat-http2-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64023,13 +64093,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:request.destroy",
-        "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-feature:http2.request.destroy"
       },
       "anchorSource": "exact"
     },
@@ -64052,11 +64117,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:request.setTimeout",
+        "evidence": "compiler-feature:http2.request.setTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/compat-http2-compat-members.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -64079,8 +64142,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.aborted",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64151,8 +64217,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.connection",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64174,8 +64243,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.headers",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64197,8 +64269,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.httpVersion",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64220,8 +64295,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.method",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64243,8 +64321,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.rawHeaders",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64312,8 +64393,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.socket",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64381,8 +64465,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.url",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64404,8 +64491,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'aborted'",
+        "tests": [
+          "tests/corpus/compat-http2-abort.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64499,8 +64589,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.response.appendHeader",
+        "tests": [
+          "tests/corpus/compat-http2-headers.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64546,11 +64639,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:response.end",
+        "evidence": "compiler-feature:http2.response.end",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/compat-http2-compat-members.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -64574,11 +64665,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:response.getHeader",
+        "evidence": "compiler-feature:http2.response.getHeader",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/compat-http2-compat-members.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -64654,11 +64743,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:response.hasHeader",
+        "evidence": "compiler-feature:http2.response.hasHeader",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/compat-http2-compat-members.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -64682,11 +64769,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:response.removeHeader",
+        "evidence": "compiler-feature:http2.response.removeHeader",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/compat-http2-compat-members.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -64710,11 +64795,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:response.setHeader",
+        "evidence": "compiler-feature:http2.response.setHeader",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/compat-http2-compat-members.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -64764,11 +64847,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:response.write",
+        "evidence": "compiler-feature:http2.response.write",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/compat-http2-compat-members.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -64861,11 +64942,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:response.writeHead",
+        "evidence": "compiler-feature:http2.response.writeHead",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/compat-http2-compat-members.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -64888,8 +64967,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.connection",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64911,8 +64993,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.finished",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64934,8 +65019,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.headersSent",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64957,8 +65045,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.req",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65003,8 +65094,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.socket",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65026,8 +65120,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.statusCode",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65095,8 +65192,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.writableEnded",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65118,8 +65218,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'close'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65141,8 +65244,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'finish'",
+        "tests": [
+          "tests/corpus/compat-http2-event-order.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

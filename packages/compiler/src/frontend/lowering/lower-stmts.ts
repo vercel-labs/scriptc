@@ -10953,8 +10953,26 @@ function destructuringAssignInto(
   const out: IrStmt[] = [{ kind: "varDecl", localId: tmp.id, init, loc }];
   const tmpRef = (): IrExpr => ({ kind: "varRef", localId: tmp.id, type: init.type, loc });
   const value = tmpRef();
+  // A literal source of this statement (an array literal for an array
+  // pattern, an object literal for an object pattern) is evaluated in full
+  // before the first target is assigned, and no target can name the new
+  // value: what each target receives does not depend on the writes.
+  let source = rhs;
+  while (source !== null && ts.isParenthesizedExpression(source)) source = source.expression;
+  const literalSource =
+    source !== null &&
+    (ts.isArrayLiteralExpression(target)
+      ? ts.isArrayLiteralExpression(source)
+      : ts.isObjectLiteralExpression(source));
+  const assignTarget = (
+    targetNode: ts.Expression,
+    targetBlame: ts.Node,
+    dflt: ts.Expression | null,
+    valueOf: (targetT: IrType | null) => IrExpr,
+  ): void =>
+    lowerAssignTargetInto(lowerer, out, targetNode, targetBlame, dflt, valueOf, literalSource);
   if (ts.isArrayLiteralExpression(target)) {
-    lowerArrayAssignInto(lowerer, out, target, tmpRef, blame, loc);
+    lowerArrayAssignInto(lowerer, out, target, tmpRef, blame, loc, literalSource);
     return { stmts: out, value };
   }
   if (init.type.kind === "dyn") {
@@ -11107,7 +11125,7 @@ function destructuringAssignInto(
             }
           }
           if (!ts.isIdentifier(restTo)) {
-            lowerAssignTargetInto(lowerer, out, restTo, prop, null, (targetT) =>
+            assignTarget(restTo, prop, null, (targetT) =>
               classInstanceRestValue(lowerer, prop, tmpRef, objT, info, consumed, targetT),
             );
             continue;
@@ -11194,7 +11212,7 @@ function destructuringAssignInto(
         };
         while (ts.isParenthesizedExpression(bindTo)) bindTo = bindTo.expression;
         if (!ts.isIdentifier(bindTo)) {
-          lowerAssignTargetInto(lowerer, out, bindTo, prop, dfltInit, readOf);
+          assignTarget(bindTo, prop, dfltInit, readOf);
           continue;
         }
         let targetBinding: { id: string; type: IrType } | null;
@@ -11267,7 +11285,7 @@ function destructuringAssignInto(
       });
       while (ts.isParenthesizedExpression(bindTo)) bindTo = bindTo.expression;
       if (!ts.isIdentifier(bindTo)) {
-        lowerAssignTargetInto(lowerer, out, bindTo, prop, null, readOf);
+        assignTarget(bindTo, prop, null, readOf);
         continue;
       }
       let targetBinding: { id: string; type: IrType } | null;
@@ -11457,7 +11475,7 @@ function destructuringAssignInto(
       if (!ts.isIdentifier(restTo)) {
         // `({ a, ...box.rest } = src)` — the rest packs identically and
         // lands through the property/element write machinery.
-        lowerAssignTargetInto(lowerer, out, restTo, prop, null, (targetT) => {
+        assignTarget(restTo, prop, null, (targetT) => {
           checkRestTarget(targetT);
           return packed;
         });
@@ -11490,7 +11508,7 @@ function destructuringAssignInto(
       // the shared non-variable machinery.
       const fieldT = shape.fields.find((f) => f.name === fieldName)?.type;
       const dflt = dfltInit;
-      lowerAssignTargetInto(lowerer, out, bindTo, prop, dflt, (targetT) => {
+      assignTarget(bindTo, prop, dflt, (targetT) => {
         if (!fieldT) {
           // The defaulted read of a field the shape does not carry is
           // always undefined — the default IS the value (the identifier
@@ -11586,6 +11604,14 @@ function lowerAssignTargetInto(
   blame: ts.Node,
   dflt: ts.Expression | null,
   valueOf: (targetT: IrType | null) => IrExpr,
+  /** The pattern's source is a literal of the same statement
+   * (destructuringAssignInto): the value this target receives cannot depend
+   * on the pattern's own writes. */
+  literalSource = false,
+  /** The same value read from the source itself at this element's turn,
+   * when the source can be (lowerArrayAssignInto); every later element of
+   * the pattern is read that way too. */
+  liveValueOf?: (targetT: IrType | null) => IrExpr,
 ): void {
   let t = targetNode;
   while (ts.isParenthesizedExpression(t)) t = t.expression;
@@ -11720,9 +11746,23 @@ function lowerAssignTargetInto(
   ) {
     const recv = tryLowerExpression(lowerer, t.expression);
     if (recv?.type.kind === "dyn") {
+      // Node reads each part of the source at its turn, after the earlier
+      // targets were assigned, and this write may reach the source
+      // (`[o.list[1], o.list[0]] = o.list`). A literal of the statement is
+      // complete before the first write and no target names it; an untyped
+      // array is read at this element's turn. Any other source may have
+      // been read or copied ahead of the writes.
+      const read = literalSource ? valueOf : liveValueOf;
+      if (read === undefined) {
+        lowerer.unsupported(
+          "SC1031",
+          targetNode,
+          "destructuring assignment into a member of an untyped object from a source that is neither an untyped array nor a literal of the statement (the source's parts may be read or copied before the first write here, where Node reads each one after the previous write: assign from an array or object literal, or write the parts out)",
+        );
+      }
       const reference = dynMemberReference(lowerer, t, recv, loc);
       out.push(...reference.stmts);
-      out.push(reference.store(lowerer.coerceInto(blame, valueOf(DYN), DYN)));
+      out.push(reference.store(lowerer.coerceInto(blame, read(DYN), DYN)));
       return;
     }
   }
@@ -11803,6 +11843,8 @@ function lowerArrayAssignInto(
   tmpRef: () => IrExpr,
   blame: ts.Node,
   loc: SrcLoc,
+  /** The source is an array literal of this statement (destructuringAssignInto). */
+  literalSource = false,
 ): void {
   let srcType = tmpRef().type;
   // A STRING source (`[a, b] = s`): the declaration path's rule in
@@ -11845,6 +11887,15 @@ function lowerArrayAssignInto(
   const shape = srcType.kind === "record" ? lowerer.shapes.get(srcType.shapeId) : undefined;
   const isTuple = shape?.tuple === true;
   let elemsRef: (() => IrExpr) | null = null;
+  // Node reads each element at its turn, after the earlier targets were
+  // assigned. The elements read ahead below are those values as long as no
+  // assignment can change the source. Once a target that can (a member of
+  // an untyped object) is about to be assigned, this element and every
+  // later one read the source itself (liveReadOf): an array's iterator
+  // reads it by index, so the indexed read is the step. A source that is
+  // not an array has no such read and is refused when the statement runs.
+  let live = false;
+  let liveGuardAt = -1;
   if (srcType.kind === "dyn") {
     // Read the pattern's width through the native iterator with Node's
     // TypeErrors. The empty pattern only validates iterability.
@@ -11855,6 +11906,7 @@ function lowerArrayAssignInto(
       init: { kind: "dynIterN", value: tmpRef(), count: elements.length, type: srcType, loc },
       loc,
     });
+    liveGuardAt = out.length;
     elemsRef = () => ({ kind: "varRef", localId: iterTmp.id, type: srcType, loc });
   } else if (srcType.kind !== "array" && srcType.kind !== "bytes" && !isTuple) {
     if (
@@ -11874,7 +11926,23 @@ function lowerArrayAssignInto(
   }
   const elemRead = (i: number, at: ts.Node): IrExpr => {
     if (elemsRef) {
-      const elems = elemsRef();
+      if (live && liveGuardAt >= 0) {
+        out.splice(liveGuardAt, 0, {
+          kind: "if",
+          cond: { kind: "dynTest", test: "array", value: tmpRef(), type: BOOL, loc },
+          then: [],
+          else_: [
+            lowerer.runtimeFenceStmt(undefined, at, {
+              code: "SC1031",
+              message:
+                "destructuring assignment into a member of an untyped object from an untyped iterable that is not an array (its values are read ahead of the writes here, where Node steps the iterator between them: spread it into an array literal on the right, or write the parts out)",
+            }),
+          ],
+          loc,
+        });
+        liveGuardAt = -1;
+      }
+      const elems = live ? tmpRef() : elemsRef();
 
       return {
         kind: "dynKeyGet",
@@ -12041,7 +12109,21 @@ function lowerArrayAssignInto(
       return read;
     };
     if (!ts.isIdentifier(targetNode)) {
-      lowerAssignTargetInto(lowerer, out, targetNode, el, defaultNode, readOf);
+      lowerAssignTargetInto(
+        lowerer,
+        out,
+        targetNode,
+        el,
+        defaultNode,
+        readOf,
+        literalSource,
+        elemsRef !== null && !isRest
+          ? (targetT) => {
+              live = true;
+              return readOf(targetT);
+            }
+          : undefined,
+      );
       return;
     }
     const targetBinding = lowerer.resolveWritable(targetNode);

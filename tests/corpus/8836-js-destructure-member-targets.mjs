@@ -51,8 +51,36 @@ try {
 }
 console.log(holder.frozen.x)
 
-const words = ['b', 'a']
+// The source array literal is evaluated before the first write, so a
+// target may name what the literal read from.
+const words = ['b', 'a', 'c']
 const ends = { low: 'z', high: 'y' };
-[ends.low, ends.high] = words;
-[words[0], words[1]] = [ends.high, ends.low]
+[ends.low, ends.high] = [words[0], words[1]];
+[words[0], words[1], words[2]] = [ends.high, ends.low, words[0]]
 console.log(JSON.stringify(ends), words.join(''))
+let reads = 0
+const counter = { get next() { return ++reads } }
+const tally = { first: 0, second: 0 };
+[tally.first, tally.second] = [counter.next, counter.next]
+console.log(JSON.stringify(tally), reads)
+
+// A source that is not a literal is read one element at a time, after the
+// earlier targets were assigned: a target that is the source, or one of its
+// elements, changes what the later ones receive.
+const o = { list: ['x', 'y', 'z'], x: '', y: '' };
+[o.x, o.y] = o.list
+console.log(o.x, o.y);
+[o.list[2], o.list[1], o.list[0]] = o.list
+console.log(o.list.join(''))
+const p = { v: [10, 20] };
+[p.v[1], p.w] = p.v
+console.log(JSON.stringify(p))
+let seen = '';
+[o.list[1], seen] = o.list
+console.log(o.list.join(''), seen)
+const sparse = { v: ['a', , 'c', 'd'], out: [] };
+[sparse.out[0], , sparse.v[3], sparse.out[1] = 'none', sparse.out[2] = 'past'] = sparse.v
+console.log(JSON.stringify(sparse))
+const plain = [1, 2];
+[plain[1], plain[0]] = plain
+console.log(plain.join(','))

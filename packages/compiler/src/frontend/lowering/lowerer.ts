@@ -12943,7 +12943,7 @@ export class Lowerer {
 
   /** The runtimeFence statement that throws `first`'s message (or the
    * fallback's) at `node`. */
-  private runtimeFenceStmt(
+  runtimeFenceStmt(
     first: ScrDiagnostic | undefined,
     node: ts.Node,
     fallback: { code: string; message: string } | undefined,

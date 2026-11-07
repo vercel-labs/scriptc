@@ -224,6 +224,7 @@ import {
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
 import { InternalCompilerError } from "../../errors.js";
+import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
@@ -3242,6 +3243,11 @@ export class Lowerer {
   /** Intrinsic callback slots can supply a destination for fresh return
    * literals, such as a reduce accumulator with recursive union fields. */
   readonly contextualFunctionReturns = new Map<ts.Node, IrType>();
+  /** The function type of the slot a function literal is being lowered
+   * into, for the duration of that lowering (lowerAtSlot). The literal
+   * takes the slot's parameter list as its own when it can
+   * (slotSignatureAdoption). */
+  readonly slotSignatures = new Map<ts.Node, SlotSignature>();
   /** Arithmetic over an unchecked string read can answer either NaN or a
    * string. Bindings and returns use this marker to retain that result union
    * through checker-bare string annotations. */
@@ -4965,6 +4971,7 @@ export class Lowerer {
         () => this.runtimeOptionalFunctionReturns.size,
       ),
       checkedTable("contextualFunctionReturns", () => this.contextualFunctionReturns.size),
+      checkedTable("slotSignatures", () => this.slotSignatures.size),
       checkedTable(
         "runtimeOptionalArithmeticTypes",
         () => this.runtimeOptionalArithmeticTypes.size,
@@ -15738,8 +15745,47 @@ export class Lowerer {
         }
       }
     }
-    const e = this.lowerExpr(node);
+    const e = this.lowerAtSlot(node, expected);
     return expected ? this.coerceExistingInto(node, e, expected) : e;
+  }
+
+  /** lowerExpr for a value whose destination has type `expected`, before
+   * any coercion into it. A function literal is used only at the slot it
+   * is written into, so its body can take the slot's parameter list
+   * directly (slotSignatureAdoption): the slot is `expected` when that is
+   * a function type, or the one function arm of a union (an optional
+   * callback). Every other expression and destination lowers as it is. */
+  lowerAtSlot(node: ts.Expression, expected: IrType | undefined): IrExpr {
+    let literal: ts.Expression = node;
+    while (ts.isParenthesizedExpression(literal) || ts.isSatisfiesExpression(literal))
+      literal = literal.expression;
+    let slot: IrType | undefined;
+    if (expected && (ts.isArrowFunction(literal) || ts.isFunctionExpression(literal))) {
+      if (expected.kind === "func") slot = expected;
+      else if (expected.kind === "union") {
+        const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+        if (arms?.length === 1) slot = arms[0];
+      }
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return this.lowerExpr(node);
+    return this.lowerWithSlot(node, literal, {
+      params: slot.params,
+      ret: slot.ret,
+      passesAll: true,
+    });
+  }
+
+  /** lowerExpr for `node`, whose value is the function literal `literal`
+   * written into `slot`. */
+  lowerWithSlot(node: ts.Expression, literal: ts.Expression, slot: SlotSignature): IrExpr {
+    const previous = this.slotSignatures.get(literal);
+    this.slotSignatures.set(literal, slot);
+    try {
+      return this.lowerExpr(node);
+    } finally {
+      if (previous === undefined) this.slotSignatures.delete(literal);
+      else this.slotSignatures.set(literal, previous);
+    }
   }
 
   /** The conversion lowerExprExpecting applies to `e`, the lowered value
@@ -17712,8 +17758,24 @@ export class Lowerer {
         });
         return;
       }
+      // A literal lowered at its slot's signature receives the slot's
+      // value in a hidden ABI parameter and binds its own type from it:
+      // the conversion the slot's adapter would have applied per call.
+      const passed = shape.slotType ? this.declareHiddenLocal(name, shape.slotType) : null;
       const local = this.declareLocal(decl.name, name, shape.type, true);
-      params.push({ localId: local.id, name, type: local.type });
+      if (passed) {
+        const loc = locOf(decl);
+        params.push({ localId: passed.id, name, type: passed.type });
+        const converted = this.coerceToExpected(
+          { kind: "varRef", localId: passed.id, type: passed.type, loc },
+          local.type,
+        );
+        if (!typeEquals(converted.type, local.type))
+          throw new InternalCompilerError("lowerer bug: probed slot parameter stopped coercing");
+        prologue.push({ kind: "varDecl", localId: local.id, init: converted, loc });
+      } else {
+        params.push({ localId: local.id, name, type: local.type });
+      }
       if (
         shape.mode === "required" &&
         shape.type.kind === "union" &&

@@ -2809,7 +2809,7 @@ export function lowerObjectLiteral(
             ts.isObjectLiteralExpression(init) ||
             ts.isConditionalExpression(init))
             ? lowerer.lowerExprExpecting(prop.initializer, fieldType)
-            : lowerer.lowerExpr(prop.initializer));
+            : lowerer.lowerAtSlot(prop.initializer, fieldType ?? shape.indexValue));
       } else if (ts.isShorthandPropertyAssignment(prop)) {
         value = lowerer.lowerShorthandValue(prop);
       } else if (ts.isMethodDeclaration(prop)) {

@@ -148,6 +148,9 @@ typedef struct ScrNiDynOps {
    * `e.constructor === TypeError` holds with the island's TypeError. 1 for
    * an island error, 0 for any other. */
   int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+  /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
+   * the exception pending). */
+  ScrStr *(*object_tag)(const ScrDyn *value);
   /* JSON.stringify's questions about an island object (scr_json.c walks
    * it member by member): IsArray, and what V8 alone can answer about it
    * (SCR_NI_JSON_*; +1, NULL with the exception pending). */

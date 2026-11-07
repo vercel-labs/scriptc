@@ -66,6 +66,7 @@ const EXPR_FIELDS: Classified<IrExpr> = {
   chainRecv: { id: "other" },
   regexLit: { pattern: "other", flags: "other" },
   templateStrings: { key: "other", "cooked[]": "other" },
+  constCell: { "strings[]": "other" },
   call: { callee: "callee" },
   ffiCall: { import: "other" },
   closure: { fnName: "reference", "captures[]": "other" },

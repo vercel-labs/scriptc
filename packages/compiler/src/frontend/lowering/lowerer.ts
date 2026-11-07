@@ -1,5 +1,4 @@
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
-import { programNamesArrayBufferView } from "./array-buffer-view.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
@@ -4035,9 +4034,6 @@ export class Lowerer {
   /** Whether a compiled source creates primitive wrapper objects
    * (programCreatesWrappers), computed on first use. */
   createsWrappers: boolean | undefined = undefined;
-  /** Whether a compiled source names the lib `ArrayBufferView` interface
-   * (programNamesArrayBufferView), computed on first use. */
-  namesArrayBufferView: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5166,7 +5162,6 @@ export class Lowerer {
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
-    "namesArrayBufferView",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -5912,7 +5907,6 @@ export class Lowerer {
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
-      arrayBufferViewReads: () => (this.namesArrayBufferView ??= programNamesArrayBufferView(this)),
       isNpmFile: (sf) => this.isNpmFile(sf),
       isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)

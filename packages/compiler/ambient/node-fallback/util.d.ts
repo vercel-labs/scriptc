@@ -259,7 +259,7 @@ declare module "util" {
   export function promisify(fn: (callback: (err?: any) => void) => void): () => Promise<void>;
   export function promisify(
     fn: typeof import("node:crypto").randomFill,
-  ): <T extends ArrayBufferView | ArrayBufferLike>(
+  ): <T extends ScriptcBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
     size?: number,

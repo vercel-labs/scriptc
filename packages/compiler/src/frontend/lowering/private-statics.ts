@@ -10,7 +10,7 @@ import {
 } from "../../ir/ir.js";
 import { helperLoc, strLit, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
-import { hasStaticThis } from "./static-this.js";
+import { usesStaticReceiver } from "./static-this.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerClassStaticRead, lowerStaticMethodCall, type ClassInfo } from "./lower-classes.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
@@ -230,7 +230,7 @@ export function lowerStaticPrivateCall(
       loc,
     };
   }
-  if (found.method.member.body && hasStaticThis(found.method.member)) {
+  if (found.method.member.body && usesStaticReceiver(found.method.member)) {
     lowerer.unsupported(
       "SC1090",
       call,

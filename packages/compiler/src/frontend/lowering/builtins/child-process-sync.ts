@@ -1,6 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { lowerChildArgsArg } from "./child-process.js";
+import { lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
 import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -111,27 +111,33 @@ export function lowerExecSyncCall(
       // captured utf8, and mislabeling them without an error would be worse).
       const runtime = lowerExecSyncRuntimeOptions(lowerer, expr, shell, optsNode, loc);
       if (runtime) {
-        return {
-          kind: "libCall",
-          fn: "cp.execSync",
-          args: [
-            cmdArg,
-            argvExpr,
-            boolLit(shell, loc),
-            runtime.input,
-            runtime.hasInput,
-            runtime.cwd,
-            boolLit(false, loc),
-            emptyPairs,
-            runtime.timeout,
-            runtime.stdoutMode,
-            runtime.stderrMode,
-            // The runtime options carry a utf8 encoding (others throw).
-            boolLit(false, loc),
-          ],
-          type: STRING,
+        return withChildArgsCheck(
+          lowerer,
+          {
+            kind: "libCall",
+            fn: "cp.execSync",
+            args: [
+              cmdArg,
+              argvExpr,
+              boolLit(shell, loc),
+              runtime.input,
+              runtime.hasInput,
+              runtime.cwd,
+              boolLit(false, loc),
+              emptyPairs,
+              runtime.timeout,
+              runtime.stdoutMode,
+              runtime.stderrMode,
+              // The runtime options carry a utf8 encoding (others throw).
+              boolLit(false, loc),
+            ],
+            type: STRING,
+            loc,
+          },
+          shell ? 1 : 0,
+          (a) => ({ cwd: a[5], envPairs: a[7] }),
           loc,
-        };
+        );
       }
       lowerer.noLowering(
         `${shell ? "execSync" : "execFileSync"} with a non-literal options argument`,
@@ -375,26 +381,33 @@ export function lowerExecSyncCall(
     }
   }
 
-  const execCall = (hasE: IrExpr, pairs: IrExpr): IrExpr => ({
-    kind: "libCall",
-    fn: "cp.execSync",
-    args: [
-      cmdArg,
-      argvExpr,
-      boolLit(shell, loc),
-      input,
-      hasInput,
-      cwd,
-      hasE,
-      pairs,
-      timeout,
-      numLit(stdoutMode + (stdinInherit ? 4 : 0), loc),
-      numLit(stderrMode, loc),
-      boolLit(!encodingGiven, loc),
-    ],
-    type: STRING,
-    loc,
-  });
+  const execCall = (hasE: IrExpr, pairs: IrExpr): IrExpr =>
+    withChildArgsCheck(
+      lowerer,
+      {
+        kind: "libCall",
+        fn: "cp.execSync",
+        args: [
+          cmdArg,
+          argvExpr,
+          boolLit(shell, loc),
+          input,
+          hasInput,
+          cwd,
+          hasE,
+          pairs,
+          timeout,
+          numLit(stdoutMode + (stdinInherit ? 4 : 0), loc),
+          numLit(stderrMode, loc),
+          boolLit(!encodingGiven, loc),
+        ],
+        type: STRING,
+        loc,
+      },
+      shell ? 1 : 0,
+      (a) => ({ cwd: a[5], envPairs: a[7] }),
+      loc,
+    );
   if (condEnvSpread !== null) {
     // The conditional env spread: ONE cond evaluation picks between two
     // copies of the call — every other argument expression is shared

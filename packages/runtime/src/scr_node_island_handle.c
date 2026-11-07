@@ -1982,6 +1982,46 @@ static ScrDyn *nh_op_iter_pack(void *h) {
   return out;
 }
 
+/* The host's structuredClone, loaded once. */
+static ScrDyn *nh_clone_fn = NULL;
+
+/* structuredClone of an island object: Node's own, so the copy is the
+ * fresh island object Node makes (a handle of it), and a value Node cannot
+ * clone throws Node's DataCloneError. +1, or NULL with the exception
+ * pending. */
+static ScrDyn *nh_op_clone(void *h) {
+  if (nh_clone_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:clone", 13);
+    nh_clone_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_clone_fn == NULL) return NULL;
+  }
+  ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_NODE_ISLAND);
+  ScrDyn *copy = scr_ni_call(nh_clone_fn, scr_dyn_undefined(), &box, 1);
+  scr_dyn_release(box);
+  return copy;
+}
+
+/* The host's Object.prototype.toString, loaded once. */
+static ScrDyn *nh_object_tag_fn = NULL;
+
+/* Object.prototype.toString.call of an island object, by Node. +1, or NULL
+ * with the exception pending. */
+static ScrStr *nh_object_tag(const ScrDyn *value) {
+  if (nh_object_tag_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:objectTag", 17);
+    nh_object_tag_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_object_tag_fn == NULL) return NULL;
+  }
+  ScrDyn *args[1] = {(ScrDyn *)value};
+  ScrDyn *tag = scr_ni_call(nh_object_tag_fn, scr_dyn_undefined(), args, 1);
+  if (tag == NULL) return NULL;
+  ScrStr *out = tag->kind == SCR_DYN_STR ? scr_str_retain(tag->v.str) : scr_str_new("[object Object]", 15);
+  scr_dyn_release(tag);
+  return out;
+}
+
 static const ScrDynHandleOps nh_ops = {
     .cls = "Object",
     .retain = nh_ref_retain_v,
@@ -1991,6 +2031,7 @@ static const ScrDynHandleOps nh_ops = {
     .set = nh_op_set,
     .symbol_get = nh_op_symbol_get,
     .iter_pack = nh_op_iter_pack,
+    .clone = nh_op_clone,
 };
 
 /* At exit: what the unit itself still holds (pins, unsettled waiters,
@@ -2010,6 +2051,14 @@ static void nh_cleanup(void) {
   if (nh_to_primitive_fn != NULL) {
     scr_dyn_release(nh_to_primitive_fn);
     nh_to_primitive_fn = NULL;
+  }
+  if (nh_clone_fn != NULL) {
+    scr_dyn_release(nh_clone_fn);
+    nh_clone_fn = NULL;
+  }
+  if (nh_object_tag_fn != NULL) {
+    scr_dyn_release(nh_object_tag_fn);
+    nh_object_tag_fn = NULL;
   }
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
@@ -2223,6 +2272,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .to_primitive = scr_ni_to_primitive,
     .is_function = scr_ni_is_function,
     .error_constructor = nh_error_constructor,
+    .object_tag = nh_object_tag,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

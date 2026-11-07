@@ -4449,10 +4449,11 @@ struct ScrChild {
 
 #ifdef SCR_CHILD_FOREIGN
 /* The handles of a child a Node island made: no pipe, no pid, in no
- * registry. scr_node_island_child.c makes them and sets the table. */
+ * registry. scr_node_island_child.c (included at the end of this unit)
+ * makes them and sets the table. */
 const ScrChildIslandOps *scr_child_island_ops = NULL;
 
-ScrChild *scr_child_island_new(void *island) {
+static ScrChild *scr_child_island_new(void *island) {
   ScrChild *c = calloc(1, sizeof *c);
   if (!c) scr_trap("scriptc: out of memory\n");
   c->rc = 1;
@@ -4460,7 +4461,7 @@ ScrChild *scr_child_island_new(void *island) {
   return c;
 }
 
-ScrChildStream *scr_child_stream_island_new(void *island) {
+static ScrChildStream *scr_child_stream_island_new(void *island) {
   ScrChildStream *s = calloc(1, sizeof *s);
   if (!s) scr_trap("scriptc: out of memory\n");
   s->rc = 1;
@@ -4469,7 +4470,7 @@ ScrChildStream *scr_child_stream_island_new(void *island) {
   return s;
 }
 
-ScrChildWriter *scr_child_writer_island_new(void *island) {
+static ScrChildWriter *scr_child_writer_island_new(void *island) {
   ScrChildWriter *w = calloc(1, sizeof *w);
   if (!w) scr_trap("scriptc: out of memory\n");
   w->rc = 1;
@@ -8251,3 +8252,10 @@ void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener) {
   scr_dyn_release(name);
   scr_dyn_release(self);
 }
+
+/* A child process a Node island made (scr_child.h): the island's side of
+ * the guards above, and the conversions that put such a child into a
+ * ChildProcess slot. */
+#ifdef SCR_NODE_ISLANDS
+#include "scr_node_island_child.c"
+#endif

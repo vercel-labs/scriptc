@@ -490,9 +490,6 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.nodeIsland === true && (u.nativeFetch || u.opts.abortSignal === true),
     "scr_node_island_abort.c",
   ),
-  // A child process an island made, in a native ChildProcess slot: named
-  // only by the conversions of a program that also uses child_process.
-  unit((u) => u.opts.nodeIsland === true, "scr_node_island_child.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
   // The dynamic global object's answer for the Node globals the native

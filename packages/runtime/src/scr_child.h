@@ -362,11 +362,11 @@ void scr_child_dyn_streams_install(const ScrChildStreamOps *ops,
  * island's object, and every entry point that takes a child, one of its
  * output streams or its input writer hands such a value to the table
  * below, which calls the island object's own member (scr_node_island_child.c,
- * linked only into programs with both Node islands and child_process). The
- * guards exist only in the SCR_NODE_ISLANDS build of scr_child.c and
- * scr_child_lifecycle.c, which programs with Node islands select; every
- * other program keeps the default objects. `island` is the same kind of
- * pointer for all three handles. */
+ * which that build of scr_child.c includes; only programs with both Node
+ * islands and child_process link it). The guards exist only in the
+ * SCR_NODE_ISLANDS build of scr_child.c and scr_child_lifecycle.c, which
+ * programs with Node islands select; every other program keeps the default
+ * objects. `island` is the same kind of pointer for all three handles. */
 enum {
   SCR_CHILD_EV_SPAWN = 0,
   SCR_CHILD_EV_EXIT,
@@ -419,9 +419,6 @@ typedef struct ScrChildIslandOps {
 /* Defined by the SCR_NODE_ISLANDS build of scr_child.c; set with the first
  * island child a program adopts. */
 extern const ScrChildIslandOps *scr_child_island_ops;
-ScrChild *scr_child_island_new(void *island);             /* +1 */
-ScrChildStream *scr_child_stream_island_new(void *island); /* +1 */
-ScrChildWriter *scr_child_writer_island_new(void *island); /* +1 */
 bool scr_children_reffed_pending(void);
 void scr_children_teardown(void);
 /* Node's signal-name table (scr_lib.c), shared with child.kill: the

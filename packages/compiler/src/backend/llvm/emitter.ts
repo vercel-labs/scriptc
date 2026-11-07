@@ -370,7 +370,12 @@ import {
   emitProcessLibCall,
   emitErrorsEventsLibCall,
 } from "./lib-process.js";
-import { FramePositions, memberFrameName } from "./frame-positions.js";
+import {
+  FramePositions,
+  frameText,
+  memberFrameName,
+  positionedFrameText,
+} from "./frame-positions.js";
 import { emitStreamLibCall } from "./lib-stream.js";
 import { emitNetworkHttpLibCall } from "./lib-network.js";
 import {
@@ -606,6 +611,12 @@ export interface LlvmTargetOptions {
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
+  /** The output is linked with the report of failed checked conversions
+   * (scr_conversion_trace.c, runtime feature conversionTrace), so each
+   * conversion's failure path calls it with the conversion's position. Set
+   * together with that link feature, by the builds that decide both; it
+   * needs `debugSources` for the positions. */
+  conversionTrace?: boolean;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
   pointerBits?: 32 | 64;
   /** Unions emitted as tagged boxes whatever their arms, for tests of the
@@ -2378,6 +2389,12 @@ export class LlEmitter {
   readonly positionedFrames: boolean;
   /** The executable prints its frame chain when it aborts. */
   readonly abortFrames: boolean;
+  /** Checked conversions pass their position to their failure path, which
+   * reports the failure when the program is run with
+   * SCRIPTC_CONVERSION_TRACE (conversionTraceAt). */
+  readonly conversionTrace: boolean;
+  /** The frame name of the function being emitted (frameNameOf). */
+  currentFrameName: string | undefined = undefined;
   /** The positions of the frame of the function being emitted, when it has
    * a positioned frame. */
   framePositions: FramePositions | null = null;
@@ -2432,6 +2449,16 @@ export class LlEmitter {
     this.positionedFrames =
       options.debugSources !== undefined && options.sanitizeAttributes === false;
     this.stackTraces = this.positionedFrames || observesStacks(mod, this.nodeIndex);
+    // A build that carries debug sources can say where a checked conversion
+    // is, so its conversions report their failures (scr_conversion_trace.c).
+    // The build asks for it where it also links that unit: an emitter whose
+    // output is linked some other way must not call what the link lacks. A
+    // sanitized build reports too: it is one call on a path that runs only
+    // when a conversion fails. Library archives link a fixed runtime set.
+    this.conversionTrace =
+      options.conversionTrace === true &&
+      options.debugSources !== undefined &&
+      mod.lib === undefined;
     this.nullableUnions = new NullableUnions(
       mod,
       options.debugSources === undefined,
@@ -3631,6 +3658,37 @@ export class LlEmitter {
     return (this.memberFrameNamesValue = names);
   }
 
+  /** The name a frame line gives `fn`: a class member's in V8's spelling,
+   * otherwise the function's source name; undefined for module-level code
+   * and generated helpers. */
+  frameNameOf(fn: IrFunction): string | undefined {
+    return this.memberFrameNames.get(fn.name) ?? fn.sourceName;
+  }
+
+  /** The call a checked conversion at `loc` makes on its failure path, or
+   * undefined in a build that reports none. It passes the conversion's
+   * position as a frame line, the text a positioned frame would hold for a
+   * statement there (frame-positions.ts): the same position service and the
+   * same spelling, so the report and a stack trace name a place alike, and
+   * the conversion's own column where a frame has only its statement's. A
+   * position the sources do not hold falls back to the file. */
+  conversionTraceAt(loc: SrcLoc): (() => void) | undefined {
+    const debug = this.debug;
+    if (!this.conversionTrace || debug === null) return undefined;
+    const name = this.currentFrameName;
+    const pos = debug.position(loc);
+    const text =
+      pos !== null
+        ? positionedFrameText(name, pos)
+        : name === undefined
+          ? `    at ${loc.file}`
+          : frameText(name, loc.file);
+    return () => {
+      this.declare("declare void @scr_conversion_trace(ptr)");
+      this.B.line(`call void @scr_conversion_trace(ptr ${this.cstr(text)})`);
+    };
+  }
+
   /** The positions `fn`'s frame takes, or null when its frame (if it has
    * one) holds one constant line: builds without debug sources, the
    * functions `Error.captureStackTrace` names, and the constructors that
@@ -3644,7 +3702,7 @@ export class LlEmitter {
     if (!this.positionedFrames || debug === null) return null;
     if (this.frameAnchors.has(fn.name)) return null;
     if (this.frameCaptures.constructors.has(fn.name)) return null;
-    const name = this.memberFrameNames.get(fn.name) ?? fn.sourceName;
+    const name = this.frameNameOf(fn);
     if (name === undefined && !fn.name.startsWith("%init.")) return null;
     return new FramePositions(
       name,

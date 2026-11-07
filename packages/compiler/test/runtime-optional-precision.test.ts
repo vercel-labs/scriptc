@@ -102,6 +102,34 @@ console.log(copy.map((item) => weigh(item)).join(","));
   expect(signature(spread, "weigh")).toBe("weigh(Item|undefined): f64");
 });
 
+test("Promise.all results hold undefined only where an entry can be a hole or undefined", async () => {
+  const LOAD = `${ITEM}
+async function load(item: Item, skip: boolean): Promise<Item> {
+  if (skip) return item;
+  return new Item(item.weight + (await Promise.resolve(1)));
+}
+`;
+  const settled = await lower(`${LOAD}
+async function main(): Promise<void> {
+  let items: Item[] = [new Item(1), new Item(2)];
+  items = await Promise.all(items.map((item) => load(item, item.weight > 1)));
+  console.log(items.map((item) => weigh(item)).join(","));
+}
+void main();
+`);
+  expect(signature(settled, "weigh")).toBe("weigh(Item): f64");
+  const missing = await lower(`${LOAD}
+async function main(): Promise<void> {
+  const pending: Promise<Item>[] = [];
+  pending[2] = load(new Item(1), false);
+  const items = await Promise.all(pending);
+  console.log(items.map((item) => weigh(item)).join(","));
+}
+void main();
+`);
+  expect(signature(missing, "weigh")).toBe("weigh(Item|undefined): f64");
+});
+
 test("holes stored through a dynamic view widen callbacks over the arrays it views", async () => {
   const viewed = await lower(`${ITEM}
 const items: Item[] = [new Item(1)];

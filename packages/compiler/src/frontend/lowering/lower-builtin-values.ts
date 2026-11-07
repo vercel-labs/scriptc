@@ -271,7 +271,7 @@ export function lowerStringCodesValue(
   loc: SrcLoc,
 ): IrExpr {
   const name = `%builtin.String.${member}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const values = varRef("values", DYN, loc),
       index = varRef("index", F64, loc),
       codes = varRef("codes", arrayOf(F64), loc),
@@ -409,7 +409,7 @@ export function lowerCheckedPredicateValue(
   predicate?: IrLibFn,
 ): IrExpr {
   const name = `%builtin.${display}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value = varRef("value", DYN, loc);
     const matches: IrExpr = { kind: "dynTest", test, value, type: BOOL, loc };
     const result: IrExpr = predicate
@@ -453,7 +453,7 @@ export function lowerNumberParserValue(
 ): IrExpr {
   const name = `%builtin.Number.${member}`;
   const types = member === "parseInt" ? [DYN, DYN] : [DYN];
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = types.map((type, index) => ({ localId: `p.${index}`, name: `p${index}`, type }));
     const text: IrExpr = {
       kind: "libCall",
@@ -737,7 +737,7 @@ const PATH_MODULE_KEYS = [
  * Module handles cache values and preserve aliases without a JS engine. */
 export function lowerObjectAssignValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%builtin.Object.assign";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [

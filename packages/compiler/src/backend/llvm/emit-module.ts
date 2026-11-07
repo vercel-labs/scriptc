@@ -36,6 +36,11 @@ import {
   typedRefConstructor,
   vAdapters,
 } from "./shapes.js";
+import {
+  ABORT_FRAMES_DECLARATIONS,
+  ABORT_FRAMES_INSTALL,
+  abortFramesDefinition,
+} from "./frame-positions.js";
 import { emitLlvmLayouts } from "./layouts.js";
 import { emitArraySearchHelpers } from "./array-search.js";
 import { emitClassMembershipHelper } from "./classes.js";
@@ -505,6 +510,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // ordering — the atexit half becomes an idempotent no-op).
   const usesEvents = runtimeFeatures.processEvents;
   const usesChildProcess = runtimeFeatures.childProcess;
+  // A program that can register an 'error' listener on a child installs
+  // the builder of a failed spawn's error object (runtime-features.ts).
+  const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
   const usesFsWatch = runtimeFeatures.fsWatch;
   // fs.watchFile programs register the poller unit's exit cleanup — the
   // same one-line gating (native/executable.ts links scr_watch_file.c on
@@ -550,6 +558,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
+  if (usesChildErrorEvent) emitter.declare(`declare void @scr_child_error_event_install()`);
   const childStreamBoxes =
     usesChildProcess &&
     usesStream &&
@@ -982,6 +991,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       ? [`@scr_stdout_buffering = constant i8 1`]
       : []),
   );
+  if (emitter.abortFrames) for (const d of ABORT_FRAMES_DECLARATIONS) emitter.declare(d);
   for (const d of emitter.decls) out.push(d);
   out.push(``);
   const flushedDecls = new Set(emitter.decls);
@@ -1302,6 +1312,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
   }
+  if (emitter.abortFrames) out.push(...abortFramesDefinition(FN_ATTRS));
   out.push(
     `define i32 @${emitter.mod.workers ? "sc_context_entry" : emitter.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
     `entry:`,
@@ -1310,6 +1321,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(lanePlansEnabled(emitter) ? [LANE_INIT_CALL] : []),
     ...(emitter.mod.workers ? [`  call void @scr_runtime_workers_v8()`] : []),
     `  call void @scr_init()`,
+    ...(emitter.abortFrames ? [ABORT_FRAMES_INSTALL] : []),
     // Compressed fields hold addresses in the program-lifetime region, which
     // is reserved below 32 GiB before compiled code runs.
     ...(emitter.compactRegion ? [`  call void @scr_plr_init()`] : []),
@@ -1325,6 +1337,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
     ...(usesChildProcess ? [`  call void @scr_child_dyn_install()`] : []),
+    ...(usesChildErrorEvent ? [`  call void @scr_child_error_event_install()`] : []),
     ...(childStreamBoxes
       ? [
           `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,

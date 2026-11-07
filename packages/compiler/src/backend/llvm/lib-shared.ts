@@ -958,6 +958,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // (execSync/execCapture throw — the may-throw check); handle getters
   // are pure reads. Registration forms are special-cased (moves + per-
   // shape adapters); spawn itself is special-cased for usesTimers.
+  "cp.checkArgs": "scr_child_check_args",
   "cp.spawnSync": "scr_spawn_sync",
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",

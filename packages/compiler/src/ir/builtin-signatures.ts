@@ -3153,6 +3153,19 @@ function buildLibFnSignatures() {
     /** Runtime options normalized into the native spawn core; unsupported
      * process features retain explicit refusals. (command, args, options). */
     "cp.spawnDynamic": { argTypes: [STRING, arrayOf(STRING), DYN], result: CHILD_T },
+    /** Node's argument checks for the child launch that follows
+     * (normalizeSpawnArguments, normalizeExecArgs): a NUL in the file or
+     * command, an argument, cwd or an environment key or value, or an
+     * empty file, throws ERR_INVALID_ARG_VALUE before a process starts.
+     * (form, cmd, args, envPairs, cwd): form 0 reads cmd as the file and
+     * args as its arguments; 1 and 2 are the /bin/sh -c launches, whose
+     * args[1] is exec's command (1) or execFile's file (2); 3 is fork,
+     * which has no file. An absent cwd is "", an inherited environment an
+     * empty array. */
+    "cp.checkArgs": {
+      argTypes: [F64, STRING, arrayOf(STRING), arrayOf(STRING), STRING],
+      result: VOID,
+    },
     // The callback's func type is program-dependent (zero params, or the
     // `number | null` union / the %Error class) — the libCall case checks
     // the shape; the slot here only pins arity and the child receiver.

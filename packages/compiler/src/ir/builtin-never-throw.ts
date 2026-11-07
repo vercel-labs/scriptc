@@ -49,4 +49,11 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_insp_numeric_separator stores one flag and answers its previous
   // value.
   "insp.numericSeparator",
+  // scr_worker_share_env answers the thread's SHARE_ENV symbol and makes it
+  // on first use; it takes no argument, and running out of memory ends the
+  // process.
+  "worker.shareEnv",
+  // scr_emitter_symbol_name allocates the registry key of the symbol it is
+  // given (scr_str_symbol_key); running out of memory ends the process.
+  "emitter.symName",
 ]);

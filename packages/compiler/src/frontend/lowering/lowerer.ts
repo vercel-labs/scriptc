@@ -9224,9 +9224,24 @@ export class Lowerer {
       params: readonly boolean[] | null;
       result: boolean;
       receiver: boolean;
+      // The callee's bodies; null when a declaration has none in the program.
+      bodies: readonly ts.Node[] | null;
     };
     const genericCallees = new Map<ts.CallExpression | ts.NewExpression, GenericSlots | null>();
     const genericSlots = (symbol: ts.Symbol): GenericSlots | null => {
+      // A function's implementation, or the class a constructor belongs to.
+      // Overload signatures add nothing beside an implementation; a callee
+      // with no implementation here (a declaration file, an interface or
+      // abstract method) is unknown.
+      const bodies: ts.Node[] = [];
+      for (const declaration of symbol.declarations ?? []) {
+        const value =
+          ts.isVariableDeclaration(declaration) && declaration.initializer
+            ? peel(declaration.initializer)
+            : declaration;
+        if (ts.isClassDeclaration(value) || ts.isClassExpression(value)) bodies.push(value);
+        else if (ts.isFunctionLike(value) && value.body !== undefined) bodies.push(value);
+      }
       for (const declaration of symbol.declarations ?? []) {
         // The standard library's generic methods are judged by what they do
         // (ArrayElementStates), not by this rule.
@@ -9274,13 +9289,15 @@ export class Lowerer {
           }
           return mentions(type);
         };
+        const known = bodies.length > 0 ? bodies : null;
         return ts.isFunctionLike(value)
           ? {
               params: value.parameters.nodes.map((parameter) => viewsFields(parameter.type)),
               result: viewsFields(value.type),
               receiver,
+              bodies: known,
             }
-          : { params: null, result: true, receiver };
+          : { params: null, result: true, receiver, bodies: known };
       }
       return null;
     };
@@ -9727,7 +9744,7 @@ export class Lowerer {
         const type = checkerTypes.get(node) ?? typeOrNull(node);
         return type !== null && (type.flags & ts.TypeFlags.Instantiable) !== 0;
       },
-      genericCallKeys: (call) => {
+      genericCall: (call) => {
         const callee = peel(call.expression);
         if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
         let slots = genericCallees.get(call);
@@ -9737,8 +9754,8 @@ export class Lowerer {
           genericCallees.set(call, slots);
         }
         if (slots === null) return null;
-        const { params: declared, result, receiver } = slots;
-        return () => {
+        const { params: declared, result, receiver, bodies } = slots;
+        const keys = (): readonly string[] => {
           const keys = new Set<string>();
           (call.arguments?.nodes ?? []).forEach((arg, index) => {
             // Arguments past the declared ones fill a rest parameter.
@@ -9763,6 +9780,7 @@ export class Lowerer {
           reachableElementKeys(mappedArrayHolder(call), keys, result ? 1 : 0);
           return [...keys];
         };
+        return { bodies, keys };
       },
       mayBeUndefined: (node) => {
         if (explicitlyNonNull(node)) return assertedReadMayBeUndefined(node);

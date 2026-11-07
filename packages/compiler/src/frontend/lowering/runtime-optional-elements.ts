@@ -55,11 +55,16 @@ export interface ElementStateHost {
    * an instance (`xs: A` with `A extends readonly T[]`). */
   instanceTyped?(node: ts.Expression): boolean;
   /** For a call of a generic function, method or constructor (its
-   * declaration, or one enclosing it, has type parameters): a function that
-   * answers the element keys of every native array reachable from the
-   * types of its arguments, its receiver and its result. Null for any
-   * other call. */
-  genericCallKeys?(call: ts.CallExpression | ts.NewExpression): (() => readonly string[]) | null;
+   * declaration, or one enclosing it, has type parameters): the callee's
+   * bodies (a function with a body, or the class a constructor belongs to;
+   * null when one is not in the program), and a function that answers the
+   * element keys of every native array reachable from the types of the
+   * call's arguments, its receiver and its result. Null for any other
+   * call. */
+  genericCall?(call: ts.CallExpression | ts.NewExpression): {
+    bodies: readonly ts.Node[] | null;
+    keys(): readonly string[];
+  } | null;
   /** Debug provenance for a new fact. */
   note:
     | ((fact: "undefined" | "holes" | "foreign", key: string, site: ts.Node | undefined) => void)
@@ -81,6 +86,8 @@ const VIEW_VALUES = "%view-values";
  * key can hold undefined". */
 const HOLEY_KEYS = "%holey-keys";
 const UNDEFINED_KEYS = "%undefined-keys";
+/** The fact name of "another function builds arrays from generic ones". */
+const BUILDERS = "%generic-builders";
 
 /** Element keys whose arrays store a value written through a dynamic view
  * that the element type cannot hold, as a foreign element: `number[]` and
@@ -147,6 +154,12 @@ export class ArrayElementStates {
    * expressions with no element key outside an instance, whose facts are
    * those of each instance's key (sourcesMayHoldMissing). */
   private sources: Set<ts.Expression> | null = null;
+  /** Functions and classes whose code builds an array from a generic
+   * array's elements or stores them into another array (a spread, a copying
+   * method, a rest pattern, a push of a spread), directly or by calling a
+   * generic function that does. Code that only reads a generic array, or
+   * returns it, is not among them. */
+  private readonly genericBuilders = new Set<ts.Node>();
   /** Counts the generic arrays judgements have read, collected or not. */
   private genericReads = 0;
   /** The collector of scan(), reused between sites. */
@@ -258,6 +271,9 @@ export class ArrayElementStates {
       this.sources = null;
     }
     if (sources.size === 0) return changed;
+    // A loop only reads; any other site that judged a generic array's
+    // contents built or stored an array from them.
+    if (!ts.isForOfStatement(node) && this.noteGenericBuilder(node)) changed = true;
     // What this site stored into an owning slot's array came from generic
     // arrays: the slot is judged with them in each instance.
     const owner = this.writtenOwner(node);
@@ -289,6 +305,25 @@ export class ArrayElementStates {
     if (known.undefined.size + known.holes.size === before) return changed;
     this.host.changed?.(owner);
     return true;
+  }
+
+  /** Marks the functions and classes around `node` as building arrays from
+   * generic ones; true when one was not marked yet. */
+  private noteGenericBuilder(node: ts.Node): boolean {
+    let grew = false;
+    for (let outer = node.parent; outer; outer = outer.parent) {
+      if (
+        !ts.isFunctionLike(outer) &&
+        !ts.isClassDeclaration(outer) &&
+        !ts.isClassExpression(outer)
+      )
+        continue;
+      if (this.genericBuilders.has(outer)) continue;
+      this.genericBuilders.add(outer);
+      grew = true;
+    }
+    if (grew) this.host.changed?.(BUILDERS);
+    return grew;
   }
 
   /** The owning slot whose array `node` builds or stores into. */
@@ -784,24 +819,28 @@ export class ArrayElementStates {
    * keys, so what it builds from an argument's elements carries no fact of
    * its own: holes that `map` keeps under another element type, holes that
    * a copy (`[...xs]`, `Array.from`) turns into present undefined
-   * elements, elements moved into another argument. When an array the
-   * call can reach may hold holes, every array it can reach, and its
-   * result, may hold holes and undefined. Explicit undefined values cross
-   * element types only through typed callbacks, judged where they are
-   * written. */
+   * elements, elements moved into another argument. When the callee builds
+   * arrays from generic ones (genericBuilders) and an array the call can
+   * reach may hold holes, every array it can reach, and its result, may
+   * hold holes and undefined. Explicit undefined values cross element types
+   * only through typed callbacks, judged where they are written. */
   private scanGenericCall(node: ts.CallExpression | ts.NewExpression): boolean {
-    const reachable = this.host.genericCallKeys?.(node) ?? null;
-    if (reachable === null) return false;
+    const callee = this.host.genericCall?.(node) ?? null;
+    if (callee === null) return false;
+    this.host.read?.(BUILDERS);
+    if (callee.bodies !== null && !callee.bodies.some((body) => this.genericBuilders.has(body)))
+      return false;
+    // The code around this call builds through the callee.
+    const builder = this.noteGenericBuilder(node);
     this.host.read?.(HOLEY_KEYS);
     this.host.read?.(VIEW_HOLES);
-    if (this.holeyKeys.size === 0 && !this.viewHoles) return false;
-    const keys = reachable();
-    if (keys.length === 0) return false;
+    if (this.holeyKeys.size === 0 && !this.viewHoles) return builder;
+    const keys = callee.keys();
     for (const key of keys) this.host.read?.(key);
-    if (!keys.some((key) => this.holeyKeys.has(key) || this.viewed(key))) return false;
+    if (!keys.some((key) => this.holeyKeys.has(key) || this.viewed(key))) return builder;
     const holes = this.addHoles(keys);
     const undefinedValues = this.addUndefined(keys);
-    return holes || undefinedValues;
+    return builder || holes || undefinedValues;
   }
 
   private scanAssignment(node: ts.BinaryExpression): boolean {

@@ -363,6 +363,17 @@ export function variantsFor(source) {
   // BigInts, whichever build of the unit the program selects. Its Node island
   // build is not the one these variants name: island output keeps its own
   // object.
+  // A method call on an island promise reaches the island object for the
+  // methods an island Promise subclass adds (a request promise's
+  // `withResponse()`): the Node island build of the invoke unit asks it.
+  // Pushed first, so each build gets its object model twin.
+  if (source === "scr_dyn_invoke.c") {
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
+    });
+  }
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);
   }

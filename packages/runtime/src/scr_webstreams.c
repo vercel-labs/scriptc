@@ -1380,6 +1380,18 @@ static void ws_byob_invalidate(WsRController *c) {
 static void ws_bytes_process_queue(WsRController *c);
 static void ws_bytes_commit(WsRController *c);
 
+/* ReadableByteStreamControllerHandleQueueDrain: a close that waited for the
+ * queued bytes takes effect once they are handed out. A read still waiting
+ * for more than they hold is its own answer (Node's pull-into errors the
+ * stream with "ReadableStream closed" for it), so it keeps the stream as it
+ * is. */
+static void ws_bytes_handle_queue_drain(WsRController *c) {
+  if (c->queue.length || !c->close_requested || c->into_head) return;
+  if (c->stream->state != WS_STATE_READABLE) return;
+  ws_rcontroller_clear_algorithms(c);
+  ws_readable_close(c->stream);
+}
+
 /* Fills pending reads from the queued chunks, oldest first. */
 static void ws_bytes_process_queue(WsRController *c) {
   while (c->queue.length && c->into_head) {
@@ -1401,6 +1413,7 @@ static void ws_bytes_process_queue(WsRController *c) {
     scr_dyn_release(value);
     if (c->into_head->filled >= c->into_head->min) ws_bytes_commit(c);
   }
+  ws_bytes_handle_queue_drain(c);
 }
 
 /* Answers the head read with what it holds and starts the next one. */
@@ -1409,6 +1422,24 @@ static void ws_bytes_commit(WsRController *c) {
   c->into_head = d->next;
   if (!c->into_head) c->into_tail = NULL;
   ws_byob_invalidate(c);
+  /* A BYOB read answers whole elements only. The bytes past the last whole
+   * element move to the end of the queue as a copy, where the next read
+   * takes them, exactly as Node's respond moves them. */
+  if (d->byob && d->filled) {
+    size_t width = scr_bytes_elem_size(d->view->elem);
+    size_t remainder = width > 1 ? d->filled % width : 0;
+    if (remainder) {
+      ScrBytes *rest = scr_bytes_new(SCR_BYTES_U8, (double)remainder);
+      if (!rest) return;
+      ws_copy_bytes(rest, 0, d->view, d->filled - remainder, remainder);
+      ScrDyn *entry = scr_dyn_new_bytes(rest);
+      scr_bytes_release(rest); /* the entry holds its own reference */
+      ws_queue_push(&c->queue, entry, (double)remainder);
+      scr_dyn_release(entry);
+      c->queue_total_size += (double)remainder;
+      d->filled -= remainder;
+    }
+  }
   ws_pull_into_finish(d, false);
   scr_bytes_release(d->view);
   free(d);
@@ -1576,14 +1607,26 @@ static ScrDyn *ws_byob_read(WsReader *r, ScrDyn *view_arg, ScrDyn *options) {
     return ws_promise_box(rejected);
   }
   ScrPromise *p = scr_promise_new();
-  size_t min_count = min > 0 ? (size_t)min : 1;
+  /* `min` counts elements of the destination's type (bytes for a DataView),
+   * as Node's read does: minimumFill = min * elementSize. */
+  size_t min_elements = min > 0 ? (size_t)min : 1;
+  size_t min_count = min_elements * scr_bytes_elem_size(view->elem);
   WsPullInto *d = ws_pull_into_new(view, min_count, true, p);
   ScrPromise *result = scr_promise_retain(p);
   scr_promise_release(p);
   ws_pull_into_enqueue(c, d);
   s->disturbed = true;
   ws_bytes_process_queue(c);
-  if (c->into_head) ws_rcontroller_call_pull_if_needed(c);
+  if (c->into_head && c->close_requested) {
+    /* The bytes still queued cannot fill this read and the stream already
+     * asked to close: Node's pull-into errors the stream instead of
+     * leaving the read waiting for a source that will never be asked. */
+    ScrDyn *error = ws_state_error_value("ReadableStream closed");
+    ws_rcontroller_error(c, error);
+    scr_dyn_release(error);
+  } else if (c->into_head) {
+    ws_rcontroller_call_pull_if_needed(c);
+  }
   return ws_promise_box(result);
 }
 
@@ -5276,10 +5319,13 @@ static ScrDyn *ws_byob_respond(WsByob *b, ScrDyn *value) {
   return ws_undef();
 }
 
-/* respondWithNewView: the bytes are the ones the new view holds. Node
- * detaches a read's buffer when the read starts, so the view can only be
- * made over the same buffer there after the fact; this runtime does not
- * detach, and accepts exactly the views the specification allows. */
+/* ReadableByteStreamControllerRespondWithNewView: the new view starts exactly
+ * where the read's fill stopped, and its bytes are that many more written
+ * into the destination the read already holds. The read keeps its own view,
+ * so a partial response leaves the rest of the destination for the responses
+ * that follow. Node detaches a read's buffer when the read starts, so the view
+ * can only be made over the same buffer there after the fact; this runtime
+ * does not detach, and accepts exactly the views the specification allows. */
 static ScrDyn *ws_byob_respond_with_new_view(WsByob *b, ScrDyn *value) {
   WsRController *c = b->controller;
   WsPullInto *d = c ? c->into_head : NULL;
@@ -5292,20 +5338,22 @@ static ScrDyn *ws_byob_respond_with_new_view(WsByob *b, ScrDyn *value) {
     return NULL;
   }
   ScrBytes *view = value->v.bytes;
+  size_t written = (size_t)scr_bytes_byte_len(view);
+  if (!written) {
+    ws_state_error("View is zero-length");
+    return NULL;
+  }
   ScrBytes *want_owner = d->view->backing ? d->view->backing : d->view;
   ScrBytes *got_owner = view->backing ? view->backing : view;
-  double want = (double)(d->view->data - want_owner->data) + (double)d->filled;
+  double begin = (double)(d->view->data - want_owner->data);
+  double want = begin + (double)d->filled;
   double got = (double)(view->data - got_owner->data);
-  double limit = (double)(want_owner->len * scr_bytes_elem_size(want_owner->elem));
-  if (got_owner != want_owner || got < want || got + scr_bytes_byte_len(view) > limit) {
+  double end = begin + (double)scr_bytes_byte_len(d->view);
+  if (got_owner != want_owner || got != want || want + (double)written > end) {
     ws_range_arg_value("view", value);
     return NULL;
   }
-  ScrBytes *replacement = scr_bytes_subarray(view, 0, (double)view->len);
-  if (!replacement) return NULL;
-  scr_bytes_release(d->view);
-  d->view = replacement;
-  d->filled = (size_t)scr_bytes_byte_len(replacement);
+  d->filled += written;
   if (d->filled >= d->min) ws_bytes_commit(c);
   ws_rcontroller_call_pull_if_needed(c);
   return ws_undef();

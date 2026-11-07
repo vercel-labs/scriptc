@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "e77bd364631caa94";
+export const IR_CODEC_LAYOUT = "4e26d93887d5740c";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -148,7 +148,7 @@ const KEYS120: readonly string[] = ["kind","value","test","className","negated",
 const KEYS121: readonly string[] = ["kind","value","type","loc"];
 const KEYS122: readonly string[] = ["kind","id","type","loc"];
 const KEYS123: readonly string[] = ["kind","className","type","loc","captures"];
-const KEYS124: readonly string[] = ["kind","fnName","captures","adapts","type","loc"];
+const KEYS124: readonly string[] = ["kind","fnName","captures","adapts","length","type","loc"];
 const KEYS125: readonly string[] = ["kind","numbers","strings","index","type","loc"];
 const KEYS126: readonly string[] = ["kind","value","type","loc"];
 const KEYS127: readonly string[] = ["kind","elems","type","loc"];
@@ -2964,6 +2964,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.bool(v.adapts);
       }
+      if (v.length === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.num(v.length);
+      }
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
       return;
@@ -4064,9 +4069,10 @@ function decIrExpr(r: IrReader): IrExpr {
       const f0 = r.str();
       const f1 = decT8(r);
       const f2 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<closure>.adapts") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "closure" }>["adapts"]>);
-      const f3 = decIrType(r);
-      const f4 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "closure" }> = { kind: "closure", fnName: f0, captures: f1, ...(f2 !== undefined ? { adapts: f2 } : {}), type: f3, loc: f4 };
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<closure>.length") === 0 ? undefined : r.num();
+      const f4 = decIrType(r);
+      const f5 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "closure" }> = { kind: "closure", fnName: f0, captures: f1, ...(f2 !== undefined ? { adapts: f2 } : {}), ...(f3 !== undefined ? { length: f3 } : {}), type: f4, loc: f5 };
       return o;
     }
     case 22: {

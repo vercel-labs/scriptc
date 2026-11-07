@@ -31,6 +31,7 @@ import {
   NULL_T,
   STRING,
   VOID,
+  canAdaptDynFuncTo,
   type IrExpr,
   type IrGlobal,
   type IrLocal,
@@ -653,21 +654,22 @@ export function isIslandImportBinding(lowerer: Lowerer, ident: ts.Identifier): b
 }
 
 function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
-  const symbol = lowerer.checker.getSymbolAtLocation(ident);
-  return symbol === undefined ? null : islandBindingOfSymbol(lowerer, symbol);
-}
-
-/** The island binding `symbol` declares, or null. A shorthand property's
- * name carries the PROPERTY's symbol, so `{ perl }` passes the value symbol
- * (getShorthandAssignmentValueSymbol) here instead of the identifier. */
-export function islandBindingOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): IslandBinding | null {
   const islands = lowerer.nodeIslands;
   if (islands === null) return null;
+  // A shorthand property's name (`{ compare }`) reads the binding of that
+  // name: the checker answers the property for the name itself.
+  const shorthand =
+    ident.parent !== undefined &&
+    ts.isShorthandPropertyAssignment(ident.parent) &&
+    ident.parent.name === ident
+      ? lowerer.checker.getShorthandAssignmentValueSymbol(ident.parent)
+      : undefined;
+  const symbol = shorthand ?? lowerer.checker.getSymbolAtLocation(ident);
   // A name a native module re-exports from an island package binds the
   // island's own export: the import's alias chain reaches it.
   const reexport = islandReexportOf(lowerer, symbol);
   if (reexport !== null) return reexport;
-  const decl = symbol.declarations[0];
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined) return null;
   let importDecl: ts.Node | undefined;
   let binding: "namespace" | "default" | { name: string };
@@ -718,19 +720,6 @@ export function islandBindingOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): Isla
   if (binding === "namespace") return { kind: "namespace", module };
   if (binding === "default") return { kind: "default", module };
   return { kind: "named", module, name: binding.name };
-}
-
-/** The value of an island import binding in shorthand property position
- * (`{ perl }`, whose name carries the property's symbol), or null when the
- * symbol is not an island import. */
-export function lowerIslandShorthandValue(
-  lowerer: Lowerer,
-  symbol: ts.Symbol,
-  node: ts.Node,
-  loc: SrcLoc,
-): IrExpr | null {
-  const binding = islandBindingOfSymbol(lowerer, symbol);
-  return binding === null ? null : islandBindingValue(lowerer, binding, node, loc);
 }
 
 /** The raw (dyn) value an island import binding reads. */
@@ -1195,6 +1184,84 @@ function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
 /** An island operation whose result is an undeclared object (a handle). */
 function isIslandHandleExpr(lowerer: Lowerer, node: ts.Expression): boolean {
   return islandRooted(lowerer, node) && undeclaredHandleType(lowerer, lowerer.typeOf(node));
+}
+
+/** The one function type a slot expects, when the program declares it: the
+ * slot's type without its nullish arms. Null for a slot with no type, with
+ * several arms, typed `any` or `unknown`, or typed by an island (values of
+ * an island's own types stay handles). */
+function programFunctionSlot(lowerer: Lowerer, node: ts.Expression): ts.Type | null {
+  const slot = lowerer.checker.getContextualType(node);
+  if (slot === undefined) return null;
+  const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+  const arms = (slot.isUnionType() ? ts.constituentTypes(slot) : [slot]).filter(
+    (arm) => (arm.flags & nullish) === 0,
+  );
+  const arm = arms.length === 1 ? arms[0]! : null;
+  if (arm === null || (arm.flags & ts.TypeFlags.Object) === 0) return null;
+  if (lowerer.checker.getCallSignatures(arm).length === 0) return null;
+  return isForeignType(lowerer.nodeIslands!, arm, lowerer.checker) ? null : arm;
+}
+
+/** A function an island made, read where the program expects a function of
+ * its own type (`versions.sort(rcompare)`, `{ order: compare }`, an argument
+ * of a program function): the typed view of the island's function at that
+ * slot. The value stays the island's one function object — the view is the
+ * checked-dynamic function boundary's adapter over the handle, so it shares
+ * the function's identity, boxes back to the handle, and each call is the
+ * island call a direct call makes. The view takes the slot's parameters
+ * (JavaScript passes every argument the caller supplies, whatever the
+ * function declares) and answers the function's own declared result, which
+ * the checked conversion holds it to as it does for a direct call; a slot
+ * that discards the result, or a function whose declaration does not name
+ * one result type (overloads, a generic signature, an island type), answers
+ * the slot's. Null where the value stays the handle: no such slot, a use
+ * through island operations, or a signature the boundary cannot adapt. */
+export function islandFunctionView(
+  lowerer: Lowerer,
+  value: IrExpr,
+  node: ts.Expression,
+): IrExpr | null {
+  if (lowerer.nodeIslands === null || value.type.kind !== "dyn") return null;
+  // A receiver or a callee is used through the value itself. Most
+  // checked-dynamic expressions are one of the two, so they leave here
+  // before any type is asked for.
+  const parent = node.parent;
+  if (
+    parent !== undefined &&
+    (ts.isPropertyAccessExpression(parent) ||
+      ts.isElementAccessExpression(parent) ||
+      ts.isCallExpression(parent) ||
+      ts.isNewExpression(parent)) &&
+    parent.expression === node
+  )
+    return null;
+  const type = lowerer.typeOf(node);
+  if (!lowerer.islandFunctionType(type)) return null;
+  const signatures = lowerer.checker.getCallSignatures(type);
+  if (handleUseOk(lowerer, node)) return null;
+  const slot = programFunctionSlot(lowerer, node);
+  if (slot === null) return null;
+  const mapped = lowerer.mapTypeOf(slot);
+  if (mapped === null || mapped.kind !== "func") return null;
+  let view: IrType & { kind: "func" } = mapped;
+  const own = signatures.length === 1 ? signatures[0]! : null;
+  if (mapped.ret.kind !== "void" && own !== null && !own.declaration?.typeParameters?.nodes) {
+    const result = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(own));
+    if (result !== null && result.kind !== "dyn" && result.kind !== "void")
+      view = { ...mapped, ret: result };
+  }
+  const adaptable = (t: IrType): boolean =>
+    canAdaptDynFuncTo(
+      t,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    );
+  if (!adaptable(view)) {
+    if (view === mapped || !adaptable(mapped)) return null;
+    view = mapped;
+  }
+  return lowerer.coerceToExpected(value, view);
 }
 
 /** Whether `name` names a `const` initialized with an undeclared island

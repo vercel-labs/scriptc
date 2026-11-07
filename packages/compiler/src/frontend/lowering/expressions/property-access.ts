@@ -4528,6 +4528,27 @@ function unionValueRead(
     }
   }
   const nonUnitArms = def.arms.filter((arm) => !isUnitType(arm));
+  // `name` and `message` of an arm rooted at Error are read as on a single
+  // class value, through the error reader: an accessor a subclass declares or
+  // a prototype defines answers, where the slot alone would not.
+  const errorMember =
+    (field === "name" || field === "message") &&
+    nonUnitArms.length > 0 &&
+    nonUnitArms.every(
+      (arm) =>
+        arm.kind === "object" &&
+        (arm.className === "%Error" || lowerer.isSubclassOf(arm.className, "%Error")),
+    );
+  if (errorMember && nonUnitArms.length === def.arms.length && def.arms.length > 1)
+    return perArmUnionRead(
+      lowerer,
+      expr,
+      unionId,
+      value,
+      STRING,
+      "%unionError",
+      (_arm, _tag, arm) => errorPropertyRead(lowerer, arm, field),
+    );
   if (nonUnitArms.length === 1 && nonUnitArms[0]?.kind === "object") {
     const objectType = nonUnitArms[0];
     const fieldType = lowerer.classes.get(objectType.className)?.fields.get(field);
@@ -4544,6 +4565,7 @@ function unionValueRead(
           receiver = lowerer.checkedNarrowCall(helper, value, objectType, locOf(expr.expression));
       }
       if (receiver !== null) {
+        if (errorMember) return errorPropertyRead(lowerer, receiver, field);
         return {
           kind: "fieldGet",
           obj: receiver,

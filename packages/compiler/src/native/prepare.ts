@@ -15,6 +15,7 @@ import {
 } from "../backend/llvm/emitter.js";
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
+import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
 import {
   loweringOptions,
@@ -26,6 +27,7 @@ import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import {
   FrontendInputTracker,
+  changedFrontendInput,
   frontendInputsSemanticallyMatch,
   frontendInputsStillMatch,
   validFrontendInputSnapshot,
@@ -263,52 +265,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
   if (features["workers"] !== undefined && typeof features["workers"] !== "boolean") return false;
   if (features["youngNursery"] !== undefined && typeof features["youngNursery"] !== "boolean")
     return false;
-  return [
-    "regex",
-    "copying",
-    "textDecoderLegacy",
-    "bigintBytes",
-    "fileHandle",
-    "fetch",
-    "zlib",
-    "assert",
-    "inspect",
-    "dynInvoke",
-    "dc",
-    "dynAsync",
-    "events",
-    "emitter",
-    "symbol",
-    "bigint",
-    "searchParams",
-    "qs",
-    "utilPromisify",
-    "dynBuiltinClass",
-    "dynBuiltinStream",
-    "parseArgs",
-    "stream",
-    "net",
-    "http",
-    "http2",
-    "dgram",
-    "dnsPromises",
-    "dgramDyn",
-    "textCodecDyn",
-    "watch",
-    "watchFile",
-    "foreignFfi",
-    "nodeTest",
-    "tls",
-    "tlsCa",
-    "cipher",
-    "ecdh",
-    "dh",
-    "pki",
-    "ed25519",
-    "x509",
-    "webcrypto",
-    "perfLoop",
-  ].every((name) => typeof features[name] === "boolean");
+  return REQUIRED_LINK_FEATURES.every((name) => typeof features[name] === "boolean");
 }
 
 function validCachedInput(value: unknown): value is FrontendCacheEntry {
@@ -410,6 +367,20 @@ export function nativeFrontendExclusions(
   return { outputPaths, outputDirectories: [...directories] };
 }
 
+/** Why a frontend result with these input observations must not enter the
+ * cache, or null when it may: the observations are incomplete or changed
+ * while the frontend ran (the snapshot is not stable), or an input no
+ * longer has the answer the frontend saw. The words go on the build's
+ * timing line, since a build that is never cached is otherwise silent. */
+function unpublishable(
+  probes: FrontendInputSnapshot,
+  exclusions: FrontendInputExclusions,
+): string | null {
+  if (!probes.stable) return probes.unstable ?? "an input changed while the frontend ran";
+  const changed = changedFrontendInput(probes, exclusions);
+  return changed === null ? null : `${changed.path} changed during the build (${changed.op})`;
+}
+
 /** Keep the checker and typed IR out of the native optimizer's live heap. */
 export function prepareNativeExecutable(
   entry: string,
@@ -438,6 +409,10 @@ export function prepareNativeExecutable(
     };
   const exclusions = nativeFrontendExclusions(entry, options);
   let key: string | null = null;
+  // Why this build has no cache key, for its timing line: an entry cannot
+  // describe it (nativeFrontendInputs), or something could not be read.
+  let keyless =
+    "the build has no cache entry: it writes or reads a lowered program, or rewrites its sources for provenance";
   // The unit store's key (unit-reuse.ts): the frontend's inputs without the
   // output paths, which lowering does not read.
   let unitKey: string | null = null;
@@ -449,6 +424,7 @@ export function prepareNativeExecutable(
     inputs = nativeFrontendInputs(entry, options, ffi, toolchain);
   } catch {
     inputs = null;
+    keyless = "the compiler's toolchain could not be identified";
   }
   if (cache !== null && inputs !== null) {
     try {
@@ -475,6 +451,7 @@ export function prepareNativeExecutable(
       }
     } catch {
       key = null;
+      keyless = "the frontend cache could not be read";
     }
   }
   timing("frontend-cache-miss");
@@ -555,16 +532,13 @@ export function prepareNativeExecutable(
   };
   timing("link-features");
   const probes = tracker.snapshot();
-  if (
-    cache !== null &&
-    key !== null &&
-    probes.stable &&
-    frontendInputsStillMatch(probes, exclusions)
-  ) {
+  const unpublished =
+    cache === null ? null : key === null ? keyless : unpublishable(probes, exclusions);
+  if (cache !== null && key !== null && unpublished === null) {
     publishFrontendCache(cache, key, probes, input);
     onInputs?.(probes);
   }
-  timing("frontend-cache-publish");
+  timing("frontend-cache-publish", unpublished === null ? undefined : { skipped: unpublished });
   return input;
 }
 
@@ -665,15 +639,10 @@ export function prepareNativeLibrary(
   };
   timing("link-features");
   const probes = tracker.snapshot();
-  if (
-    cache !== null &&
-    key !== null &&
-    probes.stable &&
-    frontendInputsStillMatch(probes, exclusions)
-  ) {
+  const unpublished = cache === null || key === null ? null : unpublishable(probes, exclusions);
+  if (cache !== null && key !== null && unpublished === null)
     publishFrontendCache(cache, key, probes, input);
-  }
-  timing("frontend-cache-publish");
+  timing("frontend-cache-publish", unpublished === null ? undefined : { skipped: unpublished });
   return input;
 }
 

@@ -28,6 +28,7 @@ import {
   BOOL,
   DYN,
   FOREIGN,
+  NULL_T,
   STRING,
   VOID,
   type IrExpr,
@@ -737,10 +738,105 @@ function islandBindingValue(
   }
 }
 
+/* The island read whose value `islandUnitComparison` wants as the island
+ * answered it, before it meets its declared type. Set for one synchronous
+ * lowering of that node. */
+let rawIslandRead: ts.Node | null = null;
+
+/** `null` or the global `undefined`, by name. */
+function unitLiteralOf(lowerer: Lowerer, node: ts.Expression): "null" | "undefined" | null {
+  const inner = stripTypeWrappers(node);
+  if (inner.kind === ts.SyntaxKind.NullKeyword) return "null";
+  if (!ts.isIdentifier(inner) || inner.text !== "undefined") return null;
+  return (lowerer.typeOf(inner).flags & ts.TypeFlags.Undefined) !== 0 ? "undefined" : null;
+}
+
+/** `read === undefined`, `read !== null`, `read == null`, `read != null`
+ * where `read` is a member read, an index or a call on an island value: the
+ * value the island answered decides, before it meets the declared type. A
+ * missing key or index reads undefined whatever the declaration says
+ * (TypeScript types `table[key]` and `list[i]` as the value type), and the
+ * native unit comparison folds an operand whose type has no such arm to a
+ * constant, so `table[key] === undefined` answered false for a key the
+ * island does not have. */
+function islandUnitComparison(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const op = expr.operatorToken.kind;
+  const strict =
+    op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  const loose =
+    op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken;
+  if (!strict && !loose) return null;
+  const leftUnit = unitLiteralOf(lowerer, expr.left);
+  const rightUnit = unitLiteralOf(lowerer, expr.right);
+  if ((leftUnit === null) === (rightUnit === null)) return null;
+  const unit = leftUnit ?? rightUnit!;
+  const read = stripTypeWrappers(leftUnit === null ? expr.left : expr.right);
+  if (
+    !ts.isPropertyAccessExpression(read) &&
+    !ts.isElementAccessExpression(read) &&
+    !ts.isCallExpression(read)
+  )
+    return null;
+  if (!islandRooted(lowerer, read)) return null;
+  const saved = rawIslandRead;
+  rawIslandRead = read;
+  let raw: IrExpr | null;
+  try {
+    raw = lowerIslandExpr(lowerer, read);
+  } finally {
+    rawIslandRead = saved;
+  }
+  // A form that did not end in the read itself (an optional chain, an
+  // awaited load) keeps the ordinary comparison.
+  if (raw === null || raw.type.kind !== "dyn") return null;
+  lowerer.usesNodeIsland = true;
+  const negated =
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsToken;
+  const dynNull: IrExpr = {
+    kind: "dynFrom",
+    value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
+    type: DYN,
+    loc,
+  };
+  const equals = (value: IrExpr, which: "null" | "undefined", not: boolean): IrExpr => ({
+    kind: "dynScalarEq",
+    left: value,
+    right: which === "null" ? dynNull : dynUndefinedExpr(loc),
+    ...(not ? { negated: true as const } : {}),
+    type: BOOL,
+    loc,
+  });
+  if (strict) return equals(raw, unit, negated);
+  // `== null` holds for both units: the read is evaluated once.
+  const held = lowerer.declareHiddenLocal("%islandUnit", DYN);
+  const ref = varRef(held.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: held.id, init: raw, loc }],
+    result: {
+      kind: "logical",
+      op: negated ? "&&" : "||",
+      left: equals(ref, "null", negated),
+      right: equals(ref, "undefined", negated),
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
+}
+
 /** An island value (dyn) at the declared type of `node`: island handles
  * stay dyn (FOREIGN), primitives and strings meet their declared type
  * through the checked conversion. */
 function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
+  if (node === rawIslandRead) return raw;
   const tsType = lowerer.typeOf(node);
   const islands = lowerer.nodeIslands!;
   if (isForeignType(islands, tsType, lowerer.checker)) return raw;
@@ -1189,20 +1285,35 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
     return freshLiteral(lowerer, inner);
   }
+  // The value as the dyn box the runtime crosses. A representation the
+  // conversion cannot box (a union with a generator arm, an `Iterable<T>`
+  // the program holds as one of several native kinds) has no island export:
+  // that is the named refusal, where the unboxed value reached the IR
+  // validator as an internal error.
+  const boxed = (lowered: IrExpr): IrExpr => {
+    const value = lowerer.coerceToExpected(lowered, DYN);
+    if (value.type.kind !== "dyn")
+      boundaryFail(
+        lowerer,
+        `a '${lowerer.checker.typeToString(lowerer.typeOf(node))}' value (its native representation has no island export)`,
+        node,
+      );
+    return value;
+  };
   if (
     (ts.isIdentifier(inner) && islandHandleBinding(lowerer, inner)) ||
     isIslandHandleExpr(lowerer, inner)
   )
-    return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+    return boxed(lowerer.lowerExpr(node));
   const crossing = crossingOf(islands, lowerer.typeOf(node), lowerer.checker);
   switch (crossing) {
     case "copy":
     case "handle":
-      return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+      return boxed(lowerer.lowerExpr(node));
     case "dyn":
       // NI-5: the runtime exports dyn objects by reference and copies only
       // primitives, strings and (for now) arrays.
-      return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+      return boxed(lowerer.lowerExpr(node));
     case "refused": {
       const type = lowerer.typeOf(node);
       // A type parameter the instance binds to dyn (a generic function
@@ -1212,10 +1323,10 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
         (type.flags & ts.TypeFlags.TypeParameter) !== 0 &&
         lowerer.typeParamResolver(type)?.kind === "dyn"
       )
-        return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
+        return boxed(lowerer.lowerExpr(node));
       const crossByReference = (): IrExpr => {
         const lowered = lowerer.lowerExpr(node);
-        const value = lowerer.coerceToExpected(lowered, DYN);
+        const value = boxed(lowered);
         return lowered.type.kind === "object"
           ? withClassMethods(lowerer, value, lowered.type.className, node)
           : value;
@@ -1901,12 +2012,20 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (ts.isBinaryExpression(expr)) {
     const op = expr.operatorToken.kind;
     if (op === ts.SyntaxKind.InstanceOfKeyword) {
-      const global = intrinsicErrorClassOf(lowerer, expr.right);
+      const errorClass = intrinsicErrorClassOf(lowerer, expr.right);
+      const global = errorClass ?? standardClassOf(lowerer, expr.right);
       if (global !== null && !lowerer.islandInstanceofHandled.has(expr)) {
         const name: IrExpr = { kind: "strLit", value: global, type: STRING, loc };
         // An island value (an instance of a native subclass of an island
-        // error class, say) answers as in Node.
-        if (isForeignExpr(lowerer, expr.left)) {
+        // error class, say) answers as in Node. A name takes the pair of
+        // tests below instead: a value typed by the island's declarations
+        // may be the native error an island error became at the boundary
+        // (a callback's parameter), which only the native test knows.
+        if (
+          errorClass !== null &&
+          isForeignExpr(lowerer, expr.left) &&
+          !ts.isIdentifier(stripTypeWrappers(expr.left))
+        ) {
           lowerer.usesNodeIsland = true;
           const value = lowerer.coerceToExpected(lowerer.lowerExpr(expr.left), DYN);
           return {
@@ -1954,6 +2073,8 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       const ctor = lowerer.lowerExpr(expr.right);
       return { kind: "libCall", fn: "nodeIsland.instanceof", args: [value, ctor], type: BOOL, loc };
     }
+    const unitTest = islandUnitComparison(lowerer, expr, loc);
+    if (unitTest !== null) return unitTest;
     if (isIslandIdentityTest(lowerer, expr)) {
       lowerer.usesNodeIsland = true;
       return {
@@ -2647,6 +2768,17 @@ function intrinsicErrorClassOf(lowerer: Lowerer, node: ts.Expression): string | 
   const decl = lowerer.checker.getSymbolAtLocation(inner)?.declarations[0];
   if (decl === undefined || !ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
   return inner.text;
+}
+
+/** The name of the standard library class an expression names (`Array`,
+ * `Map`, `Date`, …: the global, not a shadowing binding or an import), or
+ * null. An island's instance of one is an island object, which only Node
+ * can test against its own global of that name. */
+function standardClassOf(lowerer: Lowerer, node: ts.Expression): string | null {
+  const inner = stripTypeWrappers(node);
+  if (!ts.isIdentifier(inner) || !lowerer.isStdlibGlobal(inner, inner.text)) return null;
+  const type = lowerer.checker.getTypeAtLocation(inner);
+  return lowerer.checker.getConstructSignatures(type).length > 0 ? inner.text : null;
 }
 
 /** `e.message` on a catch binding narrowed to a native type (`if (e

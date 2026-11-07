@@ -6188,6 +6188,7 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
+        e.fn === "readable.encodingName" ||
         e.fn === "stream.objectMode" ||
         e.fn === "stream.decodeStrings" ||
         e.fn === "stream.optionValues" ||

@@ -4916,6 +4916,8 @@ function buildLibFnSignatures() {
     "sc.text": { argTypes: [null], result: { kind: "promise", inner: STRING } },
     "sc.json": { argTypes: [null], result: { kind: "promise", inner: DYN } },
     "sc.buffer": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
+    /** bytes(stream): sc.buffer's bytes as a plain Uint8Array. */
+    "sc.bytes": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
     "sc.arrayBuffer": { argTypes: [null], result: { kind: "promise", inner: DYN } },
     "readable.newDyn": { argTypes: [DYN], result: VOID },
     "writable.newDyn": { argTypes: [DYN], result: VOID },
@@ -4962,6 +4964,10 @@ function buildLibFnSignatures() {
      * Buffer.from(chunk, enc)); both carry the CANONICAL literal. */
     "readable.pushStrEnc": { argTypes: [null, STRING, STRING], result: BOOL },
     "readable.pushEncoding": { argTypes: [null, STRING], result: VOID },
+    /** The `encoding` option as the program spelled it, when that is not
+     * the canonical name: what readableEncoding answers. Answers the
+     * receiver (+1, the chaining shape). */
+    "readable.encodingName": { argTypes: [null, STRING], result: VOID },
     /** The objectMode option's sides (readable, writable), applied right
      * after construction; answers the receiver (+1, the chaining shape). */
     "stream.objectMode": { argTypes: [null, BOOL, BOOL], result: VOID },
@@ -5095,6 +5101,20 @@ function buildLibFnSignatures() {
     "stream.iteratorClose": { argTypes: [null], result: VOID },
     "stream.prop": { argTypes: [null, STRING], result: VOID },
     "stream.errored": { argTypes: [null], result: VOID },
+    /** stream.isDestroyed, isErrored, isDisturbed, isReadable, isWritable
+     * (the selector, 0 to 4): a boolean, or null where Node answers null.
+     * stream.is takes a stream; stream.isDyn any checked-dynamic value and
+     * throws SC2020 for one that is neither a native stream nor a
+     * primitive. */
+    "stream.is": { argTypes: [null, F64], result: DYN },
+    "stream.isDyn": { argTypes: [DYN, F64], result: DYN },
+    /** readableAborted, readableDidRead, readableEncoding, writableAborted
+     * (the selector, 0 to 3) by the stream's class: undefined where Node's
+     * prototype does not define the getter. */
+    "stream.stateDyn": { argTypes: [null, F64], result: DYN },
+    /** stream[Symbol.asyncDispose](): a pending void promise the stream's
+     * terminal watcher settles. */
+    "stream.asyncDispose": { argTypes: [null], result: { kind: "promise", inner: VOID } },
     // node:assert: pass/negated/deep/hasMsg are frontend-computed bools; the
     // message slot always carries a string ("" when hasMsg is false).
     /** node:assert (scr_assert.c; assert.match in scr_regex.c — every call

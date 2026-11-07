@@ -30,7 +30,7 @@ Runtime pack and linker -> executable
 3. **LLVM backend:** `--emit=llvm` writes textual LLVM IR. The matching LLVM 22 helper generates assembly or objects on supported macOS, Linux, and Windows hosts, including output targeting WASI. Executable and library builds use this backend. Large executables, native and WASI alike, are divided into partitions that are optimized and compiled in parallel; see [Build parallelism](#build-parallelism).
 4. **Linking:** Runtime packs contain the precompiled C runtime and vendored libraries. A hashed manifest selects the artifacts the program needs for its features, optimization mode, and (for libraries) state model. The target linker and SDK or sysroot produce the executable. Sanitizer builds use an instrumented C runtime.
 
-`comptime` calls run during the frontend stage in an isolated evaluator inside the compiler, based on QuickJS. Their results are embedded in the program as constants.
+`comptime` calls run during the frontend stage in a separate evaluator process based on QuickJS. A callback sees the ECMAScript built-ins and no object of the compiler or the host, and each call has a time limit and a memory limit. Their results are embedded in the program as constants. See [build-time evaluation](/docs/limitations#build-time-evaluation) for the rules and limits.
 
 ## Build parallelism
 

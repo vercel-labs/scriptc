@@ -63,7 +63,7 @@ import {
 import { clearFenceEvalCaches } from "../library/fence-eval.js";
 import { archiveNativeLibrary, localizeNativeLibrary, linkNativeWasmLibrary } from "./library.js";
 import type { NativeToolchain } from "./toolchain.js";
-import { evaluateNativeComptime } from "./comptime.js";
+import { createComptimeEvaluator } from "../frontend/comptime.js";
 import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
   nativeProfileKey,
@@ -181,16 +181,23 @@ export class NativeCompiler {
       toolchain.target.llvmTriple,
     );
     const evaluator = toolchain.comptimeExecutable;
+    const evaluateComptime =
+      evaluator === undefined
+        ? undefined
+        : createComptimeEvaluator(toolchain.ts7Executable, () => {
+            if (!existsSync(evaluator))
+              throw new Error(
+                `the compile-time evaluator ${evaluator} is missing; reinstall scriptc`,
+              );
+            return evaluator;
+          });
     this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
         entry,
         toolchain.ts7Executable,
         npmStatic,
         externalTypes,
-        evaluator === undefined
-          ? undefined
-          : (source, timeout) =>
-              evaluateNativeComptime(source, timeout, toolchain.ts7Executable, evaluator),
+        evaluateComptime,
         libraryNpmStatic,
         options,
       );

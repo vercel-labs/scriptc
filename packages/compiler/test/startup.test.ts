@@ -57,13 +57,6 @@ test("ordinary compilation does not initialize the legacy parser", () => {
 
 test.each([
   [
-    "compile-time evaluation",
-    "frontend/comptime-node.ts",
-    `
-    assert.equal(api.evaluateNodeComptime("(): number => 21 * 2", 1000), 42);
-  `,
-  ],
-  [
     "semantic source comparison",
     "library/semantic-source.ts",
     `

@@ -109,12 +109,12 @@ declare function clearTimeout(handle?: Timeout | number | null | undefined): voi
 
 /* Compile-time evaluation. The callback must be an inline arrow/function
  * expression with NO references to outer bindings (it is extracted
- * source-textually and executed in an isolated node:vm context inside the
- * COMPILER's Node process); the returned value is baked into the binary as a
- * literal — numbers (finite), strings, booleans, arrays, and records,
- * nested. What type-checks runs with real JavaScript semantics, so the
- * baked result is exactly what Node would compute at runtime (the
- * differential harness verifies this with a `comptime = (f) => f()` shim). */
+ * source-textually and executed in the compiler's evaluator, a separate
+ * process that holds no host object); the returned value is baked into the
+ * binary as a literal — numbers (finite), strings, booleans, arrays, and
+ * records, nested. What evaluates gives the value Node would compute at
+ * runtime, and what cannot is refused by name (the differential harness
+ * verifies this with a `comptime = (f) => f()` shim). */
 declare function comptime<T>(compute: () => T): T;
 
 /* The JavaScript WebAssembly API, as the DOM library declares it (scriptc's

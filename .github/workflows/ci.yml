@@ -1247,9 +1247,10 @@ jobs:
           echo "LLVM_DIR=$llvm\lib\cmake\llvm" >> $env:GITHUB_ENV
           echo "$llvm\bin" >> $env:GITHUB_PATH
       - run: pnpm install --frozen-lockfile
+      # Zig builds the helper package's comptime evaluator and the runtime pack.
+      - uses: ./.github/actions/zig
       - name: Build Windows helper
         run: pnpm --filter @scriptc/llvm-win32-x64-msvc build:native
-      - uses: ./.github/actions/zig
       - name: Build Windows runtime pack
         run: pnpm --filter @scriptc/runtime-win32-x64-msvc build:native
       - run: pnpm build

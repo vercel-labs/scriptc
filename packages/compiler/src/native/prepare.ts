@@ -1,7 +1,7 @@
 import { targetCpuField, targetCpuTargetRefusal } from "../backend/target-cpu.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
@@ -301,10 +301,12 @@ function implementationIdentity(toolchain: NativeToolchain): string {
     JSON.stringify({
       compiler: nativeFileIdentity(process.execPath),
       checker: nativeFileIdentity(toolchain.ts7Executable),
+      // A helper package without the evaluator fails a `comptime` call, not
+      // every build.
       evaluator:
-        toolchain.comptimeExecutable === undefined
-          ? null
-          : nativeFileIdentity(toolchain.comptimeExecutable),
+        toolchain.comptimeExecutable !== undefined && existsSync(toolchain.comptimeExecutable)
+          ? nativeFileIdentity(toolchain.comptimeExecutable)
+          : null,
       version: toolchain.compilerVersion,
     }),
   );

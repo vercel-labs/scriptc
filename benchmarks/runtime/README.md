@@ -8,6 +8,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `ast-interp` | cpu | tokenizer, recursive-descent parser, class dispatch |
 | `async-pipeline` | cpu | `async`/`await`, `Promise.all` fan-out |
 | `atomics-contended` | cpu | four worker threads updating `SharedArrayBuffer` counters with `Atomics`: one shared counter, one counter per worker, a `compareExchange` loop, and `Atomics.wait`/`notify` handoffs |
+| `catalog-tables` | cpu | keyed tables made from keyed tables: `Object.values` over dictionaries of `object` from parsed JSON, flattened with `flatMap`, filtered by a field and keyed again with `Object.fromEntries` |
 | `channel-messages` | cpu | 200,000 MessageChannel messages in one thread, half numbers and half small objects, all posted before the port delivers any |
 | `class-unions` | cpu | class instances in unions with their base class (`Shape \| Circle \| Rect`, `Account \| Savings`): an array scanned through overridden methods and methods that return `this`, a `Map` of accounts, and `instanceof` tests for subclass members |
 | `csv-numbers` | cpu | `split`, `Number`, `parseInt`, `toFixed` |

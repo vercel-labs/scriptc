@@ -62,6 +62,7 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { LoweringFacts } from "./lowering-facts.js";
+import { collectUnionClasses, type UnionClassState } from "../union-classes.js";
 import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -184,6 +185,7 @@ import {
   widthNarrowHelper,
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
+import { refuseClassRecordCopy } from "./coercions/class-records.js";
 import {
   boxBuiltinValuesChecked,
   lowerUtilTypeValue,
@@ -5989,6 +5991,27 @@ export class Lowerer {
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
     const jsDynamic = this.facts.jsDynamicDeclarations();
     if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
+    // Record types that share a discriminant literal in a declared union
+    // are one record (union-classes.ts). Each pass maps a class once, the
+    // first time one of its types is mapped.
+    const unionClasses =
+      this.moduleOrder.length === 0
+        ? collectUnionClasses([entry], this.checker)
+        : this.facts.unionClasses();
+    if (unionClasses.size > 0) {
+      const states = new Map<readonly ts.Type[], UnionClassState>();
+      this.typeCtx.unionClassRecords = new Map();
+      this.typeCtx.unionClassOf = (type) => {
+        const members = unionClasses.get(type);
+        if (members === undefined) return undefined;
+        let state = states.get(members);
+        if (state === undefined) {
+          state = { members, state: "unmapped", record: null, owning: null, reentered: false };
+          states.set(members, state);
+        }
+        return state;
+      };
+    }
     this.registerBuiltinErrorClasses();
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
@@ -15143,6 +15166,7 @@ export class Lowerer {
 
   private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    refuseClassRecordCopy(this, node, expr.type, expected);
     // A union into one of its record arms extracts that arm, trusting the
     // checker to have excluded the others. A built-in object arm the checker
     // still types the site with (`c ?? new Map()` into an interface the
@@ -15291,9 +15315,23 @@ export class Lowerer {
     // node's CHECKER type proves those arms away, they trap instead — the
     // sub-union narrowing bridge (narrowedRetagHelper).
     if (e.type.kind === "union" && expected.kind === "union" && !typeEquals(e.type, expected)) {
+      // An assertion is erased, so the value is its operand's: the arms the
+      // checker proved away at the operand (`event.type === "end" ? … :
+      // (event as Session)`) are as absent under the assertion as without it.
+      let operand: ts.Node = node;
+      while (
+        ts.isParenthesizedExpression(operand) ||
+        ts.isAsExpression(operand) ||
+        ts.isTypeAssertion(operand) ||
+        ts.isSatisfiesExpression(operand)
+      )
+        operand = operand.expression;
       const helper =
         this.narrowedRetagHelper(node, e.type.unionId, expected.unionId, e.loc) ??
-        uninhabitedArmRetagHelper(this, node, e.type.unionId, expected.unionId, e.loc);
+        uninhabitedArmRetagHelper(this, node, e.type.unionId, expected.unionId, e.loc) ??
+        (operand === node
+          ? null
+          : this.narrowedRetagHelper(operand, e.type.unionId, expected.unionId, e.loc));
       if (helper) {
         e = { kind: "call", callee: helper, args: [e], type: expected, loc: e.loc };
       }

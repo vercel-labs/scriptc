@@ -56,6 +56,7 @@ import {
 import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
+import { classMemberLayout, classRecord, type UnionClassState } from "./union-classes.js";
 
 import { isJsSourceFile, isNodeTypesPath } from "./program.js";
 import { isProvenanceSourceFile } from "./provenance-registry.js";
@@ -1501,6 +1502,14 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * once per Lowerer and threaded through the recursion — adding a hook means
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
+  /** The class of record types a type belongs to (union-classes.ts): the
+   * constituents of a declared union that share a discriminant literal,
+   * which map to one record. Absent in programs without one: every mapping
+   * is unchanged. */
+  unionClassOf?: (type: ts.Type) => UnionClassState | undefined;
+  /** With unionClassOf: each class record that merges two or more layouts,
+   * with the layouts its types have on their own. */
+  unionClassRecords?: Map<string, ReadonlySet<string>>;
   /** Whether the program creates primitive wrapper objects
    * (primitive-wrappers.ts): then the boxed interface types (`String`,
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
@@ -2474,6 +2483,66 @@ const CHILD_WRITER_MEMBERS: ReadonlySet<string> = new Set([
   "removeListener",
 ]);
 
+/** The record of the class `type` belongs to (union-classes.ts), or null
+ * when the class's types keep their own layouts: `type` then maps as it
+ * would without the class. Decided the first time one of the class's types
+ * is mapped, from the layouts its types have on their own, and the same
+ * from then on. A class stays separate when a member is not a closed
+ * record, when two members declare one member name with different types,
+ * when a member's layout contains the class (the record would have to
+ * exist before its own fields), and when a member's layout depends on the
+ * generic bindings it is mapped under. */
+function mapUnionClassRecord(
+  type: ts.Type,
+  unionClass: UnionClassState,
+  ctx: TypeMapperCtx,
+): IrType | null {
+  if (unionClass.state === "merged") return unionClass.record;
+  if (unionClass.state === "separate") return null;
+  if (unionClass.state === "mapping") {
+    if (unionClass.owning === type) unionClass.owning = null;
+    else unionClass.reentered = true;
+    return null;
+  }
+  unionClass.state = "mapping";
+  const sensitivityAtEntry = contextResolutions;
+  const layouts: IrRecordShape[] = [];
+  let closed = true;
+  for (const member of unionClass.members) {
+    unionClass.owning = member;
+    const own = mapType(member, ctx);
+    unionClass.owning = null;
+    const shape = own?.kind === "record" ? ctx.shapes.get(own.shapeId) : undefined;
+    if (!classMemberLayout(shape) || ctx.shapes.recursivePending(member)) {
+      closed = false;
+      break;
+    }
+    if (!layouts.includes(shape)) layouts.push(shape);
+  }
+  unionClass.state = "separate";
+  if (
+    !closed ||
+    unionClass.reentered ||
+    contextResolutions !== sensitivityAtEntry ||
+    ctx.erasingSignature !== undefined ||
+    ctx.lenient === true
+  )
+    return null;
+  const shapeId =
+    layouts.length === 1
+      ? layouts[0]!.id
+      : classRecord(layouts, {
+          withUndefined: (field) => withUndefinedArm(field, ctx.unions),
+          internRecord: (fields, order) => ctx.shapes.intern(fields, false, undefined, order),
+        });
+  if (shapeId === null) return null;
+  if (layouts.length > 1)
+    ctx.unionClassRecords?.set(shapeId, new Set(layouts.map((layout) => layout.id)));
+  unionClass.record = { kind: "record", shapeId };
+  unionClass.state = "merged";
+  return unionClass.record;
+}
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
@@ -2484,6 +2553,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     ts.symbolName(symbol) === "globalThis" &&
     symbol.declarations.length === 0;
   if (isIntrinsicGlobal(intrinsic)) return DYN;
+  // A constituent of a class of record types is its class's record.
+  const unionClass = ctx.unionClassOf?.(type);
+  if (unionClass !== undefined) {
+    const record = mapUnionClassRecord(type, unionClass, ctx);
+    if (record !== null) return record;
+  }
   // `typeof globalThis & { key?: T }` (the global-singleton spelling) is the
   // same global object with declared extra members.
   if (

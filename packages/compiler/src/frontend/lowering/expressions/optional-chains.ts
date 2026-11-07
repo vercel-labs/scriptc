@@ -1,4 +1,5 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { memberCallHolder, withMemberCallReceiver } from "../member-call-receivers.js";
 import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
 import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
@@ -209,10 +210,27 @@ function alwaysDefinedGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
   return name !== null && SNAPSHOT_GLOBALS.has(name);
 }
 
+/** The receiver an optional call of a member (`x.f?.()`) passes, while that
+ * call lowers (member-call-receivers.ts). */
+const optionalCallReceivers = new Map<ts.CallExpression, IrExpr | null>();
+
 export function lowerOptionalChain(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): IrExpr {
+  // `x.f?.()`: the call passes `x` as its receiver, as `x.f()` does.
+  if (ts.isCallExpression(expr) && expr.questionDotToken && !optionalCallReceivers.has(expr)) {
+    const holder = memberCallHolder(lowerer, expr);
+    if (holder !== null)
+      return withMemberCallReceiver(lowerer, expr, holder, (receiver) => {
+        optionalCallReceivers.set(expr, receiver ?? null);
+        try {
+          return lowerOptionalChain(lowerer, expr);
+        } finally {
+          optionalCallReceivers.delete(expr);
+        }
+      });
+  }
   const loc = locOf(expr);
   // The node CARRYING the ?. token and the receiver expression it guards.
   let dotNode: ts.Node;
@@ -547,9 +565,11 @@ export function lowerOptionalChain(
     // effect-free surplus argument is ignored. The completion runs INSIDE
     // the guard, so a nullish callee still evaluates no argument.
     const completed = completeFuncValueArgs(lowerer, expr, narrowed, loc);
+    const supplied = optionalCallReceivers.get(expr);
     const body: IrExpr = {
       kind: "callValue",
       callee: recvRef,
+      ...(supplied ? { receiver: supplied } : {}),
       args: completed,
       type: narrowed.ret,
       loc,

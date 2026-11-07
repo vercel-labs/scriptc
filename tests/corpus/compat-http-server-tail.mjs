@@ -55,7 +55,7 @@ await new Promise((resolve) => {
           server.closeAllConnections();
           server.close(() => {
             console.log("closed");
-            resolve();
+            resolve(undefined);
           });
         });
       },

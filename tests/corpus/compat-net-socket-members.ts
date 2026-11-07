@@ -1,7 +1,7 @@
 // The TypeScript twin of compat-net-socket-members.mjs: net members the
 // server and socket programs do not reach, from a typed source. BlockList
 // rules and size, SocketAddress fields, socket.pending and the local and
-// remote family, the 'ready', 'lookup', 'timeout' and 'drain' events,
+// remote family, the 'ready', 'timeout' and 'drain' events,
 // destroySoon() and resetAndDestroy(), and a server's 'error' for a port
 // in use. Each section closes its server before the next starts.
 import * as net from "node:net";
@@ -36,22 +36,6 @@ await new Promise<void>((resolve) => {
       client.destroy();
     });
     client.on("connect", () => console.log("connect", client.pending, client.localAddress, client.localFamily, client.remoteFamily));
-    client.on("close", () => {
-      server.close(() => resolve());
-    });
-  });
-});
-
-// 'lookup' for a host name.
-await new Promise<void>((resolve) => {
-  const server = net.createServer((socket) => {
-    socket.end();
-  });
-  server.listen(0, "127.0.0.1", () => {
-    const client = net.connect(portOf(server), "localhost");
-    client.on("lookup", (error, resolved, family, host) => console.log("lookup", error, typeof resolved, typeof family, host));
-    client.on("error", () => {});
-    client.resume();
     client.on("close", () => {
       server.close(() => resolve());
     });

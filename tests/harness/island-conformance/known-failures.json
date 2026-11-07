@@ -1,4 +1,10 @@
 {
+  "corpus/5227-url-legacy-dependency": {
+    "island:legacy-links": {
+      "category": "build",
+      "signature": "SC8010"
+    }
+  },
   "corpus/6120-type-only-import-graph": {
     "island:types-only-pkg": {
       "category": "build",
@@ -19,14 +25,8 @@
   },
   "corpus/6331-jose-root-entry": {
     "island:jose": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Unhandled promise rejection: Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
-  "corpus/6410-json-mixed-scalar-tables": {
-    "island:range-map": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
+      "category": "stdout",
+      "signature": "valid TypeError scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
     }
   },
   "corpus/6413-sdk-declared-data-class": {
@@ -39,24 +39,6 @@
     "island:promise-mixin": {
       "category": "exit",
       "signature": "exit 1, Node 0: Unhandled promise rejection: TypeError: expected string at $[0], got boolean"
-    }
-  },
-  "corpus/6592-promise-armed-method-values": {
-    "island:status-schema": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Unhandled promise rejection: Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
-  "corpus/7014-js-never-array-literal-fields": {
-    "island:mini": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
-  "corpus/7037-js-var-open-writes": {
-    "island:scalar-marks": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected object at $, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, "
     }
   },
   "corpus/7132-jose-pbes2": {
@@ -133,12 +115,6 @@
     "island:graceful-fs": {
       "category": "build",
       "signature": "SC8006"
-    }
-  },
-  "corpus/npm-record-union-returns": {
-    "island:rpc-replies": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Unhandled promise rejection: Error: JSON.stringify of a runtime handle is not supported yet"
     }
   },
   "corpus/readable-stream-3": {
@@ -226,6 +202,12 @@
       "signature": "exit 1, Node 0: Uncaught TypeError: endsWith is not a function"
     }
   },
+  "npm/hidden-key-boundary": {
+    "island:kindkit": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught Error: for-in over this checked-dynamic kind is not supported yet"
+    }
+  },
   "npm/hono-node-server": {
     "island:@hono/node-server": {
       "category": "build",
@@ -240,10 +222,6 @@
     "island:hono": {
       "category": "build",
       "signature": "SC0001"
-    },
-    "island:zod": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: TypeError: expected object at $, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, or copy i"
     }
   },
   "npm/hono-zod-validator": {
@@ -305,13 +283,13 @@
   "npm/js-own-tostring": {
     "island:nsutil": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
+      "signature": "exit 1, Node 0: Uncaught TypeError: Reflect.get called on non-object"
     }
   },
   "npm/jsval-into-dyn": {
     "island:plugstub": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
+      "signature": "exit 1, Node 0: Uncaught Error: Own-property checks on this checked-dynamic kind are not supported yet"
     }
   },
   "npm/jsval-iterate": {
@@ -333,22 +311,10 @@
       "unstable": true
     }
   },
-  "npm/node24-text-encoding": {
-    "island:node24-text-encoding-fixture": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
   "npm/node24-timers-unref": {
     "island:node24-promise-timers-fixture": {
       "category": "stdout",
       "signature": "unreferenced timer fired"
-    }
-  },
-  "npm/shape-overlay-alias": {
-    "island:shape-alias": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
     }
   },
   "npm/top-level-await-pending-exit-listener": {
@@ -363,46 +329,10 @@
       "signature": "exit 1, Node 0: Uncaught TypeError: expected string at $, got undefined"
     }
   },
-  "npm/type-patch-dts": {
-    "island:profilekit": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
-  "npm/type-patch-files": {
-    "island:eventlog": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
-  "npm/type-patch-types-twin": {
-    "island:tallyjs": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
-  "npm/typed-callbacks": {
-    "island:typedcb": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: TypeError: expected object at $[0], got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, or cop"
-    }
-  },
   "npm/types-boundary": {
     "island:rowparse": {
       "category": "build",
       "signature": "SC1090"
-    }
-  },
-  "npm/types-keyed-construction": {
-    "island:profilekit": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
-  "npm/types-undeclared-quoted-key": {
-    "island:hostilekit": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
     }
   },
   "npm/undici5": {
@@ -432,7 +362,7 @@
   "npm/zod3": {
     "island:zod": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
     }
   },
   "npm/zod3-adoption": {
@@ -447,12 +377,6 @@
       "signature": "SC1090"
     }
   },
-  "npm/zod3-infer": {
-    "island:zod": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected array at $.tags, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for "
-    }
-  },
   "npm/zod4-boundary": {
     "island:zod": {
       "category": "build",
@@ -461,8 +385,8 @@
   },
   "npm/zod4-record": {
     "island:zod": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
+      "category": "stdout",
+      "signature": "class-instance ok {\"x\":1}"
     }
   },
   "packages/commander": {
@@ -482,15 +406,6 @@
     "island:date-fns": {
       "category": "exit",
       "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
-    }
-  },
-  "packages/lodash": {
-    "default": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: TypeError: expected array at $[0], got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, or copy",
-      "autoIslands": [
-        "lodash"
-      ]
     }
   },
   "packages/process-argv": {
@@ -513,15 +428,6 @@
     "island:process-reader": {
       "category": "exit",
       "signature": "exit 4, Node 5: undefined 3"
-    }
-  },
-  "packages/yaml": {
-    "default": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected object at $, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, ",
-      "autoIslands": [
-        "yaml"
-      ]
     }
   }
 }

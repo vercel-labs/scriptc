@@ -49,6 +49,7 @@ const features = {
   stdioExtended: false,
   streamWriteErrors: false,
   stdioWriteSlot: false,
+  stdioObject: false,
   nodeIsland: false,
   brotli: false,
   zstd: false,

@@ -20,6 +20,18 @@ const timers = require("node:timers");
 
 const nativeHost = globalThis.__scriptcNodeIslandHost;
 
+// The process state the program already has (scr_node_island.c prefixes
+// this script with it): process.argv is the program's own, so island code
+// that parses the command line reads the arguments the program was started
+// with, and a Node that starts during the exit sequence is exiting too
+// (process.nextTick drops its callbacks, as it does in an 'exit' listener).
+const programProcess = globalThis.__scriptcNodeIslandProcess;
+delete globalThis.__scriptcNodeIslandProcess;
+if (programProcess !== undefined) {
+  process.argv = programProcess.argv;
+  if (programProcess.exiting) process._exiting = true;
+}
+
 // The program's island module tree (scr_node_island.c prefixes this script
 // with its root, then the bridge removes the global): modules resolve only
 // to files inside it, never to a file elsewhere on the machine.
@@ -592,6 +604,75 @@ const islandHelpers = {
   promisify(fn) {
     return require("node:util").promisify(fn);
   },
+  // ── process events: one registry ──────────────────────────────────────
+  // Once Node is loaded, `process` is the registry of the events Node raises
+  // itself (uncaughtException and its monitor, unhandledRejection,
+  // rejectionHandled, warning): the program's native listeners are
+  // registered here as the functions they are, and the runtime raises its
+  // own errors, rejections and warnings through the entries below
+  // (scr_node_island_events.c), so one list orders the listeners of both
+  // sides and Node's own rules decide what each event does.
+  processListen(mode, event, listener) {
+    if (mode === 0) process.on(event, listener);
+    else if (mode === 1) process.once(event, listener);
+    else if (mode === 2) process.prependListener(event, listener);
+    else if (mode === 4) process.prependOnceListener(event, listener);
+    else process.removeListener(event, listener);
+  },
+  // An error native code let escape, as Node handles one of its own: the
+  // monitors, then the capture callback or the listeners. false: nobody
+  // handled it and the runtime reports it; a throw is the listener's own
+  // error, which ends the process.
+  processUncaught(error, fromPromise) {
+    const handled = process._fatalException(error, fromPromise) !== false;
+    if (handled && jobs > 0) handledInJob = true;
+    return handled;
+  },
+  // A rejected native promise nobody handles: crossing gave it its V8
+  // promise, which rejects without a handler, and Node's own tracking does
+  // the rest (unhandledRejection, the --unhandled-rejections mode).
+  processRejected(_promise) {},
+  // Native code attached a handler to a native promise V8 tracks: its V8
+  // promise is handled too (rejectionHandled, when Node already reported it).
+  processHandled(promise) {
+    Promise.prototype.then.call(promise, undefined, () => {});
+  },
+  // A warning native code emitted, as process.emitWarning's own tick emits
+  // it: Node's listener prints it, then the program's listeners run. The
+  // V8 error a native warning crosses as has its name, message and stack;
+  // its code and detail, which Node's report prints, come beside it. While
+  // native code has process.noDeprecation set, Node's report reads it as set
+  // for this warning, and finds its own value again afterwards.
+  processWarning(warning, noDeprecation, code, detail) {
+    if (warning !== null && typeof warning === "object") {
+      if (typeof code === "string" && warning.code === undefined) warning.code = code;
+      if (typeof detail === "string" && warning.detail === undefined) warning.detail = detail;
+    }
+    if (!noDeprecation || process.noDeprecation) {
+      process.emit("warning", warning);
+      return;
+    }
+    const own = Object.getOwnPropertyDescriptor(process, "noDeprecation");
+    process.noDeprecation = true;
+    try {
+      process.emit("warning", warning);
+    } finally {
+      if (own === undefined) delete process.noDeprecation;
+      else Object.defineProperty(process, "noDeprecation", own);
+    }
+  },
+  // process.exitCode is Node's property once Node is loaded: the runtime
+  // writes it here and reads it back. An unset code (undefined or null) is
+  // null, which is not 0.
+  processExitCode(set, code) {
+    if (set) process.exitCode = code;
+    const current = process.exitCode;
+    return current === undefined || current === null ? null : Number(current);
+  },
+  // The V8 error a native error crosses as (scr_ni_error_link).
+  same(value) {
+    return value;
+  },
 };
 
 // Island imports of modules the program shares resolve to their native
@@ -634,17 +715,48 @@ const JOB_IMMEDIATE = 4;
 const handles = new Map();
 let nextHandle = 1;
 
+// A runtime job that let an error escape which the uncaughtException
+// listeners then handled (islandHelpers.processUncaught, called by the
+// runtime before `run` returns) ends as a JavaScript callback that threw
+// does: with a throw, so Node's tick, timer and immediate loops go on
+// exactly as after a handled error of their own (the rest of the tick queue
+// waits for the next callback, the next timer of the list runs before the
+// ticks the listener queued). HANDLED is that throw; process._fatalException
+// below answers that it was handled without raising anything.
+const HANDLED = new Error("scriptc: a handled runtime error");
+let jobs = 0;
+let handledInJob = false;
+
+function runJob(kind, token) {
+  jobs++;
+  try {
+    nativeHost.run(kind, token);
+  } finally {
+    jobs--;
+  }
+  if (handledInJob) {
+    handledInJob = false;
+    throw HANDLED;
+  }
+}
+
+const nodeFatalException = process._fatalException;
+process._fatalException = function (error) {
+  if (error === HANDLED) return true;
+  return Reflect.apply(nodeFatalException, this, arguments);
+};
+
 function onTick(token) {
-  nativeHost.run(JOB_TICK, token);
+  runJob(JOB_TICK, token);
 }
 
 function onTimer(token) {
-  nativeHost.run(JOB_TIMER, token);
+  runJob(JOB_TIMER, token);
 }
 
 function onImmediate(handle, token) {
   handles.delete(handle);
-  nativeHost.run(JOB_IMMEDIATE, token);
+  runJob(JOB_IMMEDIATE, token);
 }
 
 function setTimer(delay, repeat, ref, token) {
@@ -719,6 +831,17 @@ function nextTick(token) {
 
 const EVENT_SIGNAL = 1;
 const EVENT_EXIT = 2;
+// Not a process event: from a tick of its own, the runtime asks for the
+// rest of the current turn before it decides its unhandled rejections
+// (scr_async.c, scr_hosted_deciding_tick). Node's tick callback, the
+// function Node runs after every callback, runs the tick queue and the
+// microtasks to exhaustion and then decides Node's rejections, so the
+// runtime decides where Node does. A throw from a tick leaves `emit`
+// through MakeCallback as an uncaught exception, so the runtime hears
+// JOB_TURN only when the turn ran to its end.
+const EVENT_TURN = 3;
+const JOB_TURN = 5;
+const runNextTicks = process._tickCallback;
 const signalNames = new Set(Object.keys(osConstants.signals));
 const islandListeners = [];
 let nextListener = 1;
@@ -813,6 +936,15 @@ processMethods.prependListener = function prependListener(event, listener) {
 };
 
 function emit(kind, id, name, arg) {
+  if (kind === EVENT_TURN) {
+    runNextTicks();
+    nativeHost.run(JOB_TURN, 0);
+    return;
+  }
+  // The runtime's exit sequence began (it announces it with listener 0
+  // before the first 'exit' listener of either side): process._exiting is
+  // true from here on, as in Node, so process.nextTick drops its callbacks.
+  if (kind === EVENT_EXIT) process._exiting = true;
   const entry = islandListeners.find((e) => e.id === id);
   if (entry === undefined) return;
   // The registered function: the listener itself, or its once wrapper,

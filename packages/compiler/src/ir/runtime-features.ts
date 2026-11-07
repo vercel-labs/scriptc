@@ -1814,6 +1814,19 @@ const RUNTIME_FEATURE_RULES = {
   stdioWriteSlot: rule({
     fns: ["process.stdioSlot", "process.stdioWriteDyn", "process.stdioWriteStr"],
   }),
+  /** The program holds a process output stream as a value: the
+   * process.stdio lib call, process.stdioSlot for the write method's own
+   * lowering, or a value of the process stream type, which becomes the
+   * stream object when it is boxed (dyn.ts). Those are the only ways to the
+   * stream object, and a replacement of its write method is a store into
+   * that object, so this covers every program that can replace
+   * process.stdout.write or process.stderr.write, whichever spelling, alias
+   * or computed key the replacement uses. Beside
+   * `nodeIsland` it links scr_node_island_stdio.c and the
+   * SCR_NODE_ISLAND_STDIO build of scr_node_island.c, which make the
+   * island's two output streams read and write the program's write slots;
+   * every other program with islands keeps its island units unchanged. */
+  stdioObject: rule({ fns: ["process.stdio", "process.stdioSlot"], types: ["procStream"] }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -2102,6 +2115,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     urlIdna: false,
     stdioExtended: false,
     stdioWriteSlot: false,
+    stdioObject: false,
     streamWriteErrors: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,

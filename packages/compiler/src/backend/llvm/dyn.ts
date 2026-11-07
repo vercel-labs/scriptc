@@ -1330,10 +1330,15 @@ export class LlDyn {
       );
     }
     const key = typeKey({ kind: "record", shapeId: targetId });
-    host.declare(`declare ptr @scr_dyn_record_view(ptr, ptr, ${this.S}, ptr, ${this.S}, ptr)`);
+    // A type whose values may be frozen answers the view a capsule already
+    // has also once its record is frozen (scr_record_view_frozen.c).
+    const fn = host.recordViews!.marked.has(targetId)
+      ? "scr_dyn_record_view_kept"
+      : "scr_dyn_record_view";
+    host.declare(`declare ptr @${fn}(ptr, ptr, ${this.S}, ptr, ${this.S}, ptr)`);
     const view = B.tmp();
     B.line(
-      `${view} = call ptr @scr_dyn_record_view(ptr %d, ptr ${table}, ${this.S} ${sources.length}, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")}, ptr @${mangleRecordNew(targetId)})`,
+      `${view} = call ptr @${fn}(ptr %d, ptr ${table}, ${this.S} ${sources.length}, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")}, ptr @${mangleRecordNew(targetId)})`,
     );
     return view;
   }

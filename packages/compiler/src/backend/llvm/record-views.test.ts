@@ -226,3 +226,199 @@ console.log(v.a);
   expect(views.partial(idOf("a"), idOf("a,b"))).toBe(false);
   expect(views.partialTargets.size).toBe(0);
 });
+
+/** The reasons planRecordViews declines the partial assertions of `source`. */
+async function declinedReasons(source: string): Promise<string[]> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-record-views-"));
+  try {
+    const entry = join(dir, "main.ts"),
+      outPath = join(dir, "main.ir.json");
+    await writeFile(entry, source);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod: IrModule = deserializeModule(await readFile(outPath, "utf8"));
+    const traced = computeTraced(mod).shapes;
+    return planRecordViews(mod, {
+      traced: (id) => traced.has(`record:${id}`),
+      excluded: () => false,
+    }).declinedPartials.map((site) => site.reason);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a partial assertion whose type gets a view is not declined", async () => {
+  expect(
+    await declinedReasons(`
+type Point = { x: number; y: number };
+const p = {} as Point;
+p.x = 1;
+p.y = 2;
+console.log(p.x + p.y);
+`),
+  ).toEqual([]);
+});
+
+test("a partial assertion to a type the program freezes gets a view whose mark the table reads", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-record-views-"));
+  try {
+    const entry = join(dir, "main.ts"),
+      outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+type Point = { x: number; y: number };
+const p = {} as Point;
+p.x = 1;
+p.y = 2;
+const fixed: Point = { x: 0, y: 0 };
+console.log(p.x + p.y, Object.isFrozen(Object.freeze(fixed)));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod: IrModule = deserializeModule(await readFile(outPath, "utf8"));
+    const point = (mod.records ?? []).find(
+      (shape) => shape.fields.map((f) => f.name).join(",") === "x,y",
+    )!;
+    const literal = (mod.records ?? []).find((shape) => shape.fields.length === 0)!;
+    // The asserted type and the literal's own type are freezable together:
+    // the object is frozen through either name.
+    expect(point.freezable).toBe(true);
+    expect(literal.freezable).toBe(true);
+    const views = planRecordViews(mod, { traced: () => false, excluded: () => false });
+    expect(views.declinedPartials).toEqual([]);
+    expect(views.partial(point.id, literal.id)).toBe(true);
+    expect([...views.marked]).toEqual([point.id]);
+    // A marked value asks the record-source table whether it is a view, and
+    // the unit that answers is linked for this program only.
+    const llvm = emitLlvmModule(mod);
+    // (Optimized builds test the mark inline and ask for the slot; this
+    // emission makes the field address one call.)
+    expect(llvm).toMatch(/@scr_record_marked_(slot|field)\(/);
+    expect(llvm).toContain("@scr_record_marked_frozen(");
+    expect(llvm).toContain("@scr_dyn_record_view_kept(");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a view target no value of which is frozen keeps the unmarked test", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-record-views-"));
+  try {
+    const entry = join(dir, "main.ts"),
+      outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+type Point = { x: number; y: number };
+const p = {} as Point;
+p.x = 1;
+p.y = 2;
+console.log(p.x + p.y, Object.isFrozen(p));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod: IrModule = deserializeModule(await readFile(outPath, "utf8"));
+    const views = planRecordViews(mod, { traced: () => false, excluded: () => false });
+    expect(views.partialTargets.size).toBe(1);
+    expect(views.marked.size).toBe(0);
+    expect(emitLlvmModule(mod)).not.toContain("@scr_record_marked_");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a partial literal that holds a function is declined as possibly cyclic", async () => {
+  expect(
+    await declinedReasons(`
+type Handler = { run: () => number; label: string };
+const h = { run: () => 41 } as Handler;
+h.label = "h";
+console.log(h.run(), h.label);
+`),
+  ).toEqual(["cyclic"]);
+});
+
+test("a declined partial assertion whose missing fields all admit undefined is not reported", async () => {
+  // The ordinary checked conversion reads undefined into an untyped field.
+  expect(
+    await declinedReasons(`
+type Loose = { run: () => string; payload: unknown };
+const made = { run: () => "t" } as Loose;
+console.log(made.run());
+`),
+  ).toEqual([]);
+});
+
+test("a program that starts workers keeps its partial views and plans no ordinary view", async () => {
+  // A view belongs to the thread that made it, and a message carries a copy,
+  // so a partial view is sound in a worker program. Ordinary views stay off
+  // there until they are measured.
+  const partial = await partialModule(
+    `
+type Wide = { a: number; b: string };
+type Narrow = { a: number; z: boolean };
+const wide: Wide = { a: 1, b: "x" };
+const o: unknown = wide;
+const v = o as Narrow;
+console.log(v.a);
+`,
+    "a,b",
+    "a,z",
+  );
+  const idOf = (mod: IrModule, fields: string): string =>
+    (mod.records ?? []).find((shape) => shape.fields.map((f) => f.name).join(",") === fields)!.id;
+  const kept = planRecordViews(partial, {
+    traced: () => false,
+    excluded: () => false,
+    workers: true,
+  });
+  expect(kept.partial(idOf(partial, "a,z"), idOf(partial, "a,b"))).toBe(true);
+  expect(kept.declinedPartials).toEqual([]);
+  const full = await partialModule(
+    `
+type Wide = { a: number; b: string };
+type Narrow = { a: number };
+const wide: Wide = { a: 1, b: "x" };
+const o: unknown = wide;
+const v = o as Narrow;
+console.log(v.a);
+`,
+    "a,b",
+    "a",
+  );
+  const options = { traced: () => false, excluded: () => false };
+  expect(planRecordViews(full, options).targets.size).toBe(1);
+  expect(planRecordViews(full, { ...options, workers: true }).targets.size).toBe(0);
+});
+
+test("a type whose values can be published gets no view, with or without workers", async () => {
+  // A published object is read by threads whose record-source table has no
+  // entry for it: it must never be a view.
+  const mod = await partialModule(
+    `
+type Wide = { a: number; b: string };
+type Narrow = { a: number; z: boolean };
+const wide: Wide = { a: 1, b: "x" };
+const o: unknown = wide;
+const v = o as Narrow;
+console.log(v.a);
+`,
+    "a,b",
+    "a,z",
+  );
+  const target = (mod.records ?? []).find(
+    (shape) => shape.fields.map((f) => f.name).join(",") === "a,z",
+  )!.id;
+  for (const workers of [false, true]) {
+    const views = planRecordViews(mod, {
+      traced: () => false,
+      excluded: (id) => id === target,
+      workers,
+    });
+    expect(views.targets.has(target)).toBe(false);
+    expect(views.declinedPartials.map((site) => site.reason)).toEqual(["shared"]);
+  }
+});

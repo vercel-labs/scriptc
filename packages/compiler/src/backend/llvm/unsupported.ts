@@ -15,6 +15,10 @@ export class LlvmUnsupportedError extends Error {
     readonly kind: string,
     loc?: SrcLoc,
     readonly detail?: string,
+    /** What the program can write instead, when the backend knows. */
+    readonly hint?: string,
+    /** Further sites refused for their own `kind`, each reported beside this one. */
+    readonly also: readonly LlvmUnsupportedError[] = [],
   ) {
     super(`the LLVM backend does not support this construct yet (${kind})`);
     this.name = "LlvmUnsupportedError";

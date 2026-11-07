@@ -3,7 +3,7 @@
  *
  *  - every builtin says whether it can throw (MAY_THROW_LIB_FNS or
  *    NEVER_THROW_LIB_FNS); the builtins that predate the rule are listed in
- *    src/ir/builtin-throw-undecided.txt, and that list only shrinks;
+ *    src/ir/builtin-throw-undecided.txt, a snapshot nothing is added to;
  *  - every row of the runtime symbol tables names a builtin;
  *  - every other list of builtins in the compiler's source is typed by
  *    `IrLibFn`, so a name the table does not have fails the build, or is
@@ -25,6 +25,7 @@ import {
   readUndecided,
   throwCensus,
   UNDECIDED_FILE,
+  undecidedDigest,
 } from "../../../scripts/builtin-throw-census.mjs";
 import { LIB_FN_SYMS, MOCK_TIMER_SYMS, PURE_MATH_LIB_FNS } from "../src/backend/llvm/lib-shared.js";
 import { ALWAYS_THROW_LIB_FNS, MAY_THROW_LIB_FNS } from "../src/ir/builtin-effects.js";
@@ -60,10 +61,15 @@ const NEVER_THROW: ReadonlySet<string> = new Set<string>([
   ...PURE_MATH_LIB_FNS,
 ]);
 
-/** The length of the undecided list when it was written (2026-11-07). The
- * list may be shorter than this and never longer; lower the number when you
- * like, never raise it. */
-const UNDECIDED_AT_MOST = 1301;
+/** The digest of the names in src/ir/builtin-throw-undecided.txt: the 1,301
+ * builtins that had no throw decision when the rule was introduced
+ * (2026-11-07). The file is a snapshot. A row in MAY_THROW_LIB_FNS or
+ * NEVER_THROW_LIB_FNS overrides a builtin's line there, so deciding a
+ * builtin, renaming it or deleting it needs no edit to the file, and no
+ * builtin can be added to it. `scripts/builtin-throw-census.mjs --prune`
+ * drops the lines that are decided or deleted and prints the digest to put
+ * here. */
+const UNDECIDED_SNAPSHOT = "448945bb7281e1c811765915c413c7b33d463b2134ba5dda278ad546218cb1be";
 
 const undecided: readonly string[] = readUndecided();
 const throwDecisions = throwCensus({
@@ -85,18 +91,16 @@ test("every builtin says whether it can throw", () => {
   ).toEqual([]);
 });
 
-test("the list of builtins with no throw decision only shrinks", () => {
+test("nothing is added to the builtins with no throw decision", () => {
   expect(
-    undecided.length,
-    `${UNDECIDED_FILE} grew: a builtin goes into MAY_THROW_LIB_FNS or NEVER_THROW_LIB_FNS, never into this list`,
-  ).toBeLessThanOrEqual(UNDECIDED_AT_MOST);
-  expect(
-    throwDecisions.stale,
-    `decided or deleted since, and still in ${UNDECIDED_FILE}: run pnpm exec tsx scripts/builtin-throw-census.mjs --prune`,
-  ).toEqual([]);
-  expect(throwDecisions.unsorted, `${UNDECIDED_FILE} is sorted and names each builtin once`).toBe(
-    false,
-  );
+    undecidedDigest(undecided),
+    [
+      `${UNDECIDED_FILE} was edited. It is a snapshot of the builtins that had no throw decision when the rule was`,
+      "introduced, and a new builtin never goes into it: add the builtin to MAY_THROW_LIB_FNS or NEVER_THROW_LIB_FNS.",
+      "A decided, renamed or deleted builtin needs no edit there either. To drop such lines, run",
+      "pnpm exec tsx scripts/builtin-throw-census.mjs --prune and put the digest it prints in UNDECIDED_SNAPSHOT.",
+    ].join("\n"),
+  ).toBe(UNDECIDED_SNAPSHOT);
 });
 
 test("every runtime symbol row names a builtin", () => {

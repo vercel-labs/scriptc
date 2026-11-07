@@ -325,16 +325,20 @@ export class NarrowingStability {
           const found = this.mayBeStale(value) || this.restoredNothingRead(value) !== null;
           return found || this.selfReferences !== selfReferences;
         };
-        found.push(
-          decl.initializer === undefined
-            ? { at: decl, value: null, kind: "declared", stale: false }
-            : {
-                at: decl,
-                value: decl.initializer,
-                kind: "assigned",
-                stale: stale(decl.initializer),
-              },
-        );
+        // A `var` binding is initialized to `undefined` when the function is
+        // entered, not when its declaration statement runs: a declaration
+        // without a value stores nothing there, and a loop around it does
+        // not reset the binding on later iterations. A block-scoped
+        // declaration does initialize its binding each time it runs.
+        const blockScoped = (list.flags & ts.NodeFlags.BlockScoped) !== 0;
+        if (decl.initializer !== undefined)
+          found.push({
+            at: decl,
+            value: decl.initializer,
+            kind: "assigned",
+            stale: stale(decl.initializer),
+          });
+        else if (blockScoped) found.push({ at: decl, value: null, kind: "declared", stale: false });
         for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(
           ts.symbolName(symbol),
         ) ?? []) {

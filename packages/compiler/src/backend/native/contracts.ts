@@ -259,6 +259,10 @@ export interface CcOptions {
   /** fs.existsSync over a path value that may not be a string: compiles
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** SCR_FN_MEMBER_PROPS: a function's inherited member shadowed by an own
+   * data property (`fn.call = f`; that build of scr_json.c and
+   * scr_dyn_invoke.c). */
+  fnMemberProps?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -524,6 +528,11 @@ export interface LibArchiveOptions {
   /** See CcOptions.mutableBuffers: the archive carries the buffer views
    * registry, scr_js_buffers.c. */
   mutableBuffers?: boolean;
+  /** See CcOptions.fnMemberProps: the archive carries the
+   * SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, so an
+   * exported function that defines one of its own call/apply/bind members
+   * runs the write the way the executable lane does. */
+  fnMemberProps?: boolean;
 }
 
 export interface NativeArtifactDependency {

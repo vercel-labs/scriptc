@@ -546,6 +546,10 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_json.c's function-property write/define/delete paths and
+  // scr_dyn_invoke.c's own call/apply/bind dispatch: the source build must
+  // name the builds runtime-pack-matrix.mjs selects.
+  { define: "SCR_FN_MEMBER_PROPS", when: (opts) => opts.fnMemberProps },
   // scr_child.c's spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
   // entries.
   { define: "SCR_CHILD_CP_OPTIONS", when: (opts) => opts.childOptionExt },

@@ -16,7 +16,7 @@ import {
   privateInMessage,
 } from "../private-brands.js";
 import type { Lowerer } from "../lowerer.js";
-import { isCallableValue } from "../callable-properties.js";
+import { callableBox, isCallableValue } from "../callable-properties.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -2989,6 +2989,16 @@ export function lowerInExpression(
           type: BOOL,
           loc,
         };
+  }
+  // A typed CALLABLE receiver (a function+namespace merge, an expando
+  // function): its own data properties live in the closure's own-property
+  // table, whose presence test is the keyed one the `any` view uses
+  // (callable-properties.ts). The function protocol's inherited names
+  // (length, name, prototype, call, ...) answer through the same runtime
+  // walk.
+  if (recv.type.kind === "func" && isCallableValue(lowerer, expr.right)) {
+    const boxed = callableBox(lowerer, recv);
+    if (boxed !== null) return { kind: "dynHasKey", key, value: boxed, type: BOOL, loc };
   }
   if (recv.type.kind !== "record") {
     // A typed handle in a program that adds properties to handles: own

@@ -86,6 +86,12 @@ export interface EarlyLibraryNativeFeatures {
   /** The buffer views registry (scr_js_buffers.c) and the archive's
    * JavaScript object model build of its bytes and json units. */
   mutableBuffers: boolean;
+  /** A function's own call/apply/bind and the other inherited members a
+   * data property shadows (SCR_FN_MEMBER_PROPS, the scr_json.c and
+   * scr_dyn_invoke.c builds). An exported function that defines one runs it
+   * inside the archive, so the library selects the same build the
+   * executable lane does. */
+  fnMemberProps: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }
@@ -147,6 +153,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "textDecoderLegacy",
   "bigintBytes",
   "mutableBuffers",
+  "fnMemberProps",
 ] as const satisfies readonly (keyof EarlyLibraryNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeatures {

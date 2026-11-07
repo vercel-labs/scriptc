@@ -4549,8 +4549,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "testCtx" };
   }
   // node:test's MockFunctionContext<F> and MockFunctionCall<F>: compiler
-  // records built from F (mock-shapes.ts). Mock<F> then maps as the hybrid
-  // { %call: F, mock } record through mapHybridCallableIntersection.
+  // records built from F (mock-shapes.ts). Mock<F> — `F & { mock }` — maps
+  // through mapCallableIntersection to F's func type, with `mock` a member
+  // of the closure's own-property table.
   if (
     ((psym !== undefined && psymName === "MockFunctionContext") ||
       (psym !== undefined && psymName === "MockFunctionCall")) &&
@@ -5644,14 +5645,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // the plain-func mapping below (historic behavior: the properties drop
   // from the type).
   if (widened.isIntersectionType() && checker.getConstructSignatures(widened).length === 0) {
-    // node:test's `Mock<F>` (`F & { mock: MockFunctionContext<F> }`) keeps
-    // its hybrid `%call` record: the `mock` member is the runner's live
-    // call log, which the mock lowering builds and mutates, not data the
-    // closure's own-property table could carry yet.
-    if (isMockHybridIntersection(widened, ctx)) {
-      const hybrid = mapHybridCallableRecord(widened, ctx);
-      if (hybrid) return hybrid;
-    }
+    // node:test's `Mock<F>` (`F & { mock: MockFunctionContext<F> }`) maps
+    // here too: the mock IS the wrapper closure and its `mock` member is a
+    // table entry like any other callable member (lower-mock.ts writes it
+    // through the closure's own-property table), so `typeof`, identity and
+    // enumeration answer as Node's function object does.
     const callable = mapCallableIntersection(widened, ctx);
     if (callable) return callable;
     // Recursive and Symbol-keyed callable objects need their complete live
@@ -8407,85 +8405,19 @@ function mapCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType |
   return fn?.kind === "func" ? fn : null;
 }
 
-/** Whether `widened` is node:test's `Mock<F>` — an intersection carrying a
- * `mock: MockFunctionContext<F>` member declared in the ambient `test`
- * module (the same provenance check MockFunctionContext's own mapping
- * uses). */
-function isMockHybridIntersection(widened: ts.Type, ctx: TypeMapperCtx): boolean {
-  if (!widened.isIntersectionType()) return false;
-  const mock = ctx.checker.getPropertyOfType(widened, "mock");
-  if (mock === undefined) return false;
-  const sym = ctx.checker.getTypeOfSymbol(mock).getSymbol();
-  return (
-    sym !== undefined &&
-    ts.symbolName(sym) === "MockFunctionContext" &&
-    sym.declarations.some(
-      (d) =>
-        ts.isInterfaceDeclaration(d) &&
-        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-        isDeclaredInAmbientModule(d, "test"),
-    )
-  );
-}
-
-function mapHybridCallableRecord(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
-  const { checker, shapes } = ctx;
-  if (!widened.isIntersectionType()) return null;
-  if (checker.getCallSignatures(widened).length !== 1) return null;
-  let funcPart: ts.Type | null = null;
-  for (const part of ts.constituentTypes(widened)) {
-    if (checker.getCallSignatures(part).length > 0) {
-      if (funcPart) return null; // exactly one callable part
-      funcPart = part;
-      continue;
-    }
-    const partSym = part.getSymbol();
-    if (
-      (part.flags & ts.TypeFlags.Object) === 0 ||
-      checker.getConstructSignatures(part).length > 0 ||
-      (partSym !== undefined && (partSym.flags & ts.SymbolFlags.Class) !== 0) ||
-      checker.getIndexInfosOfType(part).length > 0
-    ) {
-      return null;
-    }
-  }
-  if (!funcPart) return null;
-  const fn = mapType(funcPart, ctx);
-  if (!fn || fn.kind !== "func") return null;
-  const fields: IrRecordField[] = [{ name: "%call", type: fn }];
-  const declaredOrder: string[] = [];
-  for (const p of checker.getPropertiesOfType(widened)) {
-    if (p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) return null;
-    const pt = mapType(checker.getTypeOfSymbol(p), ctx);
-
-    if (!pt || pt.kind === "void") return null;
-    fields.push({
-      name: ts.symbolName(p),
-      type: pt,
-      ...(optionalCheckedDyn(p, pt) ? { optional: true as const } : {}),
-    });
-    declaredOrder.push(ts.symbolName(p));
-  }
-  if (fields.length === 1) return null; // no properties — it is just F
-  fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return { kind: "record", shapeId: shapes.intern(fields, false, undefined, declaredOrder) };
-}
-
 /** The representation every part of a union of function-with-properties
  * intersections maps to, or null when a part does not map to the same one.
- * Each part maps exactly as it does alone — an ordinary callable
- * intersection to the callable's func type (its members ARE the closure's
- * own properties), node:test's `Mock<F>` to its hybrid `%call` record — so a
- * union never reintroduces the record a value no longer has. */
+ * Each part maps exactly as it does alone — a callable intersection (or
+ * node:test's `Mock<F>` among them) to the callable's func type, whose
+ * members ARE the closure's own properties — so a union never reintroduces
+ * a record a value no longer has. */
 function mapUniformHybridUnion(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const parts = ts.constituentTypes(widened);
   if (!parts.every((p) => p.isIntersectionType())) return null;
   let first: IrType | null = null;
   for (const part of parts) {
     if (ctx.checker.getConstructSignatures(part).length > 0) return null;
-    const mapped = isMockHybridIntersection(part, ctx)
-      ? mapHybridCallableRecord(part, ctx)
-      : mapCallableIntersection(part, ctx);
+    const mapped = mapCallableIntersection(part, ctx);
     if (!mapped || (first && typeKey(mapped) !== typeKey(first))) return null;
     first ??= mapped;
   }

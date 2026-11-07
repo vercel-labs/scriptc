@@ -43,6 +43,7 @@ import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { isIslandImportBinding } from "./lower-node-island.js";
+import { funduleFunctionOf, funduleMemberOf, lowerFunduleMemberValue } from "./lower-fundule.js";
 import type { FileParts } from "./lower-modules.js";
 import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
@@ -134,7 +135,37 @@ export function collectNamespaceStmt(
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return; // bodyless non-ambient: tsc-rejected
   lowerer.nsBlocks.set(body, "flattened");
+  // `function N() {}` merged with `namespace N { ... }`: one value, and the
+  // block's EXPORTED members are that function object's own properties
+  // (lower-fundule.ts). Its members register in the merge registry instead
+  // of as module globals — and every exported member form this lowering
+  // cannot put on the object is refused by name rather than silently
+  // reading a module global Node does not have.
+  const mergedFn = funduleFunctionOf(lowerer, decl);
+  // `namespace f.inner { … }` merged with `function f`: Node's transform
+  // nests a second object, so the function's one own property is `inner`
+  // and the block's exports are that object's. This lowering has no nested
+  // object to put there; storing the exports on `f` itself would answer
+  // `Object.keys(f)` with the inner names. The same refusal as the
+  // `export namespace inner` spelling.
+  if (mergedFn !== null && decl.body !== undefined && ts.isModuleDeclaration(decl.body))
+    refuseFunduleMember(lowerer, mergedFn, decl.body, "nested namespace");
   for (const s of body.statements.nodes) {
+    if (
+      mergedFn !== null &&
+      (ts.getCombinedModifierFlags(s as ts.Declaration) & ts.ModifierFlags.Export) !== 0
+    ) {
+      // An exported interface, type alias or type-only namespace is no
+      // property of the function object: Node's transform emits nothing
+      // for it, exactly as in a namespace that merges with no function.
+      if (ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) continue;
+      if (ts.isModuleDeclaration(s) && nsZeroRuntime(s)) {
+        collectNamespaceStmt(lowerer, s, fp);
+        continue;
+      }
+      collectFunduleMember(lowerer, mergedFn, s, fp);
+      continue;
+    }
     if (ts.isFunctionDeclaration(s)) fp.fnDecls.push(s);
     else if (ts.isClassDeclaration(s)) fp.classDecls.push(s);
     else if (ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) continue;
@@ -144,6 +175,109 @@ export function collectNamespaceStmt(
     // runs in the init body at its source position.
     else fp.topStmts.push(s);
   }
+}
+
+/** One EXPORTED member of a function+namespace merge: a table entry on the
+ * function object (lower-fundule.ts). Only the forms whose value this
+ * lowering can put there are collected — an exported const/let/var with an
+ * initializer, and an exported function. */
+function collectFunduleMember(
+  lowerer: Lowerer,
+  fn: ts.Identifier,
+  stmt: ts.Statement,
+  fp: FileParts,
+): void {
+  const register = (name: ts.Identifier): void => {
+    const sym = lowerer.checker.getSymbolAtLocation(name);
+    if (sym !== undefined) lowerer.funduleMembers.set(sym, { fn, key: name.text });
+  };
+  if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined) {
+    // The property holds a function VALUE. A generic function has none
+    // until a call picks its type arguments, and an overloaded one has a
+    // signature per overload: neither can be stored, and calling the
+    // declaration while leaving the property out would answer
+    // `Object.keys` and `in` without it.
+    const overloaded =
+      stmt.body === undefined ||
+      (lowerer.checker.getSymbolAtLocation(stmt.name)?.declarations ?? []).filter((d) =>
+        ts.isFunctionDeclaration(d),
+      ).length > 1;
+    if (overloaded) refuseFunduleFunction(lowerer, fn, stmt.name, "overloaded");
+    if ((stmt.typeParameters?.nodes.length ?? 0) > 0)
+      refuseFunduleFunction(lowerer, fn, stmt.name, "generic");
+    fp.fnDecls.push(stmt);
+    register(stmt.name);
+    const sf = ts.getSourceFileOfNode(stmt);
+    const list = lowerer.funduleFnStores.get(sf);
+    if (list === undefined) lowerer.funduleFnStores.set(sf, [stmt]);
+    else list.push(stmt);
+    return;
+  }
+  if (ts.isVariableStatement(stmt)) {
+    for (const decl of stmt.declarationList.declarations.nodes) {
+      if (!ts.isIdentifier(decl.name)) {
+        lowerer.unsupported(
+          "SC1090",
+          decl.name,
+          `a destructuring member of the function+namespace merge '${fn.text}'`,
+          "a merged namespace's exported members are own properties of the function object; declare them one per name (export const a = …, export const b = …)",
+        );
+      }
+      if (decl.initializer === undefined) {
+        lowerer.unsupported(
+          "SC1090",
+          decl,
+          `an exported binding without an initializer in the function+namespace merge '${fn.text}'`,
+          "Node's transform emits no property for an exported binding without an initializer; give it one (export const x = …) or move the binding out of the merged namespace",
+        );
+      }
+      register(decl.name);
+    }
+    fp.topStmts.push(stmt);
+    return;
+  }
+  const kind = ts.isClassDeclaration(stmt)
+    ? "class"
+    : ts.isEnumDeclaration(stmt)
+      ? "enum"
+      : ts.isModuleDeclaration(stmt)
+        ? "nested namespace"
+        : ts.isImportEqualsDeclaration(stmt)
+          ? "import= alias"
+          : "declaration";
+  refuseFunduleMember(lowerer, fn, stmt, kind);
+}
+
+/** The refusal for an exported member form the function object's table
+ * cannot hold. */
+function refuseFunduleMember(
+  lowerer: Lowerer,
+  fn: ts.Identifier,
+  node: ts.Node,
+  kind: string,
+): never {
+  lowerer.unsupported(
+    "SC1090",
+    node,
+    `an exported ${kind} in the function+namespace merge '${fn.text}'`,
+    "a merged namespace's exported members are own properties of the function object; this lowering writes exported const/let/var members with an initializer and exported functions there",
+  );
+}
+
+/** The refusal for an exported function that has no single value to store
+ * on the function object. */
+function refuseFunduleFunction(
+  lowerer: Lowerer,
+  fn: ts.Identifier,
+  name: ts.Identifier,
+  kind: "generic" | "overloaded",
+): never {
+  lowerer.unsupported(
+    "SC1090",
+    name,
+    `the exported ${kind} function '${name.text}' in the function+namespace merge '${fn.text}'`,
+    `a merged namespace's exported members are own properties of the function object, and ${kind === "generic" ? "a generic" : "an overloaded"} function has no single value to store there; declare '${name.text}' outside the merged namespace`,
+  );
 }
 
 function registerTypeOnlyBlocks(lowerer: Lowerer, decl: ts.ModuleDeclaration): void {
@@ -800,23 +934,31 @@ function earliestSameFileDeclStart(lowerer: Lowerer, sym: ts.Symbol, sf: ts.Sour
 /** The source-order guard for one import=-alias segment (or a bare alias
  * use): the alias statement captures its target's CURRENT value, so an
  * init-position use above the alias — or an alias above its target — would
- * observe what Node leaves uninitialized. Fences instead of diverging. */
+ * observe what Node leaves uninitialized. A use written above the alias
+ * inside a function is no better off when the function runs later: Node's
+ * transform binds only the references below the alias statement to it and
+ * leaves the ones above unbound, so they throw ReferenceError whenever
+ * they run, where a read of the alias's storage would answer a value (or
+ * read storage nothing has filled). Fences instead of diverging. */
 export function fenceEarlyAliasUse(lowerer: Lowerer, ident: ts.Identifier, refNode: ts.Node): void {
   const sym = lowerer.checker.getSymbolAtLocation(ident);
   if (!sym || !(sym.flags & ts.SymbolFlags.Alias)) return;
   const aliasDecl = sym.declarations.find(ts.isImportEqualsDeclaration);
   if (!aliasDecl || ts.isExternalModuleReference(aliasDecl.moduleReference)) return;
-  if (!initExecutingPosition(refNode)) return;
   const sf = ts.getSourceFileOfNode(refNode);
   if (ts.getSourceFileOfNode(aliasDecl) !== sf) return; // cross-file: module init order applies
+  const atInit = initExecutingPosition(refNode);
   const aliasStart = ts.tokenStartOfNode(aliasDecl);
   if (ts.tokenStartOfNode(refNode) < aliasStart) {
     lowerer.unsupported(
       "SC1090",
       refNode,
-      `reading '${ident.text}' above its \`import ${ident.text} = ...\` alias (Node binds the alias at its statement — this read would observe an uninitialized binding; move it below the alias)`,
+      atInit
+        ? `reading '${ident.text}' above its \`import ${ident.text} = ...\` alias (Node binds the alias at its statement — this read would observe an uninitialized binding; move it below the alias)`
+        : `the reference to '${ident.text}' in a function written above \`import ${ident.text} = ...\` (Node's transform binds only the references below the alias statement — this one throws ReferenceError whenever the function runs; move the alias above the function)`,
     );
   }
+  if (!atInit) return;
   // The alias itself must run AFTER its target exists: a namespace target
   // needs a contributing block above the alias, a value target its
   // declaration.
@@ -938,6 +1080,11 @@ export function nsWritableTarget(
 ): { id: string; type: IrType } | null {
   const nsMember = nsMemberIdentOf(lowerer, access);
   if (!nsMember) return null;
+  // A member of a function+namespace merge is an own property of the
+  // function object: `N.x = v` is a callable-member table write, which the
+  // write lowering reaches through its callable target (lower-fundule.ts).
+  // Declining here keeps the module-global machinery out of it.
+  if (funduleMemberOf(lowerer, lowerer.checker.getSymbolAtLocation(nsMember)) !== null) return null;
   const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
   // An export read through a module namespace object (`import * as ns`):
   // the object is read-only, and Node's assignment throws a TypeError.
@@ -965,11 +1112,12 @@ export function nsWritableTarget(
  * ones land here); `import type x = require(...)` is pure type surface and
  * lowers to nothing. The entity form is pure alias plumbing — references
  * resolve through the checker to the target's own registrations and the
- * statement emits nothing — EXCEPT aliases of MUTABLE bindings: Node's
- * transform emits `var x = N.y` (a snapshot at the alias statement), so
- * collection registered the alias its own const global (keyed by the
- * pre-alias symbol — resolveValueSymbol stops there) and this statement
- * assigns it from the target's storage, exactly when Node does. */
+ * statement emits nothing — EXCEPT aliases of MUTABLE bindings and of
+ * members of a function+namespace merge: Node's transform emits
+ * `var x = N.y` (a snapshot at the alias statement), so collection
+ * registered the alias its own const global (keyed by the pre-alias symbol
+ * — resolveValueSymbol stops there) and this statement assigns it from the
+ * target's storage, exactly when Node does. */
 export function lowerImportEquals(
   lowerer: Lowerer,
   stmt: ts.ImportEqualsDeclaration,
@@ -1018,6 +1166,19 @@ export function lowerImportEquals(
     // var reached through an alias chain); a target whose declaration
     // never registered storage takes the blocked-binding cascade.
     const target = lowerer.checker.getAliasedSymbol(nameSym);
+    const loc = locOf(stmt);
+    // A member of a function+namespace merge has no module global: its
+    // value is the function object's own property, read where the alias
+    // stands (lower-fundule.ts).
+    const merged = funduleMemberOf(lowerer, target);
+    if (merged !== null) {
+      return {
+        kind: "assign",
+        localId: aliasG.id,
+        value: lowerFunduleMemberValue(lowerer, merged, aliasG.type, loc, stmt.name),
+        loc,
+      };
+    }
     const targetG = lowerer.globalsBySymbol.get(target);
     if (!targetG) {
       lowerer.rejectUnresolvedSymbol(
@@ -1027,7 +1188,6 @@ export function lowerImportEquals(
         `the alias target of '${stmt.name.text}' (no lowered storage)`,
       );
     }
-    const loc = locOf(stmt);
     return {
       kind: "assign",
       localId: aliasG.id,

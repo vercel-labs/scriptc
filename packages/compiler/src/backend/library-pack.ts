@@ -38,6 +38,10 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     // registry's arming entry point, so the archive must carry the unit and
     // the JavaScript object model build it belongs to.
     ...(options.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    // A function's inherited member shadowed by an own data property selects
+    // the SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, the
+    // same pair the executable lane links.
+    ...(options.fnMemberProps === true ? { fnMemberProps: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,

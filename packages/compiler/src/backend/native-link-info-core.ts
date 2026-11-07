@@ -57,6 +57,11 @@ export interface NativeLinkFeatures {
   /** existsSync over a path value that is not statically a string:
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** The program writes, defines or deletes a function's inherited member
+   * name (`fn.call = f`): links the SCR_FN_MEMBER_PROPS builds of scr_json.c
+   * and scr_dyn_invoke.c. Absent for every other program, so their objects
+   * stay identical. */
+  fnMemberProps?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;

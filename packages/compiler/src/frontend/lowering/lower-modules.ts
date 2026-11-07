@@ -159,7 +159,7 @@ import {
   trapDeclRootOf,
 } from "./lower-namespaces.js";
 import { collectExpandoMembers } from "./lower-expando.js";
-import { isFunduleMemberStatement, lowerFunduleFnStore } from "./lower-fundule.js";
+import { funduleMemberOf, isFunduleMemberStatement, lowerFunduleFnStore } from "./lower-fundule.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -1909,9 +1909,10 @@ export function collectGlobals(
         continue;
       }
     }
-    // `import x = N.y` where the target is a MUTABLE binding: Node's
-    // transform emits `var x = N.y` — a SNAPSHOT taken when the alias
-    // statement runs — so the alias gets its own const storage, keyed by
+    // `import x = N.y` where the target is a MUTABLE binding, or a member
+    // of a function+namespace merge (a property, always replaceable):
+    // Node's transform emits `var x = N.y` — a SNAPSHOT taken when the
+    // alias statement runs — so the alias gets its own const storage, keyed by
     // the alias's PRE-alias symbol (resolveValueSymbol stops at alias
     // symbols with registered storage instead of chasing them to the
     // live target). lowerImportEquals assigns it at the statement's
@@ -1935,7 +1936,12 @@ export function collectGlobals(
         ts.isVariableDeclaration(vd) &&
         !ts.getSourceFileOfNode(vd).isDeclarationFile &&
         (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
-      if (!mutableVar) continue;
+      // A member of a function+namespace merge is a property of the
+      // function object, and a property can be replaced whatever its
+      // declaration says (`Object.assign(fmt, { digits: 4 })` for a
+      // `const`, for a function): its alias is a snapshot too, of the
+      // property rather than of a module global (lower-fundule.ts).
+      if (!mutableVar && funduleMemberOf(lowerer, target) === null) continue;
       const diagsBefore = lowerer.diags.length;
       try {
         let type = lowerer.irTypeOf(stmt.name);
@@ -3636,6 +3642,17 @@ export function lowerFileInit(
     const funduleFns = [...(lowerer.funduleFnStores.get(sf) ?? [])].sort(
       (a, b) => ts.tokenStartOfNode(a) - ts.tokenStartOfNode(b),
     );
+    // A member function whose type has no value form (badType) has pushed
+    // its diagnostic: the store contributes nothing and the compilation
+    // stops on that diagnostic, as for a statement.
+    const funduleFnStoreAt = (decl: ts.FunctionDeclaration): IrStmt[] => {
+      try {
+        return lowerFunduleFnStore(lowerer, decl);
+      } catch (e) {
+        if (!(e instanceof PoisonError)) throw e;
+        return [];
+      }
+    };
     const body = [...header, ...islandUnplaced, ...prelude];
     let at = 0;
     let funduleAt = 0;
@@ -3655,7 +3672,7 @@ export function lowerFileInit(
         funduleAt < funduleFns.length &&
         ts.tokenStartOfNode(funduleFns[funduleAt]!) <= ts.tokenStartOfNode(stmt)
       ) {
-        body.push(...lowerFunduleFnStore(lowerer, funduleFns[funduleAt]!));
+        body.push(...funduleFnStoreAt(funduleFns[funduleAt]!));
         funduleAt++;
       }
       // A cycle binding's declaration stays at its position: its
@@ -3679,7 +3696,7 @@ export function lowerFileInit(
       at++;
     }
     while (funduleAt < funduleFns.length) {
-      body.push(...lowerFunduleFnStore(lowerer, funduleFns[funduleAt]!));
+      body.push(...funduleFnStoreAt(funduleFns[funduleAt]!));
       funduleAt++;
     }
     for (const { at, g } of unionEntryInits) {

@@ -16,11 +16,19 @@
  * byte (lower-namespaces.ts).
  *
  * Scope: exported `const`/`let`/`var` members with an initializer, and
- * exported functions. Everything else a merged block can export — a class,
+ * exported functions with one signature and no type parameters (a function
+ * with a value form). Everything else a merged block can export — a class,
  * an enum, a nested namespace, an `export import` alias, a destructuring
- * pattern, or a member without an initializer (Node emits no property for
- * `export let x;`) — is refused by name at collection rather than
- * silently diverging. */
+ * pattern, a generic or overloaded function, or a member without an
+ * initializer (Node emits no property for `export let x;`) — is refused by
+ * name at collection rather than silently diverging.
+ *
+ * An `import x = fmt.member` alias is Node's `const x = fmt.member`: a copy
+ * of the property taken where the alias stands. A property of the function
+ * object can be replaced whatever its declaration says (`Object.assign(fmt,
+ * { digits: 4 })` replaces a `const` member, and a function member), so
+ * the alias of every member owns storage and the alias statement fills it
+ * from the table (collectGlobals, lowerImportEquals). */
 
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
@@ -174,6 +182,33 @@ function isBareFunctionReference(ident: ts.Identifier, sym: ts.Symbol | null | u
   if (!sym.declarations.some((d) => ts.isFunctionDeclaration(d))) return false;
   const p = ident.parent;
   return !(p !== undefined && ts.isPropertyAccessExpression(p) && p.name === ident);
+}
+
+/** The member's value as the function object holds it now, checked into
+ * `type`: the right-hand side of Node's `const x = fmt.member` for an
+ * `import x = fmt.member` alias (lower-namespaces.ts). */
+export function lowerFunduleMemberValue(
+  lowerer: Lowerer,
+  member: FunduleMember,
+  type: IrType,
+  loc: SrcLoc,
+  blame: ts.Node,
+): IrExpr {
+  const boxed = callableBox(lowerer, lowerer.lowerExpr(member.fn));
+  if (boxed === null) {
+    lowerer.unsupported(
+      "SC1090",
+      blame,
+      `the merged namespace member '${member.key}'`,
+      "the function object must be representable as a dynamic value to carry its namespace members",
+    );
+  }
+  return fieldGetExpr(
+    lowerer,
+    { container: "dynamic", obj: boxed, field: member.key, fieldType: type },
+    loc,
+    blame,
+  );
 }
 
 /** A read of a merged block's member by the member's name: BARE inside the

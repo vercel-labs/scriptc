@@ -205,16 +205,29 @@ export function prepareExecutableModule(
           lowerModules,
         );
       }
-      return fail(
-        refused.map((entry) =>
+      // The build stops here, and one attempt reports every blocker this
+      // load knows: the packages that neither compile nor run in an island,
+      // each with what the user can do about it, and the program's own
+      // preflight errors, which the next attempt would otherwise report
+      // alone after another whole load. A preflight refusal the island
+      // rules answer by themselves (an import a package's island resolves)
+      // is not a blocker and is left out.
+      const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
+      const growth = growthOf();
+      const own = fe.preflight.filter(
+        (d) => growth === null || growIslandSet(growth, lowerIslands, { preflight: [d] }) === null,
+      );
+      return fail([
+        ...refused.map((entry) =>
           npmStaticRefusalDiag(
             entry.package,
             entry.detail ?? "its static compilation was refused",
             fe.npmImportSites.get(entry.package) ?? { file: entryPath, start: 0, end: 0 },
-            entry.hint,
+            refusedPackageHint(entry.package, entry.hint, policy),
           ),
         ),
-      );
+        ...own,
+      ]);
     }
     if (fe.preflight.length > 0) {
       // An import of a natively compiled package that preflight refuses
@@ -941,6 +954,31 @@ function decideNodeIslands(
   return packages.size === 0 && modules.size === 0
     ? null
     : { ...nodeIslandSet(packages, modules), notes, errors };
+}
+
+/** What to do about a package that neither compiles nor runs in a Node
+ * island, beside the selection's own hint (how to compile it anyway): the
+ * setting that would run it in Node. With islands off that is the mode; for
+ * a package marked native, the mark; under the explicit policy, a mark of
+ * its own. Under the automatic policy an unmarked package that reaches this
+ * stop has no island to offer, and the selection's hint stands alone. */
+function refusedPackageHint(
+  name: string,
+  hint: string | undefined,
+  policy: NodeIslandPolicy,
+): string | undefined {
+  let island: string | null = null;
+  if (policy.mode === "off")
+    island = `--node-islands=off is set: --node-islands=auto runs every package that does not compile in Node.js, and --node-islands=explicit with --node-island=${name} runs this one`;
+  else if (policy.forcedNative.has(name))
+    island =
+      policy.mode === "auto"
+        ? "it is marked native: without the mark it runs in a Node island"
+        : `it is marked native: --node-island=${name} in place of the mark runs it in Node.js`;
+  else if (policy.mode === "explicit")
+    island = `--node-island=${name} runs it in Node.js instead (--node-islands=auto does so for every package that does not compile)`;
+  if (island === null) return hint;
+  return hint === undefined ? island : `${hint}; ${island}`;
 }
 
 /** The installed package directory of `name` as Node resolves it from

@@ -2,8 +2,13 @@
  * which forms a computed import() specifier is bounded from, and the first
  * source that stops the forms it cannot bound. The analysis runs inside the
  * frontend, so the assertion is the diagnostic a build would report — no
- * codegen, no runtime. */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+ * codegen, no runtime.
+ *
+ * The Worker-entry slice (wave2 §4.2) shares this bounder, so it is checked
+ * the same way: a `new Worker(<computed entry>)` that the bounder clears
+ * reports no SC2020, and one whose values name no compiled file keeps the
+ * refusal. */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "vitest";
@@ -39,6 +44,28 @@ function unboundedWhys(source: string): string[] {
     .sort();
 }
 
+let workerSeq = 0;
+
+/** The SC2020 "this Worker entry point" refusals a build of `source`
+ * reports; `source` is `main.ts` beside a `worker.ts` entry. */
+function workerRefusals(source: string): string[] {
+  const program = join(dir, `worker-${workerSeq++}`);
+  mkdirSync(program, { recursive: true });
+  writeFileSync(join(program, "worker.ts"), WORKER_SOURCE);
+  const entry = join(program, "main.ts");
+  writeFileSync(entry, source);
+  return analyze(entry, { tier: "static-only" })
+    .coverage.diagnostics.filter(
+      (d) => d.code === "SC2020" && d.message.includes("Worker entry point"),
+    )
+    .map((d) => `${d.message} (${d.hint})`);
+}
+
+const WORKER_SOURCE = `import { parentPort } from "node:worker_threads";
+
+parentPort!.postMessage(1);
+`;
+
 test("every §3.2 form B1 implements bounds to a finite set", () => {
   expect(
     features(`
@@ -56,6 +83,9 @@ function local(specifier: string): Promise<unknown> {
 function withDefault(specifier = "node:path"): Promise<unknown> {
   return import(specifier);
 }
+function computed(): string {
+  return "node:path";
+}
 async function main(): Promise<void> {
   await import("node:path");
   await import(template);
@@ -69,6 +99,7 @@ async function main(): Promise<void> {
   await local("node:path");
   await local(flag ? "node:os" : "node:path");
   await withDefault();
+  await import(computed());
 }
 void main();
 export {};
@@ -130,13 +161,13 @@ export const load = (specifier: string): Promise<unknown> => import(specifier);
 export async function run(specifier: string): Promise<void> {
   await import(specifier);
 }
-function computed(): string {
-  return "node:path";
+function computedUnbounded(): string {
+  return process.env.SCRIPTC_SPEC!;
 }
 async function main(specifier: string): Promise<void> {
   await import(fromArgv);
   await import(reassigned);
-  await import(computed());
+  await import(computedUnbounded());
   await import(\`node:\${process.argv[2]}\`);
   await import(process.env.SCRIPTC_SPEC ?? "node:path");
   await import(process.env.SCRIPTC_SPEC || "node:path");
@@ -154,8 +185,98 @@ export {};
     "(a value read from `process.argv`)",
     "(a value read from `process.env`)",
     "(a value read from `process.env`)",
-    "(the result of `computed(...)`)",
+    "(a value read from `process.env`)",
   ]);
+});
+
+test("a computed Worker entry bounds through URL values and local returns", () => {
+  expect(
+    workerRefusals(`
+import { Worker } from "node:worker_threads";
+
+function entryName(typescript: boolean): string {
+  return typescript ? "./worker.ts" : "./worker.js";
+}
+
+function start(specifier: string): Worker {
+  return new Worker(new URL(specifier, import.meta.url), { workerData: 1 });
+}
+
+// A helper whose returned URL reads its own parameter: the parameter is
+// bounded from the helper's call sites, so this is not a recursion.
+function entryUrl(specifier: string): URL {
+  return new URL(specifier, import.meta.url);
+}
+
+const flag = process.argv.length > 2;
+export const worker = start(entryName(flag));
+export const direct = new Worker(new URL(entryName(flag), import.meta.url));
+export const helper = new Worker(entryUrl("./worker.ts"));
+export const nested = new Worker(entryUrl(entryName(flag)));
+`),
+  ).toEqual([]);
+});
+
+test("a return value that depends on itself keeps the refusal", () => {
+  expect(
+    workerRefusals(`
+import { Worker } from "node:worker_threads";
+
+// The function returns its own call.
+function again(): URL {
+  return again();
+}
+
+// One call site passes a value computed from the parameter it binds, so the
+// call sites do not bound the parameter the returned URL reads.
+function grow(specifier: string): URL {
+  return specifier.length > 9 ? new URL(specifier, import.meta.url) : grow(specifier + "x");
+}
+
+export const first = new Worker(again());
+export const second = new Worker(grow("./worker.ts"));
+`).length,
+  ).toBe(2);
+});
+
+test("a partial bound keeps the bounded arms and the Top residual", () => {
+  expect(
+    workerRefusals(`
+import { Worker } from "node:worker_threads";
+
+interface Options {
+  workerUrl?: URL;
+}
+
+function defaultWorkerUrl(): URL {
+  return new URL(import.meta.url.endsWith(".ts") ? "./worker.ts" : "./worker.js", import.meta.url);
+}
+
+export function launch(options: Options): Worker {
+  return new Worker(options.workerUrl ?? defaultWorkerUrl());
+}
+`),
+  ).toEqual([]);
+});
+
+test("a Worker entry with no bounded value keeps the refusal", () => {
+  expect(
+    workerRefusals(`
+import { Worker } from "node:worker_threads";
+
+export function launch(specifier: string): Worker {
+  return new Worker(specifier);
+}
+
+export const fromArgv = new Worker(process.argv[2]!);
+
+// A relative string resolves against the invocation's cwd in Node, so it
+// fixes no compiled file: the site stays refused.
+void launch;
+
+export const relative = new Worker("./worker.ts");
+`).length,
+  ).toBe(3);
 });
 
 test("a concatenation's cap counts distinct values, and a spread argument is unbounded", () => {

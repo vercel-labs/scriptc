@@ -43,6 +43,10 @@ Other reads and writes of shared storage access each element atomically; a copy,
 `terminate` unwinds at runtime checkpoints, including loops and parked atomic waits, without running JavaScript catch or finally blocks.
 Blocking native calls finish before the next checkpoint.
 
+A worker that reaches a Node island posts each island operation to the thread that started the island, the main thread, and waits there for its answer, so a synchronous island call works from a worker.
+An asynchronous island call from a worker rejects with `ERR_SCRIPTC_ISLAND_WORKER_ASYNC`, and an island promise or byte value (a typed array or a Buffer) crossing into a worker throws `ERR_SCRIPTC_ISLAND_WORKER_VALUE`.
+A worker entry must be a compiled module, so a Node island module as the worker's entry is refused at build time (SC8012).
+
 Workers are unsupported in WASI, compiled libraries, and executables that use foreign-thread native callbacks.
 Ordinary callbacks that run on their owning script thread remain supported.
 Shared byte storage cannot expose unmanaged FFI pointers; copy it into an ordinary Buffer before passing it to native code.

@@ -14,10 +14,10 @@
  * otherwise be absent or a literal that passes that validation; other
  * forms fence with SC2020. */
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { sideEffectFreeOptionValue } from "../surfaces.js";
-import { stripTypeWrappers } from "../typed-arguments.js";
 import { boolLit, strLit, varRef } from "../../../ir/build.js";
 import { BOOL, DYN, type IrExpr, type IrStmt, STRING, URL_T, VOID } from "../../../ir/ir.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -119,19 +119,13 @@ function isUrlArgument(lowerer: Lowerer, node: ts.Expression | undefined): boole
   return node !== undefined && lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "url";
 }
 
-function stripParens(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
-
 /** A literal that Node's option validation accepts before it reads the
  * path: a string (the checker admits only the declared encodings, flags
  * and type names), a boolean, an integer in [0, 2^31 - 1] (every numeric
  * option of these functions accepts that range), undefined or null, or an
  * object literal of those. */
 function preValidatedLiteral(node: ts.Expression): boolean {
-  const e = stripParens(node);
+  const e = withoutParentheses(node);
   if (ts.isStringLiteralLike(e)) return true;
   if (
     e.kind === ts.SyntaxKind.TrueKeyword ||
@@ -179,7 +173,7 @@ function optionsBeforePaths(
       i === 1 &&
       lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "string"
     ) {
-      encoding = stripTypeWrappers(arg);
+      encoding = withoutParenthesesTypeWrappers(arg);
       continue;
     }
     lowerer.noLowering(`${name} with a URL path and options that are not literals`, arg, HINT);
@@ -205,14 +199,14 @@ function stagedAfter(
   // what an earlier one read.
   let last = first;
   for (let i = first + 1; i < args.length; i++) {
-    const e = stripTypeWrappers(args[i]!);
+    const e = withoutParenthesesTypeWrappers(args[i]!);
     if (!sideEffectFreeOptionValue(e) || force(e, i)) last = i;
   }
   const staged: ts.Expression[] = [];
   for (let i = first + 1; i <= last; i++) {
     // Keyed without type-only wrappers (`satisfies`, `as`, `!`), so a
     // lowering that reads through them finds the saved value.
-    const e = stripTypeWrappers(args[i]!);
+    const e = withoutParenthesesTypeWrappers(args[i]!);
     // Literals are read by their members, so a whole-value slot cannot
     // hold them.
     if (ts.isObjectLiteralExpression(e) || ts.isArrayLiteralExpression(e)) {
@@ -241,21 +235,26 @@ export function checkFsUrlPaths(
   if (!row) return;
   const args = call.arguments.nodes;
   const first = row.paths.find((i) => isUrlArgument(lowerer, args[i]));
-  if (first === undefined || lowerer.fsPathPlans.has(stripParens(args[first]!))) return;
+  if (first === undefined || lowerer.fsPathPlans.has(withoutParentheses(args[first]!))) return;
   const name = bi.member;
   if (args.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with spread arguments and a URL path`, call);
   const checks: { path: ts.Expression; name: string }[] = [];
   for (const i of row.paths) {
     if (i >= first || args[i] === undefined) continue;
-    const path = stripParens(args[i]!);
+    const path = withoutParentheses(args[i]!);
     checks.push({ path, name: row.names?.[i] ?? "path" });
     lowerer.fsPathPlans.set(path, { kind: "save", local: null });
   }
   const encoding = optionsBeforePaths(lowerer, args, bi.member, row, name);
   const staged = stagedAfter(lowerer, args, first, name, (e) => e === encoding);
   for (const e of staged) lowerer.stagedArguments.set(e, null);
-  lowerer.fsPathPlans.set(stripParens(args[first]!), { kind: "convert", staged, checks, encoding });
+  lowerer.fsPathPlans.set(withoutParentheses(args[first]!), {
+    kind: "convert",
+    staged,
+    checks,
+    encoding,
+  });
 }
 
 /** existsSync and the fs.promises functions with URL paths: each URL
@@ -308,7 +307,7 @@ export function lowerFallibleFsUrlCall(
     const value = lowerer.lowerExpr(e);
     const slot = save(value, "%fsArg", e);
     lowerer.stagedArguments.set(e, { localId: slot, type: value.type });
-    const index = args.findIndex((arg) => stripTypeWrappers(arg) === e);
+    const index = args.findIndex((arg) => withoutParenthesesTypeWrappers(arg) === e);
     if (urls.includes(index)) values.set(index, slot);
   }
   const results: string[] = [];
@@ -322,7 +321,7 @@ export function lowerFallibleFsUrlCall(
       loc,
     };
     const local = save(converted, "%fsPathValue", args[i]!);
-    lowerer.fsPathPlans.set(stripParens(args[i]!), { kind: "value", local });
+    lowerer.fsPathPlans.set(withoutParentheses(args[i]!), { kind: "value", local });
     results.push(local);
   }
   lowerer.fallibleFsCalls.add(call);
@@ -422,7 +421,7 @@ function jsUntypedFsPath(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
  * schemes, hosts and encoded separators, after the checks its plan names. */
 export function lowerFsPath(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const loc = locOf(node);
-  const plan = lowerer.fsPathPlans.get(stripParens(node));
+  const plan = lowerer.fsPathPlans.get(withoutParentheses(node));
   if (plan?.kind === "value")
     return { kind: "dynCheck", value: varRef(plan.local, DYN, loc), type: STRING, loc };
   if (!isUrlArgument(lowerer, node)) {

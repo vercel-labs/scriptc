@@ -59,6 +59,7 @@ import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import {
@@ -1772,17 +1773,12 @@ export function guaranteedDecorationThrow(
   lowerer: Lowerer,
   decl: ts.ClassLikeDeclaration,
 ): { name: string; node: ts.Decorator } | null {
-  const stripParens = (e: ts.Expression): ts.Expression => {
-    let x = e;
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
   const decoratorVerdict = (
     d: ts.Decorator,
   ): { name: string; node: ts.Decorator } | "effectFree" | "opaque" => {
     const name = ambientDecoratorThrowNameOf(lowerer, d.expression);
     if (name !== null) return { name, node: d };
-    const e = stripParens(d.expression);
+    const e = withoutParentheses(d.expression);
     // A bare identifier over a DEFINED value: a pure read.
     if (ts.isIdentifier(e)) return "effectFree";
     return "opaque";
@@ -1795,7 +1791,7 @@ export function guaranteedDecorationThrow(
   const heritage = decl.heritageClauses?.nodes.find((c) => c.token === ts.SyntaxKind.ExtendsKeyword)
     ?.types?.nodes[0];
   if (heritage) {
-    const h = stripParens(heritage.expression);
+    const h = withoutParentheses(heritage.expression);
     if (h.kind !== ts.SyntaxKind.NullKeyword && !ts.isIdentifier(h)) return null;
   }
   for (const member of decl.members.nodes) {
@@ -1806,7 +1802,7 @@ export function guaranteedDecorationThrow(
     }
     const name = (member as { name?: ts.PropertyName }).name;
     if (name && ts.isComputedPropertyName(name)) {
-      const k = stripParens(name.expression);
+      const k = withoutParentheses(name.expression);
       const literalKey = ts.isStringLiteralLike(k) || ts.isNumericLiteral(k) || ts.isIdentifier(k);
       if (!literalKey) return null;
     }
@@ -2795,8 +2791,15 @@ export function collectClassShapeInner(
           const initializerSymbol = ts.isIdentifier(member.initializer)
             ? lowerer.resolveValueSymbol(member.initializer)
             : null;
-          // Enum namespace aliases are erased; member reads fold through the checker.
-          if (initializerSymbol && (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0) continue;
+          // An alias of an enum that has no object is erased; member reads
+          // fold through the checker. An enum whose object is built
+          // (enum-objects.ts) is stored like any other value.
+          if (
+            initializerSymbol &&
+            (initializerSymbol.flags & ts.SymbolFlags.Enum) !== 0 &&
+            !lowerer.enumObjects.has(initializerSymbol)
+          )
+            continue;
           const type = lowerer.irTypeOf(member.name);
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (

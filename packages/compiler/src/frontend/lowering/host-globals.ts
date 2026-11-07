@@ -1,7 +1,8 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { arrayOf, type IrExpr, STRING, type SrcLoc, VOID } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
-import { stdlibGlobalNameOf, withoutTypeCasts } from "./surfaces.js";
+import { stdlibGlobalNameOf } from "./surfaces.js";
 
 /* Node 24 globals the native runtime does not implement. Reading one is NOT
  * a feature probe for an absent capability: Node has the value, so answering
@@ -175,7 +176,7 @@ export function isGlobalObjectRead(
   name = stdlibGlobalNameOf(lowerer, receiver),
 ): boolean {
   if (name === "globalThis") return true;
-  const uncast = withoutTypeCasts(receiver);
+  const uncast = withoutParenthesesTypeWrappers(receiver);
   if (uncast !== receiver) return isGlobalObjectRead(lowerer, uncast, seen);
   if (!ts.isIdentifier(uncast)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(uncast);
@@ -243,7 +244,7 @@ function hostGlobalPrototypeOfSeen(
   node: ts.Expression,
   seen: Set<ts.Symbol>,
 ): string | null {
-  const uncast = withoutTypeCasts(node);
+  const uncast = withoutParenthesesTypeWrappers(node);
   // A constant holding the prototype object is the same object: member
   // reads off it are as unsupported as off the read itself.
   if (ts.isIdentifier(uncast)) {
@@ -268,7 +269,7 @@ export function hostGlobalConstructorOfPrototype(
   lowerer: Lowerer,
   node: ts.Expression,
 ): string | null {
-  const uncast = withoutTypeCasts(node);
+  const uncast = withoutParenthesesTypeWrappers(node);
   if (ts.isPropertyAccessExpression(uncast))
     return uncast.name.text === "constructor"
       ? hostGlobalPrototypeOf(lowerer, uncast.expression)
@@ -289,7 +290,7 @@ export function hostGlobalPrototypeMemberOf(
   lowerer: Lowerer,
   callee: ts.Expression,
 ): string | null {
-  const uncast = withoutTypeCasts(callee);
+  const uncast = withoutParenthesesTypeWrappers(callee);
   if (ts.isPropertyAccessExpression(uncast))
     return HOST_GLOBAL_PROTOTYPE_MEMBERS.has(uncast.name.text)
       ? null
@@ -314,7 +315,7 @@ function hostGlobalNameOfReadSeen(
   operand: ts.Expression,
   seen: Set<ts.Symbol>,
 ): string | null {
-  const unwrapped = withoutTypeCasts(operand);
+  const unwrapped = withoutParenthesesTypeWrappers(operand);
   if (ts.isIdentifier(unwrapped)) {
     const global = hostGlobalNameOfIdentifier(lowerer, unwrapped);
     if (global !== null) return global;

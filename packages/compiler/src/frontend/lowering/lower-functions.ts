@@ -615,9 +615,9 @@ export function lowerLambda(
           // (`async () => p`): the async machinery RESOLVES the returned
           // thenable into the function's own promise — lowerReturnValue's
           // await-through, applied to the implicit return.
-          if (isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise") {
-            value = lowerer.returnedPromiseAwait(value);
-          }
+          const settles = isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise";
+          if (settles) value = lowerer.returnedPromiseAwait(value);
+          else if (isAsync && !fnCtx.inferReturn) lowerer.refuseReturnedThenable(bodyExpr, value);
           const flattened =
             isAsync && !fnCtx.inferReturn
               ? lowerer.maybePromiseReturn(bodyExpr, value, bodyReturn)
@@ -631,7 +631,9 @@ export function lowerLambda(
                     kind: "return",
                     value: fnCtx.inferReturn
                       ? value
-                      : lowerer.coerceInto(bodyExpr, value, bodyReturn),
+                      : settles
+                        ? lowerer.returnedPayloadInto(bodyExpr, value, bodyReturn)
+                        : lowerer.coerceInto(bodyExpr, value, bodyReturn),
                     loc: locOf(node.body!),
                   },
                 ];

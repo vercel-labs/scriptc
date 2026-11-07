@@ -47,14 +47,17 @@
  * super.emit as the prototype chain). */
 import { keyedHelperName } from "./stable-names.js";
 import { checkKeypressListener } from "./builtins/readline.js";
-import { stripTypeCasts } from "./builtins/arguments.js";
 import * as ts from "../ts7/adapter.js";
+import {
+  withoutParenthesesAssertionsNonNull,
+  withoutParenthesesTypeWrappers,
+} from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { dynFallbackType, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
-import { nullishExprUnitOf, stripValueWrappers } from "./binding-analysis.js";
+import { nullishExprUnitOf } from "./binding-analysis.js";
 import { isPureReference } from "./effect-free.js";
 import { functionUsesThis } from "./cjs-exports-object.js";
 import { isThisParameter } from "./call-signatures.js";
@@ -439,7 +442,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           const cbT = lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, cbNode, cbCt);
           typed =
             cbT?.kind === "func" &&
-            !ts.isCallExpression(stripTypeCasts(cbNode)) &&
+            !ts.isCallExpression(withoutParenthesesAssertionsNonNull(cbNode)) &&
             !(cbT.params.length === 0 && isJsSourceFile(sf)) &&
             !cbT.params.some((p) => p.kind === "dyn") &&
             !readsArgumentsPack(lowerer, cbNode);
@@ -610,7 +613,7 @@ function isErrorMonitorRef(lowerer: Lowerer, arg: ts.Expression): boolean {
  * field or record entry read. A call or an accessor lowers as a run-time
  * name so its effects still run. */
 function staticNameExpr(lowerer: Lowerer, arg: ts.Expression): boolean {
-  const expression = stripValueWrappers(arg);
+  const expression = withoutParenthesesTypeWrappers(arg);
   if (
     ts.isStringLiteral(expression) ||
     ts.isNoSubstitutionTemplateLiteral(expression) ||

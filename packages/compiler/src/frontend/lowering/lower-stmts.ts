@@ -333,7 +333,7 @@ import {
   nodeTypeError,
 } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
-import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
+import { isNativeProxyInitializer, proxyBindingHoldsProxy } from "./expressions/native-proxy.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerUnionFieldDelete, lowerUnionFieldWrite } from "./expressions/union-fields.js";
 import {
@@ -1215,6 +1215,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // declared type says: its own declaration lowers as one, and so must
     // the slot a closure captured first.
     if (islandHandleBinding(lowerer, decl.name)) type = DYN;
+    // So does the binding a Proxy initializes: its declaration gives it
+    // checked-dynamic storage, and the slot a closure captured first must
+    // be the same.
+    if (proxyBindingHoldsProxy(lowerer, decl)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     const name = decl.name.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
@@ -7152,10 +7156,15 @@ export function lowerVarDecl(
         ? [inferredObjectType]
         : [];
   const expandsObject = jsDeclarationExpandsObject(lowerer, decl, inferredObjectType);
+  // The binding a Proxy initializes holds the Proxy itself, as a module
+  // binding and a `var` do (varBindingType): a slot of the declared record
+  // type would hold a copy read through the traps once.
+  const proxyBinding = proxyBindingHoldsProxy(lowerer, decl);
   let init: IrExpr;
   try {
     init =
       expandsObject ||
+      proxyBinding ||
       (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
         !decl.type &&
         isNativeBuiltinValueInitializer(lowerer, decl.initializer))
@@ -7335,6 +7344,7 @@ export function lowerVarDecl(
     isJsPromiseStaticCall(init);
   if (
     expandsObject ||
+    proxyBinding ||
     preservesObjectIdentity ||
     keepsAssertedObject ||
     keepsPromiseStaticValue ||

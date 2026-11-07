@@ -538,6 +538,11 @@ import {
 } from "./lower-mixins.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import {
+  nativeProxyEntering,
+  noteNativeProxyRead,
+  refuseProxyInTypedSlot,
+} from "./expressions/native-proxy.js";
+import {
   type ParamShape,
   type FnSig,
   funcTypeFromParamShapes,
@@ -4322,6 +4327,9 @@ export class Lowerer {
   readonly dynNsBuilders = new Map<ts.SourceFile, string>();
 
   readonly checkedCallbackParams = new Set<ts.ParameterDeclaration>();
+  /** Reads by name of a `const` binding a Proxy initializes, by the
+   * expression each lowered to (noteNativeProxyRead). */
+  readonly nativeProxyReads = new Map<IrExpr, { trapless: boolean }>();
   /** Inline Promise.then parameters whose contextual type is a builtin
    * module namespace anonymous object. The settled native token is the
    * ABI truth even when the checker type has no stable module symbol. */
@@ -5121,6 +5129,7 @@ export class Lowerer {
       checkedTable("createRequireImports", () => this.createRequireImports.size),
       checkedTable("dynNsBuilders", () => this.dynNsBuilders.size),
       checkedTable("checkedCallbackParams", () => this.checkedCallbackParams.size),
+      checkedTable("nativeProxyReads", () => this.nativeProxyReads.size),
       checkedTable("valueStreamReceivers", () => this.valueStreamReceivers.size),
       checkedTable("stagedArguments", () => this.stagedArguments.size),
       checkedTable(
@@ -14837,6 +14846,8 @@ export class Lowerer {
     // everything else keeps requireExactShape's SC1100 fence.
     if (expr.type.kind === "dyn" && expected.kind !== "dyn") {
       noteUntypedStreamFlow(this, expected);
+      const proxy = nativeProxyEntering(this, expr);
+      if (proxy) refuseProxyInTypedSlot(this, expr.loc, expected, proxy.trapless);
       // `[EventEmitter]` in JavaScript builds an untyped array of the
       // untyped constructor, which a typed array of the class cannot
       // hold: no class check admits that constructor.
@@ -15532,6 +15543,8 @@ export class Lowerer {
 
   private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    const proxy = expected.kind === "dyn" ? null : nativeProxyEntering(this, expr);
+    if (proxy) refuseProxyInTypedSlot(this, expr.loc, expected, proxy.trapless);
     // A binding the checker types as the console object (`const c =
     // console`, a `Console` parameter) into a record of its members: the
     // same member-by-name copy the direct `console` spelling takes
@@ -18914,7 +18927,10 @@ export class Lowerer {
   }
 
   lowerShorthandValue(prop: ts.ShorthandPropertyAssignment): IrExpr {
-    return lowerShorthandValue(this, prop);
+    const read = lowerShorthandValue(this, prop);
+    // `{ view }` reads the binding as `{ view: view }` does.
+    noteNativeProxyRead(this, prop.name as ts.Identifier, read);
+    return read;
   }
 
   rejectThisInObjectMethod(node: ts.Node): void {

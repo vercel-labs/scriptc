@@ -1,0 +1,89 @@
+proxy-as-class.ts:15:54 - error SC1090: Proxy handlers whose traps have typed signatures are not supported yet
+
+  14 | // A forwarding global over an empty object asserted to the class.
+  15 | const forwarding: Palette = new Proxy({} as Palette, {
+     |                                                      ^
+  16 |   get(_target, prop) {
+
+  hint: declare each trap's parameters and result as 'any', for example get(target: any, key: string | symbol): any, so the handler is built as an untyped object
+
+proxy-as-class.ts:23:27 - error SC1090: a Proxy over a class instance or an array is not supported yet
+
+  22 | const real = new Palette("dark");
+  23 | const wrapped = new Proxy(real, {
+     |                           ^~~~
+  24 |   get(target: any, key: string | symbol): any {
+
+  hint: proxy a plain object: an object literal, or a value typed 'any'
+
+proxy-as-class.ts:34:24 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  33 | // A `let` binding, a field, an argument, a return, an element, an optional slot, an assertion.
+  34 | let rebound: Palette = new Proxy({} as any, handler);
+     |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  35 | class Holder {
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance
+
+proxy-as-class.ts:39:20 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  38 |   constructor() {
+  39 |     this.palette = new Proxy({} as any, handler);
+     |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  40 |   }
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance
+
+proxy-as-class.ts:46:10 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  45 | function lazy(): Palette {
+  46 |   return new Proxy({} as any, handler);
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  47 | }
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance
+
+proxy-as-class.ts:49:19 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  48 | const holder = new Holder();
+  49 | holder.optional = new Proxy({} as any, handler);
+     |                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  50 | const list: Palette[] = [new Proxy({} as any, handler)];
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance
+
+proxy-as-class.ts:50:26 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  49 | holder.optional = new Proxy({} as any, handler);
+  50 | const list: Palette[] = [new Proxy({} as any, handler)];
+     |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  51 | const asserted = new Proxy({} as any, handler) as Palette;
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance
+
+proxy-as-class.ts:51:18 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  50 | const list: Palette[] = [new Proxy({} as any, handler)];
+  51 | const asserted = new Proxy({} as any, handler) as Palette;
+     |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  52 | // A Proxy held untyped is a Proxy; the build sees it enter the class slot.
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance
+
+proxy-as-class.ts:55:18 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  54 | current = real;
+  55 | console.log(show(new Proxy({} as any, handler)));
+     |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  56 | console.log(show(untyped));
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance
+
+proxy-as-class.ts:56:18 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  55 | console.log(show(new Proxy({} as any, handler)));
+  56 | console.log(show(untyped));
+     |                  ^~~~~~~
+  57 | console.log(lazy().name, list.length);
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance

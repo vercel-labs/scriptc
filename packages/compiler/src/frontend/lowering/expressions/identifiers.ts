@@ -1306,48 +1306,70 @@ function requiredLibraryCallbackRead(
   const args = call.arguments?.nodes ?? [];
   const index = args.indexOf(argument);
   if (index < 0 || args.slice(0, index).some(ts.isSpreadElement)) return null;
-  const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
-  if (declaration === undefined || !ts.isFunctionLike(declaration)) return null;
+  const signature = lowerer.checker.getResolvedSignature(call);
+  const declaration = signature?.declaration;
+  if (signature === undefined || declaration === undefined || !ts.isFunctionLike(declaration))
+    return null;
   const file = ts.getSourceFileOfNode(declaration);
   if (!lowerer.isStdlibFile(file)) return null;
-  const parameterAt = (signature: ts.SignatureDeclaration): ts.ParameterDeclaration | undefined =>
-    ((signature.parameters?.nodes ?? []) as readonly ts.ParameterDeclaration[]).filter(
-      (p) => !(ts.isIdentifier(p.name) && p.name.text === "this"),
-    )[index];
-  // The declared type, before the call's type arguments: a `T` that the
-  // call instantiates with a function is a slot for any value.
-  const partsOf = (parameter: ts.ParameterDeclaration): readonly ts.Type[] => {
-    const declared = lowerer.checker.getTypeAtLocation(parameter.name);
-    return (declared.flags & ts.TypeFlags.Union) !== 0 ? ts.constituentTypes(declared) : [declared];
-  };
+  const partsOf = (type: ts.Type): readonly ts.Type[] =>
+    (type.flags & ts.TypeFlags.Union) !== 0 ? ts.constituentTypes(type) : [type];
+  const isFunction = (type: ts.Type): boolean => lowerer.checker.getCallSignatures(type).length > 0;
   const lenient =
     ts.TypeFlags.Any |
     ts.TypeFlags.Unknown |
     ts.TypeFlags.Undefined |
     ts.TypeFlags.Null |
     ts.TypeFlags.Void;
-  const admitsUndefined = (signature: ts.SignatureDeclaration): boolean => {
-    const parameter = parameterAt(signature);
-    return (
+  // The types an overload declares for the argument, before the call's type
+  // arguments, or null when the overload lets it be omitted or undefined.
+  const requiredAt = (
+    overload: ts.SignatureDeclaration,
+  ): { parameter: ts.ParameterDeclaration; parts: readonly ts.Type[] } | null => {
+    const parameter = (
+      (overload.parameters?.nodes ?? []) as readonly ts.ParameterDeclaration[]
+    ).filter((p) => !(ts.isIdentifier(p.name) && p.name.text === "this"))[index];
+    if (
       parameter === undefined ||
       parameter.dotDotDotToken !== undefined ||
       parameter.questionToken !== undefined ||
-      parameter.initializer !== undefined ||
-      partsOf(parameter).some((part) => (part.flags & lenient) !== 0)
-    );
+      parameter.initializer !== undefined
+    )
+      return null;
+    const parts = partsOf(lowerer.checker.getTypeAtLocation(parameter.name));
+    return parts.some((part) => (part.flags & lenient) !== 0) ? null : { parameter, parts };
   };
-  // Every overload of the callee decides: `JSON.stringify(value)` beside
-  // `JSON.stringify(value, replacer)` makes the replacer optional.
+  // Every overload of the callee decides. `JSON.stringify(value)` beside
+  // `JSON.stringify(value, replacer)` makes the replacer optional, and
+  // `text.replace(pattern, replacement)` beside the replacer overload takes
+  // a string there: JavaScript throws for undefined in neither.
   const name = "name" in declaration ? declaration.name : undefined;
   const symbol = name === undefined ? undefined : lowerer.checker.getSymbolAtLocation(name);
   const overloads = (symbol?.declarations ?? []).filter((d) => ts.isFunctionLike(d));
-  if (admitsUndefined(declaration) || overloads.some(admitsUndefined)) return null;
-  const parameter = parameterAt(declaration)!;
+  for (const overload of overloads) {
+    const required = requiredAt(overload);
+    if (
+      required === null ||
+      !required.parts.every(
+        (part) => isFunction(part) || (part.flags & ts.TypeFlags.Instantiable) !== 0,
+      )
+    )
+      return null;
+  }
+  // The call's own overload: a bare type parameter (`map.set(key, value)`)
+  // is a slot for any value, and the type the call gives the parameter is a
+  // function.
+  const required = requiredAt(declaration);
+  const given = signature.getParameters()[index];
   if (
-    !ts.isIdentifier(parameter.name) ||
-    !partsOf(parameter).every((part) => lowerer.checker.getCallSignatures(part).length > 0)
+    required === null ||
+    given === undefined ||
+    !ts.isIdentifier(required.parameter.name) ||
+    required.parts.some((part) => (part.flags & ts.TypeFlags.TypeParameter) !== 0) ||
+    !partsOf(lowerer.checker.getTypeOfSymbol(given)).every(isFunction)
   )
     return null;
+  const parameterName = required.parameter.name.text;
   const value = varRef(storage.id, storage.type, loc);
   const tag = lowerer.armTag(unionId, fn);
   return {
@@ -1359,7 +1381,7 @@ function requiredLibraryCallbackRead(
       : nodeThrowExpr(
           1,
           "ERR_INVALID_ARG_TYPE",
-          `The "${parameter.name.text}" argument must be of type function. Received undefined`,
+          `The "${parameterName}" argument must be of type function. Received undefined`,
           fn,
           loc,
         ),

@@ -2765,6 +2765,13 @@ SCR_COLD void scr_dyn_arg_type_fail(const char *argname, const char *expected, c
  * in order and answers them as a string[]. Borrows both. */
 ScrStr *scr_value_string(const ScrDyn *value, ScrStr *name);
 ScrArr *scr_value_strings(const ScrDyn *args, ScrStr *name);
+/* getValidatedPath over an untyped path argument of a synchronous fs
+ * function: the path (+1) of a string, a URL or a Uint8Array, or NULL with
+ * Node's ERR_INVALID_ARG_TYPE pending under `name`. `descriptor` marks a
+ * parameter where Node first asks for a file descriptor: the value converts
+ * to a number as that test does (a symbol throws), and a number keeps a
+ * named refusal. Borrows both. */
+ScrStr *scr_value_fs_path(const ScrDyn *value, ScrStr *name, bool descriptor);
 /* The property flavor ("The \"options.x\" property must be ...") — the
  * option-bag validators' gate (error.propTypeThrow). Always throws. */
 SCR_COLD void scr_throw_prop_type(const ScrStr *name, const ScrStr *expected, const ScrDyn *got);
@@ -2827,5 +2834,27 @@ ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key);
  * its layout, adds, taking ownership of `value`, exactly as an ordinary
  * insertion would. */
 void scr_dyn_tier_append(ScrDyn *obj, const ScrLayout *next, ScrDyn *value);
+
+/* Record views of record types whose values may also be frozen
+ * (scr_record_view_frozen.c; compiler record-views.ts). A view is marked by
+ * the frozen bit of its rc word, so a marked value of such a type is a view
+ * or a frozen record, and the record-source table tells which. */
+/* Whether a marked value is a view. */
+bool scr_record_marked_is_view(void *obj);
+/* The slot of field `position` of a marked value whose own slot is `own`:
+ * the viewed record's for a view (NULL for a field a partial view's record
+ * does not declare), `own` for a frozen record. */
+void *scr_record_marked_slot(void *obj, size_t position, void *own);
+/* scr_record_view_field for such a type: any value of it. */
+void *scr_record_marked_field(void *value, size_t offset, size_t position);
+/* Whether a marked value is frozen: a view answers for the record it views. */
+bool scr_record_marked_frozen(void *obj);
+/* Object.freeze of a value of such a type: a view freezes the record it
+ * views. */
+void scr_record_marked_freeze(void *record);
+/* scr_dyn_record_view that answers the view a capsule already has also once
+ * its record is frozen. */
+void *scr_dyn_record_view_kept(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
+                               const char *key, size_t key_len, void *(*alloc)(void));
 
 #endif /* SCR_DYN_H */

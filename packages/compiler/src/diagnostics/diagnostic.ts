@@ -100,6 +100,7 @@
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
+import type { NodeIslandPackageMark, NodeIslandPathMark } from "../node-islands/policy.js";
 import type { DiagnosticCode } from "./codes.js";
 
 /* Internal prioritization buckets. NEVER rendered to users — user-facing
@@ -442,42 +443,84 @@ export function nodeIslandMarkStripDiag(
   };
 }
 
-/** SC8006 — a `--node-island=<path>` value matches no module of the
- * program: the build would run nothing in Node for it. */
-export function nodeIslandUnmatchedMarkDiag(pattern: string, loc: SrcLoc): ScrDiagnostic {
+/** The package a path under node_modules belongs to (the last
+ * `node_modules` segment, scope-aware), or null outside node_modules. */
+function packageOfNodeModulesPath(path: string): string | null {
+  const parts = path.replaceAll("\\", "/").split("/");
+  const at = parts.lastIndexOf("node_modules");
+  const first = at < 0 ? undefined : parts[at + 1];
+  if (first === undefined || first === "" || first.includes("*")) return null;
+  if (!first.startsWith("@")) return first;
+  const second = parts[at + 2];
+  return second === undefined || second === "" || second.includes("*")
+    ? null
+    : `${first}/${second}`;
+}
+
+/** SC8006 — a `--node-island` value read as a path or glob matches no
+ * module of the program: the build would run nothing in Node for it. The
+ * message says how the value was read, and the hint how to write the other
+ * reading. */
+export function nodeIslandUnmatchedMarkDiag(mark: NodeIslandPathMark, loc: SrcLoc): ScrDiagnostic {
+  const read =
+    mark.why === "glob"
+      ? `read as the glob ${mark.pattern}, because a value with '*' is a glob over the program's own modules`
+      : mark.why === "explicit"
+        ? `read as the path ${mark.pattern}, because a value that starts with '.' or '/' is a path`
+        : mark.why === "node-modules"
+          ? `read as the path ${mark.pattern}, because no package is named node_modules`
+          : `read as the path ${mark.pattern}, because that file exists and the entry module resolves no package of that name`;
+  const pkg = packageOfNodeModulesPath(mark.pattern);
+  const hint =
+    pkg !== null
+      ? `a path or glob marks the program's own modules; code under node_modules runs in a Node island by package: to mark the package write --node-island=${pkg}`
+      : mark.why === "file"
+        ? `a path marks one of the program's own modules, and the program loads no module from this file; while the file exists, a package of the same name is marked in package.json ("scriptc": { "packages": { "<name>": "node" } })`
+        : "a path or glob marks the program's own modules, resolved from the working directory; to mark a package write its name as the program imports it (--node-island=<package>)";
   return {
     code: "SC8006",
-    message: `--node-island=${pattern} names no module of this program`,
+    message: `--node-island=${mark.value} names no module of this program: ${read}`,
     loc,
-    hint: "a path or glob marks the program's own modules, resolved from the working directory; a package runs in a Node island by its name (--node-island=<package>)",
+    hint,
   };
 }
 
-/** SC8006 — `--node-island=<package>` names a package the program does not
- * load from node_modules, so there is nothing to run in Node: scriptc
- * compiles the package from its own implementation (`shim`), the package is
- * a Node builtin under another name (`builtin`), or the program loads no
- * module of it (`absent`: not imported, imported for its types only, or a
- * workspace package compiled from source, which is the program's own code). */
+/** SC8006 — `--node-island` names a package the build runs nothing of in
+ * Node: scriptc compiles the package from its own implementation (`shim`),
+ * the package is a Node builtin under another name (`builtin`), `--native`
+ * names the same package (`native`), or the program loads no module of it
+ * from node_modules (`absent`: not imported, imported for its types only, or
+ * a workspace package compiled from source, which is the program's own
+ * code). The `absent` message says how the value was read, and the hint how
+ * to write the other reading. */
 export function nodeIslandUnmatchedPackageDiag(
-  name: string,
-  why: "shim" | "builtin" | "absent",
+  mark: NodeIslandPackageMark,
+  why: "shim" | "builtin" | "native" | "absent",
   loc: SrcLoc,
 ): ScrDiagnostic {
+  const { value, name } = mark;
+  const read =
+    mark.why === "installed"
+      ? `read as the package '${name}', because the entry module resolves a package of that name, which wins over the file ${mark.file}`
+      : `read as the package '${name}', because no file ${mark.file} exists`;
   const message =
     why === "shim"
-      ? `--node-island=${name} cannot run '${name}' in a Node island: scriptc compiles this package from its own implementation, not from the installed one`
+      ? `--node-island=${value} cannot run '${name}' in a Node island: scriptc compiles this package from its own implementation, not from the installed one`
       : why === "builtin"
-        ? `--node-island=${name} cannot run '${name}' in a Node island: at its installed version the package is a Node builtin module, which the program reaches directly`
-        : `--node-island=${name} names no package this program loads from node_modules`;
+        ? `--node-island=${value} cannot run '${name}' in a Node island: at its installed version the package is a Node builtin module, which the program reaches directly`
+        : why === "native"
+          ? `--node-island=${value} and --native=${name} contradict each other`
+          : `--node-island=${value} names no package this program loads from node_modules: ${read}`;
   return {
     code: "SC8006",
     message,
     loc,
     hint:
       why === "absent"
-        ? "a package runs in a Node island when the program imports a module of it; a workspace package compiled from source is the program's own code, so mark its modules by path (--node-island=<path>)"
-        : "drop the flag: this package has no island form",
+        ? `a package runs in a Node island when the program imports a module of it; a workspace package compiled from source is the program's own code, so mark its modules by path; a path starts with ./ (--node-island=./${value})`
+        : why === "native"
+          ? "drop one of the two flags: a package compiles natively or runs in a Node island"
+          : "drop the flag: this package has no island form",
   };
 }
 
@@ -662,6 +705,25 @@ export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic
     message: `${what} cannot cross into or out of a Node island yet`,
     loc,
     hint: "pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on",
+  };
+}
+
+/** SC8010 — a value a Node island made (a function it exports, an object of
+ * a type it declares) sits where the program needs a native value of that
+ * type, and the type has no native form. The package's implementation is
+ * not missing: it runs in the island, and the value is a handle. */
+export function nodeIslandNativeUseDiag(
+  what: string,
+  loc: SrcLoc,
+  callable: boolean,
+): ScrDiagnostic {
+  return {
+    code: "SC8010",
+    message: `${what} is used here as a native value, which a Node island's value of this type cannot become yet`,
+    loc,
+    hint: callable
+      ? "call it from a function of the program, such as `(a, b) => f(a, b)`, or give the slot a function type the program declares"
+      : "use the value through the island (read its members, call its methods, pass it back), or declare the slot `unknown`",
   };
 }
 

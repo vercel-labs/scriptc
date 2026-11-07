@@ -1,0 +1,17 @@
+descriptor-map-accessor.ts:9:3 - error SC1090: a get or set accessor in a property descriptor map literal is not supported yet
+
+   8 |   plain: { value: 1, enumerable: true },
+   9 |   get computed() {
+     |   ^~~~~~~~~~~~~~~~
+  10 |     return { value: items, enumerable: true };
+
+  hint: write the descriptor as the member's value ('name: { get() { ... }, enumerable: true }' defines an accessor property)
+
+descriptor-map-accessor.ts:15:3 - error SC1090: a get or set accessor in a property descriptor map literal is not supported yet
+
+  14 | const created: unknown = Object.create(null, {
+  15 |   set ignored(_descriptor: PropertyDescriptor) {},
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | });
+
+  hint: write the descriptor as the member's value ('name: { get() { ... }, enumerable: true }' defines an accessor property)

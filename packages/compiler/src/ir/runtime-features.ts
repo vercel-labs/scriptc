@@ -574,6 +574,8 @@ interface TypeTables {
   classes: Map<string, IrClassDef>;
   /** mentionsDgramSocket's carriers, computed on first use. */
   dgramCarriers?: TypeCarriers;
+  /** mentionsChild's carriers. */
+  childCarriers?: TypeCarriers;
   /** mentionsTextCodec's and mentionsTextDecoder's carriers. */
   textCodecCarriers?: TypeCarriers;
   textDecoderCarriers?: TypeCarriers;
@@ -730,6 +732,16 @@ const dgramLeaf: CarrierLeaf = (t) => t.kind === "dgramSocket";
 function mentionsDgramSocket(t: IrType, tables: TypeTables): boolean {
   tables.dgramCarriers ??= leafCarriers(tables, dgramLeaf);
   return carriesLeaf(t, tables.dgramCarriers, dgramLeaf, tables);
+}
+
+const childLeaf: CarrierLeaf = (t) => t.kind === "child";
+
+/** Whether converting a value of type `t` to dyn boxes a ChildProcess: the
+ * child itself, or a function, collection, record, union, promise or class
+ * instance that carries one (the same carrier walk as dgram sockets). */
+function mentionsChild(t: IrType, tables: TypeTables): boolean {
+  tables.childCarriers ??= leafCarriers(tables, childLeaf);
+  return carriesLeaf(t, tables.childCarriers, childLeaf, tables);
 }
 
 const textCodecLeaf: CarrierLeaf = (t, tables) => {
@@ -1297,6 +1309,19 @@ const RUNTIME_FEATURE_RULES = {
    * program that never reads `.error` keeps the default object and the
    * result container exactly as they were. */
   childErrorFields: rule({ fns: ["spawnRes.error"] }),
+  /** The program can register an 'error' listener on a ChildProcess: a
+   * typed or an untyped registration, or a child that converts to an
+   * untyped value, whose `on` the handle table serves. Such a program
+   * installs the builder of a failed spawn's error object at start
+   * (scr_child_error_event_install: errno, code, syscall, path and
+   * spawnargs, one object for every listener). The settle path reaches
+   * the builder only through that hook, so a program that spawns and can
+   * never listen for 'error' links none of the property code. No unit and
+   * no build of its own: the fact only decides the emitted call. */
+  childErrorEvent: rule({
+    fns: ["child.onError", "child.onDyn", "child.propsOnDyn"],
+    expr: (node, tables) => node.kind === "dynFrom" && mentionsChild(node.value.type, tables()),
+  }),
   /** scr_cipher.c over the mbedTLS archive; DEP0182 reports through the
    * process-warning unit, and unknown output encodings render through the
    * inspect unit. WebCrypto's encrypt, decrypt, wrapKey and unwrapKey
@@ -1480,6 +1505,18 @@ const RUNTIME_FEATURE_RULES = {
    * record's kept source (scr_record_source_delete.c, a unit of its own so
    * scr_json.c keeps its layout). */
   recordSourceDelete: rule({ fns: ["record.sourceDelete"] }),
+  /** A partial record assertion to a type whose values may be frozen
+   * (scr_record_view_frozen.c): a view of such a type shares the frozen bit
+   * with frozen records, and the unit tells the two apart. The frontend
+   * keeps the asserted type and the literal's own type freezable together
+   * (frozen-records.ts), so the asserted type decides. */
+  recordViewFrozen: rule({
+    expr: (node, tables) =>
+      node.kind === "dynCheck" &&
+      node.partialView === true &&
+      node.type.kind === "record" &&
+      tables().records.get(node.type.shapeId)?.freezable === true,
+  }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
@@ -1516,6 +1553,10 @@ const RUNTIME_FEATURE_RULES = {
   /** createRequire's require and require.resolve with specifiers computed
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
+  /** An untyped path of a synchronous fs function in a JavaScript source
+   * (scr_fs_path_value.c): a unit of its own, so no other executable
+   * changes. */
+  fsPathValue: rule({ fns: ["dyn.validateFsPath"] }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({
     fns: [
@@ -2042,6 +2083,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childOptionExt: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
+    childErrorEvent: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
@@ -2049,10 +2091,12 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
     recordSourceDelete: false,
+    recordViewFrozen: false,
     dynBuffer: false,
     dynBufferMembers: false,
     genReceiver: false,
     bufferPrototypeObject: false,
+    fsPathValue: false,
     builtinValues: false,
     computedRequire: false,
     symbol: false,

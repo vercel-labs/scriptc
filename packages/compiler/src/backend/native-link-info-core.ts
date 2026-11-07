@@ -142,6 +142,9 @@ export interface NativeLinkFeatures {
   /** `delete` of a key a record's type does not declare:
    * scr_record_source_delete.c. Absent (false) for programs without one. */
   recordSourceDelete?: boolean;
+  /** A partial record assertion to a type whose values may be frozen
+   * compiles scr_record_view_frozen.c; absent (false) otherwise. */
+  recordViewFrozen?: boolean;
   /** A generator that binds its parameters at the call: scr_gen_bind.c.
    * Absent (false) for programs without one. */
   genBind?: boolean;
@@ -172,6 +175,9 @@ export interface NativeLinkFeatures {
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;
+  /** An untyped path of a synchronous fs function in a JavaScript source
+   * (dyn.validateFsPath) links scr_fs_path_value.c; absent (false) otherwise. */
+  fsPathValue?: boolean;
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
@@ -264,6 +270,130 @@ export interface NativeLinkFeatures {
    * the link plan, never a fact the program analysis answers; absent for
    * every dynamically linked build, whose objects stay unchanged. */
   staticLink?: boolean;
+}
+
+/** The keys a NativeLinkFeatures value always spells, on or off: the ones
+ * declared without `?`. An optional key is absent when its feature is off,
+ * so a program without the feature keeps its link identity, and no list
+ * below names it. */
+export type RequiredLinkFeatureName = {
+  [Name in keyof NativeLinkFeatures]-?: undefined extends NativeLinkFeatures[Name] ? never : Name;
+}[keyof NativeLinkFeatures];
+
+/** A compile error that names this type means NO_LINK_FEATURES and
+ * NativeLinkFeatures disagree about the required keys: a key declared
+ * without `?` is not listed there (add `<key>: false,` at the key's place in
+ * the interface's order), or a listed name is not such a key (delete it). */
+type EveryRequiredLinkFeatureOff = { readonly [Name in RequiredLinkFeatureName]: false };
+
+/** Every required key, off, in the interface's order. This is the one list
+ * of those keys: the cache validators and the warm-cache profiles read it,
+ * so a required key is added by declaring it in the interface and adding
+ * its line here, and removed by deleting both. An optional key has no line
+ * anywhere but the interface. */
+const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
+  regex: false,
+  copying: false,
+  textDecoderLegacy: false,
+  bigintBytes: false,
+  fileHandle: false,
+  fetch: false,
+  zlib: false,
+  assert: false,
+  inspect: false,
+  dynInvoke: false,
+  dc: false,
+  dynAsync: false,
+  events: false,
+  emitter: false,
+  symbol: false,
+  bigint: false,
+  searchParams: false,
+  qs: false,
+  utilPromisify: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
+  parseArgs: false,
+  stream: false,
+  net: false,
+  http: false,
+  http2: false,
+  dgram: false,
+  dnsPromises: false,
+  dgramDyn: false,
+  textCodecDyn: false,
+  watch: false,
+  watchFile: false,
+  foreignFfi: false,
+  nodeTest: false,
+  tls: false,
+  cipher: false,
+  ecdh: false,
+  dh: false,
+  pki: false,
+  ed25519: false,
+  x509: false,
+  perfLoop: false,
+  tlsCa: false,
+  webcrypto: false,
+};
+
+const requiredLinkFeatures: RequiredLinkFeatureName[] = [];
+for (const name in NO_LINK_FEATURES) requiredLinkFeatures.push(name as RequiredLinkFeatureName);
+
+/** The required keys, in the interface's order. */
+export const REQUIRED_LINK_FEATURES: readonly RequiredLinkFeatureName[] = requiredLinkFeatures;
+
+/** The link features of a program that links none of the optional runtime:
+ * every required key present and false, no optional key. A caller turns on
+ * what it links: `{ ...noLinkFeatures(), fetch: true }`. */
+export function noLinkFeatures(): NativeLinkFeatures {
+  return { ...NO_LINK_FEATURES };
+}
+
+/** A link feature whose runtime units call into another feature's units,
+ * with the features that own those units. */
+interface LinkFeatureRequirement {
+  feature: RequiredLinkFeatureName;
+  requires: readonly RequiredLinkFeatureName[];
+}
+
+/** The link features that cannot link alone: each one's runtime units call
+ * functions of the units its `requires` features select, on a path the
+ * program reaches as soon as the feature is on. executableLinkFeatures turns
+ * the required features on, so the one list says what a feature needs
+ * whichever fact of the program selected it.
+ *
+ * `http2`: scr_http2.c releases a stream's compatibility request and
+ * response through scr_http.c and runs its sockets through scr_net.c. A
+ * program that only holds a session or stream type (`ClientHttp2Session` in
+ * a signature, with no node:http2 call left) selects the http2 units for the
+ * type's reference counting, and reaches those calls.
+ *
+ * A reference that only a call selecting the other unit reaches needs no
+ * line: the link's section collection drops it otherwise. The reference
+ * check in tests/harness/runtime-unit-references.test.ts lists those, and
+ * fails on a reference that is in neither list. */
+export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
+  { feature: "http2", requires: ["http", "net"] },
+];
+
+/** Turns on, in `features`, every feature that one of its features
+ * requires, directly or through another requirement, and returns it. The
+ * value keeps its keys and their order. */
+export function withRequiredLinkFeatures(features: NativeLinkFeatures): NativeLinkFeatures {
+  for (;;) {
+    let changed = false;
+    for (const { feature, requires } of LINK_FEATURE_REQUIREMENTS) {
+      if (!features[feature]) continue;
+      for (const name of requires) {
+        if (features[name]) continue;
+        features[name] = true;
+        changed = true;
+      }
+    }
+    if (!changed) return features;
+  }
 }
 
 export interface NativeLinkInfo {

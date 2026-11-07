@@ -1161,6 +1161,13 @@ export interface IrModule {
    * others: what the copy's reflective surfaces answer from. `pair` is
    * the nonzero number the link stores. Absent when there are none. */
   recordLinks?: IrRecordLink[];
+  /** Shape ids of the record types whose `record.sourceHas` tests the
+   * frontend removed, with the branches they guarded, because no function
+   * of the program can give a record a kept source (frontend
+   * record-sources.ts). The backend stops when it emits a conversion or a
+   * library call that keeps a source for one of them. Sorted; absent when
+   * no test was removed. */
+  recordSourcesFolded?: string[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
@@ -3350,12 +3357,17 @@ export type IrExpr =
    * case so `f === f` is true (JS function identity). `adapts` marks a
    * signature adapter: captures[0] holds the function it forwards to, and
    * the new closure takes that function's identity (JS sees one function,
-   * so `===`, SameValue and searches compare identity roots). */
+   * so `===`, SameValue and searches compare identity roots). `length` is
+   * the function's own `length` where the type's parameter list does not
+   * give it: a function literal lowered with the parameter list of the slot
+   * it is written into receives the slot's remaining arguments in
+   * parameters it never declared. */
   | {
       kind: "closure";
       fnName: string;
       captures: string[];
       adapts?: true;
+      length?: number;
       type: IrType;
       loc: SrcLoc;
     }

@@ -42,7 +42,7 @@ import {
   type UnitStore,
 } from "./frontend/lowering/unit-reuse.js";
 import { commentOnlyReplay } from "./coverage/verdict-semantic.js";
-import { llvmRefusalDiag, targetRefusalDiag } from "./backend/target-diagnostics.js";
+import { llvmRefusalDiags, targetRefusalDiag } from "./backend/target-diagnostics.js";
 import type {
   CompileOptions,
   CompileSourceOptions,
@@ -893,6 +893,7 @@ async function compileExecutableNative(
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
     ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
+    ...(features.recordViewFrozen ? { recordViewFrozen: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
     ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
@@ -905,6 +906,7 @@ async function compileExecutableNative(
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
+    ...(features.fsPathValue ? { fsPathValue: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
     ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
@@ -1356,7 +1358,7 @@ async function prepareExecutableInput(
       });
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
-      return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
+      return { ok: false, diagnostics: llvmRefusalDiags(err, entryPath), sourceTexts };
     }
     timing("llvm-emit");
     if (outputKind === "llvm") {
@@ -1445,7 +1447,7 @@ async function prepareExecutableInput(
     });
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
-    return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
+    return { ok: false, diagnostics: llvmRefusalDiags(err, entryPath), sourceTexts };
   }
   timing("llvm-emit");
   await writeLlvmSource(llvmSourcePath, llvmSource);
@@ -1726,7 +1728,7 @@ async function prepareExecutableInputInChild(
     return prepareExecutableInput(entryPath, opts, ffi, buildPlatform, timing, warningSink);
   timing("frontend-process");
   for (const probe of result.frontend.probes) frontendInputs.record(probe);
-  if (!result.frontend.stable) frontendInputs.markUnstable();
+  if (!result.frontend.stable) frontendInputs.markUnstable(result.frontend.unstable);
   const sourceTexts = new Map(result.sourceTexts);
   if (warningSink !== undefined && result.warnings.length > 0) {
     warningSink.warnings = result.warnings;
@@ -2186,6 +2188,7 @@ async function compileTracked(
       ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
+      ...(opts.tier === "static-only" ? { tier: "static-only" as const } : {}),
       ...(nodeIslandOptionsKey(opts.nodeIslands) !== ""
         ? { nodeIslands: nodeIslandOptionsKey(opts.nodeIslands) }
         : {}),
@@ -3054,7 +3057,7 @@ async function compileLibraryTracked(
     timing("llvm-write");
   } catch (err) {
     if (!(err instanceof LlvmUnsupportedError)) throw err;
-    return fail([llvmRefusalDiag(err, entryPath)]);
+    return fail(llvmRefusalDiags(err, entryPath));
   }
 
   let irPath: string | undefined;

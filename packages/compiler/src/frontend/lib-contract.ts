@@ -29,6 +29,7 @@
  *   export const envMsgs       = [{ env: "NAME", msg: "arm" }, ...] as const;
  */
 import * as ts from "./ts7/adapter.js";
+import { withoutParenthesesAsSatisfies } from "./outer-expressions.js";
 import type { SrcLoc } from "../ir/ir.js";
 
 /** A syntactic type shape — exactly what the source spells, no checker. */
@@ -312,28 +313,12 @@ function typeShape(
   return { k: "unsupported", text: ts.getTextOfNode(node) };
 }
 
-/** Unwrap `expr as const` / parenthesized initializers. */
-function unwrapConst(expr: ts.Expression): ts.Expression {
-  let e = expr;
-  for (;;) {
-    if (ts.isAsExpression(e) || ts.isSatisfiesExpression(e)) {
-      e = e.expression;
-      continue;
-    }
-    if (ts.isParenthesizedExpression(e)) {
-      e = e.expression;
-      continue;
-    }
-    return e;
-  }
-}
-
 function stringArray(expr: ts.Expression): string[] | null {
-  const e = unwrapConst(expr);
+  const e = withoutParenthesesAsSatisfies(expr);
   if (!ts.isArrayLiteralExpression(e)) return null;
   const out: string[] = [];
   for (const el of e.elements.nodes) {
-    const v = unwrapConst(el as ts.Expression);
+    const v = withoutParenthesesAsSatisfies(el as ts.Expression);
     if (!ts.isStringLiteral(v)) return null;
     out.push(v.text);
   }
@@ -341,18 +326,18 @@ function stringArray(expr: ts.Expression): string[] | null {
 }
 
 function envMsgArray(expr: ts.Expression): { env: string; msg: string }[] | null {
-  const e = unwrapConst(expr);
+  const e = withoutParenthesesAsSatisfies(expr);
   if (!ts.isArrayLiteralExpression(e)) return null;
   const out: { env: string; msg: string }[] = [];
   for (const el of e.elements.nodes) {
-    const v = unwrapConst(el as ts.Expression);
+    const v = withoutParenthesesAsSatisfies(el as ts.Expression);
     if (!ts.isObjectLiteralExpression(v)) return null;
     let env: string | null = null;
     let msg: string | null = null;
     for (const prop of v.properties.nodes) {
       if (!ts.isPropertyAssignment(prop)) return null;
       const name = propName(prop.name);
-      const val = unwrapConst(prop.initializer);
+      const val = withoutParenthesesAsSatisfies(prop.initializer);
       if (!ts.isStringLiteral(val)) return null;
       if (name === "env") env = val.text;
       else if (name === "msg") msg = val.text;
@@ -526,7 +511,7 @@ export function entryContractFacts(
           continue;
         }
         if (name === "appearanceMsg" || name === "chromeMsg") {
-          const v = unwrapConst(decl.initializer);
+          const v = withoutParenthesesAsSatisfies(decl.initializer);
           if (!ts.isStringLiteral(v)) {
             facts.malformedConsts.push({
               name,

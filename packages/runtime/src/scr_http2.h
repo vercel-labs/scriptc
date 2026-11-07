@@ -137,6 +137,11 @@ bool scr_http2_stream_destroyed(ScrH2Stream *st);
 bool scr_http2_stream_closed(ScrH2Stream *st);
 bool scr_http2_stream_aborted(ScrH2Stream *st);
 bool scr_http2_stream_pending(ScrH2Stream *st);
+bool scr_http2_stream_headers_sent(ScrH2Stream *st);
+bool scr_http2_req_complete(ScrHttpReq *r);
+/* Every value `name` has in a received pairs array, in order (the array a
+ * headers object holds for set-cookie). */
+ScrArr *scr_http2_pairs_values(ScrArr *pairs /*borrowed*/, ScrStr *name /*borrowed*/); /* +1 */
 ScrH2Session *scr_http2_stream_session(ScrH2Stream *st); /* +1 */
 
 /* the emitted-adapter thunks (arity + record-building live program-side) */

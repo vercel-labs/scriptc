@@ -8,14 +8,18 @@ interface CallbackArgOptions {
   dynTuple?: readonly IrType[];
   /** The dgram precedent: a raw dyn value may fill a zero-arg slot. */
   dynZero?: boolean;
-  /** Validate every declared parameter (dgram); otherwise just the first. */
-  checkAllParams?: boolean;
   /** Reject non-void callbacks instead of adapting their result away. */
   rejectValueReturn?: boolean;
   adapt?: (cb: IrExpr) => IrExpr;
 }
 
-/** Shared listener/callback shape validation for the Node spoke modules. */
+/** Shared listener/callback shape validation for the Node spoke modules.
+ * `paramOk` is asked about every declared parameter, by position: the
+ * runtime calls the closure with the event's native payload, so a
+ * parameter of another type would read that payload as something it is
+ * not. A callback whose only mismatched parameters are dynamic (`unknown`,
+ * `any`, an untyped JavaScript parameter) crosses the checked-dynamic
+ * boundary instead when the event's payload tuple is known. */
 export function lowerCallbackArg(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -38,7 +42,7 @@ export function lowerCallbackArg(
     cb.type.kind === "func" &&
     (cb.type.rest === true ||
       (cb.type.params.length > 0 && cb.type.params.some((param, i) => !paramOk(param, i)))) &&
-    cb.type.params.every((param) => param.kind === "dyn") &&
+    cb.type.params.every((param, i) => param.kind === "dyn" || paramOk(param, i)) &&
     canBoxFuncIntoDyn(
       cb.type,
       (id) => lowerer.shapes.get(id),
@@ -69,7 +73,7 @@ export function lowerCallbackArg(
       "listeners returning a value (make the callback body a block, or return nothing)",
     );
   }
-  const params = options.checkAllParams ? cb.type.params : cb.type.params.slice(0, 1);
+  const params = cb.type.params;
   for (let i = 0; i < params.length; i++) {
     if (!paramOk(params[i]!, i)) {
       lowerer.unsupported(

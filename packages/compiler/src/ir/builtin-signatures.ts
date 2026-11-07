@@ -2862,6 +2862,12 @@ function buildLibFnSignatures() {
     "http2.streamClosed": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamAborted": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamPending": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    // Http2ServerRequest.complete: true once aborted, ended or closed.
+    "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
+    // Every value a name has in a received [name, value, ...] pairs array:
+    // the string[] a headers object holds for set-cookie.
+    "http2.pairsValues": { argTypes: [arrayOf(STRING), STRING], result: arrayOf(STRING) },
     "http2.streamSession": { argTypes: [HTTP2STREAM_T], result: HTTP2SESSION_T },
     // The createConnection forms: arg 0 is the dialer closure (() =>
     // Socket — the libCall case checks), then path/method/timeout/headers/

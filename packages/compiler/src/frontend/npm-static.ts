@@ -448,18 +448,15 @@ function packageShipsEsmJs(pkgDir: string): boolean {
   return esm;
 }
 
-/** Whether a node_modules JavaScript file a NON-opted package's specifier
- * resolves to keeps the flagless import surface (`any`) instead of being
- * inferred from its source. Without --npm-static, maxNodeModuleJsDepth
- * includes no node_modules JavaScript at all, so the flagless checker types
- * every such import as an implicit-any module. Inferring one under the flag
- * replaces that surface for a package the user did not opt in — and where
- * the package DOES declare the subpath from its own declarations (an
- * ambient `declare module 'pkg/lib/languages/*'` block, which the checker
- * never consults once the specifier resolves to the JavaScript file), it
- * replaces a DECLARED surface with an inferred one, so the program's own
- * typecheck sees a package disagreeing with itself. CommonJS only: the stub
- * is CommonJS-shaped. */
+/** Whether a JavaScript file of an opted-in package that runs in a Node
+ * island keeps the implicit-any import surface instead of being inferred
+ * from its source (see the island rule in the fs shadow): an untyped
+ * package, or a CommonJS file no declaration covers. Where the package
+ * declares the subpath from its own declarations (an ambient `declare
+ * module 'pkg/lib/languages/*'` block, which the checker never consults
+ * once the specifier resolves to the JavaScript file), inferring the file
+ * would replace a DECLARED surface with an inferred one. CommonJS only: the
+ * stub is CommonJS-shaped. */
 function servesImplicitAnySurface(path: string): boolean {
   if (packageIsUntyped(path)) return true;
   const pkgDir = nodeModulesPackageDir(path);
@@ -495,31 +492,12 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
   if (!npmStaticActive()) return null;
   return {
     readFile: (path) => {
+      // A package that is not opted in is read as it is: its JavaScript never
+      // joins the program (tsgo loads node_modules JavaScript only as a
+      // root, and only opted-in packages' files are rooted), so its imports
+      // type exactly as they do without any opted-in package.
       const target = shadowTargetOf(path);
-      /* NON-OPTED node_modules JS: maxNodeModuleJsDepth (set only on
-       * --npm-static loads) admits third-party JS the flagless build never
-       * types, and that file's inferred surface would then replace the `any`
-       * its import contributes flagless — changing the PROGRAM's own types
-       * under a flag that promised to touch only the opted-in packages (the
-       * jaro-winkler shape: an @ts-ignore'd import whose result feeds program
-       * arithmetic). Serve those files as the any-surface stub instead: the
-       * import types exactly what the flagless build typed. A TYPED package
-       * reaches here too for a subpath no declaration file covers (its
-       * package .d.ts may still declare it from an ambient `declare module`
-       * block the checker never consults once the specifier resolves to the
-       * JavaScript), so typed-ness alone is not the test (see
-       * servesImplicitAnySurface). */
-      if (!target) {
-        if (
-          (path.endsWith(".js") || path.endsWith(".cjs")) &&
-          isNodeModulesPathNorm(path) &&
-          !trackedExists(path.replace(/\.(js|cjs)$/, ".d.ts")) && // a sibling .d.ts types this very file
-          servesImplicitAnySurface(path)
-        ) {
-          return "module.exports = (() => { let u; return u; })();\n";
-        }
-        return undefined;
-      }
+      if (!target) return undefined;
       if (target.viaTypes) return undefined;
       /* An OPTED-IN package that runs in a Node ISLAND is typed by its
        * declarations: its bodies are never lowered, so its JavaScript adds

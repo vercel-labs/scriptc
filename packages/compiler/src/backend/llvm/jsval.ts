@@ -178,6 +178,8 @@ function withSlowPath(
   fast: (slow: string) => string,
   slow: () => string,
   mayThrow: boolean,
+  /** Runs on the slow path's unwind (emitPendingCheck's onUnwind). */
+  onUnwind?: () => void,
 ): string {
   const B = host.B;
   const slot = B.slot();
@@ -190,7 +192,7 @@ function withSlowPath(
   B.startBlock(slowLabel);
   const slowValue = slow();
   B.line(`store ${ty} ${slowValue}, ptr ${slot}`);
-  if (mayThrow) host.emitPendingCheck();
+  if (mayThrow) host.emitPendingCheck(undefined, false, undefined, onUnwind);
   B.br(done);
   B.startBlock(done);
   const out = B.tmp();
@@ -399,6 +401,8 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
           return d;
         },
         true,
+        // A checked conversion to a number: a dev build reports its failure.
+        host.conversionTraceAt(e.loc),
       );
       return { name: out, type: e.type };
     }
@@ -602,7 +606,9 @@ function emitBoxedJsLibCall(host: Host, e: LibCallExpr): LlValue {
       const helper = host.dyn.dynCheckHelper(e.type, undefined);
       const d = B.tmp();
       B.line(`${d} = call double @${helper}(ptr ${v}, ptr null)`);
-      return throwing({ name: d, type: e.type });
+      // A checked conversion to a number: a dev build reports its failure.
+      host.emitPendingCheck(undefined, false, undefined, host.conversionTraceAt(e.loc));
+      return { name: d, type: e.type };
     }
     case "js.add": {
       const [a, b] = args();

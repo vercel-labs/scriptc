@@ -370,6 +370,12 @@ import {
   emitProcessLibCall,
   emitErrorsEventsLibCall,
 } from "./lib-process.js";
+import {
+  FramePositions,
+  frameText,
+  memberFrameName,
+  positionedFrameText,
+} from "./frame-positions.js";
 import { emitStreamLibCall } from "./lib-stream.js";
 import { emitNetworkHttpLibCall } from "./lib-network.js";
 import {
@@ -408,11 +414,12 @@ import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from
 import { VirtualBorrows } from "./virtual-borrows.js";
 import {
   absentTrapLines,
+  PARTIAL_DECLINE_TEXT,
   planRecordViews,
   recordViewFieldPtr,
-  recordViewTestLines,
+  recordViewTest,
 } from "./record-views.js";
-import { LlvmUnsupportedError } from "./unsupported.js";
+import { LlvmUnsupportedError, anchorRefusal } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
   isObjectArm,
@@ -604,6 +611,12 @@ export interface LlvmTargetOptions {
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
+  /** The output is linked with the report of failed checked conversions
+   * (scr_conversion_trace.c, runtime feature conversionTrace), so each
+   * conversion's failure path calls it with the conversion's position. Set
+   * together with that link feature, by the builds that decide both; it
+   * needs `debugSources` for the positions. */
+  conversionTrace?: boolean;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
   pointerBits?: 32 | 64;
   /** Unions emitted as tagged boxes whatever their arms, for tests of the
@@ -1120,6 +1133,7 @@ const POLL_EVERY_ITERATION = "%worker.poll.every";
 
 /** Runtime library calls (readsLoopMetrics). */
 const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
+const DYN_CHECK_KINDS: readonly IrNodeKind[] = ["dynCheck"];
 const CLOSURE_KINDS: readonly IrNodeKind[] = ["closure"];
 
 /** [A-Za-z0-9_] */
@@ -2371,6 +2385,24 @@ export class LlEmitter {
   readonly chainSlots = new Map<string, LlValue>();
   logArgSlots = 0;
   readonly stackTraces: boolean;
+  /** Source frames carry the position of the running statement. */
+  readonly positionedFrames: boolean;
+  /** The executable prints its frame chain when it aborts. */
+  readonly abortFrames: boolean;
+  /** Checked conversions pass their position to their failure path, which
+   * reports the failure when the program is run with
+   * SCRIPTC_CONVERSION_TRACE (conversionTraceAt). */
+  readonly conversionTrace: boolean;
+  /** The frame name of the function being emitted (frameNameOf). */
+  currentFrameName: string | undefined = undefined;
+  /** The positions of the frame of the function being emitted, when it has
+   * a positioned frame. */
+  framePositions: FramePositions | null = null;
+  private frameCapturesValue: {
+    anchors: ReadonlySet<string>;
+    constructors: ReadonlySet<string>;
+  } | null = null;
+  private memberFrameNamesValue: ReadonlyMap<string, string> | null = null;
   /** The options this emitter was built with (chunk emitters reuse them). */
   readonly targetOptions: LlvmTargetOptions;
   /** Records the module-level effects of emitting a range of functions,
@@ -2407,7 +2439,26 @@ export class LlEmitter {
     // process computes it (startInt32Slots).
     if (int32Analysis !== null) this.int32SlotsValue = int32Analysis.slots;
     else this.startInt32Slots(dynamicStores);
-    this.stackTraces = observesStacks(mod, this.nodeIndex);
+    // A build that carries debug sources keeps a positioned frame in the
+    // functions that can raise an error (frame-positions.ts), whether or
+    // not the program reads a stack: its uncaught-error report names the
+    // failing statement. A sanitized build keeps the frames of a release
+    // build: AddressSanitizer instruments every store into a frame, and
+    // the sanitized builds of large programs took past the test lanes'
+    // limits with a store per statement.
+    this.positionedFrames =
+      options.debugSources !== undefined && options.sanitizeAttributes === false;
+    this.stackTraces = this.positionedFrames || observesStacks(mod, this.nodeIndex);
+    // A build that carries debug sources can say where a checked conversion
+    // is, so its conversions report their failures (scr_conversion_trace.c).
+    // The build asks for it where it also links that unit: an emitter whose
+    // output is linked some other way must not call what the link lacks. A
+    // sanitized build reports too: it is one call on a path that runs only
+    // when a conversion fails. Library archives link a fixed runtime set.
+    this.conversionTrace =
+      options.conversionTrace === true &&
+      options.debugSources !== undefined &&
+      mod.lib === undefined;
     this.nullableUnions = new NullableUnions(
       mod,
       options.debugSources === undefined,
@@ -2525,6 +2576,16 @@ export class LlEmitter {
     // and per async fiber; WASI, Windows and library builds have none.
     const triple = (options.targetTriple ?? "").toLowerCase();
     const windows = triple === "" ? process.platform === "win32" : triple.includes("windows");
+    // An executable with positioned frames also reports them when it aborts
+    // (frame-positions.ts). POSIX executables on 64-bit targets: Windows
+    // spells write() and SIGABRT differently, and libraries leave signal
+    // handling to their host.
+    this.abortFrames =
+      this.positionedFrames &&
+      mod.lib === undefined &&
+      !this.wasi &&
+      !windows &&
+      this.sizeType === "i64";
     const construction = computeConstructionFacts(mod, this.nodeIndex);
     this.freshFieldStores = construction.freshStores;
     this.publishedTypes = computePublishedTypes(mod, this.nodeIndex, construction);
@@ -2557,8 +2618,17 @@ export class LlEmitter {
     // runtime moves deep prefix nests to a fresh stack using the guard,
     // which Windows lacks.
     this.stacklessAsyncAllowed = this.stacklessGenerators && mod.lib === undefined && !windows;
+    // With positioned frames a recursive function that can create no Error
+    // gives its frame up too. The one error it can raise is the stack
+    // guard's, and a frame is 16 bytes of every call: an unoptimized build
+    // would run out of stack that much earlier, to list the function that
+    // overflowed above the statement that called it.
     this.unframedFunctions = this.stackTraces
-      ? captureFreeFunctions(mod, this.stackChecks, this.publishedTypes)
+      ? captureFreeFunctions(
+          mod,
+          this.positionedFrames ? null : this.stackChecks,
+          this.publishedTypes,
+        )
       : new Set();
     // One field-mutability answer serves immutable fields and traced shapes.
     const cycleMutability = computeCycleMutability(mod, hierarchyUnitOfClass(mod), dynamicStores);
@@ -2858,14 +2928,39 @@ export class LlEmitter {
       const views = planRecordViews(mod, {
         traced: (id) => this.tracedShapes.has(`record:${id}`),
         // A tagged shape's values share field reads with the other arms of
-        // its shape union.
+        // its shape union, and a published value is read by threads that
+        // have no entry for it (record-views.ts).
         excluded: (id) =>
           this.nullableUnions.shapeNumber(id) !== 0 ||
-          this.publishedTypes?.recordGuarded(id) === true ||
-          mod.workers === true,
+          this.publishedTypes?.recordGuarded(id) === true,
+        workers: mod.workers === true,
       });
       this.shapeHost.recordViews = views;
       this.recordViewTargets = views.targets as Set<string>;
+      // A partial record assertion without a view would compile into a
+      // checked conversion that throws every time it runs: name it instead.
+      const refused = views.declinedPartials.map(
+        (site) =>
+          new LlvmUnsupportedError(
+            `partialRecordAssertion:${site.reason}`,
+            site.loc,
+            undefined,
+            "this object literal leaves required properties of the asserted type unwritten, and " +
+              `${PARTIAL_DECLINE_TEXT[site.reason]}, so the object cannot be completed in place: ` +
+              "write every required property in the literal, or collect the properties in a " +
+              "Record<string, T> or Partial<T> value and assert that once it is complete",
+          ),
+      );
+      if (refused.length > 0) {
+        const first = refused[0]!;
+        throw new LlvmUnsupportedError(
+          first.kind,
+          first.loc,
+          undefined,
+          first.hint,
+          refused.slice(1),
+        );
+      }
     }
     // Integer clones signal a stack overflow through their result. Worker
     // programs have them only as ELF executables, where the stack guard
@@ -2903,7 +2998,11 @@ export class LlEmitter {
         this.llType(g.type); // refuses out-of-tier kinds
       } catch (err) {
         if (err instanceof LlvmUnsupportedError)
-          throw new LlvmUnsupportedError(`global:${g.type.kind}`);
+          throw new LlvmUnsupportedError(
+            `global:${g.type.kind}`,
+            g.source?.loc,
+            `global ${g.name} of type ${typeKey(g.type)}`,
+          );
         throw err;
       }
       this.globalTypes.set(g.id, g.type);
@@ -3160,7 +3259,7 @@ export class LlEmitter {
       case "void":
         return "void";
       default:
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
     }
   }
 
@@ -3262,6 +3361,17 @@ export class LlEmitter {
     const weak = [...this.decls].some(
       (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
     );
+    // The frontend removed the source tests of these record types because
+    // nothing in the module gives a record a source
+    // (IrModule.recordSourcesFolded). A helper that keeps one for such a
+    // type all the same would make records whose undeclared keys and key
+    // order no surface reads: stop instead of emitting a program that
+    // answers wrongly.
+    const kept = this.mod.recordSourcesFolded?.find((id) => this.dyn.keptSourceShapes.has(id));
+    if (kept !== undefined)
+      throw new InternalCompilerError(
+        `llvm emitter bug: a helper keeps a source for record type ${kept}, whose source tests were removed`,
+      );
     return [
       `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
       `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources || this.hasRecordLinks()}`,
@@ -3480,6 +3590,133 @@ export class LlEmitter {
       fnDefs[index] = coroText;
       this.fnDefText.set(fn.name, coroText);
     });
+  }
+
+  /** The functions `Error.captureStackTrace(target, fn)` names. The runtime
+   * finds such a function's frame by its text, so these keep the one
+   * constant line of a frame without positions. */
+  private get frameAnchors(): ReadonlySet<string> {
+    return this.frameCaptures.anchors;
+  }
+
+  /** What `Error.captureStackTrace` calls ask of frames. `anchors` are the
+   * functions named as the frame to stop at. `constructors` are the
+   * constructors that keep no frame: one that captures without naming a
+   * function, which is how the frontend lowers `this.constructor`,
+   * `new.target` and the class's own name there (V8 drops the
+   * constructor's frame, and a release build has none to drop), and the
+   * constructor of every class derived from its class, which
+   * `this.constructor` and `new.target` name when one of those is built. */
+  private get frameCaptures(): {
+    anchors: ReadonlySet<string>;
+    constructors: ReadonlySet<string>;
+  } {
+    if (this.frameCapturesValue !== null) return this.frameCapturesValue;
+    const anchors = new Set<string>();
+    const capturing = new Set<string>();
+    const scan = this.nodeIndex.scan(LIB_CALL_KINDS);
+    for (const fn of this.mod.functions) {
+      eachNodeOfKinds(fn, scan, (node) => {
+        if (node.kind !== "libCall" || node.fn !== "error.captureStackTrace") return;
+        const named = node.args[1];
+        if (named?.kind !== "strLit") return;
+        if (named.value !== "") anchors.add(named.value);
+        else capturing.add(fn.name);
+      });
+    }
+    const constructors = new Set<string>();
+    const classes = new Map((this.mod.classes ?? []).map((cls) => [cls.name, cls]));
+    for (const cls of classes.values()) {
+      for (let c: typeof cls | undefined = cls; c !== undefined;) {
+        if (capturing.has(`%${c.name}.constructor`)) {
+          constructors.add(`%${cls.name}.constructor`);
+          break;
+        }
+        c = c.base === undefined ? undefined : classes.get(c.base);
+      }
+    }
+    return (this.frameCapturesValue = { anchors, constructors });
+  }
+
+  /** The frame names of class constructors, methods and accessors, by
+   * function name (`%<class>.<member>`). The frontend gives most of them no
+   * source name, so only positioned frames show them. */
+  private get memberFrameNames(): ReadonlyMap<string, string> {
+    if (this.memberFrameNamesValue !== null) return this.memberFrameNamesValue;
+    const names = new Map<string, string>();
+    const classes = new Map((this.mod.classes ?? []).map((cls) => [cls.name, cls]));
+    for (const fn of this.mod.functions) {
+      if (!fn.name.startsWith("%")) continue;
+      // The longest class name wins: class names hold dots themselves.
+      for (let dot = fn.name.lastIndexOf("."); dot > 0; dot = fn.name.lastIndexOf(".", dot - 1)) {
+        const cls = classes.get(fn.name.slice(1, dot));
+        if (cls === undefined) continue;
+        names.set(fn.name, memberFrameName(classJsName(cls), fn.name.slice(dot + 1)));
+        break;
+      }
+    }
+    return (this.memberFrameNamesValue = names);
+  }
+
+  /** The name a frame line gives `fn`: a class member's in V8's spelling,
+   * otherwise the function's source name; undefined for module-level code
+   * and generated helpers. */
+  frameNameOf(fn: IrFunction): string | undefined {
+    return this.memberFrameNames.get(fn.name) ?? fn.sourceName;
+  }
+
+  /** The call a checked conversion at `loc` makes on its failure path, or
+   * undefined in a build that reports none. It passes the conversion's
+   * position as a frame line, the text a positioned frame would hold for a
+   * statement there (frame-positions.ts): the same position service and the
+   * same spelling, so the report and a stack trace name a place alike, and
+   * the conversion's own column where a frame has only its statement's. A
+   * position the sources do not hold falls back to the file. */
+  conversionTraceAt(loc: SrcLoc): (() => void) | undefined {
+    const debug = this.debug;
+    if (!this.conversionTrace || debug === null) return undefined;
+    const name = this.currentFrameName;
+    const pos = debug.position(loc);
+    const text =
+      pos !== null
+        ? positionedFrameText(name, pos)
+        : name === undefined
+          ? `    at ${loc.file}`
+          : frameText(name, loc.file);
+    return () => {
+      this.declare("declare void @scr_conversion_trace(ptr)");
+      this.B.line(`call void @scr_conversion_trace(ptr ${this.cstr(text)})`);
+    };
+  }
+
+  /** The positions `fn`'s frame takes, or null when its frame (if it has
+   * one) holds one constant line: builds without debug sources, the
+   * functions `Error.captureStackTrace` names, and the constructors that
+   * capture onto themselves (frameCaptures), which keep no frame. Positioned frames also
+   * cover what has no source name: class members, and a module's top-level
+   * code (its `%init.<n>`), which prints no function name. Generated
+   * helpers stay without a frame, so their statements leave the position
+   * of the statement that was lowered through them. */
+  framePositionsOf(fn: IrFunction): FramePositions | null {
+    const debug = this.debug;
+    if (!this.positionedFrames || debug === null) return null;
+    if (this.frameAnchors.has(fn.name)) return null;
+    if (this.frameCaptures.constructors.has(fn.name)) return null;
+    const name = this.frameNameOf(fn);
+    if (name === undefined && !fn.name.startsWith("%init.")) return null;
+    return new FramePositions(
+      name,
+      (loc) => debug.position(loc),
+      (text) => {
+        // The slot's address is computed at each store: unoptimized code
+        // folds it into the store, and would keep a shared one on the stack.
+        const slot = this.B.tmp();
+        this.B.line(
+          `${slot} = getelementptr inbounds { ptr, ptr }, ptr %source_frame, i32 0, i32 1`,
+        );
+        this.B.line(`store ptr ${this.cstr(text)}, ptr ${slot}`);
+      },
+    );
   }
 
   /** Whether a fiberless body running on its caller's stack needs the
@@ -5194,7 +5431,11 @@ export class LlEmitter {
       case "jsval":
         return jsTruthy(this, valueName);
       default:
-        throw new LlvmUnsupportedError(`truthy:${unionArm ? "union:" : ""}${kind}`);
+        throw new LlvmUnsupportedError(
+          `truthy:${unionArm ? "union:" : ""}${kind}`,
+          undefined,
+          `a truth test of a ${kind} value`,
+        );
     }
   }
 
@@ -5623,6 +5864,7 @@ export class LlEmitter {
         this.rcMode === undefined,
         (text) => this.cstr(text),
         this.shapeHost.recordViews?.partialTargets.has(shapeId) === true,
+        this.shapeHost.recordViews?.marked.has(shapeId) === true,
       );
     } else {
       p = this.B.tmp();
@@ -5632,6 +5874,54 @@ export class LlEmitter {
     }
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
+  }
+
+  /** Whether the record `obj` of view target `shapeId` is a view (an i1). */
+  recordIsView(objName: string, shapeId: string): string {
+    return recordViewTest(
+      this.B,
+      this.sizeType,
+      objName,
+      (decl) => this.declare(decl),
+      this.shapeHost.recordViews?.marked.has(shapeId) === true,
+    );
+  }
+
+  /** The fields some partial record assertion of the module leaves unwritten
+   * (`shapeId\0field`), from the module alone. */
+  private partialUnwritten: Set<string> | undefined;
+
+  /** Whether some partial record assertion leaves `field` of `shapeId`
+   * unwritten, whether or not it gets its view (record-views.ts). A read of
+   * such a field answers a value of its own (readPartialField), with no
+   * slot that keeps it alive, so no reader borrows it. Unlike
+   * partialFieldMissing this needs no view plan: the borrow analyses that
+   * run before the views are planned decide as the emission does. */
+  partialFieldUnwritten(shapeId: string, field: string): boolean {
+    let unwritten = this.partialUnwritten;
+    if (unwritten === undefined) {
+      unwritten = new Set();
+      const scan = this.nodeIndex.scan(DYN_CHECK_KINDS);
+      for (const fn of this.fnByName.values())
+        eachNodeOfKinds(fn, scan, (node) => {
+          if (
+            node.kind !== "dynCheck" ||
+            node.partialView !== true ||
+            node.type.kind !== "record" ||
+            node.value.kind !== "dynFrom" ||
+            node.value.value.type.kind !== "record"
+          )
+            return;
+          const target = this.recordsById.get(node.type.shapeId);
+          const source = this.recordsById.get(node.value.value.type.shapeId);
+          if (target === undefined || source === undefined) return;
+          for (const f of target.fields)
+            if (!source.fields.some((written) => written.name === f.name))
+              unwritten!.add(`${target.id}\0${f.name}`);
+        });
+      this.partialUnwritten = unwritten;
+    }
+    return unwritten.size > 0 && unwritten.has(`${shapeId}\0${field}`);
   }
 
   /** Whether a value of `shapeId` may lack field `field`: a PARTIAL record
@@ -5677,14 +5967,12 @@ export class LlEmitter {
     const B = this.B;
     const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
     const inline = this.inlineUnions.record(type);
-    const isView = B.tmp();
+    const isView = this.recordIsView(objName, shapeId);
     const view = B.newLabel("pf.view");
     const notView = B.newLabel("pf.slot");
     const slots = B.newLabel("pf.slots");
     const extra = B.newLabel("pf.extra");
     const answer = B.newLabel("pf.answer");
-    for (const line of recordViewTestLines(this.sizeType, objName, isView))
-      B.line(line.trimStart());
     B.condBr(isView, view, notView);
     // Not a view: the field's own slot.
     B.startBlock(notView);
@@ -5765,15 +6053,13 @@ export class LlEmitter {
   ): void {
     const B = this.B;
     const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
-    const isView = B.tmp();
+    const isView = this.recordIsView(objName, shapeId);
     const notView = B.newLabel("ps.slot");
     const view = B.newLabel("ps.view");
     const present = B.newLabel("ps.present");
     const store = B.newLabel("ps.store");
     const extra = B.newLabel("ps.extra");
     const done = B.newLabel("ps.done");
-    for (const line of recordViewTestLines(this.sizeType, objName, isView))
-      B.line(line.trimStart());
     B.condBr(isView, view, notView);
     B.startBlock(notView);
     const own = B.tmp();
@@ -5799,9 +6085,10 @@ export class LlEmitter {
     storeAt(addr);
     B.br(done);
     B.startBlock(extra);
-    const boxed = B.tmp();
-    const box = this.dyn.toDynHelper(type);
-    B.line(`${boxed} = call ptr @${box}(${this.llType(type)} ${value.name})`);
+    // A record, an array or a union holding one is kept as the value itself
+    // (a live capsule), so the property is the object the program stored,
+    // as a slot would hold it; every other type converts by value.
+    const boxed = this.dyn.liveReadToDyn(B, type, value.name);
     this.declare(`declare void @scr_record_view_extra_set(ptr, ptr, ${this.sizeType}, ptr)`);
     B.line(
       `call void @scr_record_view_extra_set(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")}, ptr ${boxed})`,
@@ -6486,7 +6773,13 @@ export class LlEmitter {
     return copies;
   }
   emitFunction(fn: IrFunction): string {
-    return emitFunction(this, fn);
+    try {
+      return emitFunction(this, fn);
+    } catch (error) {
+      // A refusal raised outside the function's statements (its signature,
+      // locals and frame) takes the function's span.
+      throw anchorRefusal(error, fn.loc, fn.name);
+    }
   }
 
   /** What this range emitter (chunkEmitter) hands the merging emitter, as
@@ -7425,6 +7718,8 @@ export class LlEmitter {
     }
     const previous = this.B.debugLocation;
     this.B.debugLocation = this.debug?.location(s.loc, this.debugScope) ?? null;
+    const positions = this.framePositions;
+    const outerPosition = positions === null ? null : positions.enter(s);
     const loop =
       s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf";
     const builder = this.B;
@@ -7437,7 +7732,11 @@ export class LlEmitter {
     this.int32KindResume = this.int32Kinds?.resume.get(s) ?? null;
     try {
       this.emitStmtBody(s);
+    } catch (error) {
+      // A refusal raised without a source span takes this statement's.
+      throw anchorRefusal(error, s.loc);
     } finally {
+      positions?.leave(outerPosition, !this.B.isTerminated());
       this.B.debugLocation = previous;
       this.int32KindResume = kindResume;
       if (loop) {
@@ -8589,8 +8888,10 @@ export class LlEmitter {
     switch (e.kind) {
       case "fieldGet":
         return this.nullableFieldGet(e) === null && !this.inlineArrayRead(e);
+      // A field a partial record assertion leaves unwritten has no slot to
+      // lend: its read answers a value of its own.
       case "recordGet":
-        return true;
+        return !this.partialFieldUnwritten(e.shapeId, e.field);
       // A keyed read whose hits are all the result's own pointer.
       case "recordKeyGet":
         return pointerRecordKeyGet(this, e);

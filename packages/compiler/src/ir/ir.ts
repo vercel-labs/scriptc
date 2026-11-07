@@ -1161,6 +1161,13 @@ export interface IrModule {
    * others: what the copy's reflective surfaces answer from. `pair` is
    * the nonzero number the link stores. Absent when there are none. */
   recordLinks?: IrRecordLink[];
+  /** Shape ids of the record types whose `record.sourceHas` tests the
+   * frontend removed, with the branches they guarded, because no function
+   * of the program can give a record a kept source (frontend
+   * record-sources.ts). The backend stops when it emits a conversion or a
+   * library call that keeps a source for one of them. Sorted; absent when
+   * no test was removed. */
+  recordSourcesFolded?: string[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
@@ -1943,6 +1950,18 @@ export interface IrRecordShape {
 /** The hidden field of a shape with orderVariants: the index of the value's
  * key order. */
 export const KEY_ORDER_FIELD = "%order";
+
+/** The fields a property key can name: every field but KEY_ORDER_FIELD,
+ * which is bookkeeping in the value's storage and no property of it. A
+ * keyed read or write (`r[k]`) dispatches over these, and a key spelled
+ * like the hidden field misses as any undeclared key does. The field
+ * joins a shape after the bodies lowered, so every stage that reasons
+ * about a keyed access goes through here. */
+export function keyedRecordFields(shape: IrRecordShape): readonly IrRecordField[] {
+  return shape.fields.some((f) => f.name === KEY_ORDER_FIELD)
+    ? shape.fields.filter((f) => f.name !== KEY_ORDER_FIELD)
+    : shape.fields;
+}
 
 /** The orders a record shape's values enumerate their keys in: each order
  * of a shape with orderVariants, or its one table. */
@@ -3338,12 +3357,17 @@ export type IrExpr =
    * case so `f === f` is true (JS function identity). `adapts` marks a
    * signature adapter: captures[0] holds the function it forwards to, and
    * the new closure takes that function's identity (JS sees one function,
-   * so `===`, SameValue and searches compare identity roots). */
+   * so `===`, SameValue and searches compare identity roots). `length` is
+   * the function's own `length` where the type's parameter list does not
+   * give it: a function literal lowered with the parameter list of the slot
+   * it is written into receives the slot's remaining arguments in
+   * parameters it never declared. */
   | {
       kind: "closure";
       fnName: string;
       captures: string[];
       adapts?: true;
+      length?: number;
       type: IrType;
       loc: SrcLoc;
     }
@@ -3456,14 +3480,21 @@ export type IrExpr =
   | { kind: "awaitUnionExpr"; value: IrExpr; promiseTag: number; type: IrType; loc: SrcLoc }
   /** `new Promise<T>((resolve) => ...)`: creates a pending promise and runs
    * the executor synchronously with a resolve closure; an executor throw
-   * rejects the promise (JS-exact). Result +1. */
-  | { kind: "newPromise"; executor: IrExpr; type: IrType; loc: SrcLoc }
+   * rejects the promise (JS-exact). Result +1.
+   * `resolves`: the resolve function runs the promise resolution procedure
+   * on a checked-dynamic value that the static types do not prove plain: a
+   * promise it is given is adopted, and from then on neither resolving
+   * function nor a throw of the executor changes the promise. Only on a
+   * promise of a checked-dynamic value. */
+  | { kind: "newPromise"; executor: IrExpr; resolves?: true; type: IrType; loc: SrcLoc }
   /** `Promise.withResolvers<T>()`: a pending promise plus its runtime
    * resolve/reject closures (the newPromise pieces without an executor),
    * assembled into the record `{ promise, resolve, reject }` — `type` is
    * that record; the shape's promise field carries T, resolve is
    * (T) => void (() => void for void T), reject is (%Error) => void.
-   * Result +1; never throws. */
+   * Result +1; never throws. The resolve function of a promise of a
+   * checked-dynamic value runs the promise resolution procedure, as a
+   * newPromise with `resolves` does: its callers are not known here. */
   | { kind: "promiseWithResolvers"; type: IrType; loc: SrcLoc }
   /** `new C(args)`: allocate (fields zeroed), then call `%C.constructor`
    * with the new object as arg 0 (retained — the ctor owns and releases its

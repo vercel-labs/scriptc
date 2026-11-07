@@ -42,6 +42,7 @@ When a program has unsupported operations, the report adds a group for each root
     <tr><td><code>deferred to runtime</code></td><td>Other deferred operations in JavaScript code. Each throws only if it runs.</td></tr>
     <tr><td><code>in unreached code</code></td><td>Blockers in code the entry never reaches. A build never compiles that code, so these cannot fail it.</td></tr>
     <tr><td><code>differs from Node</code></td><td>Sites that compile but can behave differently from Node.js. See <a href="#node-divergences">Node divergences</a>.</td></tr>
+    <tr><td><code>trusts unverified types</code></td><td>Checked conversions whose value is typed by something no build can verify. See <a href="#type-claims">Type claims</a>.</td></tr>
     <tr><td><code>npm package compilation</code></td><td>Native package compilation outcomes and refusal reasons.</td></tr>
   </tbody>
 </table>
@@ -118,6 +119,159 @@ $ scriptc coverage plugins.ts
 
 Here `Plugin` keeps its native `name` field, and only `hook` is checked-dynamic. Reading a dynamic value into typed code checks it against the type that reads it, so data that contradicts the declaration still throws a `TypeError`. Slots with the most dynamic operations are listed first. `--fail-on=dynamic-slots` fails a coverage run when any slot exists, and `--tier=static-only` reports the original errors instead.
 
+## Type claims
+
+scriptc trusts declared types and checks them where an untyped value enters typed code. A value that contradicts its type throws a `TypeError` at that conversion, where Node.js would run on. Some of those types are claims no build can verify: an assertion over parsed data, the type a variable gives an `any` value, and the declarations of a package whose values your program receives. When a claim is wrong, the build succeeds and the program throws the first time the conversion runs. Coverage lists these conversions before anything runs:
+
+```console
+$ cat claims.ts
+interface User {
+  id: number;
+  name: string;
+}
+
+const user = JSON.parse('{"id":"41","name":"Ada"}') as User;
+const settings: any = JSON.parse('{"retries":3}');
+const retries: number = settings.retries;
+console.log(user.name, user.id + 1, retries * 2);
+
+$ scriptc coverage claims.ts
+
+  statements analyzed   4
+  compile statically    4  (100%)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  fully static — all analyzed statements compile to native code.
+
+  trusts unverified types   2 checked conversions on 2 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×1  parsed data held in 'settings', read as number
+          at claims.ts:8:25
+          fix: validate the parsed data before giving it this type (a schema, or checks on an unknown value), or declare the type the data really has
+      ×1  parsed data the program reads as { id: number; name: string }
+          at claims.ts:6:14
+          fix: validate the parsed data before giving it this type (a schema, or checks on an unknown value), or declare the type the data really has
+
+$ scriptc build claims.ts -o claims >/dev/null
+$ ./claims
+Uncaught TypeError: expected number at $.id, got string
+```
+
+The second claim is the wrong one here: the data holds `id` as a string. The report can't know which claims are wrong, only where they are.
+
+Conversions are grouped by what makes the claim, so one wrong declaration appears once with every conversion that trusts it:
+
+<table>
+  <thead><tr><th>Group</th><th>What makes the claim</th><th>What makes it safe</th></tr></thead>
+  <tbody>
+    <tr><td>A package declaration</td><td>A <code>.d.ts</code> file, an <code>@types/</code> package or JSDoc that types a value your code receives from the package. The row names the package, the declaration, and its file and line.</td><td>The <code>scriptc types patch</code> command the row prints. See <a href="/docs/dependencies#fix-a-packages-types">Fix a package's types</a>.</td></tr>
+    <tr><td>A function a Node island calls</td><td>The package's declaration of the parameter your function is passed as. The island calls the function with its own values, and each argument is checked against your function's parameter types.</td><td>The same command, with the parameter's selector.</td></tr>
+    <tr><td>A package compiled from its JavaScript</td><td>The package's own JSDoc and the types scriptc infers for its untyped code. All conversions inside the package's files are one row.</td><td>Patch the declaration that is wrong, or run the package in a Node island with <code>--node-island=&lt;package&gt;</code>.</td></tr>
+    <tr><td>Parsed data</td><td>The type your program gives the result of <code>JSON.parse</code>.</td><td>Validate the data before you give it the type.</td></tr>
+    <tr><td>An untyped value</td><td>The type a variable, parameter or return value gives a value read from a binding declared <code>any</code> or <code>unknown</code>. The row names the binding.</td><td>Declare the binding's real type, or narrow the value before typed code reads it.</td></tr>
+    <tr><td>An assertion</td><td>A type assertion over a value the program holds dynamically, such as <code>table() as Catalog</code> where <code>table()</code> returns a <code>Record&lt;string, object&gt;</code>. The row names what the value is read from.</td><td>Check the value before asserting its type, or build it under a declared type so the checker verifies it.</td></tr>
+  </tbody>
+</table>
+
+Rows are ordered by the number of conversions, after two kinds of rows that come first, and before the rows for packages compiled from their JavaScript, whose counts are of the package's own files.
+
+A Node island copies data to your program and adapts functions, but an object the island made never converts to a type only compiled code can make, such as a `Date`, a `RegExp`, or an `http.Server`. A conversion like that throws every time it runs, unless the value is one your program passed into the island, so those rows come first and say so.
+
+Next come the rows with a conversion whose failure your program would not see: one inside a `try` whose `catch` neither reads the error nor throws. This function is meant to skip malformed lines. Compiled, it also skips every well-formed line that lacks a field `Entry` declares, where Node.js keeps the entry, and nothing reports it:
+
+```console
+$ cat entries.ts
+interface Usage {
+  input: number;
+  total: number;
+}
+interface Entry {
+  type: "message";
+  usage: Usage;
+}
+
+function parse(line: string): Entry | null {
+  try {
+    return JSON.parse(line) as Entry;
+  } catch {
+    return null;
+  }
+}
+
+const lines = [
+  '{"type":"message","usage":{"input":1,"total":2}}',
+  '{"type":"message","usage":{"input":1}}',
+  "not json",
+];
+for (const line of lines) {
+  const entry = parse(line);
+  console.log(entry === null ? "skipped" : `${entry.type} ${entry.usage.input} ${String(entry.usage.total)}`);
+}
+
+$ scriptc coverage entries.ts | tail -n 5
+  trusts unverified types   1 checked conversion on 1 claim (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×1  parsed data the program reads as { type: string; usage: { input: number; total: number } }
+          at entries.ts:12:12
+          unseen if it fails: entries.ts:12:12 is in a try whose handler ignores the error, where Node.js keeps the value
+          fix: validate the parsed data before giving it this type (a schema, or checks on an unknown value), or declare the type the data really has
+
+$ scriptc build entries.ts -o entries >/dev/null
+$ ./entries
+message 1 2
+skipped
+skipped
+$ node entries.ts
+message 1 2
+message 1 undefined
+skipped
+```
+
+Only a conversion written inside the `try` block is marked, not one in a function the block calls.
+
+A conversion that a kind test of the same value guards is not a claim and is not listed: a read inside `if (typeof value === "string")`, in the matching arm of a conditional, or after `if (typeof value !== "string") return`. A test elsewhere in the function guards nothing, and neither does a test of a variable the function assigns again. Neither is reading back a value that your TypeScript source declares with a type and scriptc holds dynamically, such as a `Response` from `fetch`. In JavaScript files nothing declares a type, so every such read is listed.
+
+This program reads two members of a logger that the `debug` package creates. The package runs in a Node island, and its types come from `@types/debug`:
+
+```console
+$ cat logger.ts
+import createDebug from "debug";
+
+const log = createDebug("app:main");
+log("hidden unless DEBUG is set");
+console.log(log.enabled, log.namespace);
+
+$ scriptc coverage logger.ts | tail -n 7
+  trusts unverified types   2 checked conversions on 2 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×1  debug@4.4.3 declares debug.Debugger.enabled as boolean (@types/debug/index.d.ts:44): a Node island value
+          at logger.ts:5:13
+          fix: if the declaration is wrong, patch it: scriptc types patch debug debug.Debugger.enabled '<type>' (a type that starts with | widens the declared one, as in '| undefined')
+      ×1  debug@4.4.3 declares debug.Debugger.namespace as string (@types/debug/index.d.ts:46): a Node island value
+          at logger.ts:5:26
+          fix: if the declaration is wrong, patch it: scriptc types patch debug debug.Debugger.namespace '<type>' (a type that starts with | widens the declared one, as in '| undefined')
+
+$ scriptc build logger.ts -o logger >/dev/null 2>&1
+$ ./logger
+Uncaught TypeError: expected boolean at $, got undefined
+    debug@4.4.3 declares debug.Debugger.enabled as boolean (@types/debug/index.d.ts:44)
+    if that declaration is wrong, patch it: scriptc types patch debug debug.Debugger.enabled '| undefined'
+```
+
+The first declaration is wrong: `enabled` is `undefined` when the `DEBUG` environment variable isn't set. The error names the declaration the report listed, with the type that would admit the value. That command fixes it, and the program then prints what it prints under Node.js:
+
+```console
+$ scriptc types patch debug debug.Debugger.enabled "| undefined"
+@types/debug 4.4.3 (node_modules/@types/debug)
+  index.d.ts:44  boolean  ->  boolean | undefined
+wrote package.json scriptc.typePatches["debug@^4.4.3"].declarations["debug.Debugger.enabled"]
+
+$ scriptc build logger.ts -o logger >/dev/null 2>&1
+$ ./logger
+undefined app:main
+```
+
+A declaration with type parameters has no patch command, because its type is the one your program instantiates it with, and neither has a member of a mapped or inferred type. The row says so and points to replacing the declaration file instead.
+
+The report describes the program a build compiles, including which packages run in Node islands. If `scriptc build` reports a Node island for a package that coverage compiled, pass the same packages to coverage with `--node-island=<package>` to see the claims of that build. `--fail-on=type-claims` fails a coverage run when the program has any claim.
+
 ## Diagnostic codes
 
 Coverage and `scriptc build` report the same diagnostic codes. Common ones include:
@@ -144,7 +298,7 @@ By default, `scriptc coverage` exits with status 0 whenever the program type-che
 $ scriptc coverage src/main.ts --fail-on=blockers
 ```
 
-`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences, `--fail-on=dynamic` also fails on the `SC6101` warning for [untyped code that likely runs often](#untyped-code-that-likely-runs-often), and `--fail-on=dynamic-slots` also fails on [dynamic slots](#dynamic-slots). A program that doesn't type-check always exits with status 1.
+`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences, `--fail-on=dynamic` also fails on the `SC6101` warning for [untyped code that likely runs often](#untyped-code-that-likely-runs-often), `--fail-on=dynamic-slots` also fails on [dynamic slots](#dynamic-slots), and `--fail-on=type-claims` also fails on [type claims](#type-claims). A program that doesn't type-check always exits with status 1.
 
 Coverage caches its result. Running it again on an unchanged program, or after edits that only touch comments, reuses the previous verdict. Set `SCRIPTC_NO_CACHE=1` to turn the cache off.
 
@@ -247,6 +401,10 @@ For editors, CI annotations, and other tools, `scriptc coverage --print=diagnost
     <tr>
       <td><code>group</code></td>
       <td>The <code>id</code> of the root-cause group the diagnostic belongs to. A group's <code>primary</code> site is its first in source order.</td>
+    </tr>
+    <tr>
+      <td><code>typeClaims</code></td>
+      <td>Coverage only, present when the program has <a href="#type-claims">type claims</a>: one object per row of the report, in the report's order. <code>kind</code> is <code>island</code>, <code>declared</code>, <code>package</code>, <code>parsed</code> or <code>untyped</code>; <code>count</code> and <code>sites</code> give the conversions; <code>claimed</code> lists the types they check for; <code>fix</code> is the report's fix line. A row about a package declaration has <code>declaration</code> with its <code>package</code>, <code>version</code>, <code>name</code>, file and line (<code>at</code>), <code>declaredType</code>, and the <code>selector</code> to pass to <code>scriptc types patch</code> when it has one. A <code>package</code> row lists those for each of the package's own declarations under <code>declarations</code>. <code>nativeOnly</code> counts the conversions that throw whenever they run, <code>swallowed</code> lists the sites inside a <code>try</code> that ignores the error, <code>callbacks</code> the functions a Node island calls, and <code>asserted</code> the type assertions.</td>
     </tr>
     <tr>
       <td><code>startup</code></td>

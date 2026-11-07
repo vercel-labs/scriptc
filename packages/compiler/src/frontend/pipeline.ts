@@ -53,6 +53,9 @@ import {
   isStringLiteral,
   isStringLiteralLike,
   SyntaxKind,
+  carriedSourceText,
+  sourceTextIncludes,
+  sourceTextMatches,
   type SourceFile,
 } from "./ts7/adapter.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
@@ -137,7 +140,9 @@ export interface Frontend {
   /** The Node island detector's input (report-only): the program's
    * modules with their pre-scan markers, package import edges, and how
    * each refused package was refused. Call before dispose. */
-  nodeIslandScan?: ((opts: { userJs: boolean }) => NodeIslandScan) | undefined;
+  nodeIslandScan?:
+    | ((opts: { userJs: boolean; marked?: (file: string) => boolean }) => NodeIslandScan)
+    | undefined;
   /** Diagnostics that do not fail a build: unknown settings in the
    * project's scriptc configuration (SC8004), which builds do not use. */
   warnings?: ScrDiagnostic[];
@@ -198,7 +203,9 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
     // the keyword has none. Package JavaScript loads its literal require()
     // calls the same way, nested ones included.
     const calls =
-      packageJs || sf.text.includes("import") ? moduleSourceCandidates(load.program, sf).calls : [];
+      packageJs || sourceTextIncludes(sf, "import")
+        ? moduleSourceCandidates(load.program, sf).calls
+        : [];
     for (const call of calls) {
       const arg = call.arguments.nodes[0];
       if (arg === undefined || !isStringLiteralLike(arg)) continue;
@@ -376,7 +383,7 @@ function detectAutoPackages(
       !sf.fileName.includes("/node_modules/") &&
       // Any spelling of a call (`require (`, a comment before the paren):
       // the syntax scan below decides.
-      /\brequire\b/.test(sf.text)
+      sourceTextMatches(sf, /\brequire\b/)
     ) {
       const topLevel = new Set(edges.map((e) => `${e.spec}@${e.loc.start}`));
       for (const call of moduleSourceCandidates(load.program, sf).calls) {
@@ -1180,7 +1187,7 @@ function loadFrontend(
           finalLoad.entry,
           ...finalLoad.moduleOrder,
           ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
-        ].map((sf) => [sf.fileName, sf.text]),
+        ].map((sf) => [sf.fileName, carriedSourceText(sf)]),
       );
       // SC8004 and type patch diagnostics point into the project's
       // package.json.
@@ -1398,7 +1405,7 @@ function loadFrontend(
     npmImportSites: npmSites,
     nodeIslandScan: !scanIslands
       ? undefined
-      : ({ userJs }) => {
+      : ({ userJs, marked }) => {
           const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
           addDynamicImportGraph(finalLoad, files);
           // Package edges matter only when the program has npm packages: one
@@ -1411,6 +1418,7 @@ function loadFrontend(
             userJs,
             dropped: false,
             edges: npm,
+            ...(marked === undefined ? {} : { marked }),
           });
           return {
             modules: [...droppedScan.modules, ...scanned.modules],

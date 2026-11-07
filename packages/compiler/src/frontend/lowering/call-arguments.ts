@@ -1,8 +1,9 @@
 import { keyedHelperName } from "./stable-names.js";
-import { forwardedTupleType, pureForwardedValues, stripTypeWrappers } from "./typed-arguments.js";
+import { forwardedTupleType, pureForwardedValues } from "./typed-arguments.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { AstNode } from "../ts7/ast-node.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -258,7 +259,7 @@ export function completeArgs(
     // unknown as Parameters<F>)`) spreads the tuple itself.
     const operand =
       forwardedTupleType(lowerer, arg.expression) !== null
-        ? stripTypeWrappers(arg.expression)
+        ? withoutParenthesesTypeWrappers(arg.expression)
         : arg.expression;
     const value = lowerer.coerceInto(arg.expression, lowerer.lowerExpr(operand), tuple.type);
     const saved = lowerer.declareHiddenLocal("%callSpread", tuple.type);

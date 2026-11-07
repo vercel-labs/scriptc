@@ -311,6 +311,76 @@ test("the diagnostics envelope is versioned and located", () => {
   expect(envelope.diagnostics[0]!.hint.length).toBeGreaterThan(0);
 });
 
+test("type claims list the checked conversions that trust an unverified type", async () => {
+  // One of each: parsed data under an assertion, a value through `any`, a
+  // Node island's values (one read twice, one of a type no island object
+  // converts to, one declared `any`), a function the island calls, and a
+  // package compiled from its JavaScript, and an assertion over a value the
+  // build holds dynamically. The read `size` guards with `typeof` is not a
+  // claim; the one `late` makes before its test is.
+  const entry = fixture("node-islands-type-claims/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-type-claims.txt");
+  const { coverage, sourceTexts } = analyze(entry);
+  expect(coverage.diagnostics).toEqual([]);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  const claims = envelope.typeClaims ?? [];
+  expect(
+    claims.map((g) => [
+      g.kind,
+      g.declaration?.selector ?? g.declaration?.name ?? g.package?.name ?? g.claimed[0],
+      g.count,
+      g.sites.map((s) => s.line),
+    ]),
+  ).toEqual([
+    // Throws whenever it runs: first, whatever its count.
+    ["island", "started()", 1, [32]],
+    // A conversion whose failure the program would not see: second.
+    ["parsed", "{ name: string; retries: number }", 3, [52, 14, 15]],
+    ["island", "Session.ttl", 2, [26, 27]],
+    ["parsed", "number", 2, [18, 19]],
+    ["island", "each(visit)", 1, [28]],
+    ["island", "label()", 1, [35]],
+    ["island", "load()", 1, [31]],
+    // `table(2) as Catalog`; `entries`, read back under its declared type,
+    // is not listed.
+    ["untyped", "{ a: { n: number } }", 1, [45]],
+    // `late` converts before it tests the kind: the test guards nothing.
+    ["untyped", "number", 1, [62]],
+    // A compiled package's own conversions: after the program's.
+    ["package", "tc-native", 1, [9]],
+  ]);
+  expect(claims[0]).toMatchObject({
+    nativeOnly: 1,
+    declaration: {
+      package: "tc-island",
+      version: "3.1.0",
+      at: "index.d.ts:8",
+      declaredType: "Date",
+    },
+  });
+  // `readEntry` converts inside a try whose handler ignores the error.
+  expect(claims[1]!.swallowed?.map((s) => s.line)).toEqual([52]);
+  expect(claims[2]!.fix).toContain("scriptc types patch tc-island Session.ttl '<type>'");
+  expect(claims[4]).toMatchObject({ callbacks: 1, claimed: ["(string, number) => void"] });
+  expect(claims[8]).toMatchObject({ binding: { name: "value", line: 61 } });
+  expect(claims[9]).toMatchObject({
+    package: { name: "tc-native", version: "1.4.2" },
+    declarations: [{ selector: "width()", at: "index.js:8", declaredType: "number", count: 1 }],
+  });
+  expect(claims[7]).toMatchObject({ asserted: 1, binding: { name: "table()", line: 40 } });
+  // Never a blocker; its own gate.
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "type-claims")).toBe(false);
+});
+
+test("a program that converts only its own values reports no type claims", () => {
+  for (const name of ["no-divergences.ts", "width-copies.ts", "divergences.ts"]) {
+    const { coverage } = analyze(fixture(name));
+    expect(coverage.typeClaims, name).toBeUndefined();
+    expect(coveragePasses(coverage, "type-claims"), name).toBe(true);
+  }
+});
+
 test("CLI: --print=diagnostics and --fail-on set the output and exit status", () => {
   const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
   const run = (...args: string[]) =>
@@ -329,6 +399,8 @@ test("CLI: --print=diagnostics and --fail-on set the output and exit status", ()
   expect(envelope).toMatchObject({ schemaVersion: 1, success: false });
   expect(run(fixture("divergences.ts"), "--fail-on=blockers").status).toBe(0);
   expect(run(fixture("divergences.ts"), "--fail-on=divergences").status).toBe(1);
+  expect(run(fixture("node-islands-type-claims/main.ts"), "--fail-on=blockers").status).toBe(0);
+  expect(run(fixture("node-islands-type-claims/main.ts"), "--fail-on=type-claims").status).toBe(1);
   // Unreached blockers cannot fail a build, so they never fail the gate.
   expect(run(fixture("unreached.ts"), "--fail-on=blockers").status).toBe(0);
   const bad = run(fixture("mixed.ts"), "--fail-on=everything");

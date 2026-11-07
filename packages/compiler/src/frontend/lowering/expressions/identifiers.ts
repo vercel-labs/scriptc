@@ -95,12 +95,16 @@ import {
   identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
-import { builtinConstantsObject, pathModuleValue } from "../lower-builtin-values.js";
+import {
+  builtinConstantsEsmNamespace,
+  builtinConstantsObject,
+  pathModuleValue,
+} from "../lower-builtin-values.js";
 import { lowerTlsRootCertificates } from "../lower-server.js";
 import { builtinFunctionFenceValue } from "../builtin-function-fences.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
-import { fenceEnumObjectValue } from "../lower-enums.js";
+import { lowerEnumObjectValue } from "../enum-objects.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
@@ -803,10 +807,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // the namespace object has no representation — members lower at
   // their access sites only. The CommonJS namespace binding
   // (`const lib = require("./lib.js")`) gets the same fence.
-  const builtinNamespace = lowerer.builtinNamespaceModuleOf(expr);
-  if (builtinNamespace === "constants") return builtinConstantsObject(lowerer, loc);
-  if (builtinNamespace !== null) {
-    const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNamespace}` };
+  const builtinShape = lowerer.builtinNamespaceShapeOf(expr);
+  if (builtinShape !== null) {
+    // node:constants has a value on each side of the import: the CommonJS
+    // object a require and a default import bind, and the ES module
+    // namespace an `import * as` binding binds (sorted names plus "default",
+    // null prototype).
+    if (builtinShape.module === "constants")
+      return builtinShape.flavor === "esm"
+        ? builtinConstantsEsmNamespace(lowerer, loc)
+        : builtinConstantsObject(lowerer, loc);
+    const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinShape.module}` };
     return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
   }
   // A binding of a SINGLE-VALUE module used as a bare value: Node's
@@ -1112,9 +1123,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       return lowerer.classValueRef(classInfo, expr);
     }
     // The enum OBJECT as a value (member reads never reach here — the
-    // access hooks fold them): iteration, storage, reverse lookups
-    // through variables all land on this pointed fence.
-    if (sym) fenceEnumObjectValue(lowerer, expr, sym);
+    // access hooks fold them): the record its declaration built, or a
+    // pointed fence for an enum that has no object (enum-objects.ts).
+    if (sym) {
+      const enumObject = lowerEnumObjectValue(lowerer, expr, sym);
+      if (enumObject) return enumObject;
+    }
     // A MIXIN function as a first-class value: no runtime function
     // exists — calls instantiate a class per call site
     // (lower-mixins.ts). Generic mixins took the generic-fn value
@@ -1332,7 +1346,7 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
 export function uriFunctionValue(lowerer: Lowerer, which: string, loc: SrcLoc): IrExpr {
   const name = `%builtin.${which}`;
   const type = funcOf([DYN], STRING);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value: IrExpr = {
       kind: "libCall",
       fn: "dyn.toStringCoerce",

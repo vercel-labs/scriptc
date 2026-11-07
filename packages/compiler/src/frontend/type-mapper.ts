@@ -4,6 +4,7 @@ import { contentDigest, type HeldContents, type JournalTable } from "./lowering/
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
+import type { EnumObjectEntry } from "./enum-object-layout.js";
 import type {
   IrRecordField,
   IrRecordShape,
@@ -1501,6 +1502,11 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * once per Lowerer and threaded through the recursion — adding a hook means
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
+  /** The own properties of this enum's object when the program builds it
+   * (lowering/enum-objects.ts): then `typeof E` maps to the record of
+   * them. Absent or null: the type stays unmapped, as for every enum only
+   * read through its members. */
+  enumObjectEntries?: (symbol: ts.Symbol) => readonly EnumObjectEntry[] | null;
   /** Whether the program creates primitive wrapper objects
    * (primitive-wrappers.ts): then the boxed interface types (`String`,
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
@@ -1537,7 +1543,14 @@ export interface TypeMapperCtx {
   /** Set with erasingSignature: the signature's own type parameters, and
    * whether the erasure consulted an enclosing binding. An erasure that
    * resolved only its own parameters answers the same in every context. */
-  erasedMember?: { own: ReadonlySet<ts.Type>; outerConsulted: boolean };
+  erasedMember?: {
+    own: ReadonlySet<ts.Type>;
+    outerConsulted: boolean;
+    /** The erasure's own resolver and what mentionsErasedTypeParam answered
+     * under it (ErasedMentions). */
+    resolve?: TypeParamResolver;
+    mentions?: ErasedMentions;
+  };
   /** True while an erased generic body lowers (its type parameters are
    * bound to `unknown`). */
   isErasing?: () => boolean;
@@ -1549,6 +1562,16 @@ export interface TypeMapperCtx {
    * only where literal identity matters — indexed accesses (`T[K]`) inside
    * generic bodies whose K is bound to a literal key. */
   resolveTypeParamTs?: TypeParamTsResolver;
+  /** resolveTypeParamTs restricted to the parameters whose bound literals
+   * the instance is keyed on (generic-functions.ts memberPatternTypeParams):
+   * the instance serves no other binding of them, so its body may map a
+   * type by them. Null for every other parameter. */
+  resolvePinnedTypeParamTs?: TypeParamTsResolver;
+  /** Set on the context pinnedBindingsCtx derives: evalMappedTemplate also
+   * decides a conditional by its member pattern (memberPatternExtendsCheck). */
+  memberPatterns?: true;
+  /** The context pinnedBindingsCtx derived from this one, kept for reuse. */
+  pinnedBindings?: TypeMapperCtx;
   /** A generic alias reference inside a generic body (`Catalog<G, P>`)
    * re-instantiated with the instance's bound type arguments: the concrete
    * checker type its signature instantiates, or null. Consulted only when
@@ -2335,10 +2358,17 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // its own. A shape with no native mapping is then exactly the
     // checked-dynamic value — the same answer `unknown` gets — never the
     // package's story (there is no package value here to disagree with).
-    if (mapped === null && packageTypeIsData(type, ctx)) {
-      mapped = DYN;
-      contextResolutions++;
-    }
+    //
+    // The fallback reads the type's declarations and nothing of the binding
+    // context, so it is not a context resolution of its own: when the
+    // structural attempt consulted the context, that read counted itself,
+    // and when it did not, the type has this answer wherever it is mapped.
+    // Counting it kept every type that holds such a shape out of the memo:
+    // an SDK configuration type whose answer is the checked-dynamic value
+    // was mapped from scratch at each of its uses (pi's
+    // `BedrockRuntimeClientConfig`: forty mappings of half a second each in
+    // one function).
+    if (mapped === null && packageTypeIsData(type, ctx)) mapped = DYN;
     // Localized failure: a type that failed at a committed slot maps to its
     // lenient form. It counts as a context resolution so neither it nor a
     // type containing it is memoized: the strict form may map elsewhere.
@@ -2656,6 +2686,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (viaDistribution !== null) {
         contextResolutions++;
         return viaDistribution;
+      }
+      // One distributed member of `Extract<U, { k: T }>`, whose branch the
+      // literal this instance is keyed on decides (memberPatternExtendsCheck).
+      const pinned = pinnedBindingsCtx(ctx);
+      const selected = pinned ? evalMappedTemplate(type, new Map(), new Map(), pinned) : null;
+      if (selected && selected !== type) {
+        const viaPattern = mapType(selected, ctx);
+        if (viaPattern !== null) {
+          contextResolutions++;
+          return viaPattern;
+        }
       }
     }
   }
@@ -3833,6 +3874,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
+  // The fallback declarations give the global `console` an object type of
+  // its own (not the Console interface): the same native handle, so a slot
+  // of that type (`{ target: console }`, `[console]`, a parameter typed
+  // `typeof console`) holds the console value in both type worlds.
+  if (psym !== undefined && psym.declarations.some((d) => isFallbackConsoleType(d, ctx))) {
+    return DYN;
+  }
   // node:crypto Cipheriv/Decipheriv values (and @types/node's per-mode
   // interfaces over them) are native handles carried by the checked-dynamic
   // representation; lowerCipherMethodCall dispatches their methods.
@@ -3965,6 +4013,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("ArrayBuffer") ||
     isStdlibInterface("SharedArrayBuffer") ||
     isStdlibInterface("PropertyDescriptor") ||
+    isStdlibInterface("PropertyDescriptorMap") ||
     isStdlibInterface("ProcessVersions") ||
     isStdlibInterface("ProcessRelease") ||
     isStdlibInterface("ProcessReport")
@@ -5623,6 +5672,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // stream's replaceable method slot, so it is the checked-dynamic function
   // the stream object hands out (scr_events.c ProcessStream).
   if (callSigs.length > 1 && isStdlibStreamWriteOverloads(callSigs, ctx)) return DYN;
+  // A console method taken as a value (`const { log } = console`, a saved
+  // `console.error`, `typeof console.warn` as a slot's type): the value is
+  // the one function the console object hands out (scr_console_native.c),
+  // which formats whatever arguments its caller passes as Node's own
+  // method does. No compiled signature says that, so the value stays the
+  // checked-dynamic function, and a typed slot it flows into adapts it at
+  // the slot's own signature.
+  if (callSigs.length === 1 && isStdlibConsoleMethod(callSigs[0]!, ctx)) return DYN;
   // An overload set held as a VALUE (a callback parameter, an alias, a
   // variable, a member read): JavaScript stores ONE function, so the value
   // is that function's erased type, the same slot a record member of this
@@ -5940,6 +5997,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           neverConditionalPart = true;
           continue;
         }
+        // So does a member of a distributed `Extract<U, { k: T }>` whose
+        // pattern the instance's binding of T rejects.
+        if (memberPatternSelectsNever(part, ctx)) {
+          neverConditionalPart = true;
+          continue;
+        }
         // A `void` PART is inhabited only by undefined (`Promise<void> |
         // void` return types, `string | void`): it becomes the undefinedT
         // unit arm, exactly like an undefined part — the value either
@@ -6198,6 +6261,36 @@ function isStdlibStreamWriteOverloads(
       ctx.isStdlibFile(ts.getSourceFileOfNode(decl))
     );
   });
+}
+
+/** `node` is the object type the fallback declarations give the global
+ * `console` (`declare const console: { log(...): void; ... }`). */
+function isFallbackConsoleType(node: ts.Node, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  if (!ts.isTypeLiteralNode(node)) return false;
+  const holder = node.parent;
+  return (
+    holder !== undefined &&
+    ts.isVariableDeclaration(holder) &&
+    ts.isIdentifier(holder.name) &&
+    holder.name.text === "console" &&
+    ctx.isStdlibFile(ts.getSourceFileOfNode(node))
+  );
+}
+
+/** `sig` is a method of the standard library's console object: a member of
+ * @types/node's global `interface Console`, or of the object type the
+ * fallback declarations give `console`. */
+function isStdlibConsoleMethod(
+  sig: ts.Signature,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): boolean {
+  const decl = sig.declaration;
+  if (decl === undefined || !ts.isMethodSignatureDeclaration(decl)) return false;
+  const owner = decl.parent;
+  if (owner === undefined) return false;
+  if (ts.isInterfaceDeclaration(owner))
+    return owner.name.text === "Console" && ctx.isStdlibFile(ts.getSourceFileOfNode(decl));
+  return isFallbackConsoleType(owner, ctx);
 }
 
 /** An overloaded set's identity for the expansion guard. A generic set
@@ -7480,7 +7573,9 @@ function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null
  * parameters (through the instance's bindings), indexed accesses
  * (`S[K]`, `S[K]["_output"]`) and conditional types whose `extends` side
  * is a reference to the same generic type as the checked type
- * (`S extends Schema<infer T> ? T : never`); answers the type itself
+ * (`S extends Schema<infer T> ? T : never`), and under pinnedBindingsCtx
+ * conditional types whose `extends` side is a member pattern over a pinned
+ * parameter (`C extends { kind: K } ? C : never`); answers the type itself
  * when it mentions none of the bound parameters, null otherwise. */
 function evalMappedTemplate(
   type: ts.Type,
@@ -7541,7 +7636,10 @@ function evalMappedTemplate(
     if (!checked) return null;
     const inferred =
       primitiveExtendsCheck(checked, extendsType, ctx) ??
-      matchInferReference(checked, extendsType, ctx);
+      matchInferReference(checked, extendsType, ctx) ??
+      (ctx.memberPatterns
+        ? memberPatternExtendsCheck(checked, extendsType, keys, scope, ctx)
+        : undefined);
     if (inferred === undefined) return null;
     const branch = inferred ? type.getTrueType() : type.getFalseType();
     const branchScope = inferred ? new Map([...scope, ...inferred]) : scope;
@@ -7572,6 +7670,119 @@ function primitiveExtendsCheck(
   const extendsParts = extendsType.isUnionType() ? ts.constituentTypes(extendsType) : [extendsType];
   if (!isPrimitive(checked) || !extendsParts.every(isPrimitive)) return undefined;
   return ctx.checker.isTypeAssignableTo(checked, extendsType) ? new Map() : false;
+}
+
+/** `checked extends { k: T }` where the extends side is an object type that
+ * declares only properties and each property type, evaluated under the
+ * bindings, is a primitive or literal type or a union of them (the member
+ * pattern of `Extract<U, { kind: K }>` once the instance binds K): the
+ * pattern has no infer positions, so the branch is decided property by
+ * property as TypeScript's assignability decides it. `checked` must have
+ * every required property, required itself, with a type assignable to the
+ * pattern's. A `checked` that is not one object type, a pattern with
+ * signatures or an index signature, and a property type that stays symbolic
+ * or is not primitive all stay undecided (undefined).
+ *
+ * Asked only under pinnedBindingsCtx: an instance body is shared by every
+ * call that maps to its key, so a branch may follow a parameter's binding
+ * only when the key names that binding. */
+function memberPatternExtendsCheck(
+  checked: ts.Type,
+  extendsType: ts.Type,
+  keys: Map<ts.Symbol, string>,
+  aliases: Map<ts.Symbol, ts.Type>,
+  ctx: TypeMapperCtx,
+): Map<ts.Symbol, ts.Type> | false | undefined {
+  const { checker } = ctx;
+  const plainObject = (t: ts.Type): boolean =>
+    (t.flags & ts.TypeFlags.Object) !== 0 &&
+    !t.isUnionType() &&
+    !t.isIntersectionType() &&
+    !checker.isArrayType(t) &&
+    !checker.isTupleType(t);
+  if (!plainObject(checked) || !plainObject(extendsType)) return undefined;
+  if (
+    checker.getCallSignatures(extendsType).length > 0 ||
+    checker.getConstructSignatures(extendsType).length > 0 ||
+    checker.getIndexInfosOfType(extendsType).length > 0
+  )
+    return undefined;
+  const pattern = checker.getPropertiesOfType(extendsType);
+  if (pattern.length === 0) return undefined;
+  const primitive =
+    ts.TypeFlags.StringLike |
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined;
+  const closed = (t: ts.Type): boolean =>
+    (t.isUnionType() ? ts.constituentTypes(t) : [t]).every(
+      (part) => (part.flags & primitive) !== 0 && (part.flags & ts.TypeFlags.TypeParameter) === 0,
+    );
+  const accessor = ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor;
+  // Every property is evaluated before any answer: one that stays symbolic
+  // leaves the whole conditional undecided, whatever the others say.
+  const wanted: { name: string; optional: boolean; type: ts.Type }[] = [];
+  let bound = false;
+  for (const property of pattern) {
+    if (property.flags & accessor) return undefined;
+    const declared = checker.getTypeOfSymbol(property);
+    const type = evalMappedTemplate(declared, keys, aliases, ctx);
+    if (!type || !closed(type)) return undefined;
+    if (type !== declared) bound = true;
+    wanted.push({
+      name: ts.symbolName(property),
+      optional: (property.flags & ts.SymbolFlags.Optional) !== 0,
+      type,
+    });
+  }
+  // A pattern that names no bound parameter is the checker's to decide.
+  if (!bound) return undefined;
+  const owned: (ts.Symbol | undefined)[] = [];
+  for (const want of wanted) {
+    const own = checker.getPropertyOfType(checked, want.name);
+    if (own && own.flags & accessor) return undefined;
+    owned.push(own);
+  }
+  for (let i = 0; i < wanted.length; i++) {
+    const want = wanted[i]!;
+    const own = owned[i];
+    if (!own) {
+      if (want.optional) continue;
+      return false;
+    }
+    if ((own.flags & ts.SymbolFlags.Optional) !== 0 && !want.optional) return false;
+    if (!checker.isTypeAssignableTo(checker.getTypeOfSymbol(own), want.type)) return false;
+  }
+  return new Map();
+}
+
+/** `ctx` resolving only the type parameters the instance is keyed on
+ * (resolvePinnedTypeParamTs), with the member pattern rule on, for
+ * evalMappedTemplate. Null where no such resolver is installed. */
+function pinnedBindingsCtx(ctx: TypeMapperCtx): TypeMapperCtx | null {
+  const resolve = ctx.resolvePinnedTypeParamTs;
+  if (!resolve) return null;
+  ctx.pinnedBindings ??= { ...ctx, resolveTypeParamTs: resolve, memberPatterns: true };
+  return ctx.pinnedBindings;
+}
+
+/** A union member that is a conditional only the member pattern decides
+ * (memberPatternExtendsCheck) and that selects `never`: one distributed
+ * member of `Extract<U, { k: T }>` whose `k` the literal this instance is
+ * keyed on excludes. Such a member contributes no arm to the union. A
+ * conditional the other rules already decide keeps their answer. */
+function memberPatternSelectsNever(part: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!part.isConditionalType()) return false;
+  const pinned = pinnedBindingsCtx(ctx);
+  if (!pinned || evalMappedTemplate(part, new Map(), new Map(), ctx) !== null) return false;
+  const selected = evalMappedTemplate(part, new Map(), new Map(), pinned);
+  if (!selected || !ctx.checker.isNeverType(selected)) return false;
+  // The answer depends on the instance's binding, like every mapping that
+  // consults it.
+  contextResolutions++;
+  return true;
 }
 
 /** `checked extends G<..., infer T, ...>`: the infer bindings when
@@ -8789,31 +9000,100 @@ export function isGenericCallableMemberType(t: ts.Type, checker: ts.TypeChecker)
  * `Promise<unknown>`). */
 const ERASURE_KEPT_CONTAINERS = new Set(["Promise", "Generator", "AsyncGenerator"]);
 
+/** What mentionsErasedTypeParam answered for a type at the depth the walk
+ * met it, for the answers no enclosing binding decided. The walk is cut at
+ * a fixed depth, so an answer belongs to its depth: the same type met
+ * deeper sees less of itself. */
+type ErasedMentions = Map<ts.Type, (boolean | undefined)[]>;
+
+/** One walk of mentionsErasedTypeParam. `own` holds the type parameters the
+ * erasure itself binds, when the context's resolver is that erasure's own
+ * (their answer is fixed for the erasure); every other type parameter read
+ * consults a binding the answers do not name, and `contextReads` counts
+ * those so that only answers free of them are kept. */
+interface ErasedMentionWalk {
+  readonly answers: ErasedMentions;
+  readonly own: ReadonlySet<ts.Type> | undefined;
+  contextReads: number;
+}
+
 /** The type mentions a type parameter that the active erasure binds to
- * `unknown` (erasedGenericMemberType, erased bodies). */
+ * `unknown` (erasedGenericMemberType, erased bodies).
+ *
+ * The walk follows a type's parts to a fixed depth, and the types it meets
+ * share parts: a package's configuration type reaches the same few hundred
+ * types along millions of paths (pi's `BedrockRuntimeClientConfig`: 229
+ * types, 2.3 billion visits, two minutes for one statement). Each type is
+ * therefore answered once per depth. An erasure asks about every type it
+ * maps, so its answers are kept for the whole erasure when its own resolver
+ * is the one in force; any other context keeps them for the one walk. */
 function mentionsErasedTypeParam(type: ts.Type, ctx: TypeMapperCtx, depth: number): boolean {
+  const member = ctx.erasedMember;
+  const ownResolver =
+    member !== undefined && member.resolve !== undefined && member.resolve === ctx.resolveTypeParam;
+  const walk: ErasedMentionWalk = {
+    answers: ownResolver ? (member.mentions ??= new Map()) : new Map(),
+    own: ownResolver ? member.own : undefined,
+    contextReads: 0,
+  };
+  return mentionsErasedTypeParamAt(type, ctx, depth, walk);
+}
+
+function mentionsErasedTypeParamAt(
+  type: ts.Type,
+  ctx: TypeMapperCtx,
+  depth: number,
+  walk: ErasedMentionWalk,
+): boolean {
   if (depth > 8) return false;
-  const { checker } = ctx;
-  if (type.flags & ts.TypeFlags.TypeParameter) return ctx.resolveTypeParam?.(type)?.kind === "dyn";
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    if (walk.own === undefined || !walk.own.has(type)) walk.contextReads++;
+    return ctx.resolveTypeParam?.(type)?.kind === "dyn";
+  }
   if (
     type.flags &
     (ts.TypeFlags.IndexedAccess | ts.TypeFlags.Conditional | ts.TypeFlags.Substitution)
   )
     return true;
+  const known = walk.answers.get(type)?.[depth];
+  if (known !== undefined) return known;
+  const readsAtEntry = walk.contextReads;
+  const answer = mentionsErasedTypeParamIn(type, ctx, depth, walk);
+  // An answer a context binding took part in is that context's: it is
+  // computed again wherever it is asked for.
+  if (walk.contextReads === readsAtEntry) {
+    let byDepth = walk.answers.get(type);
+    if (byDepth === undefined) walk.answers.set(type, (byDepth = []));
+    byDepth[depth] = answer;
+  }
+  return answer;
+}
+
+function mentionsErasedTypeParamIn(
+  type: ts.Type,
+  ctx: TypeMapperCtx,
+  depth: number,
+  walk: ErasedMentionWalk,
+): boolean {
+  const { checker } = ctx;
   if (type.isUnionType() || type.isIntersectionType())
-    return ts.constituentTypes(type).some((part) => mentionsErasedTypeParam(part, ctx, depth + 1));
+    return ts
+      .constituentTypes(type)
+      .some((part) => mentionsErasedTypeParamAt(part, ctx, depth + 1, walk));
   if ((type.flags & ts.TypeFlags.Object) === 0) return false;
   if (
     (type as ts.Type).isTypeReference() &&
     checker
       .getTypeArguments(type as ts.TypeReference)
-      .some((arg) => mentionsErasedTypeParam(arg, ctx, depth + 1))
+      .some((arg) => mentionsErasedTypeParamAt(arg, ctx, depth + 1, walk))
   )
     return true;
   for (const sig of checker.getCallSignatures(type)) {
-    if (mentionsErasedTypeParam(checker.getReturnTypeOfSignature(sig), ctx, depth + 1)) return true;
+    if (mentionsErasedTypeParamAt(checker.getReturnTypeOfSignature(sig), ctx, depth + 1, walk))
+      return true;
     for (const param of sig.getParameters())
-      if (mentionsErasedTypeParam(checker.getTypeOfSymbol(param), ctx, depth + 1)) return true;
+      if (mentionsErasedTypeParamAt(checker.getTypeOfSymbol(param), ctx, depth + 1, walk))
+        return true;
   }
   const symbol = type.getSymbol();
   const anonymous =
@@ -8821,7 +9101,8 @@ function mentionsErasedTypeParam(type: ts.Type, ctx: TypeMapperCtx, depth: numbe
     (symbol.flags & (ts.SymbolFlags.TypeLiteral | ts.SymbolFlags.ObjectLiteral)) !== 0;
   if (anonymous)
     for (const property of checker.getPropertiesOfType(type))
-      if (mentionsErasedTypeParam(checker.getTypeOfSymbol(property), ctx, depth + 1)) return true;
+      if (mentionsErasedTypeParamAt(checker.getTypeOfSymbol(property), ctx, depth + 1, walk))
+        return true;
   return false;
 }
 
@@ -8865,18 +9146,18 @@ export function erasedGenericMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType 
   // context-sensitive, so a recursive record holding a generic method
   // (`interface Sub extends Base { send<T>(m: Msg<T>): void }` reached
   // from Base) still closes its knot. Consulting an enclosing binding does.
-  const erasedMember = { own, outerConsulted: false };
-  const erased = mapType(t, {
-    ...ctx,
-    erasingSignature: sig,
-    erasedMember,
-    resolveTypeParam: (param) => {
-      if (own.has(param)) return DYN;
-      if (outer === undefined) return null;
-      erasedMember.outerConsulted = true;
-      return outer(param);
-    },
-  });
+  const erasedMember: NonNullable<TypeMapperCtx["erasedMember"]> = {
+    own,
+    outerConsulted: false,
+  };
+  const resolveTypeParam: TypeParamResolver = (param) => {
+    if (own.has(param)) return DYN;
+    if (outer === undefined) return null;
+    erasedMember.outerConsulted = true;
+    return outer(param);
+  };
+  erasedMember.resolve = resolveTypeParam;
+  const erased = mapType(t, { ...ctx, erasingSignature: sig, erasedMember, resolveTypeParam });
   return erased?.kind === "func" ? erased : undefined;
 }
 
@@ -9137,6 +9418,19 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   } finally {
     shapes.inProgress.delete(widened);
   }
+}
+
+/** The fields a checked-identity view's type declares: the layout the type
+ * has when no live object stands behind it. A value of the type is a live
+ * dynamic object, so the type itself maps to the checked-dynamic value; an
+ * object literal built for the view stores its members at these field types
+ * (view-literals.ts). Member types map as everywhere else, so a member that
+ * is a view itself stays one. Null when the type declares no fixed layout
+ * (an index signature, a symbol key, a member with no representation). */
+export function declaredViewFields(type: ts.Type, ctx: TypeMapperCtx): IrRecordField[] | null {
+  const parts = mapRecordTypeInner(ctx.checker.getBaseTypeOfLiteralType(type), ctx, true);
+  if (parts === null || !("fields" in parts) || parts.indexValue !== undefined) return null;
+  return parts.fields;
 }
 
 /** An index signature already describes every OPTIONAL declared member
@@ -9498,18 +9792,36 @@ function interfaceExtendsAny(type: ts.Type, checker: ts.TypeChecker): boolean {
 function mapRecordTypeInner(
   widened: ts.Type,
   ctx: TypeMapperCtx,
+  /** Answer the fields the type declares even when the type is a
+   * checked-identity view (declaredViewFields). */
+  declaredLayout = false,
 ): IrType | RecordShapeParts | null {
   const { checker, shapes } = ctx;
   if (checker.getConstructSignatures(widened).length > 0) return null;
   if (checker.isTupleType(widened) || checker.isArrayLikeType(widened)) return null;
-  // ENUM OBJECTS (`typeof e` — the enum used as a first-class value) look
-  // exactly like a number-keyed hybrid (member fields + the reverse-map
-  // index signature), but the VALUE has no lowering: an enum identifier in
-  // value position resolves to nothing. Mapping the type would strand the
-  // reference sites, so the enum-object type stays unmapped and badType
-  // names the construct.
+  // ENUM OBJECTS (`typeof e` — the enum used as a first-class value): the
+  // checker describes one as member fields plus, for numeric members, a
+  // reverse-map index signature. The object tsc's emit builds has a known
+  // key set when every member is a compile-time constant, so the type is
+  // the closed record of those keys (enum-object-layout.ts): the member
+  // names and each numeric member's reverse entry, enumerated in the order
+  // the emit creates them. Only an enum whose object the program builds
+  // has the type: for every other enum (read only through its members, or
+  // const, ambient, with computed members or a namespace merge) it stays
+  // unmapped, and badType names the construct.
   const widenedSym = widened.getSymbol();
-  if (widenedSym !== undefined && (widenedSym.flags & ts.SymbolFlags.Enum) !== 0) return null;
+  if (widenedSym !== undefined && (widenedSym.flags & ts.SymbolFlags.Enum) !== 0) {
+    if ((widened.flags & ts.TypeFlags.Object) === 0) return null;
+    const entries = ctx.enumObjectEntries?.(widenedSym) ?? null;
+    if (entries === null) return null;
+    const fields: IrRecordField[] = entries.map((entry) => ({
+      name: entry.key,
+      type: typeof entry.value === "number" ? F64 : STRING,
+    }));
+    const declaredOrder = esOwnKeyOrder(fields.map((f) => f.name));
+    fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { kind: "record", shapeId: shapes.intern(fields, false, undefined, declaredOrder) };
+  }
   // An interface extending a type the checker answers `any` for (in the
   // compiled world, a package type computed from members only its .d.ts
   // declares, such as `interface P extends z.infer<typeof S>`) has members
@@ -9650,7 +9962,7 @@ function mapRecordTypeInner(
   const computed = widened.isIntersectionType() || isMappedShape(widened);
   {
     const props = checker.getPropertiesOfType(widened);
-    if (ctx.classImplementedProtocol?.(widened)) return DYN;
+    if (!declaredLayout && ctx.classImplementedProtocol?.(widened)) return DYN;
     // Symbol-keyed records use the checked object's descriptor table. A
     // checker-internal __@ name is not a string field in a native struct.
     if (props.some((property) => ts.symbolName(property).startsWith("__@"))) return DYN;

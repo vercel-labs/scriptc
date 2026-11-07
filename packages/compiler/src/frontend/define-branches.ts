@@ -24,7 +24,8 @@
  * (buildMain), so its reads agree with the resolved branches. */
 import * as ts from "./ts7/syntax.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
-import { countDeclarations, unparen } from "./npm-static-bundled-chunks.js";
+import { countDeclarations } from "./npm-static-bundled-chunks.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import { definedEnvValue, type Defines } from "./defines.js";
 
 /** True when the text may read a defined variable (a cheap probe). */
@@ -112,7 +113,7 @@ function importsBinding(sf: ts.SourceFile, name: string): boolean {
 
 /** The value of a condition operand `--define` decides, or null. */
 function staticValue(expr: ts.Expression, defines: Defines): string | boolean | null {
-  const e = unparen(expr);
+  const e = withoutParentheses(expr);
   if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text;
   const name = envReadName(e);
   if (name !== null) return definedEnvValue(defines, name) ?? null;
@@ -150,7 +151,7 @@ function envReadName(e: ts.Expression): string | null {
     return isProcessEnv(e.expression) ? e.name.text : null;
   }
   if (ts.isElementAccessExpression(e) && e.questionDotToken === undefined) {
-    const key = unparen(e.argumentExpression);
+    const key = withoutParentheses(e.argumentExpression);
     return isProcessEnv(e.expression) && ts.isStringLiteral(key) ? key.text : null;
   }
   return null;

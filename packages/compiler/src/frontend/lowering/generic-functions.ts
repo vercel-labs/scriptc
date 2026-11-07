@@ -4,6 +4,7 @@ import { staticNameBindings } from "./static-function-names.js";
 import { positionTag } from "./structural-positions.js";
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { heritageElementTarget, isHeritageTypeReference } from "../heritage-elements.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
@@ -25,6 +26,7 @@ import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
+import { literalValues } from "../literal-values.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
@@ -48,11 +50,7 @@ import {
   hasExplicitJsDocReturn,
   promiseCarriesDyn,
 } from "./function-returns.js";
-import {
-  bindingNeverReassigned,
-  isValueIdentifier,
-  stripValueWrappers,
-} from "./binding-analysis.js";
+import { bindingNeverReassigned, isValueIdentifier } from "./binding-analysis.js";
 import { declareContextLocal } from "./function-context.js";
 import {
   extendInstantiationPath,
@@ -67,7 +65,14 @@ import {
  * signature (type arguments substituted) becomes an instantiation key, and
  * the body is lowered once per distinct key (monomorphization). */
 export interface GenericFnInfo {
-  decl: ts.FunctionDeclaration | ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction;
+  decl:
+    | ts.FunctionDeclaration
+    | ts.MethodDeclaration
+    | ts.FunctionExpression
+    | ts.ArrowFunction
+    // A static accessor that reads `this` (staticReceiver).
+    | ts.GetAccessorDeclaration
+    | ts.SetAccessorDeclaration;
   /** Unqualified source name, for diagnostics. */
   baseName: string;
   /** Program-wide qualified name; instance `n` is named `<qualified>%<n>`
@@ -82,6 +87,10 @@ export interface GenericFnInfo {
    * literal (no cross-literal sharing) and keep the checker types
    * (tsBindings) the body resolves through. */
   keyofTps?: Set<ts.Symbol>;
+  /** Lazily computed (memberPatternTypeParams): the type parameters the
+   * body names in a member pattern (`Extract<U, { kind: K }>`). The body
+   * maps such a type by K's bound literals, so instances key on them too. */
+  patternTps?: Set<ts.Symbol>;
   /** Instantiation key (comma-joined typeKeys of the mapped param types +
    * `=>` + return typeKey) → instance. Key identity IS signature identity:
    * two call sites whose inferred types map to the same IR types share one
@@ -142,6 +151,10 @@ export interface GenericFnInfo {
    * checker types key an instantiation, exactly the generic machinery —
    * the untyped params ARE the type parameters (see implicitCallInstance). */
   implicitParams?: (ts.Symbol | null)[];
+  /** Structural instances: parallel to decl.parameters, whether the body
+   * writes through the parameter or compares it by identity
+   * (usesParameterIdentity). Computed on first use. */
+  identityParams?: boolean[];
   /** Implicit-any monomorphization of destructured object parameters
    * (implicitPatternsOf): parallel to decl.parameters, the destructured
    * names where the slot binds the call site's object type. Computed on
@@ -438,6 +451,8 @@ export function genericCallInstance(
   if (!rsig || rsig.getParameters().length !== info.decl.parameters.nodes.length) {
     lowerer.unsupported("SC1090", expr, "this call form");
   }
+  const optional = missingArgumentInstance(lowerer, expr, info, rsig);
+  if (optional) return optional;
   // Per-param shapes from the RESOLVED signature (types substituted) plus
   // the declaration's modes: rest stays the resolved array, a default's
   // ABI union is synthesized over the resolved body type — exactly the
@@ -478,12 +493,19 @@ export function genericCallInstance(
   // share one runtime-keyed instance per IR signature, exactly the
   // widened discipline.
   const named = staticNameBindings(lowerer, expr, info);
-  if (keyofConstrainedTypeParams(info).size > 0) {
+  const keyofKeyed = keyofConstrainedTypeParams(info).size > 0;
+  // So is the literal bound to a parameter the body names in a member
+  // pattern (memberPatternTypeParams): the body maps `Extract<U, { kind: K
+  // }>` by it, and two literals can map to one IR signature.
+  const patternKeyed = memberPatternTypeParams(lowerer, info).size > 0;
+  if (keyofKeyed || patternKeyed) {
     const tsBindings = new Map<ts.Symbol, ts.Type>();
     const bindings = lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings);
+    const pattern = patternKeyed ? memberPatternKey(lowerer, info, tsBindings) : null;
     return internGenericInstance(lowerer, expr, info, params, returnType, () => bindings, {
-      extraKey: `${keyofLiteralKey(info, tsBindings)}${named?.key ?? ""}`,
+      extraKey: `${keyofKeyed ? keyofLiteralKey(info, tsBindings) : ""}${pattern?.key ?? ""}${named?.key ?? ""}`,
       tsBindings,
+      ...(pattern ? { pinned: pattern.pinned } : {}),
       ...(named ? { staticFnNames: named.names } : {}),
     });
   }
@@ -495,6 +517,92 @@ export function genericCallInstance(
     returnType,
     (tsBindings) => lowerer.inferTypeParamBindings(expr, info, rsig, tsBindings),
     named ? { extraKey: named.key, staticFnNames: named.names } : undefined,
+  );
+}
+
+/** The instance of a call whose argument at a bare type-parameter slot
+ * can be a missing element (`id(values[20])` into `v: T`; the analysis in
+ * analyzeRuntimeOptionalArrayReads names the type parameters). The checker
+ * binds T to the element type, which has no value for the `undefined`
+ * Node passes there, so the instance binds T to that type with undefined:
+ * the parameter holds what the caller passes and a result declared `T`
+ * answers it, as a declared function's widened parameter and result do.
+ * Null when the call has no such argument or no binding changes. */
+function missingArgumentInstance(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+  rsig: ts.Signature,
+): GenericInstance | null {
+  const missing = lowerer.runtimeOptionalGenericArguments.get(expr);
+  if (!missing || returnedLocalClass(lowerer, info)) return null;
+  const declSig = lowerer.checker.getSignatureFromDeclaration(info.decl);
+  if (!declSig) return null;
+  const tsBindings = new Map<ts.Symbol, ts.Type>();
+  const bindings = inferTypeParamBindings(lowerer, expr, info, rsig, tsBindings);
+  let changed = false;
+  for (const tp of missing) {
+    const bound = bindings.get(tp);
+    if (!bound) continue;
+    const widened = lowerer.runtimeOptionalType(bound);
+    if (typeEquals(widened, bound)) continue;
+    bindings.set(tp, widened);
+    changed = true;
+  }
+  if (!changed) return null;
+  return instanceForBindings(lowerer, expr, info, declSig, bindings, tsBindings);
+}
+
+/** The instance of `info` a call names under `bindings` the caller chose
+ * over the resolved signature's: its parameters and result are the
+ * DECLARATION's, mapped under those bindings (as overloadCallInstance maps
+ * an implementation's). A generic-class method's declaration also names the
+ * class's type parameters, which the receiver's instantiation binds: they
+ * map under those class bindings with the call's own on top, the binding
+ * sets lowerGenericInstance lowers the body under. Null when the result
+ * has no mapping there. */
+function instanceForBindings(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+  declSig: ts.Signature,
+  bindings: Map<ts.Symbol, IrType>,
+  tsBindings: Map<ts.Symbol, ts.Type>,
+): GenericInstance | null {
+  const previous = lowerer.typeParamBindings;
+  const previousTs = lowerer.typeParamTsBindings;
+  const clsBindings = info.member?.cls.genericInstance?.bindings;
+  lowerer.typeParamBindings = clsBindings ? new Map([...clsBindings, ...bindings]) : bindings;
+  lowerer.typeParamTsBindings = tsBindings;
+  let params: ParamShape[];
+  let returnType: IrType | null;
+  try {
+    params = paramShapes(
+      lowerer,
+      info.decl.parameters.nodes,
+      declSig,
+      (_param, i) => expr.arguments.nodes[i] ?? expr,
+    );
+    returnType = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(declSig));
+  } finally {
+    lowerer.typeParamBindings = previous;
+    lowerer.typeParamTsBindings = previousTs;
+  }
+  if (!returnType) return null;
+  const named = staticNameBindings(lowerer, expr, info);
+  const keyed = keyofConstrainedTypeParams(info).size > 0 ? keyofLiteralKey(info, tsBindings) : "";
+  return internGenericInstance(
+    lowerer,
+    expr,
+    info,
+    params,
+    runtimeReturnType(lowerer, info, returnType),
+    () => bindings,
+    {
+      extraKey: `${keyed}${named?.key ?? ""}`,
+      tsBindings,
+      ...(named ? { staticFnNames: named.names } : {}),
+    },
   );
 }
 
@@ -583,11 +691,19 @@ function overloadCallInstance(
   // keyof-constrained parameters key their instance on the bound literal,
   // as on the implementation-signature path.
   const runtimeReturn = runtimeReturnType(lowerer, info, returnType);
+  const keyofKeyed = keyofConstrainedTypeParams(info).size > 0;
+  const pattern =
+    memberPatternTypeParams(lowerer, info).size > 0
+      ? memberPatternKey(lowerer, info, tsBindings)
+      : null;
   return internGenericInstance(lowerer, expr, info, params, runtimeReturn, () => bindings, {
-    ...(keyofConstrainedTypeParams(info).size > 0
-      ? { extraKey: keyofLiteralKey(info, tsBindings) }
+    ...(keyofKeyed || pattern
+      ? {
+          extraKey: `${keyofKeyed ? keyofLiteralKey(info, tsBindings) : ""}${pattern?.key ?? ""}`,
+        }
       : {}),
     tsBindings,
+    ...(pattern ? { pinned: pattern.pinned } : {}),
   });
 }
 
@@ -879,6 +995,9 @@ function internGenericInstance(
   opts?: {
     extraKey?: string;
     tsBindings?: Map<ts.Symbol, ts.Type>;
+    /** The parameters whose bound literals `extraKey` names
+     * (memberPatternKey). */
+    pinned?: ReadonlySet<ts.Symbol>;
     staticFnNames?: Map<ts.Symbol, string | null>;
   },
 ): GenericInstance {
@@ -926,10 +1045,104 @@ function internGenericInstance(
       ...(opts?.staticFnNames ? { staticFnNames: opts.staticFnNames } : {}),
     };
     info.instances.set(key, inst);
+    if (opts?.pinned !== undefined && opts.pinned.size > 0)
+      lowerer.pinnedTypeParams.push({ tsBindings, pinned: opts.pinned });
     lowerer.instantiationQueue.push({ info, inst });
   }
   lowerer.noteGenericInstanceDemand(inst);
   return inst;
+}
+
+const TYPE_LITERAL_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.TypeLiteral]);
+
+/** The type parameters of `info` its body names in a MEMBER PATTERN: as the
+ * type of a property of a type literal that is a type argument or the
+ * `extends` side of a conditional type (`slot as Extract<Slot, { type: K
+ * }>`, `S extends { kind: K } ? S : never`). Such a type selects the
+ * members of a union by K's bound literals, so the instance body depends
+ * on them where the IR signature (K maps to string) does not. Computed
+ * once per info from the body's syntax; a pattern in the signature alone
+ * maps from each call's resolved signature and needs no key. */
+function memberPatternTypeParams(lowerer: Lowerer, info: GenericFnInfo): Set<ts.Symbol> {
+  if (info.patternTps) return info.patternTps;
+  const out = new Set<ts.Symbol>();
+  const body = info.decl.body;
+  if (body !== undefined && info.typeParams.length > 0) {
+    const names = new Set(info.typeParams.map((tp) => ts.symbolName(tp)));
+    ts.walkPreorder(
+      body,
+      (node) => {
+        if (!ts.isTypeLiteralNode(node)) return;
+        const parent = node.parent;
+        const pattern =
+          parent !== undefined &&
+          (ts.isTypeReferenceNode(parent) ||
+            (ts.isConditionalTypeNode(parent) && parent.extendsType === node));
+        if (!pattern) return;
+        for (const member of node.members.nodes) {
+          if (!ts.isPropertySignature(member) || member.type === undefined) continue;
+          const type = member.type;
+          if (
+            !ts.isTypeReferenceNode(type) ||
+            type.typeArguments !== undefined ||
+            !ts.isIdentifier(type.typeName) ||
+            !names.has(type.typeName.text)
+          )
+            continue;
+          const symbol = lowerer.checker.getSymbolAtLocation(type.typeName);
+          if (symbol !== undefined && info.typeParams.includes(symbol)) out.add(symbol);
+        }
+      },
+      TYPE_LITERAL_KINDS,
+    );
+  }
+  info.patternTps = out;
+  return out;
+}
+
+/** The instance-key suffix of the literals bound to `info`'s member-pattern
+ * type parameters (`#"a"|"b"`; `*` for a binding that is not a finite set
+ * of literals), and the parameters it names a literal set for. */
+function memberPatternKey(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  tsBindings: Map<ts.Symbol, ts.Type>,
+): { key: string; pinned: Set<ts.Symbol> } {
+  const patternTps = memberPatternTypeParams(lowerer, info);
+  const pinned = new Set<ts.Symbol>();
+  const parts: string[] = [];
+  for (const tp of info.typeParams) {
+    if (!patternTps.has(tp)) continue;
+    const bound = tsBindings.get(tp);
+    const values = bound === undefined ? null : literalValues(bound);
+    if (values === null) {
+      parts.push("*");
+      continue;
+    }
+    pinned.add(tp);
+    parts.push(
+      values
+        .map((value) => JSON.stringify(value))
+        .sort()
+        .join("|"),
+    );
+  }
+  return { key: `#${parts.join(",")}`, pinned };
+}
+
+/** The instance of a receiver-dependent static member specialized for one
+ * receiver class (`info.staticReceiver`), when no call expression supplies
+ * the signature: the member has no type parameters, so its collected
+ * parameters and result are the instance's. A call of the same member
+ * through the receiver's name interns the same instance. */
+export function staticReceiverInstance(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  info: GenericFnInfo,
+  params: ParamShape[],
+  returnType: IrType,
+): GenericInstance {
+  return internGenericInstance(lowerer, blame, info, params, returnType, () => new Map());
 }
 
 /** The type parameters of `info` declared with a `keyof` CONSTRAINT
@@ -1330,8 +1543,9 @@ export function lowerGenericInstance(
   if (inst.erased) lowerer.erasingDepth++;
   try {
     // Static specializations bind lexical this only when the caller
-    // proved its exact receiver. Other instances retain the fence;
-    // super remains unsupported. Arrows inherit the lexical receiver.
+    // proved its exact receiver, and `super` members then resolve from the
+    // declaring class's base with that receiver (lowerStaticSuperRead).
+    // Other instances retain the fence. Arrows inherit the lexical receiver.
     if (info.member?.kind === "static" && decl.body) {
       rejectStaticThis(
         lowerer,
@@ -1339,6 +1553,7 @@ export function lowerGenericInstance(
         (keyword) =>
           `'${keyword}' in static methods (it names the RECEIVER class — a dynamic value; reference the class by name instead)`,
         false,
+        info.staticReceiver !== undefined,
         info.staticReceiver !== undefined,
       );
     }
@@ -2379,7 +2594,7 @@ export interface ImplicitPattern {
  * decl.parameters. */
 export function implicitPatternsOf(
   lowerer: Lowerer,
-  decl: ts.FunctionDeclaration | ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+  decl: GenericFnInfo["decl"],
 ): (ImplicitPattern | null)[] {
   return decl.parameters.nodes.map((param): ImplicitPattern | null => {
     if (!ts.isObjectBindingPattern(param.name) || !decl.body) return null;
@@ -3608,7 +3823,7 @@ export function bindingGenericFnNodeOf(
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
   // Assertion wrappers strip like parens: `const r = (<T>(x: T) => x) as
   // Mapper` evaluates the arrow — the cast only renames its type.
-  const init = stripValueWrappers(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (
     (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) &&
     init.typeParameters !== undefined &&
@@ -3638,7 +3853,7 @@ export function bindingContextualGenericFnNodeOf(
   // asserted signature exactly like an annotation would).
   const asserted = ts.isAsExpression(decl.initializer) || ts.isTypeAssertion(decl.initializer);
   if (decl.type === undefined && !asserted) return null;
-  const init = stripValueWrappers(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (
     !(ts.isArrowFunction(init) || ts.isFunctionExpression(init)) ||
     init.typeParameters !== undefined ||

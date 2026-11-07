@@ -1330,10 +1330,15 @@ export class LlDyn {
       );
     }
     const key = typeKey({ kind: "record", shapeId: targetId });
-    host.declare(`declare ptr @scr_dyn_record_view(ptr, ptr, ${this.S}, ptr, ${this.S}, ptr)`);
+    // A type whose values may be frozen answers the view a capsule already
+    // has also once its record is frozen (scr_record_view_frozen.c).
+    const fn = host.recordViews!.marked.has(targetId)
+      ? "scr_dyn_record_view_kept"
+      : "scr_dyn_record_view";
+    host.declare(`declare ptr @${fn}(ptr, ptr, ${this.S}, ptr, ${this.S}, ptr)`);
     const view = B.tmp();
     B.line(
-      `${view} = call ptr @scr_dyn_record_view(ptr %d, ptr ${table}, ${this.S} ${sources.length}, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")}, ptr @${mangleRecordNew(targetId)})`,
+      `${view} = call ptr @${fn}(ptr %d, ptr ${table}, ${this.S} ${sources.length}, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")}, ptr @${mangleRecordNew(targetId)})`,
     );
     return view;
   }
@@ -1739,7 +1744,12 @@ export class LlDyn {
       }
       default: {
         const h = DYN_HANDLE_KINDS.get(t.kind);
-        if (!h) throw new LlvmUnsupportedError(`dynMatch:${t.kind}`);
+        if (!h)
+          throw new LlvmUnsupportedError(
+            `dynMatch:${t.kind}`,
+            undefined,
+            `a checked-dynamic value tested against type ${typeKey(t)}`,
+          );
         const kd = this.kindOf(B, "%d");
         const isHandle = B.tmp();
         B.line(`${isHandle} = icmp eq i32 ${kd}, ${DYN_KIND.HANDLE}`);
@@ -1781,6 +1791,10 @@ export class LlDyn {
    * record builder that notes it, or a JSON schema of a closed record
    * (alloc.ts RECORD_SOURCES_GATE). */
   keepsRecordSources = false;
+  /** The record types those helpers keep a source for, by shape id: none
+   * may be a type whose source tests the frontend removed
+   * (IrModule.recordSourcesFolded, LlvmEmitter.disposeObserverGates). */
+  readonly keptSourceShapes = new Set<string>();
 
   /** Targets the one-pass parser (scr_json_parse_schema) can build
    * directly: number, boolean and string leaves inside arrays and records
@@ -1930,7 +1944,10 @@ export class LlDyn {
         // The order index is no key: parsed values keep the table's order
         // and their source's own order.
         const order = recordSourceFieldOrder(shape).filter((name) => name !== KEY_ORDER_FIELD);
-        if (recordMayKeepSource(shape)) this.keepsRecordSources = true;
+        if (recordMayKeepSource(shape)) {
+          this.keepsRecordSources = true;
+          this.keptSourceShapes.add(t.shapeId);
+        }
         const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
         const entries = order.map((fieldName) => {
           const field = shape.fields[index.get(fieldName)! - base]!;
@@ -2080,6 +2097,7 @@ export class LlDyn {
     const host = this.host;
     const shape = host.recordsById.get(shapeId)!;
     this.keepsRecordSources = true;
+    this.keptSourceShapes.add(shapeId);
     const names = this.recordNameTable(shapeId, shape);
     host.declare(`declare void @scr_record_source_spread(ptr, ptr, ptr, ptr, ${host.sizeType})`);
     B.line(
@@ -2093,6 +2111,7 @@ export class LlDyn {
     const host = this.host;
     const shape = host.recordsById.get(shapeId)!;
     this.keepsRecordSources = true;
+    this.keptSourceShapes.add(shapeId);
     const names = this.recordNameTable(shapeId, shape);
     host.declare(`declare void @scr_record_source_note(ptr, ptr, ptr, ptr, ${host.sizeType})`);
     B.line(
@@ -2951,6 +2970,7 @@ export class LlDyn {
         // surfaces still observe them (scr_record_source_note).
         if (recordMayKeepSource(shape)) {
           this.keepsRecordSources = true;
+          this.keptSourceShapes.add(t.shapeId);
           const names = this.recordNameTable(t.shapeId, shape);
           host.declare(
             `declare void @scr_record_source_note(ptr, ptr, ptr, ptr, ${host.sizeType})`,
@@ -3445,7 +3465,7 @@ export class LlDyn {
           B.terminate(`ret ptr ${r}`);
           break;
         }
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
       }
     }
     this.defs.push(
@@ -4166,7 +4186,7 @@ export class LlDyn {
           B.terminate(`ret ptr ${r}`);
           break;
         }
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
       }
     }
     this.defs.push(

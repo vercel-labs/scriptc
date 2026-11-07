@@ -562,7 +562,13 @@ import { isMessageListenerCall } from "./expressions/message-listeners.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-arguments.js";
-import { bodyReturnType, declaredReturnType, widensReducedRecords } from "./function-returns.js";
+import {
+  bodyReturnType,
+  declaredReturnType,
+  returnsDeclaredUndefined,
+  undefinedResultCheck,
+  widensReducedRecords,
+} from "./function-returns.js";
 import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
 import { lowerFfiCall, validateFfiImports } from "./native-ffi.js";
 import {
@@ -16221,6 +16227,16 @@ export class Lowerer {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
       let e = this.lowerExpr(node);
+      // A result declared `undefined` has the void representation: an
+      // untyped value returned into it is checked, as it is in a binding
+      // declared `undefined`, instead of being dropped unseen.
+      if (e.type.kind === "dyn" && !this.ctx.isAsync && returnsDeclaredUndefined(this, node)) {
+        return {
+          kind: "block",
+          body: [...undefinedResultCheck(this, e, loc), { kind: "return", value: null, loc }],
+          loc,
+        };
+      }
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
       if (this.ctx.isAsync && e.type.kind === "promise") {

@@ -36,6 +36,8 @@ import {
   resolveInferredReturn,
   appendImplicitUndefinedReturn,
   blockBodyOf,
+  returnsDeclaredUndefined,
+  undefinedResultCheck,
 } from "./function-returns.js";
 import {
   generatorMeta,
@@ -575,7 +577,17 @@ export function lowerLambda(
           // statement branches instead of a forbidden void-valued ternary.
           let stripped: ts.Expression = bodyExpr;
           while (ts.isParenthesizedExpression(stripped)) stripped = stripped.expression;
-          if (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped)) {
+          // An untyped body value where the result is declared `undefined`
+          // is checked, as `return` checks it (lowerReturnOf).
+          const checksUndefined =
+            !isAsync &&
+            !ts.isVoidExpression(stripped) &&
+            (lowerer.typeOf(stripped).flags & ts.TypeFlags.Any) !== 0 &&
+            returnsDeclaredUndefined(lowerer, bodyExpr);
+          if (
+            !checksUndefined &&
+            (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped))
+          ) {
             body = [lowerer.lowerExprStatement(stripped)];
           } else {
             const value = lowerer.lowerExpr(bodyExpr);
@@ -590,6 +602,8 @@ export function lowerLambda(
                 : isAsync && value.type.kind === "promise"
                   ? [lowerer.adoptingReturn(value, VOID, (e) => e)]
                   : [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }];
+            if (checksUndefined && value.type.kind === "dyn")
+              body = undefinedResultCheck(lowerer, value, locOf(node.body!));
           }
         } else {
           // Concise and block bodies use the same destination layout for

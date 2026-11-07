@@ -1380,6 +1380,61 @@ console.log(typeof read(), read() === undefined);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("undefined true\nnumber false\n");
   });
+
+  test("an untyped value returned where the result is declared undefined is checked", async () => {
+    // Node hands the caller the value (5, null); a result declared
+    // `undefined` has no representation for it, so the return throws.
+    const r = await compileAndRun(
+      "undefined-result-returns",
+      `
+      function five(): any { return JSON.parse("5"); }
+      function nothing(): any { return JSON.parse("null"); }
+      const flag: boolean = process.argv.length < 99;
+      type Nothing = undefined;
+      function declared(): undefined { return five(); }
+      function aliased(): Nothing { return five(); }
+      function ofNull(): undefined { return nothing(); }
+      function conditional(): undefined { return flag ? five() : undefined; }
+      const concise = (): undefined => five();
+      const conciseConditional = (): undefined => (flag ? five() : undefined);
+      class Holder {
+        method(): undefined { return five(); }
+        static make(): undefined { return five(); }
+      }
+      const run = (label: string, f: () => unknown): void => {
+        try { console.log(label, f()); }
+        catch (error) { console.log(label, (error as Error).name, (error as Error).message); }
+      };
+      run("declared", () => declared());
+      run("aliased", () => aliased());
+      run("null", () => ofNull());
+      run("conditional", () => conditional());
+      run("concise", () => concise());
+      run("conciseConditional", () => conciseConditional());
+      run("method", () => new Holder().method());
+      run("static", () => Holder.make());
+      declared();
+    `,
+    );
+    const message =
+      "TypeError a value other than undefined is not representable in a result declared 'undefined' (an untyped value returned it)";
+    expect(r.stdout).toBe(
+      [
+        "declared",
+        "aliased",
+        "null",
+        "conditional",
+        "concise",
+        "conciseConditional",
+        "method",
+        "static",
+      ]
+        .map((label) => `${label} ${message}\n`)
+        .join(""),
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("a value other than undefined is not representable");
+  });
 });
 
 describe(`native-handle boundary fences (scriptc-only${sanitize ? ", sanitized" : ""})`, () => {

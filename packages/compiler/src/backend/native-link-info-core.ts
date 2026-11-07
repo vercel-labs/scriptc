@@ -57,6 +57,11 @@ export interface NativeLinkFeatures {
   /** writeFile's `flag` disposition or copyFile's mode argument:
    * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
   fsFlags?: boolean;
+  /** The program writes, defines or deletes a function's inherited member
+   * name (`fn.call = f`): links the SCR_FN_MEMBER_PROPS builds of scr_json.c
+   * and scr_dyn_invoke.c. Absent for every other program, so their objects
+   * stay identical. */
+  fnMemberProps?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;

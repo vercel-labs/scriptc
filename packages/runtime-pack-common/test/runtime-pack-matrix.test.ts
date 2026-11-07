@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import * as packMatrix from "../runtime-pack-matrix.mjs";
 import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
 
 const matrix = createRuntimePackMatrix({
@@ -113,8 +114,12 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
     "default",
     "node-island",
+    "fn-member-props",
+    "fn-member-props-node-island",
     "js-om",
     "js-om-node-island",
+    "js-om-fn-member-props",
+    "js-om-fn-member-props-node-island",
   ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
@@ -139,6 +144,23 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(
     selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
   ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program that writes, defines or deletes a function's inherited member
+  // name selects the fn-member-props build, alone and beside the island and
+  // object model builds it may also carry.
+  expect(selected("scr_json.c", { workers: false, fnMemberProps: true }).defines).toEqual([
+    "SCR_FN_MEMBER_PROPS",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, nodeIsland: true, fnMemberProps: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_FN_MEMBER_PROPS"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      nodeIsland: true,
+      fnMemberProps: true,
+    }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_FN_MEMBER_PROPS", "SCR_JS_OBJECT_MODEL"]);
   // A partial record assertion selects nothing: the view slot answers NULL in
   // every build, so a program with one keeps the build its other features
   // name, alone or beside the island and object model builds.
@@ -157,6 +179,26 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
+});
+
+test("the dynamic call path reads an own call/apply/bind in one build", () => {
+  // scr_dyn_invoke.c reads a function's own call/apply/bind before the
+  // native lowering, in the same build as scr_json.c's member write path
+  // (both compile with SCR_FN_MEMBER_PROPS for a fnMemberProps program).
+  const plain = { workers: false, jsObjectModel: false, fnMemberProps: false };
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, fnMemberProps: true }).defines).toEqual([
+    "SCR_FN_MEMBER_PROPS",
+  ]);
+  // A program that also needs the object model build keeps one object.
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, fnMemberProps: true }).defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_JS_OBJECT_MODEL"]);
+  // And a worker program keeps its thread-state build.
+  expect(
+    selected("scr_dyn_invoke.c", { workers: true, jsObjectModel: false, fnMemberProps: true })
+      .defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_WORKERS"]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
@@ -261,4 +303,52 @@ test("extended spawn options beside an error read keep both child builds", () =>
     selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: false })
       .defines,
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
+});
+
+test("a unit has one build for every combination of the features its builds name", () => {
+  // A program links one build of each unit: the one that carries the define
+  // of every feature it has. Two features that each add a build column to
+  // the same unit therefore need a build that carries both defines, also
+  // when the columns were added by changes that did not know of each other.
+  // A combination no program can have needs none: a feature that implies
+  // another never comes without it. The matrix names those implications in
+  // RUNTIME_FEATURE_IMPLIES when it has any; without the table every
+  // combination is possible.
+  const implies: Record<string, string[]> =
+    Reflect.get(packMatrix, "RUNTIME_FEATURE_IMPLIES") ?? {};
+  const withImplied = (feature: string, seen = new Set<string>()): Set<string> => {
+    if (seen.has(feature)) return seen;
+    seen.add(feature);
+    for (const need of implies[feature] ?? []) withImplied(need, seen);
+    return seen;
+  };
+  for (const { source } of matrix.runtime_units as { source: string }[]) {
+    const variants: { id: string; when: Record<string, boolean>; defines: string[] }[] =
+      variantsFor(source);
+    const named = (when: Record<string, boolean>): string =>
+      Object.keys(when)
+        .filter((name) => when[name])
+        .sort()
+        .join("+");
+    const features = [...new Set(variants.flatMap((variant) => Object.keys(variant.when)))].sort();
+    // A feature's own defines: those of the smallest build a program with
+    // that feature can link, the one naming it and what it implies.
+    const alone = (feature: string): string[] => {
+      const smallest = [...withImplied(feature)].sort().join("+");
+      return variants.find((variant) => named(variant.when) === smallest)?.defines ?? [];
+    };
+    for (let mask = 0; mask < 1 << features.length; mask++) {
+      const on = features.filter((_, index) => (mask & (1 << index)) !== 0);
+      const possible = on.every((name) => (implies[name] ?? []).every((need) => on.includes(need)));
+      const builds = variants.filter((variant) => named(variant.when) === on.join("+"));
+      expect(
+        builds.map((variant) => variant.id),
+        `${source} with ${on.join("+") || "no feature"}`,
+      ).toHaveLength(possible ? 1 : 0);
+      if (!possible) continue;
+      expect([...builds[0]!.defines].sort(), `${source} with ${on.join("+")}`).toEqual(
+        [...new Set(on.flatMap(alone))].sort(),
+      );
+    }
+  }
 });

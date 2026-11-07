@@ -814,6 +814,7 @@ import {
   rejectThisInObjectMethod,
 } from "./expressions/object-literals.js";
 import type { ExpandoMembers } from "./lower-expando.js";
+import { funduleMemberOf, type FunduleMember } from "./lower-fundule.js";
 import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
@@ -4400,6 +4401,15 @@ export class Lowerer {
    * still resolved statically). Ambient blocks never register — their
    * members keep the ReferenceError/fence paths (lower-namespaces.ts). */
   readonly nsBlocks = new Map<ts.Node, "flattened" | "typeOnly">();
+  /** Exported members of function+namespace merges, by member symbol: their
+   * storage is the merged function's own-property table, not a module
+   * global (lower-fundule.ts). Filled by splitFiles. */
+  readonly funduleMembers = new Map<ts.Symbol, FunduleMember>();
+  /** File → the exported FUNCTION members of its merged namespace blocks,
+   * whose property assignment runs at the declaration's source position
+   * (`fmt.helper = helper`) — lowerFileInit's init body interleaves them
+   * by position (lower-fundule.ts). */
+  readonly funduleFnStores = new Map<ts.SourceFile, ts.FunctionDeclaration[]>();
   /** File → its %init function name, filled by prepareModuleInits before
    * any body lowers: import headers and inline require statements call
    * dependency inits by these names. */
@@ -5101,6 +5111,8 @@ export class Lowerer {
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
+      checkedTable("funduleMembers", () => this.funduleMembers.size),
+      checkedTable("funduleFnStores", () => this.funduleFnStores.size),
       checkedTable("initNameOf", () => this.initNameOf.size),
       checkedTable("cjsModuleIdOf", () => this.cjsModuleIdOf.size),
       checkedTable("cjsModuleFiles", () => this.cjsModuleFiles.length),
@@ -7630,6 +7642,19 @@ export class Lowerer {
     if (local) return local;
     const g = this.globalOf(ident);
     if (g) return g;
+    // A BARE write to an exported member of a function+namespace merge
+    // (lower-fundule.ts): Node's transform qualifies the reference, so it
+    // is a property write on the function object — which this compiler
+    // models through the qualified spelling.
+    const merged = funduleMemberOf(this, this.resolveValueSymbol(ident));
+    if (merged !== null) {
+      this.unsupported(
+        "SC1090",
+        ident,
+        `assignment to '${ident.text}' by its bare name inside the function+namespace merge '${merged.fn.text}'`,
+        `the member is a property of the function object; write ${merged.fn.text}.${ident.text}`,
+      );
+    }
     return null;
   }
 
@@ -14359,37 +14384,22 @@ export class Lowerer {
     );
   }
 
-  /** Unwraps a HYBRID (function-with-properties) record to its callable:
-   * a record whose shape carries the reserved `%call` func field reads
-   * that field; anything else returns unchanged. The consumer half of
-   * type-mapper.ts's chalk-shape mapping — call paths and func-slot coercions
-   * share it. */
+  /** Unwraps a callable CLASS instance to its callable: a class whose
+   * merged interface carries a call signature stores its call behavior in
+   * a `%call` field (the chalk package shim's builder), so calls read the
+   * field. Every other value returns unchanged — a function with
+   * properties IS the function (callable-properties.ts), never a record
+   * carrying the callable in a field. */
   hybridCallUnwrap(expr: IrExpr): IrExpr {
-    // A callable CLASS instance: a class whose merged interface carries a
-    // call signature stores its call behavior in a `%call` field (the
-    // chalk package shim's builder). Calls read the field.
-    if (expr.type.kind === "object") {
-      const callType = this.classes.get(expr.type.className)?.fields.get("%call");
-      if (callType === undefined || callType.kind !== "func") return expr;
-      return {
-        kind: "fieldGet",
-        obj: expr,
-        className: expr.type.className,
-        field: "%call",
-        type: callType,
-        loc: expr.loc,
-      };
-    }
-    if (expr.type.kind !== "record") return expr;
-    const shape = this.shapes.get(expr.type.shapeId);
-    const call = shape?.fields.find((f) => f.name === "%call");
-    if (!call || call.type.kind !== "func") return expr;
+    if (expr.type.kind !== "object") return expr;
+    const callType = this.classes.get(expr.type.className)?.fields.get("%call");
+    if (callType === undefined || callType.kind !== "func") return expr;
     return {
-      kind: "recordGet",
+      kind: "fieldGet",
       obj: expr,
-      shapeId: expr.type.shapeId,
+      className: expr.type.className,
       field: "%call",
-      type: call.type,
+      type: callType,
       loc: expr.loc,
     };
   }
@@ -14759,18 +14769,16 @@ export class Lowerer {
       }
       return expr;
     }
-    // A HYBRID (function-with-properties) record flowing into a plain
-    // func slot extracts its reserved %call field — the chalk shape's
-    // "the value IS callable" half (type-mapper.ts's hybrid mapping).
-    if (expected.kind === "func" && (expr.type.kind === "record" || expr.type.kind === "object")) {
+    // A callable CLASS instance (the chalk shim's variadic builder) flowing
+    // into a plain func slot extracts its reserved %call field; a function
+    // with properties is already the function and needs no extraction.
+    if (expected.kind === "func" && expr.type.kind === "object") {
       const un = this.hybridCallUnwrap(expr);
       if (un !== expr && typeEquals(un.type, expected)) return un;
-      // A callable class instance (the chalk shim's variadic builder) in a
-      // narrower function slot: its call closure crosses the checked
-      // function boundary, which adapts the arity.
+      // ... in a narrower function slot: its call closure crosses the
+      // checked function boundary, which adapts the arity.
       if (
         un !== expr &&
-        expr.type.kind === "object" &&
         un.type.kind === "func" &&
         canBoxFuncIntoDyn(
           un.type,

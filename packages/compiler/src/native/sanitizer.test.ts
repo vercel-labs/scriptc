@@ -25,6 +25,7 @@ const features = {
   dynForAwait: false,
   dynCollections: false,
   dynIntegrityQueries: false,
+  recordSourceDelete: false,
   genBind: false,
   eventsOnceSignal: false,
   mime: false,

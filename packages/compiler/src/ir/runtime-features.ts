@@ -1461,6 +1461,10 @@ const RUNTIME_FEATURE_RULES = {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically
    * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
   dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
+  /** `delete` of a key a record's type does not declare, removed from the
+   * record's kept source (scr_record_source_delete.c, a unit of its own so
+   * scr_json.c keeps its layout). */
+  recordSourceDelete: rule({ fns: ["record.sourceDelete"] }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
@@ -2012,6 +2016,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynForAwait: false,
     dynCollections: false,
     dynIntegrityQueries: false,
+    recordSourceDelete: false,
     dynBuffer: false,
     dynBufferMembers: false,
     bufferPrototypeObject: false,

@@ -130,6 +130,9 @@ export interface NativeLinkFeatures {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * scr_dyn_integrity.c. Absent (false) for programs without it. */
   dynIntegrityQueries?: boolean;
+  /** `delete` of a key a record's type does not declare:
+   * scr_record_source_delete.c. Absent (false) for programs without one. */
+  recordSourceDelete?: boolean;
   /** A generator that binds its parameters at the call: scr_gen_bind.c.
    * Absent (false) for programs without one. */
   genBind?: boolean;

@@ -104,6 +104,7 @@ export interface EarlyExecutableNativeFeatures {
   dynForAwait?: boolean;
   dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
+  recordSourceDelete?: boolean;
   genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;

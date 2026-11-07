@@ -1690,6 +1690,12 @@ const RUNTIME_FEATURE_RULES = {
   processEvents: rule({ fns: [...PROCESS_EVENT_LIB_FNS, "util.styleText"], types: ["procStream"] }),
   /** scr_url_legacy.c parses and stringifies queries. */
   qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
+  /** The kept-source read of a record-to-record conversion: a field the
+   * target type declares and the source type does not answers the key the
+   * source object carries, after asking whether the source holds the key
+   * (scr_record_source_get.c). A unit of its own so a program that only
+   * casts records keeps its base runtime objects byte for byte. */
+  recordSourceGet: rule({ fns: ["record.sourceGet", "record.sourceHasKey"] }),
   /** scr_url_legacy.c lowercases and normalizes hostnames with the regex
    * unit's libunicode, the WHATWG URL host parser runs UTS #46 through
    * scr_idna.c (which links with the regex unit), NODE_DEBUG matching in
@@ -2023,6 +2029,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     processEvents: false,
     processExtras: false,
     qs: false,
+    recordSourceGet: false,
     regex: false,
     searchParams: false,
     urlIdna: false,

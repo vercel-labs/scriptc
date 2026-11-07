@@ -3,12 +3,13 @@
  * type does not declare answers the key the source object carries, as Node
  * does when it erases the assertion.
  *
- * The read is its own unit rather than a scr_json.c entry point so that a
- * program which never projects a record links neither it nor its call into
- * the object model: the compiler emits scr_record_source_get only for such a
- * projection, and the archive member is pulled in by that reference alone. A
- * program that only casts records keeps scr_json.o's default object — and
- * every other unit's — byte for byte. */
+ * The read is a unit of its own rather than a scr_json.c entry point so that
+ * a program which never projects a record links nothing of it: the compiler
+ * emits scr_record_source_get only for such a projection, and that libCall is
+ * the unit's link switch (runtime-pack-matrix OPTIONAL_RUNTIME_SOURCES,
+ * feature recordSourceGet; the from-source lane's RUNTIME_UNITS and the
+ * library archive gate on the same fact). A program that only casts records
+ * keeps scr_json.o's default object — and every other unit — byte for byte. */
 #include "scr_record_source_get.h"
 
 ScrDyn *scr_record_source_get(const void *rec, const char *key, size_t key_len) {

@@ -71,7 +71,6 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_url.c",
   "scr_url_params.c",
   "scr_json.c",
-  "scr_record_source_get.c",
   "scr_node_builtin.c",
   "scr_async.c",
   "scr_crypto_async.c",

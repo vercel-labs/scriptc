@@ -178,6 +178,9 @@ export interface CcOptions {
   /** A generator function that reads `this` (dyn.generatorThis): compiles
    * scr_gen_receiver.c. */
   genReceiver?: boolean;
+  /** A kept-source read of a record-to-record conversion: compiles
+   * scr_record_source_get.c. */
+  recordSourceGet?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -489,6 +492,9 @@ export interface LibArchiveOptions {
   dynBuffer?: boolean;
   /** See CompileOptions.dynTier: the scr_js_* units. */
   dynTier?: boolean;
+  /** See CcOptions.recordSourceGet: the kept-source read of a
+   * record-to-record conversion (scr_record_source_get.c). */
+  recordSourceGet?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;

@@ -33,6 +33,7 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     dynInvoke: options.dynInvoke ?? false,
     ...(options.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(options.dynTier === true ? { dynTier: true } : {}),
+    ...(options.recordSourceGet === true ? { recordSourceGet: true } : {}),
     // A program that resizes, grows or detaches a buffer names the views
     // registry's arming entry point, so the archive must carry the unit and
     // the JavaScript object model build it belongs to.

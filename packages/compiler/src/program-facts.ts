@@ -79,18 +79,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["createsWrappers"],
   },
   {
-    name: "names-array-buffer-view",
-    file: `${SRC}/frontend/lowering/array-buffer-view.ts`,
-    symbol: "programNamesArrayBufferView",
-    source: "spelling",
-    scope: "program",
-    setBy: "any identifier spelled `ArrayBufferView` in a compiled source",
-    gates: "the mapping of the ES lib interface to the checked-dynamic value, for every value",
-    narrower: "the type of the value, with builtin declarations that do not depend on it",
-    tracked: "pi-decisions DECISIONS.md 2026-11-05 (the mapping, not the gate); #3067",
-    lowererFields: ["namesArrayBufferView"],
-  },
-  {
     name: "typed-web-streams",
     file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
     symbol: "programUsesTypedWebStreams",
@@ -127,21 +115,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     gates:
       "%main installs the web stream classes, so every fetch body stands for a web ReadableStream",
     narrower: "the stream value the member is read from",
-    tracked: null,
-    lowererFields: [],
-  },
-  {
-    name: "typeof-tested-name",
-    file: `${SRC}/frontend/program.ts`,
-    symbol: "typeofTestedNameSuppressed",
-    source: "text",
-    scope: "file",
-    setBy:
-      "a regular expression over a JavaScript file's raw text that finds `typeof name`; it matches in comments and strings",
-    gates:
-      "the checker's unresolved-name errors (TS2304, TS2552, TS2584) for that name in the file",
-    narrower:
-      "the diagnostic's own site: an unresolved name is a run-time ReferenceError in JavaScript",
     tracked: null,
     lowererFields: [],
   },
@@ -466,13 +439,13 @@ const decides = (site: string, count: number, fact: string): ProgramScan =>
 export const PROGRAM_SCANS: readonly ProgramScan[] = [
   scan(
     "frontend/contract-types.ts#collectContractAnnotations",
-    1,
+    2,
     "prefilter",
     "a file that never names the contract-type modules imports none of them",
   ),
   scan(
     "frontend/fork-target.ts#namesChildProcess",
-    1,
+    4,
     "discovery",
     "finds the modules a fork() can start, which become program roots",
   ),
@@ -481,11 +454,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "closed-world",
     "whether one function is ever read as a value",
-  ),
-  decides(
-    "frontend/lowering/array-buffer-view.ts#programNamesArrayBufferView",
-    2,
-    "names-array-buffer-view",
   ),
   scan(
     "frontend/lowering/assertion-members.ts#extendAssertedRecordMembers",
@@ -610,6 +578,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   decides("frontend/lowering/lower-server.ts#unixListenReachable", 2, "unix-listen-reachable"),
   scan(
+    "frontend/lowering/lower-shared-modules.ts#sharedModulePlans",
+    1,
+    "prefilter",
+    "a module that never names requireModule starts no island root",
+  ),
+  scan(
     "frontend/lowering/lower-stdlib.ts#requestInitPropMutatedSymbols",
     1,
     "closed-world",
@@ -682,7 +656,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "program roots of the entry package",
   ),
-  decides("frontend/program.ts#programNamesTemporal7", 1, "names-temporal"),
+  decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
   scan(
     "frontend/program.ts#lowerProgramJsx7",
     1,
@@ -697,7 +671,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/program.ts#declBoundaryUserFiles",
-    1,
+    5,
     "discovery",
     "the user files of a declaration-typed boundary",
   ),
@@ -720,7 +694,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the module graph, the evaluation order and the dynamic imports it covers",
   ),
-  decides("frontend/program.ts#preflightGate7", 1, "typeof-tested-name"),
   scan(
     "frontend/shape-inference/analyze.ts#Analyzer",
     1,
@@ -741,7 +714,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "wasm/discover.ts#Discovery",
-    1,
+    4,
     "discovery",
     "the packages that mention WebAssembly, for the wasm report",
   ),

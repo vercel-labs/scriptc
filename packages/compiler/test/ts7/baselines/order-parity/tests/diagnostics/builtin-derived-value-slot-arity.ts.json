@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/builtin-derived-value-slot-arity.ts"
+ ],
+ "diags": []
+}

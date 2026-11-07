@@ -229,6 +229,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         const callable = lowerer.lowerBuiltinCallableValue(
           { module: projection.module, member: projection.member },
           loc,
+          expr,
         );
         if (callable) return callable;
       }
@@ -733,7 +734,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         if (roots) return roots;
       }
       {
-        const callable = lowerer.lowerBuiltinCallableValue(bi, loc);
+        const callable = lowerer.lowerBuiltinCallableValue(bi, loc, expr);
         if (callable) return callable;
       }
       // node:crypto's webcrypto is the WebCrypto global's object.

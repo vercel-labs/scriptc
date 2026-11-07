@@ -1,0 +1,20 @@
+builtin-derived-value-slot-arity.ts:14:33 - error SC1090: library functions as values in a slot that passes more arguments than their lowering takes ('mkdtemp' enters a slot passing 2 arguments; the supported form takes 1 argument — call it directly) are not supported yet
+
+  13 | }
+  14 | const viaParameter = await make(mkdtemp, "scriptc-");
+     |                                 ^~~~~~~
+  15 | const viaField: { resolve?: (path: string, encoding: "hex") => Promise<string> } = {
+
+builtin-derived-value-slot-arity.ts:16:12 - error SC1090: library functions as values in a slot that passes more arguments than their lowering takes ('realpath' enters a slot passing 2 arguments; the supported form takes 1 argument — call it directly) are not supported yet
+
+  15 | const viaField: { resolve?: (path: string, encoding: "hex") => Promise<string> } = {
+  16 |   resolve: realpath,
+     |            ^~~~~~~~
+  17 | };
+
+builtin-derived-value-slot-arity.ts:18:26 - error SC1090: library functions as values (call 'stat' directly) are not supported yet
+
+  17 | };
+  18 | const untyped: unknown = stat;
+     |                          ^~~~
+  19 | console.log(viaParameter, viaField, untyped);

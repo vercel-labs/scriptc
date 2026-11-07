@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/host-global-extends-class.ts"
+ ],
+ "diags": []
+}

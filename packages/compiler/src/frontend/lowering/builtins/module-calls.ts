@@ -36,7 +36,7 @@ import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { jsCheckedBuiltinCall } from "../lower-builtin-values.js";
 import { type Lowerer } from "../lowerer.js";
-import { type BuiltinModuleFn } from "../surfaces.js";
+import type { BuiltinModuleFn } from "../surfaces.js";
 import { type ParamShape } from "../call-signatures.js";
 import {
   BYTES_U8,

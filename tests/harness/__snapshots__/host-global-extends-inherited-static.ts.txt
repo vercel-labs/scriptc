@@ -1,0 +1,42 @@
+host-global-extends-inherited-static.ts:30:13 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  29 | console.log(Sock.RETRIES, Retrying.RETRIES, Alias.RETRIES, Sock.name);
+  30 | console.log(Sock.OPEN);
+     |             ^~~~~~~~~
+  31 | console.log(Retrying.OPEN);
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use
+
+host-global-extends-inherited-static.ts:31:13 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  30 | console.log(Sock.OPEN);
+  31 | console.log(Retrying.OPEN);
+     |             ^~~~~~~~~~~~~
+  32 | console.log(Alias.OPEN);
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use
+
+host-global-extends-inherited-static.ts:32:13 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  31 | console.log(Retrying.OPEN);
+  32 | console.log(Alias.OPEN);
+     |             ^~~~~~~~~~
+  33 | console.log(Sock.probe("ws://localhost:1"));
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use
+
+host-global-extends-inherited-static.ts:33:13 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  32 | console.log(Alias.OPEN);
+  33 | console.log(Sock.probe("ws://localhost:1"));
+     |             ^~~~~~~~~~
+  34 | console.log(Sock.label);
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use
+
+host-global-extends-inherited-static.ts:34:13 - error SC1090: the static member 'label' of class 'Sock', which extends the Node global 'WebSocket' (static accessors and initializer-less static fields have no lowering there) is not supported yet
+
+  33 | console.log(Sock.probe("ws://localhost:1"));
+  34 | console.log(Sock.label);
+     |             ^~~~~~~~~~
+  35 | 

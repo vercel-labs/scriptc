@@ -4426,7 +4426,7 @@ export function lowerShorthandValue(
   // so the ordinary identifier expression path cannot resolve them.
   const builtin = lowerer.builtinImportOf(propName);
   if (builtin) {
-    const callable = lowerer.lowerBuiltinCallableValue(builtin, loc);
+    const callable = lowerer.lowerBuiltinCallableValue(builtin, loc, propName);
     if (callable) return callable;
   }
   const builtinValue = shorthandBuiltinValue(lowerer, prop);

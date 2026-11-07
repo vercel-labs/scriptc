@@ -1,0 +1,17 @@
+host-global-extends-construction.ts:16:14 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  15 | class Retrying extends Sock {}
+  16 | const sock = new Sock("ws://localhost:1");
+     |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | const retrying = new Retrying("ws://localhost:2");
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use
+
+host-global-extends-construction.ts:17:18 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  16 | const sock = new Sock("ws://localhost:1");
+  17 | const retrying = new Retrying("ws://localhost:2");
+     |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  18 | console.log(sock, retrying);
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use

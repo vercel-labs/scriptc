@@ -247,18 +247,24 @@ console.log("unreachable");
   expect(result.stderr).toContain("[SC2020");
 });
 
-test("a class extending a host global is not a Function instance natively", async () => {
-  // Node's class chain reaches Function.prototype; the native instanceof
-  // approximation walks the .prototype property, which a class-built value
-  // does not carry toward Function.prototype. Pin the divergence so it stays
-  // visible instead of surprising a program that branches on it.
+test("a class extending a host global is a Function instance", async () => {
+  // Node's class chain reaches Function.prototype. The class value's chain
+  // ends at the global's value natively, so the answer is folded for every
+  // value whose static type is such a class: the class, a subclass, an
+  // alias, and a constructor-typed parameter.
   const result = await runProgram(
     "extends-function-instanceof",
     `${webSocketDeclaration}
 class Sock extends WebSocket {}
-console.log(Sock instanceof Function);
+class Retrying extends Sock {}
+const Alias = Sock;
+function isFunction(ctor: typeof Sock): boolean {
+  return ctor instanceof Function;
+}
+console.log(Sock instanceof Function, Retrying instanceof Function, Alias instanceof Function);
+console.log(isFunction(Sock), isFunction(Retrying));
 `,
   );
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toBe("false\n");
+  expect(result.stdout).toBe("true true true\ntrue true\n");
 });

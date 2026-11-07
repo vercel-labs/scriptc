@@ -5746,6 +5746,17 @@ export function hostGlobalBaseOf(info: ClassInfo): string | undefined {
   return undefined;
 }
 
+/** The host global behind a value whose static type is a class extending
+ * one (the class, a subclass, a const alias, a constructor-typed binding), or
+ * null. Only a program that declares such a class reaches the type lookup. */
+export function hostGlobalBaseOfClassValue(lowerer: Lowerer, value: ts.Expression): string | null {
+  if (![...lowerer.classes.values()].some((info) => info.callableBase?.hostGlobal !== undefined))
+    return null;
+  const type = storedClassValueType(lowerer, value);
+  const info = type?.kind === "classval" ? lowerer.classes.get(type.className) : undefined;
+  return (info && hostGlobalBaseOf(info)) ?? null;
+}
+
 /** A static member the class inherits from such a global (`Sock.OPEN` after
  * `class Sock extends WebSocket`): no class of the program's chain declares
  * it, so the read reaches the global's own static surface, which native code

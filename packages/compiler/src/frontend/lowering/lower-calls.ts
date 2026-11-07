@@ -239,7 +239,11 @@ import {
   lowerHandleMemberCall,
   refuseShadowedImplicitReader,
 } from "./handle-properties.js";
-import { classObjectTag, classToNumberConversion } from "./class-to-primitive.js";
+import {
+  classObjectTag,
+  classToNumberConversion,
+  classUnionToString,
+} from "./class-to-primitive.js";
 import { hasRuntimeStatics } from "./class-runtime-statics.js";
 import { structuralReadType } from "./class-unions.js";
 import {
@@ -256,6 +260,7 @@ import {
   findGenericMethodOn,
   lowerClassGenericMethodCall,
   lowerStaticMethodCall,
+  hostGlobalBaseOfClassValue,
   lowerStaticFieldRead,
   returnsOnlyThis,
   storedClassValueType,
@@ -5811,8 +5816,9 @@ function lowerNumberToStringCall(
  * (string identity, JS-exact number/bool texts, and the Buffer arm's
  * utf8 decode — Node's default encoding): the per-union ToString
  * helper dispatches on the tag, so `chunk.toString()` over the ngrok
- * `Buffer | string` listener param needs no narrowing. Unit-armed
- * unions stay out — `(undefined).toString()` THROWS in JS, and
+ * `Buffer | string` listener param needs no narrowing. A union with a
+ * URL, Date or RegExp arm converts each arm as `String(value)` does.
+ * Unit-armed unions stay out — `(undefined).toString()` THROWS in JS, and
  * claiming it here would print "undefined" instead. Null for
  * other receivers/arms (the narrow-first fences stay). */
 function lowerUnionToStringCall(
@@ -5844,7 +5850,20 @@ function lowerUnionToStringCall(
       a.kind === "bool" ||
       (a.kind === "bytes" && a.elem === "u8"),
   );
-  if (!stringable) return null;
+  // A union with a URL, Date or RegExp arm next to primitive ones (`url:
+  // string | URL`): each of those classes' own zero-argument toString is its
+  // ToString (a URL's href, a date's text, a regular expression's source and
+  // flags), so the call is the per-arm conversion `String(url)` and a
+  // template span already compile to (classUnionToString). Class instances,
+  // typed arrays and unit arms stay out: their toString is not that
+  // conversion, or throws.
+  const converted =
+    !stringable &&
+    args.length === 0 &&
+    def !== undefined &&
+    def.arms.every((a) => UNION_TO_STRING_ARMS.has(a.kind)) &&
+    def.arms.some((a) => UNION_TO_STRING_CLASS_ARMS.has(a.kind));
+  if (!stringable && !converted) return null;
   let operand = lowerer.lowerExpr(access.expression);
   if (operand.type.kind !== "union") return null;
   // A flow-narrowed read keeps its wider storage union (`string | number`
@@ -5854,8 +5873,21 @@ function lowerUnionToStringCall(
     operand = lowerer.coerceInto(access.expression, operand, recvT);
     if (operand.type.kind !== "union" || operand.type.unionId !== recvT.unionId) return null;
   }
+  if (converted) return classUnionToString(lowerer, operand, "string", call);
   return { kind: "toString", operand, type: STRING, loc: locOf(call) };
 }
+
+/** The builtin class arms whose zero-argument `toString()` is the value's
+ * ToString, and the arms a union may carry beside them for the method-call
+ * spelling to take the per-arm conversion (lowerUnionToStringCall). */
+const UNION_TO_STRING_CLASS_ARMS: ReadonlySet<string> = new Set(["url", "date", "regex"]);
+const UNION_TO_STRING_ARMS: ReadonlySet<string> = new Set([
+  "string",
+  "f64",
+  "bool",
+  "bigint",
+  ...UNION_TO_STRING_CLASS_ARMS,
+]);
 
 /** `x.toString()` resolving to Object.prototype.toString (stdlib
  * provenance, zero arguments) on a RECORD or program-class receiver:
@@ -8823,6 +8855,17 @@ function lowerObjectStaticCall(
     call.arguments.nodes.length === (member === "getPrototypeOf" ? 1 : 2) &&
     !call.arguments.nodes.some(ts.isSpreadElement)
   ) {
+    // The value of a Node global native code does not provide, and a class
+    // extending one, have no prototype chain native code can replace, and
+    // `value instanceof Function` is answered for them by a fold that a
+    // replaced prototype would falsify (lowerInstanceOf). Replacing it is a
+    // use of the global's surface and refuses (SC2020, host-global).
+    if (member === "setPrototypeOf") {
+      const target = call.arguments.nodes[0]!;
+      const hostGlobal =
+        hostGlobalNameOfRead(lowerer, target) ?? hostGlobalBaseOfClassValue(lowerer, target);
+      if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, call);
+    }
     let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (object.type.kind === "func") {
       const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);

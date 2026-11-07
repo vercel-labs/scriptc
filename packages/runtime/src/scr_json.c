@@ -408,6 +408,20 @@ void scr_jb_put_str(ScrJsonBuf *b, const ScrStr *s) {
   scr_jb_write(b, s->data, s->len);
 }
 
+/* addNumericalSeparator over a bigint's decimal text: a leading '-' stays
+ * put and the digits group in threes from the right. */
+void scr_jb_put_decimal_separated(ScrJsonBuf *b, const ScrStr *decimal) {
+  size_t start = decimal->len > 0 && decimal->data[0] == '-' ? 1 : 0;
+  size_t digits = decimal->len - start;
+  if (digits == 0) return;
+  size_t first = digits % 3 == 0 ? 3 : digits % 3;
+  scr_jb_write(b, decimal->data, start + first);
+  for (size_t i = start + first; i < decimal->len; i += 3) {
+    scr_jb_putc(b, '_');
+    scr_jb_write(b, decimal->data + i, 3);
+  }
+}
+
 void scr_jb_puts(ScrJsonBuf *b, const char *s) { scr_jb_write(b, s, strlen(s)); }
 
 void scr_jb_put_number(ScrJsonBuf *b, double v) {
@@ -8197,7 +8211,11 @@ ScrStr *scr_str_inspect_quoted(const ScrStr *s, bool truncate) {
  * "is invalid" when NULL. TypeError, like Node's default. */
 void scr_dyn_arg_value_fail(const char *name, const char *reason, const ScrDyn *got) {
   char insp[64];
-  const char *d = scr_dyn_inspect_lite(got, insp, sizeof insp);
+  /* A string prints through inspect's own escaping and clips at 128 UTF-16
+   * units plus "...", the form these messages take; the fixed-buffer lite
+   * sketch is for the other kinds. */
+  ScrStr *quoted = got->kind == SCR_DYN_STR ? scr_str_inspect_quoted(got->v.str, true) : NULL;
+  const char *d = quoted != NULL ? quoted->data : scr_dyn_inspect_lite(got, insp, sizeof insp);
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "The ");
@@ -8208,6 +8226,7 @@ void scr_dyn_arg_value_fail(const char *name, const char *reason, const ScrDyn *
   scr_jb_puts(&b, ". Received ");
   scr_jb_puts(&b, d);
   ScrStr *msg = scr_jb_finish(&b);
+  if (quoted != NULL) scr_str_release(quoted);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len,
                            "ERR_INVALID_ARG_VALUE");
   scr_str_release(msg);

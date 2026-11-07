@@ -366,10 +366,12 @@ ScrArr *scr_tls_ca_get(ScrStr *type) {
   else if (strcmp(type->data, "system") == 0) arr = scr_ca_system_arr();
   else if (strcmp(type->data, "extra") == 0) arr = scr_ca_extra_arr();
   if (arr == NULL) {
-    /* Node's ERR_INVALID_ARG_VALUE TypeError, message-exact. */
-    char msg[256];
-    int n = snprintf(msg, sizeof msg, "The argument 'type' is invalid. Received '%s'", type->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, n < 0 ? 0 : (size_t)n, "ERR_INVALID_ARG_VALUE");
+    /* Node's ERR_INVALID_ARG_VALUE TypeError, message-exact: the value
+     * renders at its real length with inspect's escaping and its
+     * 128-UTF-16-unit clip. */
+    ScrDyn *value = scr_dyn_new_str(type);
+    scr_dyn_arg_value_fail("type", NULL, value);
+    scr_dyn_release(value);
     return NULL;
   }
   return scr_arr_retain(arr);

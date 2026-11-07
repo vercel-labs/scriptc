@@ -155,6 +155,9 @@ void scr_jb_write(ScrJsonBuf *b, const char *s, size_t n);
 void scr_jb_write_utf8(ScrJsonBuf *b, const char *s, size_t n);
 /* Append one borrowed runtime string verbatim (no JSON quoting). */
 void scr_jb_put_str(ScrJsonBuf *b, const ScrStr *s);
+/* Append a bigint's decimal text with addNumericalSeparator's grouping: a
+ * leading '-' stays put, the digits group in threes from the right. */
+void scr_jb_put_decimal_separated(ScrJsonBuf *b, const ScrStr *decimal);
 /* Push a container onto the circular-detection stack before serializing
  * its members. If `v` is already ON the stack, throws V8's exact
  * "Converting circular structure to JSON" TypeError (the --> starting at /

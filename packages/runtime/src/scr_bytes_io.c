@@ -19,8 +19,14 @@ static ScrArrOps scr_bytes_io_bytes_ops = { scr_bytes_retain_v, scr_bytes_releas
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <io.h> /* _commit — the CRT descriptor's fsync */
+#endif
 #ifndef O_SYNC
 #define O_SYNC 0 /* Windows CRT opens have no separate synchronous flag. */
+#endif
+#ifndef O_BINARY
+#define O_BINARY 0 /* Windows CRT text mode would translate \n on fd writes. */
 #endif
 #ifdef __APPLE__
 #include <sys/stat.h> /* lchmod(2) — the fs.lchmodSync ladder's real tail */
@@ -136,10 +142,11 @@ static void scr_fs_write_bytes_common(ScrStr *path, const ScrBytes *data, const 
   if (n > 0 && fwrite(data->data, 1, n, f) != n) {
     int e = errno;
     fclose(f);
-    scr_fs_throw(e, "write", path);
+    /* Node writes through the descriptor: only the open names the path. */
+    scr_fs_throw(e, "write", NULL);
     return;
   }
-  if (fclose(f) != 0) scr_fs_throw(errno, "close", path);
+  if (fclose(f) != 0) scr_fs_throw(errno, "close", NULL);
 }
 
 void scr_fs_write_file_bytes(ScrStr *path, const ScrBytes *data) {
@@ -148,6 +155,239 @@ void scr_fs_write_file_bytes(ScrStr *path, const ScrBytes *data) {
 
 void scr_fs_append_file_bytes(ScrStr *path, const ScrBytes *data) {
   scr_fs_write_bytes_common(path, data, "ab");
+}
+
+static bool scr_fs_mode_number_valid(double v);
+static int scr_fs_flag_bits(const char *f);
+static void scr_fs_flag_invalid(const char *f);
+
+/* fsync(2), or the Windows CRT's _commit over the same descriptor. */
+static int scr_fs_sync_fd(int fd) {
+#ifdef _WIN32
+  return _commit(fd);
+#else
+  return fsync(fd);
+#endif
+}
+
+/* ── the write options record ────────────────────────────────────────────
+ * writeFileSync/appendFileSync and fs/promises writeFile/appendFile carry
+ * { encoding, mode, flag, flush }. Node validates in this order: the
+ * encoding names (getOptions' assertEncoding, which lets "buffer" through
+ * to Buffer.from), the flush boolean, the data conversion, then the path,
+ * the flag and the mode inside open, and finally runs the write; the fsync
+ * happens before the close when flush is set. The lowering types flush as
+ * a boolean and mode as a number, so the runtime only has to reject what
+ * Node rejects there.
+ *
+ * String data under a utf8 encoding takes Node's fast arm instead
+ * (binding.writeFileUtf8): no Buffer conversion, and `flush` is not
+ * consulted at all. */
+
+/* Shared with the FileHandle write entries, which validate the same
+ * record's encoding before they touch the handle. */
+bool scr_fs_write_encoding_valid(ScrStr *encoding) {
+  if (encoding->len == 0 || scr_fs_str_is(encoding, "buffer") || scr_bytes_is_encoding(encoding))
+    return true;
+  ScrDyn *value = scr_dyn_new_str(encoding);
+  scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
+  scr_dyn_release(value);
+  return false;
+}
+
+/* isFd is isInt32 (`value === (value | 0)`): every 32-bit integer names a
+ * descriptor, negative ones included; anything else is a path to Node's
+ * file forms, and a number is not a path. */
+static bool scr_fs_fd_int32(double fd) {
+  return isfinite(fd) && trunc(fd) == fd && fd >= -2147483648.0 && fd <= 2147483647.0;
+}
+
+/* getValidatedPath's refusal, which a non-integer descriptor reaches on
+ * both arms (the fast arm's getValidatedPath, the slow arm's open). */
+static void scr_fs_fd_path_fail(double fd) {
+  char recv[48];
+  char msg[200];
+  scr_num_received(fd, recv);
+  int len = snprintf(
+      msg, sizeof msg,
+      "The \"path\" argument must be of type string or an instance of Buffer or URL. "
+      "Received type number (%s)",
+      recv);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_TYPE");
+}
+
+static void scr_fs_write_opts_core(ScrStr *path, const ScrStr *text, const ScrBytes *data,
+                                   ScrStr *encoding, bool fast, double mode, ScrStr *flag,
+                                   bool flush, const char *default_flag) {
+  if (!scr_fs_write_encoding_valid(encoding)) return;
+  if (!text) fast = false;
+  /* Buffer.from(data, encoding || 'utf8') for string data: 'buffer' is a
+   * valid encoding name for the options record and an unknown one for
+   * Buffer, exactly Node's ERR_UNKNOWN_ENCODING. The fast arm writes the
+   * string's utf8 bytes directly instead. */
+  ScrBytes *owned = NULL;
+  if (!fast && !data) {
+    owned = scr_buffer_from_str_checked(text, encoding);
+    if (!owned) return;
+    data = owned;
+  }
+  bool ok = scr_fs_path_ok(path, "path");
+  /* `options.flag || <default>`: an empty flag leaves the family's default
+   * (write truncates, append appends). */
+  const char *flag_text = flag->len ? flag->data : default_flag;
+  int bits = -1;
+  if (ok) {
+    bits = scr_fs_flag_bits(flag_text);
+    if (bits < 0) {
+      scr_fs_flag_invalid(flag_text);
+      ok = false;
+    }
+  }
+  if (ok && !scr_fs_mode_number_valid(mode)) ok = false;
+  if (ok) {
+    /* O_BINARY: zero on POSIX; on Windows it keeps the CRT from translating
+     * \n in these byte-exact writes. */
+    int fd = open(path->data, bits | O_BINARY, (mode_t)mode);
+    if (fd < 0) {
+      scr_fs_throw(errno, "open", path);
+    } else {
+      bool wrote;
+      if (fast) {
+        char *text_bytes;
+        const char *bytes = scr_str_utf8(text, &text_bytes);
+        wrote = scr_fs_write_fd_all(fd, bytes, text->len);
+        scr_str_utf8_end(text_bytes);
+      } else {
+        SCR_BYTES_SNAPSHOT(data);
+        wrote = scr_fs_write_fd_all(fd, data->data, data->len * scr_bytes_elem_size(data->elem));
+      }
+      if (!wrote) {
+        /* The write error is already pending; Node's finally still closes. */
+        close(fd);
+        goto done;
+      }
+      if (!fast && flush && scr_fs_sync_fd(fd) != 0) {
+        int e = errno;
+        close(fd);
+        scr_fs_throw(e, "fsync", NULL);
+        goto done;
+      }
+      if (close(fd) != 0) scr_fs_throw(errno, "close", NULL);
+    }
+  }
+done:
+  scr_bytes_release(owned);
+}
+
+void scr_fs_write_file_opts(ScrStr *path, ScrStr *data, ScrStr *encoding, bool fast, double mode,
+                            ScrStr *flag, bool flush) {
+  scr_fs_write_opts_core(path, data, NULL, encoding, fast, mode, flag, flush, "w");
+}
+
+void scr_fs_write_file_bytes_opts(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                  double mode, ScrStr *flag, bool flush) {
+  scr_fs_write_opts_core(path, NULL, data, encoding, false, mode, flag, flush, "w");
+}
+
+void scr_fs_append_file_opts(ScrStr *path, ScrStr *data, ScrStr *encoding, bool fast, double mode,
+                             ScrStr *flag, bool flush) {
+  scr_fs_write_opts_core(path, data, NULL, encoding, fast, mode, flag, flush, "a");
+}
+
+void scr_fs_append_file_bytes_opts(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                   double mode, ScrStr *flag, bool flush) {
+  scr_fs_write_opts_core(path, NULL, data, encoding, false, mode, flag, flush, "a");
+}
+
+/* ── the same record over an open descriptor ─────────────────────────────
+ * writeFileSync(fd, ...) and appendFileSync(fd, ...) leave the descriptor
+ * open (closeSync owns its lifetime) and never open anything: the slow arm
+ * reads neither the flag nor the mode, and the look-alike flag/mode
+ * arguments are validated only on the fast arm. */
+
+/* binding.writeFileUtf8: the descriptor goes to write(2) as-is, so a
+ * negative int32 reports EBADF, while the flag and the mode are still
+ * parsed and flush is not consulted. */
+static void scr_fs_write_fd_utf8(double fd, const char *bytes, size_t length, ScrStr *flag,
+                                 double mode, const char *default_flag) {
+  if (!scr_fs_fd_int32(fd)) {
+    scr_fs_fd_path_fail(fd);
+    return;
+  }
+  const char *flag_text = flag->len ? flag->data : default_flag;
+  if (scr_fs_flag_bits(flag_text) < 0) {
+    scr_fs_flag_invalid(flag_text);
+    return;
+  }
+  if (!scr_fs_mode_number_valid(mode)) return;
+  scr_fs_write_fd_all(fd, bytes, length);
+}
+
+/* The general arm: the encoding check and the conversion first, then the
+ * descriptor test, then Node's writeSync loop — which range-checks the
+ * descriptor per call, so empty data never does — and the flush. */
+static void scr_fs_write_fd_opts(double fd, const ScrStr *text, const ScrBytes *data,
+                                 ScrStr *encoding, bool flush) {
+  if (!scr_fs_write_encoding_valid(encoding)) return;
+  ScrBytes *owned = NULL;
+  if (!data) {
+    owned = scr_buffer_from_str_checked(text, encoding);
+    if (!owned) return;
+    data = owned;
+  }
+  if (!scr_fs_fd_int32(fd)) {
+    scr_fs_fd_path_fail(fd);
+    goto done;
+  }
+  {
+    SCR_BYTES_SNAPSHOT(data);
+    size_t total = data->len * scr_bytes_elem_size(data->elem);
+    if (total > 0 && !scr_fs_write_fd_valid(fd)) goto done;
+    if (!scr_fs_write_fd_all(fd, data->data, total)) goto done;
+  }
+  if (flush) {
+    if (!scr_fs_write_fd_valid(fd)) goto done;
+    if (scr_fs_sync_fd((int)fd) != 0) scr_fs_throw(errno, "fsync", NULL);
+  }
+done:
+  scr_bytes_release(owned);
+}
+
+void scr_fs_write_file_fd(double fd, ScrStr *data, ScrStr *encoding, bool fast, double mode,
+                          ScrStr *flag, bool flush) {
+  if (fast) {
+    char *owned;
+    const char *bytes = scr_str_utf8(data, &owned);
+    scr_fs_write_fd_utf8(fd, bytes, data->len, flag, mode, "w");
+    scr_str_utf8_end(owned);
+    return;
+  }
+  scr_fs_write_fd_opts(fd, data, NULL, encoding, flush);
+}
+
+void scr_fs_append_file_fd(double fd, ScrStr *data, ScrStr *encoding, bool fast, double mode,
+                           ScrStr *flag, bool flush) {
+  if (fast) {
+    char *owned;
+    const char *bytes = scr_str_utf8(data, &owned);
+    scr_fs_write_fd_utf8(fd, bytes, data->len, flag, mode, "a");
+    scr_str_utf8_end(owned);
+    return;
+  }
+  scr_fs_write_fd_opts(fd, data, NULL, encoding, flush);
+}
+
+void scr_fs_write_file_fd_bytes(double fd, const ScrBytes *data, ScrStr *encoding, bool flush) {
+  scr_fs_write_fd_opts(fd, NULL, data, encoding, flush);
+}
+
+/* fs/promises writeFile/appendFile with a FileHandle as the path: writeFile
+ * converts the string before the handle is consulted, and the write itself is
+ * the descriptor write, so a closed handle reports its descriptor out of
+ * range rather than a closed handle. Empty data writes nothing at all. */
+void scr_fs_write_handle_direct(double fd, const ScrStr *text, const ScrBytes *data,
+                                ScrStr *encoding) {
+  scr_fs_write_fd_opts(fd, text, data, encoding, false);
 }
 
 ScrPromise *scr_fsp_read_file_bytes(ScrStr *path) {
@@ -294,10 +534,15 @@ static int scr_fs_flag_bits(const char *f) {
   return -1;
 }
 
+/* stringToFlags' refusal: ERR_INVALID_ARG_VALUE for the argument 'flags'
+ * over the flag text, built at its real length — inspect's escaping and
+ * its 128-UTF-16-unit clip live in scr_dyn_arg_value_fail. */
 static void scr_fs_flag_invalid(const char *f) {
-  char message[160];
-  int length = snprintf(message, sizeof message, "The argument 'flags' is invalid. Received '%s'", f);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)length, "ERR_INVALID_ARG_VALUE");
+  ScrStr *text = scr_str_new(f, strlen(f));
+  ScrDyn *value = scr_dyn_new_str(text);
+  scr_str_release(text);
+  scr_dyn_arg_value_fail("flags", NULL, value);
+  scr_dyn_release(value);
 }
 
 /* open's flags check, which Node runs before its callback check. Numeric
@@ -1759,6 +2004,29 @@ static bool scr_fs_encoding_chk(const ScrDyn *opts) {
   return false;
 }
 
+/* parseFileMode's numeric ladder: an integer in open(2)'s mode_t range,
+ * with validateUint32's wording otherwise. */
+static bool scr_fs_mode_number_valid(double v) {
+  char recv[48], msg[160];
+  if (!(isfinite(v) && trunc(v) == v)) {
+    scr_num_received(v, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"mode\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (v < 0 || v > 4294967295.0) {
+    scr_num_received(v, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"mode\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  return true;
+}
+
 /* parseFileMode: integers 0..2^32-1 pass, octal strings parse, and the
  * rest throw Node's exact ladder (validateUint32's wording). */
 static bool scr_fs_mode_chk(const ScrDyn *m, const char *name) {
@@ -1776,26 +2044,7 @@ static bool scr_fs_mode_chk(const ScrDyn *m, const char *name) {
     scr_dyn_arg_type_fail(name, "of type number", m);
     return false;
   }
-  double v = m->v.num;
-  if (!(isfinite(v) && trunc(v) == v)) {
-    char recv[48], msg[160];
-    scr_num_received(v, recv);
-    int len = snprintf(msg, sizeof msg,
-                       "The value of \"%s\" is out of range. It must be an integer. Received %s",
-                       name, recv);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return false;
-  }
-  if (v < 0 || v > 4294967295.0) {
-    char recv[48], msg[160];
-    scr_num_received(v, recv);
-    int len = snprintf(msg, sizeof msg,
-                       "The value of \"%s\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
-                       name, recv);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return false;
-  }
-  return true;
+  return scr_fs_mode_number_valid(m->v.num);
 }
 
 /* fs.exists(path, cb) — the REAL deprecated-API shape: the callback
@@ -2075,23 +2324,21 @@ static bool scr_fs_bigint_position_chk(ScrBigInt *position, double length) {
   bool group = scr_bigint_cmp_f64(position, bound) > 0 || scr_bigint_cmp_f64(position, negBound) < 0;
   scr_bigint_release(bound);
   scr_bigint_release(negBound);
-  /* addNumericalSeparator: underscores every three digits from the right,
-   * after an optional sign. */
-  char digits[200];
-  size_t len = decimal->len < 120 ? decimal->len : 120, out = 0;
-  size_t start = len > 0 && decimal->data[0] == '-' ? 1 : 0;
-  for (size_t i = 0; i < len; i++) {
-    if (group && i > start && (len - i) % 3 == 0) digits[out++] = '_';
-    digits[out++] = (char)decimal->data[i];
-  }
-  digits[out] = '\0';
-  char msg[384];
-  int n = snprintf(msg, sizeof msg,
-                   "The value of \"position\" is out of range. It must be >= -1 && <= %.*s. Received %sn",
-                   (int)limit->len, (const char *)limit->data, digits);
+  /* The received value renders in full; past 2^32 its digits group in
+   * threes, as addNumericalSeparator does. */
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The value of \"position\" is out of range. It must be >= -1 && <= ");
+  scr_jb_put_str(&b, limit);
+  scr_jb_puts(&b, ". Received ");
+  if (group) scr_jb_put_decimal_separated(&b, decimal);
+  else scr_jb_put_str(&b, decimal);
+  scr_jb_putc(&b, 'n');
+  ScrStr *msg = scr_jb_finish(&b);
   scr_str_release(limit);
   scr_str_release(decimal);
-  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg->data, msg->len, "ERR_OUT_OF_RANGE");
+  scr_str_release(msg);
   return false;
 }
 

@@ -23,9 +23,7 @@ import {
   lowerFsStreamCreate,
   lowerFsPromisesMkdirCall,
   lowerFsRemoveCall,
-  lowerFsAppendOptionsCall,
-  lowerFsWriteBytesCall,
-  lowerFsWriteOptionsCall,
+  lowerFsWriteCall,
   lowerFsReadPathCall,
 } from "./filesystem-calls.js";
 import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } from "./fs-paths.js";
@@ -384,54 +382,28 @@ export function lowerBuiltinModuleCall(
       loc,
     };
   }
-  // The byte-data two-argument forms: appendFile appends, writeFile
-  // truncates (the same difference the string forms have).
-  if (
-    bi.module === "fs/promises" &&
-    (bi.member === "appendFile" || bi.member === "writeFile") &&
-    expr.arguments.nodes.length === 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "bytes"
-  ) {
-    const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
-    if (lowered) return lowered;
-  }
-  // writeFileSync(fd, data): Node accepts an open descriptor where it
-  // accepts a path. Routed by the FIRST ARGUMENT's static type, like
-  // readFileSync(fd) (before the path forms complete the data type).
-  if (
-    bi.module === "fs" &&
-    bi.member === "writeFileSync" &&
-    expr.arguments.nodes.length >= 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind === "f64"
-  ) {
-    return lowerFsWriteDescriptorCall(lowerer, expr, loc);
-  }
+  // writeFileSync(fd, data) and appendFileSync(fd, data): Node accepts an
+  // open descriptor where it accepts a path. Routed by the FIRST ARGUMENT's
+  // static type, like readFileSync(fd) (before the path forms complete the
+  // data type).
   if (
     bi.module === "fs" &&
     (bi.member === "writeFileSync" || bi.member === "appendFileSync") &&
-    expr.arguments.nodes.length === 2
+    expr.arguments.nodes.length >= 2 &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind === "f64"
   ) {
-    const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
-    if (lowered) return lowered;
+    return lowerFsWriteDescriptorCall(lowerer, expr, bi, loc);
   }
-  // writeFileSync(p, data, options) / fs.promises.writeFile(p, data,
-  // options): the lowered options are a literal
-  // `{ mode?: <number>, encoding?: "utf8" }` — the mode is open(2)'s
-  // O_CREAT argument (creation only; an existing file keeps its
-  // permissions, exactly Node), and the encoding may only spell the
-  // utf8 the runtime writes anyway. String data only — Buffer options
-  // remain outside the static surface.
-  const syncWriteOptions = bi.module === "fs" && bi.member === "writeFileSync";
-  const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
-  if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
-    return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
-  }
-  // appendFileSync(p, data, options): only the encoding can be lowered
-  // here (utf8 is what the runtime appends anyway; the flag a plain append
-  // already uses); `mode` and any other flag keep their fence, since they
-  // change what an append creates.
-  if (bi.module === "fs" && bi.member === "appendFileSync" && expr.arguments.nodes.length === 3) {
-    return lowerFsAppendOptionsCall(lowerer, expr, loc);
+  // The write family: fs.writeFileSync, fs.appendFileSync,
+  // fs.promises.writeFile and fs.promises.appendFile, over string or
+  // Uint8Array data and the optional options record. Routed before the
+  // table's string-data completion, which is what lets the byte forms and
+  // the options record through.
+  const writeFamily =
+    (bi.module === "fs" && (bi.member === "writeFileSync" || bi.member === "appendFileSync")) ||
+    (bi.module === "fs/promises" && (bi.member === "writeFile" || bi.member === "appendFile"));
+  if (writeFamily && expr.arguments.nodes.length >= 2 && expr.arguments.nodes.length <= 3) {
+    return lowerFsWriteCall(lowerer, expr, bi, loc);
   }
   if (fn.variadicPack) {
     // join(...parts) forwards the array itself; mixing spread and plain

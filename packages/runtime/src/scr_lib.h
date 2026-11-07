@@ -304,10 +304,10 @@ ScrStr *scr_fs_read_file(ScrStr *path);
 ScrStr *scr_fs_realpath(ScrStr *path);
 ScrStr *scr_fs_realpath_promise(ScrStr *path);
 void scr_fs_write_file(ScrStr *path, ScrStr *data);
-/* writeFileSync(fd, data): a write(2) loop over the whole string at the
- * descriptor's current offset; the descriptor stays open (closeSync owns
- * it). Errors carry the fd operation's errno shape. */
-void scr_fs_write_file_fd(double fd, ScrStr *data);
+/* A write(2) loop over the whole buffer at the descriptor's current offset;
+ * the descriptor stays open (closeSync owns it). Errors carry the write
+ * operation's errno shape; false after throwing. */
+bool scr_fs_write_fd_all(double fd, const void *data, size_t length);
 void scr_fs_append_file(ScrStr *path, ScrStr *data);
 bool scr_fs_exists(ScrStr *path);
 void scr_fs_mkdir(ScrStr *path);
@@ -344,8 +344,7 @@ ScrStr *scr_fs_read_fd(double fd);
  * the rest). unlink/chmod/chown wrap the syscalls 1:1. copyfile copies
  * contents into a created-or-truncated destination carrying the SOURCE's
  * mode; its errors quote both paths ("copyfile 'src' -> 'dest'", Node's
- * shape). write_file_mode is writeFileSync(p, data, { mode }) — the mode
- * applies at creation only. The mkdir *_mode twins take mkdirSync's
+ * shape). The mkdir *_mode twins take mkdirSync's
  * explicit mode (the recursive walk passes it to every directory it
  * creates). */
 void scr_fs_unlink(ScrStr *path);
@@ -384,9 +383,42 @@ void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath);
  * thread. raw returns 0 on success or a positive errno value on failure. */
 int scr_fs_rename_raw(const ScrStr *oldpath, const ScrStr *newpath);
 void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath);
-void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode);
-/* writeFileSync(path, data, { mode, flag }): `exclusive` is "wx" (O_EXCL). */
-void scr_fs_write_file_flags(ScrStr *path, ScrStr *data, double mode, double exclusive);
+/* writeFileSync/appendFileSync(path, data, { encoding, mode, flag, flush })
+ * over string and byte data (scr_bytes_io.c): the encoding names are
+ * validated first, then the path, the flag and the mode, and the file is
+ * opened with the flag, written with a write(2) loop, fsync'd when flush is
+ * set, and closed. An empty flag keeps the family's default. `fast` is
+ * Node's string-utf8 arm, which skips the fsync; byte data never takes it,
+ * so the byte forms have no such argument. */
+void scr_fs_write_file_opts(ScrStr *path, ScrStr *data, ScrStr *encoding, bool fast,
+                            double mode, ScrStr *flag, bool flush);
+void scr_fs_write_file_bytes_opts(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                  double mode, ScrStr *flag, bool flush);
+void scr_fs_append_file_opts(ScrStr *path, ScrStr *data, ScrStr *encoding, bool fast,
+                             double mode, ScrStr *flag, bool flush);
+void scr_fs_append_file_bytes_opts(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                   double mode, ScrStr *flag, bool flush);
+/* writeFileSync/appendFileSync over an open descriptor: the same encoding,
+ * flag, mode and flush handling, Node's string-utf8 fast arm when `fast`
+ * is set (the descriptor is then written as-is, and flush is not
+ * consulted), and the slow arm's descriptor range check. The descriptor
+ * stays open. One byte-data entry serves both families: the slow arm reads
+ * neither the flag nor the mode. */
+void scr_fs_write_file_fd(double fd, ScrStr *data, ScrStr *encoding, bool fast, double mode,
+                          ScrStr *flag, bool flush);
+void scr_fs_append_file_fd(double fd, ScrStr *data, ScrStr *encoding, bool fast, double mode,
+                           ScrStr *flag, bool flush);
+void scr_fs_write_file_fd_bytes(double fd, const ScrBytes *data, ScrStr *encoding, bool flush);
+/* fs/promises writeFile/appendFile over a FileHandle: the encoding check and
+ * the string conversion run first, the descriptor is range-checked only when
+ * there is something to write, nothing is fsync'd. */
+void scr_fs_write_handle_direct(double fd, const ScrStr *text, const ScrBytes *data,
+                                ScrStr *encoding);
+/* getOptions' assertEncoding over a write record: empty and "buffer" pass
+ * (the latter is an unknown name only to Buffer.from), every other name
+ * must be a Buffer encoding. Answers false with ERR_INVALID_ARG_VALUE
+ * pending. The FileHandle write entries validate the same record first. */
+bool scr_fs_write_encoding_valid(ScrStr *encoding);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
 /* The same walk, answering the first directory created (+1) or NULL
@@ -447,6 +479,9 @@ bool scr_fs_path_ok(const ScrStr *path, const char *name);
 /* scr_fs_path_ok as a statement: getValidatedPath's null-byte check on a
  * path the call validates before converting a later URL path. */
 void scr_fs_check_path(ScrStr *path, ScrStr *name);
+/* fs.writeSync/fs.fsyncSync's validateInteger(fd, 'fd', 0, 2147483647):
+ * false with Node's ERR_OUT_OF_RANGE thrown. */
+bool scr_fs_write_fd_valid(double fd);
 void scr_fs_futimes(double fd, double atime, double mtime);
 void scr_fs_link(ScrStr *source, ScrStr *dest);
 void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind);
@@ -546,8 +581,15 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint);
  * scr_lib.c without the fiber slice). */
 ScrPromise *scr_fsp_read_file(ScrStr *path);
 ScrPromise *scr_fsp_write_file(ScrStr *path, ScrStr *data);
-ScrPromise *scr_fsp_write_file_mode(ScrStr *path, ScrStr *data, double mode);
-ScrPromise *scr_fsp_write_file_flags(ScrStr *path, ScrStr *data, double mode, double exclusive);
+ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_opts(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                                    ScrStr *flag, bool flush);
+ScrPromise *scr_fsp_write_file_bytes_opts(ScrStr *path, ScrBytes *data, ScrStr *encoding,
+                                          double mode, ScrStr *flag, bool flush);
+ScrPromise *scr_fsp_append_file_opts(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                                     ScrStr *flag, bool flush);
+ScrPromise *scr_fsp_append_file_bytes_opts(ScrStr *path, ScrBytes *data, ScrStr *encoding,
+                                           double mode, ScrStr *flag, bool flush);
 ScrPromise *scr_fsp_mkdir(ScrStr *path);
 ScrPromise *scr_fsp_mkdir_mode(ScrStr *path, double mode);
 ScrPromise *scr_fsp_mkdir_recursive(ScrStr *path);
@@ -559,9 +601,6 @@ ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid);
 ScrPromise *scr_fsp_access(ScrStr *path, double mode);
 ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data);
 ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
-ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data);
-ScrPromise *scr_fsp_write_file_flags_bytes(ScrStr *path, ScrBytes *data, double mode,
-                                           double exclusive);
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);
@@ -589,6 +628,8 @@ ScrPromise *scr_file_handle_read_file_promise(ScrFileHandle *h, ScrStr *encoding
 ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h, ScrStr *encoding);
 ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h, ScrStr *data, ScrStr *encoding);
 ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h, ScrBytes *data, ScrStr *encoding);
+ScrPromise *scr_file_handle_write_file_path_promise(ScrFileHandle *h, ScrStr *data, ScrStr *encoding);
+ScrPromise *scr_file_handle_write_file_path_bytes_promise(ScrFileHandle *h, ScrBytes *data, ScrStr *encoding);
 ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h);
 
 /* Raw fd operations for worker-pool steps (scr_lib.c): no runtime state

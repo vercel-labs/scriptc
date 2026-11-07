@@ -3461,8 +3461,32 @@ ScrPromise *scr_fsp_write_file(ScrStr *path, ScrStr *data) {
   return scr_promise_settled_void();
 }
 
-ScrPromise *scr_fsp_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
-  scr_fs_write_file_mode(path, data, mode);
+ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data) {
+  scr_fs_write_file_bytes(path, data);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_write_file_opts(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                                    ScrStr *flag, bool flush) {
+  scr_fs_write_file_opts(path, data, encoding, false, mode, flag, flush);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_write_file_bytes_opts(ScrStr *path, ScrBytes *data, ScrStr *encoding,
+                                          double mode, ScrStr *flag, bool flush) {
+  scr_fs_write_file_bytes_opts(path, data, encoding, mode, flag, flush);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_append_file_opts(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                                     ScrStr *flag, bool flush) {
+  scr_fs_append_file_opts(path, data, encoding, false, mode, flag, flush);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_append_file_bytes_opts(ScrStr *path, ScrBytes *data, ScrStr *encoding,
+                                           double mode, ScrStr *flag, bool flush) {
+  scr_fs_append_file_bytes_opts(path, data, encoding, mode, flag, flush);
   return scr_promise_settled_void();
 }
 

@@ -18,7 +18,6 @@ import {
   F64,
   FILEHANDLE_T,
   type IrExpr,
-  type IrLibFn,
   type IrStmt,
   type IrType,
   STRING,
@@ -26,14 +25,22 @@ import {
   VOID,
   arrayOf,
   funcOf,
+  isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
+import { InternalCompilerError } from "../../../errors.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
 import { constInitializerOf } from "../lower-exprs.js";
 import {
+  fsWriteFdLibFn,
+  fsWriteLibFn,
   lowerFsTimestampValue,
   lowerFsSyncBufferWindow,
   lowerStringOrBytesWrite,
+  lowerStringOrBytesWriteFd,
+  type WriteFdFamily,
+  type WriteFamily,
+  type WriteOptions,
 } from "./filesystem.js";
 
 export function lowerFsCallbackCall(
@@ -982,542 +989,711 @@ export function lowerFsRemoveCall(
   };
 }
 
-export function lowerFsWriteBytesCall(
+/** fs.writeFileSync / fs.appendFileSync / fs.promises.writeFile /
+ * fs.promises.appendFile. The data is a string, an ArrayBufferView's bytes,
+ * or the string|Uint8Array union a shared helper's parameter carries. The optional
+ * third argument is a bare encoding name or the options record; every value
+ * in it is an ordinary expression, evaluated in the record's source order
+ * before the write, and the runtime validates the encoding, the flag and the
+ * mode in the order Node validates them. */
+export function lowerFsWriteCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   bi: { module: string; member: string },
   loc: SrcLoc,
-): IrExpr | null {
-  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!));
-  if (dataIr?.kind === "union") {
-    const arms = lowerer.unions.get(dataIr.unionId)?.arms;
+): IrExpr {
+  const promise = bi.module === "fs/promises";
+  const family: WriteFamily = {
+    promise,
+    append: bi.member === "appendFile" || bi.member === "appendFileSync",
+  };
+  const operation = promise ? `fs.promises.${bi.member}` : bi.member;
+  const nodes = expr.arguments.nodes;
+  const supported = `write a string or ArrayBufferView with the options record { encoding?, mode?, flag?, flush? }: ${operation}(path, data, options)`;
+  if (nodes.length < 2 || nodes.length > 3 || nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`${operation} with ${nodes.length} arguments`, expr, supported);
+  }
+  const dataNode = nodes[1]!;
+  const { dataKind, union, arms } = writeDataShape(lowerer, dataNode, operation);
+  const resultType: IrType = promise ? { kind: "promise", inner: VOID } : VOID;
+  // fs/promises writeFile/appendFile take a FileHandle where they take a path;
+  // the callback forms do not. The handle's record behaves as it does for
+  // FileHandle.writeFile, but the write itself is the descriptor write.
+  const pathNode = nodes[0]!;
+  if (promise && lowerer.mapTypeOf(lowerer.typeOf(pathNode))?.kind === "fileHandle") {
+    if (union || dataKind === null) {
+      lowerer.noLowering(
+        `${operation} of a string|Uint8Array union to a FileHandle`,
+        dataNode,
+        "write a string or ArrayBufferView to a FileHandle",
+      );
+    }
+    return lowerFileHandleWrite(
+      lowerer,
+      loc,
+      () => lowerer.lowerExprExpecting(pathNode, FILEHANDLE_T),
+      dataNode,
+      dataKind!,
+      nodes[2],
+      operation,
+      "path",
+    );
+  }
+  const path = lowerFsPath(lowerer, nodes[0]!);
+  if (nodes.length === 2) {
+    if (union && arms) {
+      return lowerStringOrBytesWrite(
+        lowerer,
+        loc,
+        union,
+        arms,
+        family,
+        null,
+        path,
+        lowerer.lowerExprExpecting(dataNode, union),
+      );
+    }
+    const kind = dataKind!;
+    return {
+      kind: "libCall",
+      fn: fsWriteLibFn(family, kind, false),
+      args: [path, lowerWriteData(lowerer, dataNode, kind)],
+      type: resultType,
+      loc,
+    };
+  }
+  // Stage the path, the data, and then the record's values in source order
+  // before issuing the write: Node evaluates the call's arguments in that
+  // order, and a value the checker cannot pin down must still be evaluated
+  // exactly once, where the source put it.
+  const stmts: IrStmt[] = [];
+  const dataType: IrType = union ?? (dataKind === "bytes" ? BYTES_U8 : STRING);
+  const pathLocal = lowerer.declareHiddenLocal("%writePath", STRING);
+  stmts.push({ kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc });
+  const dataLocal = lowerer.declareHiddenLocal("%writeData", dataType);
+  stmts.push({
+    kind: "varDecl",
+    localId: dataLocal.id,
+    init: union
+      ? lowerer.lowerExprExpecting(dataNode, union)
+      : lowerWriteData(lowerer, dataNode, dataKind === "bytes" ? "bytes" : "string"),
+    loc,
+  });
+  const defaults: Record<WriteOptionSlot, IrExpr> = {
+    encoding: { kind: "strLit", value: "utf8", type: STRING, loc },
+    mode: { kind: "numLit", value: 0o666, type: F64, loc },
+    flag: { kind: "strLit", value: family.append ? "a" : "w", type: STRING, loc },
+    flush: boolLit(false, loc),
+  };
+  const slots: Partial<Record<WriteOptionSlot, IrExpr>> = {};
+  const entries = lowerWriteOptions(lowerer, nodes[2]!, operation, supported, defaults);
+  let encodingEntry: LoweredWriteOption | undefined;
+  let stagedFast: IrExpr | null = null;
+  for (const entry of entries) {
+    if (entry.slot === null) {
+      stmts.push({ kind: "exprStmt", expr: entry.expr, loc: entry.expr.loc });
+      continue;
+    }
+    const staged = stageWriteOption(lowerer, entry, stmts, loc);
+    slots[entry.slot] = staged.value;
+    stagedFast = staged.fast ?? stagedFast;
+    if (entry.slot === "encoding") encodingEntry = entry;
+  }
+  const encoding = slots.encoding ?? defaults.encoding;
+  const options: WriteOptions = {
+    encoding,
+    fast: stagedFast ?? writeFastArg(lowerer, encodingEntry, nodes[2]!, encoding, loc),
+    mode: slots.mode ?? defaults.mode,
+    flag: slots.flag ?? defaults.flag,
+    flush: slots.flush ?? defaults.flush,
+  };
+  const pathRef = varRef(pathLocal.id, pathLocal.type, loc);
+  const dataRef = varRef(dataLocal.id, dataLocal.type, loc);
+  const result: IrExpr =
+    union && arms
+      ? lowerStringOrBytesWrite(lowerer, loc, union, arms, family, options, pathRef, dataRef)
+      : {
+          kind: "libCall",
+          fn: fsWriteLibFn(family, dataKind!, true),
+          args:
+            dataKind === "bytes" || promise
+              ? [pathRef, dataRef, options.encoding, options.mode, options.flag, options.flush]
+              : [
+                  pathRef,
+                  dataRef,
+                  options.encoding,
+                  options.fast,
+                  options.mode,
+                  options.flag,
+                  options.flush,
+                ],
+          type: resultType,
+          loc,
+        };
+  return { kind: "seqExpr", stmts, result, type: resultType, loc };
+}
+
+/** The data shapes the write families accept: a string, an ArrayBufferView's
+ * bytes, or the string|Uint8Array union a shared helper's parameter carries. */
+interface WriteDataShape {
+  dataKind: "string" | "bytes" | null;
+  union: Extract<IrType, { kind: "union" }> | null;
+  arms: readonly IrType[] | null;
+}
+
+function writeDataShape(lowerer: Lowerer, node: ts.Expression, operation: string): WriteDataShape {
+  const ir = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (ir?.kind === "string") return { dataKind: "string", union: null, arms: null };
+  if (ir?.kind === "bytes") return { dataKind: "bytes", union: null, arms: null };
+  if (ir?.kind === "union") {
+    const arms = lowerer.unions.get(ir.unionId)?.arms;
     if (
       arms &&
       arms.every((arm) => arm.kind === "string" || (arm.kind === "bytes" && arm.elem === "u8"))
     ) {
-      return lowerStringOrBytesWrite(lowerer, expr, dataIr, arms, bi.member === "appendFileSync");
+      return { dataKind: null, union: ir, arms };
     }
   }
-  if (dataIr?.kind === "bytes") {
-    if (dataIr.elem !== "u8") {
-      lowerer.noLowering(
-        `${bi.member} of '${lowerer.fmt(dataIr)}' data`,
-        expr.arguments.nodes[1]!,
-        "byte writes take Uint8Array/Buffer data",
-      );
-    }
-    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-    const data = lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, BYTES_U8);
-    if (bi.module === "fs/promises") {
-      // appendFile appends; writeFile truncates first. Both take byte data
-      // (Node writes the bytes as given), and the pair differs exactly as
-      // their string forms do.
-      return {
-        kind: "libCall",
-        fn: bi.member === "appendFile" ? "fsp.appendFileBytes" : "fsp.writeFileBytes",
-        args: [path, data],
-        type: { kind: "promise", inner: VOID },
-        loc,
-      };
-    }
-    return {
-      kind: "libCall",
-      fn: bi.member === "appendFileSync" ? "fs.appendFileSyncBytes" : "fs.writeFileSyncBytes",
-      args: [path, data],
-      type: VOID,
-      loc,
-    };
-  }
-
-  return null;
+  lowerer.noLowering(
+    `${operation} of '${ir ? lowerer.fmt(ir) : lowerer.checker.typeToString(lowerer.typeOf(node))}' data`,
+    node,
+    "write data is a string, a Buffer, Uint8Array, DataView or another typed array",
+  );
 }
 
-// The writeFileSync(fd, data[, "utf8"]) form — Node accepts a file
-// descriptor where it accepts a path (write to a descriptor openSync
-// returned, the descriptor staying open: closeSync owns its lifetime).
-// Routed by the ARGUMENT's static type, like readFileSync(fd).
-export function lowerFsWriteDescriptorCall(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  loc: SrcLoc,
-): IrExpr {
-  const supported = 'only string data is supported: writeFileSync(fd, data, "utf8")';
-  const dataNode = expr.arguments.nodes[1]!;
-  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
-  if (dataIr?.kind !== "string") {
-    lowerer.noLowering(
-      `writeFileSync(fd) of '${dataIr ? lowerer.fmt(dataIr) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
-      dataNode,
-      supported,
-    );
-  }
-  if (expr.arguments.nodes.length > 3) {
-    lowerer.noLowering(
-      `writeFileSync(fd) with ${expr.arguments.nodes.length} arguments`,
-      expr,
-      supported,
-    );
-  }
-  const fd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64);
+/** A write's data as the Uint8Array the byte entries take. Node writes the
+ * bytes of any ArrayBufferView, so a view of another element type is a u8
+ * view over the same storage rather than a conversion. */
+function writeDataBytes(lowerer: Lowerer, node: ts.Expression, value: IrExpr): IrExpr {
+  if (value.type.kind !== "bytes" || value.type.elem === "u8") return value;
   return {
     kind: "libCall",
-    fn: "fs.writeFileSyncFd",
-    args: [fd, lowerer.lowerExprExpecting(dataNode, STRING)],
-    type: VOID,
+    fn: "bytes.bufferSource",
+    args: [lowerer.coerceInto(node, value, DYN)],
+    type: BYTES_U8,
+    loc: locOf(node),
+  };
+}
+
+/** The data argument of a write, lowered to the type its entry takes. */
+function lowerWriteData(lowerer: Lowerer, node: ts.Expression, kind: "string" | "bytes"): IrExpr {
+  if (kind === "string") return lowerer.lowerExprExpecting(node, STRING);
+  return writeDataBytes(lowerer, node, lowerer.lowerExpr(node));
+}
+
+/** Node's string-utf8 arm: string data under an encoding that is exactly
+ * "utf8" or "utf-8" skips the Buffer conversion and the fsync (and, over a
+ * descriptor, the range check). No options argument, null and undefined
+ * reach it through getOptions' defaults; a record without an encoding key
+ * does not, because its encoding stays undefined. An encoding value whose
+ * type also admits null or undefined is decided from the staged value
+ * instead (stageWriteOption). */
+function writeFastArg(
+  lowerer: Lowerer,
+  encoding: LoweredWriteOption | undefined,
+  optsNode: ts.Expression,
+  lowered: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (!encoding) {
+    const flags = lowerer.typeOf(withoutParenthesesAssertionsNonNull(optsNode)).flags;
+    return boolLit(
+      (flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+      loc,
+    );
+  }
+  if (encoding.stringLiteral !== undefined)
+    return boolLit(isUtf8Encoding(encoding.stringLiteral), loc);
+  // An encoding name the checker cannot pin down is read from the staged
+  // local here and passed to the write as the same local.
+  const ref = (): IrExpr =>
+    lowered.kind === "varRef" ? varRef(lowered.localId, lowered.type, loc) : lowered;
+  const eq = (value: string): IrExpr => ({
+    kind: "strEq",
+    negated: false,
+    left: ref(),
+    right: { kind: "strLit", value, type: STRING, loc },
+    type: BOOL,
+    loc,
+  });
+  return { kind: "logical", op: "||", left: eq("utf8"), right: eq("utf-8"), type: BOOL, loc };
+}
+
+function isUtf8Encoding(name: string): boolean {
+  return name === "utf8" || name === "utf-8";
+}
+
+/** Stage one evaluated option into a hidden local. A defaulted encoding
+ * whose type also admits null or undefined stages the RAW value: Node reads
+ * the record's encoding as written to pick its arm (an absent one is not
+ * the "utf8" it falls back to), while the write takes the defaulted
+ * spelling, so both come from the one evaluation. */
+function stageWriteOption(
+  lowerer: Lowerer,
+  entry: LoweredWriteOption,
+  stmts: IrStmt[],
+  loc: SrcLoc,
+): { value: IrExpr; fast: IrExpr | null } {
+  const absent = entry.slot === "encoding" && entry.expr.kind === "nullish" ? entry.expr : null;
+  const init = absent ? absent.left : entry.expr;
+  const local = lowerer.declareHiddenLocal(`%write${entry.slot}`, init.type);
+  stmts.push({ kind: "varDecl", localId: local.id, init, loc: init.loc });
+  const ref = varRef(local.id, local.type, loc);
+  if (!absent) return { value: ref, fast: null };
+  return {
+    value: { kind: "nullish", left: ref, right: absent.right, type: absent.type, loc },
+    fast: writeFastOfValue(lowerer, ref, loc),
+  };
+}
+
+/** `options.encoding === 'utf8' || options.encoding === 'utf-8'` over a
+ * value that may be absent at run time: the arm "utf8" is the default, so
+ * the comparison reads the string arm only once no absent tag matched. */
+function writeFastOfValue(lowerer: Lowerer, raw: IrExpr, loc: SrcLoc): IrExpr {
+  const type = raw.type;
+  const arms = type.kind === "union" ? lowerer.unions.get(type.unionId)?.arms : undefined;
+  const stringTag = arms?.findIndex((arm) => arm.kind === "string") ?? -1;
+  const absentTags = arms?.flatMap((arm, tag) => (isUnitType(arm) ? [tag] : [])) ?? [];
+  if (type.kind !== "union" || !arms || stringTag < 0 || absentTags.length === 0) {
+    throw new InternalCompilerError("an encoding default without an absent arm");
+  }
+  const isTag = (tag: number): IrExpr => ({
+    kind: "unionIsTag",
+    unionId: type.unionId,
+    tag,
+    negated: false,
+    value: raw,
+    type: BOOL,
+    loc,
+  });
+  let absent: IrExpr = isTag(absentTags[0]!);
+  for (const tag of absentTags.slice(1)) {
+    absent = { kind: "logical", op: "||", left: absent, right: isTag(tag), type: BOOL, loc };
+  }
+  const isUtf8 = (name: string): IrExpr => ({
+    kind: "strEq",
+    negated: false,
+    left: {
+      kind: "unionNarrow",
+      unionId: type.unionId,
+      tag: stringTag,
+      value: raw,
+      type: STRING,
+      loc,
+    },
+    right: { kind: "strLit", value: name, type: STRING, loc },
+    type: BOOL,
+    loc,
+  });
+  return {
+    kind: "ternary",
+    cond: absent,
+    then: boolLit(false, loc),
+    else_: {
+      kind: "logical",
+      op: "||",
+      left: isUtf8("utf8"),
+      right: isUtf8("utf-8"),
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
     loc,
   };
 }
 
-export function lowerFsWriteOptionsCall(
+// writeFileSync(fd, data[, options]) and appendFileSync(fd, data[, options])
+// — Node accepts a file descriptor where it accepts a path (write to a
+// descriptor openSync returned, the descriptor staying open: closeSync owns
+// its lifetime). Routed by the ARGUMENT's static type, like readFileSync(fd).
+// The record means the same as on the path form except that the flag and the
+// mode only survive on the string-utf8 arm, and appendFileSync forces its
+// own flag whenever the value names a descriptor.
+export function lowerFsWriteDescriptorCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
+  bi: { module: string; member: string },
   loc: SrcLoc,
-  promiseWriteOptions: boolean,
 ): IrExpr {
-  const optsNode = expr.arguments.nodes[2]!;
-  const operation = promiseWriteOptions ? "fs.promises.writeFile" : "writeFileSync";
-  /** The two-argument unit of each data kind, the { mode } unit and the
-   * { mode, flag } unit. A Uint8Array/Buffer data argument takes the byte
-   * twins of all three (the flag unit carries the mode too, so the
-   * mode-only byte form passes exclusive = 0). */
-  const plainFn: IrLibFn = promiseWriteOptions ? "fsp.writeFile" : "fs.writeFileSync";
-  const modeFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileMode" : "fs.writeFileModeSync";
-  const flagsFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileFlags" : "fs.writeFileFlagsSync";
-  const bytesPlainFn: IrLibFn = promiseWriteOptions
-    ? "fsp.writeFileBytes"
-    : "fs.writeFileSyncBytes";
-  const bytesFlagsFn: IrLibFn = promiseWriteOptions
-    ? "fsp.writeFileBytesFlags"
-    : "fs.writeFileSyncBytesFlags";
-  const resultType: IrType = promiseWriteOptions ? { kind: "promise", inner: VOID } : VOID;
-  type WriteOptionValue = { kind: "effect" | "mode"; value: IrExpr };
-  /** The data argument's mapped type: a string, u8 bytes, or a union of
-   * exactly those arms (a `string | Uint8Array` payload, which Node writes
-   * as text or as raw bytes accordingly). Anything else keeps the fence. */
-  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!));
-  const unionArms =
-    dataIr?.kind === "union" ? (lowerer.unions.get(dataIr.unionId)?.arms ?? null) : null;
-  const unionWriteData =
-    unionArms !== null &&
-    unionArms.some((arm) => arm.kind === "string") &&
-    unionArms.some((arm) => arm.kind === "bytes" && arm.elem === "u8") &&
-    unionArms.every((arm) => arm.kind === "string" || (arm.kind === "bytes" && arm.elem === "u8"))
-      ? { type: dataIr as Extract<IrType, { kind: "union" }>, arms: unionArms }
-      : null;
-  const dataKind: "string" | "bytes" | "union" | null =
-    dataIr?.kind === "string"
-      ? "string"
-      : dataIr?.kind === "bytes" && dataIr.elem === "u8"
-        ? "bytes"
-        : unionWriteData
-          ? "union"
-          : null;
-  /** `flag: "w"` is the plain truncate-or-create write; `flag: "wx"` is
-   * open(2)'s O_EXCL (EEXIST when the path exists). Both are literals, so
-   * the bit is known here and carries no evaluation of its own. */
-  let exclusive = false;
-  let sawFlag = false;
-  /** The write issuing one arm's data: `kind` picks the string or byte
-   * unit. `path` and `data` are the staged operands. */
-  const armWrite = (
-    path: IrExpr,
-    data: IrExpr,
-    kind: "string" | "bytes",
-    mode: IrExpr | null,
-  ): IrExpr => {
-    // Node's default creation mode when only the flag is given.
-    const modeArg: IrExpr = mode ?? { kind: "numLit", value: 0o666, type: F64, loc };
-    if (sawFlag)
+  const family: WriteFdFamily = { append: bi.member === "appendFileSync" };
+  const operation = `fs.${bi.member}`;
+  const supported = `write a string or ArrayBufferView to a descriptor with the options record { encoding?, mode?, flag?, flush? }: ${operation}(fd, data, options)`;
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 2 || nodes.length > 3 || nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`${operation} with ${nodes.length} arguments`, expr, supported);
+  }
+  const dataNode = nodes[1]!;
+  const { dataKind, union, arms } = writeDataShape(lowerer, dataNode, operation);
+  const fd = lowerer.lowerExprExpecting(nodes[0]!, F64);
+  const defaultFlag = family.append ? "a" : "w";
+  if (nodes.length === 2) {
+    if (union && arms) {
+      return lowerStringOrBytesWriteFd(
+        lowerer,
+        loc,
+        union,
+        arms,
+        family,
+        null,
+        fd,
+        lowerer.lowerExprExpecting(dataNode, union),
+      );
+    }
+    const data = lowerWriteData(lowerer, dataNode, dataKind === "bytes" ? "bytes" : "string");
+    if (dataKind === "bytes") {
       return {
         kind: "libCall",
-        fn: kind === "bytes" ? bytesFlagsFn : flagsFn,
-        args: [path, data, modeArg, { kind: "numLit", value: exclusive ? 1 : 0, type: F64, loc }],
-        type: resultType,
+        fn: fsWriteFdLibFn(family, "bytes"),
+        args: [fd, data, { kind: "strLit", value: "utf8", type: STRING, loc }, boolLit(false, loc)],
+        type: VOID,
         loc,
       };
-    if (mode !== null)
-      return kind === "bytes"
-        ? {
-            kind: "libCall",
-            fn: bytesFlagsFn,
-            args: [path, data, mode, { kind: "numLit", value: 0, type: F64, loc }],
-            type: resultType,
-            loc,
-          }
-        : { kind: "libCall", fn: modeFn, args: [path, data, mode], type: resultType, loc };
+    }
     return {
       kind: "libCall",
-      fn: kind === "bytes" ? bytesPlainFn : plainFn,
-      args: [path, data],
-      type: resultType,
-      loc,
-    };
-  };
-  /** The write over a `string | Uint8Array` data argument: the tag picks
-   * the string or the byte unit, the same dispatch lowerStringOrBytesWrite
-   * lifts for the two-argument forms. The operands are already staged in
-   * locals here, so the dispatch is a plain if/else inside the write's own
-   * expression (the promise form keeps its result in a local). */
-  const unionWrite = (
-    pathLocal: { id: string; type: IrType },
-    dataLocal: { id: string; type: IrType },
-    mode: IrExpr | null,
-  ): Extract<IrExpr, { kind: "seqExpr" }> => {
-    const unionType = unionWriteData!.type;
-    const arms = unionWriteData!.arms;
-    const pathRef = varRef(pathLocal.id, pathLocal.type, loc);
-    const dataRef = varRef(dataLocal.id, dataLocal.type, loc);
-    const narrow = (tag: number, type: IrType): IrExpr => ({
-      kind: "unionNarrow",
-      unionId: unionType.unionId,
-      tag,
-      value: dataRef,
-      type,
-      loc,
-    });
-    const isTag = (tag: number): IrExpr => ({
-      kind: "unionIsTag",
-      unionId: unionType.unionId,
-      tag,
-      negated: false,
-      value: dataRef,
-      type: BOOL,
-      loc,
-    });
-    if (promiseWriteOptions) {
-      // The promise form picks its arm with a `ternary` chain: exactly one
-      // arm evaluates, and the chosen promise reaches the await as an
-      // ordinary expression value. A hidden local declared inside an `if`
-      // arm does not outlive the arm — an awaited promise held in one was
-      // released before the await retained it, a use-after-free that only
-      // the sanitizer lane observed.
-      let picked: IrExpr | null = null;
-      for (let tag = arms.length - 1; tag >= 0; tag--) {
-        const arm = arms[tag]!;
-        const write = armWrite(
-          pathRef,
-          narrow(tag, arm),
-          arm.kind === "bytes" ? "bytes" : "string",
-          mode,
-        );
-        picked =
-          picked === null
-            ? write
-            : {
-                kind: "ternary",
-                cond: isTag(tag),
-                then: write,
-                else_: picked,
-                type: resultType,
-                loc,
-              };
-      }
-      return { kind: "seqExpr", stmts: [], result: picked!, type: resultType, loc };
-    }
-    // The synchronous form has no value to carry out: each arm's write is a
-    // statement, and the last arm is the chain's else.
-    let chain: IrStmt[] | null = null;
-    for (let tag = arms.length - 1; tag >= 0; tag--) {
-      const arm = arms[tag]!;
-      const write = armWrite(
-        pathRef,
-        narrow(tag, arm),
-        arm.kind === "bytes" ? "bytes" : "string",
-        mode,
-      );
-      const body: IrStmt[] = [{ kind: "exprStmt", expr: write, loc }];
-      chain =
-        chain === null ? body : [{ kind: "if", loc, cond: isTag(tag), then: body, else_: chain }];
-    }
-    return {
-      kind: "seqExpr",
-      stmts: chain ?? [],
-      result: { kind: "libCall", fn: "console.noop", args: [], type: VOID, loc },
-      type: resultType,
-      loc,
-    };
-  };
-  // The runtime needs only `mode`, but every source option value is an
-  // ordinary JS expression. Stage path/data and then evaluate the option
-  // values in object-literal order before issuing the write; otherwise a
-  // call/getter statically typed as the accepted utf8 literal can vanish.
-  const finishWrite = (optionValues: WriteOptionValue[]): IrExpr => {
-    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-    const dataNode = expr.arguments.nodes[1]!;
-    const dataIrForLocal: IrType =
-      dataKind === "bytes" ? BYTES_U8 : dataKind === "union" ? unionWriteData!.type : STRING;
-    const pathLocal = lowerer.declareHiddenLocal("%writePath", STRING);
-    const dataLocal = lowerer.declareHiddenLocal("%writeData", dataIrForLocal);
-    const stmts: IrStmt[] = [
-      { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
-      {
-        kind: "varDecl",
-        localId: dataLocal.id,
-        init: lowerer.lowerExprExpecting(dataNode, dataIrForLocal),
-        loc: locOf(dataNode),
-      },
-    ];
-    let mode: IrExpr | null = null;
-    for (const option of optionValues) {
-      if (option.kind === "effect") {
-        stmts.push({ kind: "exprStmt", expr: option.value, loc: option.value.loc });
-        continue;
-      }
-      const modeLocal = lowerer.declareHiddenLocal("%writeMode", F64);
-      stmts.push({
-        kind: "varDecl",
-        localId: modeLocal.id,
-        init: option.value,
-        loc: option.value.loc,
-      });
-      mode = varRef(modeLocal.id, modeLocal.type, loc);
-    }
-    if (dataKind === "union") {
-      const result = unionWrite(pathLocal, dataLocal, mode);
-      return {
-        kind: "seqExpr",
-        stmts: [...stmts, ...result.stmts],
-        result: result.result,
-        type: resultType,
-        loc,
-      };
-    }
-    const result = armWrite(
-      varRef(pathLocal.id, pathLocal.type, loc),
-      varRef(dataLocal.id, dataLocal.type, loc),
-      dataKind === "bytes" ? "bytes" : "string",
-      mode,
-    );
-    return { kind: "seqExpr", stmts, result, type: resultType, loc };
-  };
-  // The bare-encoding spelling — writeFileSync(p, data, "utf-8") — is
-  // the options record's encoding key alone: utf8 is what the runtime
-  // writes anyway, so the data takes the plain write of its own shape. Any
-  // OTHER encoding name changes bytes and keeps the fence below; over byte
-  // data no name changes anything (Node never decodes a Buffer), but the
-  // declarations only spell the utf8 names there, so the same test serves.
-  {
-    const t = lowerer.typeOf(optsNode);
-    if (
-      t.isStringLiteralType() &&
-      (t.value === "utf8" || t.value === "utf-8") &&
-      dataKind !== null
-    ) {
-      return finishWrite([{ kind: "effect", value: lowerer.lowerExprExpecting(optsNode, STRING) }]);
-    }
-  }
-  const optionValues: WriteOptionValue[] = [];
-  // The options argument may be a const BINDING (`const OPTS =
-  // {encoding: "utf-8", mode: 0o600} as const`, shared by every write of
-  // a file): the literal behind it is the options record. Resolved only
-  // through type casts and a never-reassigned const, and only when every
-  // value is a literal — the const evaluated them once, so staging them
-  // again at the write site is the same evaluation.
-  const optsLiteral = optionsLiteralOf(lowerer, optsNode);
-  let ok = optsLiteral !== null;
-  if (optsLiteral !== null) {
-    for (const p of optsLiteral.properties.nodes) {
-      const m = optionMember(p);
-      if (!m) {
-        ok = false;
-        break;
-      }
-      if (m.name === "mode") {
-        optionValues.push({ kind: "mode", value: lowerer.lowerExprExpecting(m.value, F64) });
-      } else if (m.name === "encoding") {
-        const t = lowerer.typeOf(m.value);
-        if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-          ok = false;
-          break;
-        }
-        optionValues.push({ kind: "effect", value: lowerer.lowerExprExpecting(m.value, STRING) });
-      } else if (m.name === "flag") {
-        // Node's disposition flag changes whether an existing file is
-        // truncated: "w" is the default write, "wx" the exclusive create.
-        // Every other flag (append "a"/"as", synchronous "ws", ...) writes
-        // different bytes and keeps the fence by name.
-        const t = lowerer.typeOf(m.value);
-        if (!t.isStringLiteralType() || (t.value !== "w" && t.value !== "wx")) {
-          lowerer.noLowering(
-            `${operation} with the flag option`,
-            p,
-            'the lowered flags are "w" (the default truncate-or-create) and "wx" (O_EXCL: EEXIST when the path exists); other flags write different bytes',
-          );
-        }
-        exclusive = t.value === "wx";
-        sawFlag = true;
-        optionValues.push({ kind: "effect", value: lowerer.lowerExprExpecting(m.value, STRING) });
-      } else {
-        // The options-record stance: documented keys with no lowering
-        // fence by name; undocumented keys drop like Node.
-        fenceOrDropOptionKey(
-          lowerer,
-          p,
-          m.name,
-          operation,
-          FS_WRITE_FILE_DOCUMENTED_OPTIONS,
-          'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" }',
-        );
-      }
-    }
-  }
-  if (!ok || dataKind === null) {
-    lowerer.noLowering(
-      `${operation} with 3 arguments`,
-      optsNode,
-      'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" } over string or Uint8Array data',
-    );
-  }
-  return finishWrite(optionValues);
-}
-
-/** fs.appendFileSync(p, data, options): Node's append with an options
- * record. Only the encoding lowers — the runtime appends the same utf8
- * bytes Node does — and only over string data; `mode` (creation only) and
- * the disposition flags (`"a"` is the default, anything else appends
- * differently) keep their fence. */
-export function lowerFsAppendOptionsCall(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  loc: SrcLoc,
-): IrExpr {
-  const optsNode = expr.arguments.nodes[2]!;
-  const supported = 'the supported options are { encoding: "utf8" } over string or Uint8Array data';
-  // A Buffer carries its own bytes, so the encoding name says nothing about
-  // them (Node never looks it up); a `string | Uint8Array` payload takes the
-  // same tag dispatch the two-argument forms use.
-  const dataNode = expr.arguments.nodes[1]!;
-  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
-  const appendArms =
-    dataIr?.kind === "union" ? (lowerer.unions.get(dataIr.unionId)?.arms ?? null) : null;
-  const unionArms =
-    appendArms !== null &&
-    appendArms.every((arm) => arm.kind === "string" || (arm.kind === "bytes" && arm.elem === "u8"))
-      ? appendArms
-      : null;
-  if (dataIr?.kind === "union" && unionArms === null) {
-    lowerer.noLowering(`fs.appendFileSync of '${lowerer.fmt(dataIr)}' data`, dataNode, supported);
-  }
-  const bytesData = dataIr?.kind === "bytes" && dataIr.elem === "u8";
-  if (dataIr?.kind === "bytes" && !bytesData) {
-    lowerer.noLowering(
-      `fs.appendFileSync of '${lowerer.fmt(dataIr)}' data`,
-      dataNode,
-      "byte appends take Uint8Array/Buffer data",
-    );
-  }
-  const plainAppend = (): IrExpr =>
-    unionArms !== null
-      ? lowerStringOrBytesWrite(
-          lowerer,
-          expr,
-          dataIr as Extract<IrType, { kind: "union" }>,
-          unionArms,
-          true,
-        )
-      : {
-          kind: "libCall",
-          fn: bytesData ? "fs.appendFileSyncBytes" : "fs.appendFileSync",
-          args: [
-            lowerFsPath(lowerer, expr.arguments.nodes[0]!),
-            lowerer.lowerExprExpecting(dataNode, bytesData ? BYTES_U8 : STRING),
-          ],
-          type: VOID,
-          loc,
-        };
-  // The bare encoding spelling names an ordinary expression, not just a
-  // literal: Node evaluates it — side effects and exceptions included —
-  // after the path and the data and before the write, even though the value
-  // only has to be utf8. Stage the two operands so the encoding expression
-  // lands in that order; otherwise a call statically typed as "utf8" fails
-  // to run, or fails to throw.
-  const appendAfterEncoding = (encoding: ts.Expression): IrExpr => {
-    const dataType: IrType =
-      unionArms !== null
-        ? (dataIr as Extract<IrType, { kind: "union" }>)
-        : bytesData
-          ? BYTES_U8
-          : STRING;
-    const pathLocal = lowerer.declareHiddenLocal("%appendPath", STRING);
-    const dataLocal = lowerer.declareHiddenLocal("%appendData", dataType);
-    const path = varRef(pathLocal.id, STRING, loc);
-    const data = varRef(dataLocal.id, dataType, loc);
-    return {
-      kind: "seqExpr",
-      stmts: [
-        {
-          kind: "varDecl",
-          localId: pathLocal.id,
-          init: lowerFsPath(lowerer, expr.arguments.nodes[0]!),
-          loc,
-        },
-        {
-          kind: "varDecl",
-          localId: dataLocal.id,
-          init: lowerer.lowerExprExpecting(dataNode, dataType),
-          loc: locOf(dataNode),
-        },
-        {
-          kind: "exprStmt",
-          expr: lowerer.lowerExprExpecting(encoding, STRING),
-          loc: locOf(encoding),
-        },
+      fn: fsWriteFdLibFn(family, "string"),
+      args: [
+        fd,
+        data,
+        { kind: "strLit", value: "utf8", type: STRING, loc },
+        boolLit(true, loc),
+        { kind: "numLit", value: 0o666, type: F64, loc },
+        { kind: "strLit", value: defaultFlag, type: STRING, loc },
+        boolLit(false, loc),
       ],
-      result:
-        unionArms !== null
-          ? lowerStringOrBytesWrite(
-              lowerer,
-              expr,
-              dataIr as Extract<IrType, { kind: "union" }>,
-              unionArms,
-              true,
-              { path, data },
-            )
-          : {
-              kind: "libCall",
-              fn: bytesData ? "fs.appendFileSyncBytes" : "fs.appendFileSync",
-              args: [path, data],
-              type: VOID,
-              loc,
-            },
       type: VOID,
       loc,
     };
-  };
-  const t = lowerer.typeOf(optsNode);
-  if (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8"))
-    return appendAfterEncoding(optsNode);
-  const literal = optionsLiteralOf(lowerer, optsNode);
-  if (literal !== null) {
-    let encodingOnly = true;
-    let encoding: ts.Expression | null = null;
-    for (const property of literal.properties.nodes) {
-      const member = optionMember(property);
-      if (!member || member.name !== "encoding") {
-        lowerer.noLowering(
-          `fs.appendFileSync with the ${member ? `'${member.name}'` : "spread"} option`,
-          property,
-          supported,
-        );
-        encodingOnly = false;
-        break;
-      }
-      const value = lowerer.typeOf(member.value);
-      if (!value.isStringLiteralType() || (value.value !== "utf8" && value.value !== "utf-8")) {
-        encodingOnly = false;
-        break;
-      }
-      encoding = member.value;
-    }
-    // The options record is evaluated at the write site, as Node evaluates it:
-    // the encoding member's expression runs after the path and the data, so a
-    // call or getter behind a statically "utf8" value has its effects and
-    // exceptions, rather than being read for its type and dropped.
-    // A record with no member has no expression to evaluate.
-    if (encodingOnly) return encoding === null ? plainAppend() : appendAfterEncoding(encoding);
   }
-  lowerer.noLowering("fs.appendFileSync with 3 arguments", optsNode, supported);
-  return plainAppend();
+  // Stage the descriptor, the data, and then the record's values in source
+  // order: Node evaluates the call's arguments in that order, and a value
+  // the checker cannot pin down must still be evaluated exactly once, where
+  // the source put it.
+  const stmts: IrStmt[] = [];
+  const fdLocal = lowerer.declareHiddenLocal("%writeFd", F64);
+  stmts.push({ kind: "varDecl", localId: fdLocal.id, init: fd, loc: fd.loc });
+  const dataType: IrType = union ?? (dataKind === "bytes" ? BYTES_U8 : STRING);
+  const dataLocal = lowerer.declareHiddenLocal("%writeData", dataType);
+  stmts.push({
+    kind: "varDecl",
+    localId: dataLocal.id,
+    init: union
+      ? lowerer.lowerExprExpecting(dataNode, union)
+      : lowerWriteData(lowerer, dataNode, dataKind === "bytes" ? "bytes" : "string"),
+    loc,
+  });
+  const defaults: Record<WriteOptionSlot, IrExpr> = {
+    encoding: { kind: "strLit", value: "utf8", type: STRING, loc },
+    mode: { kind: "numLit", value: 0o666, type: F64, loc },
+    flag: { kind: "strLit", value: defaultFlag, type: STRING, loc },
+    flush: boolLit(false, loc),
+  };
+  const slots: Partial<Record<WriteOptionSlot, IrExpr>> = {};
+  let encodingEntry: LoweredWriteOption | undefined;
+  let stagedFast: IrExpr | null = null;
+  for (const entry of lowerWriteOptions(lowerer, nodes[2]!, operation, supported, defaults)) {
+    if (entry.slot === null) {
+      stmts.push({ kind: "exprStmt", expr: entry.expr, loc: entry.expr.loc });
+      continue;
+    }
+    const staged = stageWriteOption(lowerer, entry, stmts, loc);
+    slots[entry.slot] = staged.value;
+    stagedFast = staged.fast ?? stagedFast;
+    if (entry.slot === "encoding") encodingEntry = entry;
+  }
+  const encoding = slots.encoding ?? defaults.encoding;
+  const options: WriteOptions = {
+    encoding,
+    fast: stagedFast ?? writeFastArg(lowerer, encodingEntry, nodes[2]!, encoding, loc),
+    mode: slots.mode ?? defaults.mode,
+    // appendFileSync overwrites the flag for a descriptor, after evaluating
+    // it: `{ flag: "zz" }` is still read, and never parsed.
+    flag: family.append ? defaults.flag : (slots.flag ?? defaults.flag),
+    flush: slots.flush ?? defaults.flush,
+  };
+  const fdRef = varRef(fdLocal.id, F64, loc);
+  const dataRef = varRef(dataLocal.id, dataLocal.type, loc);
+  const result: IrExpr =
+    union && arms
+      ? lowerStringOrBytesWriteFd(lowerer, loc, union, arms, family, options, fdRef, dataRef)
+      : {
+          kind: "libCall",
+          fn: fsWriteFdLibFn(family, dataKind!),
+          args:
+            dataKind === "bytes"
+              ? [fdRef, dataRef, options.encoding, options.flush]
+              : [
+                  fdRef,
+                  dataRef,
+                  options.encoding,
+                  options.fast,
+                  options.mode,
+                  options.flag,
+                  options.flush,
+                ],
+          type: VOID,
+          loc,
+        };
+  return { kind: "seqExpr", stmts, result, type: VOID, loc };
+}
+
+/** FileHandle.writeFile/appendFile(data, options): Node reads the same write
+ * record, but a handle opens nothing. The encoding is validated and applies
+ * to string data exactly as Buffer.from does; the flag, mode and flush values
+ * are evaluated in source order and unused, and no fsync runs. `handle` is a
+ * thunk so the receiver binds before the data and the record, the call's own
+ * argument order. The "path" form is fs/promises writeFile/appendFile with a
+ * FileHandle as the path: Node converts the string and then writes it to the
+ * descriptor, with no handle-open check in between. */
+export function lowerFileHandleWrite(
+  lowerer: Lowerer,
+  loc: SrcLoc,
+  handle: () => IrExpr,
+  dataNode: ts.Expression,
+  dataKind: "string" | "bytes",
+  optsNode: ts.Expression | undefined,
+  operation: string,
+  form: "call" | "path" = "call",
+): IrExpr {
+  const dataType = dataKind === "bytes" ? BYTES_U8 : STRING;
+  const fn =
+    dataKind === "bytes"
+      ? form === "path"
+        ? "fileHandle.writeFilePathBytes"
+        : "fileHandle.writeFileBytes"
+      : form === "path"
+        ? "fileHandle.writeFilePath"
+        : "fileHandle.writeFile";
+  const type: IrType = { kind: "promise", inner: VOID };
+  const utf8: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
+  const data = (): IrExpr => lowerWriteData(lowerer, dataNode, dataKind);
+  if (!optsNode) {
+    return { kind: "libCall", fn, args: [handle(), data(), utf8], type, loc };
+  }
+  // A bare encoding expression takes any string value, validated at run time
+  // like the path forms'. Only a record goes through the option parser.
+  const optsType = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
+  const encodingOnly =
+    optsType?.kind === "string" ||
+    (optsType?.kind === "union" &&
+      (lowerer.unions
+        .get(optsType.unionId)
+        ?.arms.every((arm) => arm.kind === "string" || isUnitType(arm)) ??
+        false));
+  if (encodingOnly) {
+    const encoding = lowerBuiltinOptionalDefault(
+      lowerer,
+      withoutParenthesesAssertionsNonNull(optsNode),
+      STRING,
+      utf8,
+      true,
+    );
+    return { kind: "libCall", fn, args: [handle(), data(), encoding], type, loc };
+  }
+  const supported = `write a string or ArrayBufferView with the options record { encoding?, mode?, flag?, flush? }: ${operation}(data, options)`;
+  // Stage the receiver, the data, and then the record's values in source
+  // order before issuing the write: Node evaluates the call's arguments in
+  // that order, and a value the checker cannot pin down must still be
+  // evaluated exactly once, where the source put it.
+  const stmts: IrStmt[] = [];
+  const handleValue = handle();
+  const handleLocal = lowerer.declareHiddenLocal("%fhWriteHandle", handleValue.type);
+  stmts.push({ kind: "varDecl", localId: handleLocal.id, init: handleValue, loc: handleValue.loc });
+  const dataLocal = lowerer.declareHiddenLocal("%fhWriteData", dataType);
+  stmts.push({ kind: "varDecl", localId: dataLocal.id, init: data(), loc });
+  const defaults: Record<WriteOptionSlot, IrExpr> = {
+    encoding: utf8,
+    mode: { kind: "numLit", value: 0o666, type: F64, loc },
+    flag: { kind: "strLit", value: "w", type: STRING, loc },
+    flush: boolLit(false, loc),
+  };
+  let encoding: IrExpr = utf8;
+  for (const entry of lowerWriteOptions(
+    lowerer,
+    optsNode,
+    operation,
+    supported,
+    defaults,
+    HANDLE_WRITE_OPTION_SLOTS,
+  )) {
+    if (entry.slot === "encoding") {
+      encoding = stageWriteOption(lowerer, entry, stmts, loc).value;
+    } else {
+      stmts.push({ kind: "exprStmt", expr: entry.expr, loc: entry.expr.loc });
+    }
+  }
+  const result: IrExpr = {
+    kind: "libCall",
+    fn,
+    args: [
+      varRef(handleLocal.id, handleLocal.type, loc),
+      varRef(dataLocal.id, dataLocal.type, loc),
+      encoding,
+    ],
+    type,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result, type, loc };
+}
+
+type WriteOptionSlot = "encoding" | "mode" | "flag" | "flush";
+
+const ALL_WRITE_OPTION_SLOTS: ReadonlySet<WriteOptionSlot> = new Set([
+  "encoding",
+  "mode",
+  "flag",
+  "flush",
+]);
+
+/** The slots a FileHandle write takes: a handle opens nothing, so only the
+ * encoding reaches the runtime. The other record values are evaluated where
+ * the source put them and then unused, exactly as Node reads them without a
+ * syscall. */
+const HANDLE_WRITE_OPTION_SLOTS: ReadonlySet<WriteOptionSlot> = new Set(["encoding"]);
+
+/** One evaluated option: a lowered slot value, or the value of a key whose
+ * value is evaluated and not used. `stringLiteral` is the encoding's literal
+ * spelling, when the checker pins it down. */
+type LoweredWriteOption = {
+  slot: WriteOptionSlot | null;
+  expr: IrExpr;
+  stringLiteral?: string | undefined;
+};
+
+/** The third argument's values, in source order. A bare encoding name is the
+ * record's encoding key alone; null and undefined take every default; the
+ * record itself is an object literal or a readonly const binding of one.
+ * `consumed` names the slots the call's runtime takes; a documented key
+ * outside it is still evaluated, in record order, and dropped. */
+function lowerWriteOptions(
+  lowerer: Lowerer,
+  optsNode: ts.Expression,
+  operation: string,
+  supported: string,
+  defaults: Record<WriteOptionSlot, IrExpr>,
+  consumed: ReadonlySet<WriteOptionSlot> = ALL_WRITE_OPTION_SLOTS,
+): LoweredWriteOption[] {
+  const entries: LoweredWriteOption[] = [];
+  const t = lowerer.typeOf(optsNode);
+  if ((t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0) {
+    return entries;
+  }
+  if (lowerer.mapTypeOf(t)?.kind === "string") {
+    const unwrapped = withoutParenthesesAssertionsNonNull(optsNode);
+    const bare = lowerer.typeOf(unwrapped);
+    entries.push({
+      slot: "encoding",
+      expr: lowerBuiltinOptionalDefault(lowerer, unwrapped, STRING, defaults.encoding, true),
+      stringLiteral: bare.isStringLiteralType() ? bare.value : undefined,
+    });
+    return entries;
+  }
+  const literal = optionsLiteralOf(lowerer, optsNode);
+  if (literal === null) {
+    lowerer.noLowering(`${operation} with 3 arguments`, optsNode, supported);
+  }
+  for (const property of literal.properties.nodes) {
+    const member = optionMember(property);
+    if (!member) lowerer.noLowering(`${operation} options`, property, supported);
+    const value = member.value;
+    const slot = writeOptionSlotOf(member.name);
+    if (slot !== null && !consumed.has(slot)) {
+      entries.push({ slot: null, expr: lowerer.lowerExpr(value) });
+      continue;
+    }
+    switch (member.name) {
+      case "encoding": {
+        // An encoding assertion (`maybe as BufferEncoding`) selects the
+        // value as written: Node validates the value itself and never
+        // converts it, so the assertion adds nothing at run time.
+        const unwrapped = withoutParenthesesAssertionsNonNull(value);
+        const valueType = lowerer.typeOf(unwrapped);
+        entries.push({
+          slot: "encoding",
+          expr: lowerBuiltinOptionalDefault(lowerer, unwrapped, STRING, defaults.encoding, true),
+          stringLiteral: valueType.isStringLiteralType() ? valueType.value : undefined,
+        });
+        break;
+      }
+      case "mode": {
+        // parseFileMode: a number, or an octal string parsed to its numeric
+        // value. A literal octal string folds to the number the runtime
+        // takes. An expression the checker types as one such string is not
+        // the string itself: Node still runs it, so a side effect happens
+        // and a throw stops the write, and its text parses the same way.
+        // Any other string spelling would be a runtime error, so it is
+        // refused with the reason instead of being dropped.
+        const modeNode = withoutParenthesesAssertionsNonNull(value);
+        const modeType = lowerer.typeOf(modeNode);
+        if (modeType.isStringLiteralType()) {
+          if (!/^[0-7]+$/.test(modeType.value)) {
+            lowerer.noLowering(
+              `a '${modeType.value}' mode`,
+              value,
+              "write mode takes a number or an octal digit string",
+            );
+          }
+          const modeLoc = locOf(value);
+          entries.push({
+            slot: "mode",
+            expr: ts.isStringLiteral(modeNode)
+              ? { kind: "numLit", value: parseInt(modeType.value, 8), type: F64, loc: modeLoc }
+              : {
+                  kind: "libCall",
+                  fn: "num.parseInt",
+                  args: [
+                    lowerer.lowerExprExpecting(modeNode, STRING),
+                    { kind: "numLit", value: 8, type: F64, loc: modeLoc },
+                  ],
+                  type: F64,
+                  loc: modeLoc,
+                },
+          });
+        } else {
+          entries.push({
+            slot: "mode",
+            expr: lowerBuiltinOptionalDefault(lowerer, value, F64, defaults.mode, true),
+          });
+        }
+        break;
+      }
+      case "flag":
+        entries.push({
+          slot: "flag",
+          expr: lowerBuiltinOptionalDefault(lowerer, value, STRING, defaults.flag, true),
+        });
+        break;
+      case "flush":
+        entries.push({
+          slot: "flush",
+          expr: lowerBuiltinOptionalDefault(lowerer, value, BOOL, defaults.flush, true),
+        });
+        break;
+      default:
+        // The options-record stance: documented keys with no lowering fence
+        // by name; undocumented keys drop like Node.
+        fenceOrDropOptionKey(
+          lowerer,
+          property,
+          member.name,
+          operation,
+          FS_WRITE_FILE_DOCUMENTED_OPTIONS,
+          supported,
+          {
+            signal:
+              "cancelling a write through options.signal has no native lowering; drop the entry to write without cancellation",
+          },
+        );
+    }
+  }
+  return entries;
+}
+
+/** The record slot a documented key fills. */
+function writeOptionSlotOf(name: string): WriteOptionSlot | null {
+  return name === "encoding" || name === "mode" || name === "flag" || name === "flush"
+    ? name
+    : null;
 }
 
 /** ts.CheckFlags.Readonly — the property symbol's readonly bit, the same

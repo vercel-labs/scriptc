@@ -97,8 +97,18 @@ declare module "fs/promises" {
     ): Promise<FileWriteResult<string>>;
     readFile(options?: null): Promise<Buffer>;
     readFile(encoding: "utf8" | "utf-8"): Promise<string>;
-    writeFile(data: string | Uint8Array, encoding?: "utf8" | "utf-8" | null): Promise<void>;
-    appendFile(data: string | Uint8Array, encoding?: "utf8" | "utf-8" | null): Promise<void>;
+    /* A handle's write takes the same options record as the path form: the
+     * encoding applies to string data, while the flag, the mode and the
+     * flush are read and unused because the handle opens nothing and never
+     * fsyncs. */
+    writeFile(
+      data: string | ArrayBufferView,
+      options?: WriteFileOptions | BufferEncoding | null,
+    ): Promise<void>;
+    appendFile(
+      data: string | ArrayBufferView,
+      options?: WriteFileOptions | BufferEncoding | null,
+    ): Promise<void>;
     stat(): Promise<import("node:fs").Stats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
@@ -145,20 +155,35 @@ declare module "fs/promises" {
     options: BufferEncoding | { encoding: BufferEncoding },
   ): Promise<string>;
   export function readFile(path: string | URL): Promise<Buffer>;
+  /* The options record: the encoding (any Buffer encoding name at run
+   * time), the mode (applied at CREATION only, like Node), the open(2)
+   * flag, and the flush that fsyncs before the close. The options-record
+   * stance (see http.RequestOptions): an unsupported key fences by name at
+   * the call site; undocumented keys drop like Node. */
+  export interface WriteFileOptions {
+    encoding?: BufferEncoding | null;
+    mode?: number | string;
+    flag?: string;
+    flush?: boolean;
+    [option: string]: unknown;
+  }
+  /* writeFile and appendFile also take an open FileHandle where they take a
+   * path: the record's encoding applies to string data, and the flag, the
+   * mode and the flush are read and unused because the handle opens
+   * nothing. */
   export function writeFile(
-    path: string | URL,
-    data: string | Uint8Array,
-    options?: {
-      mode?: number;
-      encoding?: "utf8" | "utf-8";
-      flag?: string;
-      [option: string]: unknown;
-    },
+    path: string | URL | FileHandle,
+    data: string | ArrayBufferView,
+    options?: WriteFileOptions | null,
   ): Promise<void>;
   export function writeFile(
-    path: string | URL,
-    data: string | Uint8Array,
-    encoding: "utf8" | "utf-8",
+    path: string | URL | FileHandle,
+    data: string | ArrayBufferView,
+    encoding: BufferEncoding,
+  ): Promise<void>;
+  export function writeFile(
+    path: string | URL | FileHandle,
+    data: string | ArrayBufferView,
   ): Promise<void>;
   export function mkdir(
     path: string | URL,
@@ -209,7 +234,11 @@ declare module "fs/promises" {
   export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
   export function access(path: string | URL, mode?: number): Promise<void>;
   export function truncate(path: string | URL, len?: number): Promise<void>;
-  export function appendFile(path: string | URL, data: string | Uint8Array): Promise<void>;
+  export function appendFile(
+    path: string | URL | FileHandle,
+    data: string | ArrayBufferView,
+    options?: WriteFileOptions | BufferEncoding | null,
+  ): Promise<void>;
   export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
   export function mkdtemp(prefix: string | URL): Promise<string>;
   export function rmdir(path: string | URL): Promise<void>;

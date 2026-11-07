@@ -56,7 +56,6 @@ double scr_file_handle_write_str(ScrFileHandle *h, ScrStr *data,
                                  double position, ScrStr *encoding);
 ScrStr *scr_file_handle_read_file(ScrFileHandle *h);
 ScrBytes *scr_file_handle_read_file_bytes(ScrFileHandle *h);
-void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data);
 void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data);
 ScrStats *scr_file_handle_stat(ScrFileHandle *h);
 /* position == -1 reads from and advances the descriptor's current offset;

@@ -4158,11 +4158,12 @@ static void scr_fs_write_common(ScrStr *path, ScrStr *data, const char *mode) {
     int e = errno;
     fclose(f);
     scr_str_utf8_end(owned);
-    scr_fs_throw(e, "write", path);
+    /* Node writes through the descriptor: only the open names the path. */
+    scr_fs_throw(e, "write", NULL);
     return;
   }
   scr_str_utf8_end(owned);
-  if (fclose(f) != 0) scr_fs_throw(errno, "close", path);
+  if (fclose(f) != 0) scr_fs_throw(errno, "close", NULL);
 }
 
 void scr_fs_write_file(ScrStr *path, ScrStr *data) {
@@ -4190,39 +4191,6 @@ static bool scr_fs_file_mode_valid(double mode) {
     return false;
   }
   return true;
-}
-
-/* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
- * argument — it applies at CREATION only (umask applying), and an
- * existing file keeps its permissions, exactly Node (which never chmods
- * here). Same error shapes as the plain form. */
-void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return;
-  if (!scr_fs_file_mode_valid(mode)) return;
-  /* O_BINARY: zero on POSIX; on Windows it keeps the CRT from translating
-   * \n in these byte-exact writes (fopen's "wb" path already does). */
-  int fd = open(path->data, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, (mode_t)mode);
-  if (fd < 0) {
-    scr_fs_throw(errno, "open", path);
-    return;
-  }
-  char *owned;
-  const char *bytes = scr_str_utf8(data, &owned);
-  size_t at = 0;
-  while (at < data->len) {
-    ssize_t wrote = write(fd, bytes + at, data->len - at);
-    if (wrote < 0) {
-      if (errno == EINTR) continue;
-      int e = errno;
-      close(fd);
-      scr_str_utf8_end(owned);
-      scr_fs_throw(e, "write", path);
-      return;
-    }
-    at += (size_t)wrote;
-  }
-  scr_str_utf8_end(owned);
-  if (close(fd) != 0) scr_fs_throw(errno, "close", path);
 }
 
 void scr_fs_append_file(ScrStr *path, ScrStr *data) {
@@ -4298,7 +4266,6 @@ void scr_fs_chmod(ScrStr *path, double mode) {
 }
 
 static void scr_fs_throw_nopath(int e, const char *op);
-static bool scr_fs_write_fd_valid(double fd);
 
 /* Node's validateInteger(id, name, -1, 2 ** 32 - 1) for uid and gid. False
  * with the RangeError thrown. */
@@ -4373,9 +4340,14 @@ double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
   else if (strcmp(f, "ax+") == 0 || strcmp(f, "xa+") == 0) of = O_APPEND | O_CREAT | O_RDWR | O_EXCL;
   else if (strcmp(f, "as+") == 0 || strcmp(f, "sa+") == 0) of = O_APPEND | O_CREAT | O_RDWR | O_SYNC;
   else {
-    char msg[128];
-    int len = snprintf(msg, sizeof msg, "The argument 'flags' is invalid. Received '%s'", f);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    /* The message renders at the flag's real length with inspect's
+     * escaping and its 128-UTF-16-unit clip; scr_dyn_arg_value_fail
+     * stamps ERR_INVALID_ARG_VALUE. */
+    ScrStr *text = scr_str_new(f, strlen(f));
+    ScrDyn *value = scr_dyn_new_str(text);
+    scr_str_release(text);
+    scr_dyn_arg_value_fail("flags", NULL, value);
+    scr_dyn_release(value);
     return 0;
   }
   if (!scr_fs_file_mode_valid(mode)) return 0;
@@ -4423,7 +4395,6 @@ double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
 }
 
 static void scr_fs_throw_nopath(int e, const char *op);
-static bool scr_fs_write_fd_valid(double fd);
 
 double scr_fs_open_native(ScrStr *path, double flags, double mode) {
   if (!scr_fs_path_ok(path, "path")) return 0;
@@ -4715,7 +4686,10 @@ static ssize_t scr_fs_pwrite(int fd, const void *data, size_t length, double pos
 #endif
 }
 
-static bool scr_fs_write_fd_valid(double fd) {
+/* Node's validateInteger(fd, 'fd', 0, 2147483647): the check fs.writeSync
+ * and fs.fsyncSync run on a descriptor, with their ERR_OUT_OF_RANGE
+ * ladder. The writeFile forms run it only on their slow path. */
+bool scr_fs_write_fd_valid(double fd) {
   char msg[160];
   char recv[48];
   scr_num_received(fd, recv);
@@ -4947,23 +4921,37 @@ double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
   return wrote;
 }
 
-/* writeFileSync(fd, data): Node writes the WHOLE data to the descriptor
- * and leaves it open (closeSync owns its lifetime), at the descriptor's
- * current offset — libuv's uv_fs_write loop, so a pipe's short writes
- * resume until the data is gone. Errors keep the fd operation's errno
- * shape ("EBADF: bad file descriptor, write"). */
-void scr_fs_write_file_fd(double fd, ScrStr *data) {
-  char *owned;
-  const char *bytes = scr_str_utf8(data, &owned);
+/* The writeFile forms write the WHOLE data at the descriptor's current
+ * offset — libuv's uv_fs_write loop, so a pipe's short writes resume until
+ * the data is gone. The descriptor is already known to be a write target
+ * (Node range-checks it in its own slow path); errors keep the write
+ * operation's errno shape ("EBADF: bad file descriptor, write"). False
+ * after throwing. */
+bool scr_fs_write_fd_all(double fd, const void *data, size_t length) {
+  const char *bytes = data;
   size_t at = 0;
-  while (at < data->len) {
-    double wrote = scr_fs_write_bytes(fd, bytes + at, data->len - at, -1);
-    /* A throw leaves 0 (or the short count a partial write reported);
-     * a zero-length write on a nonempty slice would spin, so stop. */
-    if (wrote <= 0) break;
+  if (length > 0 && (fd == 1 || fd == 2)) scr_stdout_settle();
+  while (at < length) {
+    ssize_t wrote;
+    do {
+      wrote = scr_fs_write_once((int)fd, bytes + at, length - at, false, 0);
+    } while (wrote < 0 && errno == EINTR);
+    /* A zero-length write on a nonempty slice would spin, so stop. */
+    if (wrote <= 0) {
+      if (wrote < 0) {
+        int e = errno;
+        char namebuf[16];
+        const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
+        const char *text = scr_errno_text(e);
+        char msg[160];
+        int len = snprintf(msg, sizeof msg, "%s: %s, write", name, text);
+        scr_fs_throw_details(e, name, msg, (size_t)len, "write", NULL, NULL);
+      }
+      return false;
+    }
     at += (size_t)wrote;
   }
-  scr_str_utf8_end(owned);
+  return true;
 }
 
 /* fs.readSync(fd, buffer, offset, length[, position]) — the buffer form.

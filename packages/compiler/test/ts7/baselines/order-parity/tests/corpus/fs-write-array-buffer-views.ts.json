@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-write-array-buffer-views.ts"
+ ],
+ "diags": []
+}

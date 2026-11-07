@@ -19,6 +19,13 @@ try {
   // The positioned reads above left the current offset at 0.
   console.log(fs.readSync(fd, buffer, 0, 1, -1n), buffer.toString("latin1", 0, 1));
   console.log(fs.readSync(fd, buffer, 0, 1, -1n), buffer.toString("latin1", 0, 1));
+  for (const position of [-(10n ** 200n), 10n ** 200n]) {
+    try {
+      fs.readSync(fd, buffer, 0, 1, position);
+    } catch (error) {
+      console.log(error.code, error.message);
+    }
+  }
   for (const position of [-2n, 9223372036854775807n]) {
     try {
       fs.readSync(fd, buffer, 0, 1, position);

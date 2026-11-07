@@ -437,11 +437,32 @@ static void scr_file_handle_write_all(ScrFileHandle *h, const void *data,
   }
 }
 
-void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data) {
-  char *owned;
-  const char *bytes = scr_str_utf8(data, &owned);
-  scr_file_handle_write_all(h, bytes, data->len);
-  scr_str_utf8_end(owned);
+/* FileHandle.writeFile/appendFile read the path forms' options record, but a
+ * handle opens nothing: the flag, the mode and the flush value never reach a
+ * syscall (the lowering evaluates them where the record puts them), and the
+ * encoding is validated and applied to string data exactly as writeFile's
+ * Buffer.from conversion does. fsCall refuses a closed handle before it runs
+ * the write at all, so the open state comes first and the encoding second. */
+static bool scr_file_handle_utf8_encoding(const ScrStr *encoding) {
+  return encoding->len == 0 ||
+         (encoding->len == 4 && memcmp(encoding->data, "utf8", 4) == 0) ||
+         (encoding->len == 5 && memcmp(encoding->data, "utf-8", 5) == 0);
+}
+
+static void scr_file_handle_write_string(ScrFileHandle *h, const ScrStr *data, ScrStr *encoding) {
+  if (!scr_file_handle_require_open(h)) return;
+  if (!scr_fs_write_encoding_valid(encoding)) return;
+  if (scr_file_handle_utf8_encoding(encoding)) {
+    char *owned;
+    const char *bytes = scr_str_utf8(data, &owned);
+    scr_file_handle_write_all(h, bytes, data->len);
+    scr_str_utf8_end(owned);
+    return;
+  }
+  ScrBytes *owned = scr_buffer_from_str_checked(data, encoding);
+  if (!owned) return;
+  scr_file_handle_write_all(h, owned->data, owned->len * scr_bytes_elem_size(owned->elem));
+  scr_bytes_release(owned);
 }
 
 void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data) {
@@ -536,16 +557,36 @@ ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h,
 ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h,
                                                ScrStr *data,
                                                ScrStr *encoding) {
-  (void)encoding; /* frontend admits utf8 only; evaluation is observable */
-  scr_file_handle_write_file(h, data);
+  scr_file_handle_write_string(h, data, encoding);
   return scr_promise_settled_void();
 }
 
 ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h,
                                                      ScrBytes *data,
                                                      ScrStr *encoding) {
-  (void)encoding;
+  /* fsCall refuses the closed handle first; the encoding is validated only
+   * once the write runs, and Buffer data takes no conversion. */
+  if (!scr_file_handle_require_open(h)) return scr_promise_settled_void();
+  if (!scr_fs_write_encoding_valid(encoding)) return scr_promise_settled_void();
   scr_file_handle_write_file_bytes(h, data);
+  return scr_promise_settled_void();
+}
+
+/* fs/promises writeFile/appendFile with a FileHandle as the path: there is no
+ * fsCall between them and the write, so the encoding conversion runs first
+ * and the write is the descriptor write, whose range check reports a closed
+ * handle's descriptor. */
+ScrPromise *scr_file_handle_write_file_path_promise(ScrFileHandle *h,
+                                                   ScrStr *data,
+                                                   ScrStr *encoding) {
+  scr_fs_write_handle_direct((double)h->fd, data, NULL, encoding);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_file_handle_write_file_path_bytes_promise(ScrFileHandle *h,
+                                                         ScrBytes *data,
+                                                         ScrStr *encoding) {
+  scr_fs_write_handle_direct((double)h->fd, NULL, data, encoding);
   return scr_promise_settled_void();
 }
 

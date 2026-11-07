@@ -49,6 +49,7 @@ attempt("add negative", () => crypto.generatePrimeSync(8, { add: -6n }));
 attempt("rem number", () => crypto.generatePrimeSync(8, { add: 6n, rem: 1 }));
 attempt("rem negative", () => crypto.generatePrimeSync(8, { add: 6n, rem: -1n }));
 attempt("add too long", () => crypto.generatePrimeSync(8, { add: 1024n }));
+attempt("add huge negative", () => crypto.generatePrimeSync(8, { add: -(10n ** 200n) }));
 attempt("add zero", () => crypto.generatePrimeSync(8, { add: 0n }));
 attempt("add zero bytes", () => crypto.generatePrimeSync(8, { add: new Uint8Array(0) }));
 attempt("rem equal add", () => crypto.generatePrimeSync(8, { add: 6n, rem: 6n }));

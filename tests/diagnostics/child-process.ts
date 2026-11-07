@@ -17,11 +17,6 @@ const inherited = spawn("/bin/echo", [], { stdio: "inherit" });
 // A variable options value must fence instead of being dropped.
 const options: { stdio: "ignore"; detached: boolean } = { stdio: "ignore", detached: true };
 spawn("true", [], options);
-// spawn's shell form takes the complete command in the first argument:
-// joining separate args onto it (with Node's DEP0190 warning) is lowered
-// for spawnSync only.
-const shellArgs = ["unsafe"];
-spawn("printf", shellArgs, { stdio: "ignore", shell: true });
 const c = spawn("true", [], { stdio: "ignore" });
 
 // Value-returning listeners — inferred, annotated, or async — ADOPT the

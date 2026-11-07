@@ -202,9 +202,10 @@ declare module "child_process" {
     /* detached gives the child its own session and process group
      * (POSIX_SPAWN_SETSID); env REPLACES the child environment; cwd
      * sets its working directory; windowsHide is a POSIX no-op; shell
-     * runs the complete command string through /bin/sh or cmd.exe (with
-     * an empty args list — a non-empty one is a compile error, because
-     * Node warns DEP0190 for unescaped shell arguments). */
+     * (a literal or a boolean decided at run time) runs the command line
+     * through /bin/sh or cmd.exe. A non-empty args list joins onto the
+     * command unescaped where the shell is on, and Node's DEP0190 warning
+     * is reported for the first such call. */
     detached?: boolean;
     env?: { [k: string]: string | undefined };
     cwd?: string;

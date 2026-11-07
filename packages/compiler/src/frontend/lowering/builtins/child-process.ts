@@ -1359,6 +1359,8 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let detached: IrExpr = boolLit(false, loc);
   let shell: IrExpr = boolLit(false, loc);
   let shellEnabled = false;
+  // `shell` is a boolean decided at run time (bound into `shell`).
+  let shellRuntime = false;
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   let cwd: IrExpr = emptyStr;
@@ -1554,11 +1556,23 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             plain = false;
           } else if (m.value.kind === ts.SyntaxKind.FalseKeyword) {
             shell = boolLit(false, loc);
+          } else if (
+            (lowerer.typeOf(m.value).flags &
+              (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) !==
+            0
+          ) {
+            // A runtime boolean — the portable idiom `shell: process.platform
+            // === "win32"` — reaches scr_spawn_opts's shell slot as
+            // `detached` reaches its own. Separate arguments join onto the
+            // command where it is on (below).
+            shell = bind("%spawnShell", lowerer.lowerExprExpecting(m.value, BOOL));
+            shellRuntime = true;
+            plain = false;
           } else {
             lowerer.noLowering(
-              "spawn with a non-literal shell option",
+              "spawn with a shell option that is not a boolean",
               m.value,
-              "shell must be a boolean literal",
+              "shell: true, false, or a boolean expression runs the platform's shell; a shell path has no lowering",
             );
           }
           break;
@@ -1578,15 +1592,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   // Node joins [command, ...args] with single spaces for the shell form, and
   // reports DEP0190 ("passing args to a child process with shell option
   // true ... the arguments are not escaped, only concatenated") on stderr.
-  // Only spawnSync lowers that join (shellCommandLine); this entry point
-  // refuses the form rather than run it without the warning Node prints.
-  if (shellEnabled && !staticallyEmptyArgs(argsNode)) {
-    lowerer.noLowering(
-      "spawn with shell enabled and separate arguments",
-      argsNode ?? expr,
-      "put the complete shell command in the first argument and pass [] (Node joins separate shell arguments unescaped and warns DEP0190; only spawnSync has that form)",
-    );
-  }
+  // With the shell on, or possibly on, and separate arguments, the call
+  // runs that line (shellCommandLine) with an empty argument vector.
+  const shellJoinsArgs = (shellEnabled || shellRuntime) && !staticallyEmptyArgs(argsNode);
   const argv = lowerChildArgsArg(lowerer, argsNode, loc);
   if (plain) {
     return withChildArgsCheck(
@@ -1597,6 +1605,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       loc,
     );
   }
+  // The join follows the launch's checks and the options' evaluation,
+  // where Node's normalizeSpawnArguments builds it. A boolean decided at
+  // run time joins only where it is on: off, the command and the list pass
+  // as they are.
   const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr =>
     withChildArgsCheck(
       lowerer,
@@ -1623,6 +1635,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       0,
       (a) => ({ envPairs: a[10], cwd: a[11] }),
       loc,
+      shellJoinsArgs ? shellLaunch(shellEnabled ? null : 8, argv.type, loc) : undefined,
     );
   if (valuePrelude.length === 0) return callOf(cmd, argv);
   // The bound member values were collected in source order; the command and

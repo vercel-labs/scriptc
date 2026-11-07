@@ -802,11 +802,8 @@
  },
  "class.control.-": {
   "N.read.str": "refused:SC1090",
-  "N.read.ctor": "refused:SC2020",
   "N.cast.read.str": "refused:SC1090",
-  "N.cast.read.ctor": "refused:SC2020",
-  "N.read@nat.str": "refused:SC1090",
-  "N.read@nat.ctor": "refused:SC2020"
+  "N.read@nat.str": "refused:SC1090"
  },
  "class.p": {
   "n2i/I.inspect": "ctor=wrong,proto=wrong",
@@ -817,20 +814,16 @@
   "n2i/N.read@isl.str": "refused:SC1090",
   "n2i/N.read@isl.keys": "wrong",
   "n2i/N.read@isl.json": "wrong",
-  "n2i/N.read@isl.ctor": "refused:SC2020",
   "n2i/I.read@nat": "ctor=wrong,dbl=wrong,json=wrong,keys=wrong,otherThis=wrong,ownInc=wrong,plainProto=wrong,protoNames=wrong",
   "n2i/I.inspect@nat": "clone=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",
   "n2i2n/N.read.str": "refused:SC1090",
-  "n2i2n/N.read.ctor": "refused:SC2020",
   "n2i2n/P.read@back.str": "refused:SC1090",
-  "n2i2n/P.read@back.ctor": "refused:SC2020",
   "n2i2n/N.read@isl.n": "wrong",
   "n2i2n/N.read@isl.inc": "wrong",
   "n2i2n/N.read@isl.dbl": "wrong",
   "n2i2n/N.read@isl.str": "refused:SC1090",
   "n2i2n/N.read@isl.keys": "wrong",
   "n2i2n/N.read@isl.json": "wrong",
-  "n2i2n/N.read@isl.ctor": "refused:SC2020",
   "clo-n2i/I.thunk": "ctor=wrong,dbl=wrong,otherThis=wrong,ownInc=wrong,plainProto=wrong,proto=wrong,protoNames=wrong",
   "clo-i2n/I.taker": "ctor=wrong,dbl=wrong,otherThis=wrong,ownInc=wrong,plainProto=wrong,proto=wrong,protoNames=wrong"
  },
@@ -844,7 +837,6 @@
   "n2i/P.read@isl.str": "refused:SC1090",
   "n2i/P.read@isl.keys": "wrong",
   "n2i/P.read@isl.json": "wrong",
-  "n2i/P.read@isl.ctor": "refused:SC2020",
   "n2i/I.read@nat": "ctor=wrong,dbl=wrong,json=wrong,keys=wrong,otherThis=wrong,ownInc=wrong,plainProto=wrong,protoNames=wrong",
   "n2i/I.inspect@nat": "clone=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",
   "clo-n2i/I.thunk": "ctor=wrong,dbl=wrong,otherThis=wrong,ownInc=wrong,plainProto=wrong,proto=wrong,protoNames=wrong",
@@ -863,11 +855,9 @@
   "n2i/P.read@isl.str": "refused:SC1090",
   "n2i/P.read@isl.keys": "wrong",
   "n2i/P.read@isl.json": "wrong",
-  "n2i/P.read@isl.ctor": "refused:SC2020",
   "n2i/I.read@nat": "ctor=wrong,dbl=wrong,json=wrong,keys=wrong,otherThis=wrong,ownInc=wrong,plainProto=wrong,protoNames=wrong",
   "n2i/I.inspect@nat": "clone=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",
   "n2i2n/P.read@back.str": "refused:SC1090",
-  "n2i2n/P.read@back.ctor": "refused:SC2020",
   "n2i2n/N.read@isl.n": "wrong",
   "n2i2n/N.read@isl.keys": "wrong",
   "n2i2n/N.read@isl.json": "wrong",
@@ -1303,9 +1293,7 @@
   "clo-i2n/I.taker": "cause=wrong,causeIsR=wrong,own=wrong"
  },
  "error-class.control.-": {
-  "N.read.ctor": "refused:SC2020",
-  "U.clone": "wrong",
-  "N.cast.read.ctor": "refused:SC2020"
+  "U.clone": "wrong"
  },
  "error-class.p": {
   "n2i/I.inspect": "ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",

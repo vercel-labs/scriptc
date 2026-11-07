@@ -32,11 +32,21 @@ for (const sample of samples) {
   console.log(JSON.stringify(keysOf(sample)), JSON.stringify(entriesOf(sample)));
 }
 
-// The entries keep the nested values themselves.
-const inner: Json = { deep: [1] };
-const outer: Json = { inner };
-const [, held] = entriesOf(outer)[0]!;
-console.log(JSON.stringify(held), JSON.stringify(entriesOf(held)));
+// The entries hold the object's own values: a write through one is a write
+// to the object, for an object's entries and for an array's.
+const list: Json[] = [1];
+const nested: { [key: string]: Json } = { k: "v" };
+const outer: { [key: string]: Json } = { list, nested };
+const pairs = entriesOf(outer);
+const gotList = pairs[0]![1] as Json[];
+const gotNested = pairs[1]![1] as { [key: string]: Json };
+gotList.push(2);
+gotNested.added = true;
+console.log(JSON.stringify(outer), list.length, JSON.stringify(nested));
+console.log(gotList === list, gotNested === nested);
+const viaArray = entriesOf([list])[0]![1] as Json[];
+viaArray.push(3);
+console.log(list.length, viaArray === list, JSON.stringify(entriesOf(nested)));
 
 // A union of an array and a fixed record.
 function either(value: string[] | { a: number; b: string }): string {

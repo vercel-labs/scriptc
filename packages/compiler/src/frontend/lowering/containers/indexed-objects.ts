@@ -167,9 +167,10 @@ export function objectIterOverIndexShape(
   // also holds numbers): each overflow value checks into the element type,
   // so a value of a dropped arm throws instead of mistyping.
   let ivNarrows = false;
-  // An index value into an `any` element (`Object.entries` of a union the
-  // checker types `[string, any][]`): each overflow value boxes as a
-  // declared field's does.
+  // An index value into an `any` element (`Object.entries` of a union with
+  // an array arm, which the checker types `[string, any][]`): each overflow
+  // value is handed back as the untyped value it is, by reference, so a
+  // write through an array or record read this way reaches the object's own.
   let ivBoxes = false;
   // `T | undefined` values into a `(T | undefined)[]`, which stores T
   // elements (primitiveElement): each value is stored with its present
@@ -469,6 +470,7 @@ export function objectIterOverIndexShape(
                   type: iv,
                   loc,
                 },
+                liveRef: true,
                 type: DYN,
                 loc,
               }

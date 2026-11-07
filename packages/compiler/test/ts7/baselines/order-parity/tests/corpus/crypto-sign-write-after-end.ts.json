@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/crypto-sign-write-after-end.ts"
+ ],
+ "diags": []
+}

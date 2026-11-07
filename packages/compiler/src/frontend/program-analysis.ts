@@ -27,6 +27,15 @@ export class ProgramAnalysis {
   cycleEarlyBindings: EarlyBindingsMemo | null = null;
   /** Whether some program file can name node:child_process (namesChildProcess). */
   namesChildProcess: boolean | null = null;
+  /** Which member names a typed member call passes its holder for
+   * (member-call-receivers.ts): null until the census is taken; `any` is
+   * false for a program with no function that reads its call's receiver. */
+  memberCallReceivers: { any: boolean; all: boolean; names: Set<string>; keyed: boolean } | null =
+    null;
+  /** Directories whose `lib.*.d.ts` files the checker holds as default
+   * libraries, and those already asked about (isBundledLibraryFile). */
+  readonly bundledLibraryDirectories = new Set<string>();
+  readonly checkedLibraryDirectories = new Set<string>();
   moduleEarlyBindings: EarlyBindingsMemo | null = null;
   /** Top-level require declarations: the first reference to their bindings
    * that code running before the require can reach (requireEarlyReference). */
@@ -55,6 +64,8 @@ export class ProgramAnalysis {
     this.exactCycleMembers.clear();
     this.cycleEarlyBindings = null;
     this.namesChildProcess = null;
+    this.bundledLibraryDirectories.clear();
+    this.checkedLibraryDirectories.clear();
     this.moduleEarlyBindings = null;
     this.requireEarlyReferences.clear();
     this.requireFirstRunnable.clear();

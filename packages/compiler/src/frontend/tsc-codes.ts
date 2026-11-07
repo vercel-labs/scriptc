@@ -108,8 +108,9 @@ export type OpinionView = "checker" | "widen" | "throw" | "island";
 export interface Opinion {
   readonly view: OpinionView;
   /** The row admits only the constructs this guard accepts at the
-   * diagnostic's node. */
-  readonly site?: (node: ts.Node, diagnostic: ts.Diagnostic) => boolean;
+   * diagnostic's node. The program is the one the diagnostic came from, for
+   * a guard that asks the checker about the node's types. */
+  readonly site?: (node: ts.Node, diagnostic: ts.Diagnostic, program: ts.Program) => boolean;
   /** Keep the diagnostic in checked JavaScript: the project asked tsc for
    * this opinion. */
   readonly checkedJs?: "enforce";
@@ -155,7 +156,7 @@ const THROW = (why: string, corpus?: readonly string[]): Opinion => ({
 /** The row applies only where its guard holds; the code's TRIAGE_ROWS row
  * stays for every other site. */
 const at = (
-  site: (node: ts.Node, diagnostic: ts.Diagnostic) => boolean,
+  site: (node: ts.Node, diagnostic: ts.Diagnostic, program: ts.Program) => boolean,
   row: Opinion,
 ): Opinion => ({ ...row, site });
 
@@ -170,12 +171,76 @@ const inCheckedJs = (row: Opinion): Opinion => ({ ...row, checkedJs: "enforce" }
 const notPrivateName = (node: ts.Node, d: ts.Diagnostic): boolean =>
   !ts.isPrivateIdentifier(node) && !ts.getSourceFileOfNode(node).text.startsWith("#", d.pos ?? -1);
 
+/** TS1533/TS1534 report a decimal escape (`\1`, `\8`) that names no
+ * capture group, and TS1536 one inside a character class (`[\1]`). Without
+ * the `u` or `v` flag, JavaScript reads such an escape as a legacy octal or
+ * identity escape (Annex B), so `/\1/` matches "\x01" and its source can
+ * be reused in a pattern that has the group. With either flag the escape
+ * is a SyntaxError, and the grammar row stays. */
+const nonUnicodeRegexLiteral = (node: ts.Node): boolean => {
+  if (!ts.isRegularExpressionLiteral(node)) return false;
+  const flags = node.text.slice(node.text.lastIndexOf("/") + 1);
+  return !flags.includes("u") && !flags.includes("v");
+};
+
 /** TS2362/2363/2365 fire on an operator whose other operand is bigint-ish;
- * plain JavaScript admits the `any` operand, and a primitive wrapper operand
- * (`new Number(1) * 2`) converts with ToPrimitive like any object. */
-const anyOrWrapperOperand = (_node: ts.Node, d: ts.Diagnostic): boolean => {
+ * plain JavaScript admits the `any` operand, a primitive wrapper operand
+ * (`new Number(1) * 2`) converts with ToPrimitive like any object, and a
+ * BigInt operand (`5n % 2n`, `0n | 1`, `{} >> 1n`, `1n < 1`) names the
+ * operator's own BigInt form — or the TypeError a mixed, Symbol or `>>>`
+ * operand throws. Both operands undergo ToNumeric (or ToPrimitive for a
+ * comparison) first, which is the order the checked-dynamic arithmetic,
+ * bitwise and comparison lowering applies, so each shape is answerable —
+ * including an operand that answers through Symbol.toPrimitive, which the
+ * runtime applies ahead of valueOf/toString whichever way the key is
+ * spelled (`{[Symbol.toPrimitive]: () => 9n} % 5n` answers `4n`, as Node
+ * does).
+ *
+ * A compound assignment on a BigInt target is the exception. Node reads the
+ * target, applies the operator and stores whatever came back, so a partner
+ * that answers a string turns the binding into a string (`1n + {}` is
+ * "1[object Object]", so `x += {}` leaves a string in `x`), and any other
+ * partner reaches the mixed-type TypeError. The lowering's BigInt arms take
+ * two BigInts, so the assignment would either check a string result against
+ * BigInt storage or raise the compiler's own refusal at run time; tsc's
+ * refusal stays for every compound assignment on a BigInt target. */
+const coercibleOperatorOperand = (
+  node: ts.Node,
+  d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
   const text = ts.flattenDiagnosticMessageText(d, "\n");
-  return text.includes("'any'") || /'(Number|String|Boolean)'/.test(text);
+  const coercible =
+    text.includes("'any'") ||
+    /'(Number|String|Boolean)'/.test(text) ||
+    /\bbigint\b/.test(text) ||
+    /\d+n\b/.test(text);
+  return coercible && !bigintCompoundTarget(node, program);
+};
+
+/** Whether `node` sits in a compound assignment (`+=`, `-=`, ...) whose
+ * target is a BigInt binding. */
+const bigintCompoundTarget = (node: ts.Node, program: ts.Program): boolean => {
+  let current: ts.Node | undefined = node;
+  while (current !== undefined && !ts.isBinaryExpression(current)) current = current.parent;
+  if (current === undefined) return false;
+  const operator = current.operatorToken.kind;
+  if (operator <= ts.SyntaxKind.FirstAssignment || operator > ts.SyntaxKind.LastAssignment)
+    return false;
+  const checker = program.getTypeChecker();
+  return (checker.getTypeAtLocation(current.left).flags & ts.TypeFlags.BigIntLike) !== 0;
+};
+
+/** TS2469 names the operator. `'' + sym` and `sym += ''` perform ToString,
+ * which the lowering sends through the runtime conversion that throws Node's
+ * TypeError; `~sym` and `-sym` keep the triage's refusal because their
+ * lowered form would raise a different message. */
+const symbolStringOperator = (_node: ts.Node, d: ts.Diagnostic): boolean => {
+  const text = ts.flattenDiagnosticMessageText(d, "\n");
+  return (
+    (text.includes("The '+' operator") || text.includes("The '+=' operator")) &&
+    text.includes("'symbol'")
+  );
 };
 
 /** An index write on a String wrapper (`new String("ab")[5] = "q"`): Node
@@ -201,6 +266,29 @@ const deprecatedBufferCall = (_node: ts.Node, d: ts.Diagnostic): boolean => {
   );
 };
 
+/** TS17013 inside a method or accessor body (including an arrow nested in
+ * one): `new.target` is legal there and always undefined, because a method is
+ * not constructable. The path must enter the member through its body or a
+ * parameter, which run in the method's function scope; a computed member name
+ * is evaluated outside it. Global code and class field initializers keep the
+ * early SyntaxError the specification makes them. */
+const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
+  let child: ts.Node = node;
+  for (let p: ts.Node | undefined = node.parent; p !== undefined; child = p, p = p.parent) {
+    if (ts.isArrowFunction(p)) continue;
+    if (
+      ts.isMethodDeclaration(p) ||
+      ts.isGetAccessorDeclaration(p) ||
+      ts.isSetAccessorDeclaration(p)
+    )
+      return (
+        p.body === child || p.parameters?.nodes.includes(child as ts.ParameterDeclaration) === true
+      );
+    if (ts.isFunctionLike(p) || ts.isSourceFile(p)) return false;
+  }
+  return false;
+};
+
 /* ---- family reasons ---- */
 
 const IMPLICIT_ANY =
@@ -212,7 +300,19 @@ const DYNAMIC_SHAPE =
 const JSDOC_CLAIM =
   "a JSDoc type-space claim is documentation Node never reads: the values keep their runtime behavior and every use meets the per-site fences";
 
+const LEGACY_REGEX_ESCAPE = at(
+  nonUnicodeRegexLiteral,
+  CHECKER(
+    "a decimal escape without a matching group, or inside a character class, is a legacy octal or identity escape in a regex literal without the u or v flag",
+    ["tests/corpus/regexp-legacy-decimal-escapes.mjs"],
+  ),
+);
+
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  // legacy decimal escapes in non-Unicode regex literals
+  [1533, LEGACY_REGEX_ESCAPE],
+  [1534, LEGACY_REGEX_ESCAPE],
+  [1536, LEGACY_REGEX_ESCAPE],
   // implicit any (params, variables, elements, this, returns, rest,
   // construct signatures, index reads over shapes with no index signature —
   // typeof globalThis)
@@ -693,9 +793,10 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // behavior) and refuses the write with SC1091, which names the Node-island
   // route the sloppy semantics need. TypeScript input keeps the compile
   // error: an undeclared name there is a bug, not a runtime path. 2552 is
-  // 2304's did-you-mean spelling, and 18004 is the same unresolved name in
-  // SHORTHAND position (`{ x }`), which the checker reports against the
-  // property instead of the reference.
+  // 2304's did-you-mean spelling, 2584 its spelling for a name another
+  // library declares (`document`, `window`: Node defines neither), and
+  // 18004 is the same unresolved name in SHORTHAND position (`{ x }`), which
+  // the checker reports against the property instead of the reference.
   [
     2304,
     THROW(
@@ -707,6 +808,13 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
     2552,
     THROW(
       "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+    ),
+  ],
+  [
+    2584,
+    THROW(
+      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+      ["tests/corpus/8941-js-host-name-read.js", "tests/corpus/global-detection-typeof.cjs"],
     ),
   ],
   [
@@ -885,9 +993,9 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   [
     2362,
     at(
-      anyOrWrapperOperand,
+      coercibleOperatorOperand,
       CHECKER(
-        "arithmetic on an 'any' or wrapper operand is plain JavaScript: the operator converts it with ToPrimitive",
+        "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
         ["tests/corpus/js-primitive-wrappers.js", "tests/corpus/js-primitive-wrappers-zero-arg.js"],
       ),
     ),
@@ -895,18 +1003,18 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   [
     2363,
     at(
-      anyOrWrapperOperand,
+      coercibleOperatorOperand,
       CHECKER(
-        "arithmetic on an 'any' or wrapper operand is plain JavaScript: the operator converts it with ToPrimitive",
+        "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
       ),
     ),
   ],
   [
     2365,
     at(
-      anyOrWrapperOperand,
+      coercibleOperatorOperand,
       CHECKER(
-        "arithmetic on an 'any' or wrapper operand is plain JavaScript: the operator converts it with ToPrimitive",
+        "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
         ["tests/corpus/js-primitive-wrappers.js", "tests/corpus/1614-js-fence-dodges.cjs"],
       ),
     ),
@@ -929,6 +1037,20 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
     CHECKER(
       "JavaScript writes no type arguments, and the heritage lowering checks the actual base class",
       ["tests/corpus/js-iterator-subclass.js"],
+    ),
+  ],
+  // A symbol operand of `+` or `+=` (TS2469): the operator's ToString throws
+  // Node's TypeError, which the lowered conversion raises at the operator
+  // (binary.ts and updates.ts lower it to the runtime's string and number
+  // conversions). Every other operator keeps the triage's refusal.
+  [
+    2469,
+    at(
+      symbolStringOperator,
+      THROW(
+        "Node throws its TypeError from the ToString the operator performs, and the lowered conversion raises it at the operator",
+        ["tests/corpus/9005-symbol-string-concat.js"],
+      ),
     ),
   ],
   // A write through a String wrapper's index (TS2542; every other readonly
@@ -958,6 +1080,76 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  // ---- The checker's OPINIONS that need no lowering (TS2629 and friends) ----
+  // Each row below is a `checker` row: at the admitted site the checker's
+  // type is still a truthful bound on every runtime value, so the ordinary
+  // lowering already gives Node's answer. A JavaScript source only takes them;
+  // a checked project asked tsc for its opinion, so every row here is a
+  // `checkedJs: "enforce"` row (D3).
+  //
+  // 2408, a `return` in a set accessor: the value is discarded by [[Set]],
+  // exactly as a `return` in any other call is.
+  [
+    2408,
+    inCheckedJs(
+      CHECKER(
+        "a setter's `return` value is discarded by [[Set]], as Node discards every setter call's result",
+        ["tests/corpus/8944-js-setter-return-values.js"],
+      ),
+    ),
+  ],
+  // 17013, `new.target` in a method or accessor body: legal JavaScript, and
+  // always undefined because a method is not constructable (the lowering's
+  // method-body path answers undefined; every other site keeps the early
+  // SyntaxError Node raises).
+  [
+    17013,
+    inCheckedJs(
+      at(
+        newTargetInMethod,
+        CHECKER(
+          "`new.target` in a method body is undefined: a method is not constructable, so the meta-property never denotes a constructor there",
+          ["tests/corpus/8945-js-new-target-methods.js"],
+        ),
+      ),
+    ),
+  ],
+  // 4104, assigning a readonly array type to a mutable one: `readonly` is an
+  // annotation, and whether the write succeeds depends on the array's frozen
+  // state at run time.
+  [
+    4104,
+    inCheckedJs(
+      CHECKER(
+        "`readonly` is an annotation Node never sees: the assignment and the later write behave as the array's runtime state decides",
+        ["tests/corpus/8949-js-readonly-write-targets.js"],
+      ),
+    ),
+  ],
+  // 2839, a condition comparing two object references the checker proves
+  // distinct (`{} === {}`): the comparison lowering performs Node's
+  // reference test, which is the one the checker described.
+  [
+    2839,
+    inCheckedJs(
+      CHECKER(
+        "two distinct object references never pass a strict-equality test, and the comparison lowering performs that same reference test",
+        ["tests/corpus/8951-js-reference-condition-comparisons.js"],
+      ),
+    ),
+  ],
+  // 2845, a condition comparing a bigint with a non-finite number or a
+  // nullish value (`0n === Infinity`): strict equality compares the types
+  // first, and the comparison lowering applies that same test.
+  [
+    2845,
+    inCheckedJs(
+      CHECKER(
+        "a bigint never equals a non-finite number or a nullish value: the comparison lowering applies Node's type test",
+        ["tests/corpus/8952-js-bigint-non-finite-comparisons.js"],
+      ),
+    ),
+  ],
 ];
 
 /** Every JavaScript checker opinion, by TypeScript code. */
@@ -974,9 +1166,12 @@ export function jsOpinion(code: number): Opinion | null {
  * the construct needs a lowering that does not exist yet, so admitting the
  * code would compile a program the lowerer cannot build correctly.
  *
- *  - TS2365 (an operator on operands the lowerer cannot convert, `true + 1`)
- *    needs ToPrimitive on a static operand; the arithmetic lowering answers
- *    SC1043. Its TS2362/2363 siblings (an arithmetic operand of the wrong
+ *  - TS2365 with no BigInt operand (an operator on operands the lowerer
+ *    cannot convert, `true + 1`) needs ToPrimitive on a static operand; the
+ *    arithmetic lowering answers SC1043. Its BigInt forms are admitted by the
+ *    row above, because the checked-dynamic arithmetic, bitwise and
+ *    comparison lowering already applies ToNumeric/ToPrimitive in Node's
+ *    order. Its TS2362/2363 siblings (an arithmetic operand of the wrong
  *    type) never fire on a JS source — TypeScript only demands an operand
  *    type it knows, and an unannotated JavaScript value is `any` — so the pair
  *    has nothing to relax here. The invalid-assignment-target forms the
@@ -1201,7 +1396,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
-  [2408, KEEP(KEEP_GRAMMAR)],
   [
     2409,
     REWRITE(
@@ -1245,11 +1439,14 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
+  // The `+` and `+=` forms have left this decision: the JS_OPINIONS row above
+  // admits them where the lowering reproduces Node's TypeError. This row
+  // stays for the operators whose lowered form would throw another message.
   [
     2469,
     REWRITE(
-      "the '+' operator on a symbol operand",
-      "Node throws a TypeError ('Cannot convert a Symbol value to a string') at the operator",
+      "another operator on a symbol operand (`~sym`, `-sym`)",
+      "Node throws a TypeError ('Cannot convert a Symbol value to a number') at the operator, and the lowering would raise a differently worded one",
     ),
   ],
   [2481, KEEP(KEEP_GRAMMAR)],
@@ -1420,20 +1617,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [2815, KEEP(KEEP_GRAMMAR)],
   [
-    2839,
-    REFUSE(
-      "a comparison the checker proves constant (two object references)",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
-  [
-    2845,
-    REFUSE(
-      "a comparison the checker proves constant (a bigint against a non-finite number)",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
-  [
     2850,
     REWRITE(
       "a 'using' initializer that is not disposable",
@@ -1455,13 +1638,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
-  [
-    4104,
-    REFUSE(
-      "assigning to a readonly array type",
-      "readonly is an annotation: whether the write succeeds or throws depends on the array's frozen state at run time, which the lowering does not model",
-    ),
-  ],
   [5076, KEEP(KEEP_GRAMMAR)],
   [
     7036,
@@ -1473,7 +1649,9 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [17005, KEEP(KEEP_EARLY_ERROR)],
   [17009, KEEP(KEEP_EARLY_ERROR)],
   [17011, KEEP(KEEP_EARLY_ERROR)],
-  [17013, KEEP(KEEP_EARLY_ERROR)],
+  // 17013 has LEFT this table: `new.target` in a method or accessor body is a
+  // JS_OPINIONS row above, and every other site keeps the diagnostic
+  // unchanged, which is what KEEP did.
   [18013, KEEP(KEEP_EARLY_ERROR)],
   [18014, KEEP(KEEP_EARLY_ERROR)],
   [18016, KEEP(KEEP_GRAMMAR)],

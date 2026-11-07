@@ -62,6 +62,7 @@ import {
 } from "./ir.js";
 import {
   DYN_CLASS_PROPERTIES,
+  keyedRecordFields,
   callSiteReturnType,
   classValueAbiEquals,
   classValueConstructor,
@@ -533,6 +534,24 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       ) {
         errors.push({
           message: `class ${cls.name}: string tag helper must be a noncapturing (instance) => string function`,
+          loc: cls.loc,
+        });
+      }
+    }
+    for (const accessor of cls.viewAccessors ?? []) {
+      const helper = functionsByName.get(accessor.helper);
+      const receiver = helper?.params[0]?.type;
+      if (
+        !helper ||
+        helper.params.length !== 1 ||
+        receiver?.kind !== "object" ||
+        receiver.className !== cls.name ||
+        helper.returnType.kind !== "dyn" ||
+        helper.captures !== undefined ||
+        helper.classCaptures !== undefined
+      ) {
+        errors.push({
+          message: `class ${cls.name}: view accessor helper for ${accessor.member} must be a noncapturing (instance) => dyn function`,
           loc: cls.loc,
         });
       }
@@ -1376,6 +1395,7 @@ function validateFunction(
       case "arrayGet":
       case "arrayHas":
       case "arrayState":
+      case "constCell":
       case "bytesNew":
       case "bytesIntrinsic":
       case "arrIntrinsic":
@@ -1650,6 +1670,10 @@ function validateFunction(
         // choose ARRAY_VALUE versus ARRAY_UNDEFINED before the final result
         // is evaluated. Delegation also needs a local loop. Nested control
         // flow is checked recursively; jumps still cannot leave the region.
+        // A value-position `delete` of an index-signature key lowers to its
+        // recordKeyDelete (frozen-guarded into a block when the record can
+        // freeze), and a value-position `delete` of an optional field to the
+        // recordSet that writes its absent state.
         const allowed = new Set([
           "varDecl",
           "assign",
@@ -1657,6 +1681,7 @@ function validateFunction(
           "fieldSet",
           "recordSet",
           "recordKeySet",
+          "recordKeyDelete",
           "arraySet",
           "arraySetLength",
           "arraySetUndefined",
@@ -2050,6 +2075,7 @@ function validateFunction(
         | "arrayGet"
         | "arrayHas"
         | "arrayState"
+        | "constCell"
         | "bytesNew"
         | "bytesIntrinsic"
         | "arrIntrinsic";
@@ -2141,6 +2167,18 @@ function validateFunction(
         expectType(e.index, F64, "arrayState index");
         if (!typeEquals(e.type, F64)) err(`arrayState result ${e.type.kind} != f64`, e.loc);
         if (e.arr.type.kind !== "array") err(`arrayState on non-array ${e.arr.type.kind}`, e.loc);
+        break;
+      }
+      case "constCell": {
+        checkExpr(e.index);
+        expectType(e.index, F64, "constCell index");
+        const column = e.type.kind === "f64" ? e.numbers : e.strings;
+        if (e.type.kind !== "f64" && e.type.kind !== "string")
+          err(`constCell of ${e.type.kind}: a column holds numbers or strings`, e.loc);
+        else if (column === undefined || column.length === 0)
+          err(`constCell of ${e.type.kind} without its column`, e.loc);
+        if ((e.numbers === undefined) === (e.strings === undefined))
+          err("constCell holds exactly one column", e.loc);
         break;
       }
       case "bytesNew": {
@@ -2834,6 +2872,19 @@ function validateFunction(
         if (e.adapts === true && locals.get(e.captures[0] ?? "")?.type.kind !== "func") {
           err(`closure ${e.fnName}: an adapter's first capture must be a function`, e.loc);
         }
+        if (
+          e.length !== undefined &&
+          (e.adapts === true ||
+            target.captures === undefined ||
+            !Number.isInteger(e.length) ||
+            e.length < 0 ||
+            e.length >= e.type.params.length)
+        ) {
+          err(
+            `closure ${e.fnName}: length ${e.length} must be below the ${e.type.params.length} parameters of a lifted function's type`,
+            e.loc,
+          );
+        }
         if (target.captures === undefined && e.captures.length > 0) {
           err(`closure over plain function "${e.fnName}" cannot capture`, e.loc);
         }
@@ -3364,12 +3415,17 @@ function validateFunction(
         break;
       }
       case "fieldAbsent": {
-        const def = unions.get(e.unionId);
-        if (!def) err(`fieldAbsent of undeclared union "${e.unionId}"`, e.loc);
-        else if (!def.arms.some((arm) => arm.kind === "undefinedT"))
-          err(`fieldAbsent of ${e.unionId}: the union has no undefined arm`, e.loc);
-        if (e.type.kind !== "union" || e.type.unionId !== e.unionId)
-          err("fieldAbsent must have its union type", e.loc);
+        if (e.unionId === undefined) {
+          // The optional checked-dynamic slot's ABSENT marker.
+          if (e.type.kind !== "dyn") err("fieldAbsent without a union must be dyn", e.loc);
+        } else {
+          const def = unions.get(e.unionId);
+          if (!def) err(`fieldAbsent of undeclared union "${e.unionId}"`, e.loc);
+          else if (!def.arms.some((arm) => arm.kind === "undefinedT"))
+            err(`fieldAbsent of ${e.unionId}: the union has no undefined arm`, e.loc);
+          if (e.type.kind !== "union" || e.type.unionId !== e.unionId)
+            err("fieldAbsent must have its union type", e.loc);
+        }
         if (!fieldSlotValues.has(e)) err("fieldAbsent outside a record field write", e.loc);
         break;
       }
@@ -3422,7 +3478,7 @@ function validateFunction(
             e.loc,
           );
         }
-        if (!e.overflowOnly && !shape.fields.every((f) => surfaces(f.type))) {
+        if (!e.overflowOnly && !keyedRecordFields(shape).every((f) => surfaces(f.type))) {
           err(
             `recordKeyGet on ${e.shapeId}: a declared field cannot surface as the result type`,
             e.loc,
@@ -4238,8 +4294,11 @@ function validateFunction(
     // `url` property (a string).
     const optionalUrl = e.fn === "error.nodeThrow" && e.args.length === 4;
     // fs.unwatchFile's listener is optional, so its last slot may be
-    // omitted (1 or 2 args) rather than extended.
-    const optionalTail = e.fn === "fs.unwatchFile" ? 1 : 0;
+    // omitted (1 or 2 args) rather than extended. So is the message of the
+    // typed error constructors: `new Error()` and `super()` leave the
+    // instance without an own message.
+    const optionalTail =
+      e.fn === "fs.unwatchFile" || e.fn === "error.new" || e.fn === "error.ctor" ? 1 : 0;
     const arityOk = variadic
       ? e.args.length >= sig.argTypes.length
       : e.args.length === sig.argTypes.length ||
@@ -4700,7 +4759,8 @@ function validateFunction(
       e.fn === "https.requestAgentCb" ||
       e.fn === "https.requestUrlCb" ||
       e.fn === "http.requestDynCb" ||
-      e.fn === "https.requestDynCb"
+      e.fn === "https.requestDynCb" ||
+      e.fn === "https.requestFnDynCb"
     ) {
       // The response listener: void, no params or exactly (res: httpReq).
       const cbT =
@@ -4713,11 +4773,13 @@ function validateFunction(
                 ? 3
                 : e.fn === "http.requestDynCb" || e.fn === "https.requestDynCb"
                   ? 2
-                  : e.fn === "http.requestAgentCb"
-                    ? 8
-                    : e.fn === "https.requestAgentCb"
-                      ? 10
-                      : 1
+                  : e.fn === "https.requestFnDynCb"
+                    ? 3
+                    : e.fn === "http.requestAgentCb"
+                      ? 8
+                      : e.fn === "https.requestAgentCb"
+                        ? 10
+                        : 1
         ]?.type;
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {
@@ -6330,6 +6392,7 @@ function validateFunction(
         e.fn === "emitter.emitErrorValue" ||
         e.fn === "emitter.emitMixed" ||
         e.fn === "emitter.hasTyped" ||
+        e.fn === "emitter.hasDyn" ||
         e.fn === "emitter.listenersDyn" ||
         e.fn === "emitter.count" ||
         e.fn === "emitter.getMax" ||
@@ -6687,17 +6750,22 @@ function validateFunction(
           err("newPromise executor must be (resolve?, reject?) => void", e.loc);
           break;
         }
+        if (e.resolves === true && (inner.kind !== "dyn" || exec.params.length === 0)) {
+          err(
+            "newPromise resolves only a checked-dynamic value, through a resolve function",
+            e.loc,
+          );
+        }
         if (exec.params.length === 2) {
-          // The reject closure's one shape: (reason: %Error) => void.
+          // The reject closure's shapes: (reason: %Error) => void, and the
+          // checked-dynamic promise's (reason: dyn) => void.
           const rj = exec.params[1]!;
-          if (
-            rj.kind !== "func" ||
-            rj.ret.kind !== "void" ||
-            rj.params.length !== 1 ||
-            rj.params[0]!.kind !== "object" ||
-            rj.params[0]!.className !== "%Error"
-          ) {
-            err("newPromise reject param must be (%Error) => void", e.loc);
+          const param = rj.kind === "func" && rj.params.length === 1 ? rj.params[0]! : null;
+          const errorPin =
+            param !== null && param.kind === "object" && param.className === "%Error";
+          const dynPin = param !== null && param.kind === "dyn" && inner.kind === "dyn";
+          if (rj.kind !== "func" || rj.ret.kind !== "void" || (!errorPin && !dynPin)) {
+            err("newPromise reject param must be (%Error) => void or (dyn) => void", e.loc);
           }
         }
         if (exec.params.length >= 1) {
@@ -6721,7 +6789,8 @@ function validateFunction(
       }
       case "promiseWithResolvers": {
         // The record shape: promise: Promise<T>, resolve: (T) => void
-        // (() => void when T is void), reject: (%Error) => void.
+        // (() => void when T is void), reject: (%Error) => void — or, for a
+        // promise whose settled value is unknown, (dyn) => void.
         if (e.type.kind !== "record") {
           err("promiseWithResolvers must have record type", e.loc);
           break;
@@ -6749,14 +6818,19 @@ function validateFunction(
         ) {
           err(`promiseWithResolvers resolve param must match the promise's inner type`, e.loc);
         }
+        const rejectParam = reject.kind === "func" ? reject.params[0] : undefined;
+        const rejectErrorPin =
+          rejectParam !== undefined &&
+          rejectParam.kind === "object" &&
+          rejectParam.className === "%Error";
+        const rejectDynPin = rejectParam !== undefined && rejectParam.kind === "dyn";
         if (
           reject.kind !== "func" ||
           reject.ret.kind !== "void" ||
           reject.params.length !== 1 ||
-          reject.params[0]!.kind !== "object" ||
-          reject.params[0]!.className !== "%Error"
+          (!rejectErrorPin && !(rejectDynPin && inner.kind === "dyn"))
         ) {
-          err("promiseWithResolvers reject must be (%Error) => void", e.loc);
+          err("promiseWithResolvers reject must be (%Error) => void or (dyn) => void", e.loc);
         }
         break;
       }
@@ -6993,8 +7067,9 @@ function validateFunction(
           // Signature-free dispatch: every declared field shares ONE type
           // (the frontend's gate), the value IS that type, and a key miss
           // traps at runtime — so overflowOnly writes cannot exist here.
-          const common = shape.fields[0]?.type;
-          if (!common || !shape.fields.every((f) => typeEquals(f.type, common))) {
+          const keyed = keyedRecordFields(shape);
+          const common = keyed[0]?.type;
+          if (!common || !keyed.every((f) => typeEquals(f.type, common))) {
             err(
               `recordKeySet on non-index-signature shape ${s.shapeId} without one shared field type`,
               s.loc,
@@ -7019,7 +7094,7 @@ function validateFunction(
         if (
           !s.overflowOnly &&
           shape.indexValue.kind !== "dyn" &&
-          !shape.fields.every((f) => typeEquals(f.type, shape.indexValue!))
+          !keyedRecordFields(shape).every((f) => typeEquals(f.type, shape.indexValue!))
         ) {
           err(
             `recordKeySet on ${s.shapeId}: declared fields differ from the index-value type`,

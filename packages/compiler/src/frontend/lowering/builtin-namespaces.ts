@@ -165,7 +165,7 @@ export function builtinNamespaceValue(
   const members = namespaceMembers(canonical);
   if (members === null) return null;
   const name = `%builtin.namespace.${canonical}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     defineNamespaceBuilder(lowerer, canonical, members, name, helperLoc(loc));
   if (reportFences) reportMemberFences(lowerer, canonical, members, helperLoc(loc));
   lowerer.noteEdge(name);
@@ -183,7 +183,7 @@ function reportMemberFences(
   for (const { key, length } of members) {
     if (length < 0) continue;
     const display = `${canonical}.${key}`;
-    if (!lowerer.liftedFns.some((fn) => fn.name === fenceName(display))) continue;
+    if (lowerer.liftedFnNamed(fenceName(display)) === undefined) continue;
     const diag = fenceDiag(display, loc);
     if (lowerer.runtimeFences.some((d) => d.code === diag.code && d.message === diag.message))
       continue;
@@ -223,18 +223,7 @@ function defineNamespaceBuilder(
         fn: "dyn.namespaceNew",
         args: [
           { kind: "strLit", value: canonical, type: STRING, loc },
-          {
-            kind: "dynFrom",
-            value: {
-              kind: "libCall",
-              fn: "sym.wellKnown",
-              args: [{ kind: "strLit", value: "toStringTag", type: STRING, loc }],
-              type: SYMBOL_T,
-              loc,
-            },
-            type: DYN,
-            loc,
-          },
+          wellKnownSymbolValue("toStringTag", loc),
         ],
         type: DYN,
         loc,
@@ -286,6 +275,25 @@ function defineNamespaceBuilder(
   });
 }
 
+/** A well-known symbol (`toStringTag`, `iterator`, ...) as a dynamic value:
+ * the key a unit uses to give a standard object its own symbol-keyed
+ * property. The frontend passes the key so those units need no symbol entry
+ * points of their own. */
+export function wellKnownSymbolValue(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "libCall",
+      fn: "sym.wellKnown",
+      args: [{ kind: "strLit", value: name, type: STRING, loc }],
+      type: SYMBOL_T,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
 /** A Math constant, boxed. */
 function constantValue(lowerer: Lowerer, canonical: string, key: string, loc: SrcLoc): IrExpr {
   const value = canonical === "Math" ? mathMemberValue(lowerer, key, loc) : null;
@@ -325,7 +333,7 @@ const fenceDiag = (display: string, loc: SrcLoc): ScrDiagnostic =>
  * as in Node. builtinNamespaceValue reports the fence. */
 function fencedMember(lowerer: Lowerer, display: string, key: string, loc: SrcLoc): IrExpr {
   const name = fenceName(display);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const diag = fenceDiag(display, loc);
     lowerer.liftedFns.push({
       name,

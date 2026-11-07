@@ -818,7 +818,8 @@ static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
 
 static void scr_rgn_walk_map(ScrRgnWalk *w, ScrMap *m) {
   bool keyref = m->key_kind == SCR_MAP_KEY_REF || m->key_kind == SCR_MAP_KEY_UNION_REF ||
-      m->key_kind == SCR_MAP_KEY_UNION_VALUE || m->key_kind == SCR_MAP_KEY_CLOSURE;
+      m->key_kind == SCR_MAP_KEY_UNION_VALUE || m->key_kind == SCR_MAP_KEY_CLOSURE ||
+      m->key_kind == SCR_MAP_KEY_PROMISE;
   bool keydyn = m->key_kind == SCR_MAP_KEY_DYN;
   bool valref = m->val_kind == SCR_MAP_VAL_REF;
   if (!keyref && !keydyn && !valref) return;
@@ -846,6 +847,12 @@ static void scr_rgn_walk_box(ScrRgnWalk *w, ScrBox *b) {
 
 static void scr_rgn_walk_closure(ScrRgnWalk *w, ScrClosure *c) {
   for (size_t i = 0; i < c->ncaps; i++) scr_rgn_enter(w, c->caps[i], SCR_RGN_W_BOX, NULL);
+  /* Captured values, each with the release entry point its box would have. */
+  const ScrClosureValues *values = scr_closure_values(c);
+  if (values) {
+    void **slots = scr_closure_value_slots(c);
+    for (size_t i = 0; i < values->count; i++) scr_region_slot(w, slots[i], values->refs[i].release);
+  }
   scr_rgn_enter(w, c->props, SCR_RGN_W_BOX, NULL);
 }
 

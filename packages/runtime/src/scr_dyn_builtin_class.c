@@ -288,6 +288,7 @@ static void bc_warn_tick(ScrClosure *self) {
   if (scr_warning_emit_hook) {
     scr_warning_emit_hook("MaxListenersExceededWarning", NULL, message);
   } else {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "(node:%ld) MaxListenersExceededWarning: %.*s\n", BC_PID(),
             (int)message->len, message->data);
@@ -1587,9 +1588,9 @@ bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind) {
 
 /* `value instanceof callee` for an untyped constructor function. */
 bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee) {
-#ifdef SCR_NODE_ISLANDS
-  if (scr_ni_is_handle(callee)) return scr_ni_instanceof(value, callee) == 1;
-#endif
+  /* An island constructor answers through V8; only a program that links
+   * the island units, which install the table, can hold one. */
+  if (scr_ni_dyn_handle(callee)) return scr_ni_dyn_ops->instance_of(value, callee) == 1;
   if (!scr_dyn_is_callable(callee)) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);

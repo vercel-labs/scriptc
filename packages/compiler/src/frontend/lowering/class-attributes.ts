@@ -167,6 +167,43 @@ function literalAccessorDescriptor(node: ts.Expression): boolean {
   );
 }
 
+/** The class of `target` and the type of `field` when `field` names one of
+ * its declared own enumerable fields. */
+function declaredField(
+  lowerer: Lowerer,
+  target: IrExpr,
+  field: string,
+): { info: ClassInfo; fieldType: IrType } | null {
+  const info = attributeClass(lowerer, target);
+  if (!info) return null;
+  const fieldType = info.fields.get(field);
+  if (
+    fieldType === undefined ||
+    !isClassOwnEnumerableFieldName(field) ||
+    [...(info.symbolFields?.values() ?? [])].includes(field)
+  )
+    return null;
+  return { info, fieldType };
+}
+
+/** Whether a field's value crosses the checked-dynamic boundary both ways,
+ * as a definition through a descriptor needs. */
+function fieldValueDefinable(lowerer: Lowerer, fieldType: IrType): boolean {
+  const getRecord = (id: string) => lowerer.shapes.get(id);
+  const getUnion = (id: string) => lowerer.unions.get(id);
+  return (
+    canConvertToDyn(fieldType, getRecord, getUnion) && canDynCheckTo(fieldType, getRecord, getUnion)
+  );
+}
+
+/** Whether `field` is a declared field of the instance `target` that
+ * classFieldDefine redefines (or refuses by name, for a literal accessor
+ * descriptor). */
+export function isDefinableClassField(lowerer: Lowerer, target: IrExpr, field: string): boolean {
+  const declared = declaredField(lowerer, target, field);
+  return declared !== null && fieldValueDefinable(lowerer, declared.fieldType);
+}
+
 /** Object.defineProperty with a string-literal key naming a declared field
  * of a class instance: a data descriptor changes the field's value and
  * attributes, validated as Node validates ordinary objects. Answers the
@@ -178,36 +215,40 @@ export function lowerClassFieldDefine(
   call: ts.CallExpression,
   target: IrExpr,
 ): IrExpr | null {
-  const info = attributeClass(lowerer, target);
   const key = call.arguments.nodes[1]!;
-  if (!info || !ts.isStringLiteral(key)) return null;
-  const field = key.text;
-  const fieldType = info.fields.get(field);
-  if (
-    fieldType === undefined ||
-    !isClassOwnEnumerableFieldName(field) ||
-    [...(info.symbolFields?.values() ?? [])].includes(field)
-  )
-    return null;
-  if (literalAccessorDescriptor(call.arguments.nodes[2]!)) {
+  if (!ts.isStringLiteral(key)) return null;
+  return classFieldDefine(lowerer, locOf(call), target, key.text, call.arguments.nodes[2]!, null);
+}
+
+/** The definition of the declared field `field` of the instance `target`
+ * from the descriptor written at `descriptorNode`. `evaluated`, when given,
+ * is that descriptor's value, already evaluated (Object.defineProperties
+ * evaluates every descriptor of its map before it defines any property);
+ * otherwise the node is evaluated here. Null when `field` is not such a
+ * field. */
+export function classFieldDefine(
+  lowerer: Lowerer,
+  loc: SrcLoc,
+  target: IrExpr,
+  field: string,
+  descriptorNode: ts.Expression,
+  evaluated: IrExpr | null,
+): IrExpr | null {
+  const declared = declaredField(lowerer, target, field);
+  if (!declared) return null;
+  const { info, fieldType } = declared;
+  if (literalAccessorDescriptor(descriptorNode)) {
     lowerer.pushDiag({
       code: "SC2020",
       message: `Object.defineProperty with an accessor descriptor for the declared field '${field}' is not supported yet`,
-      loc: locOf(call),
+      loc,
     });
     throw new PoisonError();
   }
-  const getRecord = (id: string) => lowerer.shapes.get(id);
-  const getUnion = (id: string) => lowerer.unions.get(id);
-  if (
-    !canConvertToDyn(fieldType, getRecord, getUnion) ||
-    !canDynCheckTo(fieldType, getRecord, getUnion)
-  )
-    return null;
+  if (!fieldValueDefinable(lowerer, fieldType)) return null;
   const attributesField = classFieldAttributesName(field);
   addHiddenField(lowerer, info, CLASS_ATTRIBUTES);
   addHiddenField(lowerer, info, attributesField);
-  const loc = locOf(call);
   const type = target.type as ClassObjectType;
   const receiverSlot = lowerer.declareHiddenLocal("%defineReceiver", type);
   const descriptorSlot = lowerer.declareHiddenLocal("%defineDescriptor", DYN);
@@ -238,7 +279,7 @@ export function lowerClassFieldDefine(
       {
         kind: "varDecl",
         localId: descriptorSlot.id,
-        init: lowerer.lowerExprExpecting(call.arguments.nodes[2]!, DYN),
+        init: evaluated ?? lowerer.lowerExprExpecting(descriptorNode, DYN),
         loc,
       },
       {

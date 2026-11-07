@@ -2,6 +2,15 @@ import { join } from "node:path";
 import ts from "typescript";
 import { expect, test } from "vitest";
 import { boundedRun } from "../test262/execute.js";
+import { closeIslandRuleScanner, islandRuleMarker } from "../test262/island-marker.js";
+import {
+  chapterOf,
+  limitPerChapter,
+  parseStatuses,
+  readJournalIds,
+  readPathList,
+  resolveListedPaths,
+} from "../test262/select.mjs";
 import {
   compileFailureStatus,
   directory,
@@ -451,7 +460,72 @@ test("reports keep exclusions, refusals, failures and passes separate", () => {
   ).toEqual({
     counts: { pass: 1, "compile-refusal": 1, fail: 1, excluded: 2 },
     exclusions: { "execution:sloppy": 2 },
+    islandRules: {
+      marked: {},
+      unmarked: { pass: 1, "compile-refusal": 1, fail: 1, excluded: 2 },
+      byRule: {},
+    },
   });
+});
+
+test("reports count island-rule variants beside the rest without removing them", () => {
+  const defineProperty = { rule: "R2.3", reason: "define-property" };
+  const summary = summarize([
+    { status: "pass", islandRule: null },
+    { status: "pass", islandRule: defineProperty },
+    { status: "fail", islandRule: defineProperty },
+    { status: "runtime-refusal", islandRule: { rule: "R2.4", reason: "with" } },
+    {
+      status: "excluded",
+      reason: "execution:sloppy",
+      islandRule: { rule: "R2.4", reason: "with" },
+    },
+  ]);
+  // The denominator keeps every variant, marked or not.
+  expect(summary.counts).toEqual({ pass: 2, fail: 1, "runtime-refusal": 1, excluded: 1 });
+  expect(summary.islandRules).toEqual({
+    marked: { pass: 1, fail: 1, "runtime-refusal": 1, excluded: 1 },
+    unmarked: { pass: 1 },
+    byRule: {
+      "R2.3 define-property": { pass: 1, fail: 1 },
+      "R2.4 with": { "runtime-refusal": 1, excluded: 1 },
+    },
+  });
+});
+
+test("the island-rule marker reads the test body as its variant runs it", () => {
+  try {
+    // No island construct.
+    expect(islandRuleMarker("assert.sameValue(1 + 1, 2);", "strict")).toBeNull();
+    // An object-model rule, in either mode.
+    const define = 'var o = {}; Object.defineProperty(o, "x", { value: 1 });';
+    expect(islandRuleMarker(define, "strict")).toEqual({ rule: "R2.3", reason: "define-property" });
+    expect(islandRuleMarker(define, "sloppy")).toEqual({ rule: "R2.3", reason: "define-property" });
+    // A sloppy-only construct marks the sloppy variant only: the strict
+    // variant of the same file is a different program.
+    const block = "{ function f() {} }\nf();";
+    expect(islandRuleMarker(block, "sloppy")).toEqual({
+      rule: "R2.4",
+      reason: "annexb-block-function",
+    });
+    expect(islandRuleMarker(block, "strict")).toBeNull();
+    // A runtime rule outranks an object-model rule that comes first.
+    expect(
+      islandRuleMarker(
+        'Object.defineProperty({}, "x", { value: 1 }); new Function("return 1");',
+        "strict",
+      ),
+    ).toEqual({ rule: "R1.1", reason: "code-from-string" });
+    // A syntax negative has no module to scan, whatever construct the
+    // parser's recovered tree holds: the test's metadata decides, because
+    // the parser does not throw on a syntax error.
+    const broken = 'Object.defineProperty({}, "x", { value: 1 }); var = ;';
+    expect(islandRuleMarker(broken, "strict", true)).toBeNull();
+    expect(islandRuleMarker(broken, "sloppy", true)).toBeNull();
+    expect(islandRuleMarker("var = ;", "strict", true)).toBeNull();
+  } finally {
+    closeIslandRuleScanner();
+  }
 });
 
 test("internal compiler failures cannot be classified as intentional refusals", () => {
@@ -473,4 +547,91 @@ test("a stuck process is killed and reported as a timeout", async () => {
   const result = await boundedRun(process.execPath, ["-e", "setInterval(() => {}, 1000)"], 100);
   expect(result.timeout).toBe(true);
   expect(result.code).not.toBe(0);
+});
+
+test("a path list selects exactly the listed tests, tolerating path spellings", () => {
+  const inventory = [
+    "test/built-ins/DataView/getUint8/a.js",
+    "test/built-ins/DataView/getUint8/b.js",
+    "test/language/expressions/addition/S11.6.1_A4_T1.js",
+  ];
+  expect(chapterOf(inventory[0]!)).toBe("test/built-ins/DataView");
+  expect(chapterOf(inventory[2]!)).toBe("test/language/expressions");
+  const list = readPathList(`
+    # a comment
+    test/built-ins/DataView/getUint8/a.js
+
+    ./test/built-ins/DataView/getUint8/b.js
+    /vercel/sandbox/snap/test/language/expressions/addition/S11.6.1_A4_T1.js
+    /vercel/sandbox/test/test262-latest/test/language/expressions/addition/S11.6.1_A4_T1.js
+  `);
+  expect(list).toEqual([
+    "test/built-ins/DataView/getUint8/a.js",
+    "test/built-ins/DataView/getUint8/b.js",
+    "test/language/expressions/addition/S11.6.1_A4_T1.js",
+    "test/language/expressions/addition/S11.6.1_A4_T1.js",
+  ]);
+  expect([...resolveListedPaths(list, inventory)].sort()).toEqual(inventory);
+  expect([...resolveListedPaths(["built-ins/DataView/getUint8/a.js"], inventory)]).toEqual([
+    "test/built-ins/DataView/getUint8/a.js",
+  ]);
+  expect(() => resolveListedPaths(["test/built-ins/DataView/missing.js"], inventory)).toThrow(
+    /unknown \(1\): test\/built-ins\/DataView\/missing.js/,
+  );
+  expect(() => resolveListedPaths(["DataView/getUint8/a.js"], inventory)).not.toThrow();
+});
+
+test("a path list refuses ambiguous short paths and unknown entries", () => {
+  const inventory = ["test/built-ins/Array/same.js", "test/built-ins/Object/same.js"];
+  expect(() => resolveListedPaths(["same.js"], inventory)).toThrow(/ambiguous/);
+  expect(() => resolveListedPaths(["built-ins/Array/same.js"], inventory)).not.toThrow();
+});
+
+test("the per-chapter limit caps each chapter and spreads the sample", () => {
+  const paths = Array.from({ length: 10 }, (_, index) => `test/built-ins/DataView/f${index}.js`);
+  paths.push("test/built-ins/Object/o.js");
+  const limited = limitPerChapter(paths, 4);
+  expect(limited.filter((path) => chapterOf(path) === "test/built-ins/DataView")).toEqual([
+    "test/built-ins/DataView/f0.js",
+    "test/built-ins/DataView/f3.js",
+    "test/built-ins/DataView/f6.js",
+    "test/built-ins/DataView/f9.js",
+  ]);
+  expect(limited).toContain("test/built-ins/Object/o.js");
+  expect(limitPerChapter(paths, 100)).toEqual(paths);
+  expect(limitPerChapter(paths, 1)).toEqual([
+    "test/built-ins/DataView/f0.js",
+    "test/built-ins/Object/o.js",
+  ]);
+});
+
+test("a journal replay selects the unexpected outcomes by default", () => {
+  const journal = [
+    { id: "test/a.js#strict", status: "pass" },
+    { id: "test/b.js#strict", status: "fail" },
+    { id: "test/b.js#sloppy", status: "runtime-refusal" },
+    { id: "test/c.js#strict", status: "excluded" },
+    { id: "test/b.js#strict", status: "fail" },
+    { id: "test/d.js#strict", status: "compile-refusal" },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+  expect(parseStatuses(undefined)).toContain("fail");
+  expect(parseStatuses(undefined)).not.toContain("pass");
+  expect(parseStatuses(undefined)).not.toContain("excluded");
+  expect([...readJournalIds(journal, parseStatuses(undefined))]).toEqual([
+    "test/b.js#strict",
+    "test/b.js#sloppy",
+    "test/d.js#strict",
+  ]);
+  expect([...readJournalIds(journal, parseStatuses(["fail,runtime-refusal"]))]).toEqual([
+    "test/b.js#strict",
+    "test/b.js#sloppy",
+  ]);
+  expect([...readJournalIds(journal, parseStatuses(["pass"]))]).toEqual(["test/a.js#strict"]);
+  expect(() => parseStatuses(["fixes"])).toThrow(/must name runner outcomes/);
+  expect(() => readJournalIds("not json\n", parseStatuses(undefined))).toThrow(/not JSON/);
+  expect(() => readJournalIds('{"id":"test/a.js#strict"}\n', parseStatuses(undefined))).toThrow(
+    /no string id and status/,
+  );
 });

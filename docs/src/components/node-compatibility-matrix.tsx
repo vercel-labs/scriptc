@@ -29,6 +29,7 @@ const rowCount = Number(process.env.COMPATIBILITY_ROW_COUNT);
 const labels: Record<Status, string> = {
   supported: "Supported",
   partial: "Partial",
+  "island-served": "Island-served",
   refused: "Refused",
   "not-implemented": "Not implemented",
   "by-design": "By design",
@@ -39,6 +40,7 @@ const labels: Record<Status, string> = {
 const styles: Record<Status, string> = {
   supported: "border-green-500/40 bg-green-100 text-green-900 dark:bg-green-200",
   partial: "border-amber-500/50 bg-amber-100 text-amber-900 dark:bg-amber-200",
+  "island-served": "border-sky-500/50 bg-sky-100 text-sky-900 dark:bg-sky-200",
   refused: "border-red-500/40 bg-red-100 text-red-900 dark:bg-red-200",
   "not-implemented": "border-blue-500/40 bg-blue-100 text-blue-900 dark:bg-blue-200",
   "by-design": "border-gray-alpha-500 bg-gray-alpha-200 text-gray-1000",
@@ -266,7 +268,7 @@ export function NodeCompatibilityMatrix() {
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
           <div className="min-w-fit">
             <h1 id="compatibility-title" className="text-lg font-semibold leading-6 text-gray-1000">Node.js 24 Compatibility</h1>
-            <p className="text-xs text-gray-800">Native compilation · Node {snapshot.nodeVersion}</p>
+            <p className="text-xs text-gray-800">Native compilation and Node islands · Node {snapshot.nodeVersion}</p>
           </div>
           <div className="grid min-w-0 flex-1 gap-2 md:grid-cols-[minmax(240px,1fr)_auto]">
         <label className="relative block">
@@ -297,13 +299,16 @@ export function NodeCompatibilityMatrix() {
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-900">
           {visibleStatuses.map((status) => <StatusBadge key={status} status={status} />)}
+          {staticCounts["island-served"] > 0 ? (
+            <span className="text-gray-800">Island-served: a Node island answers it in an island build; not native support.</span>
+          ) : null}
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto overscroll-contain bg-background-100">
         <table role="treegrid" aria-label="Node.js 24 compatibility hierarchy" className="compatibility-table min-w-[900px]">
           <thead className="sticky top-0 z-10 bg-background-200/95 backdrop-blur-sm">
-            <tr><th className="w-[55%]">Node.js API hierarchy</th><th className="w-[15%] text-center">Node stability</th><th className="w-[30%]">Native support</th></tr>
+            <tr><th className="w-[55%]">Node.js API hierarchy</th><th className="w-[15%] text-center">Node stability</th><th className="w-[30%]">Support</th></tr>
           </thead>
           <tbody>
             {visible.map(({ node, level }) => {

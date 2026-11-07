@@ -432,6 +432,11 @@ ScrHttpClientReq *scr_http_request_dyn(const ScrDyn *opts /*borrowed*/, bool aut
 ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool auto_end,
                                         ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn,
                                         ScrDyn *(*add_abort)(ScrDyn *signal, ScrDyn *listener)); /* +1 */
+ScrHttpClientReq *scr_http_request_dyn_secure(const ScrDyn *opts /*borrowed*/, bool auto_end,
+                                              bool secure, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn,
+                                              ScrDyn *(*add_abort)(ScrDyn *signal,
+                                                                  ScrDyn *listener)); /* +1 */
 /* The URL+options form (request(url, options[, cb])): the URL's fields as
  * Node's urlToHttpOptions reads them, the options' own members replacing
  * them (the spread's order), then the runtime options walk above. Both

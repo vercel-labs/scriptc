@@ -833,6 +833,103 @@ static void json_schema_union_members(void) {
   assert(test_opts_live == 0);
 }
 
+static ScrDyn *class_member_get(void *instance, size_t index) {
+  (void)instance;
+  return scr_dyn_new_num(index == 0 ? 7 : 3);
+}
+
+/* A record keeps the source properties its shape does not declare beside
+ * it, so a spread after the conversion reproduces them. A class member the
+ * source view answers with its getter is not one of those properties. */
+static void record_source_class_member(void) {
+  ScrStr *member = scr_str_new("extra", 5);
+  ScrDynTypedClassOps ops = {0};
+  ops.accessor_count = 1;
+  ops.accessor_names = &member;
+  ops.accessor_get = class_member_get;
+  ScrDyn *instance = scr_dyn_new_obj();
+  ScrDyn *source = scr_dyn_new_obj();
+  ScrStr *label = scr_str_new("label", 5);
+  scr_dyn_obj_set(source, "label", 5, scr_dyn_new_str(label));
+  scr_str_release(label);
+  scr_dyn_obj_set(source, "count", 5, scr_dyn_new_num(2));
+  scr_dyn_class_view_accessors(source, &ops, instance, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  ScrDyn *read = scr_dyn_obj_read(source, "extra", 5);
+  assert(read && read->kind == SCR_DYN_NUM && read->v.num == 7);
+  scr_dyn_release(read);
+
+  static const char *const names[] = {"label"};
+  static const size_t lens[] = {5};
+  size_t record[2] = {1, 0};
+  scr_record_source_note(record, source, names, lens, 1);
+  assert(!scr_exc_pending() && scr_record_source_has(record));
+  const ScrDyn *view = scr_record_source_view(record);
+  assert(view && view->kind == SCR_DYN_OBJ && view->v.obj.len == 2);
+  size_t key_len;
+  const char *key = scr_dyn_obj_key_at(view, 0, &key_len);
+  assert(key_len == 5 && memcmp(key, "label", 5) == 0);
+  key = scr_dyn_obj_key_at(view, 1, &key_len);
+  assert(key_len == 5 && memcmp(key, "count", 5) == 0);
+
+  scr_weak_dispose(record);
+  assert(!scr_record_source_has(record));
+  scr_dyn_release(source);
+  scr_dyn_release(instance);
+  scr_str_release(member);
+}
+
+/* A declared key the source held as a non-enumerable data property stays
+ * non-enumerable: the conversion keeps a view for that alone, the view's
+ * entry for the key carries the attribute, and a refresh of the view from
+ * the record's values keeps it. An enumerable source in declaration order
+ * still keeps nothing. */
+static void record_source_hidden_key(void) {
+  static const char *const names[] = {"kind", "type"};
+  static const size_t lens[] = {4, 4};
+  ScrStr *text = scr_str_new("t", 1);
+
+  ScrDyn *plain = scr_dyn_new_obj();
+  scr_dyn_obj_set(plain, "kind", 4, scr_dyn_new_str(text));
+  scr_dyn_obj_set(plain, "type", 4, scr_dyn_new_str(text));
+  size_t ordinary[2] = {1, 0};
+  scr_record_source_note(ordinary, plain, names, lens, 2);
+  assert(!scr_record_source_has(ordinary));
+
+  ScrDyn *source = scr_dyn_new_obj();
+  scr_dyn_obj_set(source, "kind", 4, scr_dyn_new_str(text));
+  scr_dyn_obj_set(source, "type", 4, scr_dyn_new_str(text));
+  scr_dyn_obj_set_attrs_at(source, scr_dyn_obj_index_of(source, "kind", 4), true, false, true);
+  size_t record[2] = {1, 0};
+  scr_record_source_note(record, source, names, lens, 2);
+  assert(!scr_exc_pending() && scr_record_source_has(record));
+  const ScrDyn *view = scr_record_source_view(record);
+  assert(view && view->kind == SCR_DYN_OBJ && view->v.obj.len == 2);
+  ScrDynProp kind = scr_dyn_obj_prop_at(view, scr_dyn_obj_index_of(view, "kind", 4));
+  assert(!kind.enumerable && kind.writable && kind.configurable && !kind.accessor);
+  ScrDynProp type = scr_dyn_obj_prop_at(view, scr_dyn_obj_index_of(view, "type", 4));
+  assert(type.enumerable && type.writable && type.configurable);
+
+  /* The record's snapshot lists every field as an ordinary property; the
+   * merge through the kept view hides the key again. */
+  ScrDyn *snapshot = scr_dyn_new_obj();
+  scr_dyn_obj_set(snapshot, "kind", 4, scr_dyn_new_str(text));
+  scr_dyn_obj_set(snapshot, "type", 4, scr_dyn_new_str(text));
+  ScrDyn *merged = scr_record_source_apply(snapshot, record);
+  assert(merged && merged->kind == SCR_DYN_OBJ && merged->v.obj.len == 2);
+  kind = scr_dyn_obj_prop_at(merged, scr_dyn_obj_index_of(merged, "kind", 4));
+  assert(!kind.enumerable && kind.writable && kind.configurable);
+  assert(kind.value && kind.value->kind == SCR_DYN_STR);
+  type = scr_dyn_obj_prop_at(merged, scr_dyn_obj_index_of(merged, "type", 4));
+  assert(type.enumerable);
+  scr_dyn_release(merged);
+
+  scr_weak_dispose(record);
+  assert(!scr_record_source_has(record));
+  scr_dyn_release(source);
+  scr_dyn_release(plain);
+  scr_str_release(text);
+}
+
 /* Freezing a record sets the frozen bit beside its count; an immortal
  * record keeps its word, which does not read as frozen. */
 static void record_frozen_bit(void) {
@@ -859,6 +956,8 @@ int main(void) {
   json_schema_parse();
   json_schema_special_names();
   json_schema_union_members();
+  record_source_class_member();
+  record_source_hidden_key();
   /* Native Set boxes may own headerless scalar/string maps. Collecting an
    * enclosing cycle must neither trace those leaves nor skip their release. */
   for (int i = 0; i < 2000; i++) {

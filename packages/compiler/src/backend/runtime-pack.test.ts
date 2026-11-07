@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { noLinkFeatures } from "./native-link-info-core.js";
 import {
   effectiveRuntimeFeatures,
   evaluateRuntimePredicate,
@@ -15,6 +16,7 @@ import {
   RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
+import { speedFlavorFallbackWarning } from "./runtime-pack-core.js";
 import { HUGE_TEXT_MIN_CODE_BYTES } from "./huge-text.js";
 import { createNativeLinkPlan } from "./link-plan.js";
 import {
@@ -37,52 +39,7 @@ const VERSION = compilerReleaseVersion();
  * is not a script interpreter line. */
 const PROGRAM_IMAGE = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00]);
 
-const BASE: NativeLinkFeatures = {
-  regex: false,
-  copying: false,
-  textDecoderLegacy: false,
-  bigintBytes: false,
-  fileHandle: false,
-  fetch: false,
-  zlib: false,
-  assert: false,
-  inspect: false,
-  dynInvoke: false,
-  dc: false,
-  dynAsync: false,
-  events: false,
-  emitter: false,
-  symbol: false,
-  bigint: false,
-  searchParams: false,
-  qs: false,
-  utilPromisify: false,
-  dynBuiltinClass: false,
-  dynBuiltinStream: false,
-  parseArgs: false,
-  stream: false,
-  net: false,
-  http: false,
-  http2: false,
-  dgram: false,
-  dnsPromises: false,
-  dgramDyn: false,
-  textCodecDyn: false,
-  watch: false,
-  watchFile: false,
-  foreignFfi: false,
-  nodeTest: false,
-  tls: false,
-  tlsCa: false,
-  cipher: false,
-  ecdh: false,
-  dh: false,
-  pki: false,
-  ed25519: false,
-  x509: false,
-  webcrypto: false,
-  perfLoop: false,
-};
+const BASE: NativeLinkFeatures = noLinkFeatures();
 
 async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-unit-"));
@@ -107,6 +64,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
   const base = await artifact("artifacts/base.o", "base");
   const legacy = await artifact("artifacts/legacy.o", "legacy");
   const fileHandle = await artifact("artifacts/fileHandle.o", "fileHandle");
+  const staticPasswd = await artifact("artifacts/static.o", "static");
   const regex = await artifact("artifacts/regex.a", "regex");
   const zlib = await artifact("artifacts/zlib.a", "zlib");
   await writeFile(join(root, "license.txt"), "license");
@@ -127,6 +85,12 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
           when: { fileHandle: true },
           defines: ["SCR_TEST_FILE_HANDLE"],
           ...fileHandle,
+        },
+        {
+          id: "static",
+          when: { staticLink: true },
+          defines: ["SCR_STATIC_PASSWD"],
+          ...staticPasswd,
         },
       ],
     },
@@ -150,7 +114,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       target: target.llvmTriple,
     },
     macros: {
-      executable: ["SCR_TEST_FILE_HANDLE", "SCR_TEXT_DECODER_LEGACY"],
+      executable: ["SCR_TEST_FILE_HANDLE", "SCR_TEXT_DECODER_LEGACY", "SCR_STATIC_PASSWD"],
       excluded: ["SCR_LIB", "SCR_THREAD_INSTANCES", "SCR_RC_AUDIT"],
       sanitizer: "external-toolchain-required",
     },
@@ -446,6 +410,31 @@ describe("runtime pack manifests", () => {
       "fileHandle.o",
     ]);
     expect(fileHandle.archives.map((path) => path.split("/").at(-1))).toEqual(["zlib.a"]);
+  });
+
+  test("a static link selects the static executable's unit variant", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    const dynamic = await createNativeLinkPlan(options);
+    const staticPlan = await createNativeLinkPlan({ ...options, staticLink: true });
+    expect(dynamic.runtimePack.features.staticLink).toBe(false);
+    expect(dynamic.runtimePack.selectedRuntimeArtifacts.map((a) => a.path)).toEqual([
+      "artifacts/base.o",
+    ]);
+    // The link mode, not a program fact, selects the pack's /etc/passwd
+    // build of the os unit: a static executable cannot load NSS modules.
+    expect(staticPlan.runtimePack.features.staticLink).toBe(true);
+    expect(staticPlan.runtimePack.selectedRuntimeArtifacts.map((a) => a.path)).toEqual([
+      "artifacts/static.o",
+    ]);
   });
 
   test("a stale manifest reports its identity independently from the package", async () => {
@@ -965,6 +954,41 @@ test("library runtime selection requires dedicated packs and never substitutes e
     runtimeObjects: threaded.runtimeObjects,
   });
   await expect(loadRuntimePack(options)).rejects.toThrow("no release flavor");
+});
+
+test("a speed build of a pack without a speed flavor says so, once per pack", async () => {
+  const f = await fixture();
+  const options = {
+    target: MACOS_ARM64_TARGET,
+    features: BASE,
+    resolver: () => f.packagePath,
+    optimization: "speed" as const,
+  };
+  const reported: string[] = [];
+  const write = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    reported.push(String(chunk));
+    return true;
+  });
+  try {
+    await loadRuntimePack(options);
+    await loadRuntimePack(options);
+  } finally {
+    write.mockRestore();
+  }
+  const warnings = reported.filter((text) => text.includes('has no "speed" flavor'));
+  // A build selects a pack more than once; the warning names the flavor, the
+  // reason and how to get it, and is printed once.
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("--optimization=speed");
+  expect(warnings[0]).toContain("release runtime objects");
+  expect(warnings[0]).toContain("SCRIPTC_LLVM_CODEGEN");
+  // Only an executable speed build falls back; release and library builds
+  // have no speed posture to report.
+  expect(speedFlavorFallbackWarning(f.manifest, "speed", "executable")).toContain(
+    'has no "speed" flavor',
+  );
+  expect(speedFlavorFallbackWarning(f.manifest, "release", "executable")).toBeNull();
+  expect(speedFlavorFallbackWarning(f.manifest, "speed", "library")).toBeNull();
 });
 
 test("speed selects the pack's speed flavor and falls back to release objects without one", async () => {

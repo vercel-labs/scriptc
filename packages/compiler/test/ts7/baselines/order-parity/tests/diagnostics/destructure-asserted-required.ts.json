@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/destructure-asserted-required.ts"
+ ],
+ "diags": []
+}

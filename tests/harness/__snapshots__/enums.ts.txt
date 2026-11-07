@@ -1,41 +1,20 @@
-enums.ts:9:3 - error SC1090: enums with computed members ('Len' — the initializer is a runtime expression evaluated when the declaration executes; only compile-time-constant enum members lower) are not supported yet
+enums.ts:10:3 - error SC1090: enums with computed members ('Len' — the initializer is a runtime expression evaluated when the declaration executes; only compile-time-constant enum members lower) are not supported yet
 
-   8 |   Ok = 1,
-   9 |   Len = "abc".length,
+   9 |   Ok = 1,
+  10 |   Len = "abc".length,
      |   ^~~~~~~~~~~~~~~~~~
-  10 | }
+  11 | }
 
-enums.ts:13:13 - error SC1090: the enum member 'Computed.Len' (its value is not a compile-time constant — the initializer runs when the declaration executes) is not supported yet
+enums.ts:14:13 - error SC1090: the enum member 'Computed.Len' (its value is not a compile-time constant — the initializer runs when the declaration executes) is not supported yet
 
-  12 | // Reads of the computed member fence at the use site too.
-  13 | console.log(Computed.Len);
+  13 | // Reads of the computed member fence at the use site too.
+  14 | console.log(Computed.Len);
      |             ^~~~~~~~~~~~
-  14 | 
+  15 | 
 
-enums.ts:21:7 - error SC1090: enum objects as values ('E' — member reads like 'E.X' compile to constants; the object itself has no runtime representation) are not supported yet
+enums.ts:23:13 - error SC1090: 'E[42]' (no member of 'E' has this value — Node answers undefined, which the reverse mapping's 'string' type cannot carry) is not supported yet
 
-  20 | // The enum OBJECT as a value: no runtime representation exists.
-  21 | const grabbed = E;
-     |       ^~~~~~~
-  22 | console.log(grabbed.A);
-
-enums.ts:21:17 - error SC1090: enum objects as values ('E' — member reads like 'E.A' compile to constants; the object itself has no runtime representation) are not supported yet
-
-  20 | // The enum OBJECT as a value: no runtime representation exists.
-  21 | const grabbed = E;
-     |                 ^
-  22 | console.log(grabbed.A);
-
-enums.ts:27:13 - error SC1090: enum reverse lookups ('E[i]' where the index is a runtime value — only compile-time-constant indices lower) are not supported yet
-
-  26 | i += 1;
-  27 | console.log(E[i]);
-     |             ^~~~
-  28 | 
-
-enums.ts:31:13 - error SC1090: 'E[42]' (no member of 'E' has this value — Node answers undefined, which the reverse mapping's 'string' type cannot carry) is not supported yet
-
-  30 | // which the reverse mapping's `string` type cannot carry.
-  31 | console.log(E[42]);
+  22 | // which the reverse mapping's `string` type cannot carry.
+  23 | console.log(E[42]);
      |             ^~~~~
-  32 | 
+  24 | 

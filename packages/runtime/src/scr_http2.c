@@ -453,6 +453,21 @@ static void scr_h2_headers_push(ScrH2Headers *h, ScrStr *name /*moves*/, ScrStr 
   h->n++;
 }
 
+/* One decoded field for the application. A regular field (no leading ':')
+ * whose value holds a control character other than HTAB, or DEL, is left
+ * out of the list, as nghttp2 ignores it in Node (RFC 9113 section 8.2.1
+ * calls such a field malformed); its HPACK state is already applied. */
+static void scr_h2_headers_take(ScrH2Headers *h, const char *name, size_t name_len,
+                                const char *value, size_t value_len) {
+  if (name_len > 0 && name[0] != ':') {
+    for (size_t i = 0; i < value_len; i++) {
+      unsigned char ch = (unsigned char)value[i];
+      if ((ch < 0x20 && ch != '\t') || ch == 0x7f) return;
+    }
+  }
+  scr_h2_headers_push(h, scr_str_new(name, name_len), scr_str_new(value, value_len));
+}
+
 static void scr_h2_headers_free(ScrH2Headers *h) {
   for (size_t i = 0; i < h->n; i++) {
     scr_str_release(h->names[i]);
@@ -475,7 +490,7 @@ static bool scr_h2_hpack_decode(ScrH2Dyntab *t, const uint8_t *p, size_t n, ScrH
       const char *nm, *vl;
       size_t nl, vll;
       if (idx == 0 || !scr_h2_table_lookup(t, idx, &nm, &nl, &vl, &vll)) return false;
-      scr_h2_headers_push(out, scr_str_new(nm, nl), scr_str_new(vl, vll));
+      scr_h2_headers_take(out, nm, nl, vl, vll);
       continue;
     }
     if ((b & 0xe0) == 0x20) {
@@ -513,7 +528,7 @@ static bool scr_h2_hpack_decode(ScrH2Dyntab *t, const uint8_t *p, size_t n, ScrH
       return false;
     }
     if (incremental) scr_h2_dyntab_add(t, name, name_len, value, value_len);
-    scr_h2_headers_push(out, scr_str_new(name, name_len), scr_str_new(value, value_len));
+    scr_h2_headers_take(out, name, name_len, value, value_len);
     if (name_owned) free(name);
     free(value);
   }
@@ -1908,6 +1923,33 @@ static void scr_h2_encode_regulars(ScrH2Buf *b, ScrArr *pairs) {
   }
 }
 
+/* Node's check on the names of an outgoing header list, before anything
+ * is sent: a regular name that holds a space throws ERR_INVALID_HTTP_TOKEN
+ * with the lowercased name. False with the exception pending. */
+static bool scr_h2_regular_names_valid(ScrArr *pairs /*borrowed, nullable*/) {
+  size_t n = pairs ? (size_t)scr_arr_len(pairs) : 0;
+  for (size_t i = 0; i + 1 < n; i += 2) {
+    ScrStr *name = scr_arr_get_ref(pairs, (double)i);
+    bool valid = name->len == 0 || name->data[0] == ':' || memchr(name->data, ' ', name->len) == NULL;
+    if (!valid) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "Header name must be a valid HTTP token [\"");
+      for (size_t k = 0; k < name->len; k++) {
+        char c = name->data[k];
+        scr_jb_putc(&b, c >= 'A' && c <= 'Z' ? (char)(c + 32) : c);
+      }
+      scr_jb_puts(&b, "\"]");
+      ScrStr *msg = scr_jb_finish(&b);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_HTTP_TOKEN");
+      scr_str_release(msg);
+    }
+    scr_str_release(name);
+    if (!valid) return false;
+  }
+  return true;
+}
+
 /* The implicit date header (Node's auto date on respond). */
 static void scr_h2_encode_date(ScrH2Buf *b) {
   char date[40];
@@ -1942,6 +1984,7 @@ void scr_http2_stream_respond(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullabl
                                bool end_stream) {
   ScrH2Session *s = st->sess;
   if (st->destroyed || st->respond_sent || !scr_h2_sock_alive(s)) return;
+  if (!scr_h2_regular_names_valid(pairs)) return; /* nothing sent: respond() may be called again */
   st->respond_sent = true;
   ScrH2Buf block = {0};
   ScrStr *status = scr_h2_pairs_pseudo(pairs, ":status");
@@ -2706,6 +2749,7 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
                              63, "ERR_HTTP2_INVALID_SESSION");
     return NULL;
   }
+  if (!scr_h2_regular_names_valid(pairs)) return NULL; /* no stream was created */
   ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
   s->next_stream_id += 2;
   ScrStr *method = scr_h2_pairs_pseudo(pairs, ":method");

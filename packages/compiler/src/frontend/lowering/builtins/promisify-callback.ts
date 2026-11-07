@@ -383,6 +383,11 @@ function promisifyMaker(lowerer: Lowerer, shape: CallbackShape, loc: SrcLoc): st
             type: executorT,
             loc,
           },
+          // The callback's value resolves the promise: one the types do not
+          // know may be a promise, which the promisified call adopts.
+          ...(promiseT.kind === "promise" && promiseT.inner.kind === "dyn"
+            ? { resolves: true as const }
+            : {}),
           type: promiseT,
           loc,
         },

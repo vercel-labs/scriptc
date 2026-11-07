@@ -8,6 +8,7 @@ import {
   splitUndefinedIndex,
   undefinedTypedArrayKeyFence,
 } from "../undefined-index.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
 import { type Lowerer, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import {
   BOOL,
@@ -29,10 +30,12 @@ import {
   recordTextCodecClass,
   shapeHasAccessorSlots,
   typeEquals,
+  sortArms,
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { boxedHandleReceiver, lowerHandlePropertyWrite } from "../handle-properties.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
 import { lowerEnumAccess } from "../lower-enums.js";
@@ -55,7 +58,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
-import { expandoMemberRead } from "../lower-expando.js";
+import { fenceExpandoRead } from "../lower-expando.js";
 import {
   assertedElementKeepsUndefined,
   compoundUnsupported,
@@ -75,8 +78,13 @@ import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { assertedMemberRead, classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
 import {
+  assertedOnlyMemberWrite,
   assertedProbeAccessOf,
   assertedReceiverNode,
+  copiedKeyedWrite,
+  fenceCopiedKeyedWrite,
+  narrowErasedRecordValue,
+  nullishMutationMessage,
   probeMemberName,
 } from "./asserted-receiver.js";
 import {
@@ -85,6 +93,7 @@ import {
   arrayValueStore,
   arrayValueType,
   elementMayBeForeign,
+  foreignElementThrow,
   lowerSafeBytesRead,
   lowerSafeIndexRead,
   primitiveElement,
@@ -358,12 +367,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   // Expando function members in element clothing (`foo[strMem]`,
   // `foo[_private]` where foo is a module-level function/callable const
-  // and the key folds or is a unique-symbol const): the member's module
-  // global — the dotted read's twin (lower-expando.ts).
-  {
-    const ex = expandoMemberRead(lowerer, expr);
-    if (ex) return lowerer.maybeNarrow(ex, expr);
-  }
+  // and the key folds or is a unique-symbol const): only the source-order
+  // fence lives here (lower-expando.ts); the read itself is the ordinary
+  // element read of the closure's own-property table.
+  fenceExpandoRead(lowerer, expr);
   // Symbol-keyed property READS (`this[kLimit]`): when the key is a
   // statically-resolvable symbol declared as a field of the receiver's
   // class (classSymbolKeyOf — the countdown.js/OpenTUI idioms), the
@@ -1269,6 +1276,17 @@ function optionalRecordReceiver(
 /** `value`, evaluated once at this point of `out`. */
 function stabilized(lowerer: Lowerer, value: IrExpr, name: string, out: IrStmt[]): IrExpr {
   if (isSafeToRepeat(value)) return value;
+  // `null` and `undefined` carry no payload to hold: the value runs once for
+  // its effects, and its literal stands in for it afterwards.
+  if (value.type.kind === "nullT" || value.type.kind === "undefinedT") {
+    if (!isSafeToDiscard(value)) out.push({ kind: "exprStmt", expr: value, loc: value.loc });
+    return {
+      kind: "unitLit",
+      unit: value.type.kind === "nullT" ? "null" : "undefined",
+      type: value.type,
+      loc: value.loc,
+    };
+  }
   const tmp = lowerer.declareHiddenLocal(name, value.type);
   out.push({ kind: "varDecl", localId: tmp.id, init: value, loc: value.loc });
   return varRef(tmp.id, value.type, value.loc);
@@ -1967,7 +1985,7 @@ function joinedFieldType(lowerer: Lowerer, fields: readonly { type: IrType }[]):
   };
   for (const field of fields) if (!push(field.type)) return null;
   if (arms.length === 0) return null;
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
@@ -2109,7 +2127,7 @@ function lowerTupleIndexRead(
       `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (an element type has no value representation)`,
     );
   }
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   if (arms.length > 1 && !unionContainerArmsOk(arms)) {
     lowerer.unsupported(
       "SC1090",
@@ -2175,6 +2193,8 @@ export function lowerElementCompoundParts(
 ): { expr: IrExpr | null; stmts: IrStmt[] | null } {
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
+  fenceAssertedOnlyKeyedWrite(lowerer, target);
+  fenceCopiedKeyedWrite(lowerer, target);
   const loc = locOf(expr);
   // A record through a computed key (`totals[side] += n` with a literal
   // union key, `counts[name] += 1` on an index-signature record): the
@@ -2182,14 +2202,27 @@ export function lowerElementCompoundParts(
   if (isKeyedFieldAccess(lowerer, target))
     return { expr: lowerFieldCompoundValue(lowerer, target, op, expr.right, loc), stmts: null };
   const checked = lowerer.lowerExpr(target.expression);
-  if (checked?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  // A typed callable's element is its own-property table entry: the same
+  // read-modify-write the checked-dynamic receiver takes, through the
+  // identity-preserving box (`fn[k] += 1`, `fn[k] -= 1`).
+  const callableElement =
+    checked !== null &&
+    checked !== undefined &&
+    checked.type.kind === "func" &&
+    isCallableTableValue(lowerer, target.expression, checked);
+  const dynReceiver = callableElement ? callableBox(lowerer, checked) : checked;
+  if (
+    dynReceiver &&
+    (callableElement ||
+      (checked?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))))
+  ) {
     const stmts: IrStmt[] = [];
     const save = (value: IrExpr, name: string): IrExpr => {
       const local = lowerer.declareHiddenLocal(name, value.type);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
       return varRef(local.id, value.type, loc);
     };
-    const receiver = save(checked, "%compoundReceiver");
+    const receiver = save(dynReceiver, "%compoundReceiver");
     const key = save(lowerer.lowerExprExpecting(target.argumentExpression, DYN), "%compoundKey");
     const old = save({ kind: "dynKeyGet", value: receiver, key, type: DYN, loc }, "%compoundOld");
     const rhs = lowerer.lowerExprExpecting(expr.right, DYN);
@@ -2279,8 +2312,10 @@ export function lowerElementCompoundParts(
           arrayNumberRead(receiverRef(), indexRef(), locOf(target))
         : receiver.type.elem.kind === "string" &&
             op === "+" &&
-            !elementMayBeForeign(lowerer, receiver.type.elem)
-          ? arrayStringOperand(receiverRef(), indexRef(), locOf(target))
+            (statement || !elementMayBeForeign(lowerer, receiver.type.elem))
+          ? // The statement form's append reads the element inside its
+            // concat, so its operand is a string in every program.
+            arrayStringOperand(lowerer, receiverRef(), indexRef(), locOf(target))
           : arrayValueRead(lowerer, receiverRef(), indexRef(), receiver.type.elem, locOf(target))
       : {
           // An invalid index reads undefined in Node, which every numeric
@@ -2456,21 +2491,114 @@ function lowerIndexedUnionCompound(
 }
 
 /** ToString of one stabilized `string[]` element read for `+=`: a missing
- * element concatenates as "undefined". */
-function arrayStringOperand(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+ * element concatenates as "undefined". Where string arrays can hold foreign
+ * elements, one throws the checked conversion's TypeError, as the typed
+ * read does (arrayValueRead). */
+function arrayStringOperand(lowerer: Lowerer, arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+  const stateIs = (state: number): IrExpr => ({
+    kind: "bin",
+    op: "===",
+    left: { kind: "arrayState", arr, index, type: F64, loc },
+    right: { kind: "numLit", value: state, type: F64, loc },
+    type: BOOL,
+    loc,
+  });
+  let missing: IrExpr = strLit("undefined", loc);
+  if (elementMayBeForeign(lowerer, STRING)) {
+    missing = {
+      kind: "ternary",
+      cond: stateIs(3),
+      then: {
+        ...foreignElementThrow(lowerer, arr, index, arrayValueType(lowerer, STRING), loc),
+        type: STRING,
+      },
+      else_: missing,
+      type: STRING,
+      loc,
+    };
+  }
   return {
     kind: "ternary",
-    cond: {
-      kind: "bin",
-      op: "===",
-      left: { kind: "arrayState", arr, index, type: F64, loc },
-      right: { kind: "numLit", value: 1, type: F64, loc },
-      type: BOOL,
-      loc,
-    },
+    cond: stateIs(1),
     then: { kind: "arrayGet", arr, index, type: STRING, loc },
-    else_: strLit("undefined", loc),
+    else_: missing,
     type: STRING,
+    loc,
+  };
+}
+
+/** A keyed write of a member only the receiver's asserted type declares
+ * (`x["icons"] = v`): refused by name, the write twin of
+ * assertedOptionalMemberRead. Node adds the property to the object; the
+ * record the binding holds has no slot for it. */
+function fenceAssertedOnlyKeyedWrite(lowerer: Lowerer, target: ts.ElementAccessExpression): void {
+  const member =
+    recordKeyLiteralText(target.argumentExpression) ??
+    recordKeyTypeLiteralText(lowerer, target.argumentExpression);
+  if (member !== null) assertedOnlyMemberWrite(lowerer, target.expression, member, target);
+}
+
+/** `(o as View)["k"] = v` through a record assertion that changes layout:
+ * the write of the declared member `k` on the operand itself, as the dotted
+ * spelling writes it (fieldTarget's assertedWrite). Null when the key is
+ * not one literal, or when the operand's own layout does not hold the
+ * member at the asserted type; the caller then refuses by name. */
+function lowerErasedKeyedWrite(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  target: ts.ElementAccessExpression,
+  copied: NonNullable<ReturnType<typeof copiedKeyedWrite>>,
+): IrStmt | null {
+  const key =
+    recordKeyLiteralText(target.argumentExpression) ??
+    recordKeyTypeLiteralText(lowerer, target.argumentExpression);
+  if (key === null) return null;
+  const stored = lowerer.shapes.get(copied.layout.shapeId);
+  const viewed = lowerer.shapes.get(copied.asserted.shapeId);
+  if (!stored || stored.tuple || !viewed || viewed.tuple) return null;
+  const field = stored.fields.find((f) => f.name === key);
+  const assertedField = viewed.fields.find((f) => f.name === key);
+  if (!field || !assertedField || !typeEquals(field.type, assertedField.type)) return null;
+  const loc = locOf(expr);
+  const message = nullishMutationMessage(target, key);
+  const operand = lowerer.lowerExpr(copied.operand);
+  const inPlace = (obj: IrExpr | null): obj is IrExpr & { type: IrType & { kind: "record" } } =>
+    obj !== null && obj.type.kind === "record" && obj.type.shapeId === copied.layout.shapeId;
+  if (operand.type.kind !== "union") {
+    const obj = narrowErasedRecordValue(lowerer, operand, locOf(copied.operand), message);
+    if (!inPlace(obj)) return null;
+    const value = lowerer.lowerExprExpecting(expr.right, field.type);
+    return { kind: "recordSet", obj, shapeId: obj.type.shapeId, field: key, value, loc };
+  }
+  // An operand that may be undefined or null: Node evaluates the receiver,
+  // then the right-hand side, and only then needs an object to write to, so
+  // a nullish receiver throws after the value's side effects ran. The
+  // receiver and the value are held in that order, and the check that
+  // narrows the receiver to its record runs at the write.
+  const receiver = lowerer.declareHiddenLocal("%keyedReceiver", operand.type);
+  const obj = narrowErasedRecordValue(
+    lowerer,
+    varRef(receiver.id, operand.type, loc),
+    locOf(copied.operand),
+    message,
+  );
+  if (!inPlace(obj)) return null;
+  const value = lowerer.lowerExprExpecting(expr.right, field.type);
+  const held = lowerer.declareHiddenLocal("%keyedValue", value.type);
+  return {
+    kind: "block",
+    body: [
+      { kind: "varDecl", localId: receiver.id, init: operand, loc },
+      { kind: "varDecl", localId: held.id, init: value, loc },
+      {
+        kind: "recordSet",
+        obj,
+        shapeId: obj.type.shapeId,
+        field: key,
+        value: varRef(held.id, value.type, loc),
+        loc,
+      },
+    ],
     loc,
   };
 }
@@ -2480,6 +2608,19 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
   if (prototype) return { kind: "exprStmt", expr: prototype, loc: locOf(expr) };
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
+  fenceAssertedOnlyKeyedWrite(lowerer, target);
+  // A keyed write through an assertion that converts the record addresses
+  // the operand, like the dotted write and `delete` do; a key or member the
+  // operand's own layout cannot take in place is refused instead of being
+  // written to the converted copy.
+  {
+    const copied = copiedKeyedWrite(lowerer, target);
+    if (copied !== null) {
+      const inPlace = lowerErasedKeyedWrite(lowerer, expr, target, copied);
+      if (inPlace) return inPlace;
+      fenceCopiedKeyedWrite(lowerer, target);
+    }
+  }
   const globalKey = globalSymbolKey(lowerer, target.expression, target.argumentExpression);
   if (globalKey) {
     const value = lowerer.lowerExprExpecting(expr.right, DYN);
@@ -2545,6 +2686,17 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         expr: lowerDynMemberAssignment(lowerer, expr, receiver),
         loc: locOf(expr),
       };
+    // `fn[SYMBOL] = v` on a typed callable: a symbol-keyed own property of
+    // the closure's table, the computed keyed store the `any` view emits.
+    if (isCallableTableValue(lowerer, target.expression, receiver)) {
+      const boxed = callableBox(lowerer, receiver);
+      if (boxed)
+        return {
+          kind: "exprStmt",
+          expr: lowerDynMemberAssignment(lowerer, expr, boxed),
+          loc: locOf(expr),
+        };
+    }
     if (
       isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       receiver.type.kind === "object" &&
@@ -2563,12 +2715,35 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     );
   }
   const checkedReceiver = tryLowerExpression(lowerer, target.expression);
+  // `m[k] = v` over a typed handle in JavaScript: a property table entry
+  // of the handle (scr_dyn_handle_props.c).
+  {
+    const boxed = boxedHandleReceiver(lowerer, checkedReceiver);
+    if (boxed)
+      return lowerHandlePropertyWrite(
+        lowerer,
+        boxed,
+        lowerer.lowerExprExpecting(target.argumentExpression, DYN),
+        expr.right,
+        locOf(expr),
+      );
+  }
   if (checkedReceiver?.type.kind === "dyn") {
     return {
       kind: "exprStmt",
       expr: lowerDynMemberAssignment(lowerer, expr, checkedReceiver),
       loc: locOf(expr),
     };
+  }
+  // `fn[k] = v` on a typed callable: the closure's own-property table.
+  if (checkedReceiver && isCallableTableValue(lowerer, target.expression, checkedReceiver)) {
+    const boxed = callableBox(lowerer, checkedReceiver);
+    if (boxed)
+      return {
+        kind: "exprStmt",
+        expr: lowerDynMemberAssignment(lowerer, expr, boxed),
+        loc: locOf(expr),
+      };
   }
   if (checkedReceiver?.type.kind === "object" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
     const info = lowerer.classes.get(checkedReceiver.type.className);

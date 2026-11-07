@@ -17,7 +17,59 @@ interface String {
   at(index: number): string;
 }
 
+/* The first pair of overloads matches a numeric enum's object and nothing
+ * else. `keyof typeof E` names the members only, while the object also
+ * holds each numeric member's reverse entry (the member's name under its
+ * value), which the enum's number index signature describes: such a type
+ * has number-keyed values (`V` is not unknown) and neither a numeric key
+ * nor `string` in `keyof T`. For it the parameter type is `T`, and the
+ * result adds the signature's value type to `T[keyof T]`, as tsc's own
+ * library types it.
+ * For every other argument the parameter type is `never`, so the call
+ * resolves to the second pair, unchanged. A call no overload accepts (an
+ * `unknown` argument in JavaScript) reports against the first candidate,
+ * so the first pair's result is the second pair's plus the reverse entries,
+ * which are `never` for anything but an enum: the same type either way. */
 interface ObjectConstructor {
+  values<T extends object>(
+    o: T &
+      (T extends { readonly [index: number]: infer V }
+        ? unknown extends V
+          ? never
+          : [Extract<keyof T, number | `${number}`>] extends [never]
+            ? string extends keyof T
+              ? never
+              : unknown
+            : never
+        : never),
+  ): Array<
+    | (keyof T extends never ? unknown : T[keyof T])
+    | (T extends { readonly [index: number]: infer V } ? (unknown extends V ? never : V) : never)
+  >;
+  entries<T extends object>(
+    o: T &
+      (T extends { readonly [index: number]: infer V }
+        ? unknown extends V
+          ? never
+          : [Extract<keyof T, number | `${number}`>] extends [never]
+            ? string extends keyof T
+              ? never
+              : unknown
+            : never
+        : never),
+  ): Array<
+    [
+      string,
+      (
+        | (keyof T extends never ? unknown : T[keyof T])
+        | (T extends { readonly [index: number]: infer V }
+            ? unknown extends V
+              ? never
+              : V
+            : never)
+      ),
+    ]
+  >;
   values<T extends object>(o: T): Array<keyof T extends never ? unknown : T[keyof T]>;
   entries<T extends object>(o: T): Array<[string, keyof T extends never ? unknown : T[keyof T]]>;
 }
@@ -38,24 +90,33 @@ interface JSON {
  * `new Promise<T>((resolve) => ...)` types resolve as `(value: T) => void`
  * — no PromiseLike union. The reject parameter is a real closure rejecting
  * the promise; its reason is pinned to Error (the lib says `reason?: any`)
- * because rejection payloads ride the same representation as thrown values
- * and the idiomatic reason IS an Error — reject(nonError) and bare
- * reject() typecheck only in the project world and meet the lowerer's
- * honest coercion fences instead. First settle wins, exactly JS: a reject
- * after resolve (or a second reject) is a no-op, and an executor throw
- * after any settle is swallowed. Executors that use the lib signature's
- * other extras (resolving with a thenable) still typecheck and fail
- * lowering on their types. */
+ * because a TYPED promise's rejection payloads ride the same
+ * representation as thrown values and the idiomatic reason IS an Error —
+ * reject(nonError) and bare reject() typecheck only in the project world
+ * and meet the lowerer's honest coercion fences instead. A promise whose
+ * settled value is unknown has no typed payload to protect: its reason is
+ * the checked-dynamic value the program rejected with, so `reject()`,
+ * `reject(42)` and `reject("s")` are the JS semantics there
+ * (`unknown extends T` is true exactly for the dynamic tier: unknown and
+ * an untyped JavaScript executor's inference). First settle wins, exactly
+ * JS: a reject after resolve (or a second reject) is a no-op, and an
+ * executor throw after any settle is swallowed. Executors that use the lib
+ * signature's other extras (resolving with a thenable) still typecheck and
+ * fail lowering on their types. */
 interface PromiseConstructor {
   new <T>(
-    executor: (resolve: (value: T) => void, reject: (reason: Error) => void) => void,
+    executor: (
+      resolve: (value: T) => void,
+      reject: (reason: unknown extends T ? unknown : Error) => void,
+    ) => void,
   ): Promise<T>;
   /* ES2024's Promise.withResolvers, in the executor's own scriptc shape:
    * resolve takes the plain value (no PromiseLike union; the conditional
    * collapses Promise<void>'s resolve to () => void so the record's
-   * field types map exactly), reject is the executor's Error-pinned
-   * rejection closure. The lib's own declaration would otherwise be
-   * unrepresentable field-by-field. */
+   * field types map exactly), reject is the executor's rejection closure —
+   * `unknown` for a promise whose settled value is unknown, exactly the
+   * `new Promise` executor's reason. The lib's own declaration would
+   * otherwise be unrepresentable field-by-field. */
   withResolvers<T>(): {
     promise: Promise<T>;
     // `0 extends 1 & T` detects any (untyped JS: Promise.withResolvers()
@@ -67,7 +128,7 @@ interface PromiseConstructor {
       : [T] extends [void]
         ? () => void
         : (value: T) => void;
-    reject: (reason: Error) => void;
+    reject: (reason: unknown extends T ? unknown : Error) => void;
   };
 }
 

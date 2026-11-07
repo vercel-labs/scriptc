@@ -53,6 +53,9 @@ const char *scr_lib_arg(int i);
 bool scr_lib_take_flag(const char *flag);
 /* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
 ScrArr *scr_process_exec_argv(void);
+/* process.allowedNodeEnvironmentFlags: one interned set of the option
+ * names the compatibility target accepts in NODE_OPTIONS (+1 per read). */
+ScrMap *scr_process_allowed_env_flags(void);
 /* Private self-reexec marker parsed and removed from process.argv by
  * scr_lib_init. False in an ordinary parent invocation. */
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
@@ -71,6 +74,11 @@ ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 bool scr_stdio_write(int fd, const void *data, size_t len);
 bool scr_stdio_write_str(int fd, const ScrStr *s);
 int scr_stdio_write_raw(int fd, const void *data, size_t len);
+/* process.stdout/stderr.write(text) at an untyped call site: the write
+ * method's one-string form, calling a replaced write and otherwise writing
+ * the UTF-8 of `data` (borrowed). +1 true, or false after a failed write
+ * queued the stream's error event. */
+ScrDyn *scr_stdio_write_str_dyn(double fd, const ScrStr *data);
 /* `flags` describes the chunk a patched write receives: SCR_STDIO_HOOK_WIDE
  * marks string bytes that may hold lone surrogates (they become U+FFFD when
  * they reach the stream itself), SCR_STDIO_HOOK_CONSOLE a console line
@@ -551,6 +559,9 @@ ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid);
 ScrPromise *scr_fsp_access(ScrStr *path, double mode);
 ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data);
 ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_flags_bytes(ScrStr *path, ScrBytes *data, double mode,
+                                           double exclusive);
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);

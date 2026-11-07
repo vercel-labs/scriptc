@@ -418,6 +418,7 @@ static void scr_net_ls_remove_fn(ScrNetLs *l, ScrClosure *root) {
  * scr_http.c's req/res/client fire their 'error' the same way. */
 void scr_net_fire_err_this(ScrNetLs *l, ScrStr *msg, void *self, ScrDynHandleTag tag) {
   if (l->n == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", msg->data);
     _Exit(1);

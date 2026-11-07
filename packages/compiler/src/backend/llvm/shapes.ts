@@ -17,6 +17,7 @@ import {
   RUNTIME_STREAM_CLASSES,
   DYN,
   STRING,
+  typeKey,
 } from "../../ir/ir.js";
 import {
   mangleClassRelease,
@@ -317,7 +318,11 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
       };
     }
     default:
-      throw new LlvmUnsupportedError(`rc:${t.kind}`);
+      throw new LlvmUnsupportedError(
+        `rc:${t.kind}`,
+        undefined,
+        `a counted reference of type ${typeKey(t)}`,
+      );
   }
 }
 
@@ -593,7 +598,11 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
     case "object":
       return `@${mangleClassRelease(t.className)}`;
     default:
-      throw new LlvmUnsupportedError(`rc:${t.kind}`);
+      throw new LlvmUnsupportedError(
+        `rc:${t.kind}`,
+        undefined,
+        `a counted reference of type ${typeKey(t)}`,
+      );
   }
 }
 
@@ -1259,7 +1268,11 @@ function elemKindNum(elem: IrType): number {
     case "bytes":
       return 4; // SCR_ELEM_BYTES
     default:
-      throw new LlvmUnsupportedError(`arrayElem:${elem.kind}`);
+      throw new LlvmUnsupportedError(
+        `arrayElem:${elem.kind}`,
+        undefined,
+        `an array of ${typeKey(elem)} elements`,
+      );
   }
 }
 
@@ -1392,7 +1405,7 @@ export function boxNewCall(host: ShapeHost, t: IrType): string {
     host.declare(`declare ptr @scr_box_new_obj(ptr, ptr, ptr)`);
     return `call ptr @scr_box_new_obj(ptr ${v.retain}, ptr ${v.release}, ptr ${traceArg(host, t)})`;
   }
-  throw new LlvmUnsupportedError(`box:${t.kind}`);
+  throw new LlvmUnsupportedError(`box:${t.kind}`, undefined, `a boxed value of type ${typeKey(t)}`);
 }
 
 /** Box accessor suffix (boxAccess): scalars unboxed, ref kinds pointers. */
@@ -1418,7 +1431,7 @@ export function llFieldType(
     case "bool":
       return "i8";
     default:
-      throw new LlvmUnsupportedError(`type:${t.kind}`);
+      throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
   }
 }
 
@@ -1462,7 +1475,11 @@ export function mapKeyAccess(key: IrType): MapKeyAccess {
     key.kind === "dyn"
   )
     return "ref";
-  throw new LlvmUnsupportedError(`mapKey:${key.kind}`);
+  throw new LlvmUnsupportedError(
+    `mapKey:${key.kind}`,
+    undefined,
+    `a Map or Set keyed by ${typeKey(key)}`,
+  );
 }
 
 export function mapKeyLlType(access: MapKeyAccess): "double" | "i1" | "ptr" {
@@ -1490,8 +1507,18 @@ export function mapKeyKindNum(key: IrType, unionArms?: IrType[]): number {
   // signature adapter is the key of the function it adapts. A union with a
   // function arm keys each arm by its own kind (SCR_MAP_KEY_UNION_VALUE).
   if (key.kind === "func") return 10;
+  // SCR_MAP_KEY_PROMISE (11): a reference key compared by the identity cell
+  // its adapter boxes share (collectionOps adds scr_promise_map_identity).
+  if (key.kind === "promise") return 11;
+  // A union with a function or promise arm keys each arm by its own kind
+  // (SCR_MAP_KEY_UNION_VALUE): both compare an identity their payload
+  // pointer does not carry.
   if (key.kind === "union")
-    return unionArms?.every((arm) => isIdentityCollectionKey(arm) && arm.kind !== "func") ? 3 : 7;
+    return unionArms?.every(
+      (arm) => isIdentityCollectionKey(arm) && arm.kind !== "func" && arm.kind !== "promise",
+    )
+      ? 3
+      : 7;
   const acc = mapKeyAccess(key);
   return acc === "f64" ? 0 : acc === "str" ? 1 : 2;
 }
@@ -2484,8 +2511,14 @@ export function emitRecordShapes(
         refMembers.map((m) => m.type),
         directTargets,
       );
-    // Closed layouts can carry a kept record source (record-sources.ts).
-    const observers = recordMayKeepSource(shape) ? "weak-or-source" : "weak";
+    // Closed layouts can carry a kept record source (record-sources.ts), and
+    // so can the record a partial view views, also one without fields (an
+    // empty literal asserted to a wider type): the properties its views add
+    // are kept by its address, and must go when it is freed.
+    const observers =
+      recordMayKeepSource(shape) || host.recordViews?.partialSources.has(shape.id) === true
+        ? "weak-or-source"
+        : "weak";
     // A segmented teardown loads its fields, releases its own block, and
     // then releases the fields (segmentTeardownLines).
     const loads: string[] = [];
@@ -2661,7 +2694,14 @@ export function emitRecordShapes(
           // viewed record lacks, so the copy stops with the program's own
           // message (a source-level read threw first).
           const partial = host.recordViews.partialTargets.has(shape.id);
-          host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+          // A type whose values may be frozen asks about a marked source: a
+          // frozen record answers its own slot.
+          const marked = host.recordViews.marked.has(shape.id);
+          host.declare(
+            marked
+              ? `declare ptr @scr_record_marked_slot(ptr, ${host.sizeType}, ptr)`
+              : `declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`,
+          );
           const fromView = partial
             ? [
                 `  %sn${i} = icmp eq ptr %sw${i}, null`,
@@ -2677,7 +2717,9 @@ export function emitRecordShapes(
             ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
             `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
             `sv${i}.view:`,
-            `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
+            marked
+              ? `  %sw${i} = call ptr @scr_record_marked_slot(ptr %src, ${host.sizeType} ${i}, ptr %so${i})`
+              : `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
             ...fromView,
             `sv${i}.join:`,
             `  %sp${i} = phi ptr [ %so${i}, %${i === 0 ? "entry" : `sv${i - 1}.join`} ], [ %sw${i}, %sv${i}.view ]`,

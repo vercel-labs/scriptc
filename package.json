@@ -23,6 +23,7 @@
     "test:test262": "tsx tests/test262/run.ts",
     "test:test262:fetch": "node tests/test262/fetch.mjs",
     "test:cache-identity": "node tests/harness/cache-identity.mjs",
+    "test:generative": "node tests/harness/generative/run.mjs",
     "test:lowering-order": "node scripts/lowering-order.mjs --fail-on names",
     "test:recorded-lowering": "node scripts/recorded-lowering.mjs",
     "test:sandbox": "node scripts/sandbox-test.mjs",

@@ -578,16 +578,28 @@ export function lowerLambda(
           let stripped: ts.Expression = bodyExpr;
           while (ts.isParenthesizedExpression(stripped)) stripped = stripped.expression;
           // An untyped body value where the result is declared `undefined`
-          // is checked, as `return` checks it (lowerReturnOf).
+          // is checked, as `return` checks it (lowerReturnOf). The body
+          // keeps its statement lowering, so a conditional's arms stay lazy
+          // branches (a `void e` arm among them) and each untyped arm is
+          // checked where it is the result.
           const checksUndefined =
             !isAsync &&
             !ts.isVoidExpression(stripped) &&
             (lowerer.typeOf(stripped).flags & ts.TypeFlags.Any) !== 0 &&
             returnsDeclaredUndefined(lowerer, bodyExpr);
-          if (
-            !checksUndefined &&
-            (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped))
-          ) {
+          if (checksUndefined) {
+            body = [
+              lowerer.lowerExprStatement(stripped, (arm) => {
+                if (ts.isVoidExpression(arm)) return null;
+                if ((lowerer.typeOf(arm).flags & ts.TypeFlags.Any) === 0) return null;
+                const value = lowerer.lowerExpr(arm);
+                const loc = locOf(arm);
+                return value.type.kind === "dyn"
+                  ? { kind: "block", body: undefinedResultCheck(lowerer, value, loc), loc }
+                  : { kind: "exprStmt", expr: value, loc };
+              }),
+            ];
+          } else if (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped)) {
             body = [lowerer.lowerExprStatement(stripped)];
           } else {
             const value = lowerer.lowerExpr(bodyExpr);
@@ -602,8 +614,6 @@ export function lowerLambda(
                 : isAsync && value.type.kind === "promise"
                   ? [lowerer.adoptingReturn(value, VOID, (e) => e)]
                   : [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }];
-            if (checksUndefined && value.type.kind === "dyn")
-              body = undefinedResultCheck(lowerer, value, locOf(node.body!));
           }
         } else {
           // Concise and block bodies use the same destination layout for

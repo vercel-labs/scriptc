@@ -1397,6 +1397,10 @@ console.log(typeof read(), read() === undefined);
       function conditional(): undefined { return flag ? five() : undefined; }
       const concise = (): undefined => five();
       const conciseConditional = (): undefined => (flag ? five() : undefined);
+      let effects = 0;
+      const effect = (): void => { effects++; };
+      const conciseVoidArm = (): undefined => (flag ? five() : void effect());
+      const conciseVoidTaken = (): undefined => (flag ? void effect() : five());
       class Holder {
         method(): undefined { return five(); }
         static make(): undefined { return five(); }
@@ -1411,6 +1415,9 @@ console.log(typeof read(), read() === undefined);
       run("conditional", () => conditional());
       run("concise", () => concise());
       run("conciseConditional", () => conciseConditional());
+      run("conciseVoidArm", () => conciseVoidArm());
+      run("conciseVoidTaken", () => conciseVoidTaken());
+      console.log("effects", effects);
       run("method", () => new Holder().method());
       run("static", () => Holder.make());
       declared();
@@ -1420,17 +1427,15 @@ console.log(typeof read(), read() === undefined);
       "TypeError a value other than undefined is not representable in a result declared 'undefined' (an untyped value returned it)";
     expect(r.stdout).toBe(
       [
-        "declared",
-        "aliased",
-        "null",
-        "conditional",
-        "concise",
-        "conciseConditional",
-        "method",
-        "static",
-      ]
-        .map((label) => `${label} ${message}\n`)
-        .join(""),
+        ...["declared", "aliased", "null", "conditional", "concise", "conciseConditional"].map(
+          (label) => `${label} ${message}`,
+        ),
+        `conciseVoidArm ${message}`,
+        "conciseVoidTaken undefined",
+        "effects 1",
+        ...["method", "static"].map((label) => `${label} ${message}`),
+        "",
+      ].join("\n"),
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain("a value other than undefined is not representable");

@@ -9304,7 +9304,14 @@ function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpressi
   };
 }
 
-export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
+/** `leaf`, when given, may lower an expression that is not a conditional
+ * (the statement itself, or an arm of a discarded conditional at any
+ * depth) in its own way; null leaves it to the statement lowering. */
+export function lowerExprStatement(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  leaf?: (expr: ts.Expression) => IrStmt | null,
+): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   // Node islands (scope-B NI-4): writes and calls on island values.
@@ -9321,18 +9328,22 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
   if (ts.isConditionalExpression(expr)) {
     const cond = lowerer.lowerCondition(expr.condition);
     if (cond.kind === "boolLit") {
-      return lowerExprStatement(lowerer, cond.value ? expr.whenTrue : expr.whenFalse);
+      return lowerExprStatement(lowerer, cond.value ? expr.whenTrue : expr.whenFalse, leaf);
     }
     const then = lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, expr.condition, true), () =>
       withRuntimeOptionalNarrowed(lowerer, runtimeOptionalTrueIds(lowerer, expr.condition), () => [
-        lowerExprStatement(lowerer, expr.whenTrue),
+        lowerExprStatement(lowerer, expr.whenTrue, leaf),
       ]),
     );
     const else_ = lowerer.narrowingAliases(
       aliasTypeofNarrows(lowerer, expr.condition, false),
-      () => [lowerExprStatement(lowerer, expr.whenFalse)],
+      () => [lowerExprStatement(lowerer, expr.whenFalse, leaf)],
     );
     return { kind: "if", cond, then, else_, loc: locOf(expr) };
+  }
+  if (leaf !== undefined) {
+    const lowered = leaf(expr);
+    if (lowered !== null) return lowered;
   }
   // Assignment statements over the no-storage binding families:
   //   - `f1 = f2` where the RHS roots at an ambient-undefined name:

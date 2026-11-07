@@ -29,6 +29,16 @@ function early(): undefined {
 }
 const concise = (): undefined => absent();
 const conciseConditional = (): undefined => (flag ? counted() : undefined);
+// A conditional body keeps its arms lazy: a `void e` arm runs for its effect
+// only when it is selected, beside an untyped arm that is the result.
+let effects = 0;
+function effect(): void {
+  effects++;
+}
+const conciseVoidArm = (): undefined => (flag ? counted() : void effect());
+const conciseVoidTaken = (): undefined => (flag ? void effect() : counted());
+const conciseNested = (): undefined =>
+  flag ? (effects > 99 ? void effect() : counted()) : undefined;
 class Holder {
   method(): undefined {
     return counted();
@@ -58,11 +68,14 @@ show("conditional", () => conditional());
 show("early", () => early());
 show("concise", () => concise());
 show("conciseConditional", () => conciseConditional());
+show("conciseVoidArm", () => conciseVoidArm());
+show("conciseVoidTaken", () => conciseVoidTaken());
+show("conciseNested", () => conciseNested());
 show("method", () => new Holder().method());
 show("static", () => Holder.make());
 show("literal", () => literal.method());
 show("typed", () => typed());
 show("void", () => nothing());
-console.log(evaluations);
+console.log(evaluations, effects);
 const results: unknown[] = [declared(), concise(), new Holder().method()];
 console.log(results, results.every((value) => value === undefined));

@@ -18103,8 +18103,8 @@ export class Lowerer {
     return lowerTry(this, stmt);
   }
 
-  lowerExprStatement(expr: ts.Expression): IrStmt {
-    return lowerExprStatement(this, expr);
+  lowerExprStatement(expr: ts.Expression, leaf?: (expr: ts.Expression) => IrStmt | null): IrStmt {
+    return lowerExprStatement(this, expr, leaf);
   }
 
   lowerForOf(stmt: ts.ForOfStatement): IrStmt {

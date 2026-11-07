@@ -39,7 +39,7 @@ import { type IslandPackage, nodeIslandSet, type NodeIslandSet } from "./boundar
 import { packageDirOf, packageVersionOf } from "./origin.js";
 import { isMarkedUserModule, type NodeIslandPolicy } from "./policy.js";
 import { classRank, reportRank, ruleInfo } from "./rules.js";
-import type { NodeIslandScan, RefusalRecord } from "./scan.js";
+import { scannedPackageDir, type NodeIslandScan, type RefusalRecord } from "./scan.js";
 
 /** One dependency's native compilation outcome (coverage/report.ts's
  * NpmStaticStatus, restated to keep this module free of coverage). */
@@ -166,9 +166,26 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     out.add(s.key);
   }
   // Lowering refusals and fences inside npm modules.
+  const compiled = new Set<string>(
+    input.npm.filter((e) => e.status === "static").map((e) => e.package),
+  );
   const addDiagnostics = (diags: readonly ScrDiagnostic[], source: NodeIslandReasonSource) => {
     for (const d of diags) {
       if (!isIslandReasonCode(d.code)) continue;
+      // A use of an export a compiled package's module does not provide as
+      // a binding (ScrDiagnostic.exportOf) is that package's refusal,
+      // wherever the use is; a use in the program's own modules names no
+      // package there. growth.ts attributes it the same way, so a program
+      // whose only island reason is such a use is reported here as the
+      // island a build would choose.
+      if (d.exportOf !== undefined && compiled.has(d.exportOf.package)) {
+        const exporter = d.exportOf.package;
+        if (ignored(exporter)) continue;
+        const dir = scannedPackageDir(input.scan, exporter);
+        if (dir === null) continue;
+        addReason(state(exporter, dir), classifyDiagnostic(d, source));
+        continue;
+      }
       const at = packageDirOf(d.loc.file);
       if (at === null || ignored(at.name)) continue;
       addReason(state(at.name, at.dir), classifyDiagnostic(d, source));

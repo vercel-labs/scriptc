@@ -281,6 +281,13 @@ const COPIED =
   ts.TypeFlags.Undefined |
   ts.TypeFlags.Void;
 
+/** Whether a checker type is a primitive the boundary copies: a number,
+ * string, boolean or bigint (literal types included), null, undefined or
+ * void. */
+export function isCopiedTsType(type: ts.Type): boolean {
+  return (type.flags & COPIED) !== 0;
+}
+
 export function crossingOf(
   islands: NodeIslandSet,
   type: ts.Type,
@@ -288,12 +295,17 @@ export function crossingOf(
 ): BoundaryCrossing {
   if (type.isUnionType()) {
     const arms = ts.constituentTypes(type);
-    if (arms.every((t) => (t.flags & COPIED) !== 0)) return "copy";
+    if (arms.every(isCopiedTsType)) return "copy";
     if (isForeignType(islands, type, checker)) return "handle";
     return "refused";
   }
-  if ((type.flags & COPIED) !== 0) return "copy";
+  if (isCopiedTsType(type)) return "copy";
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return "dyn";
+  // Checker flow can narrow a live value to never (a failed type
+  // predicate whose type is `unknown` subtracts every member). The value
+  // still exists at run time, so it crosses as a handle-agnostic dyn
+  // value rather than a refusal; nothing can observe an uninhabited type.
+  if ((type.flags & ts.TypeFlags.Never) !== 0) return "dyn";
   if (isForeignType(islands, type, checker)) return "handle";
   return "refused";
 }

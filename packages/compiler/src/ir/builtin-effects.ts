@@ -821,6 +821,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.primitiveDelete",
   "dyn.reflectDeleteProperty",
   "dyn.reflectHasTarget",
+  "dyn.reflectGetPrototypeTarget",
   "dyn.hasKeyComputed",
   // `… in globalThis` over a name the runtime does not provide throws
   "dyn.globalHas",
@@ -1057,6 +1058,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
   "fs.writeFileSyncBytes",
+  "fs.writeFileSyncBytesFlags",
   "fs.writeFileSyncFd",
   "fs.appendFileSyncBytes",
   "zlib.inflateSync",
@@ -1187,7 +1189,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.fsStreamClose",
   "fs.fsStreamCloseCb",
   "dir.readSync",
+  "dir.readCb",
   "dir.closeSync",
+  // Symbol.dispose is closeSync on an open Dir: ERR_DIR_CONCURRENT_OPERATION
+  // while an operation is queued.
+  "dir.dispose",
   "fs.copyFileSync",
   "fs.copyFileFlagsSync",
   "fs.renameSync",

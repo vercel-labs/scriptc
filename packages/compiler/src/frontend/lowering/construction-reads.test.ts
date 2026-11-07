@@ -161,6 +161,27 @@ test("reading a method does not run it, calling it and reading an accessor do", 
   expect(early(source, "Account")).toEqual(["balance", "name"]);
 });
 
+test("call, apply, bind and a method handed to a call can run the method", () => {
+  const source = `
+    class Explicit {
+      constructor(items: number[]) {
+        this.viaCall.call(this);
+        this.viaApply.apply(this, []);
+        const bound = this.viaBind.bind(this);
+        items.forEach(this.viaArgument, this);
+        const stored = this.onlyStored;
+        this.a = 1; this.b = 2; this.c = 3; this.d = 4; this.e = 5;
+      }
+      a: number; b: number; c: number; d: number; e: number;
+      viaCall(): number { return this.a; }
+      viaApply(): number { return this.b; }
+      viaBind(): number { return this.c; }
+      viaArgument(): number { return this.d; }
+      onlyStored(): number { return this.e; }
+    }`;
+  expect(early(source, "Explicit")).toEqual(["a", "b", "c", "d"]);
+});
+
 test("a computed write through this is not a read", () => {
   const source = `
     const key = Symbol("key");

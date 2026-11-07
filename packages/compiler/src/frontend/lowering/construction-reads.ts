@@ -135,19 +135,25 @@ function isPlainWriteTarget(access: ts.Node): boolean {
   );
 }
 
-/** Whether the member access `node` is what a call calls. */
-function isCallee(node: ts.Node): boolean {
-  let callee = node;
+/** Whether the member access `node` can run the method it names: a call
+ * calls it, `.call`, `.apply` or `.bind` is taken of it, or it is an
+ * argument of a call, which may invoke it. A method that is only read or
+ * stored is handed on without running. */
+function mayRun(node: ts.Node): boolean {
+  let value = node;
   while (
-    callee.parent !== undefined &&
-    (ts.isParenthesizedExpression(callee.parent) || ts.isNonNullExpression(callee.parent))
+    value.parent !== undefined &&
+    (ts.isParenthesizedExpression(value.parent) || ts.isNonNullExpression(value.parent))
   )
-    callee = callee.parent;
-  const parent = callee.parent;
+    value = value.parent;
+  const parent = value.parent;
+  if (parent === undefined) return false;
+  if (ts.isCallExpression(parent) || ts.isNewExpression(parent)) return true;
+  if (ts.isTaggedTemplateExpression(parent)) return parent.tag === value;
   return (
-    parent !== undefined &&
-    ((ts.isCallExpression(parent) && parent.expression === callee) ||
-      (ts.isTaggedTemplateExpression(parent) && parent.tag === callee))
+    ts.isPropertyAccessExpression(parent) &&
+    parent.expression === value &&
+    (parent.name.text === "call" || parent.name.text === "apply" || parent.name.text === "bind")
   );
 }
 
@@ -188,8 +194,8 @@ export function constructionReads(
   bases: readonly ts.ClassLikeDeclaration[],
   hierarchy: ClassHierarchy,
 ): ConstructionReads {
-  // What a `this.name(...)` call runs (a method, or a field holding a
-  // function, which the call runs with the instance as its receiver) and
+  // What running `this.name` runs (a method, or a field holding a
+  // function, which a call runs with the instance as its receiver) and
   // what any `this.name` access runs (an accessor).
   const calledByName = new Map<string, ts.Node[]>();
   const accessedByName = new Map<string, ts.Node[]>();
@@ -258,8 +264,7 @@ export function constructionReads(
       if ((called || insideArrow(node, root)) && !write && !readAt.has(name))
         readAt.set(name, step);
       enter(accessedByName.get(name));
-      // Reading a method hands its value on without running it.
-      if (isCallee(node)) enter(calledByName.get(name));
+      if (mayRun(node)) enter(calledByName.get(name));
       return undefined;
     });
   };

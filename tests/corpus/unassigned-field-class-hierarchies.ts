@@ -82,6 +82,48 @@ const titled = new Titled();
 console.log(titled.display, titled.touched);
 titled.touch();
 
+// The method is run through `call`, `apply`, a bound copy or as a callback
+// the constructor hands to a function.
+class Wired {
+  constructor() {
+    console.log(this.first.call(this), this.second.apply(this, []));
+    const third = this.third.bind(this);
+    console.log(third(), [0].map(this.fourth, this).join());
+  }
+  first(): string {
+    return "first";
+  }
+  second(): string {
+    return "second";
+  }
+  third(): string {
+    return "third";
+  }
+  fourth(): string {
+    return "fourth";
+  }
+}
+class WiredFields extends Wired {
+  a = "a";
+  b = 2;
+  c: string[] = ["c"];
+  d = true;
+  first(): string {
+    return this.a ?? "no a";
+  }
+  second(): string {
+    return this.b === undefined ? "no b" : String(this.b);
+  }
+  third(): string {
+    return this.c === undefined ? "no c" : this.c.join();
+  }
+  fourth(): string {
+    return typeof this.d;
+  }
+}
+const wired = new WiredFields();
+console.log(wired.first(), wired.second(), wired.third(), wired.fourth());
+
 // A class's own constructor calls its own method before assigning.
 class Settings {
   retries: number;

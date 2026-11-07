@@ -1710,6 +1710,9 @@ function lowerArraySearchValues(
 
   // Preserve the existing fast path for an ordinary, non-union needle. Its
   // runtime implementation already has exact primitive/reference equality.
+  // A func needle of another signature cannot take it: the intrinsic types
+  // its needle at the element type. The adapted path below keeps the
+  // original's identity root, so the search still compares by identity.
   if (
     method !== "lastIndexOf" &&
     call.arguments.nodes.length === 1 &&

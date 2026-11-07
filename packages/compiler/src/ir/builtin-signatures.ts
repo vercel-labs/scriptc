@@ -1878,6 +1878,15 @@ function buildLibFnSignatures() {
      * 6 drop — the scr_net.h SCR_NET_OFF_* values); Node removes the most
      * recently added matching listener. Never throws. */
     "net.serverOff": { argTypes: [NETSERVER_T, null, F64], result: VOID },
+    /** server.off of HTTP events (kinds 7–13): request, upgrade, connect,
+     * checkContinue, checkExpectation, clientError, newListener. */
+    "http.serverOff": { argTypes: [NETSERVER_T, null, F64], result: VOID },
+    /** server.listeners(event) for those HTTP event lists: +1 closure array
+     * in registration order (the IR type is the event's listener array). */
+    "http.serverListeners": { argTypes: [NETSERVER_T, F64], result: VOID },
+    /** server.on("newListener", cb): fires BEFORE each later HTTP listener
+     * add, with the event name (and optionally the listener). */
+    "http.serverOnNewListener": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     /** 'secureConnection' — the TLS server's deferred 'connection' list
      * (handshake-completion timing); on a server without deferred
      * connections (a plain net server) the registration never fires,

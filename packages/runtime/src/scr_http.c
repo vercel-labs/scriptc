@@ -3183,10 +3183,18 @@ typedef struct ScrHttpSrvCtx {
   ScrNetLs upgrade_ls;
   ScrNetLs connect_ls; /* HTTP CONNECT — the upgrade machinery's twin */
   ScrNetLs client_error_ls; /* 'clientError' (err, socket) */
+#ifdef SCR_HTTP_SERVER_META
+  ScrNetLs new_listener_ls; /* 'newListener' (name, listener) — fires BEFORE add */
+#endif
   bool join_dup; /* createServer({ joinDuplicateHeaders: true }) */
   size_t max_header_size; /* createServer({ maxHeaderSize }); 0 = the default */
   bool require_host_header; /* HTTP/1.1 Host is required by default */
 } ScrHttpSrvCtx;
+
+#ifdef SCR_HTTP_SERVER_META
+static bool scr_http_prepare_add(ScrHttpSrvCtx *ctx, const char *event, size_t n,
+                                 ScrClosure *cb /*borrowed*/);
+#endif
 
 static ScrHttpSrvCtx *scr_http_srv_ctx_retain(ScrHttpSrvCtx *ctx) {
   ctx->rc++;
@@ -3201,6 +3209,9 @@ static void scr_http_srv_ctx_release(ScrHttpSrvCtx *ctx) {
   scr_net_ls_drop(&ctx->upgrade_ls);
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->client_error_ls);
+#ifdef SCR_HTTP_SERVER_META
+  scr_net_ls_drop(&ctx->new_listener_ls);
+#endif
   free(ctx);
 }
 
@@ -3219,6 +3230,9 @@ static void scr_http_srv_ctx_settle(void *p) {
   scr_net_ls_drop(&ctx->upgrade_ls);
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->client_error_ls);
+#ifdef SCR_HTTP_SERVER_META
+  scr_net_ls_drop(&ctx->new_listener_ls);
+#endif
 }
 
 /* Combined HTTP/2 allowHTTP1 servers retain the HTTP/1 parser ctx behind
@@ -3232,6 +3246,13 @@ void scr_http1_ctx_on_request(void *p, ScrClosure *cb /*moves*/, ScrHttpReqFn fn
     scr_net_once_release(shared_once);
     return;
   }
+#ifdef SCR_HTTP_SERVER_META
+  if (!scr_http_prepare_add(ctx, "request", 7, cb)) {
+    scr_closure_release(cb);
+    scr_net_once_release(shared_once);
+    return;
+  }
+#endif
   if (shared_once != NULL) {
     scr_net_ls_add_shared_once(&ctx->request_ls, cb, (void *)fn, shared_once);
   } else {
@@ -3247,6 +3268,13 @@ void scr_http1_ctx_on_connect(void *p, ScrClosure *cb /*moves*/, ScrHttpUpgradeF
     scr_net_once_release(shared_once);
     return;
   }
+#ifdef SCR_HTTP_SERVER_META
+  if (!scr_http_prepare_add(ctx, "connect", 7, cb)) {
+    scr_closure_release(cb);
+    scr_net_once_release(shared_once);
+    return;
+  }
+#endif
   if (shared_once != NULL) {
     scr_net_ls_add_shared_once(&ctx->connect_ls, cb, (void *)fn, shared_once);
   } else {
@@ -3260,6 +3288,12 @@ void scr_http1_ctx_on_upgrade(void *p, ScrClosure *cb /*moves*/, ScrHttpUpgradeF
     scr_closure_release(cb);
     return;
   }
+#ifdef SCR_HTTP_SERVER_META
+  if (!scr_http_prepare_add(ctx, "upgrade", 7, cb)) {
+    scr_closure_release(cb);
+    return;
+  }
+#endif
   scr_net_ls_add(&ctx->upgrade_ls, cb, (void *)fn, once);
 }
 
@@ -4379,6 +4413,98 @@ void scr_http_server_allow_missing_host_header(ScrNetServer *s) {
   if (ctx != NULL && ctx->proto == SCR_NET_PROTO_HTTP1) ctx->require_host_header = false;
 }
 
+#ifdef SCR_HTTP_SERVER_META
+/* Node emits 'newListener' BEFORE the listener is added. Snapshot so a
+ * handler that offs itself (the httpResponseErrorGuard handoff) cannot
+ * skip later entries. */
+static void scr_http_fire_new_listener(ScrHttpSrvCtx *ctx, const char *event, size_t n,
+                                       ScrClosure *listener /*borrowed*/) {
+  if (ctx->new_listener_ls.n == 0) return;
+  ScrStr *name = scr_str_new(event, n);
+  ScrNetL *snap;
+  size_t nsnap = scr_net_ls_snapshot(&ctx->new_listener_ls, &snap);
+  for (size_t i = 0; i < nsnap; i++) {
+    if (!scr_exc_pending()) {
+      typedef void (*Fn)(ScrClosure *, ScrStr *, ScrClosure *);
+      scr_str_retain(name);
+      scr_closure_retain(listener);
+      ((Fn)snap[i].fn)(snap[i].cb, name, listener);
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  free(snap);
+  scr_str_release(name);
+}
+
+static bool scr_http_prepare_add(ScrHttpSrvCtx *ctx, const char *event, size_t n,
+                                 ScrClosure *cb /*borrowed*/) {
+  scr_http_fire_new_listener(ctx, event, n, cb);
+  return !scr_exc_pending();
+}
+
+static ScrNetLs *scr_http_ls_for_kind(ScrHttpSrvCtx *ctx, double kind) {
+  if (kind == SCR_HTTP_OFF_REQUEST) return &ctx->request_ls;
+  if (kind == SCR_HTTP_OFF_UPGRADE) return &ctx->upgrade_ls;
+  if (kind == SCR_HTTP_OFF_CONNECT) return &ctx->connect_ls;
+  if (kind == SCR_HTTP_OFF_CHECK_CONTINUE) return &ctx->check_continue_ls;
+  if (kind == SCR_HTTP_OFF_CHECK_EXPECTATION) return &ctx->check_expectation_ls;
+  if (kind == SCR_HTTP_OFF_CLIENT_ERROR) return &ctx->client_error_ls;
+  if (kind == SCR_HTTP_OFF_NEW_LISTENER) return &ctx->new_listener_ls;
+  return NULL;
+}
+
+static ScrArrOps scr_http_closure_arr_ops = { &scr_closure_retain_v, &scr_closure_release_v,
+                                              &scr_closure_trace_v };
+
+void scr_http_new_listener_thunk2(ScrClosure *cb, ScrStr *name, ScrClosure *listener) {
+  ((void (*)(ScrClosure *, ScrStr *, ScrClosure *))cb->fn)(cb, name, listener);
+}
+void scr_http_new_listener_thunk1(ScrClosure *cb, ScrStr *name, ScrClosure *listener) {
+  scr_closure_release(listener);
+  ((void (*)(ScrClosure *, ScrStr *))cb->fn)(cb, name);
+}
+void scr_http_new_listener_thunk0(ScrClosure *cb, ScrStr *name, ScrClosure *listener) {
+  scr_str_release(name);
+  scr_closure_release(listener);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_http_server_on_new_listener(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn,
+                                     bool once) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1 || scr_net_server_settled(s)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (!scr_http_prepare_add(ctx, "newListener", 11, cb)) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&ctx->new_listener_ls, cb, fn, once);
+}
+
+void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) return;
+  ScrNetLs *l = scr_http_ls_for_kind(ctx, kind);
+  if (l != NULL) scr_net_ls_off(l, cb);
+}
+
+ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind) {
+  ScrArr *out = scr_arr_new_ops(&scr_http_closure_arr_ops, 0);
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) return out;
+  ScrNetLs *l = scr_http_ls_for_kind(ctx, kind);
+  if (l == NULL) return out;
+  for (size_t i = 0; i < l->n; i++) {
+    ScrClosure *c = l->ls[i].cb;
+    ScrClosure *root = c->identity ? c->identity : c;
+    scr_arr_push_ref(out, scr_closure_retain(root));
+  }
+  return out;
+}
+#endif
+
 /* Late 'request' listener installs (server.on/once("request", ...)): the
  * http2 allowHTTP1 server's handler route, and http.Server's 'request'
  * event. On a server with no HTTP parser the closure releases
@@ -4401,6 +4527,12 @@ void scr_http_server_on_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHt
     scr_closure_release(cb);
     return;
   }
+#ifdef SCR_HTTP_SERVER_META
+  if (!scr_http_prepare_add(ctx, "request", 7, cb)) {
+    scr_closure_release(cb);
+    return;
+  }
+#endif
   scr_net_ls_add(&ctx->request_ls, cb, (void *)fn, once);
 }
 
@@ -4412,6 +4544,13 @@ void scr_http_server_on_check(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttp
     scr_closure_release(cb);
     return;
   }
+#ifdef SCR_HTTP_SERVER_META
+  if (!scr_http_prepare_add(ctx, expectation ? "checkExpectation" : "checkContinue",
+                            expectation ? 16 : 13, cb)) {
+    scr_closure_release(cb);
+    return;
+  }
+#endif
   scr_net_ls_add(expectation ? &ctx->check_expectation_ls : &ctx->check_continue_ls, cb, (void *)fn,
                  once);
 }
@@ -4562,6 +4701,12 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
     scr_closure_release(cb);
     return;
   }
+#ifdef SCR_HTTP_SERVER_META
+  if (!scr_http_prepare_add(ctx, "connect", 7, cb)) {
+    scr_closure_release(cb);
+    return;
+  }
+#endif
   scr_net_ls_add(&ctx->connect_ls, cb, (void *)h1_fn, once);
 }
 
@@ -4573,6 +4718,12 @@ void scr_http_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
     scr_closure_release(cb);
     return;
   }
+#ifdef SCR_HTTP_SERVER_META
+  if (!scr_http_prepare_add(ctx, "clientError", 11, cb)) {
+    scr_closure_release(cb);
+    return;
+  }
+#endif
   scr_net_ls_add(&ctx->client_error_ls, cb, (void *)fn, once);
 }
 
@@ -4605,6 +4756,12 @@ void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHt
     scr_closure_release(cb);
     return;
   }
+#ifdef SCR_HTTP_SERVER_META
+  if (!scr_http_prepare_add(ctx, "upgrade", 7, cb)) {
+    scr_closure_release(cb);
+    return;
+  }
+#endif
   scr_net_ls_add(&ctx->upgrade_ls, cb, (void *)fn, once);
 }
 

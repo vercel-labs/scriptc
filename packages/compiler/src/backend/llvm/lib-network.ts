@@ -650,6 +650,22 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(`${t} = call ptr @scr_http_create_server(ptr ${cb}, ptr ${adapter})`);
     return host.own({ name: t, type: e.type });
   }
+  if (e.fn === "http.serverOnNewListener") {
+    const cbT = e.args[1]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError(
+        "llvm emitter bug: http.serverOnNewListener listener not a func",
+      );
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[1]!);
+    const adapter = `scr_http_new_listener_thunk${Math.min(cbT.params.length, 2)}`;
+    host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
+    host.declare(`declare void @scr_http_server_on_new_listener(ptr, ptr, ptr, i1 zeroext)`);
+    B.line(
+      `call void @scr_http_server_on_new_listener(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
+    );
+    return { name: "", type: e.type };
+  }
   if (e.fn === "http.serverOnRequest" || e.fn === "http.serverOnCheck") {
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")

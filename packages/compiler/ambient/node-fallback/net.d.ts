@@ -224,6 +224,8 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    /* Fires BEFORE each later listener add, with the event name. */
+    on(event: "newListener", listener: (event: string) => void): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     /* tls and https servers: a handshake that failed */
@@ -245,6 +247,7 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    addListener(event: "newListener", listener: (event: string) => void): void;
     once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     /* tls and https servers: a handshake that failed */
     once(
@@ -265,15 +268,24 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    once(event: "newListener", listener: (event: string) => void): void;
     /* off / removeListener: the LAST listener standing for the same
-     * function leaves that event's list (Node's EventEmitter order). The
-     * server registries that keep a removable list: error, close,
-     * listening, connection/secureConnection, timeout, and drop. */
+     * function leaves that event's list (Node's EventEmitter order). */
     off(event: "error", listener: (err: Error) => void): void;
     off(event: "close" | "listening", listener: () => void): void;
     off(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     off(event: "timeout", listener: (socket: Socket) => void): void;
     off(event: "drop", listener: (data?: DropArgument) => void): void;
+    off(
+      event: "request" | "checkContinue" | "checkExpectation",
+      listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
+    off(
+      event: "upgrade" | "connect",
+      listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
+    ): void;
+    off(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
+    off(event: "newListener", listener: (event: string) => void): void;
     removeListener(event: "error", listener: (err: Error) => void): void;
     removeListener(event: "close" | "listening", listener: () => void): void;
     removeListener(
@@ -282,6 +294,24 @@ declare module "net" {
     ): void;
     removeListener(event: "timeout", listener: (socket: Socket) => void): void;
     removeListener(event: "drop", listener: (data?: DropArgument) => void): void;
+    removeListener(
+      event: "request" | "checkContinue" | "checkExpectation",
+      listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
+    removeListener(
+      event: "upgrade" | "connect",
+      listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
+    ): void;
+    removeListener(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
+    removeListener(event: "newListener", listener: (event: string) => void): void;
+    listeners(
+      event: "request" | "checkContinue" | "checkExpectation",
+    ): Array<(req: import("http").IncomingMessage, res: import("http").ServerResponse) => void>;
+    listeners(
+      event: "upgrade" | "connect",
+    ): Array<(req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void>;
+    listeners(event: "clientError"): Array<(err: Error, socket: Socket) => void>;
+    listeners(event: "newListener"): Array<(event: string) => void>;
   }
   /* The 'drop' payload: the turned-away connection's addresses. */
   export interface DropArgument {

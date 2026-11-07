@@ -4654,6 +4654,24 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http.serverOnNewListener") {
+      const cbT = e.args[1]?.type;
+      let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 2;
+      if (ok && cbT?.kind === "func") {
+        const [p0, p1] = cbT.params;
+        if (p0 !== undefined && p0.kind !== "string") ok = false;
+        if (p1 !== undefined && p1.kind !== "func") ok = false;
+      }
+      if (!ok) {
+        err(`libCall http.serverOnNewListener handler shape (frontend must fence)`, e.loc);
+      }
+      return true;
+    }
+    if (e.fn === "http.serverListeners") {
+      const ok = e.type.kind === "array" && e.type.elem.kind === "func";
+      if (!ok) err(`libCall http.serverListeners must return a func array`, e.loc);
+      return true;
+    }
     if (e.fn === "http.serverOnRequest" || e.fn === "http.serverOnCheck") {
       // The 'request' listener: the same shape as http.createServer's
       // handler — void, at most (req, res) in order.

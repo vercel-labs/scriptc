@@ -258,8 +258,9 @@ export interface CcOptions {
   /** string_decoder's checked-dynamic chunk forms: compiles
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
-  /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
-   * stdin.isRaw and server.off. */
+  /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF / SCR_HTTP_SERVER_META:
+   * process.prependListener, stdin.isRaw, server.off, and HTTP Server
+   * listeners()/newListener. */
   processExtras?: boolean;
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */

@@ -2632,15 +2632,7 @@ void scr_net_server_on_close(ScrNetServer *s, ScrClosure *cb /*moves*/, bool onc
  * the most recently added match, so the scan runs back to front. The
  * SCR_NET_SERVER_OFF build of the unit carries it, so a program that never
  * removes a listener keeps the default object byte for byte. */
-void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind) {
-  ScrNetLs *l = kind == SCR_NET_OFF_ERROR      ? &s->err_ls
-                : kind == SCR_NET_OFF_CLOSE    ? &s->close_ls
-                : kind == SCR_NET_OFF_LISTENING ? &s->listening_cbs
-                : kind == SCR_NET_OFF_CONNECTION ? &s->conn_ls
-                : kind == SCR_NET_OFF_TIMEOUT  ? &s->timeout_ls
-                : kind == SCR_NET_OFF_DROP     ? &s->drop_ls
-                                               : NULL;
-  if (l == NULL) return;
+void scr_net_ls_off(ScrNetLs *l, ScrClosure *cb /*borrowed*/) {
   ScrClosure *root = cb->identity ? cb->identity : cb;
   for (size_t left = l->n; left > 0; left--) {
     size_t i = left - 1;
@@ -2651,6 +2643,18 @@ void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kin
     l->n--;
     return;
   }
+}
+
+void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind) {
+  ScrNetLs *l = kind == SCR_NET_OFF_ERROR      ? &s->err_ls
+                : kind == SCR_NET_OFF_CLOSE    ? &s->close_ls
+                : kind == SCR_NET_OFF_LISTENING ? &s->listening_cbs
+                : kind == SCR_NET_OFF_CONNECTION ? &s->conn_ls
+                : kind == SCR_NET_OFF_TIMEOUT  ? &s->timeout_ls
+                : kind == SCR_NET_OFF_DROP     ? &s->drop_ls
+                                               : NULL;
+  if (l == NULL) return;
+  scr_net_ls_off(l, cb);
 }
 #endif
 

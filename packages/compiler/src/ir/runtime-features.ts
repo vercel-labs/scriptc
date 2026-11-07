@@ -1972,12 +1972,16 @@ const RUNTIME_FEATURE_RULES = {
    * scr_bytes_strdec_dyn.c. */
   strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
   /** The process and stream event registries' extras — prependListener for
-   * signals, 'exit' and uncaught exceptions, stdin.isRaw, and server.off:
-   * the SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and
-   * the SCR_NET_SERVER_OFF build of scr_net.c. */
+   * signals, 'exit' and uncaught exceptions, stdin.isRaw, server.off, and
+   * HTTP Server meta (off/listeners/newListener): the SCR_PROCESS_EXTRAS
+   * builds of scr_events.c and scr_async_dyn.c, the SCR_NET_SERVER_OFF
+   * build of scr_net.c, and the SCR_HTTP_SERVER_META build of scr_http.c. */
   processExtras: rule({
     fns: [
       "net.serverOff",
+      "http.serverOff",
+      "http.serverListeners",
+      "http.serverOnNewListener",
       "process.prependExit",
       "process.prependSignal",
       "process.prependUncaughtException",

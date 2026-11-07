@@ -62,9 +62,10 @@ export interface NativeLinkFeatures {
   fsBytesWrites?: boolean;
   /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
-  /** process.prependListener, stdin.isRaw or server.off: the
-   * SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and the
-   * SCR_NET_SERVER_OFF build of scr_net.c. */
+  /** process.prependListener, stdin.isRaw, server.off, or HTTP Server
+   * listeners()/newListener: the SCR_PROCESS_EXTRAS builds of
+   * scr_events.c and scr_async_dyn.c, the SCR_NET_SERVER_OFF build of
+   * scr_net.c, and the SCR_HTTP_SERVER_META build of scr_http.c. */
   processExtras?: boolean;
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */

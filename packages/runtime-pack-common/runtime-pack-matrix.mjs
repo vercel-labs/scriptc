@@ -444,6 +444,16 @@ export function variantsFor(source) {
       defines: ["SCR_NET_SERVER_OFF"],
     });
   }
+  // HTTP Server off/listeners/newListener: a build of its own so a
+  // program that never inspects or removes HTTP listeners keeps the
+  // default object, byte for byte.
+  if (source === "scr_http.c") {
+    variants.push({
+      id: "server-meta",
+      when: { processExtras: true },
+      defines: ["SCR_HTTP_SERVER_META"],
+    });
+  }
   // Programs with web streams link the promise unit with native promise
   // reactions, the builtin-class unit whose instanceof knows their classes,
   // and the fetch unit that takes their streams as bodies; every other

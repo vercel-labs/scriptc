@@ -329,3 +329,77 @@ console.log(readChosen(), readLoaded(), typeof readLogged());
   expect(globalType(mod, "loaded")).toBe("f64");
   expect(globalType(mod, "logged")).toBe("union");
 });
+
+/** The errors the module's code can throw through `error.nodeThrow`, as
+ * `code: message`. */
+function nodeThrows(mod: IrModule): string[] {
+  const out: string[] = [];
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (node === null || typeof node !== "object") return;
+    const expr = node as { kind?: string; fn?: string; args?: { value?: unknown }[] };
+    if (expr.kind === "libCall" && expr.fn === "error.nodeThrow")
+      out.push(`${String(expr.args?.[1]?.value)}: ${String(expr.args?.[2]?.value)}`);
+    Object.values(node).forEach(visit);
+  };
+  visit(mod.functions);
+  return out;
+}
+
+test("a required library callback reads an early-read binding's function", async () => {
+  const mod = await lower(`
+import { EventEmitter } from "node:events";
+function wire(emitter: EventEmitter): void {
+  let heard: (text: string) => void;
+  let visit: (value: number) => void;
+  const install = (): void => {
+    heard = (text) => console.log(text);
+    visit = (value) => console.log(value);
+  };
+  const arm = (): void => {
+    emitter.on("word", heard);
+    [1, 2].forEach(visit);
+  };
+  install();
+  arm();
+}
+wire(new EventEmitter());
+`);
+  expect(localType(mod, "wire", "heard")).toBe("union");
+  expect(localType(mod, "wire", "visit")).toBe("union");
+  expect(nodeThrows(mod)).toEqual(
+    expect.arrayContaining([
+      'ERR_INVALID_ARG_TYPE: The "listener" argument must be of type function. Received undefined',
+      ": undefined is not a function",
+    ]),
+  );
+});
+
+test("an optional library callback and a program function keep the stored value", async () => {
+  const mod = await lower(`
+function call(run: (text: string) => string): string {
+  return run === undefined ? "absent" : run("present");
+}
+function wire(): void {
+  let replace: (key: string, value: unknown) => unknown;
+  let map: (text: string) => string;
+  const install = (): void => {
+    replace = (key, value) => value;
+    map = (text) => text;
+  };
+  const arm = (): void => {
+    console.log(JSON.stringify({ a: 1 }, replace));
+    void Promise.resolve("x").then(map);
+    console.log(call(map));
+  };
+  if (process.argv.length > 5) install();
+  arm();
+}
+wire();
+`);
+  expect(localType(mod, "wire", "replace")).toBe("union");
+  expect(localType(mod, "wire", "map")).toBe("union");
+  expect(
+    nodeThrows(mod).filter((thrown) => /must be of type function|: undefined is not/.test(thrown)),
+  ).toEqual([]);
+});

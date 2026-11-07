@@ -62,7 +62,7 @@ import {
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
 import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
-import { varRef } from "../../../ir/build.js";
+import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import {
   ambientUndefReadType,
   ambientUndefinedFnSymbolOf,
@@ -379,6 +379,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         }
         return runtimeOptionalReceiverRead(lowerer, expr, local, null, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, local, loc);
+      if (callback) return callback;
       if (runtimeOptionalObjectWalkerArg(lowerer, expr)) {
         const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
         if (local.type.kind === "union" && narrowed) {
@@ -495,6 +497,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         const helper = lowerer.narrowedArmHelper(g.type.unionId, narrowed, loc);
         if (helper) return lowerer.checkedNarrowCall(helper, ref, narrowed, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, g, loc);
+      if (callback) return callback;
       const use = runtimeOptionalUseOf(expr);
       // The enclosing logical/conditional expression consumes the union
       // before any member operation runs (`(value ?? fallback).length`).
@@ -1262,6 +1266,106 @@ function runtimeOptionalKeyedRecord(
   const helper = lowerer.unionRetagHelper(fromId, target.unionId, loc, trappable);
   if (!helper) return null;
   return lowerer.checkedNarrowCall(helper, varRef(local.id, local.type, loc), target, loc);
+}
+
+/** A function binding whose storage also holds `undefined` (code can read
+ * it before its first store, var-hoisting.ts), handed to a standard library
+ * parameter that is declared as a function and does not admit `undefined`:
+ * `server.on("error", fail)`, `setTimeout(done, 1)`, `list.forEach(visit)`.
+ * The builtin lowerings take the function such a parameter declares, so the
+ * read is the binding's function arm, and an unassigned binding throws the
+ * TypeError the library throws for `undefined` there: V8's for a default
+ * library method, Node's ERR_INVALID_ARG_TYPE for the rest. A parameter
+ * that admits `undefined` (an optional callback, `any`) keeps the stored
+ * value, and so does a program function, whose parameter widens with the
+ * binding. Null when the read is not such an argument. */
+function requiredLibraryCallbackRead(
+  lowerer: Lowerer,
+  expr: ts.Identifier,
+  storage: { id: string; type: IrType },
+  loc: SrcLoc,
+): IrExpr | null {
+  if (storage.type.kind !== "union") return null;
+  const unionId = storage.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  const fn = arms?.find((arm) => arm.kind === "func");
+  if (arms?.length !== 2 || fn === undefined || !arms.some((arm) => arm.kind === "undefinedT"))
+    return null;
+  let argument: ts.Expression = expr;
+  while (
+    (ts.isParenthesizedExpression(argument.parent) ||
+      ts.isAssertionExpression(argument.parent) ||
+      ts.isSatisfiesExpression(argument.parent) ||
+      ts.isNonNullExpression(argument.parent)) &&
+    argument.parent.expression === argument
+  ) {
+    argument = argument.parent;
+  }
+  const call = argument.parent;
+  if (!ts.isCallExpression(call) && !ts.isNewExpression(call)) return null;
+  const args = call.arguments?.nodes ?? [];
+  const index = args.indexOf(argument);
+  if (index < 0 || args.slice(0, index).some(ts.isSpreadElement)) return null;
+  const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
+  if (declaration === undefined || !ts.isFunctionLike(declaration)) return null;
+  const file = ts.getSourceFileOfNode(declaration);
+  if (!lowerer.isStdlibFile(file)) return null;
+  const parameterAt = (signature: ts.SignatureDeclaration): ts.ParameterDeclaration | undefined =>
+    ((signature.parameters?.nodes ?? []) as readonly ts.ParameterDeclaration[]).filter(
+      (p) => !(ts.isIdentifier(p.name) && p.name.text === "this"),
+    )[index];
+  // The declared type, before the call's type arguments: a `T` that the
+  // call instantiates with a function is a slot for any value.
+  const partsOf = (parameter: ts.ParameterDeclaration): readonly ts.Type[] => {
+    const declared = lowerer.checker.getTypeAtLocation(parameter.name);
+    return (declared.flags & ts.TypeFlags.Union) !== 0 ? ts.constituentTypes(declared) : [declared];
+  };
+  const lenient =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  const admitsUndefined = (signature: ts.SignatureDeclaration): boolean => {
+    const parameter = parameterAt(signature);
+    return (
+      parameter === undefined ||
+      parameter.dotDotDotToken !== undefined ||
+      parameter.questionToken !== undefined ||
+      parameter.initializer !== undefined ||
+      partsOf(parameter).some((part) => (part.flags & lenient) !== 0)
+    );
+  };
+  // Every overload of the callee decides: `JSON.stringify(value)` beside
+  // `JSON.stringify(value, replacer)` makes the replacer optional.
+  const name = "name" in declaration ? declaration.name : undefined;
+  const symbol = name === undefined ? undefined : lowerer.checker.getSymbolAtLocation(name);
+  const overloads = (symbol?.declarations ?? []).filter((d) => ts.isFunctionLike(d));
+  if (admitsUndefined(declaration) || overloads.some(admitsUndefined)) return null;
+  const parameter = parameterAt(declaration)!;
+  if (
+    !ts.isIdentifier(parameter.name) ||
+    !partsOf(parameter).every((part) => lowerer.checker.getCallSignatures(part).length > 0)
+  )
+    return null;
+  const value = varRef(storage.id, storage.type, loc);
+  const tag = lowerer.armTag(unionId, fn);
+  return {
+    kind: "ternary",
+    cond: { kind: "unionIsTag", unionId, tag, negated: false, value, type: BOOL, loc },
+    then: { kind: "unionNarrow", unionId, tag, value, type: fn, loc },
+    else_: lowerer.program.isSourceFileDefaultLibrary(file)
+      ? nodeThrowExpr(1, "", "undefined is not a function", fn, loc)
+      : nodeThrowExpr(
+          1,
+          "ERR_INVALID_ARG_TYPE",
+          `The "${parameter.name.text}" argument must be of type function. Received undefined`,
+          fn,
+          loc,
+        ),
+    type: fn,
+    loc,
+  };
 }
 
 /** Object.keys, Object.values and Object.entries require an object

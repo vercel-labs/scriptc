@@ -1215,20 +1215,25 @@ static void scr_h2_stream_queue_drain(ScrH2Stream *st) {
 
 /* ── the sweep (deferred emits) ──────────────────────────────────────── */
 
-/* The stream's own 'close': a nonzero code errors first — except NO_ERROR
- * and CANCEL (Node's rule on both the closing and the receiving side). */
-static void scr_h2_stream_fire_close(ScrH2Stream *st) {
+/* A stream that closed with a nonzero code errors before anything hears
+ * of the close — except NO_ERROR and CANCEL (Node's rule on both the
+ * closing and the receiving side). */
+static void scr_h2_stream_fire_error(ScrH2Stream *st) {
   uint32_t code = st->rst_code;
-  if (code != 0 && code != 8 && !scr_exc_pending()) {
-    const char *name = scr_h2_code_name(code);
-    char msg[80];
-    int n = name != NULL
-        ? snprintf(msg, sizeof msg, "Stream closed with error code %s", name)
-        : snprintf(msg, sizeof msg, "Stream closed with error code %" PRIu32, code);
-    ScrStr *m = scr_str_new(msg, (size_t)n);
-    scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
-    scr_str_release(m);
-  }
+  if (code == 0 || code == 8 || scr_exc_pending()) return;
+  const char *name = scr_h2_code_name(code);
+  char msg[80];
+  int n = name != NULL
+      ? snprintf(msg, sizeof msg, "Stream closed with error code %s", name)
+      : snprintf(msg, sizeof msg, "Stream closed with error code %" PRIu32, code);
+  ScrStr *m = scr_str_new(msg, (size_t)n);
+  scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+  scr_str_release(m);
+}
+
+/* The stream's own 'close' listeners, after its 'error' and after the
+ * compatibility pair's close. */
+static void scr_h2_stream_fire_close(ScrH2Stream *st) {
   if (!scr_exc_pending()) scr_net_fire0_this(&st->close_ls, st, SCR_DYNH_H2_STREAM);
   scr_h2_stream_drop_lists(st);
 }
@@ -1251,13 +1256,20 @@ static void scr_h2_proto_sweep(void) {
       st->close_emitted = true;
       if (st->compat_req != NULL || st->compat_res != NULL) {
         /* The pair listens to its stream from the start, so its close
-         * events come before the stream listeners the program added: they
-         * ride scr_http.c's queue, and this sweep steps aside for it. */
+         * events come after the stream's 'error' and before the 'close'
+         * listeners the program added. They ride scr_http.c's queue: this
+         * entry stays at the head of the queue as the stream's own close
+         * (ahead of a session 'close' queued behind it), and the sweep
+         * steps aside for that queue. */
+        scr_h2_emits_head--;
+        scr_h2_emits[scr_h2_emits_head].kind = SCR_H2_EMIT_STREAM_CLOSED;
+        scr_http2_stream_retain(st); /* the entry keeps its ref; this one is `e`'s */
+        scr_h2_stream_fire_error(st);
         scr_h2_stream_close_compat(st, true);
-        scr_h2_emit_push(SCR_H2_EMIT_STREAM_CLOSED, scr_http2_stream_retain(st));
         yield = true;
         break;
       }
+      scr_h2_stream_fire_error(st);
       scr_h2_stream_fire_close(st);
       break;
     }

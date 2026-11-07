@@ -1,6 +1,14 @@
 "use strict";
 exports.answer = () => 42;
 exports.echo = (value) => value;
+// A native value the island keeps by reference: the export table is the
+// island thread's, so only that thread may take the value back.
+let kept = null;
+exports.keep = (value) => {
+  kept = value;
+  return "kept";
+};
+exports.get = () => kept;
 // An error whose message cannot be read.
 exports.unreadable = () => {
   const error = new Error();

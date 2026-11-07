@@ -307,6 +307,7 @@ import {
   intersectionTypeDiag,
   noLoweringDiag,
   nodeIslandNativeUseDiag,
+  nodeIslandWorkerThreadDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
   stdlibSnapshotValueUseDiag,
@@ -13015,6 +13016,11 @@ export class Lowerer {
     for (const { literal, path } of this.nodeIslandLoads)
       literal.value = NodeIslandModuleCollector.loadPath(modules, path);
     return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
+  }
+
+  refuseIslandWorkerUse(node: ts.Node): never {
+    this.pushDiag(nodeIslandWorkerThreadDiag(locOf(node)));
+    throw new PoisonError();
   }
 
   unsupported(

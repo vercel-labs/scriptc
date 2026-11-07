@@ -419,7 +419,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
     });
   });
 
-  test("a call from a worker thread throws", async () => {
+  test("a call from a worker thread is routed to the island's thread", async () => {
     const worker = await build(
       "worker",
       undefined,
@@ -427,7 +427,9 @@ describe.skipIf(skip)("Node islands in-process", () => {
     );
     expect(await run(worker, [])).toEqual({
       stdout:
-        "main 42\nworker Node islands run on the main thread only; this call came from a worker thread\nexit 0\n",
+        "main 42\nworker called 42\nworker get ERR_SCRIPTC_ISLAND_WORKER_VALUE\n" +
+        "worker async ERR_SCRIPTC_ISLAND_WORKER_ASYNC\n" +
+        "worker await ERR_SCRIPTC_ISLAND_WORKER_ASYNC\nexit 0\n",
       stderr: "",
       code: 0,
     });

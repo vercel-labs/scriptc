@@ -3,6 +3,7 @@ import { locOf } from "../../program.js";
 import { resolve } from "node:path";
 import { isWorkerConstructor, workerModulePath, workerSourcePath } from "../../worker-target.js";
 import { tsgoPath } from "../../dts-paths.js";
+import { isIslandProgramModule } from "../../../node-islands/boundary.js";
 import {
   BOOL,
   DYN,
@@ -60,6 +61,12 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
       filename,
       "the worker entry must resolve to a statically compiled source file",
     );
+  }
+  if (
+    lowerer.nodeIslands !== null &&
+    isIslandProgramModule(lowerer.nodeIslands, workerSourcePath(path!))
+  ) {
+    lowerer.refuseIslandWorkerUse(expression);
   }
   if (lowerer.targetPlatform === "wasi") {
     lowerer.noLowering(

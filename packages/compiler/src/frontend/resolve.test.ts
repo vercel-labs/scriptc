@@ -6,6 +6,8 @@ import { expect, test } from "vitest";
 import {
   clearResolveCaches,
   projectDtsRuntimeSibling,
+  rememberProjectTypes,
+  rememberedProjectTypes,
   resolveInTypeRoots,
   resolveProjectModule,
   resolveTypesAsProject,
@@ -288,6 +290,41 @@ test("a module without declarations in node_modules is found under a type root",
     expect(
       resolveTypesAsProject(main, "tiny-lines", { typeRoots: [], byPath: false }, false),
     ).toBeNull();
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an answer of an earlier load is asked again by the next, and dropped when it no longer holds", async () => {
+  const dir = await projectTree({
+    "node_modules/shapes-kit/package.json": EXPORTS_ONLY_CLI,
+    "node_modules/shapes-kit/dist/cli.d.mts": "export declare const commands: string[];\n",
+    "node_modules/shapes-kit/dist/cli.mjs": "export const commands = [];\n",
+    "types/shapes-kit.d.ts": "",
+  });
+  try {
+    clearResolveCaches();
+    const config = join(dir, "tsconfig.json");
+    const shim = join(dir, "types/shapes-kit.d.ts");
+    const declaration = join(dir, "node_modules/shapes-kit/dist/cli.d.mts");
+    const node10 = { typeRoots: [], byPath: true };
+    expect(rememberedProjectTypes(config, node10).size).toBe(0);
+    rememberProjectTypes(config, "shapes-kit/dist/cli.mjs", shim, true);
+    expect([...rememberedProjectTypes(config, node10)]).toEqual([
+      ["shapes-kit/dist/cli.mjs", declaration],
+    ]);
+    // Another tsconfig's loads, and settings under which the answer is gone.
+    expect(rememberedProjectTypes(join(dir, "other/tsconfig.json"), node10).size).toBe(0);
+    expect(rememberedProjectTypes(config, { typeRoots: [], byPath: false }).size).toBe(0);
+    // The file is gone: the question is asked again, and has no answer.
+    await rm(declaration);
+    expect(rememberedProjectTypes(config, node10).size).toBe(0);
+    // Nothing is remembered across compiles.
+    await writeFile(declaration, "export declare const commands: string[];\n");
+    expect(rememberedProjectTypes(config, node10).size).toBe(1);
+    clearResolveCaches();
+    expect(rememberedProjectTypes(config, node10).size).toBe(0);
   } finally {
     clearResolveCaches();
     await rm(dir, { recursive: true, force: true });

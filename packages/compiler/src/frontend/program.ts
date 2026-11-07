@@ -67,6 +67,8 @@ import {
   resolveBareModule,
   resolveProjectModule,
   resolveWorkspaceSourceModule,
+  rememberProjectTypes,
+  rememberedProjectTypes,
   resolveInTypeRoots,
   resolveTypeDirective,
   resolveTypesAsProject,
@@ -933,6 +935,7 @@ function fallbackModuleRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
  * a `declare module` block included) and its TypeScript files alike. */
 function typesAsProject7(
   program: ts.Program,
+  configFile: string,
   project: ProjectTypeResolution,
   mapped: Readonly<Record<string, readonly string[]>> | undefined,
 ): Map<string, string> | null {
@@ -957,7 +960,9 @@ function typesAsProject7(
       if (asked.has(key)) continue;
       asked.add(key);
       const file = resolveTypesAsProject(name, specifier, project, erased);
-      if (file !== null) found.set(specifier, file);
+      if (file === null) continue;
+      found.set(specifier, file);
+      rememberProjectTypes(configFile, specifier, name, erased);
     }
   }
   return found.size === 0 ? null : found;
@@ -1317,6 +1322,20 @@ function loadProgram7(
     }
     options = { ...options, paths };
   }
+  // The declarations only the project's own resolution settings find
+  // (typesAsProject7), as far as an earlier load of this compile learned
+  // them: this load's first program then has them, and the root discovery
+  // below adds what is new.
+  if (config.typeResolution !== undefined && config.configFile !== null) {
+    const remembered = rememberedProjectTypes(config.configFile, config.typeResolution);
+    if (remembered.size > 0) {
+      // The project's own mappings and the entries above keep their keys.
+      const paths: Record<string, string[]> = { ...options.paths };
+      for (const [specifier, file] of remembered)
+        if (paths[specifier] === undefined) paths[specifier] = [file];
+      options = { ...options, paths };
+    }
+  }
   // Without @types/node the fallback declarations stand in: the core file,
   // and a Node module's file once a program file names the module
   // (fallbackModuleRoots7). The modules the entry names join the first
@@ -1359,9 +1378,9 @@ function loadProgram7(
       // root. The project's own mappings and the entries above keep their
       // keys.
       const asProject =
-        config.typeResolution === undefined
+        config.typeResolution === undefined || config.configFile === null
           ? null
-          : typesAsProject7(program, config.typeResolution, options.paths);
+          : typesAsProject7(program, config.configFile, config.typeResolution, options.paths);
       if (extraRoots.length === 0 && asProject === null) break;
       for (const root of extraRoots) programRoots.push(root);
       if (asProject !== null) {

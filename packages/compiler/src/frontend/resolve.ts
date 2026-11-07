@@ -1101,6 +1101,47 @@ export function resolveTypesAsProject(
   return resolveInTypeRoots(project.typeRoots, specifier);
 }
 
+/** The questions resolveTypesAsProject answered in an earlier load of this
+ * compile, by tsconfig and specifier. A build loads the same program many
+ * times (once per candidate set of compiled packages, then once per island
+ * round), and the checker must be given the answers when a program is
+ * created: a load that learns them only from its first program creates a
+ * second one. Each later load asks the remembered questions again before
+ * it creates its first program, so its inputs are probed and recorded as in
+ * the first load, and an answer that no longer holds is dropped. */
+const answeredProjectTypes = new Map<string, Map<string, { fromFile: string; erased: boolean }>>();
+
+/** Records that `specifier`, asked from `fromFile`, had an answer. */
+export function rememberProjectTypes(
+  configFile: string,
+  specifier: string,
+  fromFile: string,
+  erased: boolean,
+): void {
+  let questions = answeredProjectTypes.get(configFile);
+  if (questions === undefined) {
+    questions = new Map();
+    answeredProjectTypes.set(configFile, questions);
+  }
+  if (!questions.has(specifier)) questions.set(specifier, { fromFile, erased });
+}
+
+/** The remembered questions asked again: each specifier that still has an
+ * answer, with the file it names, in the order first answered. */
+export function rememberedProjectTypes(
+  configFile: string,
+  project: ProjectTypeResolution,
+): Map<string, string> {
+  const answers = new Map<string, string>();
+  const questions = answeredProjectTypes.get(configFile);
+  if (questions === undefined) return answers;
+  for (const [specifier, question] of questions) {
+    const file = resolveTypesAsProject(question.fromFile, specifier, project, question.erased);
+    if (file !== null) answers.set(specifier, file);
+  }
+  return answers;
+}
+
 /** The package an npm alias directory installs (`"x-updated":
  * "npm:x@6.3.0"` puts package x under node_modules/x-updated): the name
  * the nearest node_modules/<dirName>/package.json declares when it
@@ -1186,6 +1227,7 @@ export function clearResolveCaches(): void {
   projectRealmPkgJson = null;
   projectRealmSet = false;
   projectPathMappings = null;
+  answeredProjectTypes.clear();
 }
 
 /** True when `path` is under a node_modules directory (the

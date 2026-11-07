@@ -882,6 +882,18 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
   "node-island": { keyed: (o) => ({ ...o, nodeIslands: "node:a-package" }) },
   native: { keyed: (o) => ({ ...o, nodeIslands: "native:a-package" }) },
   node: { keyed: (o) => ({ ...o, nodeIslands: "node:another-package" }) },
+  "emit-lowered": {
+    unkeyed:
+      "a build that writes a lowered program neither reads nor writes a cache entry (usesLoweredProgram)",
+  },
+  "from-lowered": {
+    unkeyed:
+      "a build from a lowered program neither reads nor writes a cache entry (usesLoweredProgram)",
+  },
+  "from-lowered-accept": {
+    unkeyed:
+      "it decides what a build from a lowered program accepts, and such a build uses no cache entry",
+  },
 };
 
 test("every build and run option is in the cache keys or says why it need not be", async () => {

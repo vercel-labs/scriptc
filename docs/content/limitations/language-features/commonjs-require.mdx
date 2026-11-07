@@ -1,6 +1,8 @@
 - **CommonJS `require`:** Literal `require()` calls of compiled modules, supported builtins, and JSON documents compile.
   Reading a top-level `const` or `let` require binding before its `require` runs throws the same `ReferenceError` as Node.js.
   A `var` binding that code above its `require` can reach is unsupported, and so is a read that compiles to no checkable expression, such as exporting the binding before the `require`.
+  A `require()` of a relative path that names no file when the program is built throws the same `MODULE_NOT_FOUND` error as Node.js, where the call runs.
+  The error has Node's `code` and `message` and no `requireStack` property.
   JSON documents are parsed at build time, and every `require()` of a document returns the same object.
   Destructuring the exports of a module supports plain and renamed properties, plus nested patterns for builtin sub-modules such as `util.types`.
   Any pattern works on a JSON document.

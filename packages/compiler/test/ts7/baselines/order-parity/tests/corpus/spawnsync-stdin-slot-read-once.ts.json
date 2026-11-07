@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/spawnsync-stdin-slot-read-once.ts"
+ ],
+ "diags": []
+}

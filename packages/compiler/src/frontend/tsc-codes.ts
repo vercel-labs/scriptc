@@ -171,6 +171,18 @@ const inCheckedJs = (row: Opinion): Opinion => ({ ...row, checkedJs: "enforce" }
 const notPrivateName = (node: ts.Node, d: ts.Diagnostic): boolean =>
   !ts.isPrivateIdentifier(node) && !ts.getSourceFileOfNode(node).text.startsWith("#", d.pos ?? -1);
 
+/** TS1533/TS1534 report a decimal escape (`\1`, `\8`) that names no
+ * capture group, and TS1536 one inside a character class (`[\1]`). Without
+ * the `u` or `v` flag, JavaScript reads such an escape as a legacy octal or
+ * identity escape (Annex B), so `/\1/` matches "\x01" and its source can
+ * be reused in a pattern that has the group. With either flag the escape
+ * is a SyntaxError, and the grammar row stays. */
+const nonUnicodeRegexLiteral = (node: ts.Node): boolean => {
+  if (!ts.isRegularExpressionLiteral(node)) return false;
+  const flags = node.text.slice(node.text.lastIndexOf("/") + 1);
+  return !flags.includes("u") && !flags.includes("v");
+};
+
 /** TS2362/2363/2365 fire on an operator whose other operand is bigint-ish;
  * plain JavaScript admits the `any` operand, a primitive wrapper operand
  * (`new Number(1) * 2`) converts with ToPrimitive like any object, and a
@@ -288,7 +300,19 @@ const DYNAMIC_SHAPE =
 const JSDOC_CLAIM =
   "a JSDoc type-space claim is documentation Node never reads: the values keep their runtime behavior and every use meets the per-site fences";
 
+const LEGACY_REGEX_ESCAPE = at(
+  nonUnicodeRegexLiteral,
+  CHECKER(
+    "a decimal escape without a matching group, or inside a character class, is a legacy octal or identity escape in a regex literal without the u or v flag",
+    ["tests/corpus/regexp-legacy-decimal-escapes.mjs"],
+  ),
+);
+
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  // legacy decimal escapes in non-Unicode regex literals
+  [1533, LEGACY_REGEX_ESCAPE],
+  [1534, LEGACY_REGEX_ESCAPE],
+  [1536, LEGACY_REGEX_ESCAPE],
   // implicit any (params, variables, elements, this, returns, rest,
   // construct signatures, index reads over shapes with no index signature —
   // typeof globalThis)

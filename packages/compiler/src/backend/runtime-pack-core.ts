@@ -96,16 +96,20 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   handleProps: boolean;
   childLifecycle: boolean;
   childOptionExt: boolean;
+  spawnCaptureBytes: boolean;
   childErrorFields: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   dynForAwait: boolean;
+  dynCollections: boolean;
   dynIntegrityQueries: boolean;
+  reflectProtoTarget: boolean;
   genBind: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
   webStreams: boolean;
+  webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
@@ -355,16 +359,20 @@ export function effectiveRuntimeFeatures(
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
     childOptionExt: features.childOptionExt === true,
+    spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
+    dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
+    reflectProtoTarget: features.reflectProtoTarget === true,
     genBind: features.genBind === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
+    webBodies: features.webBodies === true,
     abortSignal: features.abortSignal === true,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,

@@ -870,6 +870,20 @@ static ScrDyn *nh_load(ScrStr *path, int esm) {
 
 ScrDyn *scr_ni_require(ScrStr *path) { return nh_load(path, 0); }
 
+ScrDyn *scr_ni_process_report(void) {
+  ScrStr *specifier = scr_str_new("process", 7);
+  ScrDyn *process = nh_load(specifier, 0);
+  scr_str_release(specifier);
+  if (process == NULL) return NULL;
+  /* Node's process.report object: a stable object whose getReport() builds
+   * the diagnostic report of THIS process — the island and the compiled
+   * binary are one process, so sharedObjects lists the binary's own
+   * libraries. */
+  ScrDyn *report = scr_ni_get_str(process, "report", 6);
+  scr_dyn_release(process);
+  return report;
+}
+
 ScrPromise *scr_ni_import(ScrStr *path) {
   ScrDyn *d = nh_load(path, 1);
   if (d == NULL) {

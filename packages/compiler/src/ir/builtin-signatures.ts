@@ -211,6 +211,9 @@ function buildLibFnSignatures() {
      * writes and calls on island values, argument lists as one dyn array.
      * requireModule(specifier) of @scriptc/node lowers to require too. */
     "nodeIsland.require": { argTypes: [STRING], result: DYN },
+    /** process.report, answered by the island (the same process): the
+     * diagnostic report object of the running binary. */
+    "nodeIsland.processReport": { argTypes: [], result: DYN },
     /** NI-7: a deferred island module (path, boot guards + interface snapshot). */
     "nodeIsland.defer": { argTypes: [STRING, STRING], result: DYN },
     "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
@@ -290,6 +293,9 @@ function buildLibFnSignatures() {
     "dyn.reflectDeleteProperty": { argTypes: [DYN, DYN], result: BOOL },
     /** Reflect.has's target check: Node's TypeError for a primitive. */
     "dyn.reflectHasTarget": { argTypes: [DYN], result: VOID },
+    /** Reflect.getPrototypeOf's target check: Node's TypeError for any
+     * primitive (Object.getPrototypeOf boxes instead). */
+    "dyn.reflectGetPrototypeTarget": { argTypes: [DYN], result: VOID },
     "dyn.hasKeyComputed": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.hasOwnComputed": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.propertyIsEnumerableComputed": { argTypes: [DYN, DYN], result: BOOL },
@@ -395,6 +401,8 @@ function buildLibFnSignatures() {
     "collection.preventExtensions": { argTypes: [null], result: VOID },
     "collection.isExtensible": { argTypes: [null], result: BOOL },
     "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
+    "dyn.collectionConstruct": { argTypes: [STRING, DYN], result: DYN },
+    "dyn.setValues": { argTypes: [DYN], result: DYN },
     "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
@@ -577,6 +585,12 @@ function buildLibFnSignatures() {
      * the function with zero arguments at drain. */
     "timers.queueMicrotask": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
     "timers.queueMicrotaskDyn": { argTypes: [DYN], result: VOID },
+    /** Node's synchronous timer callback gate (scr_timers_check_callback):
+     * a non-function throws ERR_INVALID_ARG_TYPE before anything schedules.
+     * Lowered only for a callback that is not statically a function — a
+     * checked-dynamic value — and sequenced after every argument
+     * expression evaluates, where Node validates the callback. */
+    "timers.checkCallback": { argTypes: [DYN], result: VOID },
     "timers.clearImmediate": { argTypes: [F64], result: VOID },
     /** process.nextTick(cb, ...args) — the user tick queue. args: [cb
      * (() => void; trailing call arguments ride the timer surface's
@@ -792,6 +806,10 @@ function buildLibFnSignatures() {
     "dir.read": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
     "dir.closeSync": { argTypes: [DIR_T], result: VOID },
     "dir.close": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
+    "dir.readCb": { argTypes: [DIR_T, DYN], result: VOID },
+    "dir.closeCb": { argTypes: [DIR_T, DYN], result: VOID },
+    "dir.dispose": { argTypes: [DIR_T], result: VOID },
+    "dir.asyncDispose": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
     /** node:path (scr_path.c ports BOTH of Node's implementations
      * function-by-function): the `path.*` family is posix, the
      * `path.win32*` family is Node v24's path.win32 ported exactly — the
@@ -1244,6 +1262,9 @@ function buildLibFnSignatures() {
      * whether the call site emits DEP0169. domainToASCII/domainToUnicode
      * take the domain and whether it was omitted. Node's validation errors
      * throw catchably. */
+    /** url.Url as a value: Node's legacy Url constructor, the class of
+     * url.parse() results. One identity per thread. */
+    "url.legacyClass": { argTypes: [], result: DYN },
     "url.legacyParse": { argTypes: [DYN, DYN, DYN, BOOL], result: DYN },
     "url.legacyFormat": { argTypes: [DYN, DYN, BOOL], result: STRING },
     "url.legacyResolve": { argTypes: [DYN, DYN, BOOL], result: STRING },
@@ -3333,6 +3354,10 @@ function buildLibFnSignatures() {
     "child.ref": { argTypes: [CHILD_T], result: VOID },
     "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
     "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
+    /* The Buffer captures (spawnSync without an encoding option): the same
+     * stored bytes as a bytes<u8> value, branded under fsBufferBrand. */
+    "spawnRes.stdoutBytes": { argTypes: [SPAWNRES_T], result: BYTES_U8 },
+    "spawnRes.stderrBytes": { argTypes: [SPAWNRES_T], result: BYTES_U8 },
     /** fs/promises (scr_lib.c over scr_async.c's settled minting): the SAME
      * sync syscalls, wrapped in an ALREADY-SETTLED promise — failure
      * REJECTS (catchable at the await) instead of throwing, so none of
@@ -3674,6 +3699,10 @@ function buildLibFnSignatures() {
     "fs.readFileSyncBytes": { argTypes: [STRING], result: BYTES_U8 },
     "fs.writeFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
     "fs.appendFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
+    /** writeFileSync(path, bytes, { mode, flag }) and its fs/promises
+     * twins: the byte-data spellings of the option write (scr_fs_flags.c's
+     * open(2) with the disposition flag, creation mode at creation only). */
+    "fs.writeFileSyncBytesFlags": { argTypes: [STRING, BYTES_U8, F64, F64], result: VOID },
     "fsp.readFileBytes": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     /** node:zlib (scr_zlib.c — native-toolchain.ts compiles/links it ONLY when these
      * appear on the IR, the regex/libcurl gating precedent): one-shot zlib,
@@ -3798,6 +3827,17 @@ function buildLibFnSignatures() {
     "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.appendFileBytes": {
       argTypes: [STRING, BYTES_U8],
+      result: { kind: "promise", inner: VOID },
+    },
+    /** fs.promises.writeFile(path, bytes): the truncating write, and its
+     * { mode, flag } form — the settled-promise twins of
+     * fs.writeFileSyncBytes and fs.writeFileSyncBytesFlags. */
+    "fsp.writeFileBytes": {
+      argTypes: [STRING, BYTES_U8],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileBytesFlags": {
+      argTypes: [STRING, BYTES_U8, F64, F64],
       result: { kind: "promise", inner: VOID },
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
@@ -4454,6 +4494,22 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A <Class>.prototype member value (scr_dyn_collections.c) for Set,
+     * Map, WeakMap or WeakSet: one interned function per (class, name), so
+     * `Map.prototype.get.call(receiver, key)` brand-checks and runs the
+     * member's implementation. */
+    "dyn.collectionMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** %<Class>.prototype%, the object `Object.getPrototypeOf(new Map())`
+     * answers. */
+    "dyn.collectionPrototype": { argTypes: [STRING], result: DYN },
+    /** Object.getPrototypeOf for a value that may be a collection handle. */
+    "dyn.collectionGetPrototype": { argTypes: [DYN], result: DYN },
+    /** The ES2025 Set compositions over a set-like argument. */
+    "dyn.setCombine": { argTypes: [DYN, STRING, DYN], result: DYN },
+    /** <Class>.prototype.forEach with a callback that is not statically a
+     * function: Node's `<value> is not a function` for a non-callable, and
+     * (value, value, set) / (value, key, map) visits otherwise. */
+    "dyn.collectionForEach": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
     /** A builtin prototype method as a function value, by its prototype
      * (`String`, `RegExp`) and canonical member name (`trim`, `trimStart`,
      * `trimEnd`; `exec`, `test`, `toString`): the unit in
@@ -5439,6 +5495,12 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "rl.on": { argTypes: [F64, F64, null, BOOL], result: VOID },
+    "rl.onFirst": { argTypes: [F64, F64, null, BOOL], result: VOID },
+    "rl.off": { argTypes: [F64, F64, null], result: VOID },
+    "rl.offAll": { argTypes: [F64, F64], result: VOID },
+    "rl.listenerCount": { argTypes: [F64, F64], result: F64 },
+    "rl.listenerCountFn": { argTypes: [F64, F64, null], result: F64 },
+    "rl.eventNames": { argTypes: [F64], result: arrayOf(STRING) },
     "rl.iterOpen": { argTypes: [F64], result: VOID },
     "rl.iterNext": { argTypes: [F64], result: { kind: "promise", inner: DYN } },
     "rl.iterReturn": { argTypes: [F64], result: VOID },

@@ -118,6 +118,12 @@ export function partialAssertionSite(
       absent.push(field.name);
       continue;
     }
+    // An optional checked-dynamic field is absentable too (the absent
+    // marker), so an omitted one is absent, not missing.
+    if (field.optional === true && field.type.kind === "dyn") {
+      absent.push(field.name);
+      continue;
+    }
     missing.add(field.name);
   }
   if (missing.size === 0) return null;
@@ -189,16 +195,32 @@ export function lowerPartialAssertion(
     const initializer = ts.isPropertyAssignment(prop)
       ? prop.initializer
       : (prop.name as unknown as ts.Expression);
-    const type = shape.fields.find((f) => f.name === key)!.type;
+    const field = shape.fields.find((f) => f.name === key)!;
+    const type = field.type;
     const value = lowerer.coerceInto(prop, lowerer.lowerExprExpecting(initializer, type), type);
-    return { name: key, type, value };
+    return {
+      name: key,
+      type,
+      value,
+      ...(field.optional === true ? { optional: true as const } : {}),
+    };
   });
   for (const name of site.absent) {
-    const type = shape.fields.find((f) => f.name === name)!.type as IrType & { kind: "union" };
+    const field = shape.fields.find((f) => f.name === name)!;
+    const type = field.type;
     fields.push({
       name,
       type,
-      value: { kind: "fieldAbsent", unionId: type.unionId, type, loc },
+      value:
+        type.kind === "dyn"
+          ? { kind: "fieldAbsent", type, loc }
+          : {
+              kind: "fieldAbsent",
+              unionId: (type as IrType & { kind: "union" }).unionId,
+              type,
+              loc,
+            },
+      ...(field.optional === true ? { optional: true as const } : {}),
     });
   }
   // A's identity is its name-sorted field list; its DECLARED order is the
@@ -207,7 +229,11 @@ export function lowerPartialAssertion(
   const shapeId = lowerer.shapes.intern(
     [...fields]
       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-      .map((f) => ({ name: f.name, type: f.type })),
+      .map((f) => ({
+        name: f.name,
+        type: f.type,
+        ...(f.optional === true ? { optional: true as const } : {}),
+      })),
     false,
     undefined,
     [...site.keys, ...site.absent],

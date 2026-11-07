@@ -70,6 +70,7 @@ import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { isViewLiteral, lowerDeclaredMemberLiteral, viewTargetOf } from "./view-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
 import { nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
@@ -7761,7 +7762,14 @@ function lowerVariableInitializer(
       : lowerer.lowerExpr(node);
   }
 
-  if (expected?.kind === "dyn") return lowerDynObjectLiteral(lowerer, value);
+  if (expected?.kind === "dyn") {
+    // A declared type that is a checked-identity view: the literal lowers
+    // as it does when it is returned or passed at that type
+    // (view-literals.ts). A literal with no record of its own (a method
+    // that reads `this`) builds as the dynamic object.
+    const viewed = isViewLiteral(lowerer, value) ? tryLowerExpression(lowerer, node) : null;
+    return viewed ?? lowerDynObjectLiteral(lowerer, value);
+  }
 
   const previous = new Map<ts.Expression, IrExpr | undefined>();
   for (const property of value.properties.nodes) {
@@ -9865,7 +9873,14 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
               type: STRING,
               loc: locOf(expr.left.name),
             };
-            const value = lowerer.lowerExprExpecting(expr.right, DYN);
+            // A fresh literal stored into a member of a checked-identity
+            // view is built at the member's declared type and held by
+            // reference, so a typed read of the member answers that value
+            // (view-literals.ts).
+            const value =
+              (viewTargetOf(lowerer, lowerer.typeOf(expr.left.expression)) !== null
+                ? lowerDeclaredMemberLiteral(lowerer, expr.right)
+                : null) ?? lowerer.lowerExprExpecting(expr.right, DYN);
             return {
               kind: "exprStmt",
               expr: {

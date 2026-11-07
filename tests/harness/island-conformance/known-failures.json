@@ -135,6 +135,12 @@
       "signature": "SC8006"
     }
   },
+  "corpus/js-package-tuple-reflection": {
+    "island:enum-kit": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
+    }
+  },
   "corpus/npm-record-union-returns": {
     "island:rpc-replies": {
       "category": "exit",

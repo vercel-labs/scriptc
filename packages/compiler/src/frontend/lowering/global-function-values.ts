@@ -101,7 +101,7 @@ function oneArgumentValue(
   length?: number,
 ): IrExpr {
   const fnName = `%builtin.global.${name}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === fnName))
+  if (lowerer.liftedFnNamed(fnName) === undefined)
     lowerer.liftedFns.push({
       name: fnName,
       params: [{ localId: "value.0", name: "value", type: DYN }],

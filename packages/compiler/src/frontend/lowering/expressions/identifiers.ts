@@ -95,7 +95,11 @@ import {
   identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
-import { builtinConstantsObject, pathModuleValue } from "../lower-builtin-values.js";
+import {
+  builtinConstantsEsmNamespace,
+  builtinConstantsObject,
+  pathModuleValue,
+} from "../lower-builtin-values.js";
 import { lowerTlsRootCertificates } from "../lower-server.js";
 import { unloweredGlobalValue, unloweredModuleMemberValue } from "../node-value-reads.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
@@ -800,10 +804,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // the namespace object has no representation — members lower at
   // their access sites only. The CommonJS namespace binding
   // (`const lib = require("./lib.js")`) gets the same fence.
-  const builtinNamespace = lowerer.builtinNamespaceModuleOf(expr);
-  if (builtinNamespace === "constants") return builtinConstantsObject(lowerer, loc);
-  if (builtinNamespace !== null) {
-    const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNamespace}` };
+  const builtinShape = lowerer.builtinNamespaceShapeOf(expr);
+  if (builtinShape !== null) {
+    // node:constants has a value on each side of the import: the CommonJS
+    // object a require and a default import bind, and the ES module
+    // namespace an `import * as` binding binds (sorted names plus "default",
+    // null prototype).
+    if (builtinShape.module === "constants")
+      return builtinShape.flavor === "esm"
+        ? builtinConstantsEsmNamespace(lowerer, loc)
+        : builtinConstantsObject(lowerer, loc);
+    const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinShape.module}` };
     return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
   }
   // A binding of a SINGLE-VALUE module used as a bare value: Node's
@@ -1335,7 +1346,7 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
 export function uriFunctionValue(lowerer: Lowerer, which: string, loc: SrcLoc): IrExpr {
   const name = `%builtin.${which}`;
   const type = funcOf([DYN], STRING);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value: IrExpr = {
       kind: "libCall",
       fn: "dyn.toStringCoerce",

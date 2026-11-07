@@ -2650,7 +2650,7 @@ export function lowerIntrinsicProperty(
   if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype") {
     const loc = locOf(expr);
     const name = "%dyn.functionPrototype";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name))
+    if (lowerer.liftedFnNamed(name) === undefined)
       lowerer.liftedFns.push({
         name,
         params: [],

@@ -40,7 +40,7 @@ export function defineRefusingFunction(
   loc: SrcLoc,
   ownsPrototype = false,
 ): boolean {
-  if (lowerer.liftedFns.some((fn) => fn.name === lifted)) return false;
+  if (lowerer.liftedFnNamed(lifted) !== undefined) return false;
   lowerer.liftedFns.push({
     name: lifted,
     ...(ownsPrototype ? { ownsPrototype: true as const } : {}),

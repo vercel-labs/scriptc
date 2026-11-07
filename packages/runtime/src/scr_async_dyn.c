@@ -845,6 +845,62 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
 #endif
 }
 
+/* ── new Promise(executor) of a checked-dynamic value ─────────────────
+ * The resolve function of such a promise runs the resolution procedure
+ * (scr_promise_resolve_dyn): a promise it is given is adopted. From then on
+ * the promise is resolved although it is still pending, so the executor's
+ * resolve, its reject and its throw no longer change it. Both closures
+ * share one box (scr_async.c's layout: caps[0] holds the promise); a
+ * resolution that leaves the promise pending points the box at a settled
+ * promise nobody observes, which every later call finds settled. */
+static void scr_resolve_dyn_thunk(ScrClosure *self, ScrDyn *value) {
+  ScrPromise *p = (ScrPromise *)scr_box_get_ref(self->caps[0]);
+  if (!scr_promise_is_pending(p)) {
+    scr_dyn_release(value);
+  } else {
+    scr_promise_resolve_dyn(p, value); /* moves value in */
+    if (scr_promise_is_pending(p)) {
+      ScrPromise *resolved = scr_promise_new();
+      scr_promise_fulfill_void(resolved);
+      scr_box_set_ref(self->caps[0], resolved);
+    }
+  }
+  scr_promise_release(p);
+}
+
+/* The resolve closure of `p` (+1). `reject`, the promise's reject closure
+ * or NULL, is borrowed and joins the resolve closure's box. */
+ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject) {
+  ScrClosure *resolve = scr_closure_new((void *)&scr_resolve_dyn_thunk, 1);
+  ScrBox *target = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+  scr_box_set_ref(target, scr_promise_retain(p));
+  resolve->caps[0] = target;
+  if (reject != NULL) {
+    scr_box_release(reject->caps[0]);
+    reject->caps[0] = scr_box_retain(target);
+  }
+  return resolve;
+}
+
+/* Runs the executor of `p` with the closures scr_make_resolve_dyn paired
+ * (`reject` NULL for a one-parameter executor). Borrows `p` and `exec`; the
+ * closures move into the call. A throw rejects the promise unless the
+ * executor resolved it first. */
+void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve,
+                                  ScrClosure *reject) {
+  ScrBox *target = scr_box_retain(resolve->caps[0]);
+  if (reject != NULL)
+    ((void (*)(ScrClosure *, ScrClosure *, ScrClosure *))exec->fn)(exec, resolve, reject);
+  else ((void (*)(ScrClosure *, ScrClosure *))exec->fn)(exec, resolve);
+  if (scr_exc_pending()) {
+    ScrPromise *now = (ScrPromise *)scr_box_get_ref(target);
+    if (now == p) scr_promise_reject_pending(p);
+    else scr_exc_clear();
+    scr_promise_release(now);
+  }
+  scr_box_release(target);
+}
+
 /* `await v` where v is a CHECKED-DYNAMIC value: a dyn promise adopts
  * (the boxed promise awaits — rejections re-throw); every other kind is
  * JS's await-of-a-non-thenable — one microtask hop, the value itself

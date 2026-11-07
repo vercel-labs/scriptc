@@ -159,6 +159,9 @@ export interface CcOptions {
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  /** A dev executable's report of failed checked conversions: compiles
+   * scr_conversion_trace.c. */
+  conversionTrace?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
   /** The keyed collections' prototype objects and member values, their

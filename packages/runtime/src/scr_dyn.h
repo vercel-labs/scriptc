@@ -484,6 +484,11 @@ void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
  * TypeError's message gains the declaration and the type patch that would
  * admit the value. `origin` is the compiler's origin string. */
 void scr_type_origin_note(const char *origin);
+/* A checked conversion failed in a dev build (scr_conversion_trace.c,
+ * linked by executables built with debug sources): with
+ * SCRIPTC_CONVERSION_TRACE set, the pending TypeError and `where`, the
+ * conversion's position as a stack frame line, go to stderr. */
+void scr_conversion_trace(const char *where);
 
 /* Prototype members of a compiled class seen as `unknown`, emitted per
  * class by the compiler: the string names of methods, getters and setters
@@ -2165,12 +2170,12 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len);
 ScrDyn *scr_dyn_function_properties(const ScrDyn *function);
 /* The table a function value already has. +1, or NULL. */
 ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
-/* Object.defineProperties over dyn values (targets: OBJ and FUNC): each
- * descriptor's `value` becomes an own data property. OBJ targets preserve
- * writable/enumerable/configurable; FUNC targets still use plain properties.
- * get/set throw the "not supported yet" Error.
+/* Object.defineProperties over dyn values: every descriptor of the map is
+ * read and converted (scr_dyn_define_props_pending), then each is defined
+ * through scr_dyn_define_property, which decides what a target accepts.
+ * The map and a descriptor may be typed records held by reference.
  * Returns the target (+1, JS's return), or NULL with a pending catchable
- * TypeError (non-object target/descriptor — Node's messages). */
+ * TypeError (primitive target, bad map or descriptor: Node's messages). */
 ScrDyn *scr_dyn_define_props(ScrDyn *target, ScrDyn *descs);
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_define_props_shapes(ScrDyn *target, ScrDyn *descs);

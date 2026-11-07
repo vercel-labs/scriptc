@@ -187,8 +187,7 @@ function programReadsGlobalValue(lowerer: Lowerer, name: string): boolean {
  * never come here: they are lowered where they are written. */
 function nodeObjectValue(lowerer: Lowerer, name: string, node: ts.Node, loc: SrcLoc): IrExpr {
   const helper = `%builtin.object.${name}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === helper))
-    defineNodeObject(lowerer, name, helper, node);
+  if (lowerer.liftedFnNamed(helper) === undefined) defineNodeObject(lowerer, name, helper, node);
   lowerer.noteEdge(helper);
   return { kind: "call", callee: helper, args: [], type: DYN, loc };
 }
@@ -587,7 +586,7 @@ function refusalCall(lowerer: Lowerer, display: string, node: ts.Node, loc: SrcL
  * `timeOrigin + now()` is the wall clock, as in Node. */
 function performanceTimeOrigin(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const helper = "%perf.timeOrigin";
-  if (!lowerer.liftedFns.some((fn) => fn.name === helper)) {
+  if (lowerer.liftedFnNamed(helper) === undefined) {
     const storage = `%g.${helper}`;
     const ready = `${storage}%ready`;
     lowerer.globalsList.push(

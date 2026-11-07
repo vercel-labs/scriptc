@@ -102,6 +102,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   childStreamFlow: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
+  conversionTrace: boolean;
   dynForAwait: boolean;
   dynCollections: boolean;
   dynIntegrityQueries: boolean;
@@ -379,6 +380,7 @@ export function effectiveRuntimeFeatures(
     childStreamFlow: features.childStreamFlow === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
+    conversionTrace: features.conversionTrace === true,
     dynForAwait: features.dynForAwait === true,
     dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,

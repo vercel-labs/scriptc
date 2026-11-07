@@ -4013,6 +4013,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("ArrayBuffer") ||
     isStdlibInterface("SharedArrayBuffer") ||
     isStdlibInterface("PropertyDescriptor") ||
+    isStdlibInterface("PropertyDescriptorMap") ||
     isStdlibInterface("ProcessVersions") ||
     isStdlibInterface("ProcessRelease") ||
     isStdlibInterface("ProcessFeatures") ||

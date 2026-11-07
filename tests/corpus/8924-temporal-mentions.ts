@@ -24,6 +24,15 @@ class Clock {
 }
 console.log(new Clock().describe());
 
+// Declarations of the name in type space, and a type parameter.
+type Temporal = { zone: string };
+interface Holder<Temporal> {
+  held: Temporal;
+}
+const shaped: Temporal = { zone: "utc" };
+const holder: Holder<number> = { held: 1 };
+console.log(shaped.zone, holder.held);
+
 // A string and a computed read of the global object.
 const name = "Temporal";
 console.log(name.length, name in globalThis, (globalThis as Record<string, unknown>)[name]);

@@ -1,0 +1,15 @@
+import type { Match } from "../../../locale/types.ts";
+import { Parser } from "../Parser.ts";
+import type { ParseFlags, ParseResult } from "../types.ts";
+export declare class DayOfYearParser extends Parser<number> {
+  priority: number;
+  subpriority: number;
+  parse(dateString: string, token: string, match: Match): ParseResult<number>;
+  validate<DateType extends Date>(date: DateType, value: number): boolean;
+  set<DateType extends Date>(
+    date: DateType,
+    _flags: ParseFlags,
+    value: number,
+  ): DateType;
+  incompatibleTokens: string[];
+}

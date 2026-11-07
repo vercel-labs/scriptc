@@ -1944,6 +1944,18 @@ export interface IrRecordShape {
  * key order. */
 export const KEY_ORDER_FIELD = "%order";
 
+/** The fields a property key can name: every field but KEY_ORDER_FIELD,
+ * which is bookkeeping in the value's storage and no property of it. A
+ * keyed read or write (`r[k]`) dispatches over these, and a key spelled
+ * like the hidden field misses as any undeclared key does. The field
+ * joins a shape after the bodies lowered, so every stage that reasons
+ * about a keyed access goes through here. */
+export function keyedRecordFields(shape: IrRecordShape): readonly IrRecordField[] {
+  return shape.fields.some((f) => f.name === KEY_ORDER_FIELD)
+    ? shape.fields.filter((f) => f.name !== KEY_ORDER_FIELD)
+    : shape.fields;
+}
+
 /** The orders a record shape's values enumerate their keys in: each order
  * of a shape with orderVariants, or its one table. */
 export function shapeKeyOrders(shape: IrRecordShape): readonly (readonly string[])[] {

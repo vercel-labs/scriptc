@@ -13,7 +13,7 @@ import {
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { lowerIslandExpr } from "./lower-node-island.js";
-import { lowerAwaitedUniformPromiseAll } from "./builtins/promises.js";
+import { lowerAwaitedUniformPromiseAll, promiseAllValueUnread } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Expression lowering: the expression dispatch (lowerExpr), literals
@@ -58,6 +58,7 @@ import {
   arrayOf,
   funcOf,
   isUnitType,
+  keyedRecordFields,
   typeEquals,
   sortArms,
 } from "../../ir/ir.js";
@@ -2710,7 +2711,7 @@ export function recordKeyResultOk(lowerer: Lowerer, shape: IrRecordShape, type: 
     (type.kind === "union" && lowerer.armTag(type.unionId, t) >= 0) ||
     exactUnionWidening(lowerer, t, type) ||
     (type.kind === "dyn" && lowerer.dynConvertible(t));
-  if (!shape.fields.every((f) => surfaces(f.type))) return false;
+  if (!keyedRecordFields(shape).every((f) => surfaces(f.type))) return false;
   if (shape.indexValue) {
     if (type.kind === "dyn") return shape.indexValue.kind === "dyn";
     if (!surfaces(shape.indexValue)) return false;
@@ -4026,9 +4027,10 @@ export function lowerPromiseRejectCall(
  * rejects — but a homogeneous tuple of promises IS a Promise<T>[] in
  * every observable way, so the entries build the array directly and
  * the runtime's countdown combinator runs (the certs read-both-files
- * shape). Result Promise<T[]>; void inners collapse to Promise<void>
- * exactly like the array path. Null otherwise: heterogeneous literals
- * and non-literal arguments keep the array path and its fences. */
+ * shape). Result Promise<T[]>; void inners whose values nothing reads
+ * are a Promise<void>, exactly like the array path. Null otherwise:
+ * heterogeneous literals, non-literal arguments and void entries whose
+ * values are read keep the static path and its fences. */
 export function lowerPromiseAllTupleCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -4055,6 +4057,14 @@ export function lowerPromiseAllTupleCall(
   }
   const loc = locOf(call);
   const inner = first.inner;
+  // Promise<void> entries whose values are read are an array, or the
+  // checker's tuple, of undefined values: the static path makes it.
+  if (
+    inner.kind === "void" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    !promiseAllValueUnread(call)
+  )
+    return null;
   const entryT: IrType = { kind: "promise", inner };
   const elems = argNode.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, entryT));
   const entries: IrExpr = { kind: "arrayLit", elems, type: arrayOf(entryT), loc };

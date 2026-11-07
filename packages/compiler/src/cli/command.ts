@@ -459,11 +459,17 @@ async function main(args: string[], host: CliHost): Promise<number> {
       fail(`--native=${name} and --node-island=${name} contradict each other\n\n${USAGE}`);
   }
   if (values.node === "") fail(`--node needs the path of a node executable\n\n${USAGE}`);
+  const islandDecision = values["node-island-decision"];
+  if (islandDecision !== undefined && command === "coverage") {
+    fail(`--node-island-decision is a build/run option\n\n${USAGE}`);
+  }
+  if (islandDecision === "") fail(`--node-island-decision needs a file path\n\n${USAGE}`);
   const nodeIslands: NodeIslandOptions | undefined =
     islandMode === undefined &&
     islandArgs.length === 0 &&
     nativeArgs.length === 0 &&
     values.node === undefined &&
+    islandDecision === undefined &&
     !values["strict-user-js"]
       ? undefined
       : {
@@ -472,6 +478,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
           ...(nativeArgs.length > 0 ? { native: nativeArgs } : {}),
           ...(values.node !== undefined ? { node: resolve(values.node) } : {}),
           ...(values["strict-user-js"] ? { strictUserJs: true } : {}),
+          ...(islandDecision !== undefined ? { decision: resolve(islandDecision) } : {}),
         };
   if (printNativeLinkInfo && command !== "build") {
     fail(`--print=native-link-info is a build option\n\n${USAGE}`);
@@ -832,6 +839,7 @@ function hasNodeIslandFlags(values: ReturnType<typeof parseCli>["values"]): bool
   return (
     values["node-islands"] !== undefined ||
     (values["node-island"] ?? []).length > 0 ||
+    values["node-island-decision"] !== undefined ||
     (values.native ?? []).length > 0 ||
     values.node !== undefined ||
     values["explain-island"] !== undefined ||

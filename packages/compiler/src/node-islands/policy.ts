@@ -29,6 +29,10 @@ export interface NodeIslandOptions {
   /** `--strict-user-js`: report R2 constructs in user JavaScript as
    * SC8101–SC8105. */
   strictUserJs?: boolean;
+  /** `--node-island-decision=<file>`: where a build keeps the island
+   * decision it reached and the next build starts from (absolute;
+   * decision-file.ts). */
+  decision?: string;
 }
 
 export type DecisionSource = "config" | "cli";
@@ -249,11 +253,14 @@ function matchSegment(p: string, pi: number, s: string, si: number): boolean {
  * decide the same islands. */
 export function nodeIslandOptionsKey(options: NodeIslandOptions | undefined): string {
   if (options === undefined) return "";
-  return [
+  const key = [
     options.mode ?? "",
     (options.islands ?? []).join(","),
     (options.native ?? []).join(","),
     options.node ?? "",
     options.strictUserJs === true ? "strict-user-js" : "",
   ].join("|");
+  // A build that replays a recorded decision is keyed by where it reads it;
+  // every other key stays as it was.
+  return options.decision === undefined ? key : `${key}|decision=${options.decision}`;
 }

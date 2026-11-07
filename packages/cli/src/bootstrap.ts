@@ -233,6 +233,7 @@ function hasNodeIslandFlags(
   return (
     values["node-islands"] !== undefined ||
     (values["node-island"] ?? []).length > 0 ||
+    values["node-island-decision"] !== undefined ||
     (values.native ?? []).length > 0 ||
     values.node !== undefined ||
     values["explain-island"] !== undefined ||

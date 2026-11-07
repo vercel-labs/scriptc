@@ -894,6 +894,11 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
   "node-island": { keyed: (o) => ({ ...o, nodeIslands: "node:a-package" }) },
   native: { keyed: (o) => ({ ...o, nodeIslands: "native:a-package" }) },
   node: { keyed: (o) => ({ ...o, nodeIslands: "node:another-package" }) },
+  // The island key holds the file's path and the digest of its bytes
+  // (islandDecisionDigest), so a recorded decision that changed is a miss.
+  "node-island-decision": {
+    keyed: (o) => ({ ...o, nodeIslands: "auto|decision=/project/islands.json#0123abcd" }),
+  },
 };
 
 test("every build and run option is in the cache keys or says why it need not be", async () => {

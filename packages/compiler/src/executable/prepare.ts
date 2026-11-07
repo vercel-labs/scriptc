@@ -58,6 +58,12 @@ import { resolveBareModule } from "../frontend/resolve.js";
 import type { NodeIslandScan } from "../node-islands/scan.js";
 import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
+import {
+  islandDecisionKey,
+  readIslandDecision,
+  writeIslandDecision,
+  type IslandRoundState,
+} from "../node-islands/decision-file.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { builtinPackageAliasFor, packageShimFor } from "../frontend/package-shims.js";
 
@@ -75,9 +81,75 @@ export interface PreparedExecutableModule {
   islands?: { packages: string[]; modules: string[] };
 }
 
+/** `prepareExecutableModule` for a build: with `--node-island-decision` the
+ * first island round starts from the islands the file records, and the
+ * islands the build's last round started from are written back for the next
+ * build (node-islands/decision-file.ts). The replayed round runs with the
+ * fence rules on, as a first round does: they judge the program as it is
+ * now, so a dependency added since the record is not left to a rule that
+ * ran before it existed. A failed build records its decision too, so the
+ * next one reports the same failure from one round. Without the option this
+ * is `prepareExecutableModule` from scratch. */
+export function prepareExecutableBuild(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  buildPlatform: string,
+  createFrontend: FrontendFactory,
+  timing: CompilationTiming,
+  unitStore: UnitStore | null,
+): PreparedExecutableModule | CompileFailure {
+  const file = opts.nodeIslands?.decision;
+  if (file === undefined)
+    return prepareExecutableModule(
+      entryPath,
+      opts,
+      ffi,
+      buildPlatform,
+      createFrontend,
+      timing,
+      new Map(),
+      true,
+      unitStore,
+    );
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const key = islandDecisionKey(opts.nodeIslands, opts.npmStatic, buildPlatform);
+  const replayed = readIslandDecision(file, entryPath, key, policy);
+  if (replayed !== null)
+    timing("island-decision-replay", {
+      packages: replayed.packages.size,
+      modules: replayed.modules.size,
+    });
+  const last: { state: IslandRoundState | null } = { state: null };
+  const prepared = prepareExecutableModule(
+    entryPath,
+    opts,
+    ffi,
+    buildPlatform,
+    createFrontend,
+    timing,
+    replayed === null ? new Map() : replayed.packages,
+    true,
+    unitStore,
+    replayed === null ? new Map() : replayed.modules,
+    (state) => {
+      last.state = state;
+    },
+  );
+  if (last.state !== null) writeIslandDecision(file, entryPath, key, policy, last.state);
+  return prepared;
+}
+
 /** Release the parser/checker before native object generation begins.
  * `unitStore` keeps the lowered units of this build for the next one
- * (unit-reuse.ts). */
+ * (unit-reuse.ts).
+ *
+ * `lowerIslands` and `lowerModules` are the islands an island round starts
+ * from: empty for a build that decides from scratch, the grown set for a
+ * retry, and a recorded decision for a build that replays one
+ * (node-islands/decision-file.ts). `onDecided` receives the islands of the
+ * round whose result this call returns, which is what such a recording
+ * keeps. */
 export function prepareExecutableModule(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -89,7 +161,15 @@ export function prepareExecutableModule(
   retryFences = true,
   unitStore: UnitStore | null = null,
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
+  onDecided: ((state: IslandRoundState) => void) | null = null,
 ): PreparedExecutableModule | CompileFailure {
+  // A round that returns a result of its own reports the islands it started
+  // from. A round that retries returns the retry's result, and the retry
+  // reports; a build that keeps its own result after its fence attempts
+  // failed reports last, so the last report is always the returned round's.
+  const decided = (): void => {
+    if (onDecided !== null) onDecided({ packages: lowerIslands, modules: lowerModules });
+  };
   // The island decision reads the detector's scan unless islands are off.
   const islandScan =
     nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath).mode !== "off";
@@ -105,6 +185,7 @@ export function prepareExecutableModule(
     const diagnostics = islandDecision.errors;
     const sourceTexts = fe.sourceTexts();
     fe.dispose();
+    decided();
     return { ok: false, diagnostics, sourceTexts };
   }
   if (islandDecision !== null) {
@@ -139,11 +220,10 @@ export function prepareExecutableModule(
   // The frontend (and its tsgo server) is released as soon as lowering
   // ends — clang and the link never hold it open.
   try {
-    const fail = (diagnostics: ScrDiagnostic[]): CompileFailure => ({
-      ok: false,
-      diagnostics,
-      sourceTexts: fe.sourceTexts(),
-    });
+    const fail = (diagnostics: ScrDiagnostic[]): CompileFailure => {
+      decided();
+      return { ok: false, diagnostics, sourceTexts: fe.sourceTexts() };
+    };
 
     // A package already bound to a Node island is never compiled statically,
     // so a refusal status it still carries is the bookkeeping of the analysis
@@ -176,6 +256,7 @@ export function prepareExecutableModule(
           retryFences,
           unitStore,
           lowerModules,
+          onDecided,
         );
       }
       return fail(
@@ -211,6 +292,7 @@ export function prepareExecutableModule(
           retryFences,
           unitStore,
           lowerModules,
+          onDecided,
         );
       }
       return fail(fe.preflight);
@@ -265,6 +347,7 @@ export function prepareExecutableModule(
           retryFences,
           unitStore,
           grownModules ?? lowerModules,
+          onDecided,
         );
       }
       // A failed program whose compiled packages need the runtime or a
@@ -297,6 +380,7 @@ export function prepareExecutableModule(
           false,
           undefined,
           lowerModules,
+          onDecided,
         );
       }
       return fail(lowered.diagnostics);
@@ -404,6 +488,7 @@ export function prepareExecutableModule(
         false,
         unitStore,
         lowerModules,
+        onDecided,
       );
       if (islanded.ok) return islanded;
       firstError ??= islanded.diagnostics[0] ?? null;
@@ -415,6 +500,7 @@ export function prepareExecutableModule(
       );
     }
   }
+  decided();
   return prepared;
 }
 

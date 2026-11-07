@@ -184,6 +184,7 @@ import {
   widthNarrowHelper,
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
+import { siteDiscriminantConversion } from "./coercions/site-discriminant.js";
 import {
   boxBuiltinValuesChecked,
   lowerUtilTypeValue,
@@ -14974,6 +14975,14 @@ export class Lowerer {
         type: expected,
         loc: e.loc,
       };
+    }
+    // A union with no discriminant of its own, which the value fits several
+    // arms of: the checker types of this conversion can still name the arm
+    // each discriminant value enters (site-discriminant.ts). Asked last, so
+    // only a conversion that is otherwise refused (SC2003) takes it.
+    if (!typeEquals(e.type, expected) && expected.kind === "union") {
+      const routed = siteDiscriminantConversion(this, node, e, expected);
+      if (routed) e = routed;
     }
     this.requireExactShape(node, e.type, expected);
     return e;

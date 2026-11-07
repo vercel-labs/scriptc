@@ -143,6 +143,32 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
+  test("a value routed by a partial discriminant is checked into the arm it names", async () => {
+    const r = await compileAndRun(
+      "partial-discriminant-route",
+      `
+      type Reply =
+        | { op: "open"; ok: true; data: { handle: number } }
+        | { op: "close"; ok: true }
+        | { op: "list"; ok: true; data: { names: string[] } }
+        | { op: string; ok: false; error: string };
+      const done = <T extends "open" | "close" | "list">(op: T, data: object): Reply => ({ op, ok: true, data }) as Reply;
+      console.log(JSON.stringify(done("open", { handle: 1 })));
+      try { console.log(JSON.stringify(done("list", { handle: 1 }))); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      try { console.log(JSON.stringify(done("other" as "open", {}))); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"op":"open","ok":true,"data":{"handle":1}}\n' +
+        "true expected array at $.names, got undefined\n" +
+        "true invalid 'op' discriminant in record conversion\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("assertions narrowing record members or union arms check the value", async () => {
     const r = await compileAndRun(
       "narrowing-record-assertions",

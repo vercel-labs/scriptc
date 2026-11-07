@@ -655,17 +655,27 @@ export function readProbe(): string {
       expect(stripped).toContain("enum");
     }, 300_000);
 
-    test("replacing process.stdout.write beside an island is an SC8006 error", async () => {
-      // The planner refuses the combination (the island's process.stdout is
-      // its own object), so it is an error. It used to be SC8020, which the
-      // renderer prints as a warning and the planner still failed the build
-      // on: a diagnostic is a warning or an error, never both.
+    test("replacing process.stdout.write beside an island builds, and the island's write is the program's", async () => {
+      // The island's process.stdout.write is the program's write slot
+      // (scr_node_island_stdio.c), so the combination needs no refusal; it
+      // used to be SC8006. What Node does differently is pinned here rather
+      // than in the differential corpus: in the island `write` is an own
+      // accessor that cannot be redefined or deleted, so island code cannot
+      // end up with a private write the program never sees.
       const dir = copyCorpus(
         "stdio-patch",
-        `import { installPatch } from "./patch.ts";
+        `import { installPatch, probe } from "./patch.ts";
 installPatch();
-process.stdout.write = (() => true) as unknown as typeof process.stdout.write;
-console.log("ok");
+const lines: string[] = [];
+const original = process.stdout.write;
+process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+  lines.push(typeof chunk === "string" ? chunk.trimEnd() : "bytes");
+  return true;
+}) as typeof process.stdout.write;
+const probed = probe();
+process.stdout.write = original;
+console.log(probed);
+console.log(lines.join("|"));
 `,
         {
           "patch.ts": `import { createRequire } from "node:module";
@@ -678,16 +688,40 @@ export function installPatch(): void {
     configurable: true,
   });
 }
+// An ES module, so strict code: the delete throws. The indirect eval runs
+// the same delete as sloppy code, where it answers false.
+export function probe(): string {
+  const out: unknown[] = [Object.hasOwn(process.stdout, "write")];
+  try {
+    delete (process.stdout as { write?: unknown }).write;
+    out.push("deleted");
+  } catch (error) {
+    out.push((error as Error).constructor.name);
+  }
+  try {
+    Object.defineProperty(process.stdout, "write", { value: () => true });
+    out.push("redefined");
+  } catch (error) {
+    out.push((error as Error).constructor.name);
+  }
+  out.push((0, eval)("delete process.stdout.write"));
+  console.log("island line");
+  return out.join(" ");
+}
 `,
         },
       );
       const result = await buildDir(dir, "main");
-      expect(result.ok).toBe(false);
-      const refusal = messages(result).find(
-        (m) => m.startsWith("SC8006:") && m.includes("process.stdout.write"),
-      );
-      expect(refusal).toBeDefined();
-      expect(messages(result).filter((m) => m.startsWith("SC8020:"))).toEqual([]);
+      expect(messages(result).filter((m) => m.includes("process.stdout.write"))).toEqual([]);
+      expect(result.ok).toBe(true);
+      // The island module is TypeScript, which Node does not strip below a
+      // node_modules directory: the module cache goes beside the program.
+      const env = { ...process.env, XDG_CACHE_HOME: join(dir, "cache") };
+      expect(await run(join(dir, "main"), [], env)).toEqual({
+        stdout: "true TypeError TypeError false\nisland line\n",
+        stderr: "",
+        code: 0,
+      });
     }, 300_000);
 
     // A package that reads the patched member joins the island set, where the

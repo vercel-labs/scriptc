@@ -297,6 +297,23 @@ describe("runtime feature snapshots", () => {
     }
   });
 
+  test("a process stream held as a value is the stdioObject feature", () => {
+    // The stream object is the only way to replace process.stdout.write, so
+    // these two lib calls decide whether a program's islands share its write
+    // slot (scr_node_island_stdio.c). Console output and direct writes never
+    // create the object.
+    for (const fn of ["process.stdio", "process.stdioSlot"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).stdioObject, fn).toBe(true);
+    }
+    for (const fn of ["process.stdoutWrite", "process.stdioWriteStr"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).stdioObject, fn).toBe(false);
+    }
+  });
+
   test("a dynamic __proto__ key selects the object model build", () => {
     // Object.prototype's __proto__ accessor is modelled in the object model
     // build of scr_json.c, so a source that reads or writes the member by

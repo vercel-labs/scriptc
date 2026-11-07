@@ -477,26 +477,6 @@ export function sharedModuleDuplicatedDiag(
   };
 }
 
-/** SC8006 — the build refuses the program: it replaces a process output
- * stream's write method while a Node island exists, and the island's
- * `process.stdout` is its own object, so the replacement and the island's
- * writes cannot see each other. The planner stops on this, so it is an
- * error, not the SC8020 warning. H2 shares the native stream object with
- * the islands and removes this refusal. */
-export function stdioPatchAcrossIslandsDiag(
-  stream: "stdout" | "stderr" | null,
-  loc: SrcLoc,
-): ScrDiagnostic {
-  const what =
-    stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
-  return {
-    code: "SC8006",
-    message: `${what} is replaced while a Node island exists: the island's process output stream is its own object, so it would not see this patch and its writes would bypass it`,
-    loc,
-    hint: "remove the replacement, or keep this write in a module that stays native (--node-islands=off for the package)",
-  };
-}
-
 /** SC8022 — island code extends a class of a module the program compiles.
  * A native instance cannot take an island subclass's overrides, so the
  * module is not owned by the program: a package runs in Node for both

@@ -102,8 +102,6 @@ import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.
 import {
   isOptionalProcessStreamProperty,
   isOptionalProcessVersionsRead,
-  programPatchesStdio,
-  type StdioPatchSite,
 } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
@@ -1015,11 +1013,6 @@ export interface LowerResult {
   dynamicFunctions?: DynamicFunction[];
   /** LowerOptions.tierReport: the report-only tier assignment. */
   tiers?: TierReport;
-  /** The program replaces a process output stream's write method, with the
-   * site: the executable planner refuses the combination with Node islands
-   * (SC8006), whose process objects would not see the patch. Present only
-   * when the build has islands. */
-  stdioPatches?: StdioPatchSite[];
   /** LIBRARY mode (LowerOptions.libRoots): each root name resolved through
    * the entry module's export table to the unit that supplies it — the
    * entry's own unit for a direct export, the module-tagged unit of the
@@ -3127,9 +3120,6 @@ export class Lowerer {
   /** Whether some source replaces a process output stream's write method
    * (programPatchesStdio in builtins/process.ts). */
   patchesStdio: boolean | null = null;
-  /** The write-replacement site programPatchesStdio found: the executable
-   * planner refuses it beside Node islands (SC8006). */
-  readonly stdioPatchSites: StdioPatchSite[] = [];
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
   emitterComputedPatterns: ComputedEventPattern[] = [];
@@ -5171,7 +5161,6 @@ export class Lowerer {
     "streamPropMutatedSyms",
     "readsExitCode",
     "patchesStdio",
-    "stdioPatchSites",
     "requestInitPropMutatedSyms",
     // familyFieldLayoutFixed and familyAnswersFromInstance answer from the
     // class declarations and the module order, which do not change while a
@@ -11146,20 +11135,11 @@ export class Lowerer {
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
-    // A program that replaces a process output stream's write method beside
-    // Node islands is refused by the executable planner (SC8006): an
-    // island's process.stdout is its own object. Only island builds pay for
-    // the whole-program scan.
-    const stdioPatches =
-      this.nodeIslands !== null && programPatchesStdio(this)
-        ? [...this.stdioPatchSites]
-        : undefined;
     return {
       module,
       diagnostics: this.diags,
       runtimeFences: this.runtimeFences,
       stats: this.stats,
-      ...(stdioPatches !== undefined && stdioPatches.length > 0 ? { stdioPatches } : {}),
       ...(this.dynamicFunctions.length > 0 ? { dynamicFunctions: this.dynamicFunctions } : {}),
       ...(this.statsByFile.size > 0 ? { statsByFile: this.statsByFile } : {}),
       ...(this.provenanceElided.length > 0 ? { provenanceElided: this.provenanceElided } : {}),

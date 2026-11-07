@@ -16,7 +16,12 @@ Stored methods do not support format specifiers with substitution arguments.
 Other stored console APIs, custom `Console` instances, and console mutation are unsupported.
 
 JavaScript and TypeScript can store `process.stdin`, `stdout`, and `stderr`, replace output `write` methods, and call saved methods with their stream receiver.
-A replaced `write` method does not receive console's error-callback argument.
+A program that holds `process.stdout` or `process.stderr` as a value shares the stream's `write` method with its Node islands: a replacement installed by either side sees the output of both, and either side can call or restore the method the other saved.
+In the islands of such a program `write` is an own accessor property of the two streams, so `Object.hasOwn(process.stdout, "write")` is `true` before any replacement.
+There, `Object.defineProperty(process.stdout, "write", …)` throws a `TypeError`, and `delete process.stdout.write` throws one in strict code and answers `false` otherwise, where Node would replace or remove the method.
+Writes that island code makes through the shared method do not pass through the island stream's own state, so its `writableLength`, `'drain'` event and `'error'` listeners do not reflect them.
+In any other program with islands, a `write` replacement that island code installs sees island output only.
+A worker thread's output does not pass through a `write` method replaced on the main thread.
 Input supports data/end/error/readable listeners, pause/resume, buffered reads with `read(size)` and `readableLength`, and TTY raw mode.
 Output writes are synchronous, with successful callbacks on the next-tick queue; queued backpressure is not modeled.
 An executable built with `--stdout-buffering` instead keeps stdout bytes in a 64 KiB buffer whenever stdout is not a terminal, so a pipe or file can receive a line later than the call that wrote it; the runtime settles the buffer when it fills, before a stderr write, when the event loop sleeps, before a blocking stdin read, before `process.kill`, on `process.exit`, on an uncaught error, and at exit, and output that a kill skips those paths for (such as `SIGKILL`) can be lost up to the buffer size.

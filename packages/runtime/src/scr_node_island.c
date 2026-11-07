@@ -1493,6 +1493,12 @@ static void ni_start(void) {
   ni_hosted.immediate_ref = &ni_h_immediate_ref;
   ni_hosted.checkpoint = &ni_h_checkpoint;
   scr_loop_host(&ni_hosted, since);
+#ifdef SCR_NODE_ISLAND_STDIO
+  /* The island's process.stdout.write and process.stderr.write become the
+   * program's write slots (scr_node_island_stdio.c) before any island
+   * module runs. */
+  scr_ni_stdio_started();
+#endif
   /* NI-7: deferred island modules evaluate now, before the operation that
    * needed Node, in their import order. */
   if (scr_ni_started_hook != NULL) scr_ni_started_hook();

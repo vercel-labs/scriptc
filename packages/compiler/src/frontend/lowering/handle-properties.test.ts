@@ -272,3 +272,90 @@ console.log("ok", typeof never);
     expr: { fn: "handle.propsInstall" },
   });
 });
+
+/** How many checked-dynamic invocations of `method` the IR holds. A typed
+ * child call that reaches the member a definition installed lowers to one of
+ * these; a call left native does not. */
+function dynInvokes(value: unknown, method: string): number {
+  let count = 0;
+  const seen = new Set<object>();
+  const visit = (node: unknown): void => {
+    if (typeof node !== "object" || node === null || seen.has(node)) return;
+    seen.add(node);
+    const record = node as Record<string, unknown>;
+    if (record.kind === "dynInvoke" && record.method === method) count += 1;
+    for (const child of Object.values(record)) visit(child);
+  };
+  visit(value);
+  return count;
+}
+
+test("a typed child call reaches a member defined through an aliased defineProperty", async () => {
+  // The aliased definition names its member in the second argument. Without
+  // reading that name the call below lowers to the child's native method, so
+  // the replacement never runs.
+  const mod = await compileIr(
+    `"use strict";
+const { spawn } = require("child_process");
+const define = Object.defineProperty;
+const child = spawn(process.execPath, ["-e", ""]);
+define(child, "kill", { value: () => "replaced", configurable: true });
+console.log(child.kill());
+child.on("close", () => console.log("close"));
+`,
+    "js",
+  );
+  expect(dynInvokes(mod, "kill")).toBe(1);
+});
+
+test("a typed child call reaches a member named by an aliased defineProperties", async () => {
+  // defineProperties names its members as the keys of the descriptor object.
+  const mod = await compileIr(
+    `"use strict";
+const { spawn } = require("child_process");
+const define = Object.defineProperties;
+const child = spawn(process.execPath, ["-e", ""]);
+define(child, { kill: { value: () => "replaced", configurable: true } });
+console.log(child.kill());
+child.on("close", () => console.log("close"));
+`,
+    "js",
+  );
+  expect(dynInvokes(mod, "kill")).toBe(1);
+});
+
+test("a typed child call reaches a member an untyped target defines", async () => {
+  // The definition's target is an untyped parameter, so the checker resolves
+  // no child for it; the name it defines still reaches a typed call.
+  const mod = await compileIr(
+    `"use strict";
+const { spawn } = require("child_process");
+function replace(child) {
+  Object.defineProperty(child, "kill", { value: () => "replaced", configurable: true });
+}
+const child = spawn(process.execPath, ["-e", ""]);
+replace(child);
+console.log(child.kill());
+child.on("close", () => console.log("close"));
+`,
+    "js",
+  );
+  expect(dynInvokes(mod, "kill")).toBe(1);
+});
+
+test("a child call of a member no definition names stays native", async () => {
+  // The program defines `label`; `kill` is untouched, so its typed call keeps
+  // the native lowering.
+  const mod = await compileIr(
+    `"use strict";
+const { spawn } = require("child_process");
+const define = Object.defineProperty;
+const child = spawn(process.execPath, ["-e", ""]);
+define(child, "label", { value: 1, configurable: true });
+console.log(child.kill());
+child.on("close", () => console.log("close"));
+`,
+    "js",
+  );
+  expect(dynInvokes(mod, "kill")).toBe(0);
+});

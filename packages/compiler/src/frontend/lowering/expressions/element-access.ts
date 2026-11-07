@@ -81,6 +81,10 @@ import {
   assertedOnlyMemberWrite,
   assertedProbeAccessOf,
   assertedReceiverNode,
+  copiedKeyedWrite,
+  fenceCopiedKeyedWrite,
+  lowerErasedRecordOperand,
+  nullishMutationMessage,
   probeMemberName,
 } from "./asserted-receiver.js";
 import {
@@ -2164,6 +2168,7 @@ export function lowerElementCompoundParts(
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
   fenceAssertedOnlyKeyedWrite(lowerer, target);
+  fenceCopiedKeyedWrite(lowerer, target);
   const loc = locOf(expr);
   // A record through a computed key (`totals[side] += n` with a literal
   // union key, `counts[name] += 1` on an index-signature record): the
@@ -2488,12 +2493,52 @@ function fenceAssertedOnlyKeyedWrite(lowerer: Lowerer, target: ts.ElementAccessE
   if (member !== null) assertedOnlyMemberWrite(lowerer, target.expression, member, target);
 }
 
+/** `(o as View)["k"] = v` through a record assertion that changes layout:
+ * the write of the declared member `k` on the operand itself, as the dotted
+ * spelling writes it (fieldTarget's assertedWrite). Null when the key is
+ * not one literal, or when the operand's own layout does not hold the
+ * member at the asserted type; the caller then refuses by name. */
+function lowerErasedKeyedWrite(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  target: ts.ElementAccessExpression,
+  copied: NonNullable<ReturnType<typeof copiedKeyedWrite>>,
+): IrStmt | null {
+  const key =
+    recordKeyLiteralText(target.argumentExpression) ??
+    recordKeyTypeLiteralText(lowerer, target.argumentExpression);
+  if (key === null) return null;
+  const stored = lowerer.shapes.get(copied.layout.shapeId);
+  const viewed = lowerer.shapes.get(copied.asserted.shapeId);
+  if (!stored || stored.tuple || !viewed || viewed.tuple) return null;
+  const field = stored.fields.find((f) => f.name === key);
+  const assertedField = viewed.fields.find((f) => f.name === key);
+  if (!field || !assertedField || !typeEquals(field.type, assertedField.type)) return null;
+  const obj = lowerErasedRecordOperand(lowerer, copied, nullishMutationMessage(target, key));
+  if (obj === null || obj.type.kind !== "record" || obj.type.shapeId !== copied.layout.shapeId)
+    return null;
+  const value = lowerer.lowerExprExpecting(expr.right, field.type);
+  return { kind: "recordSet", obj, shapeId: obj.type.shapeId, field: key, value, loc: locOf(expr) };
+}
+
 export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {
   const prototype = lowerClassPrototypeComputedAssignment(lowerer, expr);
   if (prototype) return { kind: "exprStmt", expr: prototype, loc: locOf(expr) };
   const target = expr.left as ts.ElementAccessExpression;
   fenceNodeModuleMutation(lowerer, target, "assignment");
   fenceAssertedOnlyKeyedWrite(lowerer, target);
+  // A keyed write through an assertion that converts the record addresses
+  // the operand, like the dotted write and `delete` do; a key or member the
+  // operand's own layout cannot take in place is refused instead of being
+  // written to the converted copy.
+  {
+    const copied = copiedKeyedWrite(lowerer, target);
+    if (copied !== null) {
+      const inPlace = lowerErasedKeyedWrite(lowerer, expr, target, copied);
+      if (inPlace) return inPlace;
+      fenceCopiedKeyedWrite(lowerer, target);
+    }
+  }
   const globalKey = globalSymbolKey(lowerer, target.expression, target.argumentExpression);
   if (globalKey) {
     const value = lowerer.lowerExprExpecting(expr.right, DYN);

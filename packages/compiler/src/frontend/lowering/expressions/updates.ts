@@ -51,6 +51,7 @@ import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
+import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
 import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
@@ -289,6 +290,7 @@ export function lowerIncDec(
       lowerer.unsupported("SC1045", expr, "increment/decrement of this target");
     }
     fenceNodeModuleMutation(lowerer, access, "assignment");
+    if (ts.isElementAccessExpression(access)) fenceCopiedKeyedWrite(lowerer, access);
     if (ts.isPropertyAccessExpression(access)) {
       // `this.#x++` on a static private field (private-statics.ts): the
       // brand check, then the field's native global.

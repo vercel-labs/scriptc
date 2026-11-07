@@ -486,6 +486,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.realpathValue": "scr_fs_realpath_value",
   "dyn.validateString": "scr_value_string",
   "dyn.validateStrings": "scr_value_strings",
+  "dyn.validateFsPath": "scr_value_fs_path",
   "path.resolveValue": "scr_path_resolve_value",
   "path.parseValue": "scr_path_parse_value",
   "path.formatValue": "scr_path_format_value",

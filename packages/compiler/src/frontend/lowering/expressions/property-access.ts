@@ -15,6 +15,7 @@ import {
   hostGlobalPrototypeOf,
 } from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
+import { fenceConsoleMemberValue } from "../coercions/console-records.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
@@ -710,7 +711,9 @@ export function lowerPropertyAccessExpr(
     const webStream = lowerWebStreamClassRead(lowerer, expr);
     if (webStream) return webStream;
   }
-  if (lowerer.stdlibGlobalMember(expr, "console") !== null) {
+  const consoleMember = lowerer.stdlibGlobalMember(expr, "console");
+  if (consoleMember !== null) {
+    fenceConsoleMemberValue(lowerer, consoleMember, expr);
     return {
       kind: "dynKeyGet",
       value: { kind: "libCall", fn: "console.native", args: [], type: DYN, loc },
@@ -6527,7 +6530,7 @@ function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<stri
   const names = new Set<string>();
   lowerer.globalThisWrittenNames = names;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || !sf.text.includes("globalThis")) continue;
+    if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "globalThis")) continue;
     ts.walkPreorder(sf, (node) => {
       if (
         ts.isBinaryExpression(node) &&

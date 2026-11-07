@@ -14,6 +14,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.require",
   // process.report loads the process builtin and reads the report object.
   "nodeIsland.processReport",
+  // An exit code Node refuses (ERR_OUT_OF_RANGE), as process.setExitCode.
+  "nodeIsland.setExitCode",
   "nodeIsland.defer",
   "nodeIsland.get",
   "nodeIsland.getKey",

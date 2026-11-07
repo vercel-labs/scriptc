@@ -214,6 +214,13 @@ function buildLibFnSignatures() {
     /** process.report, answered by the island (the same process): the
      * diagnostic report object of the running binary. */
     "nodeIsland.processReport": { argTypes: [], result: DYN },
+    /** Process state a program shares with its Node islands: an assignment
+     * to process.exitCode that island code reads too, whether either side
+     * assigned one (after reading Node's property into the runtime's code),
+     * and the notice that the program changed directory. */
+    "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
+    "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
+    "nodeIsland.cwdChanged": { argTypes: [], result: VOID },
     /** NI-7: a deferred island module (path, boot guards + interface snapshot). */
     "nodeIsland.defer": { argTypes: [STRING, STRING], result: DYN },
     "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },

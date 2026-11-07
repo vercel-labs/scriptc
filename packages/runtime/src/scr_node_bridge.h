@@ -38,6 +38,11 @@ enum {
   SCR_NODE_JOB_TICK = 2,      /* Node's process.nextTick queue */
   SCR_NODE_JOB_TIMER = 3,     /* a Node timer (setTimeout / setInterval) */
   SCR_NODE_JOB_IMMEDIATE = 4, /* Node's check phase (setImmediate) */
+  /* Not jobs: island code assigned process.exitCode, and the host script
+   * tells the runtime, whose exit code it is. The token is the code's 32
+   * bits; CLEAR is an assignment of undefined or null. */
+  SCR_NODE_JOB_EXIT_CODE = 5,
+  SCR_NODE_JOB_EXIT_CODE_CLEAR = 6,
 };
 
 /* Process events that island code listens to (`listen`): the listener

@@ -9930,9 +9930,14 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         ) {
           const loc = locOf(expr);
           const value = lowerer.lowerExprExpecting(expr.right, F64);
-          const fn = programReadsExitCode(lowerer)
-            ? "process.setExitCodeTracked"
-            : "process.setExitCode";
+          // In a program with Node islands the exit code is one value that
+          // island code reads and assigns too (scr_node_island.c).
+          const fn =
+            lowerer.nodeIslands !== null
+              ? "nodeIsland.setExitCode"
+              : programReadsExitCode(lowerer)
+                ? "process.setExitCodeTracked"
+                : "process.setExitCode";
           return {
             kind: "exprStmt",
             expr: { kind: "libCall", fn, args: [value], type: VOID, loc },

@@ -884,6 +884,105 @@ ScrDyn *scr_ni_process_report(void) {
   return report;
 }
 
+/* ── process state ────────────────────────────────────────────────────── */
+
+/* Whether process.exitCode holds a value: the program or island code
+ * assigned one and nothing cleared it since. The code itself is the
+ * runtime's (scr_exit_code_hint_get). */
+static SCR_TL bool nh_exit_code_assigned = false;
+
+/* Island code's process object once Node is loaded, or NULL (+1). Node
+ * runs on the main thread only, and a worker thread's process state is its
+ * own, as in Node. */
+static ScrDyn *nh_process_loaded(void) {
+  if (scr_ni_bridge_loaded() == NULL || !scr_context_is_main()) return NULL;
+  ScrStr *specifier = scr_str_new("process", 7);
+  ScrDyn *process = nh_load(specifier, 0);
+  scr_str_release(specifier);
+  if (process == NULL) scr_exc_clear();
+  return process;
+}
+
+/* What Node's process.exitCode held when the runtime last wrote or read
+ * it. A pull applies the property only when island code changed it since:
+ * the codes the runtime notes by itself (an unhandled rejection, a pending
+ * top-level await) are not Node's to overwrite. */
+static SCR_TL bool nh_island_has_code = false;
+static SCR_TL int nh_island_code = 0;
+
+bool scr_ni_process_exit_code_start(int *code) {
+  bool assigned = nh_exit_code_assigned || scr_exit_code_hint_get() != 0;
+  *code = scr_exit_code_hint_get();
+  nh_island_has_code = assigned;
+  nh_island_code = assigned ? *code : 0;
+  return assigned;
+}
+
+void scr_ni_process_exit_code_pull(void) {
+  ScrDyn *process = nh_process_loaded();
+  if (process == NULL) return;
+  ScrDyn *value = scr_ni_get_str(process, "exitCode", 8);
+  scr_dyn_release(process);
+  if (value == NULL) {
+    scr_exc_clear();
+    return;
+  }
+  /* Node keeps what was assigned: an integer, or a string that reads as
+   * one. undefined and null are no code. */
+  double number = 0;
+  bool has = value->kind != SCR_DYN_UNDEF && value->kind != SCR_DYN_NULL &&
+             scr_dyn_number_coerce_js(value, &number);
+  scr_dyn_release(value);
+  int code = has ? (int)(int32_t)(int64_t)number : 0;
+  if (has == nh_island_has_code && code == nh_island_code) return;
+  nh_island_has_code = has;
+  nh_island_code = code;
+  scr_exit_code_note(code);
+  nh_exit_code_assigned = has;
+}
+
+bool scr_ni_process_has_exit_code(void) {
+  scr_ni_process_exit_code_pull();
+  return nh_exit_code_assigned || scr_exit_code_hint_get() != 0;
+}
+
+void scr_ni_process_set_exit_code(double code) {
+  scr_process_set_exit_code(code);
+  if (scr_exc_pending()) return;
+  nh_exit_code_assigned = true;
+  /* A Node that is not loaded yet starts with this code (ni_bootstrap). */
+  ScrDyn *process = nh_process_loaded();
+  if (process == NULL) return;
+  ScrDyn *value = scr_dyn_new_num((double)scr_exit_code_hint_get());
+  if (scr_ni_set_str(process, "exitCode", 8, value)) {
+    nh_island_has_code = true;
+    nh_island_code = scr_exit_code_hint_get();
+  } else {
+    scr_exc_clear();
+  }
+  scr_dyn_release(value);
+  scr_dyn_release(process);
+}
+
+void scr_ni_process_cwd_changed(void) {
+  /* Node caches process.cwd() until its own process.chdir runs: changing
+   * to "." there keeps the directory the program just entered and drops
+   * the cached one. */
+  ScrDyn *process = nh_process_loaded();
+  if (process == NULL) return;
+  ScrStr *dot = scr_str_new(".", 1);
+  ScrDyn *arg = scr_dyn_new_str(dot);
+  scr_str_release(dot);
+  ScrDyn *args[1] = {arg};
+  ScrDyn *result = scr_ni_call_method(process, "chdir", 5, args, 1);
+  /* The program's own chdir succeeded; a directory that vanished since
+   * leaves Node's cached answer, which its next process.cwd() replaces. */
+  if (result != NULL) scr_dyn_release(result);
+  else scr_exc_clear();
+  scr_dyn_release(arg);
+  scr_dyn_release(process);
+}
+
 ScrPromise *scr_ni_import(ScrStr *path) {
   ScrDyn *d = nh_load(path, 1);
   if (d == NULL) {

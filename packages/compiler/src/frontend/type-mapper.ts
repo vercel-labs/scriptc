@@ -1506,12 +1506,6 @@ export interface TypeMapperCtx {
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
    * primitive. Absent or false: every mapping is unchanged. */
   primitiveWrappers?: () => boolean;
-  /** Whether a compiled source names the lib `ArrayBufferView` interface
-   * (programNamesArrayBufferView): then a value of that type maps to the
-   * checked-dynamic one, whose three view reads stay dynamic. Absent or
-   * false: every mapping is unchanged, so a program that never names the
-   * type keeps the standard library's own paths. */
-  arrayBufferViewReads?: () => boolean;
   /** Node islands (scope-B NI-4): whether a type's values are island
    * handles, which map to the `foreign` type (a dyn value). Absent in
    * programs without islands. */
@@ -1543,7 +1537,14 @@ export interface TypeMapperCtx {
   /** Set with erasingSignature: the signature's own type parameters, and
    * whether the erasure consulted an enclosing binding. An erasure that
    * resolved only its own parameters answers the same in every context. */
-  erasedMember?: { own: ReadonlySet<ts.Type>; outerConsulted: boolean };
+  erasedMember?: {
+    own: ReadonlySet<ts.Type>;
+    outerConsulted: boolean;
+    /** The erasure's own resolver and what mentionsErasedTypeParam answered
+     * under it (ErasedMentions). */
+    resolve?: TypeParamResolver;
+    mentions?: ErasedMentions;
+  };
   /** True while an erased generic body lowers (its type parameters are
    * bound to `unknown`). */
   isErasing?: () => boolean;
@@ -2341,10 +2342,17 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // its own. A shape with no native mapping is then exactly the
     // checked-dynamic value — the same answer `unknown` gets — never the
     // package's story (there is no package value here to disagree with).
-    if (mapped === null && packageTypeIsData(type, ctx)) {
-      mapped = DYN;
-      contextResolutions++;
-    }
+    //
+    // The fallback reads the type's declarations and nothing of the binding
+    // context, so it is not a context resolution of its own: when the
+    // structural attempt consulted the context, that read counted itself,
+    // and when it did not, the type has this answer wherever it is mapped.
+    // Counting it kept every type that holds such a shape out of the memo:
+    // an SDK configuration type whose answer is the checked-dynamic value
+    // was mapped from scratch at each of its uses (pi's
+    // `BedrockRuntimeClientConfig`: forty mappings of half a second each in
+    // one function).
+    if (mapped === null && packageTypeIsData(type, ctx)) mapped = DYN;
     // Localized failure: a type that failed at a committed slot maps to its
     // lenient form. It counts as a context resolution so neither it nor a
     // type containing it is memoized: the strict form may map elsewhere.
@@ -3987,14 +3995,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // dynamically (narrowing.ts). @types/node's `NodeJS.ArrayBufferView` is its
   // own interface with its own mapping and keeps it.
   //
-  // Only a program that names the type takes this mapping. The name is also
-  // the third arm of the builtin declarations' `BinaryLike`
-  // (packages/compiler/ambient/node-fallback), so mapping it unconditionally
-  // makes whole ambient signature types statically representable and
-  // reshapes calls the program never wrote — the standard library keeps
-  // those paths. A program that never mentions `ArrayBufferView` lowers
-  // exactly as before.
-  if (ctx.arrayBufferViewReads?.() === true && isLibInterface("ArrayBufferView")) return DYN;
+  // The mapping belongs to the type, so it applies wherever a value of the
+  // type flows, whether or not the program spells the name. The builtin
+  // declarations (packages/compiler/ambient) type their view parameters with
+  // their own `ScriptcBufferView`, so the Node signatures a program never
+  // wrote do not change shape with it.
+  if (isLibInterface("ArrayBufferView")) return DYN;
   if (isStdlibInterface("Uint8Array")) return bytesOf("u8");
   if (isStdlibInterface("Uint32Array")) return bytesOf("u32");
   if (isStdlibInterface("Uint8ClampedArray")) return bytesOf("u8c");
@@ -8797,31 +8803,100 @@ export function isGenericCallableMemberType(t: ts.Type, checker: ts.TypeChecker)
  * `Promise<unknown>`). */
 const ERASURE_KEPT_CONTAINERS = new Set(["Promise", "Generator", "AsyncGenerator"]);
 
+/** What mentionsErasedTypeParam answered for a type at the depth the walk
+ * met it, for the answers no enclosing binding decided. The walk is cut at
+ * a fixed depth, so an answer belongs to its depth: the same type met
+ * deeper sees less of itself. */
+type ErasedMentions = Map<ts.Type, (boolean | undefined)[]>;
+
+/** One walk of mentionsErasedTypeParam. `own` holds the type parameters the
+ * erasure itself binds, when the context's resolver is that erasure's own
+ * (their answer is fixed for the erasure); every other type parameter read
+ * consults a binding the answers do not name, and `contextReads` counts
+ * those so that only answers free of them are kept. */
+interface ErasedMentionWalk {
+  readonly answers: ErasedMentions;
+  readonly own: ReadonlySet<ts.Type> | undefined;
+  contextReads: number;
+}
+
 /** The type mentions a type parameter that the active erasure binds to
- * `unknown` (erasedGenericMemberType, erased bodies). */
+ * `unknown` (erasedGenericMemberType, erased bodies).
+ *
+ * The walk follows a type's parts to a fixed depth, and the types it meets
+ * share parts: a package's configuration type reaches the same few hundred
+ * types along millions of paths (pi's `BedrockRuntimeClientConfig`: 229
+ * types, 2.3 billion visits, two minutes for one statement). Each type is
+ * therefore answered once per depth. An erasure asks about every type it
+ * maps, so its answers are kept for the whole erasure when its own resolver
+ * is the one in force; any other context keeps them for the one walk. */
 function mentionsErasedTypeParam(type: ts.Type, ctx: TypeMapperCtx, depth: number): boolean {
+  const member = ctx.erasedMember;
+  const ownResolver =
+    member !== undefined && member.resolve !== undefined && member.resolve === ctx.resolveTypeParam;
+  const walk: ErasedMentionWalk = {
+    answers: ownResolver ? (member.mentions ??= new Map()) : new Map(),
+    own: ownResolver ? member.own : undefined,
+    contextReads: 0,
+  };
+  return mentionsErasedTypeParamAt(type, ctx, depth, walk);
+}
+
+function mentionsErasedTypeParamAt(
+  type: ts.Type,
+  ctx: TypeMapperCtx,
+  depth: number,
+  walk: ErasedMentionWalk,
+): boolean {
   if (depth > 8) return false;
-  const { checker } = ctx;
-  if (type.flags & ts.TypeFlags.TypeParameter) return ctx.resolveTypeParam?.(type)?.kind === "dyn";
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    if (walk.own === undefined || !walk.own.has(type)) walk.contextReads++;
+    return ctx.resolveTypeParam?.(type)?.kind === "dyn";
+  }
   if (
     type.flags &
     (ts.TypeFlags.IndexedAccess | ts.TypeFlags.Conditional | ts.TypeFlags.Substitution)
   )
     return true;
+  const known = walk.answers.get(type)?.[depth];
+  if (known !== undefined) return known;
+  const readsAtEntry = walk.contextReads;
+  const answer = mentionsErasedTypeParamIn(type, ctx, depth, walk);
+  // An answer a context binding took part in is that context's: it is
+  // computed again wherever it is asked for.
+  if (walk.contextReads === readsAtEntry) {
+    let byDepth = walk.answers.get(type);
+    if (byDepth === undefined) walk.answers.set(type, (byDepth = []));
+    byDepth[depth] = answer;
+  }
+  return answer;
+}
+
+function mentionsErasedTypeParamIn(
+  type: ts.Type,
+  ctx: TypeMapperCtx,
+  depth: number,
+  walk: ErasedMentionWalk,
+): boolean {
+  const { checker } = ctx;
   if (type.isUnionType() || type.isIntersectionType())
-    return ts.constituentTypes(type).some((part) => mentionsErasedTypeParam(part, ctx, depth + 1));
+    return ts
+      .constituentTypes(type)
+      .some((part) => mentionsErasedTypeParamAt(part, ctx, depth + 1, walk));
   if ((type.flags & ts.TypeFlags.Object) === 0) return false;
   if (
     (type as ts.Type).isTypeReference() &&
     checker
       .getTypeArguments(type as ts.TypeReference)
-      .some((arg) => mentionsErasedTypeParam(arg, ctx, depth + 1))
+      .some((arg) => mentionsErasedTypeParamAt(arg, ctx, depth + 1, walk))
   )
     return true;
   for (const sig of checker.getCallSignatures(type)) {
-    if (mentionsErasedTypeParam(checker.getReturnTypeOfSignature(sig), ctx, depth + 1)) return true;
+    if (mentionsErasedTypeParamAt(checker.getReturnTypeOfSignature(sig), ctx, depth + 1, walk))
+      return true;
     for (const param of sig.getParameters())
-      if (mentionsErasedTypeParam(checker.getTypeOfSymbol(param), ctx, depth + 1)) return true;
+      if (mentionsErasedTypeParamAt(checker.getTypeOfSymbol(param), ctx, depth + 1, walk))
+        return true;
   }
   const symbol = type.getSymbol();
   const anonymous =
@@ -8829,7 +8904,8 @@ function mentionsErasedTypeParam(type: ts.Type, ctx: TypeMapperCtx, depth: numbe
     (symbol.flags & (ts.SymbolFlags.TypeLiteral | ts.SymbolFlags.ObjectLiteral)) !== 0;
   if (anonymous)
     for (const property of checker.getPropertiesOfType(type))
-      if (mentionsErasedTypeParam(checker.getTypeOfSymbol(property), ctx, depth + 1)) return true;
+      if (mentionsErasedTypeParamAt(checker.getTypeOfSymbol(property), ctx, depth + 1, walk))
+        return true;
   return false;
 }
 
@@ -8873,18 +8949,18 @@ export function erasedGenericMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType 
   // context-sensitive, so a recursive record holding a generic method
   // (`interface Sub extends Base { send<T>(m: Msg<T>): void }` reached
   // from Base) still closes its knot. Consulting an enclosing binding does.
-  const erasedMember = { own, outerConsulted: false };
-  const erased = mapType(t, {
-    ...ctx,
-    erasingSignature: sig,
-    erasedMember,
-    resolveTypeParam: (param) => {
-      if (own.has(param)) return DYN;
-      if (outer === undefined) return null;
-      erasedMember.outerConsulted = true;
-      return outer(param);
-    },
-  });
+  const erasedMember: NonNullable<TypeMapperCtx["erasedMember"]> = {
+    own,
+    outerConsulted: false,
+  };
+  const resolveTypeParam: TypeParamResolver = (param) => {
+    if (own.has(param)) return DYN;
+    if (outer === undefined) return null;
+    erasedMember.outerConsulted = true;
+    return outer(param);
+  };
+  erasedMember.resolve = resolveTypeParam;
+  const erased = mapType(t, { ...ctx, erasingSignature: sig, erasedMember, resolveTypeParam });
   return erased?.kind === "func" ? erased : undefined;
 }
 

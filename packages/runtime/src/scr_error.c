@@ -354,6 +354,15 @@ ScrStr *scr_error_stack(ScrError *e) {
   return scr_str_retain(e->stack);
 }
 
+/* The frames `e` captured at creation, one "\n    at ..." line each, for
+ * the uncaught and unhandled-rejection reports, which print them under the
+ * "name: message" heading as Node prints its stack trace. Nothing for an
+ * error created where no source frame was kept. */
+void scr_error_report_frames(const ScrError *e) {
+  const ScrStr *frames = e->stack_frames;
+  if (frames != NULL) fwrite(frames->data, 1, frames->len, stderr);
+}
+
 void scr_error_set_stack(ScrError *e, ScrStr *stack) {
   ScrStr *replacement = scr_str_retain(stack);
   scr_str_release(e->stack);

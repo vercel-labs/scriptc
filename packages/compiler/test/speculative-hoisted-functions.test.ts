@@ -8,10 +8,11 @@ import type { IrModule } from "../src/ir/ir.js";
 // bignumber.js's clone(): `P = BigNumber.prototype = {...}` in a `var`
 // list above the constructor. The initializer lowers speculatively first,
 // which hoists the constructor and the helper it calls. Those bodies are
-// kept, so their failing statements must keep runtime fences; dropping
-// them left `isNum` without its return (an SC9002 trap at load). isNum's
-// return reads the prototype through Reflect.getPrototypeOf, which has no
-// lowering, so it fences.
+// kept, so their failing statements must keep their runtime form (a fence
+// when the statement has no lowering); dropping them left `isNum` without
+// its return (an SC9002 trap at load). isNum's return reads the prototype
+// through Reflect.getPrototypeOf, which lowers to the prototype-identity
+// read, so the kept statement shows up as that call.
 const source = `
 function clone(config) {
   var P = (Num.prototype = { constructor: Num, toString: null }),
@@ -57,10 +58,25 @@ function fenceCodes(node: unknown, out: string[] = []): string[] {
   return out;
 }
 
-test("speculatively hoisted JavaScript functions keep their statement fences", async () => {
+function callCallees(node: unknown, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const item of node) callCallees(item, out);
+  } else if (node !== null && typeof node === "object") {
+    const record = node as Record<string, unknown>;
+    if (record["kind"] === "call") out.push(String(record["callee"]));
+    for (const [key, value] of Object.entries(record)) if (key !== "loc") callCallees(value, out);
+  }
+  return out;
+}
+
+test("speculatively hoisted JavaScript functions keep their statements", async () => {
   const mod = await lower();
   const isNum = mod.functions.find((fn) => fn.name.endsWith("_isNum"));
   expect(isNum).toBeDefined();
-  expect(fenceCodes(isNum!.body)).toEqual(["SC2020"]);
+  // The hoisted body still carries the statement it was hoisted with — the
+  // dropped form left `isNum` without its return. Reflect.getPrototypeOf
+  // now lowers (the prototype-identity read), so nothing fenced here.
+  expect(fenceCodes(isNum!.body)).toEqual([]);
+  expect(callCallees(isNum!.body)).toContain("%dyn.class.prototypeIdentity");
   expect(mod.functions.flatMap((fn) => fenceCodes(fn.body))).not.toContain("SC9002");
 });

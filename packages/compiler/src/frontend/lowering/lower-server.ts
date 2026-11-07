@@ -1546,10 +1546,40 @@ function lowerNetServerMethodCall(
     // statement position keeps the plain void call; a consumed result
     // rides the interned receiver-returning helper.
     const listenResult = (fn: IrLibFn, callArgs: IrExpr[]): IrExpr => {
-      if (ts.isExpressionStatement(call.parent)) {
-        return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+      const statement = ts.isExpressionStatement(call.parent);
+      const port = callArgs[1];
+      if (port === undefined || port.kind !== "libCall" || port.fn !== "net.listenPortDyn") {
+        if (statement) return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+        return receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
       }
-      return receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
+      // A port checked when the call runs: Node evaluates every argument,
+      // left to right, before listen validates the port. The receiver and
+      // each argument are held first, so a later argument's effects happen
+      // and its exception wins over ERR_SOCKET_BAD_PORT.
+      const stmts: IrStmt[] = [];
+      const held = callArgs.map((arg, index): IrExpr => {
+        const value = index === 1 ? port.args[0]! : arg;
+        const local = lowerer.declareHiddenLocal(`%listenArg${index}`, value.type);
+        stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+        return varRef(local.id, value.type, loc);
+      });
+      const server = held[0]!;
+      held[1] = { ...port, args: [held[1]!, port.args[1]!] };
+      if (statement) {
+        stmts.push({
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn, args: held, type: VOID, loc },
+          loc,
+        });
+        return { kind: "seqExpr", stmts, result: server, type: NETSERVER_T, loc };
+      }
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: receiverReturningCall(lowerer, fn, held, NETSERVER_T, loc),
+        type: NETSERVER_T,
+        loc,
+      };
     };
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
     // listen() and listen(callback): Node binds an arbitrary unused port

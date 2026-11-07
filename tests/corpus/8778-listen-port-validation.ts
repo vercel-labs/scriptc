@@ -58,6 +58,34 @@ async function main(): Promise<void> {
   await attempt("literal 1.5", (server, done) => server.listen(1.5, done));
   await attempt("literal 0", (server, done) => server.listen(0, done));
 
+  // Every argument is evaluated, left to right, before listen validates the
+  // port: a later argument's effect happens, and its exception wins.
+  const order: string[] = [];
+  const host = (): string => {
+    order.push("host");
+    return "127.0.0.1";
+  };
+  const callback = (done: () => void): (() => void) => {
+    order.push("callback");
+    return done;
+  };
+  const failing = (): string => {
+    order.push("failing host");
+    throw new Error("thrown by the host argument");
+  };
+  await attempt("later arguments", (server, done) => server.listen(big, host(), callback(done)));
+  await attempt("later callback", (server, done) => server.listen(fraction, callback(done)));
+  await attempt("later options", (server, done) =>
+    server.listen({ port: big, host: host() }, callback(done)),
+  );
+  await attempt("later argument throws", (server, done) =>
+    server.listen(big, failing(), callback(done)),
+  );
+  await attempt("valid port, later arguments", (server, done) =>
+    server.listen(zero, host(), callback(done)),
+  );
+  console.log(order.join(", "));
+
   const web = http.createServer((_request, response) => response.end("x"));
   try {
     web.listen(big, () => {

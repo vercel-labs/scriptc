@@ -9726,6 +9726,27 @@ static ScrDyn *scr_dyn_construct_new_target(const ScrDyn *callee, const ScrDyn *
     ScrDyn *result = scr_bytes_construct(callee, args, what);
     if (!result || !prototype || !scr_iterator_object(prototype) ||
         (result->kind != SCR_DYN_OBJ && result->kind != SCR_DYN_ARR)) {
+      /* A value whose prototype is not part of it (a typed array, a native
+       * record) cannot take the newTarget's prototype. When that prototype
+       * is the constructor's own, nothing is lost; any other object would
+       * make the instance answer its members and `instanceof` from the
+       * wrong prototype, so the construction refuses, as Reflect.construct
+       * does for the same newTarget without a proxy in between. */
+      if (result && prototype && scr_iterator_object(prototype) && callee->kind == SCR_DYN_FUNC) {
+        ScrDyn *own = scr_dyn_fn_get(callee, "prototype", 9);
+        bool same = own && scr_dyn_same_value(own, prototype);
+        scr_dyn_release(own);
+        if (!same && !scr_exc_pending()) {
+          static const char message[] =
+              "Reflect.construct with a newTarget other than the target is not supported yet";
+          scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+        }
+        if (scr_exc_pending()) {
+          scr_dyn_release(prototype);
+          scr_dyn_release(result);
+          return NULL;
+        }
+      }
       scr_dyn_release(prototype);
       return result;
     }

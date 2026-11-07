@@ -2021,8 +2021,9 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // A feature test that guards a polyfill of a built-in member Node 24
     // has (`if (!Array.prototype.at) { Array.prototype.at = … }`) has one
     // answer, and neither the test nor the polyfill lowers
-    // (builtin-member-writes.ts). An arm that declares a hoisted binding
-    // has to lower for it, so its guard is not decided here.
+    // (builtin-member-writes.ts); a test with an operand that runs for its
+    // effects still lowers. An arm that declares a hoisted binding has to
+    // lower for it, so its guard is not decided here.
     const polyfill = builtinPolyfillGuard(
       lowerer,
       test,
@@ -2031,13 +2032,13 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       declaresHoistedBinding,
     );
     const cond: IrExpr =
-      polyfill === null
+      polyfill === null || !polyfill.pure
         ? lowerer.lowerCondition(test)
-        : { kind: "boolLit", value: polyfill, type: BOOL, loc: locOf(test) };
+        : { kind: "boolLit", value: polyfill.value, type: BOOL, loc: locOf(test) };
     // A global-detection condition (static-typeof.ts) folds; its untaken
     // arm is code Node never runs and does not lower, unless it declares a
     // hoisted binding.
-    const decided = polyfill ?? staticCondition(lowerer, test);
+    const decided = polyfill?.value ?? staticCondition(lowerer, test);
     if (decided !== null) {
       const taken = decided ? stmt.thenStatement : stmt.elseStatement;
       const untaken = decided ? stmt.elseStatement : stmt.thenStatement;

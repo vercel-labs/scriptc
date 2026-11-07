@@ -42,6 +42,26 @@ if (typeof Promise.allSettled !== "function" || !Array.prototype.includes) {
 } else {
   console.log("else arm runs");
 }
+// A guard with an operand that runs for its effects: the operand runs, and
+// the polyfill behind the guard still never does.
+const effects: string[] = [];
+function effect(label: string, answer: boolean): boolean {
+  effects.push(label);
+  return answer;
+}
+if (effect("and", true) && !Array.prototype.at) {
+  Array.prototype.at = function <T>(this: T[], _index: number): T | undefined {
+    ran++;
+    return undefined;
+  };
+}
+if (!Array.prototype.includes && effect("never", true)) {
+  Array.prototype.at = function <T>(this: T[], _index: number): T | undefined {
+    ran++;
+    return undefined;
+  };
+}
+console.log(effects.join(","));
 // The spellings without a guard statement: an assignment that keeps the
 // member's own value, and a logical assignment that never assigns.
 String.prototype.trimStart =

@@ -57,6 +57,34 @@ if (Number.isInteger) {
     return true;
   };
 }
+// A guard with an operand that runs for its effects: the operand runs, in
+// order, and the polyfill behind the guard still never does.
+var effects = [];
+function effect(label, answer) {
+  effects.push(label);
+  return answer;
+}
+if (effect("and", true) && !Array.prototype.at) {
+  Array.prototype.at = function () {
+    ran++;
+    return "polyfill";
+  };
+}
+if (effect("or", false) || Array.prototype.flat) {
+  effects.push("has flat");
+} else {
+  Array.prototype.flat = function () {
+    ran++;
+    return "polyfill";
+  };
+}
+if (!Array.prototype.at && effect("never", true)) {
+  Array.prototype.at = function () {
+    ran++;
+    return "polyfill";
+  };
+}
+console.log(effects.join(","));
 // A guard that returns early in front of the polyfill.
 (function () {
   if (Array.prototype.flat) return;

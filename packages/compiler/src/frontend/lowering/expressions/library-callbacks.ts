@@ -189,9 +189,6 @@ export function requiredLibraryCallbackRead(
   };
 }
 
-/** The calls being lowered with their operands already evaluated. */
-const deferring = new WeakSet<ts.Node>();
-
 /** Whether `node` has the same value wherever in the call it is evaluated,
  * and evaluating it cannot be observed: a literal, a function expression,
  * `this`, a name that is not a variable (a function, a class, an enum, a
@@ -297,11 +294,13 @@ export function lowerDeferredCallbackCall(
   lowerer: Lowerer,
   call: ts.CallExpression | ts.NewExpression,
 ): IrExpr | null {
-  if (deferring.has(call)) return null;
   const args = call.arguments?.nodes ?? [];
   for (let index = 0; index < args.length - 1; index++) {
     const expr = withoutParenthesesTypeWrappers(args[index]!);
     if (!ts.isIdentifier(expr)) continue;
+    // This call is being lowered over its held operands, the callback among
+    // them (below): nothing is left to hold.
+    if (lowerer.chainRecvByNode.has(expr)) return null;
     const symbol = identifierReadSymbol(lowerer, expr);
     if (symbol === undefined || !lowerer.earlyReadVars.has(symbol)) continue;
     const first = calleeOperand(call);
@@ -360,13 +359,7 @@ export function lowerDeferredCallbackCall(
       else_: null,
       loc,
     });
-    deferring.add(call);
-    let result: IrExpr;
-    try {
-      result = lowerer.withExpressionOverrides(overrides, () => lowerer.lowerExpr(call));
-    } finally {
-      deferring.delete(call);
-    }
+    const result = lowerer.withExpressionOverrides(overrides, () => lowerer.lowerExpr(call));
     for (const temp of temps) {
       if (!readsLocal(result, temp.id))
         lowerer.unsupported(

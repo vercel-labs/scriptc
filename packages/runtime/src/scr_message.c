@@ -23,7 +23,9 @@ typedef struct {
   size_t type_key_len;
   ScrDyn *(*materialize)(void *);
   void (*commit)(void *, const ScrDyn *);
+  const void *ops;
   bool traced;
+  bool record, klass, bag_class;
 } ScrMessageTyped;
 
 typedef struct {
@@ -379,7 +381,8 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     encoder->typed[encoder->typed_count++] = (ScrMessageTyped){
       input->v.typed_ref.ptr, input->v.typed_ref.retain, input->v.typed_ref.release,
       input->v.typed_ref.type_key, input->v.typed_ref.type_key_len, input->v.typed_ref.materialize,
-      input->v.typed_ref.commit, input->v.typed_ref.traced,
+      input->v.typed_ref.commit, input->v.typed_ref.array, input->v.typed_ref.traced,
+      input->v.typed_ref.record, input->v.typed_ref.klass, input->v.typed_ref.bag_class,
     };
     if (getenv("SCRIPTC_PUBLISH_TRACE"))
       fprintf(stderr, "scriptc: published %.*s shared by reference\n", (int)input->v.typed_ref.type_key_len,
@@ -1002,6 +1005,17 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
       values[i] = (typed->traced ? scr_dyn_new_typed_ref_traced : scr_dyn_new_typed_ref)(
           typed->ptr, typed->retain, typed->release, typed->type_key, typed->type_key_len,
           typed->materialize, typed->commit);
+      /* The capsule and its cached views belong to the receiver, but its
+       * native operations are process-wide, just like the adapters. */
+      if (typed->ops) {
+        if (typed->record)
+          scr_dyn_typed_ref_bind_record(values[i], typed->ops);
+        else if (typed->klass)
+          scr_dyn_typed_ref_bind_class(values[i], typed->ops);
+        else if (typed->bag_class)
+          scr_dyn_typed_ref_bind_bag_class(values[i], typed->ops);
+        else scr_dyn_typed_ref_bind_array(values[i], typed->ops);
+      }
       break;
     }
     case SCR_MESSAGE_PORT:

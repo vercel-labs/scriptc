@@ -8,7 +8,7 @@ import {
   resolveRequireRuntime,
   runtimePathForTarget,
 } from "./runtime-resolve.js";
-import { FrontendInputTracker, frontendInputMismatch } from "./input-tracker.js";
+import { FrontendInputTracker, changedFrontendInput } from "./input-tracker.js";
 import { FrontendServices } from "./services.js";
 import { clearResolveCaches } from "./resolve.js";
 
@@ -136,14 +136,14 @@ test("a frontend entry recorded under another working directory is not reused", 
     resolveRequireRuntime(entry, "lookup-fixture", process.platform, ["./vendor"]);
   });
   const snapshot = tracker.snapshot();
-  expect(frontendInputMismatch(snapshot)).toBeNull();
+  expect(changedFrontendInput(snapshot)).toBeNull();
   const elsewhere = {
     ...snapshot,
     probes: snapshot.probes.map((probe) =>
       probe.op === "host" && probe.path === "cwd" ? { ...probe, value: "/elsewhere" } : probe,
     ),
   };
-  expect(frontendInputMismatch(elsewhere)).toEqual({
+  expect(changedFrontendInput(elsewhere)).toEqual({
     op: "host",
     path: "cwd",
     value: "/elsewhere",

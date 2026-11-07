@@ -26,8 +26,9 @@
 #include <string.h>
 
 void scr_conversion_trace(const char *where) {
-  /* Every thread reads the same environment: a race stores one value. */
-  static int tracing = -1;
+  /* Per thread, so worker threads that fail their first conversions at
+   * the same time share nothing: each reads the environment once. */
+  static SCR_TL int tracing = -1;
   if (tracing < 0) {
     const char *t = getenv("SCRIPTC_CONVERSION_TRACE");
     tracing = t != NULL && *t != 0 && strcmp(t, "0") != 0;

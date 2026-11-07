@@ -42218,6 +42218,7 @@
           "tests/corpus/5846-events-esm-default-max.ts",
           "tests/corpus/5847-events-cjs-default-max.cjs",
           "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43524,6 +43525,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43575,6 +43577,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43603,6 +43606,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43631,6 +43635,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43659,6 +43664,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43687,6 +43693,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43715,6 +43722,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43743,6 +43751,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43771,6 +43780,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43799,6 +43809,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43827,6 +43838,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43855,6 +43867,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43883,6 +43896,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43911,6 +43925,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43939,6 +43954,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43967,6 +43983,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44212,6 +44229,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },

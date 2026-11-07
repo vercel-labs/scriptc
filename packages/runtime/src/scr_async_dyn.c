@@ -872,6 +872,14 @@ ScrDyn *scr_coro_await_dyn_value(ScrDyn *value) {
 static SCR_TL ScrDyn **scr_warn_listeners = NULL;
 static SCR_TL size_t scr_nwarn = 0, scr_warn_cap = 0;
 
+static void scr_emit_leak_warning(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message);
+
+#ifdef SCR_WARNING_REPLACE
+/* The program's process.emitWarning replacement, or NULL while the
+ * property holds Node's own function (defined below). */
+static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+#endif
+
 static void scr_warn_teardown(void) {
   for (size_t i = 0; i < scr_nwarn; i++) scr_dyn_release(scr_warn_listeners[i]);
   free(scr_warn_listeners);
@@ -886,6 +894,7 @@ void scr_process_on_warning(ScrDyn *fn) {
     return;
   }
   scr_warning_emit_hook = scr_emit_warning;
+  scr_warning_leak_hook = scr_emit_leak_warning;
   if (scr_nwarn == scr_warn_cap) {
     scr_warn_cap = scr_warn_cap ? scr_warn_cap * 2 : 4;
     scr_warn_listeners = realloc(scr_warn_listeners, scr_warn_cap * sizeof *scr_warn_listeners);
@@ -1069,13 +1078,39 @@ ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   return w;
 }
 
+/* The EventEmitter leak warning: MaxListenersExceededWarning with the
+ * `emitter`, `type` and `count` own properties Node's _addListener sets,
+ * in that order. `type` is the event name VALUE (a symbol stays a symbol),
+ * and `emitter` is an identity-bearing value of the emitter, so a listener
+ * comparing it with the emitter it registered on sees one object. Borrows
+ * every argument. */
+static void scr_emit_leak_warning(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message) {
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(e->name);
+  e->name = scr_str_new("MaxListenersExceededWarning", sizeof "MaxListenersExceededWarning" - 1);
+  e->name_present = true;
+  ScrDyn *w = scr_dyn_from_error(e);
+  /* The values move in (scr_error_set_prop takes the reference). */
+  scr_error_set_prop(e, "emitter", 7, scr_dyn_retain(emitter));
+  scr_error_set_prop(e, "type", 4, scr_dyn_retain(type));
+  scr_error_set_prop(e, "count", 5, scr_dyn_new_num(count));
 #ifdef SCR_WARNING_REPLACE
-/* The program's process.emitWarning replacement, or NULL while the
- * property holds Node's own function. Compiled only into the
- * SCR_WARNING_REPLACE variant, which programs assigning process.emitWarning
- * link: every other executable keeps the plain warning paths. */
-static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+  if (scr_emit_warning_override != NULL) {
+    /* _addListener calls process.emitWarning(warning), so a replacement
+     * receives the warning object itself. */
+    ScrDyn *r = scr_dyn_call(scr_emit_warning_override, &w, 1, "process.emitWarning");
+    scr_dyn_release(r);
+  } else
+#endif
+    scr_warning_dispatch(w);
+  scr_dyn_release(w);
+  scr_error_release(e);
+}
 
+#ifdef SCR_WARNING_REPLACE
+/* Compiled only into the SCR_WARNING_REPLACE variant, which programs
+ * assigning process.emitWarning link: every other executable keeps the
+ * plain warning paths. */
 static void scr_emit_warning_override_teardown(void) {
   scr_dyn_release(scr_emit_warning_override);
   scr_emit_warning_override = NULL;
@@ -1089,6 +1124,7 @@ void scr_process_set_emit_warning(ScrDyn *fn) {
   /* Units that report their own warnings without a listener route them
    * here once a replacement exists. */
   scr_warning_emit_hook = scr_emit_warning;
+  scr_warning_leak_hook = scr_emit_leak_warning;
 }
 
 /* A runtime-built warning while a replacement is installed: Node's modules

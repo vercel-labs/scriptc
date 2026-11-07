@@ -3,7 +3,7 @@
 /* Node's system error for a failure message the net, http and dgram units
  * write. Those units report a failed bind, listen, connect, send or lookup
  * as the message Node builds from the failure, so the error object is
- * rebuilt from that text in one place: this function. Each unit that fires
+ * rebuilt from that text in one place: these functions. Each unit that fires
  * such messages includes this header after its socket headers (the
  * function is static: a dgram program links no net unit). */
 #include "scr_dyn.h"
@@ -53,12 +53,12 @@ static bool scr_system_error_word(const char *data, size_t len, const char *word
 /* The message forms:
  * "<syscall> <CODE>[ <detail>]" (errnoException, exceptionWithHostPort,
  * DNSException) or "<syscall> <CODE>: <libuv message>[ <detail>]"
- * (uvExceptionWithHostPort). The error carries the code, the libuv errno
- * and the syscall. For connect, listen, bind and send the detail is the
- * address, as "<address>:<port>" with a port, and a listen on a pipe path
- * has port -1; for getaddrinfo it is the hostname. NULL for any other
- * message; +1 otherwise. */
-static ScrError *scr_system_error_from_message(ScrStr *msg) {
+ * (uvExceptionWithHostPort). This is the part of the error that lives in
+ * the error itself: the code, the libuv errno and the syscall. *detail is
+ * where the message's detail starts (its end when there is none). NULL
+ * for any other message; +1 otherwise. It names nothing of the dynamic
+ * object model, so a unit that typed programs link can call it. */
+static ScrError *scr_system_error_fields(ScrStr *msg, const char **detail_out) {
   const char *data = msg->data;
   const char *end = data + msg->len;
   const char *space = memchr(data, ' ', msg->len);
@@ -94,6 +94,22 @@ static ScrError *scr_system_error_from_message(ScrStr *msg) {
   scr_error_set_code(e, code_buf);
   e->system_errno = uv;
   e->system_call = scr_str_new(data, syscall_len);
+  *detail_out = detail;
+  return e;
+}
+
+/* scr_system_error_fields, and the properties the detail names: for
+ * connect, listen, bind and send the address, as "<address>:<port>" with
+ * a port, and a listen on a pipe path has port -1; for getaddrinfo the
+ * hostname. They are own properties of the error's untyped view, so this
+ * function links the dynamic object model. */
+static ScrError *scr_system_error_from_message(ScrStr *msg) {
+  const char *detail;
+  ScrError *e = scr_system_error_fields(msg, &detail);
+  if (e == NULL) return NULL;
+  const char *data = msg->data;
+  const char *end = data + msg->len;
+  size_t syscall_len = e->system_call->len;
   if (scr_system_error_word(data, syscall_len, "getaddrinfo")) {
     if (detail < end) {
       ScrStr *hostname = scr_str_new(detail, (size_t)(end - detail));

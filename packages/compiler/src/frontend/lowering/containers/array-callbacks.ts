@@ -3123,6 +3123,16 @@ export function lowerArraySortCall(
   }
   let fnArg =
     undefinedArg ?? lowerOptionalElementComparator(lowerer, argNode, unwrappedArg, elem, arrT);
+  // A Node island's function as the comparator: its typed view, taken at
+  // the two elements the sort passes.
+  if (fnArg.type.kind === "func" && fnArg.type.ret.kind !== "void") {
+    const view = lowerer.islandFunctionViewAt(
+      fnArg,
+      unwrappedArg,
+      funcOf([elem, elem], fnArg.type.ret),
+    );
+    if (view !== null) fnArg = view;
+  }
   // A comparator whose result may be `undefined` — the shape TS infers for a
   // JavaScript function that falls off its end for equal elements (semver's
   // `rcompare`) — still orders: JavaScript reads a comparator's result with

@@ -2902,6 +2902,19 @@ function validateFunction(
         if (e.adapts === true && locals.get(e.captures[0] ?? "")?.type.kind !== "func") {
           err(`closure ${e.fnName}: an adapter's first capture must be a function`, e.loc);
         }
+        if (
+          e.length !== undefined &&
+          (e.adapts === true ||
+            target.captures === undefined ||
+            !Number.isInteger(e.length) ||
+            e.length < 0 ||
+            e.length >= e.type.params.length)
+        ) {
+          err(
+            `closure ${e.fnName}: length ${e.length} must be below the ${e.type.params.length} parameters of a lifted function's type`,
+            e.loc,
+          );
+        }
         if (target.captures === undefined && e.captures.length > 0) {
           err(`closure over plain function "${e.fnName}" cannot capture`, e.loc);
         }

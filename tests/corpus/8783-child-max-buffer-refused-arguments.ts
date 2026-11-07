@@ -7,6 +7,10 @@
 // forms throw from the call, like the functions they wrap.
 //
 // A launch that was refused leaves its limit behind for no other capture.
+//
+// Node has the value of every option before it checks anything, so a
+// maxBuffer expression that adds an argument has added it when the
+// arguments are checked.
 import { exec, execFile, execFileSync, execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -20,6 +24,12 @@ const bad: number = Number(process.argv[2] ?? "-1");
 const small: number = Number(process.argv[3] ?? "4");
 const dir: string = tmpdir();
 const notCalled = (): void => console.log("not called");
+
+// A limit whose computation appends an argument Node refuses.
+function growing(list: string[], limit: number): number {
+  list.push(nul);
+  return limit;
+}
 
 function thrown(label: string, launch: () => unknown): void {
   try {
@@ -80,6 +90,21 @@ async function main(): Promise<void> {
   thrown("promisified exec cwd, valid limit", () =>
     void execAsync("echo x", { cwd: nul, maxBuffer: small }),
   );
+
+  // The limit's expression runs before the arguments are checked.
+  const forSync = ["x"];
+  thrown("execFileSync, limit adds an argument", () =>
+    execFileSync("/bin/echo", forSync, { maxBuffer: growing(forSync, 64) }),
+  );
+  const forCallback = ["x"];
+  thrown("execFile, limit adds an argument", () =>
+    execFile("/bin/echo", forCallback, { maxBuffer: growing(forCallback, 64) }, notCalled),
+  );
+  const forPromise = ["x"];
+  thrown("promisified execFile, limit adds an argument", () =>
+    void execFileAsync("/bin/echo", forPromise, { maxBuffer: growing(forPromise, 64) }),
+  );
+  console.log("lists:", forSync.length, forCallback.length, forPromise.length);
 
   // The refused launches above named a limit of four. The captures below
   // name none, so Node's default applies and ten bytes fit.

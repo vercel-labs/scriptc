@@ -85,8 +85,9 @@ export function armedMaxBuffer(value: IrExpr | null, sync: boolean): ChildMaxBuf
  *
  * The limit shares the evaluated arguments, so a capture one of them runs
  * has finished before the limit is armed, and it is armed last: a check
- * that throws leaves no limit behind for another capture. Where both the
- * limit and a value can be refused, the checks run in Node's order. */
+ * that throws leaves no limit behind for another capture. Its own value is
+ * evaluated with the arguments, before any check. Where both the limit and
+ * a value can be refused, the checks run in Node's order. */
 export function withChildArgsCheck(
   lowerer: Lowerer,
   launch: Extract<IrExpr, { kind: "libCall" | "call" }>,
@@ -167,7 +168,17 @@ export function withChildArgsCheck(
     },
     loc,
   });
-  const limit = limited ? held.maxBuffer : undefined;
+  // The limit is an option, and Node has every option's value before it
+  // checks anything: an expression that changes the argument list has done
+  // so when the list is checked. So its value is evaluated here, before the
+  // checks, and they and the launch read the local. (A limit that is an
+  // argument of the launch was evaluated with the arguments.)
+  let limit = limited ? held.maxBuffer : undefined;
+  if (limit !== undefined && limit.value.kind !== "numLit" && limit.value.kind !== "varRef") {
+    const local = lowerer.declareHiddenLocal("%childArg", limit.value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: limit.value, loc });
+    limit = { ...limit, value: varRef(local.id, limit.value.type, loc) };
+  }
   if (limit === undefined) {
     stmts.push(checkAll());
   } else if (fileAndArgsPass && optionsPass) {
@@ -177,13 +188,8 @@ export function withChildArgsCheck(
   } else {
     // exec and execFile, callback or promisified, where the limit and a
     // launch value can both be refused. The limit is validated first and
-    // armed after the last check, so it is read twice.
-    let value = limit.value;
-    if (limit.arm && value.kind !== "numLit" && value.kind !== "varRef") {
-      const local = lowerer.declareHiddenLocal("%childArg", value.type);
-      stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
-      value = varRef(local.id, value.type, loc);
-    }
+    // armed after the last check.
+    const value = limit.value;
     if (form === 1) {
       // exec: normalizeExecArgs checks the command, execFile the limit,
       // spawn the options. Form 3 with no list checks neither a file nor

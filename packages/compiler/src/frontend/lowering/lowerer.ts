@@ -18772,6 +18772,16 @@ export class Lowerer {
       : { kind: "seqExpr", stmts: [load], result: value, type: value.type, loc };
   }
 
+  /** The receiver evaluation of a builtin dispatch over an awaited literal
+   * import as a statement of its own. A declaration that resolves through
+   * a baked constants object (`const { A } = (await import("node:crypto")).constants`)
+   * stores nothing, but its source still evaluates the await where the
+   * declaration sits. Null for every receiver that evaluates nothing of
+   * its own. */
+  builtinReceiverLoad(receiver: ts.Expression, loc: SrcLoc): IrStmt | null {
+    return this.awaitedReceiverLoad(receiver, loc);
+  }
+
   /** `ns.member(...)` on a builtin namespace import: exactly the named-
    * import dispatch — the module tables for lowered members, the module-
    * qualified per-member fence for the rest. Null for non-namespace
@@ -19440,7 +19450,8 @@ export class Lowerer {
   }
 
   lowerBuiltinConstantsProperty(expr: ts.PropertyAccessExpression): IrExpr | null {
-    return lowerBuiltinConstantsProperty(this, expr);
+    const value = lowerBuiltinConstantsProperty(this, expr);
+    return value === null ? null : this.withReceiverLoad(expr.expression, value, locOf(expr));
   }
 
   builtinConstantBindingOf(ident: ts.Identifier): IrExpr | null {

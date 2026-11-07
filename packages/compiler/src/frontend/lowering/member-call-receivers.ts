@@ -482,6 +482,9 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
       }
       return verdict;
     }
+    // A read through a literal string index is a read of that member.
+    if (ts.isElementAccessExpression(value) && ts.isStringLiteralLike(value.argumentExpression))
+      return { kind: "member", member: value.argumentExpression.text };
     if (ts.isPropertyAccessExpression(value)) {
       const declarations = symbolOf(value.name)?.declarations ?? [];
       if (

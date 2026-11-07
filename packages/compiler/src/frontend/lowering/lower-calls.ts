@@ -11219,21 +11219,48 @@ export function lowerRecordFieldCall(
       )
     )
       return null;
-    const callee = lowerer.lowerUnionProperty(access);
-    if (callee?.type.kind !== "func") return null;
-    const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-    const value: IrExpr = {
-      kind: "callValue",
-      callee,
-      args,
-      type: callee.type.ret,
-      loc: locOf(call),
+    const lowerCall = (receiver: IrExpr | undefined): IrExpr | null => {
+      const callee = lowerer.lowerUnionProperty(access);
+      if (callee?.type.kind !== "func") return null;
+      const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
+      const value: IrExpr = {
+        kind: "callValue",
+        callee,
+        ...(receiver ? { receiver } : {}),
+        args,
+        type: callee.type.ret,
+        loc: locOf(call),
+      };
+      // An overloaded member's erased result converts to the resolved
+      // overload's type, as on a single record receiver below.
+      return isOverloadedMemberAccess(lowerer, access)
+        ? lowerer.coerceInto(call, value, resolvedOverloadResultType(lowerer, call))
+        : value;
     };
-    // An overloaded member's erased result converts to the resolved
-    // overload's type, as on a single record receiver below.
-    return isOverloadedMemberAccess(lowerer, access)
-      ? lowerer.coerceInto(call, value, resolvedOverloadResultType(lowerer, call))
-      : value;
+    // The union value is the call's receiver where the member can hold a
+    // function that reads it, as on a single record receiver below: the
+    // holder is evaluated once, before the member read.
+    const carries =
+      isJsSourceFile(ts.getSourceFileOfNode(call)) ||
+      lowerer.memberCallCarriesReceiver(access.name.text);
+    if (!carries || !lowerer.dynConvertible(receiverType)) return lowerCall(undefined);
+    const loc = locOf(call);
+    const holder = lowerer.lowerExpr(access.expression);
+    if (stableBinding(lowerer, holder, access.expression))
+      return lowerCall(lowerer.coerceToExpected(holder, DYN));
+    const local = lowerer.declareHiddenLocal("%callReceiver", holder.type);
+    const reference = varRef(local.id, holder.type, loc);
+    const result = lowerer.withExpressionOverride(access.expression, reference, () =>
+      lowerCall(lowerer.coerceToExpected(reference, DYN)),
+    );
+    if (result === null) return null;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: holder, loc }],
+      result,
+      type: result.type,
+      loc,
+    };
   }
   const target = lowerer.fieldTarget(access);
   const loc = locOf(call);

@@ -1,5 +1,6 @@
-/* Node islands: a native AbortSignal and AbortController in an island.
- * Links into programs that have both Node islands and native signals.
+/* Node islands: AbortSignal and AbortController across the boundary.
+ * Links into programs that have Node islands and either native signals or
+ * a native receiver of one.
  *
  * The receivers of a signal in an island test its brand: undici's fetch,
  * addEventListener's `signal` option, AbortSignal.any, events.once and

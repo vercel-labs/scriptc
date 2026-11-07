@@ -51,6 +51,17 @@ async function main(port: number): Promise<void> {
   const map = new Map<unknown, string>([[second.signal, "second"]]);
   console.log("identity", map.get(second.signal), lib.keep(second.signal), lib.keep(second.signal));
 
+  let seen: AbortSignal | undefined;
+  const sameTwice = (a: AbortSignal, b: AbortSignal): boolean => {
+    const same = a === b && (seen === undefined || seen === a);
+    seen = a;
+    return same;
+  };
+  console.log("one signal in two arguments", lib.twice(sameTwice));
+  const interleaved = (a: AbortSignal, b: AbortSignal, c: AbortSignal): string =>
+    `${a === c} ${a === b} ${b.aborted} ${String(b.reason)}`;
+  console.log("interleaved", lib.interleaved(interleaved));
+
   // Aborted before it arrived.
   const gone: AbortSignal = lib.aborted(new RangeError("gone"));
   console.log("arrives aborted", gone.aborted, show(gone.reason));

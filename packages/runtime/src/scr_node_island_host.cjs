@@ -400,8 +400,12 @@ const islandHelpers = {
     if (state.adopted) state.cls.adopt(twin, state.native);
     else state.cls.start(twin, state.native);
   },
-  // The class that adopts `value`, by its prototype, or undefined.
+  // The class that adopts `value`, by its prototype, or undefined. A value
+  // that a native object adopted since its handle was made (the same
+  // object twice in one argument list) answers itself: it crosses back as
+  // that native object.
   twinClassOf(value) {
+    if (twinStates.has(value)) return value;
     const prototype = Object.getPrototypeOf(value);
     for (const name of Object.keys(twinClasses)) {
       const cls = twinClasses[name];

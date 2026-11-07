@@ -415,6 +415,36 @@ static int ni_returned(ScrDyn *result, ScrNodeValue *out) {
   return 0;
 }
 
+/* The values the bridge wrote for one host call are read one by one, and
+ * two of them may name one import (the same island signal in two
+ * arguments). An adoption while they are read lets go of the island
+ * object's handle, which would drop the import under the values not read
+ * yet: those handles live until the call's values are all read. */
+static ScrDyn **ni_adopted = NULL;
+static size_t ni_nadopted = 0, ni_adopted_cap = 0;
+static uint32_t ni_reading = 0;
+
+static size_t ni_read_begin(void) {
+  ni_reading++;
+  return ni_nadopted;
+}
+
+static void ni_read_end(size_t mark) {
+  ni_reading--;
+  while (ni_nadopted > mark) scr_dyn_release(ni_adopted[--ni_nadopted]);
+}
+
+static void ni_adopted_keep(ScrDyn *island) {
+  if (ni_reading == 0) return;
+  if (ni_nadopted == ni_adopted_cap) {
+    ni_adopted_cap = ni_adopted_cap ? ni_adopted_cap * 2 : 8;
+    ScrDyn **grown = realloc(ni_adopted, ni_adopted_cap * sizeof *grown);
+    if (grown == NULL) ni_export_oom();
+    ni_adopted = grown;
+  }
+  ni_adopted[ni_nadopted++] = scr_dyn_retain(island);
+}
+
 /* Arguments as runtime values (+1 each). */
 static ScrDyn **ni_args_in(const ScrNodeValue *args, size_t argc, ScrDyn **small, size_t nsmall) {
   ScrDyn **out = argc <= nsmall ? small : malloc(argc * sizeof *out);
@@ -438,8 +468,10 @@ int scr_ni_host_export_call(uint32_t id, const ScrNodeValue *this_, const ScrNod
   }
   scr_dyn_retain(fn);
   ScrDyn *small[8];
+  size_t reading = ni_read_begin();
   ScrDyn **in = ni_args_in(args, argc, small, 8);
   ScrDyn *self = this_ != NULL ? scr_ni_value_in(this_) : scr_dyn_retain(scr_dyn_undefined());
+  ni_read_end(reading);
   scr_dyn_this_push_dyn(self);
   ScrDyn *result = scr_dyn_call(fn, in, argc, "callback");
   scr_dyn_this_pop();
@@ -471,12 +503,16 @@ int scr_ni_host_export_construct(uint32_t id, const ScrNodeValue *args, size_t a
     /* A native class of a shared module (NI-6): its helper's thunk checks
      * the arguments against the constructor's parameters. */
     ScrDyn *small[8];
+    size_t reading = ni_read_begin();
     ScrDyn **in = ni_args_in(args, argc, small, 8);
+    ni_read_end(reading);
     result = scr_dyn_call(helper, in, argc, "constructor");
     ni_args_free(in, argc, small);
   } else {
     ScrDyn *list = scr_dyn_new_arr();
+    size_t reading = ni_read_begin();
     for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(list, scr_ni_value_in(&args[i]));
+    ni_read_end(reading);
     ScrStr *what = scr_str_new("constructor", 11);
     result = scr_dyn_construct(ctor, list, what);
     scr_str_release(what);
@@ -800,7 +836,9 @@ static int ni_twin_op(const ScrNiTwinClass *twin, ScrDyn *target, uint32_t op,
                       const ScrNodeValue *args, size_t argc, ScrNodeValue *out) {
   const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(target);
   ScrDyn *small[4];
+  size_t reading = ni_read_begin();
   ScrDyn **in = ni_args_in(args, argc, small, 4);
+  ni_read_end(reading);
   ScrDyn *result = NULL;
   scr_dyn_retain(target);
   if (ops != NULL && argc > 0 && in[0]->kind == SCR_DYN_STR) {
@@ -847,7 +885,9 @@ int scr_ni_host_export_op(uint32_t id, uint32_t op, const ScrNodeValue *args, si
     return ni_threw(out);
   }
   ScrDyn *small[4];
+  size_t reading = ni_read_begin();
   ScrDyn **in = ni_args_in(args, argc, small, 4);
+  ni_read_end(reading);
   /* The collection's own handle operations (scr_json.c), which every
    * program with Maps or Sets links. */
   const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(view);
@@ -1247,6 +1287,9 @@ void scr_ni_exports_release_all(void) {
   }
   ni_exports_len = 1;
   ni_nfree = 0;
+  free(ni_adopted);
+  ni_adopted = NULL;
+  ni_adopted_cap = 0;
   free(ni_ids);
   ni_ids = NULL;
   ni_ids_cap = ni_ids_len = ni_ids_dead = 0;
@@ -1351,6 +1394,15 @@ ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle) {
   ScrDyn *native = NULL;
   ScrDyn *name = ni_helper("twinClassOf", &island, 1);
   const ScrNiTwinClass *cls = NULL;
+  /* Adopted since this handle was made: the native object that did. */
+  if (name != NULL && ni_twin_class(name) != NULL) {
+    ni_adopted_keep(island);
+    if (saved != NULL) {
+      scr_rethrow(saved);
+      scr_caught_release(saved);
+    }
+    return name;
+  }
   if (name != NULL && name->kind == SCR_DYN_STR)
     for (const ScrNiTwinClass *c = ni_twin_classes; c != NULL && cls == NULL; c = c->next)
       if (c->adopt != NULL && strlen(c->name) == name->v.str->len &&
@@ -1370,6 +1422,8 @@ ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle) {
       if (ni_exports[id].value == native) scr_ni_host_export_release(id);
       scr_dyn_release(native);
       native = NULL;
+    } else {
+      ni_adopted_keep(island);
     }
   }
   if (scr_exc_pending()) scr_exc_clear();

@@ -13,6 +13,16 @@ exports.keep = (signal) => {
   kept = signal;
   return same;
 };
+// One signal in two arguments of a native callback, and again later.
+exports.twice = (callback) => {
+  const signal = new AbortController().signal;
+  return `${callback(signal, signal)} ${callback(signal, signal)}`;
+};
+// Three arguments: a signal, an aborted one, and the first again.
+exports.interleaved = (callback) => {
+  const first = new AbortController().signal;
+  return callback(first, AbortSignal.abort("mid"), first);
+};
 exports.state = (signal) => `${signal instanceof AbortSignal} ${signal.aborted} ${String(signal.reason)}`;
 
 // A client that makes its own controller per request and hands the signal

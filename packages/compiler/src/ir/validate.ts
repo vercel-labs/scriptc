@@ -6410,6 +6410,20 @@ function validateFunction(
     return false;
   }
 
+  let linkSourcesByTarget: Map<string, string[]> | null = null;
+  /** The source shapes of the module's links into the record `shapeId`. */
+  function jsonLinkSources(shapeId: string): readonly string[] | undefined {
+    if (linkSourcesByTarget === null) {
+      linkSourcesByTarget = new Map();
+      for (const link of recordLinks) {
+        const sources = linkSourcesByTarget.get(link.to);
+        if (sources) sources.push(link.from);
+        else linkSourcesByTarget.set(link.to, [link.from]);
+      }
+    }
+    return linkSourcesByTarget.get(shapeId);
+  }
+
   function checkConversionExpr(e: IrExpr & { kind: "jsonStringify" | "dynCheck" }): void {
     switch (e.kind) {
       case "jsonStringify": {
@@ -6421,15 +6435,18 @@ function validateFunction(
         // JSON-safe (the frontend rejects the rest with a specific message).
         // A dyn ROOT is the one non-static shape allowed: the runtime's dyn
         // walker serializes it (scr_dyn_format_j), no emitted serializer.
+        // A linked copy serializes as a record of its source's type, so
+        // every source type of a link into a reachable record counts.
         if (
           e.value.type.kind !== "dyn" &&
           !isJsonStringifySafeType(
             e.value.type,
             (id) => records.get(id),
             (id) => unions.get(id),
+            recordLinks.length === 0 ? undefined : jsonLinkSources,
           )
         ) {
-          err(`jsonStringify of non-JSON-safe type ${e.value.type.kind}`, e.loc);
+          err(`jsonStringify of non-JSON-safe type ${typeKey(e.value.type)}`, e.loc);
         }
         break;
       }

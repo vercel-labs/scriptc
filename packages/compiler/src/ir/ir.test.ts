@@ -201,6 +201,131 @@ describe("checked records with opaque payloads", () => {
   });
 });
 
+describe("functions under JSON.stringify", () => {
+  const callback: IrType = { kind: "func", params: [], ret: { kind: "void" } };
+  const shapes: IrRecordShape[] = [
+    { id: "field", fields: [{ name: "run", type: callback }] },
+    { id: "armed", fields: [{ name: "label", type: { kind: "union", unionId: "lazy" } }] },
+    { id: "tuple", tuple: true, fields: [{ name: "0", type: callback }] },
+    { id: "index", fields: [], indexValue: callback },
+    { id: "armedIndex", fields: [], indexValue: { kind: "union", unionId: "lazy" } },
+    { id: "hook", fields: [{ name: "toJSON", type: callback }] },
+    {
+      id: "maybeHook",
+      fields: [{ name: "toJSON", type: { kind: "union", unionId: "optional" } }],
+    },
+    { id: "textHook", fields: [{ name: "toJSON", type: STRING }] },
+    { id: "narrow", fields: [{ name: "id", type: F64 }] },
+    {
+      id: "wide",
+      fields: [
+        { name: "id", type: F64 },
+        { name: "run", type: callback },
+      ],
+    },
+    {
+      id: "wideOptional",
+      fields: [
+        { name: "id", type: F64 },
+        { name: "pick", type: { kind: "union", unionId: "optional" } },
+      ],
+    },
+    {
+      id: "wideUnknown",
+      fields: [
+        { name: "extra", type: DYN },
+        { name: "id", type: F64 },
+      ],
+    },
+    {
+      id: "wideMap",
+      fields: [
+        { name: "id", type: F64 },
+        { name: "index", type: { kind: "map", key: STRING, value: F64 } },
+      ],
+    },
+  ];
+  const records = new Map(shapes.map((shape) => [shape.id, shape]));
+  const unions = new Map<string, IrUnionDef>([
+    ["lazy", { id: "lazy", arms: [STRING, callback] }],
+    ["optional", { id: "optional", arms: [callback, { kind: "undefinedT" }] }],
+  ]);
+  const record = (id: string): IrRecordShape | undefined => records.get(id);
+  const union = (id: string): IrUnionDef | undefined => unions.get(id);
+  const shape = (id: string): IrType => ({ kind: "record", shapeId: id });
+  const safe = (type: IrType): boolean => isJsonStringifySafeType(type, record, union);
+  const dynamic = (type: IrType): boolean => isJsonStringifyDynamicType(type, record, union);
+
+  test("the type-directed writer only omits a required function member", () => {
+    expect(safe(shape("field"))).toBe(true);
+    expect(dynamic(shape("field"))).toBe(false);
+  });
+
+  test("a function anywhere else below the root takes the runtime traversal", () => {
+    const below = [
+      shape("armed"),
+      shape("tuple"),
+      shape("index"),
+      shape("armedIndex"),
+      arrayOf(callback),
+      arrayOf({ kind: "union", unionId: "lazy" }),
+      arrayOf(shape("armed")),
+    ];
+    for (const type of below) {
+      expect(safe(type)).toBe(false);
+      expect(dynamic(type)).toBe(true);
+    }
+  });
+
+  test("a root that is or may be a function is no container", () => {
+    for (const type of [callback, { kind: "union", unionId: "lazy" } as IrType]) {
+      expect(safe(type)).toBe(false);
+      expect(dynamic(type)).toBe(false);
+    }
+  });
+
+  test("checked JSON conversion still excludes functions", () => {
+    for (const id of ["field", "armed", "index", "armedIndex"])
+      expect(isJsonSafeType(shape(id), record, union)).toBe(false);
+    expect(isJsonSafeType(arrayOf(callback), record, union)).toBe(false);
+  });
+
+  test("a record with a toJSON hook takes the runtime traversal", () => {
+    for (const id of ["hook", "maybeHook"]) {
+      expect(safe(shape(id))).toBe(false);
+      expect(safe(arrayOf(shape(id)))).toBe(false);
+      expect(dynamic(shape(id))).toBe(true);
+    }
+    expect(safe(shape("textHook"))).toBe(true);
+  });
+
+  test("a linked copy is as serializable as its sources", () => {
+    const sources = (from: string) => (id: string) => (id === "narrow" ? [from] : undefined);
+    const narrow = shape("narrow");
+    const typed = (from: string): boolean =>
+      isJsonStringifySafeType(narrow, record, union, sources(from));
+    const runtime = (from: string): boolean =>
+      isJsonStringifyDynamicType(narrow, record, union, sources(from));
+    expect(dynamic(narrow)).toBe(false);
+    // A source the writer serializes: a required function member is omitted.
+    expect([typed("wide"), runtime("wide")]).toEqual([true, false]);
+    // A source that needs the runtime traversal.
+    for (const from of ["wideOptional", "hook"])
+      expect([typed(from), runtime(from)]).toEqual([false, true]);
+    // A Map has no JSON writer on either path.
+    expect([typed("wideMap"), runtime("wideMap")]).toEqual([false, false]);
+    expect(isJsonStringifySafeType(arrayOf(narrow), record, union, sources("wideMap"))).toBe(false);
+    expect(isJsonStringifySafeType(shape("wide"), record, union, sources("wideMap"))).toBe(true);
+  });
+
+  test("the writer serializes a checked-dynamic member of a link source itself", () => {
+    const sources = (id: string) => (id === "narrow" ? ["wideUnknown"] : undefined);
+    expect(safe(shape("wideUnknown"))).toBe(false);
+    expect(isJsonStringifySafeType(shape("narrow"), record, union, sources)).toBe(true);
+    expect(isJsonStringifyDynamicType(shape("narrow"), record, union, sources)).toBe(false);
+  });
+});
+
 describe("native typed-array boundaries", () => {
   test.each(Object.keys(BYTES_ELEMENT_NAME) as IrBytesElem[])(
     "preserves %s in checked records without a JSON/island claim",

@@ -39,6 +39,10 @@ export class StackCallbacks {
       B.line(`${kind} = getelementptr inbounds %ScrClosure, ptr ${closure}, i32 0, i32 4`);
       B.line(`store i32 ${functionKind}, ptr ${kind}`);
     }
+    // The closure's own `length` (IrExpr closure.length) is not recorded
+    // here: reading it boxes the function value, which an invocation-only
+    // consumer never does, and a header that stores its own address would
+    // keep LLVM from dissolving the allocation.
     value.captures.forEach((localId, index) => {
       const box = host.retainBox(host.captureBox(localId));
       const caps = B.tmp();

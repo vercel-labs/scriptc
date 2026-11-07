@@ -82,6 +82,7 @@ import {
   prepareNativeExecutable,
   prepareNativeLibrary,
 } from "./prepare.js";
+import { usesLoweredProgram } from "../executable/lowered.js";
 import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
@@ -527,9 +528,10 @@ export class NativeCompiler {
       }
       const exclusions = nativeFrontendExclusions(entry, options);
       // An unchanged build keeps what the last build of the same inputs left
-      // in place (native/unchanged.ts), before the frontend reads a source.
+      // in place (native/unchanged.ts), before the frontend reads a source. A
+      // build that writes or reads a lowered program always runs.
       const unchangedKey =
-        outputKind === "exe"
+        outputKind === "exe" && !usesLoweredProgram(options)
           ? unchangedBuildKey({
               entry,
               options,

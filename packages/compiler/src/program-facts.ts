@@ -93,6 +93,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["createsWrappers"],
   },
   {
+    name: "uses-intrinsic-objects",
+    file: `${SRC}/frontend/lowering/intrinsics.ts`,
+    symbol: "programUsesIntrinsicObjects",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "a JavaScript source that reads `X.prototype` of a standard library global the intrinsic table names, calls `Object.getPrototypeOf` or `Reflect.getPrototypeOf`, or reads a member named `__proto__` or `isPrototypeOf` on any receiver",
+    gates:
+      "every builtin prototype read in the program's JavaScript sources answers the intrinsic table's object (`dyn.intrinsic`) instead of the per-kind builders",
+    narrower:
+      "none wanted: one intrinsic has to be one object for every read of it, so the choice of table or builders is the program's",
+    tracked: "designs/t262-da",
+    lowererFields: ["usesIntrinsicObjects"],
+  },
+  {
     name: "typed-web-streams",
     file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
     symbol: "programUsesTypedWebStreams",
@@ -547,6 +562,11 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "only JavaScript adds properties to handles, so a program without a JavaScript file skips the census",
+  ),
+  decides(
+    "frontend/lowering/intrinsics.ts#programUsesIntrinsicObjects",
+    1,
+    "uses-intrinsic-objects",
   ),
   scan(
     "frontend/lowering/js-collection-types.ts#inferProgram",

@@ -2225,18 +2225,13 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
       ["globalThis.Map.prototype", "read object"],
       ["Map alias prototype", "read object"],
     ]);
-    // The reads whose value is right but whose binding to a local still runs
+    // The read whose value is right but whose binding to a local still runs
     // the checked cast the JS lane inserts for the checker's declared type
-    // (`Map`, `RegExp`, `Set`), which the intrinsic object is not: the same
-    // limitation the prototype builders that predate the table have, and the
-    // reason the value is read inline elsewhere.
-    const readsTrap = new Map<string, string>([
-      ["Map.prototype", "Map"],
-      ["RegExp.prototype", "RegExp"],
-      ["Set.prototype", "Set"],
-      ["globalThis.Map.prototype", "Map"],
-      ["Map alias prototype", "Map"],
-    ]);
+    // (`RegExp`), which the intrinsic object is not: the same limitation the
+    // prototype builders that predate the table have, and the reason the
+    // value is read inline elsewhere. The collection prototypes are held as
+    // checked-dynamic values (isCollectionPrototypeRead), so they bind.
+    const readsTrap = new Map<string, string>([["RegExp.prototype", "RegExp"]]);
     const source = `"use strict";
 const MapAlias = Map;
 const DateAlias = Date;

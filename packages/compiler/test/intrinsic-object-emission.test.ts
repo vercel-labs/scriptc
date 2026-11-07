@@ -14,6 +14,8 @@ interface IntrinsicReads {
   wrapperBooleanPrototype: number;
   /** `dyn.globalConstructor` names, in IR order. */
   constructors: string[];
+  /** `dyn.collectionPrototype` class names, in IR order. */
+  collectionPrototypes: string[];
 }
 
 async function intrinsicReads(source: string): Promise<IntrinsicReads> {
@@ -32,6 +34,7 @@ async function intrinsicReads(source: string): Promise<IntrinsicReads> {
       stdlibPrototype: 0,
       wrapperBooleanPrototype: 0,
       constructors: [],
+      collectionPrototypes: [],
     };
     const visit = (value: unknown): void => {
       if (Array.isArray(value)) {
@@ -48,6 +51,8 @@ async function intrinsicReads(source: string): Promise<IntrinsicReads> {
         reads.wrapperBooleanPrototype++;
       if (node.kind === "libCall" && node.fn === "dyn.globalConstructor")
         reads.constructors.push(String(node.args?.[0]?.value));
+      if (node.kind === "libCall" && node.fn === "dyn.collectionPrototype")
+        reads.collectionPrototypes.push(String(node.args?.[0]?.value));
       for (const child of Object.values(value)) visit(child);
     };
     visit(mod.functions);
@@ -64,15 +69,35 @@ async function intrinsicReads(source: string): Promise<IntrinsicReads> {
 test("a fact program reads builtin prototypes through the intrinsic table only", async () => {
   const reads = await intrinsicReads(
     `
-const mapMethods = Map.prototype;
-const get = Map.prototype.get;
+const dateMethods = Date.prototype;
+const getTime = Date.prototype.getTime;
 const test = RegExp.prototype.test;
-console.log(typeof mapMethods, typeof get, typeof test);
+console.log(typeof dateMethods, typeof getTime, typeof test);
 `,
   );
-  expect(reads.intrinsics).toEqual(["Map.prototype", "Map.prototype", "RegExp.prototype"]);
+  expect(reads.intrinsics).toEqual(["Date.prototype", "Date.prototype", "RegExp.prototype"]);
   expect(reads.stdlibPrototype).toBe(0);
   expect(reads.builtinPrototype).toBe(0);
+});
+
+// The four keyed collections' prototypes are the dynamic collection unit's
+// objects (dyn.collectionPrototype), which a collection's getPrototypeOf
+// answers too. The bare read takes that object and a member read through
+// the class keeps the collection unit's own lowering, also in a fact
+// program: the table's twin of the same intrinsic is never read, so a
+// property written through one spelling is there for the other.
+test("a collection prototype is read through the collection unit's object only", async () => {
+  const reads = await intrinsicReads(
+    `
+const mapMethods = Map.prototype;
+const get = Map.prototype.get;
+const has = Set.prototype.has;
+const test = RegExp.prototype.test;
+console.log(typeof mapMethods, typeof get, typeof has, typeof test);
+`,
+  );
+  expect(reads.collectionPrototypes).toEqual(["Map"]);
+  expect(reads.intrinsics).toEqual(["RegExp.prototype"]);
 });
 
 // The primitive wrappers are the table's objects too (t262-da A2): the
@@ -110,11 +135,11 @@ console.log(fixed);
 // checked-object read.
 test("a fact program reads builtin constructors as the interned constructor", async () => {
   const reads = await intrinsicReads(`
-const map = Map;
-const descriptor = Object.getOwnPropertyDescriptor(map, "prototype");
-console.log(typeof map, descriptor.value === Map.prototype, Map.prototype.get === new Map().get);
+const date = Date;
+const descriptor = Object.getOwnPropertyDescriptor(date, "prototype");
+console.log(typeof date, descriptor.value === Date.prototype, typeof Date.prototype.getTime);
 `);
-  expect([...new Set(reads.constructors)]).toEqual(["Map"]);
+  expect([...new Set(reads.constructors)]).toEqual(["Date"]);
   const ids = [...new Set(reads.intrinsics)].sort();
-  expect(ids).toEqual(["Map.prototype"]);
+  expect(ids).toEqual(["Date.prototype"]);
 });

@@ -16,6 +16,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
@@ -122,7 +123,6 @@ import {
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { customInspectRegistrations } from "./lower-inspect.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
-import { stripTypeCasts } from "./builtins/arguments.js";
 import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
 import {
   bindingContextualGenericFnNodeOf,
@@ -2283,8 +2283,8 @@ export function collectGlobals(
       // other instance is refused where its declaration lowers.
       if (
         decl.initializer !== undefined &&
-        ts.isNewExpression(stripTypeCasts(decl.initializer)) &&
-        isAssertClassNew(lowerer, stripTypeCasts(decl.initializer))
+        ts.isNewExpression(withoutParenthesesAssertionsNonNull(decl.initializer)) &&
+        isAssertClassNew(lowerer, withoutParenthesesAssertionsNonNull(decl.initializer))
       )
         continue;
       // `const process = globalThis.process` at file scope: a stdlib-
@@ -2354,7 +2354,9 @@ export function collectGlobals(
           // adapting the loader to (string) would replace its validation.
           // An inferred Promise.prototype binding holds an ordinary object
           // (isPromisePrototypeRead), in TypeScript as well.
-          const initializer = decl.initializer ? stripTypeCasts(decl.initializer) : undefined;
+          const initializer = decl.initializer
+            ? withoutParenthesesAssertionsNonNull(decl.initializer)
+            : undefined;
           if (
             (nameNode === decl.name &&
               !decl.type &&

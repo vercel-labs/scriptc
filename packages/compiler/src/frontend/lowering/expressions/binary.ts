@@ -9,6 +9,7 @@ import {
 import { lowerStaticPrivateAssignment } from "../private-statics.js";
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import {
   lowerOptionalIndex,
   splitUndefinedIndex,
@@ -233,10 +234,8 @@ function lowerLooseNullCompare(
   loc: SrcLoc,
 ): IrExpr | null {
   const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
-  const unwrap = (e: ts.Expression): ts.Expression =>
-    ts.isParenthesizedExpression(e) ? unwrap(e.expression) : e;
-  const left = unwrap(expr.left);
-  const right = unwrap(expr.right);
+  const left = withoutParentheses(expr.left);
+  const right = withoutParentheses(expr.right);
   const leftIsNull = left.kind === ts.SyntaxKind.NullKeyword;
   if (!leftIsNull && right.kind !== ts.SyntaxKind.NullKeyword) return null;
   const otherNode = leftIsNull ? right : left;

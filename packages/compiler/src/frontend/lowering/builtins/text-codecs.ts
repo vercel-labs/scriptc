@@ -3,6 +3,7 @@ import { isBuiltinClassInstance } from "./receiver-types.js";
 import { strLit, varRef, dynUndefinedExpr } from "../../../ir/build.js";
 import { staticTextDecoderEncoding } from "../text-decoder-encoding.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -18,11 +19,7 @@ import {
   STRING,
   type SrcLoc,
 } from "../../../ir/ir.js";
-import {
-  lowerBuiltinValuePreservingUndefined,
-  checkedOptionalBuiltinArm,
-  stripTypeCasts,
-} from "./arguments.js";
+import { lowerBuiltinValuePreservingUndefined, checkedOptionalBuiltinArm } from "./arguments.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 
 /** The input of `decoder.decode(input)`. An undefined input decodes no bytes,
@@ -467,7 +464,7 @@ export function lowerTextCodecNew(
       label = lowerer.lowerExprExpecting(args[0]!, STRING);
     }
   }
-  const options = args[1] ? stripTypeCasts(args[1]) : null;
+  const options = args[1] ? withoutParenthesesAssertionsNonNull(args[1]) : null;
   const flags = new Map<string, IrExpr>();
   for (const name of ["fatal", "ignoreBOM"])
     flags.set(name, { kind: "boolLit", value: false, type: BOOL, loc });
@@ -567,7 +564,7 @@ function lowerStoredTextCodecCall(
   let stream: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
   let optionsNode: ts.Expression | null = null;
   if (cls === "TextDecoder" && call.arguments.nodes[1]) {
-    const options = stripTypeCasts(call.arguments.nodes[1]);
+    const options = withoutParenthesesAssertionsNonNull(call.arguments.nodes[1]);
     // Options outside an object literal are checked and read after the
     // input evaluates (below).
     if (!ts.isObjectLiteralExpression(options)) optionsNode = options;
@@ -689,9 +686,9 @@ function lowerStoredTextCodecCall(
  * type-only wrappers. Name alone is never enough: a user class with the
  * same spelling keeps the ordinary class lowering. */
 function directTextCodecCtorOf(lowerer: Lowerer, expr: ts.Expression): TextCodecCtor | null {
-  const ctor = stripTypeCasts(expr);
+  const ctor = withoutParenthesesAssertionsNonNull(expr);
   if (!ts.isNewExpression(ctor)) return null;
-  const callee = stripTypeCasts(ctor.expression);
+  const callee = withoutParenthesesAssertionsNonNull(ctor.expression);
   if (!ts.isIdentifier(callee)) return null;
   if (callee.text !== "TextDecoder" && callee.text !== "TextEncoder") return null;
   const sym = lowerer.resolveValueSymbol(callee);
@@ -727,7 +724,9 @@ export function lowerTextCodecCall(
     const result: IrExpr = {
       kind: "libCall",
       fn: "text.encodeInto",
-      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(stripTypeCasts(arg), DYN)),
+      args: call.arguments.nodes.map((arg) =>
+        lowerer.lowerExprExpecting(withoutParenthesesAssertionsNonNull(arg), DYN),
+      ),
       type: DYN,
       loc,
     };
@@ -852,7 +851,10 @@ export function lowerBufferEncodingCall(
   const arity = bi.member === "transcode" ? 3 : 1;
   const args = Array.from({ length: arity }, (_, index) =>
     expr.arguments.nodes[index]
-      ? lowerer.lowerExprExpecting(stripTypeCasts(expr.arguments.nodes[index]!), DYN)
+      ? lowerer.lowerExprExpecting(
+          withoutParenthesesAssertionsNonNull(expr.arguments.nodes[index]!),
+          DYN,
+        )
       : dynUndefinedExpr(loc),
   );
   if (expr.arguments.nodes.length > arity)

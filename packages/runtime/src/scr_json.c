@@ -1932,14 +1932,14 @@ int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *co
                                   size_t count) {
   if (!d) return -1;
   if (d->kind == SCR_DYN_TYPED_REF) {
-    /* One read answers what each literal test would (scr_dyn_field_eq_str):
-     * a capsule whose member is absent or not a string passes none. */
-    ScrDyn *member = scr_dyn_discriminant(d, key);
-    int32_t found = -1;
-    if (member && member->kind == SCR_DYN_STR)
-      for (size_t k = 0; k < count && found < 0; k++)
-        if (scr_str_eq(member->v.str, values[k])) found = (int32_t)k;
-    scr_dyn_release(member);
+    /* A capsule is classified as its view is, by the rules below: an own
+     * data member answers once what each literal test would
+     * (scr_dyn_field_eq_str), and an accessor (a class's getter) or a member
+     * the view does not own is left to the tests, which read it as they
+     * always have. */
+    ScrDyn *view = scr_dyn_visit_view(d);
+    int32_t found = scr_dyn_discriminant_case(view, key, values, count);
+    scr_dyn_release(view);
     return found;
   }
   if (d->kind != SCR_DYN_OBJ) return -1;

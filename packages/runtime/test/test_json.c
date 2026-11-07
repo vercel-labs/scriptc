@@ -190,6 +190,17 @@ static bool dyn_keys_are(const ScrDyn *keys, const char *const *want, size_t n) 
   return true;
 }
 
+static int live_record_getter_reads = 0;
+
+static ScrDyn *live_record_getter(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  live_record_getter_reads++;
+  ScrStr *answer = S("p");
+  ScrDyn *out = scr_dyn_new_str(answer);
+  scr_str_release(answer);
+  return out;
+}
+
 static void live_record_ref_tests(void) {
   ScrStr *x = S("x"), *label = S("label"), *extra = S("extra"), *missing = S("missing");
   ScrStr *names[] = { x, label };
@@ -263,8 +274,21 @@ static void live_record_ref_tests(void) {
       "a string among no literal matches none");
   check(scr_dyn_discriminant_case(capsule, x, literals, 2) == -1,
       "a discriminant that is not a string matches no literal");
-  check(scr_dyn_discriminant_case(capsule, missing, literals, 2) == -1,
-      "a member the capsule lacks matches no literal");
+  check(scr_dyn_discriminant_case(capsule, missing, literals, 2) == -2,
+      "a member the capsule's view does not own is left to the literal tests");
+  /* An accessor is left to the literal tests too: each one runs the getter,
+   * as it does on a plain object. */
+  ScrStr *flip = S("flip");
+  ScrDyn *view = scr_dyn_visit_view(capsule);
+  scr_dyn_obj_set_accessor(view, flip->data, flip->len,
+      scr_dyn_new_func(scr_closure_new(NULL, 0), live_record_getter, 0, "", "flip"), NULL);
+  scr_dyn_release(view);
+  int reads = live_record_getter_reads;
+  check(scr_dyn_discriminant_case(capsule, flip, literals, 2) == -2 && live_record_getter_reads == reads,
+      "a capsule's accessor is left to the literal tests, unread");
+  check(scr_dyn_field_eq_str(capsule, flip, p) && live_record_getter_reads == reads + 1,
+      "a literal test runs the accessor");
+  scr_str_release(flip);
   scr_str_release(p); scr_str_release(q); scr_str_release(r);
   check(!scr_exc_pending(), "live record queries raise nothing");
 

@@ -402,8 +402,7 @@ class Session {
         const what =
           `seed ${this.options.seed}: request ${run.last} did not settle (${describe(run.result)}); ` +
           `replay with fuzz http-client <port> ${run.last} 1 against scripts/fuzz-http.mjs serve <case>`;
-        const failing = run.last < 0 ? [] : [caseOf(run.last)];
-        this.fail(target.name, what, run.result.stdout + run.result.stderr, failing);
+        this.fail(target.name, what, run.result.stdout + run.result.stderr, [caseOf(run.last)]);
         return cases;
       }
       cases += batch;

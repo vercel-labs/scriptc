@@ -44,9 +44,11 @@ const TOP_LEVEL =
 /** An iteration of the program's source files. */
 const FILE_SCAN = /\.(?:getSourceFiles|getImplementationSourceFiles)\(\)/;
 /** A test of a source file's raw text, by the names the compiler gives a
- * source file. */
+ * source file, or through the helpers that report such a test to the build
+ * cache (sourceTextIncludes, sourceTextMatches; their own definitions are
+ * not tests). */
 const TEXT_TEST =
-  /\b(?:sf|file|source|sourceFile|src|f)\.text\.(?:includes|indexOf|search|match|startsWith)\(|\.test\((?:sf|file|source|sourceFile|src|f)\.text\)/;
+  /\b(?:sf|file|source|sourceFile|src|f)\.text\.(?:includes|indexOf|search|match|startsWith)\(|\.test\((?:sf|file|source|sourceFile|src|f)\.text\)|(?<!function )\bsourceText(?:Includes|Matches)\(/;
 
 /** Every whole-program scan in the compiler's source, counted by the
  * top-level declaration that holds it. */

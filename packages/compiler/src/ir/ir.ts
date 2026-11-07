@@ -1944,6 +1944,18 @@ export interface IrRecordShape {
  * key order. */
 export const KEY_ORDER_FIELD = "%order";
 
+/** The fields a property key can name: every field but KEY_ORDER_FIELD,
+ * which is bookkeeping in the value's storage and no property of it. A
+ * keyed read or write (`r[k]`) dispatches over these, and a key spelled
+ * like the hidden field misses as any undeclared key does. The field
+ * joins a shape after the bodies lowered, so every stage that reasons
+ * about a keyed access goes through here. */
+export function keyedRecordFields(shape: IrRecordShape): readonly IrRecordField[] {
+  return shape.fields.some((f) => f.name === KEY_ORDER_FIELD)
+    ? shape.fields.filter((f) => f.name !== KEY_ORDER_FIELD)
+    : shape.fields;
+}
+
 /** The orders a record shape's values enumerate their keys in: each order
  * of a shape with orderVariants, or its one table. */
 export function shapeKeyOrders(shape: IrRecordShape): readonly (readonly string[])[] {
@@ -3338,12 +3350,17 @@ export type IrExpr =
    * case so `f === f` is true (JS function identity). `adapts` marks a
    * signature adapter: captures[0] holds the function it forwards to, and
    * the new closure takes that function's identity (JS sees one function,
-   * so `===`, SameValue and searches compare identity roots). */
+   * so `===`, SameValue and searches compare identity roots). `length` is
+   * the function's own `length` where the type's parameter list does not
+   * give it: a function literal lowered with the parameter list of the slot
+   * it is written into receives the slot's remaining arguments in
+   * parameters it never declared. */
   | {
       kind: "closure";
       fnName: string;
       captures: string[];
       adapts?: true;
+      length?: number;
       type: IrType;
       loc: SrcLoc;
     }

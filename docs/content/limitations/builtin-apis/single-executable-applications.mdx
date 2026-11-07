@@ -1,0 +1,2 @@
+- **Single executable applications:** a compiled program is not a Node.js single-executable application, so `node:sea` answers what Node.js answers outside one.
+  `isSea()` is `false`, and `getAsset()`, `getRawAsset()`, `getAssetAsBlob()`, and `getAssetKeys()` check their arguments and then throw `ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION`.

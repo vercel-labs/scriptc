@@ -152,8 +152,8 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
   <dt><code>--print &lt;native-link-info|diagnostics&gt;</code></dt>
   <dd><code>native-link-info</code>: build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed precompiled runtime pack and all link inputs, but does not invoke a linker. <code>diagnostics</code>: for <code>build</code> and <code>coverage</code>, print the versioned JSON diagnostics document described in <a href="/docs/coverage#machine-readable-diagnostics">Coverage Reports</a> instead of the human output.</dd>
 
-  <dt><code>--fail-on &lt;blockers|divergences|dynamic|dynamic-slots&gt;</code></dt>
-  <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, with <code>divergences</code>, also when it has Node divergence warnings, with <code>dynamic</code>, also when it has the <code>SC6101</code> warning for untyped code that likely runs often, or with <code>dynamic-slots</code>, also when it has <a href="/docs/coverage#dynamic-slots">dynamic slots</a> (<code>SC6104</code>). See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
+  <dt><code>--fail-on &lt;blockers|divergences|dynamic|dynamic-slots|node-islands|eager-node-islands|island-gaps&gt;</code></dt>
+  <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, with <code>divergences</code>, also when it has Node divergence warnings, with <code>dynamic</code>, also when it has the <code>SC6101</code> warning for untyped code that likely runs often, or with <code>dynamic-slots</code>, also when it has <a href="/docs/coverage#dynamic-slots">dynamic slots</a> (<code>SC6104</code>). With <code>node-islands</code>, also when the report lists any <a href="/docs/node-islands">Node island</a> or an <code>SC8002</code> or <code>SC8003</code> policy error; <code>eager-node-islands</code> currently behaves the same. With <code>island-gaps</code>, also when it lists an island of the <code>gap</code> class or a policy error. See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
 
   <dt><code>--ffi &lt;file&gt;</code></dt>
   <dd>Bind signature-only TypeScript declarations to native C ABI symbols and link the manifest's archive, object, and system-library inputs. See <a href="/docs/ffi">Native FFI</a>.</dd>
@@ -199,6 +199,21 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
 
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
   <dd>Name npm packages to compile even if they don't ship their own type declarations (repeatable). A trailing <code>...</code>, as in <code>fs-extra...</code>, also names every package that package depends on. <code>auto</code> uses the default automatic selection. Packages that can't compile produce diagnostics. See <a href="/docs/dependencies#explicit-package-selection">npm Dependencies</a>.</dd>
+
+  <dt><code>--node-islands &lt;auto|explicit|off&gt;</code></dt>
+  <dd>Which code may run in a <a href="/docs/node-islands">Node island</a>. <code>auto</code>, the default, runs npm packages that can't compile natively, and JavaScript modules of the program that depend on sloppy-mode semantics, in Node.js. <code>explicit</code> allows only the packages and modules you mark. <code>off</code> allows none. See <a href="/docs/node-islands#choose-where-code-runs">Choose where code runs</a>.</dd>
+
+  <dt><code>--node-island &lt;pkg-or-path&gt;</code></dt>
+  <dd>Run an npm package, or a JavaScript module of the program named by a path or glob, in a Node island. Repeatable, and accepts a comma-separated list. The same choice can be written in <code>package.json</code>; see <a href="/docs/node-islands#choose-where-code-runs">Choose where code runs</a>.</dd>
+
+  <dt><code>--native &lt;pkg&gt;</code></dt>
+  <dd>Keep an npm package out of Node islands. Coverage reports <code>SC8003</code> when the package can't compile natively. Repeatable. Not allowed together with <code>--node-island</code> for the same package.</dd>
+
+  <dt><code>--explain-island &lt;pkg&gt;</code></dt>
+  <dd>Coverage only. After the report, show why a package runs in a Node island: its class, the first reason in each of its modules, and the places where native code imports it.</dd>
+
+  <dt><code>--libnode &lt;dir|beside&gt;</code></dt>
+  <dd>The <a href="/docs/node-islands#get-a-libnode-pack">libnode pack</a> a program with a Node island loads Node.js from. A directory is recorded in the executable. <code>beside</code> copies the pack that <code>SCRIPTC_LIBNODE</code> or an installed pack provides next to the executable, as <code>&lt;output&gt;.libnode/</code>, so the two can be moved together. Without the option, the build uses <code>SCRIPTC_LIBNODE</code>, then an installed <code>@scriptc/libnode-&lt;platform&gt;</code> package.</dd>
 
   <dt><code>--provenance-sources</code></dt>
   <dd>Experimental. Compile npm dependencies from the source at the commit their provenance attestation names. Packages without a usable attestation compile from their installed files.</dd>
@@ -263,6 +278,9 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
 
   <dt><code>SCRIPTC_RUNTIME_PACK</code></dt>
   <dd>A runtime pack directory to use instead of an installed <code>@scriptc/runtime-&lt;target&gt;</code> package.</dd>
+
+  <dt><code>SCRIPTC_LIBNODE</code></dt>
+  <dd>The absolute path of a <a href="/docs/node-islands#get-a-libnode-pack">libnode pack</a>. At build time it names the pack a program with a Node island records, unless <code>--libnode</code> names one. At run time it overrides the location recorded in the executable.</dd>
 
   <dt><code>SCRIPTC_CHECKER</code></dt>
   <dd>The TypeScript 7 API server that checks the program: <code>tsc-ts</code> (the default), which scriptc includes, or <code>tsgo</code>, from the <code>typescript</code> package scriptc also includes. Both give the same diagnostics and generated code.</dd>

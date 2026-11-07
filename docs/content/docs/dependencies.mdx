@@ -2,9 +2,9 @@
 title: "npm Dependencies"
 ---
 
-Programs can import npm packages the same way they do under Node.js. scriptc compiles each package your program uses to native code along with your own code. The executable doesn't read `node_modules` at runtime.
+Programs can import npm packages the same way they do under Node.js. scriptc compiles the packages your program uses to native code along with your own code, and runs a package it can't compile that way in a [Node island](/docs/node-islands): the executable loads Node.js into its own process the first time the program uses that package. Either way the package's code is built into the executable, which doesn't read `node_modules` at runtime.
 
-Package support is partial. Packages that scriptc can't compile are reported at build time with a diagnostic, so check new dependencies with [`scriptc coverage`](/docs/coverage) before relying on them.
+Native package support is partial. The build prints an `SC8001` note for each package that runs in a Node island, and such a program needs a libnode pack to build and to run. Check new dependencies with [`scriptc coverage`](/docs/coverage) before relying on them.
 
 ## Use a package
 
@@ -57,7 +57,9 @@ scriptc compiles a package automatically when it:
 
 The declarations check your program; the package's JavaScript compiles with the types scriptc infers from it. A program that doesn't typecheck against the inferred types, for example because an `@types/` package describes another release, fails the build at that use.
 
-A package that doesn't meet these requirements, or that uses something scriptc can't compile, gets a package-specific diagnostic that explains why. The usual fixes are to switch to a version or alternative package that compiles, or to replace the call with code you write yourself.
+A package that scriptc can't compile natively runs in a [Node island](/docs/node-islands) instead. The build prints an `SC8001` note that names the package and the reason, and the program's uses of the package become calls into Node.js. An island costs start-up time and memory when the program first uses it, and it needs a libnode pack, so the usual fixes still apply when you want the package native: switch to a version or alternative package that compiles, or replace the call with code you write yourself. [Choose where code runs](/docs/node-islands#choose-where-code-runs) describes the options that keep a package native or move it into an island.
+
+An island package is typed by its declarations, its own or its `@types/` package. A package your program imports directly that has neither is a type error (`SC0001`), not an island.
 
 `graceful-fs` is the exception: it compiles as `node:fs` instead of from its JavaScript, with one [documented difference](/docs/limitations#graceful-fs).
 
@@ -139,7 +141,7 @@ CommonJS packages compile with Node.js's module semantics. Each `require()` eval
 
 ## Unsupported code inside a package
 
-A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. These don't fail the build: each one compiles to code that throws a runtime error if it ever runs. Coverage reports list them as deferred sites, so review the list and test the parts of the package your program uses. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
+A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. When such an operation needs Node.js itself, such as building a function from a string, the build runs the whole package in a [Node island](/docs/node-islands). Other unsupported operations don't fail the build: each one compiles to code that throws a runtime error if it ever runs. Coverage reports list them as deferred sites, so review the list and test the parts of the package your program uses. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
 
 ## Fix a package's types
 
@@ -216,6 +218,6 @@ Patches change only declarations, never the package's code, and values are still
 
 ## Upgrading from scriptc 0.2
 
-scriptc 0.2 had a `--dynamic` mode that embedded a JavaScript engine in the executable to run code that didn't compile, including packages that failed native compilation. scriptc 0.3 removed `--dynamic` and the embedded engine, so all application and package code now compiles to native code.
+scriptc 0.2 had a `--dynamic` mode that embedded a JavaScript engine in the executable to run code that didn't compile, including packages that failed native compilation. scriptc 0.3 removed `--dynamic` and the embedded engine. Your own code now always compiles to native code, and since scriptc 0.4 a package that can't compile natively runs in a [Node island](/docs/node-islands), which loads Node.js from a libnode pack instead of embedding an engine.
 
-If you built with `--dynamic`, remove the flag and run `scriptc coverage` on your entry file. The report lists the operations and packages that need a change; rewrite those sites or replace the package. If you link [native program objects](/docs/native-objects) into your own builds, use the runtime pack that matches the 0.3 compiler.
+If you built with `--dynamic`, remove the flag and run `scriptc coverage` on your entry file. The report lists the operations in your own code that need a change, and the packages that would run in a Node island; rewrite those sites, replace the package, or build with a libnode pack. If you link [native program objects](/docs/native-objects) into your own builds, use the runtime pack that matches the 0.3 compiler.

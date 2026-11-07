@@ -8,7 +8,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-unbound-export/main.ts
 
   Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
     gap  ni-metrics@1.0.0
-          tests/coverage-fixtures/node-islands-unbound-export/main.ts:9:13: SC1090: its export 'counter' has no native binding form
+          tests/coverage-fixtures/node-islands-unbound-export/main.ts:9:13: SC1090: the reference to 'counter' (a binding form with no lowering) is not supported yet
     hint: scriptc coverage --explain-island=<package> lists every reason
 
   fully static — all analyzed statements compile to native code.

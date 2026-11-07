@@ -526,6 +526,26 @@ static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key) {
   return m != NULL ? scr_dyn_retain(m) : NULL;
 }
 
+/* Whether `key` is a name `target` only inherits from Object.prototype.
+ * scr_dyn_in answers true for those (the `in` operator consults the
+ * prototype chain), and the representative has V8's own Object.prototype,
+ * so they are left to it: an intercepted read answered undefined where
+ * Node answers the inherited function, and `String(record)`,
+ * `record.hasOwnProperty(k)` and `record.constructor` failed in the island. */
+static bool ni_inherited_name(const ScrDyn *target, const ScrDyn *key) {
+  static const char *const names[] = {
+      "constructor",      "__defineGetter__", "__defineSetter__",     "hasOwnProperty",
+      "__lookupGetter__", "__lookupSetter__", "isPrototypeOf",        "propertyIsEnumerable",
+      "toString",         "valueOf",          "__proto__",            "toLocaleString",
+  };
+  if (key->kind != SCR_DYN_STR) return false;
+  const ScrStr *s = key->v.str;
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+    if (s->len == strlen(names[i]) && memcmp(s->data, names[i], s->len) == 0)
+      return !scr_dyn_has_own(target, s);
+  return false;
+}
+
 int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *out) {
   ni_keep_set(NULL);
   ScrDyn *target = scr_ni_export_value(id);
@@ -582,6 +602,11 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
     if (method != NULL) {
       scr_dyn_release(result);
       result = method;
+    } else if (ni_inherited_name(target, pk)) {
+      scr_dyn_release(result);
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      return 2;
     }
   }
   scr_dyn_release(pk);
@@ -633,6 +658,12 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
   }
   if (scr_exc_pending()) scr_exc_clear();
   if (!present && pk != NULL) {
+    ScrDyn *method = ni_class_method(target, pk);
+    present = method != NULL;
+    scr_dyn_release(method);
+  } else if (present && !ni_is_array(target) && ni_inherited_name(target, pk)) {
+    /* Not an own property: V8 answers `in` from the prototype chain. A
+     * class's own method of that name stays the capsule's. */
     ScrDyn *method = ni_class_method(target, pk);
     present = method != NULL;
     scr_dyn_release(method);

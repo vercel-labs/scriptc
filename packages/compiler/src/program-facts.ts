@@ -93,18 +93,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["createsWrappers"],
   },
   {
-    name: "names-array-buffer-view",
-    file: `${SRC}/frontend/lowering/array-buffer-view.ts`,
-    symbol: "programNamesArrayBufferView",
-    source: "spelling",
-    scope: "program",
-    setBy: "any identifier spelled `ArrayBufferView` in a compiled source",
-    gates: "the mapping of the ES lib interface to the checked-dynamic value, for every value",
-    narrower: "the type of the value, with builtin declarations that do not depend on it",
-    tracked: "pi-decisions DECISIONS.md 2026-11-05 (the mapping, not the gate); #3067",
-    lowererFields: ["namesArrayBufferView"],
-  },
-  {
     name: "typed-web-streams",
     file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
     symbol: "programUsesTypedWebStreams",
@@ -141,21 +129,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     gates:
       "%main installs the web stream classes, so every fetch body stands for a web ReadableStream",
     narrower: "the stream value the member is read from",
-    tracked: null,
-    lowererFields: [],
-  },
-  {
-    name: "typeof-tested-name",
-    file: `${SRC}/frontend/program.ts`,
-    symbol: "typeofTestedNameSuppressed",
-    source: "text",
-    scope: "file",
-    setBy:
-      "a regular expression over a JavaScript file's raw text that finds `typeof name`; it matches in comments and strings",
-    gates:
-      "the checker's unresolved-name errors (TS2304, TS2552, TS2584) for that name in the file",
-    narrower:
-      "the diagnostic's own site: an unresolved name is a run-time ReferenceError in JavaScript",
     tracked: null,
     lowererFields: [],
   },
@@ -510,11 +483,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "closed-world",
     "whether one function is ever read as a value",
   ),
-  decides(
-    "frontend/lowering/array-buffer-view.ts#programNamesArrayBufferView",
-    2,
-    "names-array-buffer-view",
-  ),
   scan(
     "frontend/lowering/assertion-members.ts#extendAssertedRecordMembers",
     1,
@@ -754,7 +722,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the module graph, the evaluation order and the dynamic imports it covers",
   ),
-  decides("frontend/program.ts#preflightGate7", 1, "typeof-tested-name"),
   scan(
     "frontend/shape-inference/analyze.ts#Analyzer",
     1,

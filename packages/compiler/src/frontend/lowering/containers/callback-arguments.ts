@@ -61,10 +61,13 @@ function arrayCallbackDeclaresRest(lowerer: Lowerer, call: ts.CallExpression): b
  * compiled type keeps one), a generator function (its results have no array
  * element kind), a function held as `any`, or a standard-library function,
  * whose compiled value takes one input type (`Number` as a value takes a
- * string). `String` and `Boolean` have loops of their own
- * (lowerArrayCallback). In a JavaScript source a function value is
- * checked-dynamic already and lowerArrayCallback adapts it at that
- * boundary, so only the rest parameter counts there. */
+ * string). A standard-library function is known by its type, whose call
+ * signature the library declares, not by how the call spells it: it is
+ * the same value through a binding (`const toNumber = Number`), a property,
+ * a parameter or an import. `String` and `Boolean` written as the globals
+ * have loops of their own (lowerArrayCallback). In a JavaScript source a
+ * function value is checked-dynamic already and lowerArrayCallback adapts
+ * it at that boundary, so only the rest parameter counts there. */
 export function arrayCallbackNeedsDynamicView(lowerer: Lowerer, call: ts.CallExpression): boolean {
   if (arrayCallbackDeclaresRest(lowerer, call)) return true;
   if (isJsSourceFile(ts.getSourceFileOfNode(call))) return false;
@@ -73,15 +76,25 @@ export function arrayCallbackNeedsDynamicView(lowerer: Lowerer, call: ts.CallExp
   while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
   if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
     return callback.asteriskToken !== undefined;
-  if ((lowerer.typeOf(callback).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
-    return true;
   if (
     ts.isIdentifier(callback) &&
+    (callback.text === "String" || callback.text === "Boolean") &&
     lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(callback) ?? undefined)
   )
-    return callback.text !== "String" && callback.text !== "Boolean";
-  if (ts.isPropertyAccessExpression(callback) && lowerer.isStdlibMember(callback)) return true;
-  const type = lowerer.mapTypeOf(lowerer.typeOf(callback));
+    return false;
+  const checkerType = lowerer.typeOf(callback);
+  if ((checkerType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  if (
+    lowerer.checker
+      .getCallSignatures(checkerType)
+      .some(
+        (signature) =>
+          signature.declaration !== undefined &&
+          lowerer.isStdlibFile(ts.getSourceFileOfNode(signature.declaration)),
+      )
+  )
+    return true;
+  const type = lowerer.mapTypeOf(checkerType);
   return type?.kind === "func" && type.rest === true;
 }
 

@@ -226,6 +226,29 @@ console.log(
     .join("|"),
 );
 
+// The same functions through a binding: the value decides, not the name
+// the call uses.
+const toNumber = Number;
+const toText = String;
+const toFlag = Boolean;
+console.log(Object.values(d).map(toNumber).join(","), Object.values(d).map(toText).join("|"));
+console.log(Object.values(d).filter(toFlag).length, Object.values(d).map(toFlag).join(","));
+console.log(Object.values(d).every(toFlag), Object.values(d).some(toFlag), Object.values(d).filter(toNumber).length);
+console.log(
+  Object.values(d)
+    .map((value) => idOf(value))
+    .map(toNumber)
+    .join(","),
+  Object.values(d)
+    .map((value) => idOf(value).length)
+    .map(toText)
+    .join("|"),
+  Object.values(d)
+    .map((value) => nOf(value) - 1)
+    .filter(toFlag)
+    .join(","),
+);
+
 // A generator function.
 console.log(
   Object.values(d)

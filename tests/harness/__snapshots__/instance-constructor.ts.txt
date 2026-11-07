@@ -39,3 +39,17 @@ instance-constructor.ts:67:10 - error SC1090: reading 'constructor' of a 'Local'
   67 |   return value.constructor.name;
      |          ^~~~~~~~~~~~~~~~~~~~~~
   68 | }
+
+instance-constructor.ts:79:38 - error SC1090: comparing the constructor of a 'Base' instance with the function-local class 'Local' (a function-local class is a new class object at each evaluation) is not supported yet
+
+  78 |   escaped.push(new Local());
+  79 |   return escaped[0]!.constructor === Local;
+     |                                      ^~~~~
+  80 | }
+
+instance-constructor.ts:99:13 - error SC1090: calling the static member 'make' through the constructor of a 'Namers' instance (the subclass 'GetterNamers' redeclares it as an accessor, so the call could invoke the getter's value) is not supported yet
+
+   98 | }
+   99 | console.log((build().constructor as typeof Namers).make());
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  100 | 

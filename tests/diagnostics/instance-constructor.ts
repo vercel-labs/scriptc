@@ -67,3 +67,33 @@ function local(n: number): string {
   return value.constructor.name;
 }
 console.log(local(1));
+
+// A function-local class is a new class object at each evaluation of its
+// enclosing body: one evaluation's instance is not another evaluation's
+// class.
+class Base {}
+const escaped: Base[] = [];
+function probe(): boolean {
+  class Local extends Base {}
+  escaped.push(new Local());
+  return escaped[0]!.constructor === Local;
+}
+console.log(probe());
+
+// A subclass can replace an inherited static method with a function-valued
+// getter: the instance's own class decides what the member read returns,
+// so the call is not the inherited method.
+class Namers {
+  static make(): string {
+    return "base";
+  }
+}
+class GetterNamers extends Namers {
+  static get make(): () => string {
+    return () => "sub";
+  }
+}
+function build(): Namers {
+  return new GetterNamers();
+}
+console.log((build().constructor as typeof Namers).make());

@@ -59,6 +59,7 @@ import {
   findGenericStaticOn,
   findStaticAccessorOn,
   findStaticOn,
+  perEvaluationClass,
   staticMethodFunctionFor,
   type ClassInfo,
 } from "./lower-classes.js";
@@ -380,7 +381,8 @@ function staticCallPlan(
   // `get:x` is the getter of the static accessor `x`: it answers for a
   // class only where the accessor is the nearest declaration of `x`.
   const property = member.startsWith("get:") ? member.slice(4) : null;
-  for (const c of subtreeOf(info)) {
+  const subtree = subtreeOf(info);
+  for (const c of subtree) {
     if (c.generic) continue;
     if (hasRuntimeStatics(c) || c.callableBase) return null;
     if (property !== null && findStaticAccessorOn(c, property)?.get !== true) {
@@ -389,6 +391,17 @@ function staticCallPlan(
         refusal: `reading the static accessor '${property}' through the constructor of a '${displayName(info)}' instance (the subclass '${displayName(c)}' redeclares it without a getter)`,
       };
     }
+    // An accessor collects as `get:x`/`set:x`, which the static method
+    // lookup does not see: a subclass that declares the member as an
+    // accessor decides the member read, so the inherited method is not
+    // the call.
+    const accessor = property === null ? findStaticAccessorOn(c, member) : null;
+    if (accessor !== null && (accessor.declarer === info || !subtree.includes(accessor.declarer)))
+      return null;
+    if (accessor !== null)
+      return {
+        refusal: `calling the static member '${member}' through the constructor of a '${displayName(info)}' instance (the subclass '${displayName(accessor.declarer)}' redeclares it as an accessor, so the call could invoke the getter's value)`,
+      };
     const found = findStaticOn(lowerer, c, member);
     if (!found) {
       if (c === info) return null;
@@ -1004,6 +1017,16 @@ export function lowerInstanceConstructorIs(
   if (!ctor) return null;
   const target = exactClassOfReceiver(lowerer, erased(other));
   if (!target || target.generic || !target.decl) return null;
+  // A function-local class is a new class object at each evaluation of its
+  // enclosing body, but the compiled class identity is one declaration: the
+  // selection would answer for the declaration and compare an instance of
+  // another evaluation's class equal, where JavaScript answers false.
+  if (target.localClass || perEvaluationClass(target.decl))
+    lowerer.unsupported(
+      "SC1090",
+      other,
+      `comparing the constructor of a '${displayName(ctor.info)}' instance with the function-local class '${displayName(target)}' (a function-local class is a new class object at each evaluation)`,
+    );
   const recv = lowerReceiver(lowerer, ctor);
   const fn = helperFor(
     lowerer,

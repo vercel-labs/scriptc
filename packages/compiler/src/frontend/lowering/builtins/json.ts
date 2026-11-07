@@ -173,11 +173,21 @@ export function lowerJsonMethodCall(
     // A Buffer serializes through its toJSON ({ type: "Buffer", data }), and
     // another typed array as an object keyed by index: the runtime walker
     // tells them apart by the box.
+    // A function root answers undefined, or what its own toJSON property
+    // returns: the runtime walker decides, on the boxed function.
+    const functionRoot =
+      value.type.kind === "func" &&
+      canBoxFuncIntoDyn(
+        value.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      );
     if (
       value.type.kind === "url" ||
       value.type.kind === "dyn" ||
       value.type.kind === "bytes" ||
       toJsonClass ||
+      functionRoot ||
       isJsonStringifyDynamicType(
         value.type,
         (id) => lowerer.shapes.get(id),
@@ -203,7 +213,7 @@ export function lowerJsonMethodCall(
           : {
               kind: "dynFrom",
               value,
-              ...(value.type.kind === "url" ? {} : { liveRef: true }),
+              ...(value.type.kind === "url" || functionRoot ? {} : { liveRef: true }),
               type: DYN,
               loc,
             };
@@ -238,6 +248,21 @@ export function lowerJsonMethodCall(
             `narrow with '!== undefined' first, model absence with a null arm, ` +
             `or use an optional record field ('{ a?: string }'), which drops ` +
             `from the output like Node's)`,
+        );
+      }
+      // A root that may be a function gets its own wording too: the
+      // result is undefined for the function and text for the rest.
+      if (
+        value.type.kind === "union" &&
+        lowerer.unions.get(value.type.unionId)?.arms.some((arm) => arm.kind === "func") === true
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          argNode,
+          `JSON.stringify of '${lowerer.fmt(value.type)}' values ` +
+            `(Node's stringify of a function is undefined, not a string — ` +
+            `test 'typeof value !== "function"' first; a function inside a ` +
+            `record or an array serializes like Node's)`,
         );
       }
       lowerer.unsupported(
@@ -451,7 +476,7 @@ function holdsUnwritable(lowerer: Lowerer, t: IrType, visiting: Set<string>): bo
  * a Promise, which the runtime JSON traversal cannot write. The traversal
  * reads class instances through that view, so such a class is refused at
  * compile time instead of throwing when the view is built or written. */
-function classFieldWithoutJsonView(
+export function classFieldWithoutJsonView(
   lowerer: Lowerer,
   t: IrType,
   visiting: Set<string>,

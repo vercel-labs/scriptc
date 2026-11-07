@@ -252,7 +252,8 @@ export function groupTypeClaims(sites: readonly TypeClaimSite[]): TypeClaimGroup
       key = `p${SEPARATOR}${inside.name}${SEPARATOR}${inside.version}`;
       name = inside.name;
     } else if (declaration !== undefined) {
-      key = `d${SEPARATOR}${site.kind}${SEPARATOR}${declaration.package}${SEPARATOR}${declaration.at}${SEPARATOR}${declaration.name}`;
+      // Two installed versions of a package are two declarations.
+      key = `d${SEPARATOR}${site.kind}${SEPARATOR}${declaration.package}${SEPARATOR}${declaration.version}${SEPARATOR}${declaration.at}${SEPARATOR}${declaration.name}`;
       name = `${declaration.package} ${declaration.name}`;
     } else if (produced !== undefined) {
       key = `f${SEPARATOR}${produced.name}${SEPARATOR}${produced.version}`;

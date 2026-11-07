@@ -1,7 +1,7 @@
 scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
 
-  statements analyzed   27
-  compile statically    27  (100%)
+  statements analyzed   30
+  compile statically    30  (100%)
     in dynamic tier     11  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
@@ -15,7 +15,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
 
   fully static — all analyzed statements compile to native code.
 
-  trusts unverified types   13 checked conversions on 9 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+  trusts unverified types   14 checked conversions on 10 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
       ×1  tc-island@3.1.0 declares started() as Date (index.d.ts:8): a Node island value the program reads as Date, which throws for every object the island made
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:32:20
           fix: a Node island's own object never converts to this type: keep the value as the island's by giving it a type the island package declares, or read what the program needs from it through the island's own members
@@ -41,6 +41,9 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
       ×1  the program asserts the type of 'table()', a value it holds dynamically: { a: { n: number } }
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:45:17
           fix: check the value (typeof, in, a schema) before asserting its type, or build it under a declared type so the checker verifies it
+      ×1  'value' is untyped; its values are read as number
+          at tests/coverage-fixtures/node-islands-type-claims/main.ts:62:21
+          fix: give 'value' the type its values really have where it is declared, or narrow the value (typeof, in, a schema) before typed code reads it
       ×1  tc-native@1.4.2, compiled from its JavaScript: 1 conversion trusts 1 declaration of its own
           at tests/coverage-fixtures/node-islands-type-claims/node_modules/tc-native/index.js:9:10
           fix: run the package in a Node island (--node-island=tc-native), or patch the declaration that is wrong: scriptc types patch tc-native <selector> '<type>' (--print=diagnostics lists each declaration's selector)

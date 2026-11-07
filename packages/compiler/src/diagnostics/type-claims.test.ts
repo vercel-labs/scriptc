@@ -34,6 +34,18 @@ test("one declaration is one claim, however many conversions trust it", () => {
   expect(groups[0]!.fix).toContain("scriptc types patch debug Debugger.enabled '<type>'");
 });
 
+test("two installed versions of a package are two claims", () => {
+  const older = origin("debug", "3.2.7", "^3.2.7", "Debugger.enabled", "index.d.ts:44", "boolean");
+  const groups = groupTypeClaims([
+    { kind: "island", loc: at(1), claimed: "boolean", origin: ENABLED },
+    { kind: "island", loc: at(2), claimed: "boolean", origin: older },
+  ]);
+  expect(groups.map((g) => [g.declaration?.version, g.sites.length])).toEqual([
+    ["4.4.3", 1],
+    ["3.2.7", 1],
+  ]);
+});
+
 test("a declaration without a selector is named and not given a patch command", () => {
   const [group] = groupTypeClaims([
     { kind: "island", loc: at(1), claimed: "(Row) => string", origin: GROUP_BY, callback: true },

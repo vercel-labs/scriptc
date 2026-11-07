@@ -227,7 +227,7 @@ skipped
 
 Only a conversion written inside the `try` block is marked, not one in a function the block calls.
 
-A conversion to a type that the same function tests the value for, such as a read guarded by `typeof value === "string"`, is not a claim and is not listed. Neither is reading back a value that your TypeScript source declares with a type and scriptc holds dynamically, such as a `Response` from `fetch`. In JavaScript files nothing declares a type, so every such read is listed.
+A conversion that a kind test of the same value guards is not a claim and is not listed: a read inside `if (typeof value === "string")`, in the matching arm of a conditional, or after `if (typeof value !== "string") return`. A test elsewhere in the function guards nothing, and neither does a test of a variable the function assigns again. Neither is reading back a value that your TypeScript source declares with a type and scriptc holds dynamically, such as a `Response` from `fetch`. In JavaScript files nothing declares a type, so every such read is listed.
 
 This program reads two members of a logger that the `debug` package creates. The package runs in a Node island, and its types come from `@types/debug`:
 

@@ -32,9 +32,9 @@
  *
  * Not claims: conversions of values the compiler produced itself (a typed
  * value boxed and converted in one expression, the result of a library
- * call whose type the runtime guarantees), and a conversion to a kind the
- * same function tests the same value for (`typeof v === "string"`), which
- * cannot fail.
+ * call whose type the runtime guarantees), and a conversion a kind test of
+ * the same value guards (`typeof v === "string" ? v : ""`, or the code
+ * after `if (typeof v !== "string") return`), which cannot fail.
  *
  * A claim inside a `try` whose handler neither reads the error nor throws
  * is marked: there a failed conversion is invisible. `try { return
@@ -45,7 +45,7 @@
  * Runs over the final function bodies in coverage analyses only, so it
  * costs builds nothing and reads exactly the conversions a build emits. */
 import type { IrExpr, IrFunction, IrGlobal, IrLocal, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
-import { everyStmtList } from "../../ir/traverse.js";
+import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import type { TypeClaimKind, TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import * as ts from "../ts7/adapter.js";
@@ -215,7 +215,9 @@ interface Scope {
   params: Set<string>;
   stored: Map<string, IrExpr[]>;
   chains: Map<string, IrExpr>;
-  tested: Set<string>;
+  /** The locals stored to after their declaration: a kind test of one
+   * says nothing about what it holds later. */
+  reassigned: Set<string>;
   /** The conversions inside a `try` whose handler ignores the error. */
   swallowed: Set<IrExpr>;
 }
@@ -291,7 +293,7 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
       params: new Set(fn.params.map((p) => p.localId)),
       stored: new Map(),
       chains: new Map(),
-      tested: new Set(),
+      reassigned: new Set(),
       swallowed: new Set(),
     };
     for (const local of fn.locals) scope.locals.set(local.id, local);
@@ -307,25 +309,23 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
     everyStmtList(fn.body as IrStmt[], {
       expr: (e) => {
         if (e.kind === "optChain") scope.chains.set(e.id, e.receiver);
-        else if (e.kind === "assignExpr") store(e.localId, e.value);
-        else if (e.kind === "call") {
+        else if (e.kind === "assignExpr") {
+          store(e.localId, e.value);
+          scope.reassigned.add(e.localId);
+        } else if (e.kind === "call") {
           e.args.forEach((value, i) => {
             if (value.type.kind === "dyn" || value.type.kind === "jsval")
               push(argumentStores, `${e.callee}\u0000${i}`, { scope, value });
           });
-        } else if (e.kind === "dynTest") {
-          // Negated too: `typeof v !== "string"` guards the code after its
-          // early exit.
-          const path = pathOf(scope, e.value);
-          if (path !== null)
-            scope.tested.add(`${path}\u0001${e.test === "buffer" ? "bytes" : e.test}`);
         }
         return true;
       },
       stmt: (s) => {
         if (s.kind === "varDecl" && s.init !== null) store(s.localId, s.init);
-        else if (s.kind === "assign") store(s.localId, s.value);
-        else if (s.kind === "return" && s.value !== null)
+        else if (s.kind === "assign") {
+          store(s.localId, s.value);
+          if (s.initializes !== true) scope.reassigned.add(s.localId);
+        } else if (s.kind === "return" && s.value !== null)
           push(returnStores, fn.name, { scope, value: s.value });
         else if (
           s.kind === "tryCatch" &&
@@ -544,59 +544,145 @@ export function collectTypeClaims(input: TypeClaimInputs): TypeClaimSite[] {
         islandCallbacks(e.result, depth + 1);
       }
     };
-    everyStmtList(scope.fn.body as IrStmt[], {
-      stmt: () => true,
-      expr: (e) => {
-        if (e.kind === "libCall" && e.fn.startsWith("nodeIsland.")) {
-          for (const arg of e.args) islandCallbacks(arg, 0);
-          return true;
+    /** The claim of one conversion, unless a kind test in `facts` guards it. */
+    const claimAt = (e: IrExpr & { kind: "dynCheck" }, facts: ReadonlySet<string>): void => {
+      const declared = e.origin === undefined ? undefined : input.declOrigins[e.origin];
+      const source = sourceOf(scope, e.value, 0);
+      const root = source === "own" ? null : source;
+      // An assertion over a value the program holds dynamically is a
+      // claim whatever the value's source.
+      const asserted = root === null && input.asserted.has(claimKey(e.loc));
+      const boundary = root === null && input.boundary.has(claimKey(e.loc));
+      if (root === null && declared === undefined && !asserted && !boundary) return;
+      const proof = provingTest(e.type);
+      if (proof !== null) {
+        const path = pathOf(scope, e.value);
+        if (path !== null && facts.has(`${path}\u0001${proof}`)) return;
+      }
+      // The declaration of the value at this very position names the
+      // claim; failing that, the one its root was recorded with.
+      const here = input.islandOrigins.get(claimKey(e.loc));
+      const origin = here !== undefined && here !== "" ? here : (root?.origin ?? declared);
+      const read = asserted || boundary ? readFrom(scope, e.value) : undefined;
+      const binding = asserted ? read : root?.binding;
+      // A boundary cast's value was produced by the package it is read from.
+      const from = root?.from ?? (read === undefined ? null : packageOf(read.loc.file));
+      add({
+        kind:
+          root?.kind === "island"
+            ? "island"
+            : declared !== undefined || boundary
+              ? "declared"
+              : (root?.kind ?? "untyped"),
+        loc: e.loc,
+        claimed: typeText(e.type),
+        ...(origin !== undefined ? { origin } : {}),
+        ...(origin !== undefined && here === undefined && root?.origin !== undefined
+          ? { reached: true as const }
+          : {}),
+        ...(binding !== undefined ? { binding } : {}),
+        ...(asserted ? { asserted: true as const } : {}),
+        ...(scope.swallowed.has(e) ? { swallowed: true as const } : {}),
+        ...(from !== null && from !== undefined ? { from } : {}),
+        ...(root?.kind === "island" && islandNativeOnly(e.type, input.unionArms)
+          ? { nativeOnly: true as const }
+          : {}),
+      });
+    };
+
+    // A kind test guards what its outcome dominates: the branch of an `if`
+    // or a conditional it selects, the right operand of `&&` and `||`, and
+    // the statements after an `if` whose other branch always leaves. A test
+    // of a binding the function stores to again guards nothing.
+    const stable = (path: string): boolean => {
+      const root = path.split("\u0000", 1)[0]!;
+      if (scope.locals.has(root)) return !scope.reassigned.has(root);
+      return (globalStores.get(root)?.length ?? 0) <= 1;
+    };
+    const proven = (cond: IrExpr, when: boolean, out: Set<string>): void => {
+      if (cond.kind === "dynTest") {
+        if ((cond.negated === true) === when) return;
+        const path = pathOf(scope, cond.value);
+        if (path !== null && stable(path))
+          out.add(`${path}\u0001${cond.test === "buffer" ? "bytes" : cond.test}`);
+      } else if (cond.kind === "unary" && cond.op === "!") proven(cond.operand, !when, out);
+      else if (cond.kind === "toBool") proven(cond.operand, when, out);
+      else if (cond.kind === "logical" && (cond.op === "&&") === when) {
+        // Both operands of a true `&&`, and of a false `||`, are decided.
+        proven(cond.left, when, out);
+        proven(cond.right, when, out);
+      }
+    };
+    const withFacts = (
+      facts: ReadonlySet<string>,
+      cond: IrExpr,
+      when: boolean,
+    ): ReadonlySet<string> => {
+      const out = new Set(facts);
+      proven(cond, when, out);
+      return out.size === facts.size ? facts : out;
+    };
+    const leaves = (body: readonly IrStmt[]): boolean => {
+      const last = body[body.length - 1];
+      if (last === undefined) return false;
+      if (last.kind === "block") return leaves(last.body);
+      return (
+        last.kind === "return" ||
+        last.kind === "throw" ||
+        last.kind === "rethrow" ||
+        last.kind === "break" ||
+        last.kind === "continue"
+      );
+    };
+    const visitExpr = (e: IrExpr, facts: ReadonlySet<string>): void => {
+      if (e.kind === "ternary") {
+        visitExpr(e.cond, facts);
+        visitExpr(e.then, withFacts(facts, e.cond, true));
+        visitExpr(e.else_, withFacts(facts, e.cond, false));
+        return;
+      }
+      if (e.kind === "logical") {
+        visitExpr(e.left, facts);
+        visitExpr(e.right, withFacts(facts, e.left, e.op === "&&"));
+        return;
+      }
+      if (e.kind === "libCall" && e.fn.startsWith("nodeIsland."))
+        for (const arg of e.args) islandCallbacks(arg, 0);
+      else if (e.kind === "dynCheck" && e.exact !== true && e.inferredSite === undefined)
+        claimAt(e, facts);
+      everyExprChild(
+        e,
+        (child) => (visitExpr(child, facts), true),
+        (child) => (visitStmt(child, facts), true),
+      );
+    };
+    const visitStmts = (body: readonly IrStmt[], facts: ReadonlySet<string>): void => {
+      let known = facts;
+      for (const stmt of body) {
+        if (stmt.kind !== "if") {
+          visitStmt(stmt, known);
+          continue;
         }
-        if (e.kind !== "dynCheck" || e.exact === true || e.inferredSite !== undefined) return true;
-        const declared = e.origin === undefined ? undefined : input.declOrigins[e.origin];
-        const source = sourceOf(scope, e.value, 0);
-        const root = source === "own" ? null : source;
-        // An assertion over a value the program holds dynamically is a
-        // claim whatever the value's source.
-        const asserted = root === null && input.asserted.has(claimKey(e.loc));
-        const boundary = root === null && input.boundary.has(claimKey(e.loc));
-        if (root === null && declared === undefined && !asserted && !boundary) return true;
-        const proof = provingTest(e.type);
-        if (proof !== null) {
-          const path = pathOf(scope, e.value);
-          if (path !== null && scope.tested.has(`${path}\u0001${proof}`)) return true;
-        }
-        // The declaration of the value at this very position names the
-        // claim; failing that, the one its root was recorded with.
-        const here = input.islandOrigins.get(claimKey(e.loc));
-        const origin = here !== undefined && here !== "" ? here : (root?.origin ?? declared);
-        const read = asserted || boundary ? readFrom(scope, e.value) : undefined;
-        const binding = asserted ? read : root?.binding;
-        // A boundary cast's value was produced by the package it is read from.
-        const from = root?.from ?? (read === undefined ? null : packageOf(read.loc.file));
-        add({
-          kind:
-            root?.kind === "island"
-              ? "island"
-              : declared !== undefined || boundary
-                ? "declared"
-                : (root?.kind ?? "untyped"),
-          loc: e.loc,
-          claimed: typeText(e.type),
-          ...(origin !== undefined ? { origin } : {}),
-          ...(origin !== undefined && here === undefined && root?.origin !== undefined
-            ? { reached: true as const }
-            : {}),
-          ...(binding !== undefined ? { binding } : {}),
-          ...(asserted ? { asserted: true as const } : {}),
-          ...(scope.swallowed.has(e) ? { swallowed: true as const } : {}),
-          ...(from !== null && from !== undefined ? { from } : {}),
-          ...(root?.kind === "island" && islandNativeOnly(e.type, input.unionArms)
-            ? { nativeOnly: true as const }
-            : {}),
-        });
-        return true;
-      },
-    });
+        visitExpr(stmt.cond, known);
+        visitStmts(stmt.then, withFacts(known, stmt.cond, true));
+        if (stmt.else_ !== null) visitStmts(stmt.else_, withFacts(known, stmt.cond, false));
+        // `if (typeof v !== "string") return;` proves the test for the rest.
+        if (leaves(stmt.then)) known = withFacts(known, stmt.cond, false);
+        else if (stmt.else_ !== null && leaves(stmt.else_))
+          known = withFacts(known, stmt.cond, true);
+      }
+    };
+    const visitStmt = (stmt: IrStmt, facts: ReadonlySet<string>): void => {
+      if (stmt.kind === "if") visitStmts([stmt], facts);
+      else if (stmt.kind === "block") visitStmts(stmt.body, facts);
+      else
+        everyStmtChild(
+          stmt,
+          (child) => (visitExpr(child, facts), true),
+          (child) => (visitStmt(child, facts), true),
+        );
+    };
+    visitStmts(scope.fn.body, new Set());
   }
   return sites;
 }

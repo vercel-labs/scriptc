@@ -55,3 +55,11 @@ function readEntry(line: string): Config | null {
   }
 }
 console.log(readEntry('{"name":"c"}')?.name);
+
+// A kind test guards only what it dominates: this conversion runs before
+// the test, so it is a claim.
+function late(value: any): number {
+  const n: number = value;
+  return typeof value === "number" ? n : 0;
+}
+console.log(late(3));

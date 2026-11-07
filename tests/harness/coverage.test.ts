@@ -317,7 +317,7 @@ test("type claims list the checked conversions that trust an unverified type", a
   // converts to, one declared `any`), a function the island calls, and a
   // package compiled from its JavaScript, and an assertion over a value the
   // build holds dynamically. The read `size` guards with `typeof` is not a
-  // claim.
+  // claim; the one `late` makes before its test is.
   const entry = fixture("node-islands-type-claims/main.ts");
   await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-type-claims.txt");
   const { coverage, sourceTexts } = analyze(entry);
@@ -344,6 +344,8 @@ test("type claims list the checked conversions that trust an unverified type", a
     // `table(2) as Catalog`; `entries`, read back under its declared type,
     // is not listed.
     ["untyped", "{ a: { n: number } }", 1, [45]],
+    // `late` converts before it tests the kind: the test guards nothing.
+    ["untyped", "number", 1, [62]],
     // A compiled package's own conversions: after the program's.
     ["package", "tc-native", 1, [9]],
   ]);
@@ -360,7 +362,8 @@ test("type claims list the checked conversions that trust an unverified type", a
   expect(claims[1]!.swallowed?.map((s) => s.line)).toEqual([52]);
   expect(claims[2]!.fix).toContain("scriptc types patch tc-island Session.ttl '<type>'");
   expect(claims[4]).toMatchObject({ callbacks: 1, claimed: ["(string, number) => void"] });
-  expect(claims[8]).toMatchObject({
+  expect(claims[8]).toMatchObject({ binding: { name: "value", line: 61 } });
+  expect(claims[9]).toMatchObject({
     package: { name: "tc-native", version: "1.4.2" },
     declarations: [{ selector: "width()", at: "index.js:8", declaredType: "number", count: 1 }],
   });

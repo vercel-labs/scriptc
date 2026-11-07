@@ -814,6 +814,7 @@ import { partialAssertionFields } from "./partial-assertions.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import { lowerTernary } from "./lower-exprs.js";
+import { closeLoweringBudget, openLoweringBudget, refuseSpentLowering } from "./lower-exprs.js";
 import {
   maybePromiseReturnStmt,
   maybePromiseUnionOf,
@@ -862,6 +863,31 @@ const DECLARATION_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>
   "global",
   "loop",
 ]);
+
+/** A refused probe of an operand (Lowerer.refusedProbes). */
+interface RefusedProbe {
+  node: ts.Expression;
+  ctx: FnCtx;
+  bindings: Map<ts.Symbol, IrType> | null;
+  /** Lowerer.probeSurroundings when the probe was refused. */
+  surroundings: number;
+  diagnostics: ScrDiagnostic[];
+}
+
+/** The receiver of the call being dispatched (Lowerer.dispatchedReceiver)
+ * and, once a lowering produced one that may be handed out again, its
+ * value with what that lowering ran under. */
+interface DispatchedReceiver {
+  node: ts.Expression;
+  value: IrExpr | null;
+  ctx: FnCtx | null;
+  bindings: Map<ts.Symbol, IrType> | null;
+  /** Lowerer.probeSurroundings when the value was lowered. */
+  surroundings: number;
+  /** The expression overrides in force then, in the table's order (null
+   * for none): replacing one leaves the table's size as it was. */
+  overrides: IrExpr[] | null;
+}
 
 export class PoisonError extends Error {
   /** Set when a type with no static lowering poisoned a slot (badType and
@@ -4602,6 +4628,7 @@ export class Lowerer {
     const first = keyedHelperName(this, prefix, key);
     const seen = this.closureNameCounts.get(first) ?? 0;
     this.closureNameCounts.set(first, seen + 1);
+    this.closureNamesIssued++;
     return (seen === 0 ? first : keyedHelperName(this, prefix, `${key}|${seen}`)) + suffix;
   }
 
@@ -5327,6 +5354,16 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    // Refused probes are held only while the expression or statement that
+    // probed is being lowered, so a unit begins and ends with none; the
+    // closure-name count is only compared across one probe.
+    "refusedProbes",
+    "refusedProbeFrame",
+    "refusedProbeFrames",
+    "closureNamesIssued",
+    // Set and restored around one call's dispatch (lowerCall), so a unit
+    // begins and ends with none.
+    "dispatchedReceiver",
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
@@ -5613,6 +5650,166 @@ export class Lowerer {
   /** Non-null redirects pushDiag into a capture buffer (the deferred
    * collection wrapper). */
   diagSink: ScrDiagnostic[] | null = null;
+  /** Operands whose probe (tryLowerExpression) was refused, for as long as
+   * the expression or statement that probed them is still being lowered:
+   * the function context, type bindings and ambient lowering state the
+   * probe ran under, and the diagnostics it captured. lowerExpr answers a
+   * later request for the same operand from here while a probe is active,
+   * in place of lowering it again to the same refusal. */
+  readonly refusedProbes = new Map<ts.Expression, RefusedProbe>();
+  /** The refusals the expression or statement on top recorded (null until
+   * its first), and how many expressions and statements are open. */
+  private refusedProbeFrame: RefusedProbe[] | null = null;
+  private refusedProbeFrames = 0;
+  /** Closure names handed out so far (closureName counts every request). */
+  private closureNamesIssued = 0;
+
+  /** Starts the expression or statement that owns the refusals recorded
+   * until closeRefusedProbeFrame; returns the enclosing owner's. */
+  openRefusedProbeFrame(): RefusedProbe[] | null {
+    const outer = this.refusedProbeFrame;
+    this.refusedProbeFrame = null;
+    this.refusedProbeFrames++;
+    return outer;
+  }
+
+  /** Forgets the refusals recorded since the matching open. */
+  closeRefusedProbeFrame(outer: RefusedProbe[] | null): void {
+    const own = this.refusedProbeFrame;
+    if (own !== null) {
+      for (const refusal of own) {
+        if (this.refusedProbes.get(refusal.node) === refusal)
+          this.refusedProbes.delete(refusal.node);
+      }
+    }
+    this.refusedProbeFrame = outer;
+    this.refusedProbeFrames--;
+  }
+
+  /** A number that changes when lowering leaves something behind besides
+   * its result: a local or a lifted function declared, a closure name
+   * taken, a diagnostic or a deferred fence recorded. A refused probe that
+   * leaves it unchanged can be refused again without being run again. */
+  probeEffects(): number {
+    return (
+      this.ctx.locals.length +
+      this.liftedFns.length +
+      this.implicitFns.length +
+      this.closureNamesIssued +
+      this.diags.length +
+      this.runtimeFences.length
+    );
+  }
+
+  /** A number that changes when a lowering in progress installs or removes
+   * what makes an expression lower differently: an expression override, an
+   * optional chain taken in hand, a narrowed type, a staged argument, a
+   * scope. A recorded refusal stands only while it is unchanged. */
+  private probeSurroundings(): number {
+    return (
+      this.chainRecvByNode.size +
+      this.chainHandled.size +
+      this.chainNarrowedType.size +
+      this.runtimeOptionalBindingTypes.size +
+      this.stagedArguments.size +
+      this.receiverTypeOverrides.size +
+      this.ctx.scopes.length
+    );
+  }
+
+  /** A probe of `node` was refused with these captured diagnostics and
+   * left nothing else behind. */
+  noteRefusedProbe(node: ts.Expression, diagnostics: ScrDiagnostic[]): void {
+    if (this.refusedProbeFrames === 0) return;
+    const refusal: RefusedProbe = {
+      node,
+      ctx: this.ctx,
+      bindings: this.typeParamBindings,
+      surroundings: this.probeSurroundings(),
+      diagnostics,
+    };
+    this.refusedProbes.set(node, refusal);
+    (this.refusedProbeFrame ??= []).push(refusal);
+  }
+
+  /** The recorded refusal of `node` that still stands here, or null. */
+  standingRefusal(node: ts.Expression): RefusedProbe | null {
+    const refusal = this.refusedProbes.get(node);
+    return refusal !== undefined &&
+      refusal.ctx === this.ctx &&
+      refusal.bindings === this.typeParamBindings &&
+      refusal.surroundings === this.probeSurroundings()
+      ? refusal
+      : null;
+  }
+  /** The receiver of the method call being dispatched, from lowerCall's
+   * entry to its return. A call is claimed by one of about a hundred
+   * forms, and the forms that have to see the receiver's value to decide
+   * (lowerDynReceiverMethodCall asks whether a typed receiver lowered to a
+   * checked-dynamic value, the array methods ask for its kind) lower it,
+   * as does the form that finally claims the call. Lowering it once per
+   * form made a chain of calls cost that factor at every link: two to the
+   * power of the chain's length through classes and records, three for
+   * array methods. The first lowering's value is kept here and handed to
+   * every later request for the same node (lowerDispatchedReceiver). */
+  private dispatchedReceiver: DispatchedReceiver | null = null;
+
+  /** The lowering of the dispatched call's receiver: the value an earlier
+   * form's lowering produced when a new lowering would produce it again,
+   * and a lowering that is kept for the next form otherwise.
+   *
+   * A value is kept only when its lowering left nothing behind
+   * (probeEffects, and nothing in the capture buffer): a lowering that
+   * declares a local, lifts a function or takes a closure name numbers
+   * what it declares by how often it ran, so running it once instead of
+   * twice would rename them. It is handed out only in the function context
+   * and under the type bindings it was lowered in, with the surroundings
+   * that decide how an expression lowers unchanged (probeSurroundings) and
+   * the same expression overrides in force, and never for a receiver that
+   * is itself overridden (an optional chain's guarded receiver is its bind
+   * temp). */
+  private lowerDispatchedReceiver(receiver: DispatchedReceiver): IrExpr {
+    const node = receiver.node;
+    if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
+    const surroundings = this.probeSurroundings();
+    if (
+      receiver.value !== null &&
+      receiver.ctx === this.ctx &&
+      receiver.bindings === this.typeParamBindings &&
+      receiver.surroundings === surroundings &&
+      this.expressionOverridesAre(receiver.overrides)
+    ) {
+      return receiver.value;
+    }
+    const effects = this.probeEffects();
+    const sinkMark = this.diagSinkMark();
+    const value = lowerExpr(this, node);
+    if (
+      this.probeEffects() === effects &&
+      this.diagSinkMark() === sinkMark &&
+      this.probeSurroundings() === surroundings
+    ) {
+      receiver.value = value;
+      receiver.ctx = this.ctx;
+      receiver.bindings = this.typeParamBindings;
+      receiver.surroundings = surroundings;
+      receiver.overrides =
+        this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()];
+    }
+    return value;
+  }
+
+  /** Whether the expression overrides in force are exactly `overrides`. */
+  private expressionOverridesAre(overrides: IrExpr[] | null): boolean {
+    if (overrides === null) return this.chainRecvByNode.size === 0;
+    if (overrides.length !== this.chainRecvByNode.size) return false;
+    let index = 0;
+    for (const value of this.chainRecvByNode.values()) {
+      if (overrides[index++] !== value) return false;
+    }
+    return true;
+  }
+
   /** Diagnostics converted into runtimeFence statements (JS sources —
    * see lowerStmts): off the build, preserved here so coverage reporting
    * can still name every deferred fence. */
@@ -18015,7 +18212,16 @@ export class Lowerer {
   }
 
   lowerStmt(stmt: ts.Statement): IrStmt | IrStmt[] | null {
-    return lowerStmt(this, stmt);
+    const outermost = openLoweringBudget(stmt);
+    const frame = this.openRefusedProbeFrame();
+    try {
+      const lowered = lowerStmt(this, stmt);
+      if (outermost) refuseSpentLowering(this);
+      return lowered;
+    } finally {
+      this.closeRefusedProbeFrame(frame);
+      closeLoweringBudget();
+    }
   }
 
   lowerVarStatement(stmt: ts.VariableStatement): IrStmt[] {
@@ -18160,7 +18366,12 @@ export class Lowerer {
     const streamValue = this.valueStreamReceivers.get(expr);
     if (streamValue)
       return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
-    return this.stagedArgument(expr) ?? lowerExpr(this, expr);
+    const staged = this.stagedArgument(expr);
+    if (staged !== null) return staged;
+    const dispatched = this.dispatchedReceiver;
+    if (dispatched !== null && dispatched.node === expr)
+      return this.lowerDispatchedReceiver(dispatched);
+    return lowerExpr(this, expr);
   }
 
   /** The value storedImplicitArgumentType lowered for `expr` in the active
@@ -18604,6 +18815,29 @@ export class Lowerer {
     const webAssembly = lowerWebAssemblyCall(this, expr);
     if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression);
+    // The forms below lower a method call's receiver once between them
+    // (dispatchedReceiver).
+    const callee = expr.expression;
+    const outerReceiver = this.dispatchedReceiver;
+    this.dispatchedReceiver =
+      ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)
+        ? {
+            node: callee.expression,
+            value: null,
+            ctx: null,
+            bindings: null,
+            surroundings: 0,
+            overrides: null,
+          }
+        : null;
+    try {
+      return this.dispatchCall(expr);
+    } finally {
+      this.dispatchedReceiver = outerReceiver;
+    }
+  }
+
+  private dispatchCall(expr: ts.CallExpression): IrExpr {
     return (
       lowerErrorFunctionCall(this, expr) ??
       lowerLifetimeRegionCall(this, expr) ??

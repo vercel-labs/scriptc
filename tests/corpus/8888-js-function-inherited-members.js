@@ -25,3 +25,14 @@ console.log("deleted", typeof add.call, add.call(null, 5, 6), Object.keys(add).j
 add.bind = 1;
 delete add.bind;
 console.log("re-deleted", typeof add.bind, add.bind(null, 7)(8));
+
+// The inherited `call` runs any callable it is called on, a Proxy included,
+// and a bracket key reads the same member.
+var proxied = new Proxy(
+  function (a, b) {
+    return a * b;
+  },
+  {},
+);
+console.log("proxy receiver", call.call(proxied, null, 6, 7));
+console.log("bracket", typeof add["call"], typeof add["bind"], add["call"] === call);

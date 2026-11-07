@@ -1276,22 +1276,26 @@ const FN_INHERITED_VALUE_NAMES: ReadonlySet<string> = new Set(["bind", "call"]);
  * inherited member, which only that build has a value for. */
 const FN_REVEALED_BY_DELETE: ReadonlySet<string> = new Set(["toString"]);
 
+/** The literal a read's key spells: bare for a dotted read, boxed for a
+ * literal bracket (`fn["call"]` evaluates its key into the dynamic tier). */
+function spelledReadKey(key: IrExpr): string | undefined {
+  if (key.kind === "strLit") return key.value;
+  return key.kind === "dynFrom" && key.value.kind === "strLit" ? key.value.value : undefined;
+}
+
 /** Whether the function reads one of those members as a value through the
- * checked-dynamic tier (`typeof fn.call`, `const c = fn.bind` on a value
- * that may be a function): a keyed read whose key the source spells. A key
- * computed at run time cannot be proven one of the names, so it keeps the
- * build the rest of the program selects. */
+ * checked-dynamic tier (`typeof fn.call`, `const c = fn.bind`, `fn["call"]`
+ * on a value that may be a function): a keyed read whose key the source
+ * spells. A key computed at run time cannot be proven one of the names, so
+ * it keeps the build the rest of the program selects. */
 function functionReadsInheritedMember(fn: IrFunction): boolean {
   let found = false;
   everyStmtList(fn.body, {
     expr: (node) => {
-      if (
-        !found &&
-        node.kind === "dynKeyGet" &&
-        node.key.kind === "strLit" &&
-        FN_INHERITED_VALUE_NAMES.has(node.key.value)
-      )
-        found = true;
+      if (!found && node.kind === "dynKeyGet") {
+        const name = spelledReadKey(node.key);
+        if (name !== undefined && FN_INHERITED_VALUE_NAMES.has(name)) found = true;
+      }
       return !found;
     },
     stmt: () => !found,

@@ -17570,23 +17570,35 @@ static void scr_fn_inherited_cleanup(void) {
   scr_fn_inherited_registered = false;
 }
 
-/* The function a builtin value was called on (+1), or NULL with Node's
- * TypeError pending when `this` is not callable. */
-static ScrDyn *scr_fn_inherited_receiver(const char *what) {
+/* The value a builtin was called on (+1), or NULL with an error pending:
+ * Node's TypeError when `this` is not callable, and a named refusal when
+ * it is callable but not a function value (a callable Proxy) and the
+ * builtin needs one (`functions_only`: bind builds on the function's own
+ * closure, toString on its text). */
+static ScrDyn *scr_fn_inherited_receiver(const char *what, bool functions_only) {
   ScrDyn *receiver = scr_dyn_this_get();
-  if (receiver->kind == SCR_DYN_FUNC) return receiver;
+  bool callable = scr_dyn_is_callable(receiver);
+  if (receiver->kind == SCR_DYN_FUNC || (callable && !functions_only)) return receiver;
   scr_dyn_release(receiver);
   ScrJsonBuf b;
   scr_jb_init(&b);
+  if (callable) scr_jb_puts(&b, "scriptc: ");
   scr_jb_puts(&b, what);
-  scr_jb_puts(&b, " was called on a non-callable value");
+  scr_jb_puts(&b, callable ? " on a callable that is not a function value is not supported"
+                           : " was called on a non-callable value");
+  if (callable) {
+    ScrStr *message = scr_jb_finish(&b);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+    scr_str_release(message);
+    return NULL;
+  }
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
   return NULL;
 }
 
 static ScrDyn *scr_fn_inherited_bind_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure;
-  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.bind");
+  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.bind", true);
   if (!receiver) return NULL;
   ScrDyn *bound = scr_dyn_bind(receiver, args, argc);
   scr_dyn_release(receiver);
@@ -17595,7 +17607,7 @@ static ScrDyn *scr_fn_inherited_bind_call(ScrClosure *closure, ScrDyn *const *ar
 
 static ScrDyn *scr_fn_inherited_call_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure;
-  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.call");
+  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.call", false);
   if (!receiver) return NULL;
   scr_dyn_this_push_dyn(argc ? args[0] : scr_dyn_undefined());
   ScrDyn *result = scr_dyn_call(receiver, argc > 1 ? args + 1 : NULL, argc > 1 ? argc - 1 : 0,
@@ -17607,7 +17619,7 @@ static ScrDyn *scr_fn_inherited_call_call(ScrClosure *closure, ScrDyn *const *ar
 
 static ScrDyn *scr_fn_inherited_to_string_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure; (void)args; (void)argc;
-  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.toString");
+  ScrDyn *receiver = scr_fn_inherited_receiver("Function.prototype.toString", true);
   if (!receiver) return NULL;
   scr_dyn_release(receiver);
   static const char message[] = "'Function.prototype.toString' on a dynamic value is not supported yet";

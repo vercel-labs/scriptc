@@ -599,6 +599,16 @@ describe("runtime feature snapshots", () => {
     expect(reads(str("valueOf"))).toBe(false);
     expect(reads(str("extra"))).toBe(false);
     expect(reads({ kind: "varRef", localId: "k", type: DYN, loc })).toBe(false);
+    // A literal bracket key is boxed into the dynamic tier (`fn["call"]`).
+    const boxedKey = (value: string): IrExpr => ({
+      kind: "dynFrom",
+      value: str(value),
+      type: DYN,
+      loc,
+    });
+    expect(reads(boxedKey("call"))).toBe(true);
+    expect(reads(boxedKey("bind"))).toBe(true);
+    expect(reads(boxedKey("toString"))).toBe(false);
     // The read counts wherever the function holds it.
     const nested = module();
     nested.functions[0]!.body.push({

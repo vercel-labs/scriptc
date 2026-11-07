@@ -18,6 +18,7 @@ import {
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
 import { everyModuleNode, everyStmtList } from "./traverse.js";
+import { isDeferredDiagnosticFence } from "./deferred-fence.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 
@@ -876,6 +877,22 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
+/** Whether the module holds a runtimeFence that stands for a deferred
+ * diagnostic: the statement the backend throws through the reporter. */
+function moduleHasDeferredFence(mod: IrModule): boolean {
+  let found = false;
+  everyModuleNode(mod, {
+    expr: () => !found,
+    stmt: (node) => {
+      if (node.kind === "runtimeFence" && isDeferredDiagnosticFence(node.code, node.message))
+        found = true;
+      return !found;
+    },
+    type: () => !found,
+  });
+  return found;
+}
+
 /* The node:url and WHATWG URL entry points: every URL value comes from
  * one, and parsing one can reach the UTS #46 host processing. */
 const URL_PREFIXES: readonly string[] = ["url."];
@@ -1397,6 +1414,10 @@ const RUNTIME_FEATURE_RULES = {
    * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
    * the global object, or `… in globalThis` (host-globals.ts). */
   hostAbsentGlobals: rule({ fns: ["global.hostAbsent", "dyn.globalHas"] }),
+  /** The stderr report of a deferred diagnostic that fires
+   * (scr_deferred_fence.c): a runtimeFence whose message carries its
+   * diagnostic's tag (deferred-fence.ts). */
+  deferredFence: rule({ initial: moduleHasDeferredFence }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -1972,6 +1993,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdlibPrototypeValue: false,
     dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
+    deferredFence: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,

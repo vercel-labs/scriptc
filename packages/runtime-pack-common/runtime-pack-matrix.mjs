@@ -32,9 +32,6 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_exception.c",
   "scr_unwind.c",
   "scr_error.c",
-  // The stderr report of a deferred refusal that fires; it links only into
-  // programs that contain one.
-  "scr_deferred_fence.c",
   "scr_console.c",
   "scr_lib.c",
   "scr_hash.c",
@@ -274,6 +271,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
   // instead of answering undefined.
   ["scr_global_host_absent.c", "hostAbsentGlobals"],
+  // The stderr report of a deferred diagnostic that fires: only a program
+  // that contains one links it, so no other executable changes.
+  ["scr_deferred_fence.c", "deferredFence"],
 ];
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript

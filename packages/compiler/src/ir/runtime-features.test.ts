@@ -487,6 +487,21 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(module()).hostAbsentGlobals).toBe(false);
   });
 
+  test("links the stderr reporter for a fence that stands for a deferred diagnostic", () => {
+    // A runtimeFence whose message carries its diagnostic's tag throws
+    // through scr_deferred_fence.c; the traps the lowering writes itself
+    // (no tag) leave the program without the unit.
+    const fenced = (message: string) => {
+      const mod = module();
+      mod.functions[0]!.body.push({ kind: "runtimeFence", code: "SC2020", message, loc });
+      return moduleRuntimeFeatures(mod).deferredFence;
+    };
+    expect(fenced("'unescape' has no scriptc lowering yet [SC2020 at /app/a.js:4]")).toBe(true);
+    expect(fenced("'unescape' has no scriptc lowering yet [SC2020]")).toBe(true);
+    expect(fenced("reading 'x' through an untyped value is not supported")).toBe(false);
+    expect(moduleRuntimeFeatures(module()).deferredFence).toBe(false);
+  });
+
   test("gates the BigInt typed-array element kinds on the constructor name", () => {
     // The two BigInt kinds have no double-backed element, so their code lives
     // in the JavaScript object model build (t262-da §J); every other typed

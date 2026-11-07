@@ -208,6 +208,9 @@ export interface CcOptions {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic: compiles
+   * scr_deferred_fence.c, its stderr reporter. */
+  deferredFence?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */

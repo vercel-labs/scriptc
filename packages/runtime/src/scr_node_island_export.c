@@ -189,6 +189,16 @@ static ScrDyn *ni_collection(const ScrDyn *v, bool *set) {
 }
 
 uint32_t scr_ni_export_flags(const ScrDyn *v) {
+  /* A native error's node, whatever its form (a plain view, or the capsule
+   * of an instance of a program class): scr_node_island_handle.c exports
+   * it with the error's own value form. */
+  if (v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_TYPED_REF) {
+    ScrError *e = scr_errdyn_err_of(v);
+    if (e != NULL) {
+      scr_error_release(e);
+      return SCR_NVF_ERROR;
+    }
+  }
   switch (v->kind) {
   case SCR_DYN_FUNC:
     return v->v.fn.class_obj != NULL ? SCR_NVF_FUNCTION | SCR_NVF_CONSTRUCTOR : SCR_NVF_FUNCTION;
@@ -208,6 +218,55 @@ uint32_t scr_ni_export_flags(const ScrDyn *v) {
   default:
     return 0;
   }
+}
+
+/* The representative of a native error is a V8 Error that holds what every
+ * error holds (name, message, stack, code); its export answers the rest
+ * from behind it, in front of the intrinsic prototype. So it answers only
+ * what the native error or its class holds, and leaves what an error
+ * inherits (`toString`, a plain TypeError's `constructor`) to V8's own. */
+static bool ni_export_is_error(uint32_t id) { return (ni_exports[id].flags & SCR_NVF_ERROR) != 0; }
+
+static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key);
+
+/* Member `key` of native error `target` as its export answers it (+1), or
+ * NULL when V8's own Error answers (or an exception is pending): a field,
+ * an accessor or a method of the error's class, and its class as
+ * `constructor`. The names every object inherits and the constructor of an
+ * intrinsic error class are V8's, so `e.constructor === TypeError` holds
+ * in island code for a native TypeError. */
+static ScrDyn *ni_error_member(ScrDyn *target, ScrDyn *key) {
+  if (key->kind != SCR_DYN_STR) return NULL;
+  const ScrStr *name = key->v.str;
+  bool own = scr_dyn_has_key(target, name);
+  if (scr_exc_pending()) return NULL;
+  bool ctor = name->len == 11 && memcmp(name->data, "constructor", 11) == 0;
+  if (!own && !ctor && scr_dyn_in(target, name)) return NULL;
+  if (scr_exc_pending()) return NULL;
+  ScrDyn *value = scr_dyn_reflect_get(target, key, target);
+  if (value == NULL || scr_exc_pending()) {
+    scr_dyn_release(value);
+    return NULL;
+  }
+  if (ctor) {
+    static const char *const intrinsic[] = {"Error",          "TypeError", "RangeError",
+                                            "SyntaxError",    "ReferenceError", "EvalError",
+                                            "URIError",       "AggregateError"};
+    for (size_t i = 0; i < sizeof intrinsic / sizeof intrinsic[0]; i++) {
+      ScrDyn *builtin = scr_dyn_error_constructor(intrinsic[i]);
+      bool same = builtin == value;
+      scr_dyn_release(builtin);
+      if (same) {
+        scr_dyn_release(value);
+        return NULL;
+      }
+    }
+  }
+  if (value->kind == SCR_DYN_UNDEF && !own) {
+    scr_dyn_release(value);
+    return ni_class_method(target, key);
+  }
+  return value;
 }
 
 /* Whether `v` crosses into Node as an export (by reference). */
@@ -586,6 +645,16 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
     }
     return ni_returned(element, out);
   }
+  if (ni_export_is_error(id)) {
+    ScrDyn *member = ni_error_member(target, pk);
+    scr_dyn_release(pk);
+    scr_dyn_release(k);
+    if (scr_exc_pending()) {
+      scr_dyn_release(member);
+      return ni_threw(out);
+    }
+    return member != NULL ? ni_returned(member, out) : 2;
+  }
   int present = 0;
   if (pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
   if (!present && !scr_exc_pending()) {
@@ -653,6 +722,10 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
       present = len != NULL && len->kind == SCR_DYN_NUM && index < len->v.num;
       scr_dyn_release(len);
     }
+  } else if (pk != NULL && pk->kind == SCR_DYN_STR && ni_export_is_error(id)) {
+    ScrDyn *member = ni_error_member(target, pk);
+    present = member != NULL;
+    scr_dyn_release(member);
   } else if (pk != NULL && pk->kind == SCR_DYN_STR) {
     present = scr_dyn_in(target, pk->v.str);
   }

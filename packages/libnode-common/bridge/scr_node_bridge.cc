@@ -2128,9 +2128,64 @@ void FreeRuntimeBytes(void *, size_t, void *owner) {
 Local<Value> ErrorConstructor(Isolate *isolate, Local<Context> context, uint32_t kind) {
   static const char *const names[] = {"Error",          "TypeError", "RangeError", "SyntaxError",
                                       "Error",          "ReferenceError", "EvalError",
-                                      "URIError"};
-  const char *name = kind < 8 ? names[kind] : "Error";
+                                      "URIError",       "AggregateError"};
+  const char *name = kind < 9 ? names[kind] : "Error";
   return context->Global()->Get(context, Utf8(isolate, name)).ToLocalChecked();
+}
+
+const uint32_t kAggregateErrorKind = 8;
+
+// The own enumerable properties of a native error, copied onto its V8 Error
+// where Object.keys, JSON.stringify, a spread and util.inspect look; they
+// are refreshed at every crossing, as an array export's contents are.
+// Reads of anything else go to the native error through the link below.
+void SyncErrorFields(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error) {
+  if (!g_refreshing.insert(id).second) return;
+  struct Done {
+    uint32_t id;
+    ~Done() { g_refreshing.erase(id); }
+  } done{id};
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_keys(id, &out) != 0) return;
+  Local<Value> all = ToV8(isolate, context, &out);
+  if (!all->IsArray()) return;
+  Local<v8::Array> list = all.As<v8::Array>();
+  for (uint32_t i = 0; i < list->Length(); i++) {
+    Local<Value> key;
+    if (!list->Get(context, i).ToLocal(&key) || !key->IsString()) continue;
+    std::string text = ToStdString(isolate, key);
+    // The V8 Error's own, set when it was made.
+    if (text == "message" || text == "stack") continue;
+    ScrNodeValue k, v;
+    FromV8(isolate, context, key, &k);
+    std::memset(&v, 0, sizeof v);
+    if (g_host->export_get(id, &k, &v) != 0) continue;
+    Local<Value> value = ToV8(isolate, context, &v);
+    error->CreateDataProperty(context, key.As<v8::Name>(), value).FromMaybe(false);
+  }
+}
+
+// A native error crosses by reference: `error` becomes the representative
+// of export `id`, so it is that native error again when it crosses back.
+// What the V8 Error does not hold is the native error's: an object with the
+// export interceptors stands between the error and its intrinsic prototype
+// (fields, methods of its class, `cause`, an AggregateError's `errors`, its
+// class as `constructor`).
+void LinkNativeError(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error) {
+  Local<Value> data = v8::Integer::NewFromUnsigned(isolate, id);
+  Local<Object> link = ExportTemplate(isolate)->NewInstance(context).ToLocalChecked();
+  link->SetInternalField(0, data);
+  link->SetPrototypeV2(context, error->GetPrototypeV2()).FromMaybe(false);
+  error->SetPrototypeV2(context, link).FromMaybe(false);
+  error->SetPrivate(context, ExportKey(isolate), data).Check();
+  AttachReach(isolate, context, id, error);
+  Global<Object> &slot = g_exports[id];
+  slot.Reset(isolate, error);
+  slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
+               v8::WeakCallbackType::kParameter);
+  SyncErrorFields(isolate, context, id, error);
 }
 
 Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
@@ -2173,20 +2228,45 @@ Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *
     }
   }
   case SCR_NV_ERROR: {
-    Local<Value> ctor = ErrorConstructor(isolate, context, in->u.error.kind);
-    Local<Value> argv[] = {FromWtf8(isolate, in->u.error.message, in->u.error.message_len)};
-    Local<Object> error = ctor.As<Function>()->NewInstance(context, 1, argv).ToLocalChecked();
+    uint32_t id = in->u.error.export_id;
+    if (id != 0) {
+      auto found = g_exports.find(id);
+      if (found != g_exports.end()) {
+        Touch(id);
+        Local<Object> existing = found->second.Get(isolate);
+        SyncErrorFields(isolate, context, id, existing);
+        return existing;
+      }
+    }
+    // The runtime's strings are read before any JavaScript runs: they are
+    // valid only until the runtime is entered again.
+    uint32_t kind = in->u.error.kind;
     std::string name(in->u.error.name, in->u.error.name_len);
+    Local<Value> message = FromWtf8(isolate, in->u.error.message, in->u.error.message_len);
+    Local<Value> stack, code;
+    if (in->u.error.stack != nullptr)
+      stack = FromWtf8(isolate, in->u.error.stack, in->u.error.stack_len);
+    if (in->u.error.code != nullptr)
+      code = FromWtf8(isolate, in->u.error.code, in->u.error.code_len);
+    Local<Value> ctor = ErrorConstructor(isolate, context, kind);
+    Local<Object> error;
+    if (kind == kAggregateErrorKind) {
+      // new AggregateError(errors, message); the native error's `errors`
+      // answers through the link, so the copy V8 made goes.
+      Local<Value> argv[] = {v8::Array::New(isolate, 0), message};
+      error = ctor.As<Function>()->NewInstance(context, 2, argv).ToLocalChecked();
+      if (id != 0) error->Delete(context, Utf8(isolate, "errors")).FromMaybe(false);
+    } else {
+      Local<Value> argv[] = {message};
+      error = ctor.As<Function>()->NewInstance(context, 1, argv).ToLocalChecked();
+    }
     Local<Value> default_name;
     if (!error->Get(context, Utf8(isolate, "name")).ToLocal(&default_name) ||
         ToStdString(isolate, default_name) != name)
       error->Set(context, Utf8(isolate, "name"), FromWtf8(isolate, name.data(), name.size())).Check();
-    if (in->u.error.stack != nullptr)
-      error->Set(context, Utf8(isolate, "stack"),
-                 FromWtf8(isolate, in->u.error.stack, in->u.error.stack_len)).Check();
-    if (in->u.error.code != nullptr)
-      error->Set(context, Utf8(isolate, "code"),
-                 FromWtf8(isolate, in->u.error.code, in->u.error.code_len)).Check();
+    if (!stack.IsEmpty()) error->Set(context, Utf8(isolate, "stack"), stack).Check();
+    if (!code.IsEmpty()) error->Set(context, Utf8(isolate, "code"), code).Check();
+    if (id != 0) LinkNativeError(isolate, context, id, error);
     return error;
   }
   case SCR_NV_EXPORT: return ExportValue(isolate, context, in);

@@ -399,6 +399,18 @@ export function variantsFor(source) {
       when: { warningReplace: true, processExtras: true },
       defines: ["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS"],
     });
+    // An island object with a `then` method is a thenable to every promise
+    // resolution (Promise.resolve, a combinator's entry, an async function's
+    // return): the Node island build reads `then` in V8. The selector takes
+    // the variant with the most conditions, so each build above gets its
+    // island twin; every other program keeps its object, byte for byte.
+    for (const { id, when, defines } of variants.slice()) {
+      variants.push({
+        id: id === "default" ? "node-island" : `${id}-node-island`,
+        when: { ...when, nodeIsland: true },
+        defines: [...defines, "SCR_NODE_ISLANDS"],
+      });
+    }
   }
   // copyFileSync's mode argument reuses scr_fs_cp.c's reflink walk, so the
   // entry lives in a build of this unit rather than a unit of its own.

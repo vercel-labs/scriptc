@@ -26,7 +26,7 @@ import {
   shapeHasAccessorSlots,
   typeEquals,
 } from "../../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../../program.js";
+import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
@@ -392,6 +392,23 @@ export function lowerTernary(
           : dynJoin
             ? DYN
             : (anyJoin ?? (useCtx && ctxMapped ? ctxMapped : lowerer.irTypeOf(expr)));
+    // A checker type that names only ONE arm while the lowered arms
+    // disagree cannot be the join: the checker could not spell the other
+    // arm's type (a union of module namespace types does not serialize
+    // back, so `c ? import("./a") : import("./b")` reads as the first
+    // arm), and coercing the second arm into the first would claim the two
+    // namespaces are the same module. Join the arms the lowering actually
+    // holds with the union mapping's promise rule instead.
+    const namespaceArm = (t: IrType): boolean =>
+      t.kind === "promise" && t.inner.kind === "moduleNs";
+    if (
+      !typeEquals(thenRaw.type, elseRaw.type) &&
+      (namespaceArm(thenRaw.type) || namespaceArm(elseRaw.type)) &&
+      (typeEquals(type, thenRaw.type) || typeEquals(type, elseRaw.type))
+    ) {
+      const joined = lowerer.mergePromiseArmTypes([thenRaw.type, elseRaw.type]);
+      if (joined !== null) type = joined;
+    }
     // An arm the checker types at the join can still hold an absent value
     // at run time (`flag ? empty.a : empty.b`): an unchecked key or element
     // read whose storage carries the undefined arm. The join keeps that
@@ -457,6 +474,30 @@ export function isDataViewPrototypeValue(expr: IrExpr): boolean {
   return expr.kind === "dynKeyGet" && isDataViewPrototypeValue(expr.value);
 }
 
+/** Whether `node` reads one of the ES lib interface's three view fields —
+ * `buffer`, `byteOffset`, `byteLength` — from a receiver the checker types
+ * as `ArrayBufferView`. That interface is the common supertype of every
+ * typed array and DataView, so it maps to the checked-dynamic value: its
+ * three reads answer from the native view the value holds (its buffer by
+ * identity) or from the dynamic tier, exactly as Node reads the property.
+ * Extracting them as the declared `number` would throw where Node answers a
+ * non-view value. @types/node's `NodeJS.ArrayBufferView` is its own
+ * interface with its own mapping, whose reads keep the extraction. */
+function isArrayBufferViewFieldRead(lowerer: Lowerer, node: ts.Node): boolean {
+  if (!ts.isPropertyAccessExpression(node)) return false;
+  const name = node.name.text;
+  if (name !== "buffer" && name !== "byteOffset" && name !== "byteLength") return false;
+  const type = lowerer.checker.getNonNullableType(lowerer.typeOf(node.expression));
+  const symbol = type.getSymbol();
+  if (symbol === undefined || ts.symbolName(symbol) !== "ArrayBufferView") return false;
+  return (
+    symbol.declarations?.some((decl) => {
+      const file = ts.getSourceFileOfNode(decl);
+      return lowerer.isStdlibFile(file) && !isNodeTypesPath(file.fileName);
+    }) ?? false
+  );
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -505,6 +546,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // DataView.prototype (and its members) is the prototype OBJECT, though
     // @types/node declares the interface: extracting the view would throw.
     if (isDataViewPrototypeValue(expr)) return expr;
+    // A value typed `ArrayBufferView` reads its three view fields as the
+    // dynamic answer: the interface is the common supertype of every typed
+    // array and DataView, so the value is whatever view the program stored
+    // (or none — the checker's `number` does not make the property exist),
+    // and the dynamic tier answers the read from the native view behind it
+    // or the way Node reads the property. A consumer that needs a number
+    // checks it itself.
+    if (isArrayBufferViewFieldRead(lowerer, node)) return expr;
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));
@@ -669,14 +718,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       lowerer.isStdlibMember(node)
     )
       return expr;
-    // A null-initialized JS field can later receive an object even when
-    // checker flow calls its non-null branch never. The live checked
-    // value remains authoritative; never is not a numeric guard.
-    if (
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
-      (lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0
-    )
-      return expr;
+    // The live value is authoritative even when checker flow calls it
+    // never. Two flows reach here: a null-initialized JS field that later
+    // receives an object, and a failed type predicate whose type is
+    // `unknown` (`Check(value: unknown): value is Encode` with an
+    // unconstrained `Encode`), which subtracts every member of the value
+    // and so narrows it to never. Never is not a numeric guard, and no
+    // check can produce an uninhabited value.
+    if ((lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0) return expr;
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
     if (
       narrowed &&

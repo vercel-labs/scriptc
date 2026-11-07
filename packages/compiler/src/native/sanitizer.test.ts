@@ -23,6 +23,7 @@ const features = {
   declAdopt: false,
   typeOrigins: false,
   dynForAwait: false,
+  dynCollections: false,
   dynIntegrityQueries: false,
   genBind: false,
   eventsOnceSignal: false,

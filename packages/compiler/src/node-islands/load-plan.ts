@@ -54,7 +54,8 @@ const PLAIN_PATH = /^[A-Za-z0-9._\-/@+~=,]+$/;
 
 /** Files whose loads the plan answers: JavaScript and TypeScript modules,
  * not declaration files. */
-const MODULE_FILE = /(?<!\.d)\.(?:[cm]?js|[cm]?ts)$/;
+const MODULE_FILE = /\.(?:[cm]?js|[cm]?ts)$/;
+const DECLARATION_FILE = /\.d\.[cm]?ts$/;
 
 /** A quote followed by `./`, `../`, `.` or `..`: where a string literal
  * that is a relative specifier starts. */
@@ -383,6 +384,7 @@ export function buildLoadPlan(
   for (const file of tree.files) {
     // A program module the islands share is answered by its own hooks.
     if (file.placeholder === true || !MODULE_FILE.test(file.path)) continue;
+    if (DECLARATION_FILE.test(file.path)) continue;
     if (!PLAIN_PATH.test(file.path)) continue;
     const group = planGroupOf(file.path);
     const list = grouped.get(group);
@@ -508,22 +510,18 @@ function tracePlan(plan: LoadPlan): void {
   process.stderr.write(`[node-islands] plan: ${plan.bytes.length} bytes at ${LOAD_PLAN_PATH}\n`);
 }
 
-/** Trees the plan was added to: planning one again replaces its entry. */
-const planned = new WeakSet<IrNodeIslandModules>();
-
 /** Adds the load plan to a tree about to ship: its manifest entry, and its
  * bytes in the returned map (readNodeIslandModules and
  * placeNodeIslandModules take them: the file exists nowhere on disk). A
- * tree with nothing to plan, or one that already holds a file at the
- * plan's path, ships without one, and Node resolves as before. */
+ * tree with nothing to plan ships without one, and Node resolves as before.
+ * So does a tree that already holds a file at the plan's path, unless that
+ * file is this plan (the same tree planned again): the two are told apart
+ * by content. */
 export function planNodeIslandLoads(modules: IrNodeIslandModules): Map<string, Uint8Array> {
   const generated = new Map<string, Uint8Array>();
   const existing = modules.files.findIndex((file) => file.path === LOAD_PLAN_PATH);
-  if (existing >= 0) {
-    if (!planned.has(modules)) return generated;
-    modules.files.splice(existing, 1);
-  }
-  const plan = buildLoadPlan(modules, (path) => {
+  const files = existing < 0 ? modules.files : modules.files.filter((_, at) => at !== existing);
+  const plan = buildLoadPlan({ files, links: modules.links }, (path) => {
     try {
       return readFileSync(join(modules.root, ...path.split("/")), "utf8");
     } catch {
@@ -531,17 +529,22 @@ export function planNodeIslandLoads(modules: IrNodeIslandModules): Map<string, U
     }
   });
   if (plan === null) return generated;
-  tracePlan(plan);
   const entry = {
     path: LOAD_PLAN_PATH,
     size: plan.bytes.length,
     sha256: createSha256(plan.bytes),
   };
+  if (existing >= 0) {
+    const held = modules.files[existing]!;
+    if (held.size === entry.size && held.sha256 === entry.sha256)
+      generated.set(LOAD_PLAN_PATH, plan.bytes);
+    return generated;
+  }
+  tracePlan(plan);
   // The manifest stays sorted by path.
   let at = modules.files.findIndex((file) => file.path > LOAD_PLAN_PATH);
   if (at < 0) at = modules.files.length;
   modules.files.splice(at, 0, entry);
-  planned.add(modules);
   generated.set(LOAD_PLAN_PATH, plan.bytes);
   return generated;
 }

@@ -20,6 +20,7 @@ import {
 import { everyModuleNode, everyStmtList } from "./traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
+import { TEXT_DECODER_STREAM_CLASS } from "./webstream-classes.js";
 
 const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
   ["read", "write"].flatMap((rw) => [
@@ -100,6 +101,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webcrypto.object",
   // Web streams settle their promises with dyn values.
   "webstream.class",
+  "webstream.from",
   "webstream.instanceOf",
   "webstream.install",
   "dyn.promiseAll",
@@ -500,6 +502,7 @@ const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Web streams answer async iteration through Symbol.asyncIterator.
   "webstream.class",
+  "webstream.from",
   "webstream.instanceOf",
   "webstream.install",
   // EventEmitter's kShapeMode and kCapture properties
@@ -1471,6 +1474,7 @@ const RUNTIME_FEATURE_RULES = {
       "buffer.prototypeObject",
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
       "webstream.class",
+      "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
       // scr_js_wrapper.c answers other values' tags through
@@ -1693,6 +1697,7 @@ const RUNTIME_FEATURE_RULES = {
       "bigint.inspect",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      "webstream.from",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",
@@ -1722,6 +1727,13 @@ const RUNTIME_FEATURE_RULES = {
   jsObjectModel: rule({ fns: [...JS_OBJECT_MODEL_LIB_FNS] }),
   legacyTextDecoder: rule({
     fns: [...LEGACY_TEXT_DECODER_LIB_FNS],
+    // A TextDecoderStream decodes whatever encoding it was constructed with:
+    // its transform calls scr_text_decode_stream, whose UTF-8 half is the
+    // default build and whose other encodings are the legacy one.
+    libCall: (node) =>
+      node.fn === "webstream.class" &&
+      node.args[0]?.kind === "numLit" &&
+      node.args[0].value === TEXT_DECODER_STREAM_CLASS,
     expr: (node, tables) =>
       (node.kind === "dynFrom" && mentionsTextDecoder(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsTextDecoder(node.type, tables())),

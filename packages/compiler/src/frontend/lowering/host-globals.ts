@@ -54,9 +54,6 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
   "PerformanceObserver",
   "PerformanceObserverEntryList",
   "PerformanceResourceTiming",
-  "ReadableByteStreamController",
-  "ReadableStreamBYOBReader",
-  "ReadableStreamBYOBRequest",
   "URLPattern",
   "WebSocket",
 ]);

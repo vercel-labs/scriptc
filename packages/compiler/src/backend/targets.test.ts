@@ -12,6 +12,7 @@ import {
   MACOS_X64_TARGET,
   WASM32_WASI_TARGET,
   WINDOWS_X64_MSVC_TARGET,
+  executableHardeningLinkerArgs,
   executableOptimizationLinkerArgs,
   executableStaticLinkerArgs,
   ffiExtendsNarrowIntegers,
@@ -227,6 +228,30 @@ describe("native code-generation targets", () => {
     expect(executableOptimizationLinkerArgs("wasi", "release")).toEqual(["-Wl,--strip-debug"]);
     expect(executableOptimizationLinkerArgs("wasi", "dev")).toEqual([]);
     expect(executableOptimizationLinkerArgs("linux", "release")).toEqual([]);
+  });
+
+  test("strips the debug info of zig's musl from release executables", () => {
+    expect(executableOptimizationLinkerArgs("linux", "release", true)).toEqual([
+      "-Wl,--strip-debug",
+    ]);
+    expect(executableOptimizationLinkerArgs("linux", "speed", true)).toEqual(["-Wl,--strip-debug"]);
+    expect(executableOptimizationLinkerArgs("linux", "dev", true)).toEqual([]);
+    expect(executableOptimizationLinkerArgs("linux", "release", false)).toEqual([]);
+  });
+
+  test("binds a glibc executable's imports at load and protects their table", () => {
+    const hardening = ["-Wl,-z,relro,-z,now"];
+    expect(executableHardeningLinkerArgs("linux", false)).toEqual(hardening);
+    for (const target of [LINUX_X64_GNU_TARGET, LINUX_ARM64_GNU_TARGET])
+      expect(target.executableLinkerArgs).toEqual(expect.arrayContaining(hardening));
+    // Static musl executables import nothing, and the other formats bind
+    // through their own loaders.
+    expect(executableHardeningLinkerArgs("linux", true)).toEqual([]);
+    expect(LINUX_X64_MUSL_TARGET.executableLinkerArgs).not.toEqual(
+      expect.arrayContaining(hardening),
+    );
+    for (const platform of ["darwin", "win32", "wasi"])
+      expect(executableHardeningLinkerArgs(platform, false)).toEqual([]);
   });
 
   test("keeps Windows release links free of debug info so dead COMDATs drop", () => {

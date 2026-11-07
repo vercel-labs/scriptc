@@ -43,12 +43,35 @@ export interface CanonMapNotes {
   collapsedToDynamic: boolean;
 }
 
-/** The IR type of a canonical node, or null when no rule applies. */
+/** The structural mappings one walk has finished: by object node, then by
+ * the depth the node was reached at. Canonical nodes intern by checker type
+ * (canon.ts), so a recursive type reaches its own node again and a type many
+ * members share is one node however many paths lead to it. The depth is
+ * part of the key because MAX_DEPTH cuts a mapping off at a distance that
+ * depends on it. */
+type CanonWalk = Map<Canon, (IrType | null | undefined)[]>;
+
+/** The IR type of a canonical node, or null when no rule applies.
+ *
+ * An object node maps once per depth in one walk. Without that, a recursive
+ * type is mapped again along every path that leads back to it, down to
+ * MAX_DEPTH: (members leading back)^MAX_DEPTH mappings of the same nodes,
+ * each with the same answer. */
 export function mapCanonical(
   c: Canon,
   ctx: TypeMapperCtx,
   depth = 0,
   notes?: CanonMapNotes,
+): IrType | null {
+  return mapCanonicalAt(c, ctx, depth, notes, new Map());
+}
+
+function mapCanonicalAt(
+  c: Canon,
+  ctx: TypeMapperCtx,
+  depth: number,
+  notes: CanonMapNotes | undefined,
+  walk: CanonWalk,
 ): IrType | null {
   if (depth > MAX_DEPTH) return null;
   const viaChecker = (): IrType | null => (c.src === undefined ? null : mapType(c.src, ctx));
@@ -78,13 +101,13 @@ export function mapCanonical(
     case "tuple":
       return viaChecker();
     case "array": {
-      const elem = mapCanonical(c.elem, ctx, depth + 1, notes);
+      const elem = mapCanonicalAt(c.elem, ctx, depth + 1, notes, walk);
       return elem === null ? null : { kind: "array", elem };
     }
     case "union": {
       const byKey = new Map<string, IrType>();
       for (const arm of c.arms) {
-        const mapped = mapCanonical(arm, ctx, depth + 1, notes);
+        const mapped = mapCanonicalAt(arm, ctx, depth + 1, notes, walk);
         if (mapped === null || mapped.kind === "void") return null;
         if (mapped.kind === "union") {
           const def = ctx.unions.get(mapped.unionId);
@@ -112,10 +135,16 @@ export function mapCanonical(
       if (props.some((p) => p.accessor)) return viaChecker();
       // `{}` holds any non-nullish value: the checked dynamic, as mapType.
       if (props.length === 0) return DYN;
-      const structural = mapCanonicalRecord(props, ctx, depth, notes);
+      let atDepth = walk.get(c);
+      if (atDepth === undefined) walk.set(c, (atDepth = []));
+      const finished = atDepth[depth];
+      if (finished !== undefined) return finished;
+      const structural = mapCanonicalRecord(props, ctx, depth, notes, walk);
       // An object whose members do not map structurally (an interface over
       // Map or Set, methods) keeps its per-type recognition.
-      return structural ?? viaChecker();
+      const mapped = structural ?? viaChecker();
+      atDepth[depth] = mapped;
+      return mapped;
     }
   }
 }
@@ -127,10 +156,11 @@ function mapCanonicalRecord(
   ctx: TypeMapperCtx,
   depth: number,
   notes: CanonMapNotes | undefined,
+  walk: CanonWalk,
 ): IrType | null {
   const fields: { name: string; type: IrType; optional?: true }[] = [];
   for (const p of props) {
-    let t = mapCanonical(p.type(), ctx, depth + 1, notes);
+    let t = mapCanonicalAt(p.type(), ctx, depth + 1, notes, walk);
     if (t === null) return null;
     let absentable = false;
     if (p.optional) {

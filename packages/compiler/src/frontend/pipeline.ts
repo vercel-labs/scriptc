@@ -135,7 +135,9 @@ export interface Frontend {
   /** The Node island detector's input (report-only): the program's
    * modules with their pre-scan markers, package import edges, and how
    * each refused package was refused. Call before dispose. */
-  nodeIslandScan?: ((opts: { userJs: boolean }) => NodeIslandScan) | undefined;
+  nodeIslandScan?:
+    | ((opts: { userJs: boolean; marked?: (file: string) => boolean }) => NodeIslandScan)
+    | undefined;
   /** Diagnostics that do not fail a build: unknown settings in the
    * project's scriptc configuration (SC8004), which builds do not use. */
   warnings?: ScrDiagnostic[];
@@ -766,7 +768,10 @@ function loadFrontend(
     scoutServices = scout.services;
     let retained = false;
     try {
-      const scoutPreflight = checkPreflight(scout);
+      // The scout is a rung like the ones below: its one consumer is the
+      // package walk, which reads the module order and never a diagnostic.
+      // Its diagnostics are read only when it is retained.
+      checkModuleOrder(scout);
       requested =
         npmStatic === "lib"
           ? [
@@ -777,10 +782,11 @@ function loadFrontend(
       // With no package to opt in, the scout already IS the final frontend:
       // same roots, resolution posture, preflight, and module order. Retain it
       // instead of spawning a second tsgo server and checking the whole graph
-      // again — the common library-mode path has no bare npm imports.
+      // again — the common library-mode path has no bare npm imports. Its
+      // full preflight completes the walk above instead of repeating it.
       if (requested.length === 0) {
+        reusablePreflight = checkPreflight(scout);
         reusableScout = scout;
-        reusablePreflight = scoutPreflight;
         retained = true;
       }
     } finally {
@@ -1388,7 +1394,7 @@ function loadFrontend(
     npmImportSites: npmSites,
     nodeIslandScan: !scanIslands
       ? undefined
-      : ({ userJs }) => {
+      : ({ userJs, marked }) => {
           const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
           addDynamicImportGraph(finalLoad, files);
           // Package edges matter only when the program has npm packages: one
@@ -1401,6 +1407,7 @@ function loadFrontend(
             userJs,
             dropped: false,
             edges: npm,
+            ...(marked === undefined ? {} : { marked }),
           });
           return {
             modules: [...droppedScan.modules, ...scanned.modules],

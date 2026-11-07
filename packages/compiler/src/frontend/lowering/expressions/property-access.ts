@@ -1725,6 +1725,23 @@ export function lowerPropertyAccessExpr(
         expr,
       );
     }
+    // A GENERIC instantiation keeps every OPTIONAL member the CONSTRAINT
+    // declares even when the instantiated type has no such key
+    // (`f<TO extends { headers?: H }>(o: TO)`, called with `{ apiKey }`):
+    // the read resolves through the constraint and the value was never
+    // stored, so it is undefined. The field is declared, not undeclared —
+    // nothing here is a failed type assertion.
+    if (recvShape && !recvShape.tuple && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const declared = lowerer.checker.getPropertyOfType(
+        lowerer.typeOf(expr.expression),
+        expr.name.text,
+      );
+      if (declared && (declared.flags & ts.SymbolFlags.Optional) !== 0) {
+        const readT = lowerer.mapTypeOf(lowerer.typeOf(expr));
+        const missing = readT ? lowerer.wrappedUndefined(readT, loc) : null;
+        if (missing) return afterReceiver(recvLowered, missing, loc);
+      }
+    }
     // An inferred package-JS call specializes a parameter to the
     // caller's own record shape. Optional option names omitted by that
     // caller read undefined; the missing field is not a failed type
@@ -2842,16 +2859,26 @@ export function lowerIntrinsicProperty(
       return lowerer.maybeNarrow(read, expr);
     }
     if (name === "stdout" || name === "stderr") {
-      if (lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind !== "string") {
-        lowerer.noLowering(
-          `spawnSync's ${name} without the "utf8" encoding`,
-          expr,
-          'Buffer captures are not representable — call spawnSync(cmd, args, { encoding: "utf8" }) so the outputs are strings',
-        );
-      }
+      // With { encoding: "utf8" } the checker types the capture string and
+      // the runtime hands over the captured utf8; without it (@types/node
+      // types SpawnSyncReturns<Buffer>) the capture is a Buffer, lowered as
+      // the bytes value fs's Buffer reads use — the runtime accessor
+      // carries the Buffer brand under the fsBufferBrand feature.
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
       const receiver = lowerer.lowerExpr(expr.expression);
-      const fn = name === "stdout" ? "spawnRes.stdout" : "spawnRes.stderr";
-      return { kind: "libCall", fn, args: [receiver], type: STRING, loc };
+      if (mapped?.kind === "string") {
+        const fn = name === "stdout" ? "spawnRes.stdout" : "spawnRes.stderr";
+        return { kind: "libCall", fn, args: [receiver], type: STRING, loc };
+      }
+      if (mapped?.kind === "bytes" && mapped.elem === "u8") {
+        const fn = name === "stdout" ? "spawnRes.stdoutBytes" : "spawnRes.stderrBytes";
+        return { kind: "libCall", fn, args: [receiver], type: BYTES_U8, loc };
+      }
+      lowerer.noLowering(
+        `spawnSync's ${name} with this type`,
+        expr,
+        'the capture is string (with { encoding: "utf8" }) or Buffer (without it)',
+      );
     }
     if (name === "error") {
       // Node's spawn-failure carrier: `Error | undefined` — a fresh

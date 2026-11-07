@@ -1136,7 +1136,11 @@ test("a package a build islands for an export it cannot bind is the same island 
   const { coverage } = analyze(entry);
   expect(coverage.diagnostics).toEqual([]);
   expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class, i.reason])).toEqual([
-    ["ni-metrics", "gap", "SC1090: its export 'counter' has no native binding form"],
+    [
+      "ni-metrics",
+      "gap",
+      "SC1090: the reference to 'counter' (a binding form with no lowering) is not supported yet",
+    ],
   ]);
   expect(coverage.nodeIslands?.packages.map((p) => p.package)).toEqual([]);
   expect(coveragePasses(coverage, "blockers")).toBe(true);

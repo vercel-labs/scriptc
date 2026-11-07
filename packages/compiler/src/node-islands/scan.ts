@@ -83,6 +83,16 @@ export function emptyScan(): NodeIslandScan {
   return { modules: [], edges: [], refusals: [] };
 }
 
+/** The directory of a package the program compiles, from its scanned
+ * modules; null when the scan holds none of its modules. */
+export function scannedPackageDir(scan: NodeIslandScan, name: string): string | null {
+  for (const m of scan.modules) {
+    if (m.dropped || m.packageDir === null) continue;
+    if (m.packageName === name) return m.packageDir;
+  }
+  return null;
+}
+
 function locOfNode(node: ts.Node): SrcLoc {
   const sf = ts.getSourceFileOfNode(node);
   return { file: sf.fileName, start: ts.tokenStartOfNode(node), end: node.end };

@@ -23,7 +23,6 @@ import {
   classifyDiagnostic,
   classifyMarker,
   classifyRefusal,
-  classifyUnboundExport,
   isIslandReasonCode,
 } from "./classify.js";
 import {
@@ -40,7 +39,7 @@ import { type IslandPackage, nodeIslandSet, type NodeIslandSet } from "./boundar
 import { packageDirOf, packageVersionOf } from "./origin.js";
 import { isMarkedUserModule, type NodeIslandPolicy } from "./policy.js";
 import { classRank, reportRank, ruleInfo } from "./rules.js";
-import type { NodeIslandScan, RefusalRecord } from "./scan.js";
+import { scannedPackageDir, type NodeIslandScan, type RefusalRecord } from "./scan.js";
 
 /** One dependency's native compilation outcome (coverage/report.ts's
  * NpmStaticStatus, restated to keep this module free of coverage). */
@@ -166,21 +165,27 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     if (out === undefined) imports.set(from, (out = new Set<string>()));
     out.add(s.key);
   }
-  // Lowering refusals and fences inside npm modules. A use of an export
-  // that a compiled package does not provide as a binding is that package's
-  // refusal, wherever the use is (ScrDiagnostic.exportOf): a build islands
-  // the exporting package for it (growth.ts), so the reason is that
-  // package's here too, and not the reason of the module the use is in.
-  const compiled = new Set<string>();
-  for (const outcome of input.npm) if (outcome.status === "static") compiled.add(outcome.package);
+  // Lowering refusals and fences inside npm modules.
+  const compiled = new Set<string>(
+    input.npm.filter((e) => e.status === "static").map((e) => e.package),
+  );
   const addDiagnostics = (diags: readonly ScrDiagnostic[], source: NodeIslandReasonSource) => {
     for (const d of diags) {
       if (!isIslandReasonCode(d.code)) continue;
-      const exported = d.exportOf;
-      if (exported !== undefined && compiled.has(exported.package)) {
-        if (ignored(exported.package)) continue;
-        const reason = classifyUnboundExport(d, exported.name);
-        for (const key of byName.get(exported.package) ?? []) addReason(states.get(key)!, reason);
+      // A use of an export a compiled package's module does not provide as
+      // a binding (ScrDiagnostic.exportOf) is that package's refusal,
+      // wherever the use is; a use in the program's own modules names no
+      // package there. growth.ts attributes it the same way, so a program
+      // whose only island reason is such a use is reported here as the
+      // island a build would choose. It comes after what the package's own
+      // modules report (sortReasons), as growth.ts keeps a package's own
+      // refusal or fence as its reason.
+      if (d.exportOf !== undefined && compiled.has(d.exportOf.package)) {
+        const exporter = d.exportOf.package;
+        if (ignored(exporter)) continue;
+        const dir = scannedPackageDir(input.scan, exporter);
+        if (dir === null) continue;
+        addReason(state(exporter, dir), { ...classifyDiagnostic(d, source), exported: true });
         continue;
       }
       const at = packageDirOf(d.loc.file);

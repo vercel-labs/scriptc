@@ -39,12 +39,12 @@ import { dirname, relative } from "node:path";
 import type { SrcLoc } from "../ir/ir.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import type { IslandModule, IslandPackage } from "./boundary.js";
-import { classifyDiagnostic, isIslandReasonCode, unboundExportMessage } from "./classify.js";
+import { classifyDiagnostic, isIslandReasonCode } from "./classify.js";
 import { growEsmImporters } from "./graph-islands.js";
 import { packageDirOf, packageKeyOf, packageVersionOf } from "./origin.js";
 import type { NodeIslandPolicy } from "./policy.js";
 import { buildNodeIslandReport } from "./report.js";
-import type { NodeIslandScan } from "./scan.js";
+import { scannedPackageDir, type NodeIslandScan } from "./scan.js";
 import { describe } from "./summary.js";
 
 /** A dependency's native compilation outcome (coverage/report.ts's
@@ -228,7 +228,7 @@ function growFromLowering(
     const exporter = d.exportOf.package;
     if (!compiled.has(exporter) || grown.has(exporter)) continue;
     if (ctx.policy.forcedNative.has(exporter) || ctx.policy.unloaded.has(exporter)) continue;
-    const dir = compiledPackageDir(ctx.scan, exporter);
+    const dir = scannedPackageDir(ctx.scan, exporter);
     if (dir === null) continue;
     if (ownFence === null) {
       ownFence = new Map();
@@ -255,7 +255,7 @@ function growFromLowering(
       version: packageVersionOf(dir),
       dir,
       class: "gap",
-      reason: `${unboundExportMessage(d.exportOf.name)} (used at ${siteOf(ctx, d.loc)})`,
+      reason: `its export '${d.exportOf.name}' has no native binding form (used at ${siteOf(ctx, d.loc)})`,
       named: true,
     });
   }
@@ -277,16 +277,6 @@ function siteOf(ctx: IslandGrowthContext, loc: SrcLoc): string {
     lineStart = i + 1;
   }
   return `${file}:${line}:${loc.start - lineStart + 1}`;
-}
-
-/** The directory of a package the program compiles, from its scanned
- * modules; null when the scan holds none of its modules. */
-function compiledPackageDir(scan: NodeIslandScan, name: string): string | null {
-  for (const m of scan.modules) {
-    if (m.dropped || m.packageDir === null) continue;
-    if (m.packageName === name) return m.packageDir;
-  }
-  return null;
 }
 
 /** The packages an explicit `--npm-static` list names: the ones the user

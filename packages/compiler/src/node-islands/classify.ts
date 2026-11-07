@@ -85,28 +85,6 @@ export function classifyDiagnostic(
   };
 }
 
-/** What an island reason says about a use of an export that a compiled
- * package's module does not provide as a binding (ScrDiagnostic.exportOf). */
-export function unboundExportMessage(name: string): string {
-  return `its export '${name}' has no native binding form`;
-}
-
-/** The reason such a use gives the exporting package. The refusal is the
- * package's, wherever the use is: a build runs the package in a Node island
- * for it (node-islands/growth.ts), so the report names the same package. */
-export function classifyUnboundExport(d: ScrDiagnostic, name: string): NodeIslandReason {
-  return {
-    class: "gap",
-    rule: null,
-    reason: "gap",
-    code: d.code,
-    message: unboundExportMessage(name),
-    loc: d.loc,
-    source: "refusal",
-    exported: true,
-  };
-}
-
 export function classifyMarker(m: NodeIslandMarker): NodeIslandReason {
   return {
     class: classOfRule(m.rule),

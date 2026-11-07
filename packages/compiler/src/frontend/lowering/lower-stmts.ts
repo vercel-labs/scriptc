@@ -1152,16 +1152,37 @@ const TDZ_KINDS = new Set<IrType["kind"]>([
  * test the box and throw Node's exact catchable ReferenceError while it
  * is empty. Mutable bindings also guard writes; only the declaration's
  * initializing assignment may leave the temporal dead zone. */
-export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): boolean {
-  const decl = symbol.valueDeclaration;
+export function predeclareForwardCapture(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+  reference: ts.Node,
+): boolean {
+  const binding = symbol.valueDeclaration;
   if (
-    !decl ||
-    !ts.isVariableDeclaration(decl) ||
-    decl.name === undefined ||
-    !ts.isIdentifier(decl.name)
+    !binding ||
+    !(ts.isVariableDeclaration(binding) || ts.isBindingElement(binding)) ||
+    binding.name === undefined ||
+    !ts.isIdentifier(binding.name)
   )
     return false;
-  if (!decl.initializer) return false;
+  // A name a destructuring declaration binds, read by a closure in that
+  // declaration's own initializer (`const { pipe } = render({ onReady() {
+  // pipe(out); } })`), takes the box of its host declaration's statement;
+  // bindPatternTarget initializes it. Other forward reads of such names keep
+  // their own resolution (builtin aliases such as `const { EOL } = os` bind
+  // no storage).
+  const nameNode = binding.name;
+  const decl = ts.isVariableDeclaration(binding) ? binding : hostVariableDeclarationOf(nameNode);
+  if (!decl || !decl.initializer) return false;
+  if (
+    decl !== binding &&
+    !(
+      ts.getSourceFileOfNode(reference) === ts.getSourceFileOfNode(decl) &&
+      reference.pos >= decl.initializer.pos &&
+      reference.end <= decl.initializer.end
+    )
+  )
+    return false;
   const flags = ts.getCombinedNodeFlags(decl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
   // `const E = EventEmitter` has no storage to box: uses resolve at
@@ -1188,8 +1209,9 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // TDZ read until the initializing assign completes — JS exactly.
     if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
       return false;
-    let type = lowerer.irTypeOf(decl.name);
+    let type = lowerer.irTypeOf(nameNode);
     if (
+      decl === binding &&
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
@@ -1204,9 +1226,9 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // An island handle binding holds a checked-dynamic value whatever its
     // declared type says: its own declaration lowers as one, and so must
     // the slot a closure captured first.
-    if (islandHandleBinding(lowerer, decl.name)) type = DYN;
+    if (islandHandleBinding(lowerer, nameNode)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
-    const name = decl.name.text;
+    const name = nameNode.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
     entry.ctx.localCounters.set(name, count + 1);
     const local: IrLocal = {
@@ -6101,6 +6123,20 @@ export function bindPatternTarget(
   const loc = value.loc;
   if (ts.isIdentifier(name)) {
     const symbol = lowerer.checker.getSymbolAtLocation(name);
+    // A closure in the declaration's own initializer captured the name: its
+    // TDZ box exists (predeclareForwardCapture), and this initializes it.
+    const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
+    if (pre) {
+      lowerer.ctx.tdzPredeclared.delete(symbol!);
+      out.push({
+        kind: "assign",
+        localId: pre.id,
+        value: lowerer.coerceInto(name, value, pre.type),
+        initializes: true,
+        loc,
+      });
+      return;
+    }
     const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
     if (g) {
       if (value.type.kind === "dyn" && jsBindingKeepsCheckedObject(lowerer, name, g.type))
@@ -8050,6 +8086,8 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   // writes that coerce into the declared type keep it.
   // A write whose checker type is the declaration's own maps to the same
   // representation; the declared type is mapped only for the others.
+  // A union declaration (`var match = re.exec(text)`, later `match =
+  // "&lt;"`) counts a write that fits none of its arms.
   const declaredType = lowerer.typeOf(decl.name);
   const differing = candidates.filter(
     (node) =>
@@ -8058,7 +8096,9 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   );
   if (differing.length === 0) return false;
   const declared = lowerer.mapTypeOf(declaredType);
-  if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
+  if (declared === null || declared.kind === "dyn" || !lowerer.dynConvertible(declared))
+    return false;
+  const arms = declared.kind === "union" ? lowerer.unions.get(declared.unionId)!.arms : [declared];
   return differing.some((node) => {
     const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
     // A union a primitive binding cannot hold (`x = c ? 1 : "a"` into
@@ -8074,9 +8114,10 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
       written.kind !== "union" &&
       !isUnitType(written) &&
       lowerer.dynConvertible(written) &&
-      lowerer.dynConvertible(declared) &&
-      !typeEquals(written, declared) &&
-      (written.kind !== declared.kind || written.kind === "bytes")
+      arms.every(
+        (arm) =>
+          !typeEquals(written, arm) && (written.kind !== arm.kind || written.kind === "bytes"),
+      )
     );
   });
 }

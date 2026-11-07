@@ -3623,7 +3623,20 @@ export class Lowerer {
     action: "read" | "set" = "read",
   ): IrExpr | null {
     const source = this.runtimeOptionalSourceValue(node, value);
-    if (source?.type.kind !== "union") return null;
+    return source ? this.nullableArmReceiver(node, source, expected, member, action) : null;
+  }
+
+  /** A member receiver whose union holds `expected` beside null/undefined:
+   * evaluates it once, throws Node's member-read TypeError for a unit arm,
+   * and extracts `expected` otherwise. */
+  nullableArmReceiver(
+    node: ts.Expression,
+    source: IrExpr,
+    expected: IrType,
+    member: string,
+    action: "read" | "set" = "read",
+  ): IrExpr | null {
+    if (source.type.kind !== "union") return null;
     const def = this.unions.get(source.type.unionId);
     const valueTag = this.armTag(source.type.unionId, expected);
     if (
@@ -17829,7 +17842,7 @@ export class Lowerer {
     // () => onSigInt; ...; const onSigInt = ...`). Pre-declare the const as
     // a TDZ box at its scope's entry and resolve again (the recursion finds
     // it in the origin frame and threads captures normally).
-    if (blame && predeclareForwardCapture(this, symbol)) {
+    if (blame && predeclareForwardCapture(this, symbol, blame)) {
       return this.resolveKey(symbol, blame);
     }
     // The FUNCTION-DECLARATION twin: JS hoists a nested `function f() {}`

@@ -183,7 +183,22 @@ enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 
 typedef struct ScrFiber ScrFiber;
 
-typedef struct { size_t rc; } ScrPromiseIdentity;
+/* The identity every box and adapted twin of one JS promise shares, and
+ * the promise's own properties (`p.status = "pending"`): a checked-dynamic
+ * object the dyn unit creates on the first write and releases through
+ * `release_properties`. The table is not traced: the collector counts it
+ * as an outside reference, as it does the box-to-promise edge. */
+typedef struct {
+  size_t rc;
+  void *properties;
+  void (*release_properties)(void *);
+} ScrPromiseIdentity;
+
+static void scr_promise_identity_release(ScrPromiseIdentity *identity) {
+  if (--identity->rc != 0) return;
+  if (identity->properties) identity->release_properties(identity->properties);
+  free(identity);
+}
 
 struct ScrPromise {
   size_t rc; /* The cycle collector reads the reference count at offset zero. */
@@ -284,7 +299,7 @@ static void scr_oom(void) {
 }
 
 static void scr_promise_free_side(ScrPromise *p) {
-  if (p->identity && --p->identity->rc == 0) free(p->identity);
+  if (p->identity) scr_promise_identity_release(p->identity);
   /* Most promises never park a fiber or a second waiter: skip the calls. */
   if (p->waiters && p->waiters != &p->waiter_inline) free(p->waiters);
 }
@@ -383,43 +398,44 @@ ScrPromise *scr_promise_new(void) {
   return p;
 }
 
-void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
-  if (dst == src) return;
-  if (!src->identity) {
-    src->identity = malloc(sizeof *src->identity);
-    if (!src->identity) scr_oom();
-    src->identity->rc = 1;
-  }
-  if (dst->identity == src->identity) return;
-  if (dst->identity && --dst->identity->rc == 0) free(dst->identity);
-  dst->identity = src->identity;
-  dst->identity->rc++;
-}
-
-/* A Set's or Map's key identity of a promise (ScrMapIdentityOps): the
- * identity cell its adapter boxes share, created on the first call so a
- * stored key's hash does not change when a box of it appears later. */
-void *scr_promise_map_identity(void *promise) {
-  ScrPromise *p = promise;
+static ScrPromiseIdentity *scr_promise_identity(ScrPromise *p) {
   if (!p->identity) {
-    p->identity = malloc(sizeof *p->identity);
+    p->identity = calloc(1, sizeof *p->identity);
     if (!p->identity) scr_oom();
     p->identity->rc = 1;
   }
   return p->identity;
 }
 
+void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
+  if (dst == src) return;
+  ScrPromiseIdentity *identity = scr_promise_identity(src);
+  if (dst->identity == identity) return;
+  if (dst->identity) scr_promise_identity_release(dst->identity);
+  dst->identity = identity;
+  identity->rc++;
+}
+
+/* A Set's or Map's key identity of a promise (ScrMapIdentityOps): the
+ * identity cell its adapter boxes share, created on the first call so a
+ * stored key's hash does not change when a box of it appears later. */
+void *scr_promise_map_identity(void *promise) { return scr_promise_identity(promise); }
+
+void **scr_promise_properties_slot(ScrPromise *p, bool create, void (*release)(void *)) {
+  if (!p->identity && !create) return NULL;
+  ScrPromiseIdentity *identity = scr_promise_identity(p);
+  identity->release_properties = release;
+  return &identity->properties;
+}
+
 #ifdef SCR_NODE_ISLANDS
 /* Node islands (NI-5) key their export table by a promise's identity
  * (scr_node_island_export.c); other programs link none of this. */
-const void *scr_promise_identity_key(ScrPromise *p) { return scr_promise_map_identity(p); }
+const void *scr_promise_identity_key(ScrPromise *p) { return scr_promise_identity(p); }
 
 void scr_promise_identity_hold(const void *key) { ((ScrPromiseIdentity *)key)->rc++; }
 
-void scr_promise_identity_drop(const void *key) {
-  ScrPromiseIdentity *identity = (ScrPromiseIdentity *)key;
-  if (--identity->rc == 0) free(identity);
-}
+void scr_promise_identity_drop(const void *key) { scr_promise_identity_release((ScrPromiseIdentity *)key); }
 #endif
 
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {

@@ -795,6 +795,9 @@ ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method) {
     return scr_dyn_obj_read(recv, method, strlen(method));
   if (recv->kind == SCR_DYN_ARR && (recv->v.arr.properties || recv->prototype))
     return scr_dyn_arr_custom_member(recv, method, strlen(method));
+  /* A promise's own property shadows Promise.prototype, read first as
+   * JavaScript reads the callee. */
+  if (recv->kind == SCR_DYN_PROMISE) return scr_dyn_promise_named_get(recv, method, strlen(method));
   if (recv->kind == SCR_DYN_PROXY) {
     ScrStr *key = scr_str_new(method, strlen(method));
     ScrDyn *result = scr_dyn_proxy_get(recv, key);
@@ -1924,11 +1927,26 @@ static ScrDyn *scr_dyn_invoke_impl(
     return NULL;
   }
 
-  /* PROMISE receivers: the then/catch/finally reactions ride the fiber
-   * machinery (scr_dyn_promise_then — microtask-exact ordering); every
-   * other Promise.prototype name is `then`-adjacent sugar JS doesn't
-   * have, so the not-a-function answer IS the JS answer. */
+  /* PROMISE receivers: an own property shadows Promise.prototype (the
+   * protocol names cannot be own properties); the then/catch/finally
+   * reactions ride the fiber machinery (scr_dyn_promise_then —
+   * microtask-exact ordering); every other Promise.prototype name is
+   * `then`-adjacent sugar JS doesn't have, so the not-a-function answer IS
+   * the JS answer. */
   if (recv->kind == SCR_DYN_PROMISE) {
+    ScrDyn *member = scr_dyn_promise_named_get(recv, method, strlen(method));
+    if (!member && scr_exc_pending()) return NULL;
+    if (member) {
+      ScrDyn *result = NULL;
+      if (!scr_dyn_is_callable(member)) dyn_throw_not_fn(what);
+      else {
+        scr_dyn_this_push_dyn(recv);
+        result = scr_dyn_call(member, args, argc, what);
+        scr_dyn_this_pop();
+      }
+      scr_dyn_release(member);
+      return result;
+    }
 #ifdef SCR_LIB
     scr_trap("scriptc: promise dispatch is unavailable in library mode\n");
 #else

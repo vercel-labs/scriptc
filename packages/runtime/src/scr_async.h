@@ -31,6 +31,10 @@ const void *scr_promise_identity_key(ScrPromise *p);
  * keeps the key after the promises that share it are gone. */
 void scr_promise_identity_hold(const void *key);
 void scr_promise_identity_drop(const void *key);
+/* The slot of the own-property table the promise's identity shares (NULL
+ * when the promise has no identity and `create` is false). The table is
+ * released through `release` with the identity's last promise. */
+void **scr_promise_properties_slot(ScrPromise *p, bool create, void (*release)(void *));
 ScrPromise *scr_promise_retain(ScrPromise *p);
 void scr_promise_release(ScrPromise *p);
 void *scr_promise_retain_v(void *p);

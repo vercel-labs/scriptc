@@ -258,6 +258,9 @@ void scr_error_install_message_reader(ScrStr *(*reader)(ScrError *));
 void scr_error_install_name_reader(ScrStr *(*reader)(ScrError *));
 ScrStr *scr_error_default_name(const ScrError *e);
 ScrStr *scr_error_stack(ScrError *e);
+/* Writes the frames the error captured at creation to stderr, each line
+ * led by its newline; nothing when it captured none. Borrows e. */
+void scr_error_report_frames(const ScrError *e);
 /* Replaces the error's stack string, as an assignment to `stack` does.
  * Borrowed operands. */
 void scr_error_set_stack(ScrError *e, ScrStr *stack);

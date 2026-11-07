@@ -297,8 +297,10 @@ const islandHelpers = {
     return generatorPrototypes[isAsync ? 1 : 0];
   },
   isInstance(value, name) {
-    const C = INTRINSIC_CLASSES[name];
-    return C !== undefined && value instanceof C;
+    // The error classes by their intrinsics; any other standard class by
+    // the global of that name (Array, Map, Date, …).
+    const C = INTRINSIC_CLASSES[name] ?? globalThis[name];
+    return typeof C === "function" && value instanceof C;
   },
   subclass(Base, name, ctor, fields, methods, getters, setters) {
     const C = {
@@ -454,6 +456,8 @@ let sharedModules = null;
 function load(path, esm) {
   if (path === "scriptc:toPrimitive") return toPrimitive;
   if (path === "scriptc:spread") return (value) => [...value];
+  if (path === "scriptc:clone") return (value) => structuredClone(value);
+  if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
   // The island value's own iterator (`for…of`, `for await` over a value the
   // runtime holds as a handle): V8 opens it, and the runtime steps it one
   // value at a time. Mode 2 is the async protocol: [Symbol.asyncIterator](),

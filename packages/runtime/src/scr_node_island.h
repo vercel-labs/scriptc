@@ -159,6 +159,9 @@ typedef struct ScrNiDynOps {
    * `e.constructor === TypeError` holds with the island's TypeError. 1 for
    * an island error, 0 for any other. */
   int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+  /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
+   * the exception pending). */
+  ScrStr *(*object_tag)(const ScrDyn *value);
   /* `value[Symbol.iterator]` (async 0) or `value[Symbol.asyncIterator]`
    * (async 1) of an island value, read by V8: +1, the island function or
    * undefined or null for a value that has none; NULL with the error

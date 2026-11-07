@@ -207,6 +207,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
   // scr_json.c keeps its layout for every program that never reflects.
   ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // `delete` of a key a record's type does not declare, removed from the
+  // record's kept source; a unit of its own so scr_json.c keeps its layout
+  // for every other program.
+  ["scr_record_source_delete.c", "recordSourceDelete"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],

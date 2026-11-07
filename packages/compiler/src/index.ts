@@ -889,6 +889,7 @@ async function compileExecutableNative(
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
     ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
+    ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),

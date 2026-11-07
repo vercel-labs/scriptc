@@ -407,6 +407,34 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     tracked: "FOLLOWUPS 2026-10-30",
     lowererFields: [],
   },
+  {
+    name: "generic-call-array-holes",
+    file: `${SRC}/frontend/lowering/runtime-optional-elements.ts`,
+    symbol: "scanGenericCall",
+    source: "types",
+    scope: "type",
+    setBy:
+      "an array that can hold holes, reachable by a call of a generic function that builds arrays from generic ones",
+    gates:
+      "arrays of every element type that call can reach, and of its result, read as possibly holding a hole or undefined",
+    narrower: "the element type of the callee's instance, where the instance builds the array",
+    tracked: "FOLLOWUPS 2026-11-07 (holed-array-generics)",
+    lowererFields: [],
+  },
+  {
+    name: "generic-built-array-elements",
+    file: `${SRC}/frontend/lowering/runtime-optional-elements.ts`,
+    symbol: "elementsPresent",
+    source: "types",
+    scope: "program",
+    setBy: "one array that can hold a hole or undefined, anywhere in the program",
+    gates:
+      "callbacks and index reads over an array with a concrete element type that generic code built from a generic array take the element or undefined",
+    narrower:
+      "the element type each instance gives the generic array, asked when the instance lowers, as the for-of decision is",
+    tracked: "FOLLOWUPS 2026-11-07 (holed-array-generics)",
+    lowererFields: [],
+  },
 ];
 
 /** Why a whole-program scan decides no registered fact.

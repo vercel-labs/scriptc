@@ -247,12 +247,13 @@ export class ArrayElementStates {
   /** One of `sources` (generic arrays, see loopSources) can hold a hole or
    * undefined under the element key it has where this is asked: inside an
    * instance, whose type-parameter bindings the host's queries resolve. A
-   * source that still has no key is judged as holding either. */
+   * source that has no key there either (its element type has no mapping
+   * for another reason) is judged as the loop was, by the facts every
+   * array shares. */
   sourcesMayHoldMissing(sources: readonly ts.Expression[]): boolean {
     for (const source of sources) {
       const keys = this.host.arrayKeys(source);
-      if (keys === null) return true;
-      if (keys.length === 0) continue;
+      if (keys === null || keys.length === 0) continue;
       const contents = this.stored(keys);
       if (contents === null || contents.undefined || contents.holes) return true;
     }

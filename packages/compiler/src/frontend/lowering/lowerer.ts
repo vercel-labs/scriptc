@@ -9214,7 +9214,9 @@ export class Lowerer {
     // A generic callee: a function, method or constructor whose declaration,
     // or a declaration around it (a function, a class, an interface, a type
     // alias), has type parameters. Such a body is judged without its
-    // instances' element keys. The slots say which declared parameter types,
+    // instances' element keys. A function held in a parameter, a variable or
+    // a field is not one: its body is judged where it is written. The slots
+    // say which declared parameter types,
     // and whether the declared result, give the body a generic view of a
     // record's or a class instance's fields (`box: { items: T[] }`, `Box<T>`,
     // `v: B` with `B extends Box<T>`); a bare `v: T` is opaque to it. A
@@ -9250,6 +9252,12 @@ export class Lowerer {
           ts.isVariableDeclaration(declaration) && declaration.initializer
             ? peel(declaration.initializer)
             : declaration;
+        if (
+          !ts.isFunctionLike(value) &&
+          !ts.isClassDeclaration(value) &&
+          !ts.isClassExpression(value)
+        )
+          continue;
         const declared = new Map<string, ts.TypeParameterDeclaration>();
         let receiver = false;
         for (let node: ts.Node | undefined = value; node; node = node.parent) {
@@ -9315,16 +9323,20 @@ export class Lowerer {
     // parameters and result of a function value. The fields of a record or
     // a class instance are entered `fields` levels deep: a generic body
     // reads them by their declared types, which are generic only where the
-    // callee's own declaration says so.
+    // callee's own declaration says so. A function held in a field is not
+    // entered: it is called with what its own body builds.
     const reachableElementKeys = (
       type: IrType | null,
       keys: Set<string>,
       fields: number,
       depth = 0,
+      field = false,
     ): void => {
       if (!type || depth > 4) return;
-      const enter = (inner: IrType | null, levels = fields): void =>
-        reachableElementKeys(inner, keys, levels, depth + 1);
+      const enter = (inner: IrType | null): void =>
+        reachableElementKeys(inner, keys, fields, depth + 1, field);
+      const enterField = (inner: IrType | null): void =>
+        reachableElementKeys(inner, keys, fields - 1, depth + 1, true);
       if (type.kind === "array") {
         if (type.elem.kind !== "dyn") keys.add(typeKey(type.elem));
         enter(type.elem);
@@ -9337,15 +9349,17 @@ export class Lowerer {
         enter(type.value);
       } else if (type.kind === "record") {
         const shape = this.shapes.get(type.shapeId);
-        if (shape?.tuple === true) for (const field of shape.fields) enter(field.type);
-        else if (fields > 0) for (const field of shape?.fields ?? []) enter(field.type, fields - 1);
+        if (shape?.tuple === true) for (const item of shape.fields) enter(item.type);
+        else if (fields > 0) for (const item of shape?.fields ?? []) enterField(item.type);
       } else if (type.kind === "object") {
         if (fields > 0)
-          for (const field of this.classes.get(type.className)?.fields.values() ?? [])
-            enter(field, fields - 1);
-      } else if (type.kind === "func") {
-        for (const param of type.params) enter(param);
-        enter(type.ret);
+          for (const item of this.classes.get(type.className)?.fields.values() ?? [])
+            enterField(item);
+      } else if (type.kind === "func" && !field) {
+        // The arrays a callback takes and returns, not the fields of its
+        // other parameters.
+        for (const param of type.params) reachableElementKeys(param, keys, 0, depth + 1);
+        reachableElementKeys(type.ret, keys, 0, depth + 1);
       }
     };
     const ownership = new ArrayOwnership(sourceFiles, {

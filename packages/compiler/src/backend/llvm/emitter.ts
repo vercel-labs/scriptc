@@ -369,6 +369,7 @@ import {
   emitProcessLibCall,
   emitErrorsEventsLibCall,
 } from "./lib-process.js";
+import { FramePositions, memberFrameName } from "./frame-positions.js";
 import { emitStreamLibCall } from "./lib-stream.js";
 import { emitNetworkHttpLibCall } from "./lib-network.js";
 import {
@@ -2274,6 +2275,15 @@ export class LlEmitter {
   readonly chainSlots = new Map<string, LlValue>();
   logArgSlots = 0;
   readonly stackTraces: boolean;
+  /** Source frames carry the position of the running statement. */
+  readonly positionedFrames: boolean;
+  /** The executable prints its frame chain when it aborts. */
+  readonly abortFrames: boolean;
+  /** The positions of the frame of the function being emitted, when it has
+   * a positioned frame. */
+  framePositions: FramePositions | null = null;
+  private frameAnchorsValue: ReadonlySet<string> | null = null;
+  private memberFrameNamesValue: ReadonlyMap<string, string> | null = null;
   /** The options this emitter was built with (chunk emitters reuse them). */
   readonly targetOptions: LlvmTargetOptions;
   /** Records the module-level effects of emitting a range of functions,
@@ -2310,7 +2320,11 @@ export class LlEmitter {
     // process computes it (startInt32Slots).
     if (int32Analysis !== null) this.int32SlotsValue = int32Analysis.slots;
     else this.startInt32Slots(dynamicStores);
-    this.stackTraces = observesStacks(mod, this.nodeIndex);
+    // A build that carries debug sources keeps a positioned frame in every
+    // function (frame-positions.ts), whether or not the program reads a
+    // stack: its uncaught-error report names the failing statement.
+    this.positionedFrames = options.debugSources !== undefined;
+    this.stackTraces = this.positionedFrames || observesStacks(mod, this.nodeIndex);
     this.nullableUnions = new NullableUnions(
       mod,
       options.debugSources === undefined,
@@ -2428,6 +2442,16 @@ export class LlEmitter {
     // and per async fiber; WASI, Windows and library builds have none.
     const triple = (options.targetTriple ?? "").toLowerCase();
     const windows = triple === "" ? process.platform === "win32" : triple.includes("windows");
+    // An executable with positioned frames also reports them when it aborts
+    // (frame-positions.ts). POSIX executables on 64-bit targets: Windows
+    // spells write() and SIGABRT differently, and libraries leave signal
+    // handling to their host.
+    this.abortFrames =
+      this.positionedFrames &&
+      mod.lib === undefined &&
+      !this.wasi &&
+      !windows &&
+      this.sizeType === "i64";
     const construction = computeConstructionFacts(mod, this.nodeIndex);
     this.freshFieldStores = construction.freshStores;
     this.publishedTypes = computePublishedTypes(mod, this.nodeIndex, construction);
@@ -2460,8 +2484,17 @@ export class LlEmitter {
     // runtime moves deep prefix nests to a fresh stack using the guard,
     // which Windows lacks.
     this.stacklessAsyncAllowed = this.stacklessGenerators && mod.lib === undefined && !windows;
+    // With positioned frames a recursive function that can create no Error
+    // gives its frame up too. The one error it can raise is the stack
+    // guard's, and a frame is 16 bytes of every call: an unoptimized build
+    // would run out of stack that much earlier, to list the function that
+    // overflowed above the statement that called it.
     this.unframedFunctions = this.stackTraces
-      ? captureFreeFunctions(mod, this.stackChecks, this.publishedTypes)
+      ? captureFreeFunctions(
+          mod,
+          this.positionedFrames ? null : this.stackChecks,
+          this.publishedTypes,
+        )
       : new Set();
     // One field-mutability answer serves immutable fields and traced shapes.
     const cycleMutability = computeCycleMutability(mod, hierarchyUnitOfClass(mod), dynamicStores);
@@ -3382,6 +3415,71 @@ export class LlEmitter {
       fnDefs[index] = coroText;
       this.fnDefText.set(fn.name, coroText);
     });
+  }
+
+  /** The functions `Error.captureStackTrace(target, fn)` names. The runtime
+   * finds such a function's frame by its text, so these keep the one
+   * constant line of a frame without positions. */
+  private get frameAnchors(): ReadonlySet<string> {
+    if (this.frameAnchorsValue !== null) return this.frameAnchorsValue;
+    const anchors = new Set<string>();
+    const scan = this.nodeIndex.scan(LIB_CALL_KINDS);
+    for (const fn of this.mod.functions) {
+      eachNodeOfKinds(fn, scan, (node) => {
+        if (node.kind !== "libCall" || node.fn !== "error.captureStackTrace") return;
+        const named = node.args[1];
+        if (named?.kind === "strLit" && named.value !== "") anchors.add(named.value);
+      });
+    }
+    return (this.frameAnchorsValue = anchors);
+  }
+
+  /** The frame names of class constructors, methods and accessors, by
+   * function name (`%<class>.<member>`). The frontend gives most of them no
+   * source name, so only positioned frames show them. */
+  private get memberFrameNames(): ReadonlyMap<string, string> {
+    if (this.memberFrameNamesValue !== null) return this.memberFrameNamesValue;
+    const names = new Map<string, string>();
+    const classes = new Map((this.mod.classes ?? []).map((cls) => [cls.name, cls]));
+    for (const fn of this.mod.functions) {
+      if (!fn.name.startsWith("%")) continue;
+      // The longest class name wins: class names hold dots themselves.
+      for (let dot = fn.name.lastIndexOf("."); dot > 0; dot = fn.name.lastIndexOf(".", dot - 1)) {
+        const cls = classes.get(fn.name.slice(1, dot));
+        if (cls === undefined) continue;
+        names.set(fn.name, memberFrameName(classJsName(cls), fn.name.slice(dot + 1)));
+        break;
+      }
+    }
+    return (this.memberFrameNamesValue = names);
+  }
+
+  /** The positions `fn`'s frame takes, or null when its frame (if it has
+   * one) holds one constant line: builds without debug sources, and the
+   * functions `Error.captureStackTrace` names. Positioned frames also
+   * cover what has no source name: class members, and a module's top-level
+   * code (its `%init.<n>`), which prints no function name. Generated
+   * helpers stay without a frame, so their statements leave the position
+   * of the statement that was lowered through them. */
+  framePositionsOf(fn: IrFunction): FramePositions | null {
+    const debug = this.debug;
+    if (!this.positionedFrames || debug === null) return null;
+    if (this.frameAnchors.has(fn.name)) return null;
+    const name = this.memberFrameNames.get(fn.name) ?? fn.sourceName;
+    if (name === undefined && !fn.name.startsWith("%init.")) return null;
+    return new FramePositions(
+      name,
+      (loc) => debug.position(loc),
+      (text) => {
+        // The slot's address is computed at each store: unoptimized code
+        // folds it into the store, and would keep a shared one on the stack.
+        const slot = this.B.tmp();
+        this.B.line(
+          `${slot} = getelementptr inbounds { ptr, ptr }, ptr %source_frame, i32 0, i32 1`,
+        );
+        this.B.line(`store ptr ${this.cstr(text)}, ptr ${slot}`);
+      },
+    );
   }
 
   /** Whether a fiberless body running on its caller's stack needs the
@@ -7304,6 +7402,8 @@ export class LlEmitter {
     }
     const previous = this.B.debugLocation;
     this.B.debugLocation = this.debug?.location(s.loc, this.debugScope) ?? null;
+    const positions = this.framePositions;
+    const outerPosition = positions === null ? null : positions.enter(s);
     const loop =
       s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf";
     const builder = this.B;
@@ -7317,6 +7417,7 @@ export class LlEmitter {
     try {
       this.emitStmtBody(s);
     } finally {
+      positions?.leave(outerPosition, !this.B.isTerminated());
       this.B.debugLocation = previous;
       this.int32KindResume = kindResume;
       if (loop) {

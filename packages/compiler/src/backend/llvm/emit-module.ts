@@ -36,6 +36,11 @@ import {
   typedRefConstructor,
   vAdapters,
 } from "./shapes.js";
+import {
+  ABORT_FRAMES_DECLARATIONS,
+  ABORT_FRAMES_INSTALL,
+  abortFramesDefinition,
+} from "./frame-positions.js";
 import { emitLlvmLayouts } from "./layouts.js";
 import { emitArraySearchHelpers } from "./array-search.js";
 import { emitClassMembershipHelper } from "./classes.js";
@@ -979,6 +984,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       ? [`@scr_stdout_buffering = constant i8 1`]
       : []),
   );
+  if (emitter.abortFrames) for (const d of ABORT_FRAMES_DECLARATIONS) emitter.declare(d);
   for (const d of emitter.decls) out.push(d);
   out.push(``);
   const flushedDecls = new Set(emitter.decls);
@@ -1297,6 +1303,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
   }
+  if (emitter.abortFrames) out.push(...abortFramesDefinition(FN_ATTRS));
   out.push(
     `define i32 @${emitter.mod.workers ? "sc_context_entry" : emitter.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
     `entry:`,
@@ -1305,6 +1312,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(lanePlansEnabled(emitter) ? [LANE_INIT_CALL] : []),
     ...(emitter.mod.workers ? [`  call void @scr_runtime_workers_v8()`] : []),
     `  call void @scr_init()`,
+    ...(emitter.abortFrames ? [ABORT_FRAMES_INSTALL] : []),
     // Compressed fields hold addresses in the program-lifetime region, which
     // is reserved below 32 GiB before compiled code runs.
     ...(emitter.compactRegion ? [`  call void @scr_plr_init()`] : []),

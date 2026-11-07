@@ -1830,7 +1830,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       if (!target || target.contLabel === null)
         throw new InternalCompilerError("llvm emitter bug: continue target not found");
       emitter.emitFinallysForJump(target.finallyDepth, target.frameDepth, target.scopeDepth);
-      if (!B.isTerminated()) B.terminate(`br label %${target.contLabel}`);
+      if (!B.isTerminated()) {
+        emitter.framePositions?.continueLoop(s.label);
+        B.terminate(`br label %${target.contLabel}`);
+      }
       break;
     }
     case "return": {

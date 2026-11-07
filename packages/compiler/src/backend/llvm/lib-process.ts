@@ -16,6 +16,7 @@ import { mockTimerSym } from "./lib-shared.js";
 import { FN_ATTRS } from "./shapes.js";
 import { registerReplay } from "./emit-journal.js";
 import { typedRefRecipe } from "./expr-calls.js";
+import { frameText } from "./frame-positions.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -858,7 +859,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
         fn.sourceName !== undefined &&
         !host.unframedFunctions.has(fn.name)
       )
-        through = host.cstr(`    at ${fn.sourceName} (${fn.loc.file})`);
+        through = host.cstr(frameText(fn.sourceName, fn.loc.file));
     }
     host.declare(`declare void @scr_error_capture_stack_trace(ptr, ptr, i1)`);
     B.line(

@@ -100,6 +100,23 @@ test("Node islands select the invoke build that reaches an island promise's own 
   ]);
 });
 
+test("a process stream held as a value selects the island build that shares its write", () => {
+  // The unit that joins the island's process.stdout.write to the program's
+  // links only with both features.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_node_island_stdio.c",
+  );
+  expect(unit.predicate).toEqual({ all: ["nodeIsland", "stdioObject"] });
+  expect(selected("scr_node_island.c", { stdioObject: true, workers: false }).defines).toEqual([
+    "SCR_NODE_ISLAND_STDIO",
+  ]);
+  // Every other program with islands keeps the default object.
+  expect(selected("scr_node_island.c", { stdioObject: false, workers: false })).toMatchObject({
+    id: "default",
+    defines: [],
+  });
+});
+
 test("web streams and Node islands select an async build that defines both", () => {
   const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
   expect(variant.defines).toEqual(

@@ -274,6 +274,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
+  // One process.stdout.write for the program and its islands: a program that
+  // holds a process output stream as a value can replace its write method,
+  // and its islands then read and write the same slot. It is called by the
+  // SCR_NODE_ISLAND_STDIO build of scr_node_island.c.
+  ["scr_node_island_stdio.c", all("nodeIsland", "stdioObject")],
   // A native AbortSignal's twin in an island: programs with islands and
   // native signals (the signal unit or the fetch unit).
   ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
@@ -608,6 +613,18 @@ export function variantsFor(source) {
       ],
     ])
       variants.push({ id, when, defines });
+  }
+  // A program with islands that holds a process output stream as a value:
+  // the bootstrap carries the accessor that joins the island's
+  // process.stdout.write to the program's write slot, and the start of Node
+  // calls scr_node_island_stdio.c to install it. Every other program with
+  // islands keeps the default object, byte for byte.
+  if (source === "scr_node_island.c") {
+    variants.push({
+      id: "stdio",
+      when: { stdioObject: true },
+      defines: ["SCR_NODE_ISLAND_STDIO"],
+    });
   }
   // Error-taking write completion callbacks: the stream unit publishes the
   // error each callback receives; every other program keeps the default

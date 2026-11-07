@@ -354,6 +354,17 @@ void scr_ni_boot_materialize(void *stub); /* evaluates the stub's module (compon
 /* Called at the end of Node's start (scr_node_island.c), set by the boot unit. */
 extern void (*scr_ni_started_hook)(void);
 
+/* ── shared process output streams (scr_node_island_stdio.c) ────────────
+ * Called once Node has started, by the SCR_NODE_ISLAND_STDIO build of
+ * scr_node_island.c: programs that have islands and hold a process output
+ * stream as a value. It makes `write` on the island's process.stdout and
+ * process.stderr an accessor over the program's write slots. */
+void scr_ni_stdio_started(void);
+/* Releases the helper scr_ni_stdio_started took. Called by the same build
+ * at process end after both sides' 'exit' listeners ran, while Node can
+ * still release it. */
+void scr_ni_stdio_stop(void);
+
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
 /* fn called with `this` (a method read before its arguments ran). */

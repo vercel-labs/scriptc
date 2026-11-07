@@ -35,6 +35,8 @@ export class ClassProtocols {
    * their symbol (markReceivedView): with islandViews, the types whose
    * values may be an island's object. */
   private readonly islandSymbols = new Set<ts.Symbol>();
+  /** receivesIslandValues' answers, by type. */
+  private readonly islandReceivers = new Map<ts.Type, boolean>();
   /** islandValue's answers: which expressions read an island handle. */
   private readonly islandValues = new Map<ts.Node, boolean>();
   /** The object types markReceivedView has answered for, so a type that
@@ -276,11 +278,17 @@ export class ClassProtocols {
     if (type.isIntersectionType())
       return ts.constituentTypes(type).some((part) => this.receivesIslandValues(part));
     if ((type.flags & ts.TypeFlags.Object) === 0) return false;
-    if (this.islandViews.has(type)) return true;
-    const mapped = this.mappedViewSource(type);
-    if (mapped !== null) return this.receivesIslandValues(mapped);
+    const known = this.islandReceivers.get(type);
+    if (known !== undefined) return known;
     const symbol = type.getSymbol();
-    return symbol !== undefined && this.islandSymbols.has(symbol);
+    const mapped = this.islandViews.has(type) ? null : this.mappedViewSource(type);
+    const answer =
+      this.islandViews.has(type) ||
+      (mapped !== null
+        ? this.receivesIslandValues(mapped)
+        : symbol !== undefined && this.islandSymbols.has(symbol));
+    this.islandReceivers.set(type, answer);
+    return answer;
   }
 
   /** Marks the types the members of a marked type are declared with: the

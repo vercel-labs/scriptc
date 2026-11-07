@@ -856,7 +856,9 @@ function viewMemberRead(
  * unconverted. Every other read of the member converts to its type at that
  * point (narrowed behind a guard) and throws when the value is not one. */
 function unconvertedViewRead(lowerer: Lowerer, expr: ts.Expression, loc: SrcLoc): IrExpr | null {
-  if (!viewMemberRead(lowerer, expr) || !totalUse(lowerer, expr)) return null;
+  // The position first: it is syntax, and it rules out most member reads
+  // before any type is asked for.
+  if (!totalUse(lowerer, expr) || !viewMemberRead(lowerer, expr)) return null;
   const receiver = lowerer.lowerExpr(expr.expression);
   if (receiver.type.kind !== "dyn") return null;
   return {
@@ -906,9 +908,9 @@ function unconvertedDefault(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   const op = expr.operatorToken.kind;
   if (op !== ts.SyntaxKind.BarBarToken && op !== ts.SyntaxKind.QuestionQuestionToken) return null;
   if (defaultsInProgress.has(expr)) return null;
-  if (!yieldsUnconverted(lowerer, expr.left)) return null;
   // In a total use of its own the result stays unconverted for that use.
   if (totalUse(lowerer, expr)) return null;
+  if (!yieldsUnconverted(lowerer, expr.left)) return null;
   defaultsInProgress.add(expr);
   let value: IrExpr;
   try {

@@ -2134,6 +2134,44 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // os.constants' groups, fs.constants and crypto.constants): bindings of
     // the module read it as a checked-dynamic value (builtinConstantsObject).
     constants: {},
+    // node:sea: a compiled program is not a Node single-executable
+    // application and holds no injected assets, so the module answers what
+    // Node answers outside one. isSea() is false; the asset readers check
+    // their arguments in lib/sea.js's order (getAsset's encoding when given,
+    // then the key) and throw ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION. The
+    // rows are in Node's key order, which the module object reports.
+    sea: {
+      isSea: { fn: "sea.isSea", params: [], result: BOOL, valueParams: [] },
+      getAsset: {
+        fn: "sea.getAsset",
+        params: [STRING, STRING],
+        result: DYN,
+        defaults: [""],
+        valueParams: [
+          { mode: "required", type: STRING, name: "key" },
+          { mode: "optional", type: STRING, defaultValue: "", name: "encoding" },
+        ],
+        valueOrder: [1, 0],
+        valueLength: 2,
+      },
+      getRawAsset: {
+        fn: "sea.getRawAsset",
+        params: [STRING],
+        result: DYN,
+        valueParams: [{ mode: "required", type: STRING, name: "key" }],
+      },
+      getAssetAsBlob: {
+        fn: "sea.getAssetAsBlob",
+        params: [STRING, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "required", type: STRING, name: "key" },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        valueLength: 2,
+      },
+      getAssetKeys: { fn: "sea.getAssetKeys", params: [], result: DYN, valueParams: [] },
+    },
     // node:readline: createInterface's options are entirely special-cased
     // (exactly { input: process.stdin, output?: process.stdout } — see
     // lowerBuiltinModuleCall); the entry carries the canonical shape. The
@@ -2938,7 +2976,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "process.builtinObject",
         "process.builtinUnsupported",
       ],
-      note: "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020",
+      note: "a literal id of a supported module answers its namespace; a computed id serves the path families, os, util/types, node:sea and current-thread worker_threads metadata, answers undefined for an id Node does not have, and throws SC2020 for Node's other modules",
     },
     {
       id: "node-builtin.process.versions",

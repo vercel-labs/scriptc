@@ -19596,7 +19596,9 @@ export class Lowerer {
    * { module, member } shape builtinImportOf gives named imports, so both
    * import forms key the same lowering tables. Null for everything else. */
   builtinMemberOf(access: ts.PropertyAccessExpression): { module: string; member: string } | null {
-    if (access.questionDotToken) return null;
+    // A guarded step keeps its chain lowering, except one the chain lowering
+    // has already found to be a plain access (a namespace is never nullish).
+    if (access.questionDotToken && !this.chainHandled.has(access)) return null;
     // Function-owned builtin members still require import provenance. A
     // user object named realpathSync must retain its ordinary method call.
     if (access.name.text === "native") {

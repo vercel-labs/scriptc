@@ -1,4 +1,10 @@
 {
+  "corpus/5227-url-legacy-dependency": {
+    "island:legacy-links": {
+      "category": "build",
+      "signature": "SC8010"
+    }
+  },
   "corpus/6120-type-only-import-graph": {
     "island:types-only-pkg": {
       "category": "build",

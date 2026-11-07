@@ -3,7 +3,7 @@
 // body runs only when the loop asks for the next value, so the island's own
 // output interleaves with the loop's and a `break`, `throw` or `return` in
 // the body closes the generator (its finally runs) instead of draining it.
-import { boxed, counted, naturals, pairs, throwsLater } from "iter-pkg";
+import { boxed, counted, echo, naturals, pairs, throwsLater } from "iter-pkg";
 
 for (const x of naturals(3)) {
   console.log("got", x);
@@ -52,3 +52,11 @@ for (const w of boxed.values()) {
   if (words.length === 1) break;
 }
 console.log(words.join(","), boxed.count);
+
+// A typed input channel: the value of each next(value) reaches the island
+// generator.
+const echoed = echo();
+console.log(echoed.next(0).value);
+console.log(echoed.next(1).value);
+console.log(echoed.next(2).value);
+console.log(echoed.next(3).done);

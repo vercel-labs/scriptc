@@ -1212,6 +1212,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.classMethodsOf": "scr_node_island_class_methods_of",
   "nodeIsland.instanceofGlobal": "scr_node_island_instanceof_global",
   "nodeIsland.isHandle": "scr_ni_is_handle",
+  "nodeIsland.setGeneratorMembers": "scr_node_island_set_generator_members",
   "nodeIsland.openIterator": "scr_island_open_iterator",
   "nodeIsland.openAsyncIterator": "scr_island_open_async_iterator",
   "nodeIsland.asyncIteratorWasSync": "scr_island_async_iterator_was_sync",

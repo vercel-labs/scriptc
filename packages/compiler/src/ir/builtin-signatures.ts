@@ -259,6 +259,9 @@ function buildLibFnSignatures() {
      * sync source). The compiled adapter generators (iterator-adapters.ts)
      * step the answer through next()/return(), so iteration stays lazy and
      * IteratorClose reaches the island. */
+    /** The getters island code reaches a native generator's next, return
+     * and throw through (generator-dynamic-dispatch.ts). */
+    "nodeIsland.setGeneratorMembers": { argTypes: [DYN, DYN, DYN], result: VOID },
     "nodeIsland.openIterator": { argTypes: [DYN], result: DYN },
     "nodeIsland.openAsyncIterator": { argTypes: [DYN], result: DYN },
     /** Whether the iterator the last island async open returned is a

@@ -4,7 +4,7 @@
 // closes the generator (its finally runs), a rejection surfaces as the loop's
 // error, and a synchronous island iterable goes through the async-from-sync
 // protocol (each value awaited).
-import { naturals, rejects, ticked, ticks } from "iter-pkg";
+import { echoLater, naturals, rejects, ticked, ticks } from "iter-pkg";
 
 let sum = 0;
 for await (const t of ticks(3)) sum += t;
@@ -41,3 +41,10 @@ console.log("take", await take());
 let s2 = 0;
 for await (const v of naturals(4)) s2 += v;
 console.log("sync", s2);
+
+// A typed input channel through the async adapter.
+const echoed = echoLater();
+console.log((await echoed.next(0)).value);
+console.log((await echoed.next(1)).value);
+console.log((await echoed.next(2)).value);
+console.log((await echoed.next(3)).done);

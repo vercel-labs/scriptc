@@ -53,6 +53,9 @@ export class GeneratorDynamicDispatch {
   private readonly properties = new Map<string, { fn: IrFunction; types: Set<string> }>();
   /** Whether %main registers the next/return getters with the runtime. */
   private membersRegistered = false;
+  /** Whether %main registers the next/return/throw getters with the Node
+   * island unit. */
+  private islandMembersRegistered = false;
 
   /** The getter for a generator capsule's `method` (next, return, throw or
    * an iterator helper): a checked function over the capsule's type keys
@@ -213,6 +216,48 @@ export class GeneratorDynamicDispatch {
     // generator's capsule; the runtime drives it through these getters,
     // which %main registers first.
     const firstFn = functions[0];
+    const getterValue = (method: string, loc: IrExpr["loc"]): IrExpr => ({
+      kind: "dynFrom",
+      value: {
+        kind: "closure",
+        fnName: this.ensureProperty(lowerer, method, {
+          kind: "dynKeyGet",
+          value: varRef("value", DYN, loc),
+          key: { kind: "strLit", value: method, type: STRING, loc },
+          type: DYN,
+          loc,
+        }).name,
+        captures: [],
+        type: funcOf([DYN], DYN),
+        loc,
+      },
+      type: DYN,
+      loc,
+    });
+    // A generator that crosses into a Node island is stepped there: island
+    // code reads its next, return and throw, and the island unit answers
+    // them through the same getters (scr_node_island_export.c).
+    if (
+      lowerer.usesNodeIsland &&
+      !this.islandMembersRegistered &&
+      firstFn !== undefined &&
+      this.generators.size > 0
+    ) {
+      const loc = firstFn.loc;
+      lowerer.mainPrelude.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "nodeIsland.setGeneratorMembers",
+          args: [getterValue("next", loc), getterValue("return", loc), getterValue("throw", loc)],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+      this.islandMembersRegistered = true;
+      changed = true;
+    }
     if (
       runtimeSteps &&
       !this.membersRegistered &&
@@ -220,31 +265,12 @@ export class GeneratorDynamicDispatch {
       [...this.generators.values()].some((t) => t.async !== true)
     ) {
       const loc = firstFn.loc;
-      const read = (method: string): KeyGet => ({
-        kind: "dynKeyGet",
-        value: varRef("value", DYN, loc),
-        key: { kind: "strLit", value: method, type: STRING, loc },
-        type: DYN,
-        loc,
-      });
-      const getterValue = (method: string): IrExpr => ({
-        kind: "dynFrom",
-        value: {
-          kind: "closure",
-          fnName: this.ensureProperty(lowerer, method, read(method)).name,
-          captures: [],
-          type: funcOf([DYN], DYN),
-          loc,
-        },
-        type: DYN,
-        loc,
-      });
       lowerer.mainPrelude.push({
         kind: "exprStmt",
         expr: {
           kind: "libCall",
           fn: "dyn.setGeneratorMembers",
-          args: [getterValue("next"), getterValue("return")],
+          args: [getterValue("next", loc), getterValue("return", loc)],
           type: VOID,
           loc,
         },

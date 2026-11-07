@@ -188,6 +188,62 @@ static ScrDyn *ni_collection(const ScrDyn *v, bool *set) {
   return NULL;
 }
 
+/* 1 for a compiled generator, 2 for a compiled async generator, else 0. */
+static int ni_generator_kind(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_TYPED_REF || v->v.typed_ref.type_key == NULL) return 0;
+  const char *key = v->v.typed_ref.type_key;
+  size_t len = v->v.typed_ref.type_key_len;
+  if (len >= 10 && memcmp(key, "generator<", 10) == 0) return 1;
+  if (len >= 16 && memcmp(key, "async-generator<", 16) == 0) return 2;
+  return 0;
+}
+
+/* The program's getters for a generator's next, return and throw
+ * (generator-dynamic-dispatch.ts registers them from %main in a program
+ * with islands that boxes generators): each answers that method of a
+ * generator capsule as a function, which steps the generator it is called
+ * on. Island code that holds a native generator reaches its methods through
+ * them (scr_ni_host_export_get). */
+static ScrDyn *ni_generator_getters[3];
+static const char *const ni_generator_methods[3] = {"next", "return", "throw"};
+
+static void ni_generator_members_cleanup(void) {
+  for (int i = 0; i < 3; i++) {
+    scr_dyn_release(ni_generator_getters[i]);
+    ni_generator_getters[i] = NULL;
+  }
+}
+
+void scr_node_island_set_generator_members(ScrDyn *next, ScrDyn *ret, ScrDyn *thrw) {
+  ScrDyn *getters[3] = {next, ret, thrw};
+  if (ni_generator_getters[0] == NULL) scr_atexit(ni_generator_members_cleanup);
+  for (int i = 0; i < 3; i++) {
+    scr_dyn_release(ni_generator_getters[i]);
+    ni_generator_getters[i] = scr_dyn_retain(getters[i]);
+  }
+}
+
+/* A generator export's member `key`: 0 with the method in *out for next,
+ * return and throw; 1 with the error pending; 2 for every other key, which
+ * the generator's prototype in Node answers (Symbol.iterator, the iterator
+ * helpers) or which it does not have (`then`). */
+static int ni_generator_member(ScrDyn *target, const ScrStr *key, ScrDyn **out) {
+  for (int i = 0; i < 3; i++) {
+    const char *name = ni_generator_methods[i];
+    if (key->len != strlen(name) || memcmp(key->data, name, key->len) != 0) continue;
+    if (ni_generator_getters[i] == NULL) return 2;
+    ScrDyn *args[1] = {target};
+    *out = scr_dyn_call(ni_generator_getters[i], args, 1, name);
+    if (*out == NULL || scr_exc_pending()) {
+      scr_dyn_release(*out);
+      *out = NULL;
+      return 1;
+    }
+    return 0;
+  }
+  return 2;
+}
+
 uint32_t scr_ni_export_flags(const ScrDyn *v) {
   switch (v->kind) {
   case SCR_DYN_FUNC:
@@ -199,6 +255,9 @@ uint32_t scr_ni_export_flags(const ScrDyn *v) {
   case SCR_DYN_HANDLE:
   case SCR_DYN_TYPED_REF: {
     if (v->kind == SCR_DYN_TYPED_REF && ni_is_array(v)) return SCR_NVF_ARRAY;
+    /* A compiled generator: iterable in Node as itself. */
+    int generator = ni_generator_kind(v);
+    if (generator != 0) return generator == 1 ? SCR_NVF_ITERATOR : SCR_NVF_ASYNC_ITERATOR;
     bool set = false;
     ScrDyn *c = ni_collection(v, &set);
     if (c == NULL) return 0;
@@ -566,6 +625,16 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
     }
     return ni_returned(element, out);
   }
+  if (ni_generator_kind(target) != 0) {
+    /* A generator has no properties of its own to reflect: its three
+     * methods, and what its prototype in Node holds. */
+    ScrDyn *method = NULL;
+    int status = pk->kind == SCR_DYN_STR ? ni_generator_member(target, pk->v.str, &method) : 2;
+    scr_dyn_release(pk);
+    scr_dyn_release(k);
+    if (status == 1) return ni_threw(out);
+    return status == 0 ? ni_returned(method, out) : 2;
+  }
   int present = 0;
   if (pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
   if (!present && !scr_exc_pending()) {
@@ -628,6 +697,11 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
       present = len != NULL && len->kind == SCR_DYN_NUM && index < len->v.num;
       scr_dyn_release(len);
     }
+  } else if (pk != NULL && pk->kind == SCR_DYN_STR && ni_generator_kind(target) != 0) {
+    for (int i = 0; i < 3 && !present; i++)
+      present = ni_generator_getters[i] != NULL &&
+                pk->v.str->len == strlen(ni_generator_methods[i]) &&
+                memcmp(pk->v.str->data, ni_generator_methods[i], pk->v.str->len) == 0;
   } else if (pk != NULL && pk->kind == SCR_DYN_STR) {
     present = scr_dyn_in(target, pk->v.str);
   }

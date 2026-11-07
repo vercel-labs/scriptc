@@ -1770,6 +1770,24 @@ Local<Object> CollectionView(Isolate *isolate, Local<Context> context, Local<Val
   return Object::New(isolate);
 }
 
+// A native generator's representative inherits the prototype of Node's own
+// generators (the bootstrap's generatorPrototype): next, return and throw
+// stay the native methods the interceptors answer, and the inherited
+// Symbol.iterator or Symbol.asyncIterator method answers the generator
+// itself, which is what island loops, spread and destructuring ask for.
+void InheritGenerator(Isolate *isolate, Local<Context> context, Local<Object> obj, bool async) {
+  Local<Value> helpers, make, proto;
+  Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+  if (g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) &&
+      helpers->IsObject() &&
+      helpers.As<Object>()->Get(context, Utf8(isolate, "generatorPrototype")).ToLocal(&make) &&
+      make->IsFunction()) {
+    Local<Value> argv[] = {v8::Boolean::New(isolate, async)};
+    if (make.As<Function>()->Call(context, helpers, 1, argv).ToLocal(&proto) && proto->IsObject())
+      obj->SetPrototypeV2(context, proto).FromMaybe(false);
+  }
+}
+
 Local<Object> ArrayProxy(Isolate *isolate, Local<Context> context, Local<Value> data) {
   Local<Object> handler = Object::New(isolate);
   struct Trap {
@@ -1893,6 +1911,8 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     // code (`Object.getPrototypeOf(o) === Object.prototype`, as jose's
     // isObject checks), so it inherits Object.prototype directly.
     obj->SetPrototypeV2(context, v8::Object::New(isolate)->GetPrototypeV2()).FromMaybe(false);
+    if (in->flags & (SCR_NVF_ITERATOR | SCR_NVF_ASYNC_ITERATOR))
+      InheritGenerator(isolate, context, obj, (in->flags & SCR_NVF_ASYNC_ITERATOR) != 0);
   }
   if (!obj->IsProxy()) obj->SetPrivate(context, ExportKey(isolate), data).Check();
   AttachReach(isolate, context, id, obj);

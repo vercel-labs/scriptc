@@ -1486,21 +1486,40 @@ static ScrDyn *nh_op_iter_pack(void *h) {
 }
 
 /* ── lazy iteration over island values (SPEC 1c option A) ───────────────
- * `for…of` over an island value steps V8's own iterator one value at a
- * time, so the island generator's body runs only when the loop asks for the
- * next value: side effects keep their order and an endless generator ends
- * with the loop. The opened iterator lives in the host's WeakMap keyed by
- * the island value, so it goes away with the value instead of pinning
- * island state.
+ * `for…of`, `for await` and destructuring over an island value run the
+ * iterator protocol on the island's own iterator, one step at a time, so the
+ * island generator's body runs only when the loop asks for the next value:
+ * side effects keep their order, an endless generator ends with the loop,
+ * and leaving the loop early calls the island iterator's return().
  *
- * A statically generator-typed island value crosses into the compiled
- * adapter generator (iterator-adapters.ts), which opens the value's own
- * iterator through scr_island_open_iterator, steps it through the ordinary
- * next() protocol and calls its return() when a consumer leaves the loop
- * early. scr_island_open_async_iterator is the `for await` sibling: it opens
- * [Symbol.asyncIterator](), or wraps a sync iterator in V8's
- * async-from-sync protocol. Both entry points live in this gated unit, so a
+ * A checked-dynamic loop reaches the island's protocol method through
+ * nh_iterator_method (scr_json.c's scr_iterator_method asks it for an
+ * island handle) and then holds the island iterator like any other iterator
+ * object. A statically generator-typed island value crosses into the
+ * compiled adapter generator (iterator-adapters.ts), which opens the value's
+ * own iterator through scr_island_open_iterator, steps it through the
+ * ordinary next() protocol and calls its return() when a consumer leaves the
+ * loop early. scr_island_open_async_iterator is the `for await` sibling: it
+ * opens [Symbol.asyncIterator](), or wraps a sync iterator in V8's
+ * async-from-sync protocol. All of it lives in this gated unit, so a
  * program without islands links none of it. */
+
+/* The host's reader of a protocol method: `value[Symbol.iterator]`, or
+ * `value[Symbol.asyncIterator]` for mode 1. */
+static ScrDyn *nh_iter_method_fn = NULL;
+
+static ScrDyn *nh_iterator_method(const ScrDyn *value, int async) {
+  if (nh_iter_method_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:iterMethod", 18);
+    nh_iter_method_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_iter_method_fn == NULL) return NULL;
+  }
+  ScrDyn *args[2] = {(ScrDyn *)value, scr_dyn_new_num((double)async)};
+  ScrDyn *result = scr_ni_call(nh_iter_method_fn, scr_dyn_undefined(), args, 2);
+  scr_dyn_release(args[1]);
+  return result;
+}
 
 /* The host's iterator opener (`value[Symbol.iterator]()` for mode 1;
  * `[Symbol.asyncIterator]()`, or the async-from-sync wrapper over a sync
@@ -1516,24 +1535,6 @@ static ScrDyn *nh_open_iterator(ScrDyn *value, int mode) {
   }
   ScrDyn *args[2] = {value, scr_dyn_new_num((double)mode)};
   ScrDyn *result = scr_ni_call(nh_iter_fn, scr_dyn_undefined(), args, 2);
-  scr_dyn_release(args[1]);
-  return result;
-}
-
-/* The host's stepper: `token` names one opened iteration of the value (the
- * wrapper's index), so each loop opens its own iterator and the host drops a
- * finished one. */
-static ScrDyn *nh_iter_step_fn = NULL;
-
-static ScrDyn *nh_step_iterator(ScrDyn *value, double token) {
-  if (nh_iter_step_fn == NULL) {
-    ScrStr *name = scr_str_new("scriptc:iterStep", 17);
-    nh_iter_step_fn = nh_load(name, 0);
-    scr_str_release(name);
-    if (nh_iter_step_fn == NULL) return NULL;
-  }
-  ScrDyn *args[2] = {value, scr_dyn_new_num(token)};
-  ScrDyn *result = scr_ni_call(nh_iter_step_fn, scr_dyn_undefined(), args, 2);
   scr_dyn_release(args[1]);
   return result;
 }
@@ -1622,34 +1623,6 @@ ScrDyn *scr_island_open_async_iterator(const ScrDyn *value) {
   return iterator;
 }
 
-/* One lazy step of an island iterator (`for…of` over a checked-dynamic
- * island value): V8's own next(), whose {value, done} crosses as a fresh
- * record. The wrapper's index names the iteration, so a later loop over the
- * same value opens a new iterator. `selection` is the collection protocol's
- * (keys, values, entries); an island iterator yields values as its own
- * next() defines them. */
-static ScrDyn *nh_op_iter_step(void *h, double *index, unsigned selection) {
-  (void)selection;
-  static double next_token = 1;
-  if (!(*index >= 1)) *index = next_token++;
-  ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_NODE_ISLAND);
-  ScrDyn *step = nh_step_iterator(box, *index);
-  scr_dyn_release(box);
-  if (step == NULL) return NULL;
-  ScrDyn *done = scr_ni_get_str(step, "done", 4);
-  ScrDyn *value = scr_ni_get_str(step, "value", 5);
-  scr_dyn_release(step);
-  if (done == NULL || value == NULL) {
-    scr_dyn_release(done);
-    scr_dyn_release(value);
-    return NULL;
-  }
-  ScrDyn *result = scr_dyn_new_obj();
-  scr_dyn_obj_set(result, "value", 5, value);
-  scr_dyn_obj_set(result, "done", 4, done);
-  return result;
-}
-
 static const ScrDynHandleOps nh_ops = {
     .cls = "Object",
     .retain = nh_ref_retain_v,
@@ -1659,7 +1632,6 @@ static const ScrDynHandleOps nh_ops = {
     .set = nh_op_set,
     .symbol_get = nh_op_symbol_get,
     .iter_pack = nh_op_iter_pack,
-    .iter_step = nh_op_iter_step,
 };
 
 /* At exit: what the unit itself still holds (pins, unsettled waiters,
@@ -1687,9 +1659,9 @@ static void nh_cleanup(void) {
     scr_dyn_release(nh_iter_fn);
     nh_iter_fn = NULL;
   }
-  if (nh_iter_step_fn != NULL) {
-    scr_dyn_release(nh_iter_step_fn);
-    nh_iter_step_fn = NULL;
+  if (nh_iter_method_fn != NULL) {
+    scr_dyn_release(nh_iter_method_fn);
+    nh_iter_method_fn = NULL;
   }
   while (nh_npins > 0) {
     NhPin pin = nh_pins[--nh_npins];
@@ -1874,6 +1846,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .to_primitive = scr_ni_to_primitive,
     .is_function = scr_ni_is_function,
     .error_constructor = nh_error_constructor,
+    .iterator_method = nh_iterator_method,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

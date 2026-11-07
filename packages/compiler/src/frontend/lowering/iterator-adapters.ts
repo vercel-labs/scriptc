@@ -2,6 +2,7 @@ import { appendElement, optionalElementValue, primitiveElement } from "./array-v
 import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import {
+  canConvertToDyn,
   BOOL,
   DYN,
   F64,
@@ -252,6 +253,23 @@ function resumeType(nextT: IrType): IrType {
   return nextT.kind === "undefinedT" ? VOID : nextT;
 }
 
+/** Whether the adapter passes the value a consumer sends with `next(value)`
+ * on to the source's next(). An adapter over an island iterator forwards
+ * every typed resume channel (an island generator declared
+ * `Generator<T, R, number>` receives the number), and answers null when the
+ * channel's values have no checked-dynamic form to cross in; the
+ * checked-dynamic adapter forwards an untyped channel. */
+function forwardsResume(lowerer: Lowerer, nextT: IrType, open: IteratorOpen): boolean | null {
+  if (nextT.kind === "dyn") return true;
+  if (open !== "island" || nextT.kind === "undefinedT" || nextT.kind === "void") return false;
+  const convertible = canConvertToDyn(
+    nextT,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  );
+  return convertible ? true : null;
+}
+
 /** Convert a stepped value into a channel type. Records and arrays box into
  * checked values by reference, so consumers observe the same objects. */
 function intoChannel(lowerer: Lowerer, value: IrExpr, target: IrType): IrExpr | null {
@@ -303,7 +321,11 @@ export function dynIteratorAdapter(
     const iterator = local("iterator.0", DYN);
     const next = local("next.0", DYN);
     const step = local("step.0", DYN, true);
-    const forwards = expected.nextT.kind === "dyn";
+    const forwards = forwardsResume(lowerer, expected.nextT, open);
+    if (forwards === null) {
+      lowerer.valueHelpers.delete(key);
+      return null;
+    }
     const sent = forwards ? local("sent.0", DYN, true) : null;
     const get = (value: IrExpr, field: string): IrExpr => ({
       kind: "dynKeyGet",
@@ -348,7 +370,12 @@ export function dynIteratorAdapter(
         loc,
       };
       return sent
-        ? { kind: "assign", localId: "sent.0", value: resumed, loc }
+        ? {
+            kind: "assign",
+            localId: "sent.0",
+            value: resumed.type.kind === "dyn" ? resumed : lowerer.coerceToExpected(resumed, DYN),
+            loc,
+          }
         : { kind: "exprStmt", expr: resumed, loc };
     };
     const resumedFlag = local("resumed.0", BOOL, true);
@@ -517,7 +544,11 @@ export function dynAsyncIteratorAdapter(
     // island can be sync.
     const sync = local("sync.0", BOOL);
     const step = local("step.0", DYN, true);
-    const forwards = expected.nextT.kind === "dyn";
+    const forwards = forwardsResume(lowerer, expected.nextT, open);
+    if (forwards === null) {
+      lowerer.valueHelpers.delete(key);
+      return null;
+    }
     const sent = forwards ? local("sent.0", DYN, true) : null;
     const get = (value: IrExpr, field: string): IrExpr => ({
       kind: "dynKeyGet",
@@ -579,7 +610,12 @@ export function dynAsyncIteratorAdapter(
         loc,
       };
       return sent
-        ? { kind: "assign", localId: "sent.0", value: resumed, loc }
+        ? {
+            kind: "assign",
+            localId: "sent.0",
+            value: resumed.type.kind === "dyn" ? resumed : lowerer.coerceToExpected(resumed, DYN),
+            loc,
+          }
         : { kind: "exprStmt", expr: resumed, loc };
     };
     const resumedFlag = local("resumed.0", BOOL, true);

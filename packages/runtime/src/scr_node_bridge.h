@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 10u
+#define SCR_NODE_BRIDGE_ABI 11u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -96,7 +96,8 @@ enum {
   SCR_NV_ERROR = 8,  /* into V8 only: a new Error of an intrinsic class */
   SCR_NV_JSON = 9,   /* into V8 only: str is JSON text, parsed there (a copy) */
   SCR_NV_EXPORT = 10, /* exp: a runtime value exported by reference (NI-5); flags: SCR_NVF_FUNCTION,
-                         SCR_NVF_PROMISE, SCR_NVF_ARRAY or 0 for an object */
+                         SCR_NVF_PROMISE, SCR_NVF_ARRAY, SCR_NVF_MAP, SCR_NVF_SET,
+                         SCR_NVF_ITERATOR, SCR_NVF_ASYNC_ITERATOR or 0 for an object */
 };
 /* What a handle is, reported with every handle the bridge answers. */
 enum {
@@ -110,6 +111,12 @@ enum {
   SCR_NVF_DATAVIEW = 128,
   SCR_NVF_MAP = 256, /* EXPORT: a native Map (NI-5b) */
   SCR_NVF_SET = 512, /* EXPORT: a native Set (NI-5b) */
+  /* EXPORT: a native generator, whose representative inherits Node's
+   * generator prototype (its Symbol.iterator answers the generator itself),
+   * and a native async generator (Symbol.asyncIterator), so island loops,
+   * spread and destructuring accept them. */
+  SCR_NVF_ITERATOR = 1024,
+  SCR_NVF_ASYNC_ITERATOR = 2048,
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
 typedef struct ScrNodeValue {

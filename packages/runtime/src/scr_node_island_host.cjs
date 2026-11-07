@@ -283,7 +283,19 @@ const INTRINSIC_CLASSES = {
   AggregateError,
 };
 const collectionSyncs = new WeakMap();
+// What a native generator inherits in Node (the bridge sets it as the
+// prototype of the generator's representative): %GeneratorPrototype% and
+// %AsyncGeneratorPrototype%, whose Symbol.iterator and Symbol.asyncIterator
+// methods answer the generator itself. The native next, return and throw
+// are the representative's own.
+const generatorPrototypes = [
+  Object.getPrototypeOf(function* () {}).prototype,
+  Object.getPrototypeOf(async function* () {}).prototype,
+];
 const islandHelpers = {
+  generatorPrototype(isAsync) {
+    return generatorPrototypes[isAsync ? 1 : 0];
+  },
   isInstance(value, name) {
     const C = INTRINSIC_CLASSES[name];
     return C !== undefined && value instanceof C;
@@ -439,10 +451,6 @@ const islandHelpers = {
 // exports (NI-6, scr_node_island_hooks.cjs, appended to this file).
 let sharedModules = null;
 
-// One map of token -> iterator per island value, so an unfinished `for…of`
-// keeps its iterator only while the value itself is alive.
-const iterationsByValue = new WeakMap();
-
 function load(path, esm) {
   if (path === "scriptc:toPrimitive") return toPrimitive;
   if (path === "scriptc:spread") return (value) => [...value];
@@ -467,29 +475,12 @@ function load(path, esm) {
         yield* iterator;
       })();
     };
-  // One step of a `for…of` over an island value: the token names one loop's
-  // iteration, so each loop opens its own iterator and a finished one is
-  // dropped. A sync island iterator answers {value, done}; the value's own
-  // next() errors surface as they are.
-  if (path === "scriptc:iterStep")
-    return (value, token) => {
-      let iterations = iterationsByValue.get(value);
-      if (iterations === undefined) {
-        iterations = new Map();
-        iterationsByValue.set(value, iterations);
-      }
-      let iterator = iterations.get(token);
-      if (iterator === undefined) {
-        if (value === null || value === undefined) throw new TypeError("value is not iterable");
-        const method = value[Symbol.iterator];
-        if (typeof method !== "function") throw new TypeError("value is not iterable");
-        iterator = method.call(value);
-        iterations.set(token, iterator);
-      }
-      const step = iterator.next();
-      if (step !== null && typeof step === "object" && step.done) iterations.delete(token);
-      return step;
-    };
+  // An island value's protocol method, for the runtime's iterator protocol
+  // over a value it holds as a handle: `value[Symbol.iterator]`, or
+  // `value[Symbol.asyncIterator]` when `async` is 1. The loop calls it with
+  // the value as `this` and then steps and closes the iterator it answers.
+  if (path === "scriptc:iterMethod")
+    return (value, async) => value[async === 1 ? Symbol.asyncIterator : Symbol.iterator];
   if (path === "scriptc:island-helpers") return islandHelpers;
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);

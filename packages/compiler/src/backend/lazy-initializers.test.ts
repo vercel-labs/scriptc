@@ -10,7 +10,11 @@ import {
   type IrStmt,
   type IrType,
 } from "../ir/ir.js";
-import { deferClosedInitializers, type LazyInitializerVerdict } from "./lazy-initializers.js";
+import {
+  deferClosedInitializers,
+  initializerTrace,
+  type LazyInitializerVerdict,
+} from "./lazy-initializers.js";
 
 const loc = { file: "program.ts", start: 0, end: 1 };
 const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
@@ -705,4 +709,35 @@ test("only what the roots load for certain counts as start-up code", () => {
     [global("%g.m1.table")],
   );
   expect(defer(atStart).verdicts.get("%init.1")?.reason).toMatch(/start-up code uses it/);
+});
+
+test("the trace names each module with its verdict, and only when asked", () => {
+  const prints: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "intrinsic", name: "console.log", args: [num(1)], type: VOID, loc },
+    loc,
+  };
+  const at = (file: string, f: IrFunction): IrFunction => ({ ...f, loc: { ...loc, file } });
+  const mod = program(
+    [
+      seven,
+      at("table.ts", init(1, [], [assign("%g.m1.table", call("seven", [], F64))])),
+      at("loud.ts", init(2, [], [prints])),
+      entry([1, 2], []),
+    ],
+    [global("%g.m1.table")],
+  );
+  expect(initializerTrace(mod, {})).toBeUndefined();
+  expect(initializerTrace(mod, { SCRIPTC_INITIALIZERS_TRACE: "boot" })).toBeUndefined();
+  const lines: string[] = [];
+  const trace = initializerTrace(mod, { SCRIPTC_INITIALIZERS_TRACE: "defer" }, (line) =>
+    lines.push(line),
+  );
+  // The trace changes nothing about what the pass builds.
+  expect(deferClosedInitializers(mod, undefined, trace)).toEqual(deferClosedInitializers(mod));
+  expect(lines).toEqual([
+    "[initializers] defer table.ts: runs at the first use of what it makes (%lazy.0)\n",
+    "[initializers] eager loud.ts: a 'intrinsic' expression (offset 0 of program.ts)\n",
+    "[initializers] eager program.ts: the entry module\n",
+  ]);
 });

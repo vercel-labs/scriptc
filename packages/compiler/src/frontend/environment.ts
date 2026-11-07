@@ -13,6 +13,8 @@ const FRONTEND_INDEPENDENT_VARIABLES = new Set([
   // Reusing lowered units leaves the lowered module as it is.
   "SCRIPTC_INCR_LOWERING",
   "SCRIPTC_INCR_VERIFY",
+  // The backend's report of which module initializers it defers.
+  "SCRIPTC_INITIALIZERS_TRACE",
   "SCRIPTC_TIMING",
 ]);
 

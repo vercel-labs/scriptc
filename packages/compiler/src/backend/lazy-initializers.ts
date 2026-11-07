@@ -1,5 +1,5 @@
-/* Lazy module initializers (see deferClosedInitializers). Pure function of
- * the IR module. */
+/* Lazy module initializers (see deferClosedInitializers). The pass is a pure
+ * function of the IR module; initializerTrace reads the environment. */
 import {
   BOOL,
   F64,
@@ -38,6 +38,37 @@ export interface LazyInitializerVerdict {
 }
 
 const INIT = "%init.";
+
+/** SCRIPTC_INITIALIZERS_TRACE=defer at build time prints the verdict for
+ * every module initializer of the program, in the form of the trace of
+ * deferred island loads (`[node-islands] defer|eager <path>: <reason>`,
+ * node-islands/snapshot.ts): `defer` for a module that runs at the first use
+ * of what it makes, `eager` with the first reason found for one that stays
+ * where it is. Answers the `explain` callback of deferClosedInitializers, or
+ * undefined when the variable does not ask. A build answered from the
+ * executable cache emits no module and prints nothing. */
+export function initializerTrace(
+  mod: IrModule,
+  env: NodeJS.ProcessEnv = process.env,
+  write: (line: string) => void = (line) => void process.stderr.write(line),
+): ((verdict: LazyInitializerVerdict) => void) | undefined {
+  const asked = env["SCRIPTC_INITIALIZERS_TRACE"];
+  if (asked === undefined || !asked.includes("defer")) return undefined;
+  const files = new Map<string, string>();
+  for (const fn of mod.functions) if (fn.name.startsWith(INIT)) files.set(fn.name, fn.loc.file);
+  return (verdict) => {
+    const file = files.get(verdict.init) ?? verdict.init;
+    if (verdict.group !== null) {
+      write(
+        `[initializers] defer ${file}: runs at the first use of what it makes (${verdict.group})\n`,
+      );
+      return;
+    }
+    const loc = verdict.loc;
+    const at = !loc ? "" : ` (offset ${loc.start}${loc.file === file ? "" : ` of ${loc.file}`})`;
+    write(`[initializers] eager ${file}: ${verdict.reason ?? "it stays where it is"}${at}\n`);
+  };
+}
 
 /** The binding nodes: reads and writes of locals and module globals. */
 const BINDING_KINDS: readonly IrNodeKind[] = [...LOCAL_BINDING_KINDS, "varRef"];

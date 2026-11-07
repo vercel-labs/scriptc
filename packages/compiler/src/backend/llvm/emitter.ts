@@ -172,7 +172,7 @@ import {
   type FfiCallbackAdapter,
 } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../may-throw.js";
-import { deferClosedInitializers } from "../lazy-initializers.js";
+import { deferClosedInitializers, initializerTrace } from "../lazy-initializers.js";
 import {
   UNWIND_PERSONALITY,
   UNWIND_RAISE,
@@ -864,7 +864,7 @@ function prepareModule(input: IrModule, options: LlvmTargetOptions): PreparedMod
   // they make; every pass after this one sees their guards as ordinary
   // statements.
   const rolledNodes = new IrNodeIndex(rolled);
-  const mod = deferClosedInitializers(rolled, rolledNodes);
+  const mod = deferClosedInitializers(rolled, rolledNodes, initializerTrace(rolled));
   // One index of the module the passes start from. Each pass skips the
   // functions the index records without the node kinds it rewrites, and
   // reads its scans of whole bodies from the index; it walks the functions

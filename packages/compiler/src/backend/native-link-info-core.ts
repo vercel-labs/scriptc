@@ -51,9 +51,6 @@ export interface NativeLinkFeatures {
    * (jsObjectModelFact), so it selects no build column of its own. Absent
    * for every other program, so their objects stay identical. */
   mutableBuffers?: boolean;
-  /** The program uses process.stdin.setEncoding, string 'data' listeners
-   * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
-  stdioExtended?: boolean;
   /** writeFile's `flag` disposition or copyFile's mode argument:
    * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
   fsFlags?: boolean;
@@ -63,15 +60,12 @@ export interface NativeLinkFeatures {
   /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** process.prependListener, stdin.isRaw or server.off: the
-   * SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and the
+   * SCR_PROCESS_EXTRAS build of scr_async_dyn.c and the
    * SCR_NET_SERVER_OFF build of scr_net.c. */
   processExtras?: boolean;
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
-  /** The program reaches the process output streams' write slot: links the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;

@@ -181,6 +181,9 @@ function scriptcSharedModules(nativeHost) {
 // resolution functions, the extension table, `fs.realpathSync`,
 // `fs.readFileSync`, `fs.openSync`); the values are captured here, before
 // island code runs, and a request is answered only while they are in place.
+// An asynchronous loader (`module.register`) is the same: its hooks answer
+// before Node's default steps, so the plan would hide them from every
+// request it answers. Once one is registered, Node resolves everything.
 //
 // The plan does not look at the disk. When a file it names is gone from the
 // tree, the read fails with ENOENT on the file's path in the tree (this
@@ -238,6 +241,29 @@ function scriptcLoadPlan(root, given) {
       extensions[1] === ".json" &&
       extensions[2] === ".node"
     );
+  }
+
+  // A package can register an asynchronous loader with `module.register()`.
+  // That loader's hooks run in a separate thread and see a request before
+  // Node's default steps; the synchronous hooks here answer first, so a
+  // short-circuited answer would skip the loader's resolution and source
+  // transformations. Node loads internal/modules/esm/hooks when a loader
+  // registers (also one registered before this bootstrap, such as
+  // `--experimental-loader`), and the entry stays in the list, so the plan
+  // stops answering the moment it appears.
+  const ASYNC_LOADER = "NativeModule internal/modules/esm/hooks";
+  let enumerated = 0;
+  let asyncLoader = false;
+  function asyncLoaderRegistered() {
+    if (asyncLoader) return true;
+    const list = process.moduleLoadList;
+    for (; enumerated < list.length; enumerated++) {
+      if (list[enumerated] === ASYNC_LOADER) {
+        asyncLoader = true;
+        return true;
+      }
+    }
+    return false;
   }
 
   const REQUIRE = 1;
@@ -359,6 +385,7 @@ function scriptcLoadPlan(root, given) {
   }
 
   function planned(specifier, context) {
+    if (asyncLoaderRegistered()) return undefined;
     if (image === undefined) open();
     if (image === null) return undefined;
     const attributes = context.importAttributes;
@@ -419,6 +446,7 @@ function scriptcLoadPlan(root, given) {
       const path = sources.get(url);
       if (
         path === undefined ||
+        asyncLoaderRegistered() ||
         context.format !== "module" ||
         kindOf(context.conditions) !== IMPORT ||
         fs.readFileSync !== original.readFileSync ||

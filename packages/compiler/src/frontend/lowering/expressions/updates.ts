@@ -1181,43 +1181,35 @@ export function lowerFieldCompoundValue(
         });
         return { kind: "seqExpr", stmts: body, result: value, type: DYN, loc };
       }
-      // TypeScript's `v.text += s` where the checker types the member
-      // `string` (a value a predicate narrowed, a slot held whole as the
-      // checked dynamic): the expanded `v.text = v.text + s`, which
-      // validates the member as the string its type claims (a member holding
-      // anything else throws the catchable TypeError, as the number form
-      // below does), appends and writes the result back. JavaScript sources
-      // keep the runtime operator above, whose types claim nothing.
+      // A member the checker types as a string (`detail.text += chunk`,
+      // where the program holds values of the record type as checked-dynamic
+      // values): the member validates as a string, as it validates as a
+      // number below, and the right side appends as it does to a string
+      // field.
       if (
         op === "+" &&
         rhsNode !== null &&
-        rawRhs.kind !== "unitLit" &&
-        !isJsSourceFile(ts.getSourceFileOfNode(access)) &&
-        (lowerer.typeOf(access).flags & ts.TypeFlags.String) !== 0
+        lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "string"
       ) {
         const old: IrExpr = { kind: "dynCheck", value: read, type: STRING, loc };
+        const appended = concatOperand(lowerer, rhs, rhsNode);
         const value = save(
-          {
-            kind: "strConcat",
-            left: old,
-            right: concatOperand(lowerer, rhs, rhsNode),
-            type: STRING,
-            loc,
-          },
+          { kind: "strConcat", left: old, right: appended, type: STRING, loc },
           "%compoundResult",
         );
+        const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
         body.push({
           kind: "exprStmt",
           expr: {
             kind: "libCall",
             fn: "dyn.keySet",
-            args: [receiver, { ...key }, { kind: "dynFrom", value, type: DYN, loc }],
+            args: [receiver, { ...key }, boxed],
             type: VOID,
             loc,
           },
           loc,
         });
-        return { kind: "seqExpr", stmts: body, result: value, type: STRING, loc };
+        return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
       }
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"

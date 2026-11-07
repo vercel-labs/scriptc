@@ -1783,9 +1783,19 @@ ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn 
  * closure, or an island function a native object holds) is called as it
  * was read. A native receiver's other members (a builtin, a class method,
  * a generator step) have no function value: compiled code calls them
- * through the ordinary checked-dynamic method call instead. */
-bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_) {
-  return ni_lc_island(this_) || ni_lc_island(fn) || nh_is_native_function(fn);
+ * through the ordinary checked-dynamic method call instead. That call
+ * reads the member `key` again, after the arguments ran, as the by-name
+ * call of scr_node_island_apply_to does: when they stored a function
+ * there, this answers false with Node's TypeError pending, for the value
+ * read before them (`what`, the callee as V8 words it, is not a
+ * function). */
+bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrStr *what) {
+  if (ni_lc_island(this_) || ni_lc_island(fn) || nh_is_native_function(fn)) return true;
+  ScrDyn *member = scr_node_island_get(this_, key);
+  bool callable = member != NULL && scr_dyn_is_callable(member);
+  scr_dyn_release(member);
+  if (callable) nh_throw_not_fn(what->data, what->len);
+  return false;
 }
 
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args) {

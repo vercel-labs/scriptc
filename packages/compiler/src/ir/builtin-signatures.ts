@@ -227,8 +227,11 @@ function buildLibFnSignatures() {
     /** Whether `this.m(...)` with the member read into args[0] is a call
      * nodeIsland.applyTo makes: an island receiver's, or one whose member is
      * a function value. A native receiver's other members are called by the
-     * ordinary checked-dynamic method call. */
-    "nodeIsland.calls": { argTypes: [DYN, DYN], result: BOOL },
+     * ordinary checked-dynamic method call, which reads the member args[2]
+     * again: when the arguments made it a function, this throws the
+     * TypeError JavaScript throws for the value it read before them, naming
+     * the callee args[3]. */
+    "nodeIsland.calls": { argTypes: [DYN, DYN, STRING, STRING], result: BOOL },
     "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
     "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
     /** Array.isArray of a dyn value in a program with Node islands: island

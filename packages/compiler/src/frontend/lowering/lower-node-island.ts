@@ -1831,7 +1831,10 @@ function lowerIslandChain(
  *   generator step or an iterator helper has no function value and no
  *   runtime table, and is dispatched by the passes that rewrite this node.
  *   A member that is a function value (a closure on a native object) is
- *   still called as read when the arguments run code.
+ *   still called as read when the arguments run code, and a member the
+ *   arguments turn into a function is not called: JavaScript read it before
+ *   they ran, so the call is the TypeError for that value
+ *   (nodeIsland.calls).
  *
  * The arguments cross once, into hidden locals both arms read. A call that
  * spreads an argument keeps the runtime's routing (it has no fixed
@@ -1888,7 +1891,18 @@ function islandMethodCall(
     cond:
       held === null
         ? { kind: "libCall", fn: "nodeIsland.isHandle", args: [recv()], type: BOOL, loc }
-        : { kind: "libCall", fn: "nodeIsland.calls", args: [held(), recv()], type: BOOL, loc },
+        : {
+            kind: "libCall",
+            fn: "nodeIsland.calls",
+            args: [
+              held(),
+              recv(),
+              name(),
+              { kind: "strLit", value: v8CalleeText(callee), type: STRING, loc },
+            ],
+            type: BOOL,
+            loc,
+          },
     then: bridge({ kind: "dynArrLit", elems: values.map((value) => value()), type: DYN, loc }),
     else_: {
       kind: "dynInvoke",

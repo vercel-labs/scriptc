@@ -22,6 +22,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.invoke",
   "nodeIsland.apply",
   "nodeIsland.applyTo",
+  "nodeIsland.calls",
   "nodeIsland.construct",
   "nodeIsland.instanceof",
   "nodeIsland.classMethods",

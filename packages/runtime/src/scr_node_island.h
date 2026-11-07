@@ -272,8 +272,10 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
 /* fn called with `this` (the member `key`, read before its arguments ran). */
 ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn *args);
 /* Whether scr_node_island_apply_to makes the call of the member `fn` read
- * from `this_`; otherwise compiled code calls the native member by name. */
-bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_);
+ * from `this_`; otherwise compiled code calls the native member `key` by
+ * name, unless the arguments made it a function (a TypeError naming `what`
+ * is pending then). */
+bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrStr *what);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value);
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);

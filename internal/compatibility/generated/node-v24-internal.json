@@ -78012,6 +78012,8 @@
           "tests/corpus/5214-perf-entry-inspect.ts",
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/corpus/compat-js-value-reads-require.cjs",
+          "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -81565,8 +81567,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.timeOrigin",
+        "tests": [
+          "tests/corpus/compat-js-value-reads.mjs",
+          "tests/corpus/compat-js-value-reads-require.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81899,6 +81905,8 @@
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
+          "tests/corpus/compat-js-value-reads-require.cjs",
+          "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/compat-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -81922,6 +81930,7 @@
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdout-write-patch.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
+          "tests/diagnostics/compat-absent-node-values.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/util-callables.ts",
           "tests/harness/event-loop.test.ts",
@@ -82314,7 +82323,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.process.abort",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-values.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82623,7 +82635,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.process.finalization.registerBeforeExit",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-values.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82646,7 +82661,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.process.finalization.unregister",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-values.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83564,8 +83582,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.debugPort",
+        "tests": [
+          "tests/corpus/compat-js-value-reads.mjs",
+          "tests/corpus/compat-js-value-reads-require.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -83910,7 +83932,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.mainModule",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-values.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -84324,8 +84349,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.sourceMapsEnabled",
+        "tests": [
+          "tests/corpus/compat-js-value-reads.mjs",
+          "tests/corpus/compat-js-value-reads-require.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -94181,6 +94210,7 @@
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
+          "tests/diagnostics/compat-absent-node-values.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
@@ -94946,7 +94976,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "evidence": "compiler-feature:test.snapshot",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-values.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -94969,7 +95002,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "evidence": "compiler-feature:test.snapshot.setDefaultSnapshotSerializers",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-values.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -94992,7 +95028,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "evidence": "compiler-feature:test.snapshot.setResolveSnapshotPath",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-values.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117760,7 +117799,8 @@
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
-          "tests/corpus/native-worker-terminate-wait.ts"
+          "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/diagnostics/compat-absent-node-values.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -119334,7 +119374,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "evidence": "compiler-feature:worker_threads.SHARE_ENV",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-values.ts"
+        ]
       },
       "anchorSource": "chapter"
     },

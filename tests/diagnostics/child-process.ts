@@ -3,13 +3,7 @@
 // exactly, so most misuse is a type error before lowering; these are the
 // forms that TYPECHECK and fence per site.
 
-import {
-  execFile,
-  fork,
-  spawn,
-  spawnSync,
-  type SpawnSyncOptionsWithStringEncoding,
-} from "node:child_process";
+import { execFile, fork, spawn, spawnSync } from "node:child_process";
 
 // The default and explicit "pipe" forms use piped streams.
 // Keep both adjacent to the remaining rejection cases.
@@ -23,11 +17,11 @@ const inherited = spawn("/bin/echo", [], { stdio: "inherit" });
 // A variable options value must fence instead of being dropped.
 const options: { stdio: "ignore"; detached: boolean } = { stdio: "ignore", detached: true };
 spawn("true", [], options);
-// The shell forms take the complete command in the first argument; separate
-// args would need Node's DEP0190 warning, which a native build cannot report.
+// spawn's shell form takes the complete command in the first argument:
+// joining separate args onto it (with Node's DEP0190 warning) is lowered
+// for spawnSync only.
 const shellArgs = ["unsafe"];
 spawn("printf", shellArgs, { stdio: "ignore", shell: true });
-spawnSync("printf", ["%s", "unsafe"], { shell: true });
 const c = spawn("true", [], { stdio: "ignore" });
 
 // Value-returning listeners — inferred, annotated, or async — ADOPT the
@@ -44,10 +38,6 @@ spawnSync("true", [], { shell: shellFlag });
 // member.
 const looseOptions: { shell?: boolean } = { shell: true };
 spawnSync("true", [], looseOptions);
-// A typed options value MAY enable the shell at run time, so its call takes
-// no separate args either.
-const typedOptions: SpawnSyncOptionsWithStringEncoding = { encoding: "utf8", shell: true };
-spawnSync("printf %s", ["unsafe"], typedOptions);
 // The callback slice accepts inline utf8/maxBuffer/cwd/shell options, but
 // not all of Node's options or the optional-callback overload family.
 execFile("true");

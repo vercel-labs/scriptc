@@ -1733,8 +1733,9 @@ function buildLibFnSignatures() {
      * input (has_input false leaves fd 0 to the stdio mode — an absent
      * `input` option; "" pipes an empty stdin), and the shell form
      * (the complete command line through /bin/sh -c — the compiler emits
-     * it with an empty args list only, since Node warns DEP0190 for
-     * separate shell arguments), exactly Node's reading of the members.
+     * it with an empty args list only; separate shell arguments arrive
+     * joined into the line by cp.shellLine), exactly Node's reading of the
+     * members.
      * Args (cmd, argv, timeout, killSignal, inMode, outMode, errMode,
      * cwd, input, hasInput, shell). Never throws, like every spawnSync
      * form. */
@@ -1742,6 +1743,12 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
       result: SPAWNRES_T,
     },
+    /** The command line of a shell-enabled call that passes separate
+     * arguments (scr_child_shell.c): the file, a space, and the arguments
+     * joined with spaces — Node concatenates them unescaped — with DEP0190
+     * reported for the first non-empty list of the process. An empty list
+     * answers the file. Args (file, argv). */
+    "cp.shellLine": { argTypes: [STRING, arrayOf(STRING)], result: STRING },
     /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
      * replace the child's environment. */
     "cp.spawnSyncExtEnv": {

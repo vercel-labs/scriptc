@@ -42,10 +42,10 @@ declare module "child_process" {
    * pipes an empty stdin), shell (the complete command line in
    * `command`, with a statically empty args list, run by /bin/sh -c),
    * and windowsHide (a POSIX no-op).
-   * The shell form takes no separate args: Node warns DEP0190 because it
-   * concatenates them unescaped, and a native build has no warning
-   * channel, so the compiler REFUSES `shell: true` with a non-empty args
-   * list. */
+   * The shell form joins a non-empty args list onto the command, as Node
+   * does: the arguments are concatenated unescaped, never quoted, and
+   * the first such call of a process reports the DEP0190 warning on
+   * stderr. */
   export interface SpawnSyncOptions {
     encoding?: "utf8" | "utf-8";
     timeout?: number;
@@ -61,8 +61,8 @@ declare module "child_process" {
     /* Node's shell form: the complete command line in `command`, with
      * an empty args list, runs through /bin/sh -c, so quoting and
      * operators follow the shell's rules. A non-empty args list with
-     * shell: true is a compile error (Node warns DEP0190 for unescaped
-     * shell arguments). */
+     * shell: true joins onto the command unescaped, and Node's DEP0190
+     * warning is shown. */
     shell?: boolean;
   }
   export function spawnSync(
@@ -92,9 +92,9 @@ declare module "child_process" {
     stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
     timeout?: number;
     windowsHide?: boolean;
-    /* Read at the call. The call then takes the command-line form only:
-     * a statically non-empty args list is a compile error (Node warns
-     * DEP0190 for unescaped shell arguments). */
+    /* Read at the call. When it is on, a non-empty args list joins onto
+     * the command unescaped and Node's DEP0190 warning is issued; when
+     * off, the list is the arguments passed. */
     shell?: boolean;
   }
 

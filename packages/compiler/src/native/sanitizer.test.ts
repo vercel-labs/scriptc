@@ -18,6 +18,7 @@ const features = {
   streamDyn: false,
   handleProps: false,
   childLifecycle: false,
+  childShellLine: false,
   childOptionExt: false,
   spawnCaptureBytes: false,
   childErrorFields: false,

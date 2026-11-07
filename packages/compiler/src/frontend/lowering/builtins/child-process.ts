@@ -106,14 +106,24 @@ function stdioModeChain(
 }
 
 /** True when the args slot is statically empty (omitted, `undefined`, or an
- * empty array literal): the shape the shell forms accept. Node joins the
- * arguments unescaped and warns DEP0190 whenever a non-empty list meets
- * `shell: true`, and a native build has no warning channel to match it. */
+ * empty array literal): the shape the shell forms run as they are. Node
+ * joins a non-empty list onto the command unescaped and warns DEP0190
+ * whenever one meets `shell: true`; spawnSync builds that line through
+ * shellCommandLine, and the other entry points refuse the list. */
 function staticallyEmptyArgs(node: ts.Expression | undefined): boolean {
   if (!node) return true;
   const bare = stripTypeCasts(node);
   if (ts.isIdentifier(bare) && bare.text === "undefined") return true;
   return ts.isArrayLiteralExpression(bare) && bare.elements.nodes.length === 0;
+}
+
+/** The command line a shell-enabled call runs when it passes separate
+ * arguments: Node's `file + " " + args.join(" ")`, unescaped, with DEP0190
+ * reported for the first non-empty list of the process (cp.shellLine; an
+ * empty list answers the file and reports nothing). The shell entry points
+ * take that line with an empty args list. */
+function shellCommandLine(file: IrExpr, args: IrExpr, loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "cp.shellLine", args: [file, args], type: STRING, loc };
 }
 
 /** The signal names Node's table (and the runtime's twin) resolves —
@@ -168,8 +178,8 @@ const NODE_SIGNAL_NAMES = new Set([
  * stance), `env` (a REPLACEMENT environment), `cwd` (the child's
  * directory), `input` (the string piped to its stdin, `| undefined`
  * meaning absent), `shell` (a boolean literal: the complete command line
- * runs through /bin/sh -c, with an empty args list only — Node warns
- * DEP0190 for separate shell args), and
+ * runs through /bin/sh -c; separate args join onto it unescaped, with
+ * Node's DEP0190 warning), and
  * `windowsHide` (a POSIX no-op, evaluated for side effects). Everything
  * else (maxBuffer, ...) fences by name. A TYPED options value
  * (SpawnSyncOptionsWithStringEncoding) reads its members at the call.
@@ -219,6 +229,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   let hasInput: IrExpr = boolLit(false, loc);
   // Node's shell form: the command line runs through /bin/sh -c.
   let shell: IrExpr = boolLit(false, loc);
+  // A literal `shell: true` beside separate arguments: the call runs the
+  // joined line with an empty argument vector (shellCommandLine).
+  let shellJoinsArgs = false;
   let extOptions = false; // cwd, input, or shell present: the extended entry point
   let plain = true; // no behavior-changing option: the historical libCall
   // A union-typed `input` is read once into a hidden local that its
@@ -232,13 +245,67 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
-      const runtime = lowerSpawnSyncRuntimeOptions(lowerer, optsNode, expr.arguments.nodes[1], loc);
+      const runtime = lowerSpawnSyncRuntimeOptions(lowerer, optsNode, loc);
       if (runtime) {
+        // The record carries `shell`, so the call MAY enable the shell at
+        // run time. Separate arguments then run as Node runs them: joined
+        // onto the command when the member is on (shellCommandLine, with
+        // its warning), passed as the argument vector when it is off. The
+        // command and its arguments are evaluated once, before the record
+        // is read, as the call's own argument order has them.
+        const shellArgs = !staticallyEmptyArgs(expr.arguments.nodes[1]);
+        const shellPrelude: IrStmt[] = [];
+        let shellCmd = cmd;
+        let shellArgv = argv;
+        if (shellArgs) {
+          const cmdLocal = lowerer.declareHiddenLocal("%spawnSyncCmd", cmd.type);
+          const argvLocal = lowerer.declareHiddenLocal("%spawnSyncArgs", argv.type);
+          const lineLocal = lowerer.declareHiddenLocal("%spawnSyncLine", STRING);
+          const lineArgvLocal = lowerer.declareHiddenLocal("%spawnSyncLineArgs", argv.type);
+          const cmdRef = varRef(cmdLocal.id, cmd.type, loc);
+          const argvRef = varRef(argvLocal.id, argv.type, loc);
+          shellPrelude.push(
+            { kind: "varDecl", localId: cmdLocal.id, init: cmd, loc },
+            { kind: "varDecl", localId: argvLocal.id, init: argv, loc },
+            {
+              kind: "varDecl",
+              localId: lineLocal.id,
+              init: {
+                kind: "ternary",
+                cond: runtime.shell,
+                then: shellCommandLine(cmdRef, argvRef, loc),
+                else_: cmdRef,
+                type: STRING,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "varDecl",
+              localId: lineArgvLocal.id,
+              init: {
+                kind: "ternary",
+                cond: runtime.shell,
+                then: { kind: "arrayLit", elems: [], type: argv.type, loc },
+                else_: argvRef,
+                type: argv.type,
+                loc,
+              },
+              loc,
+            },
+          );
+          shellCmd = varRef(lineLocal.id, STRING, loc);
+          shellArgv = varRef(lineArgvLocal.id, argv.type, loc);
+        }
+        const withShellPrelude = (result: IrExpr): IrExpr =>
+          shellPrelude.length === 0
+            ? result
+            : { kind: "seqExpr", stmts: shellPrelude, result, type: SPAWNRES_T, loc };
         const call = (
           fn: "cp.spawnSyncExt" | "cp.spawnSyncExtEnv",
           extra: IrExpr[],
-          callCmd: IrExpr = cmd,
-          callArgs: IrExpr = argv,
+          callCmd: IrExpr = shellCmd,
+          callArgs: IrExpr = shellArgv,
         ): IrExpr => ({
           kind: "libCall",
           fn,
@@ -267,6 +334,18 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         // that adds or drops `env` in the record decides the entry point,
         // as it does under Node.
         if (runtime.hasEnv !== null && runtime.envPairs !== null) {
+          // The shell prelude already holds the command and its arguments
+          // in locals the presence test follows.
+          if (shellArgs) {
+            return withShellPrelude({
+              kind: "ternary",
+              cond: runtime.hasEnv,
+              then: call("cp.spawnSyncExtEnv", [runtime.envPairs]),
+              else_: call("cp.spawnSyncExt", []),
+              type: SPAWNRES_T,
+              loc,
+            });
+          }
           const cmdLocal = lowerer.declareHiddenLocal("%spawnSyncCmd", cmd.type);
           const argvLocal = lowerer.declareHiddenLocal("%spawnSyncArgs", argv.type);
           const cmdArg = varRef(cmdLocal.id, cmd.type, loc);
@@ -289,7 +368,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
             loc,
           };
         }
-        return call("cp.spawnSyncExt", []);
+        return withShellPrelude(call("cp.spawnSyncExt", []));
       }
       lowerer.noLowering(
         "spawnSync with a non-literal options argument",
@@ -433,16 +512,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         case "shell":
           if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
             // Node joins [command, ...args] with single spaces and warns
-            // DEP0190 for a non-empty list; a native build has no warning
-            // channel, so it refuses the form instead of dropping the
-            // warning Node prints.
-            if (!staticallyEmptyArgs(expr.arguments.nodes[1])) {
-              lowerer.noLowering(
-                "spawnSync with shell enabled and separate arguments",
-                expr.arguments.nodes[1]!,
-                "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
-              );
-            }
+            // DEP0190 for a non-empty list: the call below runs that line.
+            shellJoinsArgs = !staticallyEmptyArgs(expr.arguments.nodes[1]);
             shell = boolLit(true, loc);
             extOptions = true;
             plain = false;
@@ -625,12 +696,20 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       : ignoreInput
         ? boolLit(false, loc)
         : hasInput;
+    // A literal `shell: true` beside separate arguments: the call runs the
+    // joined line with an empty argument vector. The join follows the
+    // options' evaluation, where Node's normalizeSpawnArguments builds it
+    // (an option expression that throws reports no warning).
+    const callCmd = shellJoinsArgs ? shellCommandLine(cmdArg, argvArg, loc) : cmdArg;
+    const callArgv: IrExpr = shellJoinsArgs
+      ? { kind: "arrayLit", elems: [], type: argv.type, loc }
+      : argvArg;
     const call: IrExpr = {
       kind: "libCall",
       fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
       args: [
-        cmdArg,
-        argvArg,
+        callCmd,
+        callArgv,
         timeoutArg,
         killSignal,
         stdinModeArg,
@@ -680,7 +759,6 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
 function lowerSpawnSyncRuntimeOptions(
   lowerer: Lowerer,
   optsNode: ts.Expression,
-  argsNode: ts.Expression | undefined,
   loc: SrcLoc,
 ): {
   cwd: IrExpr;
@@ -707,17 +785,6 @@ function lowerSpawnSyncRuntimeOptions(
       "spawnSync with a computed options argument",
       optsNode,
       "the member reads re-read the options — bind the object to a const first",
-    );
-  }
-  // The record carries `shell`, so the call MAY enable the shell at run
-  // time. Node joins a non-empty args list unescaped and warns DEP0190
-  // there; only an empty list provably never triggers that warning, so the
-  // value form accepts the command-line idiom and refuses separate args.
-  if (!staticallyEmptyArgs(argsNode)) {
-    lowerer.noLowering(
-      "spawnSync with a typed options value and separate arguments",
-      argsNode!,
-      "the options record may enable shell, where Node warns DEP0190 for unescaped arguments — put the complete command in the first argument and pass no args",
     );
   }
   const fieldType = (name: string): IrType => shape!.fields.find((f) => f.name === name)!.type;
@@ -1398,13 +1465,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   // Node joins [command, ...args] with single spaces for the shell form, and
   // reports DEP0190 ("passing args to a child process with shell option
   // true ... the arguments are not escaped, only concatenated") on stderr.
-  // A native build has no warning channel, so it refuses the form rather
-  // than silently skipping the warning Node prints.
+  // Only spawnSync lowers that join (shellCommandLine); this entry point
+  // refuses the form rather than run it without the warning Node prints.
   if (shellEnabled && !staticallyEmptyArgs(argsNode)) {
     lowerer.noLowering(
       "spawn with shell enabled and separate arguments",
       argsNode ?? expr,
-      "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
+      "put the complete shell command in the first argument and pass [] (Node joins separate shell arguments unescaped and warns DEP0190; only spawnSync has that form)",
     );
   }
   const argv = lowerChildArgsArg(lowerer, argsNode, loc);
@@ -1739,8 +1806,9 @@ export function lowerExecFileCall(
   const shellForm = shell || execShell;
   const cmd: IrExpr = shellForm ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : first;
   // Node joins [file, ...args] with single spaces for the shell form and
-  // reports DEP0190 on stderr; a native build has no warning channel, so it
-  // refuses separate arguments here rather than silently skipping it.
+  // reports DEP0190 on stderr. Only spawnSync lowers that join
+  // (shellCommandLine); this entry point refuses separate arguments rather
+  // than run them without the warning.
   if (
     execShell &&
     !staticallyEmptyArgs(expr.arguments.nodes.length >= 3 ? expr.arguments.nodes[1] : undefined)
@@ -1748,7 +1816,7 @@ export function lowerExecFileCall(
     lowerer.noLowering(
       `${what} with shell enabled and separate arguments`,
       expr.arguments.nodes[1]!,
-      "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
+      "put the complete shell command in the first argument and pass [] (Node joins separate shell arguments unescaped and warns DEP0190; only spawnSync has that form)",
     );
   }
   let argv: IrExpr;

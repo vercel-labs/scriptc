@@ -34,11 +34,17 @@ ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
  * leaves fd 0 to the stdio mode — "input: undefined" is an ABSENT option,
  * "" pipes an empty stdin), and `shell` running the command line through
  * /bin/sh -c (cmd.exe /d /s /c on Windows) — the compiler emits it with
- * an empty args list only, because Node warns DEP0190 for unescaped
- * separate shell arguments.
+ * an empty args list only: a call that passes separate arguments hands
+ * over the line scr_child_shell_line joined.
  * Built only into programs that name these entries
  * (SCR_CHILD_CP_OPTIONS: the compiler's childOptionExt feature), so the
  * default object stays byte identical. */
+/* cp.shellLine (scr_child_shell.c, the compiler's childShellLine feature):
+ * the command line of a shell-enabled call that passes separate
+ * arguments — `file`, a space, and the arguments joined with spaces, as
+ * Node concatenates them — reporting DEP0190 for the first non-empty list
+ * of the process. An empty list answers `file`. Borrows both; +1. */
+ScrStr *scr_child_shell_line(ScrStr *file, ScrArr *args);
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,

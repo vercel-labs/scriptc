@@ -383,6 +383,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayLikeProtoCall",
   "dyn.builtinPrototype",
   "dyn.arrayPrototype",
+  "dyn.arrayPrototypeValue",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
   "dyn.builtinMethodValue",

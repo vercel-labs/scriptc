@@ -1370,7 +1370,10 @@ ScrDyn *scr_dyn_collection_prototype(const ScrStr *klass) {
   }
   ScrDyn *prototype = scr_collection_prototypes[cls - scr_collection_classes];
   if (prototype) return scr_dyn_retain(prototype);
-  return scr_collection_prototype_build(cls);
+  prototype = scr_collection_prototype_build(cls);
+  /* The program holds the object now: its built-in members are fenced. */
+  scr_dyn_fence_builtin_members(prototype);
+  return prototype;
 }
 
 /* Object.getPrototypeOf on a collection value: its class prototype. */

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8774-builtin-member-runtime-fence.cjs"
+ ],
+ "diags": []
+}

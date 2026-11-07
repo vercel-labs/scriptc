@@ -3,10 +3,9 @@
  * never reads the member from its object, so a program that replaces or
  * deletes one (`Array.prototype.push = f`, `Math.random = f`, `delete
  * JSON.parse`) would keep running the built-in: the build refuses every such
- * write it can see (SC1092). A write it cannot see, where the object or the
- * key arrives as a value, keeps what the runtime does with it today. Adding
- * a member the object does not have is not a replacement and keeps its
- * existing lowering.
+ * write it can see (SC1092), and the runtime throws for the ones it cannot
+ * (ScrDynEntry.fenced). Adding a member the object does not have is not a
+ * replacement and keeps its existing lowering.
  *
  * "Existing" is a fact of the pinned Node release (builtin-object-members
  * .generated.ts): an own member of the object, or one it inherits from
@@ -14,7 +13,11 @@
  * members cannot change, a feature test of one (`if (!Array.prototype.at)`)
  * has one answer, and the polyfill it guards is code Node 24 never runs. */
 import * as ts from "../ts7/adapter.js";
-import { builtinMemberWriteDiag } from "../../diagnostics/diagnostic.js";
+import {
+  builtinMemberCopyDiag,
+  builtinMemberWriteDiag,
+  builtinPrototypeAddDiag,
+} from "../../diagnostics/diagnostic.js";
 import { locOf } from "../program.js";
 import {
   BUILTIN_OBJECT_INHERITS,
@@ -70,6 +73,15 @@ export interface BuiltinMember {
   /** The key; a well-known symbol is "@@iterator". */
   member: string;
   kind: BuiltinMemberKind;
+}
+
+/** A key the language itself reads from an object: a well-known symbol,
+ * `toJSON` (JSON.stringify) and `then` (promise resolution). The runtime's
+ * own readers answer for a built-in value without consulting its prototype
+ * object, so a program that adds one to a built-in object would not see it
+ * take effect; the write is refused like a replacement. */
+function isProtocolKey(member: string): boolean {
+  return member.startsWith("@@") || member === "toJSON" || member === "then";
 }
 
 function displayName(owner: string, member: string): string {
@@ -267,6 +279,43 @@ export function builtinMemberOf(lowerer: Lowerer, expr: ts.Expression): BuiltinM
   return kind === null ? null : { owner, member, kind };
 }
 
+/** The built-in member a write to `target` changes: an existing member, or
+ * a protocol key the object does not have yet (`added`). */
+function writtenMemberOf(lowerer: Lowerer, target: ts.Expression): WrittenMember | null {
+  const existing = builtinMemberOf(lowerer, target);
+  if (existing !== null) return existing;
+  const e = withoutTypeCasts(target);
+  if (!ts.isPropertyAccessExpression(e) && !ts.isElementAccessExpression(e)) return null;
+  if (e.questionDotToken !== undefined) return null;
+  const member = staticKey(lowerer, e);
+  if (member === null || !mayNameBuiltin(e.expression)) return null;
+  const owner = builtinObjectOf(lowerer, e.expression);
+  return owner === null ? null : addedMember(owner, member);
+}
+
+/** A built-in member a write changes; `added` when the object has no such
+ * member yet: "protocol" for a key the language reads itself, "unread" for
+ * any other key on a prototype whose instances would never read it. */
+type WrittenMember = BuiltinMember & { added?: "protocol" | "unread" };
+
+/** Whether instances read a member a program adds to this prototype object.
+ * Arrays do: a member read on an untyped array consults Array.prototype.
+ * No other built-in's instances look at their prototype object, so
+ * `Map.prototype.added = 7` would leave `new Map().added` undefined. */
+function instancesReadAddedMembers(owner: string): boolean {
+  return owner === "Array.prototype";
+}
+
+/** The refusal an added member of `owner` needs, or null when adding it is
+ * what the object model supports: a member of a constructor, a namespace
+ * object or Array.prototype that the language does not read itself. */
+function addedMember(owner: string, member: string): WrittenMember | null {
+  if (isProtocolKey(member)) return { owner, member, kind: "f", added: "protocol" };
+  if (owner.endsWith(".prototype") && !instancesReadAddedMembers(owner))
+    return { owner, member, kind: "f", added: "unread" };
+  return null;
+}
+
 /** A built-in member the runtime models as program state: assigning it is
  * what the member is for, and compiled code reads the assigned value. */
 function isAssignableState(target: BuiltinMember): boolean {
@@ -310,9 +359,10 @@ function keepsOwnValue(
 }
 
 /** A refused write: the member, whether the write deletes it, and the node
- * to report. */
+ * to report. `unknownMembers` is a call that copies members the build cannot
+ * name onto a built-in object. */
 interface RefusedWrite {
-  target: BuiltinMember;
+  target: WrittenMember & { unknownMembers?: true };
   deletes: boolean;
   at: ts.Node;
 }
@@ -325,9 +375,9 @@ interface RefusedWrite {
  * value, and for a member the runtime models as assignable state. */
 function refusedWriteOf(lowerer: Lowerer, node: ts.Node): RefusedWrite | null {
   if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
-    const target = builtinMemberOf(lowerer, node.left);
+    const target = writtenMemberOf(lowerer, node.left);
     if (target === null || isAssignableState(target)) return null;
-    if (keepsOwnValue(lowerer, node, target)) return null;
+    if (target.added === undefined && keepsOwnValue(lowerer, node, target)) return null;
     return { target, deletes: false, at: node.left };
   }
   if (
@@ -378,18 +428,31 @@ function refusedWriteCall(lowerer: Lowerer, call: ts.CallExpression): RefusedWri
   if (stdlibGlobalNameOf(lowerer, callee.expression) !== holder) return null;
   const owner = builtinObjectOf(lowerer, first);
   if (owner === null) return null;
-  const hit = (member: string | null): BuiltinMember | null => {
+  const hit = (member: string | null): WrittenMember | null => {
     if (member === null) return null;
     const kind = builtinMemberKind(owner, member);
-    if (kind === null) return null;
+    if (kind === null) return addedMember(owner, member);
     const target = { owner, member, kind };
     return isAssignableState(target) ? null : target;
   };
   if (method === "defineProperties" || method === "assign") {
     for (const source of args.slice(1)) {
       const literal = withoutTypeCasts(source);
-      if (!ts.isObjectLiteralExpression(literal)) continue;
+      // A source the build cannot read member by member may replace any of
+      // the object's members.
+      if (!ts.isObjectLiteralExpression(literal))
+        return {
+          target: { owner, member: "", kind: "f", unknownMembers: true },
+          deletes: false,
+          at: source,
+        };
       for (const member of literal.properties.nodes) {
+        if (ts.isSpreadAssignment(member))
+          return {
+            target: { owner, member: "", kind: "f", unknownMembers: true },
+            deletes: false,
+            at: member,
+          };
         const target = hit(literalMemberName(member));
         if (target !== null) return { target, deletes: false, at: member };
       }
@@ -409,7 +472,12 @@ function refusedWriteCall(lowerer: Lowerer, call: ts.CallExpression): RefusedWri
     member = `@@${key.name.text}`;
   const target = hit(member);
   if (target === null) return null;
-  if (method === "defineProperty" && keepsMemberValue(lowerer, args[2], target)) return null;
+  if (
+    method === "defineProperty" &&
+    target.added === undefined &&
+    keepsMemberValue(lowerer, args[2], target)
+  )
+    return null;
   return { target, deletes: method === "deleteProperty", at: call };
 }
 
@@ -443,12 +511,17 @@ function keepsMemberValue(
 export function fenceBuiltinMemberWrite(lowerer: Lowerer, node: ts.Node): void {
   const write = refusedWriteOf(lowerer, node);
   if (write === null) return;
+  const { target } = write;
   lowerer.pushDiag(
-    builtinMemberWriteDiag(
-      displayName(write.target.owner, write.target.member),
-      write.deletes,
-      locOf(write.at),
-    ),
+    target.unknownMembers === true
+      ? builtinMemberCopyDiag(target.owner, locOf(write.at))
+      : target.added === "unread"
+        ? builtinPrototypeAddDiag(displayName(target.owner, target.member), locOf(write.at))
+        : builtinMemberWriteDiag(
+            displayName(target.owner, target.member),
+            write.deletes ? "delete" : target.added === "protocol" ? "add" : "replace",
+            locOf(write.at),
+          ),
   );
   throw new PoisonError();
 }

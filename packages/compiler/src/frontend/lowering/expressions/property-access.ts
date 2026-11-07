@@ -2494,7 +2494,7 @@ export function lowerIntrinsicProperty(
       kind: "dynKeyGet",
       value: {
         kind: "libCall",
-        fn: "dyn.arrayPrototype",
+        fn: "dyn.arrayPrototypeValue",
         args: [],
         type: DYN,
         loc: locOf(expr.expression),
@@ -2510,8 +2510,16 @@ export function lowerIntrinsicProperty(
     lowerer.stdlibGlobalMember(expr.expression, "Function") === "prototype"
   )
     return { kind: "libCall", fn: "dyn.functionApply", args: [], type: DYN, loc: locOf(expr) };
+  // The program holds the prototype object from here on, so its built-in
+  // methods are fenced against replacement (dyn.arrayPrototypeValue).
   if (lowerer.stdlibGlobalMember(expr, "Array") === "prototype")
-    return { kind: "libCall", fn: "dyn.arrayPrototype", args: [], type: DYN, loc: locOf(expr) };
+    return {
+      kind: "libCall",
+      fn: "dyn.arrayPrototypeValue",
+      args: [],
+      type: DYN,
+      loc: locOf(expr),
+    };
   // DataView.prototype as a value, and its members read through it: the
   // prototype object the language defines — its see-through properties
   // (buffer, byteLength, byteOffset), its getter/setter family and its

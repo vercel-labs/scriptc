@@ -17,6 +17,7 @@ import { Normalizer } from "../canon.js";
 import { resolveEntryExportSymbol } from "../lib-exports.js";
 import { compactDeclOrigins, recordOrigin, slotOrigin, type RecordOrigin } from "./decl-origin.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { LiteralTexts } from "./literal-texts.js";
 import {
   checkedTable,
   countTable,
@@ -11490,6 +11491,16 @@ export class Lowerer {
     const loweredUnits = new Map<string, IrFunction>();
     const initFunctions: IrFunction[] = [];
     const instanceFunctions: IrFunction[] = [];
+    // Each finished function's long string literals become the one string
+    // of their text (literal-texts.ts), with the functions it lifted.
+    const literalTexts = new LiteralTexts();
+    const internLiteralTexts = (fn: IrFunction | null): void => {
+      if (fn !== null) literalTexts.intern(fn);
+      literalTexts.internAdded(initFunctions);
+      literalTexts.internAdded(instanceFunctions);
+      literalTexts.internAdded(this.liftedFns);
+      literalTexts.internAdded(this.implicitFns);
+    };
     this.onEdge = (name: string): void => {
       if (!this.superConstructorEdge && name.endsWith(".constructor"))
         instantiated.add(name.slice(1, -".constructor".length));
@@ -11630,6 +11641,7 @@ export class Lowerer {
                 ),
               ),
             );
+            internLiteralTexts(null);
             relieveHeapPressure();
           }
         }
@@ -11660,6 +11672,7 @@ export class Lowerer {
             );
             if (fn !== null) {
               instanceFunctions.push(fn);
+              internLiteralTexts(null);
               relieveHeapPressure();
             }
           }
@@ -11695,6 +11708,7 @@ export class Lowerer {
                 );
               });
               if (fn) instanceFunctions.push(fn);
+              internLiteralTexts(null);
             } catch (e) {
               if (!(e instanceof PoisonError)) throw e;
             }
@@ -11745,11 +11759,13 @@ export class Lowerer {
       const unit = units.get(name)!;
       const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
       const owner = demandOwner(priority);
-      return this.withGenericDemandOwner(owner, () =>
+      const fn = this.withGenericDemandOwner(owner, () =>
         this.shapes.withDeclaredOrderPriority(priority, () =>
           this.withClosureRoot(name, unit.lower),
         ),
       );
+      internLiteralTexts(fn);
+      return fn;
     };
     // With a unit store, every unit is recorded as in the serial mode, and
     // a unit applies the record an earlier build stored for it where that

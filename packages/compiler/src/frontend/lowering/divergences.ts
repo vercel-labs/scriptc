@@ -939,7 +939,9 @@ function widthCopyBetween(
  * record or class instance it was given) converted to a dictionary type that
  * does not. Dictionary types with the same value type are one type and share
  * the answer, so this is a dictionary of another value type: a native
- * dictionary, built by copying the entries. */
+ * dictionary, built by copying the entries. A dictionary that is a view for
+ * another reason (an island value) is not copied by a conversion: it is
+ * refused when the program runs. */
 function identityDictionaryCopy(lowerer: Lowerer, source: ts.Type, target: ts.Type): boolean {
   const checker = lowerer.checker;
   const dictionary = (type: ts.Type): boolean =>
@@ -949,7 +951,7 @@ function identityDictionaryCopy(lowerer: Lowerer, source: ts.Type, target: ts.Ty
       .getIndexInfosOfType(type)
       .some((index) => (index.keyType.flags & ts.TypeFlags.String) !== 0);
   if (!dictionary(source) || !dictionary(target)) return false;
-  if (!lowerer.classImplementedProtocol(source) || lowerer.classImplementedProtocol(target))
+  if (!lowerer.classDictionaryView(source) || lowerer.classImplementedProtocol(target))
     return false;
   return lowerer.mapTypeOf(target)?.kind === "record";
 }

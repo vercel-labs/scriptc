@@ -1801,18 +1801,25 @@ export class ClassProtocols {
     // A dictionary keeps checked identity when the protocols already mark
     // it (a literal whose methods read `this`) or when it receives existing
     // objects (markDictionaryViews).
-    const dictionaryValue = this.dictionaryValueType(type);
     const view = type.getSymbol();
     const answer =
       this.protocol(type) ||
-      // Nothing is compared in a program that marks no dictionary.
-      (dictionaryValue !== undefined &&
-        this.dictionaryViews.size > 0 &&
-        this.dictionaryViews.has(this.sameness.canonical(dictionaryValue))) ||
+      this.dictionaryView(type) ||
       // A record view of a Map or Set answers through the collection itself.
       (view !== undefined && this.collectionViews.has(view));
     this.answers.set(type, answer);
     return answer;
+  }
+
+  /** Whether `type` is a string-keyed dictionary that keeps checked identity
+   * because dictionaries of its value type receive existing objects
+   * (markDictionaryViews), under any spelling of that type. A program that
+   * marks no dictionary asks the checker nothing here. */
+  dictionaryView(type: ts.Type): boolean {
+    this.index();
+    if (this.dictionaryViews.size === 0) return false;
+    const value = this.dictionaryValueType(type);
+    return value !== undefined && this.dictionaryViews.has(this.sameness.canonical(value));
   }
 
   private protocol(type: ts.Type): boolean {

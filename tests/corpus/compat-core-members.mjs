@@ -39,7 +39,7 @@ await new Promise((resolve) =>
     console.log(error, fs.existsSync(dir));
     fs.rm(path.join(dir, "missing"), (missing) => {
       console.log(missing.code, missing.syscall);
-      resolve();
+      resolve(undefined);
     });
   }),
 );

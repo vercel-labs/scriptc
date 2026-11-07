@@ -535,4 +535,50 @@ describe("runtime feature snapshots", () => {
       childErrorFields: false,
     });
   });
+
+  test("a program that can read the dynamic receiver installs handle ops before %main", () => {
+    // Typed handle use boxes nothing and reads no receiver.
+    const typed = module();
+    typed.functions[0]!.body.push(call("net.serverClose"));
+    expect(moduleRuntimeFeatures(typed)).toMatchObject({ net: true, dynReceiver: false });
+
+    // A JavaScript function's `this`.
+    const receiver = module();
+    receiver.functions[0]!.body.push(call("dyn.this"));
+    expect(moduleRuntimeFeatures(receiver).dynReceiver).toBe(true);
+
+    // A dynamic value converted to a function: it may be a builtin that
+    // reads its receiver.
+    const listener = { kind: "func" as const, params: [], ret: VOID };
+    const dynamicValue: IrExpr = { kind: "varRef", localId: "d", type: DYN, loc };
+    const converted = module();
+    converted.functions[0]!.locals.push({ id: "d", name: "d", mutable: false, type: DYN });
+    converted.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynCheck", value: dynamicValue, type: listener, loc },
+    });
+    expect(moduleRuntimeFeatures(converted).dynReceiver).toBe(true);
+
+    // A typed function boxed and converted back on the spot (a listener
+    // adapter) is the program's own function.
+    const adapted = module();
+    adapted.functions[0]!.locals.push({ id: "f", name: "f", mutable: false, type: listener });
+    adapted.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynCheck",
+        type: { kind: "func", params: [DYN], ret: VOID },
+        loc,
+        value: {
+          kind: "dynFrom",
+          type: DYN,
+          loc,
+          value: { kind: "varRef", localId: "f", type: listener, loc },
+        },
+      },
+    });
+    expect(moduleRuntimeFeatures(adapted).dynReceiver).toBe(false);
+  });
 });

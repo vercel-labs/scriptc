@@ -2527,8 +2527,19 @@ void scr_net_server_drop_max_connection_set(ScrNetServer *s, const ScrDyn *value
   s->drop_max_connection = scr_dyn_retain((ScrDyn *)value);
 }
 
+static void scr_net_server_drop_fire(ScrNetServer *srv, int fd);
+/* The 'drop' fire, set where a 'drop' listener is registered: a server
+ * without one never builds the event's data object, and a program without
+ * one does not link the object writes. A pointer with external linkage:
+ * the compiler folds a static one whose only stored value is this function
+ * back into a direct call. */
+extern SCR_TL void (*scr_net_drop_fire)(ScrNetServer *srv, int fd);
+SCR_TL void (*scr_net_drop_fire)(ScrNetServer *srv, int fd) = NULL;
+
 void scr_net_server_on_drop(ScrNetServer *s, const ScrDyn *listener /*borrowed*/, bool once) {
+  scr_net_dyn_install();
   if (s->close_emitted) return;
+  scr_net_drop_fire = &scr_net_server_drop_fire;
   scr_net_ls_add(&s->drop_ls, scr_dyn_listener_closure_fn(listener, (void *)&scr_net_dyn_fire_arg),
                  (void *)&scr_net_dyn_fire_arg, once);
 }
@@ -2545,6 +2556,7 @@ static void scr_net_get_connections_fire(ScrClosure *self) {
 }
 
 void scr_net_server_get_connections(ScrNetServer *s, const ScrDyn *callback /*borrowed*/) {
+  scr_net_dyn_install();
   ScrClosure *clo = scr_dyn_listener_closure_fn(callback, (void *)&scr_net_get_connections_fire);
   ScrClosure *job = scr_closure_new((void *)&scr_net_get_connections_fire, 2);
   job->caps[0] = scr_box_retain(clo->caps[0]);
@@ -2723,20 +2735,23 @@ static void scr_net_drop_side(ScrDyn *data, const char *prefix, const struct soc
   scr_str_release(f);
 }
 
-/* A connection past server.maxConnections: 'drop' with the local and
- * remote addresses (a null-prototype object in Node), then the close. */
+/* 'drop' with the local and remote addresses (a null-prototype object in
+ * Node). */
+static void scr_net_server_drop_fire(ScrNetServer *srv, int fd) {
+  ScrDyn *data = scr_dyn_new_obj();
+  data->null_proto = true;
+  struct sockaddr_storage ss;
+  socklen_t len = sizeof ss;
+  if (getsockname(fd, (struct sockaddr *)&ss, &len) == 0) scr_net_drop_side(data, "local", &ss);
+  len = sizeof ss;
+  if (getpeername(fd, (struct sockaddr *)&ss, &len) == 0) scr_net_drop_side(data, "remote", &ss);
+  scr_net_fire_arg_this(&srv->drop_ls, data, srv, SCR_DYNH_NET_SERVER);
+  scr_dyn_release(data);
+}
+
+/* A connection past server.maxConnections: 'drop', then the close. */
 static void scr_net_server_drop_conn(ScrNetServer *srv, int fd) {
-  if (srv->drop_ls.n > 0) {
-    ScrDyn *data = scr_dyn_new_obj();
-    data->null_proto = true;
-    struct sockaddr_storage ss;
-    socklen_t len = sizeof ss;
-    if (getsockname(fd, (struct sockaddr *)&ss, &len) == 0) scr_net_drop_side(data, "local", &ss);
-    len = sizeof ss;
-    if (getpeername(fd, (struct sockaddr *)&ss, &len) == 0) scr_net_drop_side(data, "remote", &ss);
-    scr_net_fire_arg_this(&srv->drop_ls, data, srv, SCR_DYNH_NET_SERVER);
-    scr_dyn_release(data);
-  }
+  if (srv->drop_ls.n > 0) scr_net_drop_fire(srv, fd);
   scr_net_close_fd_raw(fd);
 }
 
@@ -3811,6 +3826,7 @@ ScrNetSocket *scr_net_sock_set_keepalive_ret(ScrNetSocket *s, bool enable, doubl
 /* end(callback) with a dyn callback: once 'finish', called without
  * arguments. */
 void scr_net_sock_on_finish_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/) {
+  scr_net_dyn_install();
   scr_net_sock_on_finish(s, scr_dyn_listener_closure0(listener));
 }
 
@@ -3878,21 +3894,23 @@ static void scr_net_ctx_fire_arg(ScrClosure *self, const ScrDyn *arg) {
 }
 
 /* Adds a write callback (moves) with its firing adapter (NULL: a
- * zero-argument closure; scr_net_dyn_fire_arg: a dyn listener). */
+ * zero-argument closure; scr_net_dyn_fire_arg: a dyn listener, whose
+ * caller passes scr_net_ctx_fire_arg as `ctx_fn`, so the zero-argument
+ * form names no dynamic call). */
 static __attribute__((noinline)) ScrClosure *scr_net_bind_write_cb(ScrClosure *cb /*moves*/, void **fn,
-                                                                    ScrAlsCtx *active) {
+                                                                    void *ctx_fn, ScrAlsCtx *active) {
   ScrClosure *bound = scr_closure_new(*fn == NULL ? (void *)scr_net_ctx_fire0 : NULL, 2);
   bound->caps[0] = scr_box_new(SCR_BOX_FUNC);
   scr_box_set_ref(bound->caps[0], cb);
   bound->caps[1] = scr_box_new_obj(scr_net_ctx_retain_v, scr_net_ctx_release_v, NULL);
   scr_box_set_ref(bound->caps[1], scr_als_ctx_retain(active));
-  if (*fn != NULL) *fn = (void *)&scr_net_ctx_fire_arg;
+  if (*fn != NULL) *fn = ctx_fn;
   return bound;
 }
 
-static void scr_net_sock_add_write_cb(ScrNetSocket *s, ScrClosure *cb, void *fn) {
+static void scr_net_sock_add_write_cb(ScrNetSocket *s, ScrClosure *cb, void *fn, void *ctx_fn) {
   ScrAlsCtx *active = *SCR_ALS_SLOT();
-  if (active != NULL) cb = scr_net_bind_write_cb(cb, &fn, active);
+  if (active != NULL) cb = scr_net_bind_write_cb(cb, &fn, ctx_fn, active);
   scr_net_ls_add(&s->wcb_ls, cb, fn, true);
   scr_net_work_add(s);
 }
@@ -3909,7 +3927,7 @@ void scr_net_sock_on_write_flush(ScrNetSocket *s, ScrClosure *cb /*moves*/) {
     scr_closure_release(cb);
     return;
   }
-  scr_net_sock_add_write_cb(s, cb, NULL);
+  scr_net_sock_add_write_cb(s, cb, NULL, NULL);
 }
 
 double scr_net_sock_bytes_written(ScrNetSocket *s) { return (double)s->bytes_written; }
@@ -5174,6 +5192,7 @@ void scr_net_sock_on_ready(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
 /* close(hadError) and write(chunk, cb(err)) listeners as dyn functions,
  * called with the hadError boolean and null. */
 void scr_net_sock_on_close_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/, bool once) {
+  scr_net_dyn_install();
   if (s->close_emitted) return;
   scr_net_ls_add(&s->close_ls, scr_dyn_listener_closure_fn(listener, (void *)&scr_net_dyn_fire_arg),
                  (void *)&scr_net_dyn_fire_arg, once);
@@ -5282,6 +5301,7 @@ void scr_net_lookup_install(void) { scr_net_lookup_ops = &scr_net_lookup_ops_imp
  * delivers its recorded answers at the connect, like Node's asynchronous
  * lookup. */
 void scr_net_sock_on_lookup(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/, bool once) {
+  scr_net_dyn_install();
   if (s->close_emitted) return;
   scr_net_ls_add(&s->lookup_ls, scr_dyn_listener_closure_fn(listener, (void *)&scr_net_dyn_fire_arg),
                  (void *)&scr_net_dyn_fire_arg, once);
@@ -5304,6 +5324,7 @@ static void scr_net_close_not_running_fire(ScrClosure *cb) {
 }
 
 void scr_net_server_close_dyn(ScrNetServer *s, const ScrDyn *listener /*borrowed*/) {
+  scr_net_dyn_install();
   ScrClosure *cb = scr_dyn_listener_closure_fn(
       listener, s->listening ? (void *)&scr_dyn_listener_fire0 : (void *)&scr_net_close_not_running_fire);
   scr_net_server_close(s, cb);
@@ -5320,6 +5341,7 @@ static void scr_net_write_err_fire(ScrClosure *self) {
 }
 
 void scr_net_sock_on_write_flush_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/) {
+  scr_net_dyn_install();
   ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
   if (w->write_err_code != NULL) {
     ScrStr *msg = scr_str_new(w->write_err_msg, strlen(w->write_err_msg));
@@ -5338,7 +5360,7 @@ void scr_net_sock_on_write_flush_dyn(ScrNetSocket *s, const ScrDyn *listener /*b
   }
   if (s->close_emitted) return;
   scr_net_sock_add_write_cb(s, scr_dyn_listener_closure_fn(listener, (void *)&scr_net_dyn_fire_arg),
-                            (void *)&scr_net_dyn_fire_arg);
+                            (void *)&scr_net_dyn_fire_arg, (void *)&scr_net_ctx_fire_arg);
 }
 
 /* socket.setTimeout(ms[, callback]) as the program calls it: Node's
@@ -6955,7 +6977,7 @@ static void scr_net_dynh_srv_unsupported(const char *member, const char *why) {
  * sock arrives +1 and the adapter owns it, like the static adapters). */
 static void scr_net_dynh_fire_conn(ScrClosure *cb, ScrNetSocket *sock /* +1 */) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
-  ScrDyn *dsock = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);
+  ScrDyn *dsock = scr_net_socket_to_dyn(sock);
   ScrDyn *args[1] = { dsock };
   ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");
   scr_dyn_release(r);
@@ -7188,8 +7210,21 @@ static const ScrDynHandleOps scr_net_dynh_srv_ops = {
 };
 
 void scr_net_dyn_install(void) {
+  static SCR_TL bool installed = false;
+  if (installed) return;
+  installed = true;
   scr_dyn_handle_install(SCR_DYNH_NET_SOCKET, &scr_net_dynh_sock_ops);
   scr_dyn_handle_install(SCR_DYNH_NET_SERVER, &scr_net_dynh_srv_ops);
+}
+
+ScrDyn *scr_net_socket_to_dyn(ScrNetSocket *s) {
+  scr_net_dyn_install();
+  return scr_dyn_new_handle(s, SCR_DYNH_NET_SOCKET);
+}
+
+ScrDyn *scr_net_server_to_dyn(ScrNetServer *s) {
+  scr_net_dyn_install();
+  return scr_dyn_new_handle(s, SCR_DYNH_NET_SERVER);
 }
 
 /* Checked-dynamic chunks into a TYPED socket (an untyped JS payload

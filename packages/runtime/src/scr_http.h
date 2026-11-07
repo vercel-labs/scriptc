@@ -84,10 +84,19 @@ double scr_http_req_http_version_minor(ScrHttpReq *r);
 bool scr_http_req_aborted_flag(ScrHttpReq *r);
 bool scr_http_req_complete(ScrHttpReq *r);
 
-/* Registers the httpReq/httpRes handle-dispatch ops (SCR_DYNH_HTTP_REQ /
- * SCR_DYNH_HTTP_RES) — emitted main() calls this exactly when the http
- * unit is linked (the scr_net_dyn_install story). */
+/* Registers the IncomingMessage, ServerResponse and ClientRequest
+ * handle-dispatch ops, the net unit's (an HTTP server and its sockets are
+ * net handles) and the 'request' hook of a dynamic Server, once per thread.
+ * Called as scr_net_dyn_install is: by the boxing functions below, and by
+ * the emitted main() of a program that reads the dynamic receiver. */
 void scr_http_dyn_install(void);
+/* The handle as a dynamic value (+1; borrows the handle). A program that
+ * links this unit boxes its net handles through the last two, so a boxed
+ * HTTP server always has its 'request' hook. */
+ScrDyn *scr_http_req_to_dyn(ScrHttpReq *r);
+ScrDyn *scr_http_res_to_dyn(ScrHttpRes *r);
+ScrDyn *scr_http_server_to_dyn(ScrNetServer *s);
+ScrDyn *scr_http_socket_to_dyn(ScrNetSocket *s);
 void scr_http_validate_header_name(ScrStr *name /*borrowed*/, ScrStr *label /*borrowed*/);
 void scr_http_validate_header_value(ScrStr *name /*borrowed*/, const ScrDyn *value /*borrowed*/);
 ScrDyn *scr_http_status_codes(void); /* +1, shared mutable Node v24 table */
@@ -251,6 +260,7 @@ void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /
  * machinery — one dialed connection per request, no agent pooling; the
  * wire head is Node's exactly). The response arrives as a ScrHttpReq. */
 typedef struct ScrHttpClientReq ScrHttpClientReq;
+ScrDyn *scr_http_client_to_dyn(ScrHttpClientReq *c); /* as scr_http_req_to_dyn */
 typedef void (*ScrHttpRespFn)(ScrClosure *cb, ScrHttpReq *res); /* res +1 */
 ScrHttpClientReq *scr_http_client_retain(ScrHttpClientReq *c);
 void scr_http_client_release(ScrHttpClientReq *c);
@@ -377,8 +387,7 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
                                              ScrHttpRespFn fn, int default_port,
                                              void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx,
                                              ScrStr *pool_key /*borrowed, nullable: https TLS options*/); /* +1 */
-/* http.globalAgent / https.globalAgent: borrowed, and as a +1 value. */
-const ScrDyn *scr_http_global_agent(bool secure);
+/* http.globalAgent / https.globalAgent as a +1 value (below). */
 /* fetch()'s client request for a direct connection: through fetch's own
  * keep-alive agent, which reuses an idle connection with the same host,
  * port and pool_key (+1). */

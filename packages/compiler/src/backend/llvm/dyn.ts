@@ -159,10 +159,24 @@ const STRING_DECODER_FIELDS = ["%enc", "%pending"] as const;
  * which installs the tag's ops on first use (scr_crypto.h). Programs that
  * never box one of these values do not link its dynamic members. */
 const DYN_HANDLE_BOX_FN: Record<string, string> = {
+  child: "scr_child_to_dyn",
   cryptoHash: "scr_crypto_hash_to_dyn",
   cryptoHmac: "scr_crypto_hash_to_dyn",
   dgramSocket: "scr_dgram_to_dyn",
+  httpClientReq: "scr_http_client_to_dyn",
+  httpReq: "scr_http_req_to_dyn",
+  httpRes: "scr_http_res_to_dyn",
+  netServer: "scr_net_server_to_dyn",
+  netSocket: "scr_net_socket_to_dyn",
   spawnRes: "scr_spawn_res_to_dyn",
+};
+
+/** The net handles' box functions in a program that links the HTTP unit:
+ * an HTTP server is a net server, and its box dispatches 'request' through
+ * a hook the HTTP unit's install sets (scr_http.h). */
+const DYN_HANDLE_BOX_FN_HTTP: Record<string, string> = {
+  netServer: "scr_http_server_to_dyn",
+  netSocket: "scr_http_socket_to_dyn",
 };
 
 /** Handle kinds whose box holds a unit-owned wrapper rather than the
@@ -231,6 +245,8 @@ export interface DynHost extends WalkerHost {
   liveDynRefAdapter(t: IrType): LlStreamTypedRefAdapter;
   /** See moduleUsesDynBuiltinStream. */
   usesDynBuiltinStream?(): boolean;
+  /** The program links the HTTP unit (RuntimeFeatures.http). */
+  usesHttp?(): boolean;
   /** The JavaScript object model build is on: an array it holds may keep
    * elements past its dense prefix, so the keyed read answers `length`
    * from the array's own length rather than the prefix field. */
@@ -4157,7 +4173,9 @@ export class LlDyn {
         // tag's installed ops.
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) {
-          const box = DYN_HANDLE_BOX_FN[t.kind];
+          const box =
+            (host.usesHttp?.() === true ? DYN_HANDLE_BOX_FN_HTTP[t.kind] : undefined) ??
+            DYN_HANDLE_BOX_FN[t.kind];
           const r = B.tmp();
           if (box) {
             host.declare(`declare ptr @${box}(ptr)`);

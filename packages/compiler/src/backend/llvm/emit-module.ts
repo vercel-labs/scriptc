@@ -518,11 +518,20 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // before %main — scr_stream.c links only when the line is emitted
   // (native/executable.ts gates on the same predicate).
   const usesStream = runtimeFeatures.stream;
-  // Net-surface programs fill the loop's net hooks (and the netSocket
-  // handle-dispatch ops for the checked-dynamic boundary); http-surface
-  // programs additionally stamp the httpReq/httpRes ops — the C main's
-  // install lines, gated on the same predicates native/executable.ts links by.
+  // Net-surface programs fill the loop's net hooks — the C main's install
+  // line, gated on the same predicate native/executable.ts links by.
   const usesNet = runtimeFeatures.net;
+  // The net, HTTP and child units install their checked-dynamic handle ops
+  // where a handle is first boxed (their scr_*_to_dyn functions), so a
+  // program that boxes none links none of those members. A listener's
+  // `this` is the one box the units cannot see coming: the runtime makes
+  // it by tag when dynamic code reads the receiver, so a program that can
+  // read one installs the ops here, before %main. A program that adds
+  // properties to handles installs the child ops here too:
+  // scr_dyn_handle_props_install wraps the ops it finds.
+  const readsDynReceiver = runtimeFeatures.dynReceiver;
+  const installsChildDyn =
+    runtimeFeatures.childProcess && (readsDynReceiver || runtimeFeatures.handleProps);
   const usesNetLookup = runtimeFeatures.netLookup;
   const usesDgram = runtimeFeatures.dgram;
   const usesHttp2 = runtimeFeatures.http2;
@@ -549,7 +558,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesNodeTest = runtimeFeatures.nodeTest;
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
-  if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
+  if (installsChildDyn) emitter.declare(`declare void @scr_child_dyn_install()`);
   const childStreamBoxes =
     usesChildProcess &&
     usesStream &&
@@ -600,13 +609,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
   if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
-  if (usesNet) {
-    emitter.declare(`declare void @scr_net_install()`);
-    emitter.declare(`declare void @scr_net_dyn_install()`);
-  }
+  if (usesNet) emitter.declare(`declare void @scr_net_install()`);
+  if (usesNet && readsDynReceiver) emitter.declare(`declare void @scr_net_dyn_install()`);
   if (usesDgram) emitter.declare(`declare void @scr_dgram_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
-  if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
+  if (usesHttp && readsDynReceiver) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
@@ -1324,7 +1331,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // nullable event hooks before %main — scr_events.c links only when
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
-    ...(usesChildProcess ? [`  call void @scr_child_dyn_install()`] : []),
+    ...(installsChildDyn ? [`  call void @scr_child_dyn_install()`] : []),
     ...(childStreamBoxes
       ? [
           `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,
@@ -1354,9 +1361,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
     ...(usesBufferPrototypeObject ? [`  call void @scr_sym_for_install()`] : []),
     ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
-    ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
+    ...(usesNet ? [`  call void @scr_net_install()`] : []),
+    ...(usesNet && readsDynReceiver ? [`  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
-    ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
+    ...(usesHttp && readsDynReceiver ? [`  call void @scr_http_dyn_install()`] : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
     ...(usesStream ? [`  call void @scr_stream_install()`] : []),

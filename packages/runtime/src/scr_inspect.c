@@ -1430,7 +1430,7 @@ static ScrStr *insp_improve_stack(const ScrStr *text, const char *name, size_t n
  * materialized node the caller releases). */
 static ScrDyn *insp_error_cause(ScrError *e, bool *enumerable, ScrDyn **view) {
   *view = NULL;
-  ScrDyn *node = scr_errdyn_view_of(e);
+  ScrDyn *node = scr_errdyn_node_of(e);
   if (node != NULL && node->kind == SCR_DYN_TYPED_REF) node = *view = scr_dyn_typed_ref_materialize(node);
   if (node != NULL && node->kind == SCR_DYN_OBJ) {
     for (size_t i = 0; i < scr_dyn_obj_count(node); i++) {
@@ -1492,7 +1492,7 @@ ScrStr *scr_insp_error_node(ScrError *e, double recurse, double depth) {
   bool pending = scr_exc_pending();
   ScrStr *stack = scr_error_stack(e);
   insp_swallow_new_exc(pending);
-  ScrDyn *view = scr_errdyn_view_of(e);
+  ScrDyn *view = scr_errdyn_node_of(e);
   if (view != NULL && view->kind == SCR_DYN_OBJ) {
     ScrStr *out = insp_dyn_error(view, recurse, depth, e, stack, true, NULL);
     scr_str_release(stack);

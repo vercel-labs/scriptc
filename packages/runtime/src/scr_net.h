@@ -358,11 +358,17 @@ void scr_net_data_thunk_dyn(ScrClosure *cb, ScrBytes *chunk);
 void scr_net_conn_thunk0(ScrClosure *cb, ScrNetSocket *sock);
 void scr_net_conn_thunk_sock(ScrClosure *cb, ScrNetSocket *sock);
 void scr_net_install(void);
-/* Registers the netSocket handle-dispatch ops (SCR_DYNH_NET_SOCKET) —
- * emitted main() calls this alongside scr_net_install exactly when the
- * net unit is linked, so the always-linked dyn core never references
- * this unit's entry points. */
+/* Registers the netSocket and netServer handle-dispatch ops, once per
+ * thread. Every way a handle of this unit becomes a dynamic value calls
+ * it: the boxing functions below (the compiler's and the runtime's), the
+ * entry points that take a dynamic listener, and the emitted main() of a
+ * program that reads the dynamic receiver (a listener's `this` boxes the
+ * emitting handle by tag in scr_dyn_this_get). A program that does none of
+ * these links none of the unit's dynamic members. */
 void scr_net_dyn_install(void);
+/* The handle as a dynamic value (+1; borrows the handle). */
+ScrDyn *scr_net_socket_to_dyn(ScrNetSocket *s);
+ScrDyn *scr_net_server_to_dyn(ScrNetServer *s);
 #ifdef SCR_RC_AUDIT
 long scr_net_live_count(void);
 #endif

@@ -3056,7 +3056,7 @@ static void scr_h2_dyn_fire_resp(ScrClosure *cb, ScrArr *pairs, double status, d
 static void scr_h2_dyn_fire_connect(ScrClosure *cb, ScrH2Session *s, ScrNetSocket *sock) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
   ScrDyn *hs = scr_dyn_new_handle(s, SCR_DYNH_H2_SESSION);
-  ScrDyn *hsock = sock ? scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET) : scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *hsock = sock ? scr_http_socket_to_dyn(sock) : scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *args[2] = { hs, hsock };
   ScrDyn *r = scr_dyn_call(fn, args, 2, "listener");
   scr_dyn_release(r);
@@ -3313,7 +3313,7 @@ static ScrDyn *scr_h2_dynh_session_get(void *h, const char *key, size_t key_len)
   if (strcmp(key, "socket") == 0) {
     ScrNetSocket *sock = scr_http2_session_socket(s);
     if (sock == NULL) return NULL;
-    ScrDyn *d = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);
+    ScrDyn *d = scr_http_socket_to_dyn(sock);
     scr_net_sock_release(sock);
     return d;
   }

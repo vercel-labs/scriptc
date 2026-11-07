@@ -66,6 +66,21 @@ const SRC = "packages/compiler/src";
 
 export const PROGRAM_FACTS: readonly ProgramFact[] = [
   {
+    name: "member-call-receivers",
+    file: `${SRC}/frontend/lowering/member-call-receivers.ts`,
+    symbol: "memberCallReceivers",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a store of a function that reads the receiver of its call (a function with its own `this`, outside classes) into a member, by the member's name; and, once such a function reaches a place the census does not follow, any store of a value it cannot classify",
+    gates:
+      "a member call on a record whose member has that name passes the record as the call's receiver, boxed only if the callee reads it",
+    narrower:
+      "the member's declaring symbol instead of its name, and the function values that can reach the store, by type flow",
+    tracked: "pi-decisions DECISIONS.md 2026-11-07, unbound-method-this slice 2",
+    lowererFields: ["memberReceivers"],
+  },
+  {
     name: "thenables-may-be-defined",
     file: `${SRC}/frontend/lowering/thenables.ts`,
     symbol: "programMayDefineThenables",
@@ -650,6 +665,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "partial-assertion-targets",
   ),
+  decides("frontend/lowering/member-call-receivers.ts#takeCensus", 1, "member-call-receivers"),
   decides("frontend/lowering/primitive-wrappers.ts#programCreatesWrappers", 1, "creates-wrappers"),
   scan(
     "frontend/lowering/symbol-fields.ts#tablePropertyWritten",

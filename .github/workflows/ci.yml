@@ -920,6 +920,9 @@ jobs:
               const value = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
               if (value.default_target !== "x86_64-unknown-linux-musl" || !value.supported_targets?.includes("wasm32-unknown-wasi")) process.exit(1);
             '
+      - run: pnpm build
+      - name: Executable hardening and debug payload (glibc and musl)
+        run: pnpm test tests/harness/executable-hardening.test.ts
 
   llvm_artifacts_linux_x64_wasi:
     needs: [validation_scope, lanes, native_linux]

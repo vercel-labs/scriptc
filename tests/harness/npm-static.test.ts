@@ -306,15 +306,12 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         ].join("\n"),
       );
       const npmStatic = ["loaded-pkg", "named-only-pkg"];
-      // Both packages are plain static modules: the second is never loaded,
-      // so its classification may not depend on how the call above is read.
-      expect(
-        analyze(entry, { npmStatic }).coverage.npmStatic.toSorted((a, b) =>
-          a.package.localeCompare(b.package),
-        ),
-      ).toEqual([
+      // Both packages are plain static modules: the second is never loaded
+      // (the call above names it in a string, which is not an import), so
+      // the selection compiles nothing of it and the analysis does not list
+      // it as a compiled package.
+      expect(analyze(entry, { npmStatic }).coverage.npmStatic).toEqual([
         { package: "loaded-pkg", status: "static" },
-        { package: "named-only-pkg", status: "static" },
       ]);
       const outDir = join(dir, "out");
       const result = await compile(entry, {

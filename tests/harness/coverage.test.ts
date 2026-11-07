@@ -1183,10 +1183,13 @@ test("Node island policy from the command line: native, forced, off", () => {
   expect(forcedCoverage.diagnostics).toEqual([]);
   expect(forced.violations).toEqual([]);
   expect(forced.unknownPackages).toEqual(["not-a-dependency"]);
-  // With islands off the refused package is the build's error, and no
-  // island is left to report.
+  // With islands off the refused package is the build's error and no
+  // island is left; the native packages keep their reasons.
   const off = analyze(entry, { nodeIslands: { mode: "off" } }).coverage;
-  expect(off.nodeIslands).toBeUndefined();
+  expect(off.nodeIslands!.islands).toEqual([]);
+  expect(
+    off.nodeIslands!.packages.filter((p) => p.outside !== undefined).map((p) => p.package),
+  ).toEqual(["ni-bundled", "ni-ctor", "ni-eval", "ni-gap"]);
   expect([...new Set(off.diagnostics.map((d) => d.code))]).toEqual(["SC2013"]);
   expect(coveragePasses(off, "blockers")).toBe(false);
 });

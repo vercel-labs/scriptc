@@ -987,11 +987,16 @@ function renderNodeIslands(
     if (details.length > 0) out.push(`          ${c(DIM, details.join("; "))}`);
   }
   for (const m of report.userModules) {
+    // The packages only this module imports run inside its island.
+    const inside = report.packages
+      .filter((p) => p.status === "inside" && p.islands.includes(m.file))
+      .map((p) => p.package);
     out.push(
       m.source === "auto"
         ? `    ${c(YELLOW, "module".padEnd(widest))}  ${displayPath(m.file, root)} ${c(DIM, `(user module${m.reason === undefined ? "" : `: ${capMessage(m.reason)}`})`)}`
         : `    ${c(YELLOW, "marked".padEnd(widest))}  ${displayPath(m.file, root)} ${c(DIM, `(user module, marked by ${m.source === "cli" ? "--node-island" : "nodeIslands.modules"})`)}`,
     );
+    if (inside.length > 0) out.push(`          ${c(DIM, `carries ${inside.join(", ")}`)}`);
   }
   for (const v of report.violations) {
     out.push(`    ${c(RED, v.code)}  ${capMessage(v.message)}`);

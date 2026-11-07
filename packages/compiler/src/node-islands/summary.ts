@@ -109,13 +109,14 @@ export function describe(r: NodeIslandReason): string {
   return r.code === null ? `${rule}${r.message}` : `${rule}${r.code}: ${r.message}`;
 }
 
-/** True when the report has decisions to show (islands, marked modules,
- * policy errors or unknown names); SC81xx findings alone render as
- * blockers. */
+/** True when the report has decisions to show (islands, island modules,
+ * a native package with a reason it could need Node, policy errors or
+ * unknown names); SC81xx findings alone render as blockers. */
 export function hasNodeIslandDecisions(report: NodeIslandReport): boolean {
   return (
     report.islands.length > 0 ||
     report.userModules.length > 0 ||
+    report.packages.some((p) => p.outside !== undefined) ||
     report.violations.length > 0 ||
     report.unknownPackages.length > 0
   );
@@ -123,11 +124,5 @@ export function hasNodeIslandDecisions(report: NodeIslandReport): boolean {
 
 /** True when the report has anything to show. */
 export function hasNodeIslandFindings(report: NodeIslandReport): boolean {
-  return (
-    report.islands.length > 0 ||
-    report.userModules.length > 0 ||
-    report.violations.length > 0 ||
-    report.userJs.length > 0 ||
-    report.unknownPackages.length > 0
-  );
+  return hasNodeIslandDecisions(report) || report.userJs.length > 0;
 }

@@ -127,11 +127,17 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     const s = state(m.packageName, m.packageDir);
     for (const marker of m.markers) addReason(s, classifyMarker(marker));
   }
-  // Import edges. A marked user module is an island owner of its own
-  // (unless islands are off, where it is a violation and stays native).
+  // Import edges. A user module that runs in Node is an island owner of its
+  // own: one the build decided (marked, or islanded automatically for a
+  // sloppy construct, a builtin patch or a refusal of its lowering), or,
+  // without a decision, one the policy marks (unless islands are off, where
+  // it is a violation and stays native).
+  const decided = input.decided;
   const USER = "user:";
   const userIsland = (file: string): boolean =>
-    policy.mode !== "off" && isMarkedUserModule(policy, file) !== null;
+    decided !== undefined
+      ? decided.modules.has(file)
+      : policy.mode !== "off" && isMarkedUserModule(policy, file) !== null;
   const imports = new Map<string, Set<string>>();
   for (const e of input.scan.edges) {
     if (e.shim || ignored(e.to)) continue;
@@ -176,7 +182,6 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
   // Decisions.
   const violations: ScrDiagnostic[] = [];
   const fallbackLoc: SrcLoc = { file: input.entry, start: 0, end: 0 };
-  const decided = input.decided;
   // The build's decision: its packages are the islands, whatever reasons
   // the report holds for the others (a package with reasons the build keeps
   // native is a native package).

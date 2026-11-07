@@ -43427,9 +43427,9 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
-        "verification": "test-backed"
+        "status": "not-implemented",
+        "detail": "No static compiler lowering is registered for this API yet.",
+        "verification": "registry-gap"
       }
     },
     {
@@ -43749,9 +43749,9 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
-        "verification": "test-backed"
+        "status": "not-implemented",
+        "detail": "No static compiler lowering is registered for this API yet.",
+        "verification": "registry-gap"
       }
     },
     {

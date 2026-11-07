@@ -64079,11 +64079,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:http2.aborted",
-        "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:http2"
       },
       "anchorSource": "ancestor"
     },
@@ -64407,11 +64404,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:http2.'aborted'",
-        "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:http2"
       },
       "anchorSource": "exact"
     },

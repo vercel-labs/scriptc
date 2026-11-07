@@ -2,8 +2,9 @@
 // session's 'connect', 'close' and 'error' events, its type and socket,
 // close() with a callback, the server session's 'stream' event, a
 // stream's session, and through the compatibility API the request's
-// complete and aborted flags and 'close' event, and the response's
-// getHeaderNames(), getHeaders() and setTimeout().
+// complete flag and 'close' event, and the response's getHeaderNames(),
+// getHeaders() and setTimeout(). Every request here completes: the
+// request's aborted flag and 'aborted' event are not exercised.
 import http2 from "node:http2";
 
 // Core API: session events and state.
@@ -57,11 +58,10 @@ await new Promise((resolve) => {
 await new Promise((resolve) => {
   const lines = [];
   const server = http2.createServer((request, response) => {
-    request.on("aborted", () => lines.push("aborted"));
     request.on("close", () => lines.push("request close"));
     request.resume();
     request.on("end", () => {
-      lines.push(`request ${request.complete} ${request.aborted}`);
+      lines.push(`request ${request.complete}`);
       response.setHeader("X-A", "1");
       response.setHeader("x-b", ["2", "3"]);
       lines.push(`headers ${response.getHeaderNames().join(",")} ${JSON.stringify(response.getHeaders())}`);

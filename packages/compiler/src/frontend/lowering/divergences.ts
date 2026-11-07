@@ -426,6 +426,14 @@ export function bindingIdentityUse(
   return identityUse(scope, decl.name.text, decl.end, symbolMatcher(decl, checker)) !== null;
 }
 
+/** Whether the body of `fn` writes through its parameter `name` or compares
+ * it by identity: the uses the width-copy report names for an argument. A
+ * call that passes an existing record keeps that record's layout for such a
+ * parameter instead of copying it (structural-instances.ts). */
+export function parameterIdentityUse(fn: ts.FunctionLikeDeclaration, name: string): boolean {
+  return fn.body !== undefined && identityUse(fn.body, name) !== null;
+}
+
 /** Matches references that resolve to the binding `decl` declares, so a
  * shadowing declaration of the same name elsewhere is not mistaken for a
  * use of the binding. Undefined when the checker is unavailable or cannot

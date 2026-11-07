@@ -86,6 +86,10 @@ Parallel changes must never pick the same number by hand. Each registry has one 
 
 Before taking a number in a pinned registry, run `node scripts/registry-claims.mjs`: it lists the diagnostic codes and pinned handle tags that open pull requests claim and reports collisions; `--check` reports only collisions with the current branch and exits 1 when there is one.
 
+## Whole-program facts
+
+A rule that turns on for a whole program, file or shape because of one occurrence somewhere in it is a cliff: an unrelated line changes how other code compiles. Decide a fact from the syntax, symbols or types of the value or site it concerns, never from a file's raw text or from an identifier's spelling. When a fact has to be program-wide, register it in `packages/compiler/src/program-facts.ts`, which lists every such fact and every scan over the program's source files; `program-facts.test.ts` fails on a scan that is not registered there.
+
 ## Where things live
 
 - `packages/compiler` — the frontend (tsc API to IR), typed IR, validator, serializer, and LLVM backend.

@@ -1255,6 +1255,8 @@ void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key);
 bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key);
 /* Reflect.has's target check: Node's TypeError pending for a primitive. */
 void scr_dyn_reflect_has_target(const ScrDyn *target);
+/* Reflect.getPrototypeOf's target check: Node's TypeError for any primitive. */
+void scr_dyn_reflect_get_prototype_target(const ScrDyn *target);
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key);
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key);
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *key, bool strict);
@@ -1580,6 +1582,13 @@ void *scr_record_link_source(const void *copy);
  * that order. Undeclared keys are not copied, as the literal copies none. */
 void scr_record_source_spread(void *dst, const void *src, const char *const *names,
                               const size_t *lens, size_t count);
+/* `delete rec.key` of a key the record's declared layout does not hold
+ * (scr_record_source_delete.c, a gated unit): removes the own property
+ * from the record's kept source (a record view deletes from the record it
+ * views). Answers `delete`'s boolean: true when the property is gone, false
+ * when it survives — a frozen or non-configurable property, which strict
+ * code (`strict`) refuses with Node's TypeError instead. Borrows both. */
+bool scr_record_source_delete(void *rec, const char *key, size_t key_len, bool strict);
 /* Object.freeze of a record a program may freeze: sets SCR_RC_FROZEN in its
  * rc word (immortal records are left as they are). */
 void scr_record_freeze(void *record);

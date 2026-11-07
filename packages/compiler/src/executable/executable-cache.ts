@@ -100,11 +100,14 @@ export interface EarlyExecutableNativeFeatures {
   handleProps?: boolean;
   childLifecycle?: boolean;
   childOptionExt?: boolean;
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
   dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
+  reflectProtoTarget?: boolean;
+  recordSourceDelete?: boolean;
   genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;

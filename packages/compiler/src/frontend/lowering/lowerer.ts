@@ -310,10 +310,10 @@ import type {
 } from "../../diagnostics/diagnostic.js";
 import { declarationGroupKey, typeFailureOf } from "./type-failure.js";
 import { dynamicSlotDiag, type DynamicSlotEntry } from "../../diagnostics/dynamic-slots.js";
+import { compilerCrashDiag, isCompilerCrash, noteCrashSite } from "../../diagnostics/crash-site.js";
 import {
   unsupportedAnyOperationDiag,
   blockedBindingUseDiag,
-  checkerPanicDiag,
   componentTypeDiag,
   isCheckerPanic,
   genericSignatureTypeDiag,
@@ -5664,6 +5664,7 @@ export class Lowerer {
       fixed("collecting", () => this.collecting),
       fixed("diagSink", () => this.diagSink),
       fixed("speculativeTypeQueryDepth", () => this.speculativeTypeQueryDepth),
+      fixed("speculativeCollectionDepth", () => this.speculativeCollectionDepth),
       fixed("mixinTypeContext", () => this.mixinTypeContext),
       fixed("pendingLabels", () => this.pendingLabels),
       fixed("onEdge", () => this.onEdge),
@@ -14169,6 +14170,20 @@ export class Lowerer {
   }
 
   typeOf(node: ts.Node): ts.Type {
+    if (this.speculativeTypeQueryDepth === 0 || this.speculativeCollectionDepth > 0)
+      return this.typeOfNode(node);
+    // A speculative whole-program analysis (speculativeTypeQueries) asks
+    // about nodes of every file, reached or not, and the checker can panic
+    // on one. No statement or declaration owns that query, so the panic
+    // would end the build with nothing to point at. The query takes the
+    // answer the checker's own sweep gives a node it panics on (`any`,
+    // ts7/checker.ts withPanicFence): the analysis learns nothing from the
+    // node, and a statement that does lower it meets the panic inside its
+    // own fence, which reports it there.
+    return panicSafe(() => this.typeOfNode(node), this.checker.getAnyType());
+  }
+
+  private typeOfNode(node: ts.Node): ts.Type {
     if (ts.isIdentifier(node)) {
       const inferred = inferredCollectionType(this, node);
       if (inferred) return inferred;
@@ -17443,14 +17458,19 @@ export class Lowerer {
       // (the 1e999 JSON-marshal signature crossed collectSignature): the
       // declaration poisons under a source-anchored diagnostic, deferred
       // like any collection fence — never a crashed CLI.
-      if (isCheckerPanic(e)) {
+      // An internal compiler error raised while collecting poisons the
+      // declaration the same way, under SC9001 at the innermost node its
+      // collection had reached (diagnostics/crash-site.ts), unless this
+      // collection runs inside another capture buffer: there it keeps
+      // propagating (see lowerStmts' fence), with the site noted.
+      if (isCompilerCrash(e)) {
         const decl = symbol ? symbol.declarations[0] : undefined;
-        sink.push(
-          checkerPanicDiag(
-            e.message.split("\n", 1)[0]!,
-            decl ? locOf(decl) : { file: this.entry.fileName, start: 0, end: 0 },
-          ),
-        );
+        const declLoc = decl ? locOf(decl) : { file: this.entry.fileName, start: 0, end: 0 };
+        if (e instanceof InternalCompilerError && previousSink !== null) {
+          noteCrashSite(e, declLoc);
+          throw e;
+        }
+        sink.push(compilerCrashDiag(e, declLoc));
       } else if (!(e instanceof PoisonError)) {
         throw e;
       }
@@ -17873,6 +17893,10 @@ export class Lowerer {
    * file before reachability is known (speculativeTypeQueries). */
   private speculativeTypeQueryDepth = 0;
 
+  /** Depth of the class collections a speculative analysis' type query
+   * started (collectLocalClassForType). */
+  private speculativeCollectionDepth = 0;
+
   /** Runs a whole-program analysis whose type queries are speculative: they
    * visit every file, reached or not, and no statement or declaration owns
    * a refusal they trigger (collectLocalClassForType). */
@@ -17893,16 +17917,22 @@ export class Lowerer {
    * an analysis already caught the poison) and the class is unmappable for
    * the query instead of the poison escaping the compiler. */
   collectLocalClassForType(decl: ts.ClassLikeDeclaration): boolean {
-    if (this.speculativeTypeQueryDepth === 0 || this.fnStack.length > 0) {
+    if (this.speculativeTypeQueryDepth === 0) {
       this.lowerClassExpressionInfo(decl);
       return true;
     }
+    // The collection is real work with fences of its own: a checker panic
+    // inside it is reported there, not answered as the analysis' queries
+    // are (typeOf).
+    this.speculativeCollectionDepth++;
     try {
       this.lowerClassExpressionInfo(decl);
       return true;
     } catch (e) {
-      if (e instanceof PoisonError) return false;
+      if (this.fnStack.length === 0 && e instanceof PoisonError) return false;
       throw e;
+    } finally {
+      this.speculativeCollectionDepth--;
     }
   }
 

@@ -343,11 +343,11 @@ import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerUnionFieldDelete, lowerUnionFieldWrite } from "./expressions/union-fields.js";
 import {
   UNSUPPORTED,
-  checkerPanicDiag,
   isCheckerPanic,
   unsupportedNativeExecutionDiag,
   widthCopyRefusalDiag,
 } from "../../diagnostics/diagnostic.js";
+import { compilerCrashDiag, noteCrashSite } from "../../diagnostics/crash-site.js";
 import { observesDeclaration } from "./observable-write.js";
 import {
   isParseArgsDynTypeName,
@@ -923,9 +923,21 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
         // an upstream checker bug reached through this statement's
         // queries. It poisons the statement under a source-anchored
         // diagnostic exactly like a fence — never a crashed CLI.
-        if (isCheckerPanic(e)) {
-          lowerer.pushDiag(checkerPanicDiag(e.message.split("\n", 1)[0]!, locOf(stmt)));
+        // An internal compiler error takes the same road where this
+        // statement reports to the build itself: the statement poisons
+        // under SC9001 at the innermost node its lowering had reached
+        // (diagnostics/crash-site.ts), and the build goes on to report
+        // what else is wrong with the program. Inside a capture buffer
+        // (a probe, a deferred collection) it keeps propagating, so
+        // nothing that discards what it captured can turn a compiler bug
+        // into a quiet fallback; the site is noted for whoever reports it.
+        if (
+          isCheckerPanic(e) ||
+          (e instanceof InternalCompilerError && lowerer.diagSink === null)
+        ) {
+          lowerer.pushDiag(compilerCrashDiag(e, locOf(stmt)));
         } else if (!(e instanceof PoisonError)) {
+          if (e instanceof InternalCompilerError) noteCrashSite(e, locOf(stmt));
           throw e;
         }
         if (!lowerer.suppressStats) lowerer.countStatementFailed(stmt, sf?.fileName);

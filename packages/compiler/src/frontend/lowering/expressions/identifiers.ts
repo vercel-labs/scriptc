@@ -10,7 +10,6 @@ import { legacyUrlClassValue } from "../builtins/url.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { globalFunctionValue } from "../global-function-values.js";
-import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
@@ -42,7 +41,11 @@ import {
   wholeExportValueOfModuleBinding,
 } from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
-import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
+import {
+  argumentsOwner,
+  forwardedOnlyTupleValue,
+  typedArgumentsCandidate,
+} from "../typed-arguments.js";
 import { argumentCountValue } from "../argument-counts.js";
 import {
   isCjsExportTableLiteral,
@@ -174,8 +177,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // type and lowerLambda declared the local.
   if (expr.text === "arguments") {
     const binding = captureContextArguments(lowerer.fnStack);
-    if (binding && lowerer.ctx.pureTuples.has(binding.id)) {
-      throw new InternalCompilerError("lowerer bug: forwarded-only 'arguments' read as a value");
+    // A forwarded-only `arguments` read as a value after all (a call path
+    // that takes its spread operand as a list): the tuple is built here
+    // from its slots (typed-arguments.ts forwardedOnlyTupleValue).
+    const forwardedSlots = binding ? lowerer.ctx.pureTuples.get(binding.id) : undefined;
+    if (binding && forwardedSlots) {
+      return lowerer.tupleOfSlots(forwardedSlots, binding.type, expr, loc);
     }
     if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };
     const owner = argumentsOwner(expr);
@@ -260,6 +267,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       );
     }
   }
+  // A forwarded-only rest tuple read as a value after all.
+  const forwardedTuple = forwardedOnlyTupleValue(lowerer, expr, loc);
+  if (forwardedTuple) return forwardedTuple;
   // Union-typed bindings read through tsc's control-flow narrowing:
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.

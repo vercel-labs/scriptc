@@ -467,6 +467,10 @@ ScrPromise *scr_fsp_symlink(const ScrDyn *target, const ScrDyn *destination, con
 ScrPromise *scr_fsp_readlink_dyn(const ScrDyn *path, const ScrDyn *options);
 ScrPromise *scr_fsp_readlink_str(const ScrDyn *path, const ScrDyn *options);
 ScrPromise *scr_fsp_readlink_buffer(const ScrDyn *path, const ScrDyn *options);
+/* An fs.Stats as a checked-dynamic value (scr_stats_dyn.c, linked by the
+ * statsDyn runtime feature): the handle holds the snapshot by reference, so
+ * every box of one Stats is the same object. +1 box; `s` is borrowed. */
+ScrDyn *scr_stats_to_dyn(ScrStats *s);
 ScrStats *scr_stats_retain(ScrStats *s);
 void scr_stats_release(ScrStats *s);
 void *scr_stats_retain_v(void *p);

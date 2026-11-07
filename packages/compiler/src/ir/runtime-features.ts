@@ -578,6 +578,7 @@ interface TypeTables {
   childCarriers?: TypeCarriers;
   /** mentionsTextCodec's and mentionsTextDecoder's carriers. */
   textCodecCarriers?: TypeCarriers;
+  statsCarriers?: TypeCarriers;
   textDecoderCarriers?: TypeCarriers;
   /** mentionsU8Bytes's carriers. */
   u8BytesCarriers?: TypeCarriers;
@@ -742,6 +743,16 @@ const childLeaf: CarrierLeaf = (t) => t.kind === "child";
 function mentionsChild(t: IrType, tables: TypeTables): boolean {
   tables.childCarriers ??= leafCarriers(tables, childLeaf);
   return carriesLeaf(t, tables.childCarriers, childLeaf, tables);
+}
+
+const statsLeaf: CarrierLeaf = (t) => t.kind === "stats";
+
+/** Whether converting a value of type `t` to or from dyn converts an
+ * fs.Stats, which boxes it as a handle of scr_stats_dyn.c (the same carrier
+ * walk as dgram sockets). */
+function mentionsStats(t: IrType, tables: TypeTables): boolean {
+  tables.statsCarriers ??= leafCarriers(tables, statsLeaf);
+  return carriesLeaf(t, tables.statsCarriers, statsLeaf, tables);
 }
 
 const textCodecLeaf: CarrierLeaf = (t, tables) => {
@@ -1501,6 +1512,14 @@ const RUNTIME_FEATURE_RULES = {
   /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
    * a unit of its own so scr_json.c keeps its layout). */
   reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** An fs.Stats converts to or from an untyped value (its handle box, or a
+   * boxed function, promise, record or collection that carries one):
+   * scr_stats_dyn.c. */
+  statsDyn: rule({
+    expr: (node, tables) =>
+      (node.kind === "dynFrom" && mentionsStats(node.value.type, tables())) ||
+      (node.kind === "dynCheck" && mentionsStats(node.type, tables())),
+  }),
   /** `delete` of a key a record's type does not declare, removed from the
    * record's kept source (scr_record_source_delete.c, a unit of its own so
    * scr_json.c keeps its layout). */
@@ -2078,6 +2097,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynCollections: false,
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
+    statsDyn: false,
     recordSourceDelete: false,
     dynBuffer: false,
     dynBufferMembers: false,

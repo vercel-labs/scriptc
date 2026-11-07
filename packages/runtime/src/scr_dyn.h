@@ -221,6 +221,7 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
   X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
+  X(STATS, 101) /* fs.Stats (scr_stats_dyn.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -261,7 +262,8 @@ typedef enum {
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
 #define SCR_DYNH_UNASSIGNED(Z) \
-  Z(63) /* skipped: claimed by a branch that took another number */
+  Z(63) /* skipped: claimed by a branch that took another number */ \
+  Z(100) /* skipped: an open branch claims it for WeakRef */
 
 /* One member per pinned tag, sized value + 1, so its size is the largest
  * pinned value + 1: the new tags are numbered from there. Never instantiated. */

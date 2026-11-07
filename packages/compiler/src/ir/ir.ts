@@ -4594,6 +4594,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["spawnRes", { tag: "SCR_DYNH_SPAWN_RES", cls: "SpawnSyncReturns" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
+  ["stats", { tag: "SCR_DYNH_STATS", cls: "Stats" }],
 ]);
 
 /** A class value that crosses an `unknown` slot as a compiler-owned typed

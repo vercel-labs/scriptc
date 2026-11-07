@@ -2876,11 +2876,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Primitive and container types retain their structural mappings; types
   // owned by the standard library or explicit host mappings are handled
   // by their dedicated native rules. Pure type shapes — interfaces, type
-  // aliases, and object or mapped type literals with no value declaration
-  // merged in — describe data, not an implementation: a program value of
-  // such a type is one the program built itself (`import type` from a
-  // types-only package), so it maps structurally like a local declaration.
-  // Values the package itself would produce stay refused at their import.
+  // aliases, object or mapped type literals with no value declaration
+  // merged in, and the CALLING-CONVENTION shapes they spell (a function type
+  // node, a method signature) — describe data and call signatures, not an
+  // implementation: a program value of such a type is one the program built
+  // itself (`import type` from a types-only package), so it maps structurally
+  // like a local declaration. A callback or method slot is the common case:
+  // an SDK config type declares `requestHandler?: (url: string) => void` or
+  // `logger?: Logger` with `info(message: string): void`, and the program
+  // fills the slot with its own closure. Values the package itself would
+  // produce stay refused at their import.
   {
     const aliasDecls = packageDeclarations(widened.getAliasSymbol(), ctx);
     const ownDecls = packageDeclarations(widened.getSymbol(), ctx);
@@ -8615,8 +8620,11 @@ function packageDataPart(
 
 /** True when EVERY declaration `type` is spelled by is a pure data
  * declaration (interface, type alias, object or mapped type literal,
- * declared data class, type-only namespace) in a package declaration file —
- * no value declaration merged in, no class implementation. */
+ * function type, method signature, declared data class, type-only
+ * namespace) in a package declaration file — no value declaration merged
+ * in, no class implementation. A member's type is spelled by a function
+ * type node or a method signature, and a callback or method slot declares
+ * no implementation either: the program fills it with its own closure. */
 function purePackageDeclarations(
   decls: readonly ts.Node[] | null,
   ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
@@ -8629,6 +8637,8 @@ function purePackageDeclarations(
         (ts.isInterfaceDeclaration(d) ||
           ts.isTypeAliasDeclaration(d) ||
           ts.isTypeLiteralNode(d) ||
+          ts.isFunctionTypeNode(d) ||
+          ts.isMethodSignatureDeclaration(d) ||
           ts.isMappedTypeNode(d) ||
           isDeclaredDataClass(d) ||
           (decls.some(isDeclaredDataClass) && isTypeOnlyNamespace(d))),

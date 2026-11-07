@@ -242,7 +242,7 @@ ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
  * check Node runs before it converts a URL path. */
 void scr_fs_check_read_encoding(ScrStr *encoding);
 ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding);
-ScrDyn *scr_fs_callback_value(ScrStr *member);
+ScrDyn *scr_fs_callback_value(ScrStr *member, double length);
 ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args);
 /* The error-first callback queue (scr_bytes_io.c): a pending exception
  * becomes [err], otherwise [null, result(, buffer)]; the callback runs on
@@ -256,6 +256,8 @@ ScrStr *scr_fs_validated_path(const ScrDyn *value, const char *name);
 ScrDyn *scr_fs_option_get(const ScrDyn *options, const char *name);
 ScrBytes *scr_fs_read_fd_bytes(double fd);      /* +1; the fd form (scr_lib.c) */
 void scr_fs_write_file_bytes(ScrStr *path, const ScrBytes *data);
+void scr_fs_write_file_flags_bytes(ScrStr *path, const ScrBytes *data, double mode,
+                                   double exclusive);
 void scr_fs_append_file_bytes(ScrStr *path, const ScrBytes *data);
 
 /* fs/promises readFile(path) [no encoding]: the same read behind an

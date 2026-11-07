@@ -23,6 +23,19 @@
  * has a lowering (throw sites stamp the errno name — "ENOENT" and
  * friends; reads answer `string | undefined`), errno/syscall/path
  * typecheck and fence per member. */
+/* A typed array or a DataView as a builtin's parameter: the three members
+ * every view has, so each of them, a Buffer and a value typed with the ES
+ * library's `ArrayBufferView` are arguments. The builtin declarations use
+ * this interface instead of the library's: that one is the type of a
+ * program's own values and maps to the checked-dynamic value wherever one
+ * flows, and a builtin's signature keeps its shape whatever a program's
+ * values are. It has no value representation of its own: a builtin lowers
+ * its view argument at the call. */
+interface ScriptcBufferView<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike> {
+  readonly buffer: TArrayBuffer;
+  readonly byteLength: number;
+  readonly byteOffset: number;
+}
 declare namespace NodeJS {
   interface ProcessVersions {
     readonly node: string;
@@ -55,6 +68,22 @@ declare namespace NodeJS {
     headersUrl?: string | undefined;
     libUrl?: string | undefined;
     lts?: string | undefined;
+  }
+  /* process.report: the diagnostic report of this process. A build with a
+   * Node island answers it from the island — the same process, so the
+   * report's sharedObjects lists the binary's real libraries; a build
+   * without islands fences the member rather than fabricating a report.
+   * The report object itself is checked-dynamic. */
+  interface ProcessReport {
+    directory: string;
+    filename: string;
+    compact: boolean;
+    excludeNetwork: boolean;
+    signal: string;
+    reportOnFatalError: boolean;
+    reportOnSignal: boolean;
+    reportOnUncaughtException: boolean;
+    getReport(error?: Error): object;
   }
   interface ResourceUsage {
     userCPUTime: number;
@@ -270,6 +299,9 @@ declare var process: {
   /* The extra CLI arguments Node itself consumed (--expose-internals,
    * ...): a compiled binary consumed none, so this is always []. */
   readonly execArgv: string[];
+  /* The option names the compatibility target accepts in NODE_OPTIONS —
+   * one stable set, like Node's. */
+  readonly allowedNodeEnvironmentFlags: ReadonlySet<string>;
   /* Node's internal "exit sequence started" flag (real, undocumented
    * surface — the test harness reads it): true while 'exit' listeners
    * run, false otherwise. */
@@ -293,6 +325,8 @@ declare var process: {
   title: string;
   argv0: string;
   readonly release: NodeJS.ProcessRelease;
+  /* The diagnostic report (Node islands only; see NodeJS.ProcessReport). */
+  readonly report: NodeJS.ProcessReport;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -1135,10 +1169,52 @@ interface UnderlyingSource<T = unknown> {
   pull?(controller: ReadableStreamDefaultController<T>): unknown;
   cancel?(reason?: unknown): unknown;
 }
+/* A byte stream's source and its controller, request and reader
+ * (@types/node's stream/web shapes). */
+interface UnderlyingByteSource {
+  type: "bytes";
+  autoAllocateChunkSize?: number;
+  start?(controller: ReadableByteStreamController): unknown;
+  pull?(controller: ReadableByteStreamController): unknown;
+  cancel?(reason?: unknown): unknown;
+}
+interface ReadableStreamBYOBRequest {
+  readonly view: Uint8Array | null;
+  respond(bytesWritten: number): void;
+  respondWithNewView(view: Uint8Array): void;
+}
+interface ReadableByteStreamController {
+  readonly byobRequest: ReadableStreamBYOBRequest | null;
+  readonly desiredSize: number | null;
+  enqueue(chunk?: ArrayBufferView): void;
+  close(): void;
+  error(reason?: unknown): void;
+}
+interface ReadableStreamBYOBReadValueResult<T extends ArrayBufferView> {
+  done: false;
+  value: T;
+}
+interface ReadableStreamBYOBReadDoneResult<T extends ArrayBufferView> {
+  done: true;
+  value: T | undefined;
+}
+type ReadableStreamBYOBReadResult<T extends ArrayBufferView> =
+  | ReadableStreamBYOBReadValueResult<T>
+  | ReadableStreamBYOBReadDoneResult<T>;
+interface ReadableStreamBYOBReader {
+  readonly closed: Promise<void>;
+  read<T extends ArrayBufferView>(
+    view: T,
+    options?: { min?: number },
+  ): Promise<ReadableStreamBYOBReadResult<T>>;
+  cancel(reason?: unknown): Promise<void>;
+  releaseLock(): void;
+}
 interface ReadableStream<T = unknown> {
   readonly locked: boolean;
   cancel(reason?: unknown): Promise<void>;
   getReader(): ReadableStreamDefaultReader<T>;
+  getReader(options: { mode: "byob" }): ReadableStreamBYOBReader;
   tee(): [ReadableStream<T>, ReadableStream<T>];
   pipeTo(destination: WritableStream<T>, options?: StreamPipeOptions): Promise<void>;
   pipeThrough<O>(
@@ -1149,11 +1225,32 @@ interface ReadableStream<T = unknown> {
   values(options?: { preventCancel?: boolean }): AsyncIterableIterator<T>;
 }
 declare var ReadableStream: {
-  new <T = unknown>(source?: UnderlyingSource<T>): ReadableStream<T>;
+  /* Two constructor signatures, like @types/node's: a union of the two
+   * source shapes in one signature would drop the contextual type of a
+   * `pull(controller)` callback, since TypeScript gives no contextual
+   * signature for a property whose type differs across the union. */
+  new (
+    source: UnderlyingByteSource,
+    strategy?: QueuingStrategy<Uint8Array>,
+  ): ReadableStream<Uint8Array>;
+  new <T = unknown>(source?: UnderlyingSource<T>, strategy?: QueuingStrategy<T>): ReadableStream<T>;
   from<T>(iterable: readonly T[]): ReadableStream<T>;
   from(iterable: Uint8Array): ReadableStream<number>;
   from(iterable: string): ReadableStream<string>;
+  from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T>;
   readonly prototype: ReadableStream<unknown>;
+};
+declare var ReadableStreamBYOBReader: {
+  new (stream: ReadableStream<Uint8Array>): ReadableStreamBYOBReader;
+  readonly prototype: ReadableStreamBYOBReader;
+};
+declare var ReadableByteStreamController: {
+  new (): ReadableByteStreamController;
+  readonly prototype: ReadableByteStreamController;
+};
+declare var ReadableStreamBYOBRequest: {
+  new (): ReadableStreamBYOBRequest;
+  readonly prototype: ReadableStreamBYOBRequest;
 };
 /* The writable side of a TransformStream and its writer. A program that
  * constructs a WritableStream, or a TransformStream with a transformer,
@@ -1245,9 +1342,9 @@ declare var CountQueuingStrategy: {
   new (init: { highWaterMark: number }): CountQueuingStrategy;
   readonly prototype: CountQueuingStrategy;
 };
-interface ByteLengthQueuingStrategy extends QueuingStrategy<ArrayBufferView> {
+interface ByteLengthQueuingStrategy extends QueuingStrategy<ScriptcBufferView> {
   readonly highWaterMark: number;
-  readonly size: QueuingStrategySize<ArrayBufferView>;
+  readonly size: QueuingStrategySize<ScriptcBufferView>;
 }
 declare var ByteLengthQueuingStrategy: {
   new (init: { highWaterMark: number }): ByteLengthQueuingStrategy;
@@ -1326,7 +1423,7 @@ interface ResponseInit {
 }
 declare var Response: {
   new (
-    body?: string | Uint8Array | ReadableStream<Uint8Array> | null,
+    body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null,
     init?: ResponseInit,
   ): Response;
   readonly prototype: Response;
@@ -1355,7 +1452,7 @@ interface Blob {
 }
 declare var Blob: {
   new (
-    sources?: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    sources?: readonly (string | ArrayBuffer | ScriptcBufferView | Blob)[],
     options?: BlobPropertyBag,
   ): Blob;
   readonly prototype: Blob;
@@ -1366,7 +1463,7 @@ interface File extends Blob {
 }
 declare var File: {
   new (
-    sources: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    sources: readonly (string | ArrayBuffer | ScriptcBufferView | Blob)[],
     fileName: string,
     options?: FilePropertyBag,
   ): File;
@@ -1400,7 +1497,7 @@ interface Request {
 interface RequestInit {
   method?: string;
   headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
-  body?: string | Uint8Array | ReadableStream<Uint8Array> | null;
+  body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
   duplex?: "half";
   redirect?: "follow" | "error" | "manual";
   signal?: AbortSignal;
@@ -1661,6 +1758,66 @@ declare module "readline" {
     ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
+    /* prependListener and prependOnceListener register the listener at
+     * the FRONT of the event's list, so it runs before the ones already
+     * there ('once' entries still leave after their one call). */
+    prependListener(event: "line", listener: (input: string) => void): this;
+    prependListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependListener(event: "error", listener: (err: Error) => void): this;
+    prependListener(event: "history", listener: (history: string[]) => void): this;
+    prependOnceListener(event: "line", listener: (input: string) => void): this;
+    prependOnceListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependOnceListener(event: "error", listener: (err: Error) => void): this;
+    prependOnceListener(event: "history", listener: (history: string[]) => void): this;
+    /* removeListener/off remove the LAST registration of that same
+     * function (a once registration leaves as the listener itself); an
+     * event with nothing left drops out of eventNames(). */
+    removeListener(event: "line", listener: (input: string) => void): this;
+    removeListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "history", listener: (history: string[]) => void): this;
+    off(event: "line", listener: (input: string) => void): this;
+    off(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    off(event: "history", listener: (history: string[]) => void): this;
+    removeAllListeners(
+      event?:
+        | "line"
+        | "close"
+        | "pause"
+        | "resume"
+        | "error"
+        | "history"
+        | "SIGINT"
+        | "SIGTSTP"
+        | "SIGCONT",
+    ): this;
+    /* listenerCount counts the listeners of the event (the async
+     * iterator's own count too); with a function only that function's
+     * registrations. eventNames answers the events that have a listener,
+     * in first-registration order: every readline event name is a string,
+     * so the array is string[] rather than EventEmitter's
+     * (string | symbol)[]. */
+    listenerCount(event: "line", listener?: (input: string) => void): number;
+    listenerCount(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener?: () => void,
+    ): number;
+    listenerCount(event: "error", listener?: (err: Error) => void): number;
+    listenerCount(event: "history", listener?: (history: string[]) => void): number;
+    eventNames(): string[];
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
@@ -1779,6 +1936,66 @@ declare module "readline/promises" {
     ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
+    /* prependListener and prependOnceListener register the listener at
+     * the FRONT of the event's list, so it runs before the ones already
+     * there ('once' entries still leave after their one call). */
+    prependListener(event: "line", listener: (input: string) => void): this;
+    prependListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependListener(event: "error", listener: (err: Error) => void): this;
+    prependListener(event: "history", listener: (history: string[]) => void): this;
+    prependOnceListener(event: "line", listener: (input: string) => void): this;
+    prependOnceListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependOnceListener(event: "error", listener: (err: Error) => void): this;
+    prependOnceListener(event: "history", listener: (history: string[]) => void): this;
+    /* removeListener/off remove the LAST registration of that same
+     * function (a once registration leaves as the listener itself); an
+     * event with nothing left drops out of eventNames(). */
+    removeListener(event: "line", listener: (input: string) => void): this;
+    removeListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "history", listener: (history: string[]) => void): this;
+    off(event: "line", listener: (input: string) => void): this;
+    off(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    off(event: "history", listener: (history: string[]) => void): this;
+    removeAllListeners(
+      event?:
+        | "line"
+        | "close"
+        | "pause"
+        | "resume"
+        | "error"
+        | "history"
+        | "SIGINT"
+        | "SIGTSTP"
+        | "SIGCONT",
+    ): this;
+    /* listenerCount counts the listeners of the event (the async
+     * iterator's own count too); with a function only that function's
+     * registrations. eventNames answers the events that have a listener,
+     * in first-registration order: every readline event name is a string,
+     * so the array is string[] rather than EventEmitter's
+     * (string | symbol)[]. */
+    listenerCount(event: "line", listener?: (input: string) => void): number;
+    listenerCount(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener?: () => void,
+    ): number;
+    listenerCount(event: "error", listener?: (err: Error) => void): number;
+    listenerCount(event: "history", listener?: (history: string[]) => void): number;
+    eventNames(): string[];
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }

@@ -157,6 +157,7 @@ const FALLBACK_MODULE_FILES: Readonly<Record<string, string>> = {
   "node:process": "process.d.ts",
   "node:punycode": "punycode.d.ts",
   "node:querystring": "querystring.d.ts",
+  "node:sea": "sea.d.ts",
   "node:stream": "stream.d.ts",
   "node:stream/consumers": "stream-consumers.d.ts",
   "node:stream/promises": "stream-promises.d.ts",

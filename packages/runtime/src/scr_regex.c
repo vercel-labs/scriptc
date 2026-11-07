@@ -2940,6 +2940,59 @@ static void scr_regex_ctor_remember(ScrRegex *re) {
 #endif
 }
 
+/* A line terminator at source[i]: its byte length, or 0. */
+static size_t scr_regex_line_terminator(const char *source, size_t len, size_t i) {
+  if (source[i] == '\n' || source[i] == '\r') return 1;
+  if (i + 2 < len && (unsigned char)source[i] == 0xE2 && (unsigned char)source[i + 1] == 0x80 &&
+      ((unsigned char)source[i + 2] == 0xA8 || (unsigned char)source[i + 2] == 0xA9))
+    return 3;
+  return 0;
+}
+
+/* EscapeRegExpPattern for a constructed regex, as V8 stores it: the text
+ * between the slashes of a literal that compiles to the same pattern. A '/'
+ * outside a class takes a backslash, a line terminator becomes its escape
+ * (\n, \r, \u2028, \u2029) and a backslash before one is dropped; every
+ * other escape is copied as written. `source`, `String(re)`, inspection and
+ * assertion messages all read the stored text. Runs once the pattern has
+ * compiled, so a SyntaxError names the pattern as given. */
+static void scr_regex_escape_source(ScrRegex *re) {
+  const char *source = re->source->data;
+  size_t len = re->source->len;
+  size_t i = 0;
+  while (i < len && source[i] != '/' && !scr_regex_line_terminator(source, len, i)) i++;
+  if (i == len) return;
+  char *buf = malloc(len * 6 + 1);
+  if (!buf) scr_trap("scriptc: out of memory\n");
+  size_t pos = 0;
+  bool in_class = false;
+  for (i = 0; i < len; i++) {
+    char c = source[i];
+    size_t terminator = scr_regex_line_terminator(source, len, i);
+    if (c == '\\') {
+      if (i + 1 < len && scr_regex_line_terminator(source, len, i + 1)) continue;
+      buf[pos++] = c;
+      if (i + 1 < len) buf[pos++] = source[++i];
+    } else if (terminator == 3) {
+      memcpy(buf + pos, (unsigned char)source[i + 2] == 0xA8 ? "\\u2028" : "\\u2029", 6);
+      pos += 6;
+      i += 2;
+    } else if (terminator == 1) {
+      buf[pos++] = '\\';
+      buf[pos++] = c == '\n' ? 'n' : 'r';
+    } else {
+      if (c == '/' && !in_class) buf[pos++] = '\\';
+      else if (c == '[') in_class = true;
+      else if (c == ']') in_class = false;
+      buf[pos++] = c;
+    }
+  }
+  ScrStr *escaped = scr_str_new(buf, pos);
+  free(buf);
+  scr_str_release(re->source);
+  re->source = escaped;
+}
+
 ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   unsigned seen_flags = 0;
   for (size_t i = 0; i < flags->len; i++) {
@@ -3000,6 +3053,7 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
     re->literal = shared;
     re->bc = shared->bc;
     re->native = shared->native;
+    scr_regex_escape_source(re);
     return re;
   }
   /* Eager compile — the literal path stays lazy (its failure is an
@@ -3030,6 +3084,7 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   re->bc = bc;
   re->native = scr_regex_native_build(re, bc);
   scr_regex_ctor_remember(re);
+  scr_regex_escape_source(re);
   return re;
 }
 

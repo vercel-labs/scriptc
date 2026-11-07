@@ -1,6 +1,8 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { memberCallHolder, withMemberCallReceiver } from "../member-call-receivers.js";
 import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
+import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
 import { overloadValueResult } from "../lower-calls.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
@@ -208,10 +210,27 @@ function alwaysDefinedGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
   return name !== null && SNAPSHOT_GLOBALS.has(name);
 }
 
+/** The receiver an optional call of a member (`x.f?.()`) passes, while that
+ * call lowers (member-call-receivers.ts). */
+const optionalCallReceivers = new Map<ts.CallExpression, IrExpr | null>();
+
 export function lowerOptionalChain(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): IrExpr {
+  // `x.f?.()`: the call passes `x` as its receiver, as `x.f()` does.
+  if (ts.isCallExpression(expr) && expr.questionDotToken && !optionalCallReceivers.has(expr)) {
+    const holder = memberCallHolder(lowerer, expr);
+    if (holder !== null)
+      return withMemberCallReceiver(lowerer, expr, holder, (receiver) => {
+        optionalCallReceivers.set(expr, receiver ?? null);
+        try {
+          return lowerOptionalChain(lowerer, expr);
+        } finally {
+          optionalCallReceivers.delete(expr);
+        }
+      });
+  }
   const loc = locOf(expr);
   // The node CARRYING the ?. token and the receiver expression it guards.
   let dotNode: ts.Node;
@@ -265,6 +284,23 @@ export function lowerOptionalChain(
     lowerer.chainHandled.add(dotNode);
     try {
       return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
+  // `process.getBuiltinModule("node:os")?.arch()`, `ns?.member`: a builtin
+  // module's namespace object is never nullish, and its members lower at
+  // their access sites (the namespace has no value form to guard), so the
+  // guarded step is the plain member access. The member answers statically
+  // but the receiver still evaluates first: `loadOs()?.arch()` calls loadOs
+  // and keeps its side effects and exceptions, as Node does.
+  if (
+    ts.isPropertyAccessExpression(dotNode) &&
+    lowerer.builtinNamespaceModuleOf(recvNode) !== null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return reflectOverNamespaceExpr(lowerer, recvNode, lowerer.lowerExpr(expr), locOf(expr));
     } finally {
       lowerer.chainHandled.delete(dotNode);
     }
@@ -529,9 +565,11 @@ export function lowerOptionalChain(
     // effect-free surplus argument is ignored. The completion runs INSIDE
     // the guard, so a nullish callee still evaluates no argument.
     const completed = completeFuncValueArgs(lowerer, expr, narrowed, loc);
+    const supplied = optionalCallReceivers.get(expr);
     const body: IrExpr = {
       kind: "callValue",
       callee: recvRef,
+      ...(supplied ? { receiver: supplied } : {}),
       args: completed,
       type: narrowed.ret,
       loc,
@@ -638,7 +676,16 @@ export function finishOptionalChain(
       `'?.' where the result '${lowerer.fmt(type)}' has no undefined arm (narrow the receiver with 'if (x !== undefined)' instead)`,
     );
   }
-  const wrapped = lowerer.coerceToExpected(body, type);
+  let wrapped = lowerer.coerceToExpected(body, type);
+  // The checker narrowed the CHAIN itself (`typeof j?.n === "string" ? … :
+  // j?.n` reads `number | undefined` in the false arm) while the guarded
+  // read still answers the member's stored union. The chain node's type
+  // names the arms still possible, so the stranded ones trap, as at every
+  // slot a narrowed union flows into (coerceIntoSlot's sub-union bridge).
+  if (wrapped.type.kind === "union" && type.kind === "union" && !typeEquals(wrapped.type, type)) {
+    const helper = lowerer.narrowedRetagHelper(expr, wrapped.type.unionId, type.unionId, loc);
+    if (helper) wrapped = { kind: "call", callee: helper, args: [wrapped], type, loc };
+  }
   if (!typeEquals(wrapped.type, type)) lowerer.badType(expr, lowerer.typeOf(expr));
   return { kind: "optChain", id, receiver, body: wrapped, type, loc };
 }

@@ -1,4 +1,9 @@
 import * as ts from "../ts7/adapter.js";
+import {
+  activeNodeIslands,
+  isForeignType,
+  type NodeIslandSet,
+} from "../../node-islands/boundary.js";
 
 /** Index only program classes. Ambient declarations describe APIs, not
  * compiled implementations, and must not change a protocol's storage. */
@@ -20,6 +25,17 @@ export class ClassProtocols {
    * without protocol dispatch: their members are invoked on the collection
    * itself, not read from a property bag. */
   private readonly collectionViews = new Set<ts.Symbol>();
+  /** The mapped views a receiver-dependent literal is used as, whose source
+   * cannot carry the marking (see index). */
+  private readonly literalViews = new Set<ts.Type>();
+  /** The program types that receive island values and cannot carry the
+   * marking on a symbol, recorded by the type itself (see markIslandView). */
+  private readonly islandViews = new Set<ts.Type>();
+  /** islandValue's answers: which expressions read an island handle. */
+  private readonly islandValues = new Map<ts.Node, boolean>();
+  /** The object types markReceivedView has answered for, so a type that
+   * names itself in a member (`interface Node { next?: Node }`) ends. */
+  private readonly receivedTypes = new Set<ts.Type>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -31,6 +47,23 @@ export class ClassProtocols {
     const protocols = new Set<ts.Symbol>();
     this.implemented = protocols;
     const add = (type: ts.Type): void => {
+      // A homomorphic mapped view's own symbol is the shared mapped
+      // `__type` that every mapped type in the program uses: marking it
+      // would make every Pick, Omit, Partial and Readonly a view. Mark the
+      // type the view maps instead when that is a structural type. A source
+      // that cannot carry the marking keeps its own representation: a class
+      // instance would make every instance a view, and an intersection has
+      // no symbol. The VIEW type itself is recorded for those, so a
+      // receiver-dependent literal typed as it still keeps checked identity
+      // and protocol answers it through that record.
+      const mapped = this.mappedViewSource(type);
+      if (mapped !== null) {
+        if (!this.isStructuralTarget(mapped)) {
+          this.literalViews.add(type);
+          return;
+        }
+        type = mapped;
+      }
       const symbol = type.getSymbol();
       if (!symbol || protocols.has(symbol)) return;
       protocols.add(symbol);
@@ -47,11 +80,24 @@ export class ClassProtocols {
     // program, so it must stay syntax-cheap).
     const accessorNames = new Set<string>();
     const literals: ts.ObjectLiteralExpression[] = [];
+    // The expressions that may read a value out of an island handle, when the
+    // program runs islands at all: their declared types are marked once the
+    // walk ends (markIslandView).
+    const islands = activeNodeIslands();
+    const crossings: ts.Expression[] = [];
     const visit = (node: ts.Node): void => {
       if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
         const name = propertyNameText(node.name);
         if (name !== null) accessorNames.add(name);
       }
+      if (
+        islands !== null &&
+        (ts.isPropertyAccessExpression(node) ||
+          ts.isElementAccessExpression(node) ||
+          ts.isCallExpression(node)) &&
+        this.islandValue(node.expression, islands)
+      )
+        crossings.push(node);
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
         for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
@@ -102,8 +148,160 @@ export class ClassProtocols {
     };
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
     for (const literal of literals) this.markMemberKindViews(literal, accessorNames, add);
+    for (const crossing of crossings) this.markIslandView(crossing, islands, add);
     this.markIdentityFlows(protocols);
     return protocols;
+  }
+
+  /** Marks the program types that receive island values (SPEC 6 = C). An
+   * island object crossing into a program record type used to be refused
+   * (SC8010): a deep checked copy loses the identity and every later write
+   * the island makes to the object. The checked-identity view is the one
+   * representation for "a native-typed value that must stay a live
+   * JavaScript object", so a program type that receives island values
+   * becomes a view instead: an island object is already a live dynamic
+   * object natively (a handle), and every other value of the type is the
+   * checked-dynamic object a view builds, so identity and later changes are
+   * shared exactly and the copy never happens.
+   *
+   * The types are the DECLARED types at the reads that produce island
+   * values (`doc.colors`, `event.usage.cache_creation`, `islandFn()`), the
+   * set `fromIsland` answers for. An intersection or union marks its object
+   * parts; an island-declared part is a handle already and is skipped. A
+   * type that cannot carry the marking on its symbol — a mapped type, whose
+   * symbol is the shared `__type` — is recorded by instance instead.
+   *
+   * A member read from a live island object is an island value too, received
+   * by the member's declared type (`const i = o.inner` holds the island's
+   * own inner object), so the types a marked type's members are declared
+   * with are marked with it, to any depth (markReceivedMembers). */
+  private markIslandView(
+    crossing: ts.Expression,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+  ): void {
+    const type = attempt(() => this.checker.getTypeAtLocation(crossing));
+    if (type !== undefined) this.markReceivedView(type, islands, add, 0);
+  }
+
+  private markReceivedView(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    if (depth > RECEIVED_VIEW_DEPTH) return;
+    if (type.isUnionType() || type.isIntersectionType()) {
+      for (const part of ts.constituentTypes(type))
+        this.markReceivedView(part, islands, add, depth + 1);
+      return;
+    }
+    if ((type.flags & ts.TypeFlags.Object) === 0) return;
+    if (islands !== null && isForeignType(islands, type, this.checker)) return;
+    if (this.receivedTypes.has(type)) return;
+    this.receivedTypes.add(type);
+    // A promise the island returns is adopted, never converted: it is the
+    // same promise on both sides, and the value that crosses is the one it
+    // settles with, where the program awaits it or a reaction receives it.
+    // That value's declared type is the promise's type argument, so the
+    // argument is the type that receives the island value
+    // (`await later<Rec>()` reads an island object as a `Rec`).
+    const settled = attempt(() => this.checker.getAwaitedType(type));
+    if (settled !== undefined && settled !== type) {
+      this.markReceivedView(settled, islands, add, depth + 1);
+      return;
+    }
+    // A mapped type's symbol is the shared `__type` every mapped type in the
+    // program uses, so it can never carry the marking: a homomorphic view
+    // marks what it maps (as a literal view does), and any other mapped type
+    // (`Record<string, V>`, an inline `{ [K in ...]: V }`) is recorded by the
+    // type itself. This is what keeps the fact from spreading to every Pick,
+    // Partial and Record in the program.
+    const source = this.mappedViewSource(type);
+    if (source !== null) {
+      if (this.isStructuralTarget(source)) add(source);
+      else this.islandViews.add(type);
+      this.markReceivedMembers(type, islands, add, depth);
+      return;
+    }
+    if (((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Mapped) !== 0) {
+      this.islandViews.add(type);
+      this.markReceivedMembers(type, islands, add, depth);
+      return;
+    }
+    if (this.isStructuralTarget(type)) {
+      add(type);
+      this.markReceivedMembers(type, islands, add, depth);
+      return;
+    }
+    // A class instance keeps its own native value (fromIsland unboxes it, it
+    // is never copied), and an array, tuple or function has its own crossing
+    // rule: neither is a record this marking can help.
+    if (this.isProgramClassInstance(type) || this.checker.isArrayType(type)) return;
+    if (this.checker.isTupleType(type)) return;
+    if (this.checker.getCallSignatures(type).length > 0) return;
+    // A library class (Date, Map, Error, URL, a typed array) has a native
+    // representation of its own and never becomes a record, so there is no
+    // view to mark; its instance type is also one type for the whole
+    // program, native uses included.
+    if (this.isLibraryClassInstance(type)) return;
+    this.islandViews.add(type);
+    this.markReceivedMembers(type, islands, add, depth);
+  }
+
+  /** Marks the types the members of a marked type are declared with: the
+   * island object behind a view holds island objects in its members, and a
+   * read hands one to the member's type. Property types and index signature
+   * values are followed through unions, intersections and optional members
+   * (markReceivedView), so `inner: Inner`, `opt?: Inner`, `Inner | string`,
+   * `Record<string, Inner>` and `Box<Inner>` all reach `Inner`.
+   *
+   * A promise-typed member reaches the type it settles with the same way
+   * (`Promise<Inner>`). Arrays, tuples, Maps, Sets and other library classes
+   * are not records and stay what they are: an island array has no native
+   * counterpart, so a marked type with such a member is refused by name
+   * where the island value crosses (fromIsland's unreceivableMember), not
+   * marked here. */
+  private markReceivedMembers(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    for (const property of this.checker.getPropertiesOfType(type)) {
+      const member = attempt(() => this.checker.getTypeOfSymbol(property));
+      if (member !== undefined) this.markReceivedView(member, islands, add, depth + 1);
+    }
+    for (const index of this.checker.getIndexInfosOfType(type))
+      this.markReceivedView(index.type, islands, add, depth + 1);
+  }
+
+  /** Whether `expr` reads a value out of an island handle: its receiver
+   * chain is rooted at a binding of an island-declared type. A value a
+   * program type holds is a program value — that type is the one this pass
+   * marks — so the chain never has to be followed through one. */
+  private islandValue(expr: ts.Expression, islands: NodeIslandSet): boolean {
+    const known = this.islandValues.get(expr);
+    if (known !== undefined) return known;
+    let inner: ts.Expression = expr;
+    for (;;) {
+      if (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner))
+        inner = inner.expression;
+      else if (ts.isAssertionExpression(inner) || ts.isSatisfiesExpression(inner))
+        inner = inner.expression;
+      else break;
+    }
+    let answer = false;
+    if (ts.isPropertyAccessExpression(inner) || ts.isElementAccessExpression(inner))
+      answer = this.islandValue(inner.expression, islands);
+    else if (ts.isCallExpression(inner)) answer = this.islandValue(inner.expression, islands);
+    else if (ts.isIdentifier(inner))
+      answer =
+        attempt(() =>
+          isForeignType(islands, this.checker.getTypeAtLocation(inner), this.checker),
+        ) === true;
+    this.islandValues.set(expr, answer);
+    return answer;
   }
 
   /** Marks the structural types a literal's member kinds disagree with: a
@@ -115,10 +313,11 @@ export class ClassProtocols {
    * checked-dynamic view, where the accessor stays live, `Object.keys`
    * lists it, and `JSON.stringify` calls it — Node's own model.
    *
-   * Only the TARGET is marked: the literal then takes the checked-dynamic
-   * literal path (`lowerDynObjectLiteral`), which defines an accessor member
-   * as a live get/set property and a data member as a plain property, so
-   * both directions construct live objects. */
+   * Only the TARGET is marked (for an intersection or union, its object
+   * constituents): the literal then takes the checked-dynamic literal path
+   * (`lowerDynObjectLiteral`), which defines an accessor member as a live
+   * get/set property and a data member as a plain property, so both
+   * directions construct live objects. */
   private markMemberKindViews(
     literal: ts.ObjectLiteralExpression,
     accessorNames: ReadonlySet<string>,
@@ -145,25 +344,124 @@ export class ClassProtocols {
     if (members.length === 0) return;
     const contextual = attempt(() => this.checker.getContextualType(literal));
     if (contextual === undefined) return;
-    // Only one object type can be the one the literal converts into: a union
-    // with several arms picks its arm from the value itself, and an
-    // intersection merges members, so neither has the single layout the
-    // literal would have to disagree with. Nullish arms are ignored, so
-    // `Counter | undefined` still names Counter.
+    // The literal converts into an object PART of its contextual type, so
+    // both composites are resolved part by part. An intersection needs the
+    // views of every constituent that declares a disagreeing member. A
+    // union keeps checked identity only as a whole (usesCheckedIdentity
+    // answers it when every present arm does), so it becomes a view only
+    // when NO present arm can hold the literal natively: every present arm
+    // declares a disagreeing member. An arm that agrees is the arm the
+    // literal is, and marking the union anyway would make a program whose
+    // literals already match their arms dynamic for nothing. Nullish arms
+    // are ignored, so `Counter | undefined` still names Counter.
     const present = contextual.isUnionType()
       ? ts
           .constituentTypes(contextual)
           .filter((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) === 0)
       : [contextual];
-    const target = present.length === 1 ? present[0]! : undefined;
-    if (target === undefined || target.isIntersectionType()) return;
-    if ((target.flags & ts.TypeFlags.TypeParameter) !== 0) return;
-    if (!this.isStructuralTarget(target)) return;
-    const disagrees = members.some((member) => {
+    if (present.length === 0) return;
+    const union = present.length > 1;
+    if (union && !present.every((part) => this.memberKindDisagrees(part, members))) return;
+    const targets: ts.Type[] = [];
+    for (const arm of present) {
+      const found = this.viewTargets(arm, members, union);
+      // An arm that cannot become a view leaves the union native; marking
+      // the other arms alone would not give it checked identity.
+      if (found === null) return;
+      targets.push(...found);
+    }
+    for (const target of targets) add(target);
+  }
+
+  /** The view targets `target` needs for a literal with these member kinds,
+   * or null when `target` cannot become a view. An intersection needs the
+   * targets of every constituent. A homomorphic mapped view (Partial, Pick,
+   * Omit, Readonly) has no symbol of its own — its symbol is the shared
+   * mapped `__type`, which every mapped type in the program uses — so the
+   * type it maps is the target instead, and `protocol` answers the view
+   * through that marking. `force` targets a union arm that must keep
+   * checked identity even when it agrees with the literal by itself. */
+  private viewTargets(
+    target: ts.Type,
+    members: readonly { name: string; accessor: boolean }[],
+    force: boolean,
+  ): ts.Type[] | null {
+    if (target.isIntersectionType()) {
+      const targets: ts.Type[] = [];
+      for (const part of ts.constituentTypes(target)) {
+        const found = this.viewTargets(part, members, force);
+        if (found === null) return null;
+        targets.push(...found);
+      }
+      return targets;
+    }
+    if ((target.flags & ts.TypeFlags.TypeParameter) !== 0) return null;
+    const source = this.mappedViewSource(target) ?? target;
+    if (!this.isStructuralTarget(source)) return null;
+    if (!force && !this.memberKindDisagrees(target, members)) return [];
+    return [source];
+  }
+
+  /** Whether any of the literal's member kinds disagrees with the member
+   * `target` declares under that name (a missing member never disagrees). */
+  private memberKindDisagrees(
+    target: ts.Type,
+    members: readonly { name: string; accessor: boolean }[],
+  ): boolean {
+    return members.some((member) => {
       const kind = attempt(() => this.memberKind(target, member.name));
       return kind == null ? false : (kind === "accessor") !== member.accessor;
     });
-    if (disagrees) add(target);
+  }
+
+  /** The structural type a homomorphic mapped VIEW maps — Partial, Pick,
+   * Omit or Readonly over a program type. Mapped types share one `__type`
+   * symbol, so a view is identified through the alias it is spelled with;
+   * program aliases of views (`type A = B`, `type B = Partial<X>`) are
+   * followed through their declarations, and nested views
+   * (`Partial<Omit<X, K>>`) resolve to the type carrying the members.
+   * Null for everything else. */
+  private mappedViewSource(type: ts.Type, depth = 0): ts.Type | null {
+    if (depth > 8) return null;
+    const alias = type.getAliasSymbol();
+    if (alias === undefined) return null;
+    if (this.isHomomorphicMappedAlias(alias)) {
+      const [source] = type.getAliasTypeArguments();
+      if (source === undefined) return null;
+      return this.mappedViewSource(source, depth + 1) ?? source;
+    }
+    const declaration = this.programTypeAlias(alias);
+    return declaration === null ? null : this.mappedViewSourceNode(declaration.type, depth + 1);
+  }
+
+  /** mappedViewSource for a view spelled as a type node (a program alias's
+   * declaration, whose resolved type is the alias itself). */
+  private mappedViewSourceNode(node: ts.TypeNode, depth: number): ts.Type | null {
+    if (depth > 8) return null;
+    while (ts.isParenthesizedTypeNode(node)) node = node.type;
+    if (!ts.isTypeReferenceNode(node)) return null;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(node.typeName));
+    if (symbol === undefined) return null;
+    if (this.isHomomorphicMappedAlias(symbol)) {
+      const sourceNode = node.typeArguments?.nodes[0];
+      if (sourceNode === undefined) return null;
+      const source = attempt(() => this.checker.getTypeFromTypeNode(sourceNode));
+      if (source === undefined) return null;
+      return this.mappedViewSource(source, depth + 1) ?? source;
+    }
+    const declaration = this.programTypeAlias(symbol);
+    return declaration === null ? null : this.mappedViewSourceNode(declaration.type, depth + 1);
+  }
+
+  /** The lib's homomorphic mapped utility types. */
+  private isHomomorphicMappedAlias(symbol: ts.Symbol): boolean {
+    const name = ts.symbolName(symbol);
+    if (name !== "Pick" && name !== "Omit" && name !== "Partial" && name !== "Readonly")
+      return false;
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile)
+    );
   }
 
   /** The member kind `type` declares at `name` — an accessor (get/set pair)
@@ -1337,6 +1635,28 @@ export class ClassProtocols {
     );
   }
 
+  /** An instance of a class the standard library or a declaration package
+   * provides: a type whose symbol is also a value (`class URL`, or the lib's
+   * `interface Date` with `declare var Date`) and is declared only in
+   * declaration files. A pure library interface (a data shape such as
+   * `PropertyDescriptor`) has no value side and is not one. */
+  private isLibraryClassInstance(type: ts.Type): boolean {
+    const symbol = type.getSymbol();
+    if (symbol === undefined) return false;
+    if (
+      (symbol.flags &
+        (ts.SymbolFlags.Class | ts.SymbolFlags.Variable | ts.SymbolFlags.Function)) ===
+      0
+    )
+      return false;
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every(
+        (declaration) => ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
+    );
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
@@ -1369,6 +1689,8 @@ export class ClassProtocols {
     if (this.isBuiltinError(type)) return true;
     // A live Pick or Omit view of a program class holds the instance itself.
     if (this.pickOfProgramClass(type) && this.usesCheckedIdentity(type)) return true;
+    // A homomorphic mapped view of a marked type is the live view itself.
+    if (this.mappedViewSource(type) !== null && this.protocol(type)) return true;
     const symbol = type.getSymbol();
     if (symbol === undefined) return false;
     if (marked.has(symbol)) return true;
@@ -1547,6 +1869,18 @@ export class ClassProtocols {
     const symbol = type.getSymbol();
     const properties = this.checker.getPropertiesOfType(type);
     if (symbol && protocols.has(symbol)) return true;
+    // A mapped view whose source cannot carry the marking was recorded
+    // itself (index): the receiver-dependent literal typed as it needs the
+    // live object, and no other view of that source does.
+    if (this.literalViews.has(type)) return true;
+    // A program type that receives island values, recorded by the type
+    // itself because it has no symbol to mark (markIslandView).
+    if (this.islandViews.has(type)) return true;
+    // A homomorphic mapped view (Partial, Pick, Omit, Readonly) has no
+    // symbol of its own to mark, so it is a view exactly when the type it
+    // maps is one.
+    const mapped = this.mappedViewSource(type);
+    if (mapped !== null && this.protocol(mapped)) return true;
     if (
       !this.pickOfProgramClass(type) &&
       (!symbol ||
@@ -1574,6 +1908,13 @@ export class ClassProtocols {
     return false;
   }
 }
+
+/** How deep markReceivedView follows composites and members. The set of
+ * answered types ends every finite cycle; the bound ends a generic that
+ * names a larger instance of itself in a member (`next: List<T[]>`), and
+ * what lies beyond it stays a native record, which the crossing refuses by
+ * name. */
+const RECEIVED_VIEW_DEPTH = 32;
 
 interface FlowFacts {
   /** Types whose values reach identity comparisons, Set/Map keys, array

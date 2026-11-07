@@ -3,6 +3,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { constructedValue } from "../constructor-returns.js";
 import { countedFor, dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import type { FieldLift } from "./structural-plans.js";
+import { liftableBesideArm, widthNarrowHelper } from "./unions.js";
 import { buildArrayConversion } from "./builders.js";
 import { arrayValueRead, arrayValueStore, primitiveElement } from "../array-values.js";
 import type { WidthLift } from "../width-lift.js";
@@ -12,6 +13,7 @@ import { BOOL, DYN, F64, STRING, UNDEFINED_T, isUnitType, typeEquals } from "../
 import { typeKey } from "../../type-mapper.js";
 import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
+import { builtinMethodRecord } from "./builtin-method-records.js";
 import type { Lowerer } from "../lowerer.js";
 import { recordLinkPair, registerLinkSite } from "../record-links.js";
 
@@ -37,6 +39,13 @@ export function widthCoerce(lowerer: Lowerer, expr: IrExpr, expected: IrType): I
     const helper = lowerer.objRecordWidthHelper(expr.type.className, expected.shapeId, expr.loc);
     if (!helper) return null;
     return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
+  }
+  // A builtin handle (process.stdout, process.stderr) flowing into a
+  // record of methods: each method calls the handle's member through its
+  // checked-dynamic view (builtin-method-records.ts).
+  if (expected.kind === "record") {
+    const projected = builtinMethodRecord(lowerer, expr, expected.shapeId, expr.loc);
+    if (projected) return projected;
   }
   // A RECORD flowing into a class-instance slot (`{x: 0, y: 0}` into
   // `A.Point` — the parameter-property data-class pattern): construction
@@ -328,7 +337,16 @@ export function applyWidthLift(
     case "narrow": {
       if (value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: narrow lift on a non-union");
-      const helper = lowerer.narrowedArmHelper(value.type.unionId, dst, loc);
+      // A member or element typed by a union that holds the destination
+      // record beside arms that convert into it (`{ v: S | T }` into
+      // `{ v: T }`, S assignable to T): a declared member type is not
+      // narrowed, so those arms are values of the slot's type and convert
+      // on their own tag instead of throwing.
+      const converts = liftableBesideArm(lowerer, value.type.unionId, dst);
+      const helper =
+        converts.length > 0
+          ? widthNarrowHelper(lowerer, value.type.unionId, dst, loc, converts)
+          : lowerer.narrowedArmHelper(value.type.unionId, dst, loc);
       if (!helper)
         throw new InternalCompilerError("lowerer bug: planned narrow lift failed to intern");
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
@@ -348,6 +366,21 @@ export function applyWidthLift(
     }
     case "dynOut":
       return { kind: "dynCheck", value, type: dst, loc };
+    case "checkedWiden": {
+      if (dst.kind !== "record" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: checkedWiden lift shape");
+      // The value's own properties cross as a live capsule (dynFrom
+      // liveRef), so the check reads what the record kept beside its
+      // declared fields — a width copy's source, a checked record's
+      // source note — and throws only when the value genuinely lacks a
+      // required destination member.
+      return {
+        kind: "dynCheck",
+        value: { kind: "dynFrom", value, liveRef: true, type: DYN, loc },
+        type: dst,
+        loc,
+      };
+    }
     case "upcast": {
       if (dst.kind !== "object" || value.type.kind !== "object")
         throw new InternalCompilerError("lowerer bug: upcast lift shape");
@@ -924,7 +957,7 @@ export function classStaticsProjection(
     const found = findStaticOn(lowerer, info, tf.name);
     if (!found) {
       if (tf.type.kind !== "union") return null;
-      const u = lowerer.absentFieldValue(tf.type, loc);
+      const u = lowerer.absentFieldValue(tf, loc);
       if (!u) return null;
       fields.push({ name: tf.name, value: u });
       continue;
@@ -994,8 +1027,63 @@ function buildRecordProjection(
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
-            if ("absentDyn" in conversion)
-              return { name: field.name, value: dynUndefinedExpr(loc) };
+            if ("overflow" in conversion || "overflowAt" in conversion) {
+              // The source keeps this member in its index signature:
+              // read the key from the overflow instead of completing
+              // undefined over a value it holds. The key names no
+              // declared field of the source, so the read is an overflow
+              // read. A typed member reads at its own type, where a key
+              // the object never had is the type's undefined arm; a
+              // dynamic member reads as dyn, whose undefined the member's
+              // check rejects.
+              const atMember = "overflowAt" in conversion;
+              const shapeId = (source as IrType & { kind: "record" }).shapeId;
+              const read: IrExpr = {
+                kind: "recordKeyGet",
+                obj: receiver,
+                shapeId,
+                key: { kind: "strLit", value: field.name, type: STRING, loc },
+                overflowOnly: true,
+                type: atMember ? conversion.overflowAt : conversion.overflow,
+                loc,
+              };
+              const value: IrExpr = atMember ? read : lowerer.coerceToExpected(read, field.type);
+              // The key lives in the source's index signature, so the
+              // projection cannot know it is there: a key the object never
+              // had keeps the target slot ABSENT instead of writing the
+              // type's undefined arm as a present property, the state `in`,
+              // Object.hasOwn and Object.keys observe. A stored undefined
+              // is still a present key, which the overflow test tells apart.
+              const absent = lowerer.absentFieldValue(field, loc);
+              if (absent?.kind === "fieldAbsent") {
+                return {
+                  name: field.name,
+                  value: {
+                    kind: "ternary",
+                    cond: {
+                      kind: "recordOvfHas",
+                      obj: receiver,
+                      shapeId,
+                      key: { kind: "strLit", value: field.name, type: STRING, loc },
+                      type: BOOL,
+                      loc,
+                    },
+                    then: value,
+                    else_: absent,
+                    type: value.type,
+                    loc,
+                  },
+                };
+              }
+              return { name: field.name, value };
+            }
+            if ("absentDyn" in conversion) {
+              // The source has no such property: an optional target field
+              // keeps the absent marker, a required one holds the dyn
+              // undefined (the options-record call shape's old behaviour).
+              const absent = lowerer.absentFieldValue(field, loc);
+              return { name: field.name, value: absent ?? dynUndefinedExpr(loc) };
+            }
             if ("absent" in conversion) {
               if (field.type.kind !== "union")
                 throw new InternalCompilerError(
@@ -1039,7 +1127,14 @@ function buildRecordProjection(
               name: field.name,
               value:
                 source.kind === "record"
-                  ? lowerer.presenceKeepingCopy(receiver, source.shapeId, field.name, lifted, loc)
+                  ? lowerer.presenceKeepingCopy(
+                      receiver,
+                      source.shapeId,
+                      field.name,
+                      lifted,
+                      loc,
+                      field,
+                    )
                   : lifted,
             };
           }),

@@ -967,6 +967,35 @@ export function typeKey(t: IrType): string {
   }
 }
 
+/** Sorts arms into `typeKey` order, building each key once.
+ *
+ * The inline form this replaces, `arms.sort((a, b) => (typeKey(a) <
+ * typeKey(b) ? -1 : 1))`, builds two keys for every comparison — 2·n·log n
+ * key strings per sort, and a key walks its whole type. This form builds n
+ * keys and compares them from a map. The comparator answers the same way for
+ * every pair (a pure function of the two arms), so the sort visits the same
+ * comparisons and leaves the arms in the same order; a sort compacts the
+ * array in place, and so does this. */
+export function sortArms(arms: IrType[]): IrType[] {
+  if (arms.length < 2) return arms;
+  const keys = new Map<IrType, string>();
+  for (const arm of arms) if (!keys.has(arm)) keys.set(arm, typeKey(arm));
+  return arms.sort((a, b) => (keys.get(a)! < keys.get(b)! ? -1 : 1));
+}
+
+/** `sortArms` for the total-order form `< -1 : > 1 : 0`, which leaves arms
+ * with equal keys in their input order instead of reversing them. */
+export function sortArmsTotal(arms: IrType[]): IrType[] {
+  if (arms.length < 2) return arms;
+  const keys = new Map<IrType, string>();
+  for (const arm of arms) if (!keys.has(arm)) keys.set(arm, typeKey(arm));
+  return arms.sort((a, b) => {
+    const left = keys.get(a)!;
+    const right = keys.get(b)!;
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+}
+
 /** The type a CALL SITE (or function value) receives from a module
  * function: an async body's returnType is the promise's INNER type, so
  * calls and closures over it see Promise<T>; a generator body's is the
@@ -1132,6 +1161,13 @@ export interface IrModule {
    * others: what the copy's reflective surfaces answer from. `pair` is
    * the nonzero number the link stores. Absent when there are none. */
   recordLinks?: IrRecordLink[];
+  /** Shape ids of the record types whose `record.sourceHas` tests the
+   * frontend removed, with the branches they guarded, because no function
+   * of the program can give a record a kept source (frontend
+   * record-sources.ts). The backend stops when it emits a conversion or a
+   * library call that keeps a source for one of them. Sorted; absent when
+   * no test was removed. */
+  recordSourcesFolded?: string[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
@@ -1841,11 +1877,24 @@ export const ZLIB_STREAM_MODES: ReadonlyMap<string, number> = new Map([
   ["ZstdDecompress", 11],
 ]);
 
+/** One declared field of a record shape. */
+export interface IrRecordField {
+  name: string;
+  type: IrType;
+  /** A checked-dynamic (`unknown`/`any`) field declared `?:` — the slot can
+   * hold the ABSENT marker (@sc_dyn_absent), so an omitted or deleted
+   * property reads absent to recordHas and every presence surface, and an
+   * explicit `undefined` stays present. Part of the shape's interned
+   * identity: `{ a?: unknown }` and `{ a: unknown }` are distinct shapes,
+   * because only the optional one can lack its key. */
+  optional?: true;
+}
+
 export interface IrRecordShape {
   /** Frontend-assigned shape id (`r0`, `r1`, ...). */
   id: string;
   /** Sorted by field name (canonical order). Types are never void. */
-  fields: { name: string; type: IrType }[];
+  fields: IrRecordField[];
   /** A TUPLE shape (`[string, number]`): fields are exactly "0".."n-1" —
    * one per position, arity = fields.length. Same struct/RC/trace emission
    * as any record; the flag changes the SURFACE (literal-index access,
@@ -1901,6 +1950,18 @@ export interface IrRecordShape {
 /** The hidden field of a shape with orderVariants: the index of the value's
  * key order. */
 export const KEY_ORDER_FIELD = "%order";
+
+/** The fields a property key can name: every field but KEY_ORDER_FIELD,
+ * which is bookkeeping in the value's storage and no property of it. A
+ * keyed read or write (`r[k]`) dispatches over these, and a key spelled
+ * like the hidden field misses as any undeclared key does. The field
+ * joins a shape after the bodies lowered, so every stage that reasons
+ * about a keyed access goes through here. */
+export function keyedRecordFields(shape: IrRecordShape): readonly IrRecordField[] {
+  return shape.fields.some((f) => f.name === KEY_ORDER_FIELD)
+    ? shape.fields.filter((f) => f.name !== KEY_ORDER_FIELD)
+    : shape.fields;
+}
 
 /** The orders a record shape's values enumerate their keys in: each order
  * of a shape with orderVariants, or its one table. */
@@ -2176,11 +2237,15 @@ export interface IrLocal {
 export type IrStmt =
   /** First initialization of a local at its source position. `init: null`
    * means "declared, uninitialized" (`let x: number;`) — the local must be
-   * `mutable`. SOUNDNESS: tsc strict-mode definite-assignment analysis
-   * (TS2454 "used before being assigned") rejects any READ before an
-   * assignment on every path, so backends never need a runtime
-   * initialized-check; refcounted locals simply stay NULL until the first
-   * `assign`. */
+   * `mutable`. SOUNDNESS: the frontend emits it only for a binding no read
+   * can reach before a store. tsc's definite-assignment analysis (TS2454
+   * "used before being assigned") rejects such a read in the declaring
+   * function's own code; a binding that a nested function or an unchecked
+   * declaration (`let x!: number`) can read earlier is declared with an
+   * undefined-armed type and an undefined `init` instead
+   * (frontend/lowering/var-hoisting.ts). Backends therefore never need a
+   * runtime initialized-check; refcounted locals simply stay NULL until
+   * the first `assign`. */
   | { kind: "varDecl"; localId: string; init: IrExpr | null; loc: SrcLoc }
   /** `initializes` marks a TDZ binding's declaration, whose store may
    * initialize an empty box. Ordinary assignments must check it first. */
@@ -3138,6 +3203,22 @@ export type IrExpr =
   | { kind: "arrayHas"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
   /** Array slot state as f64: HOLE=0, VALUE=1, UNDEFINED=2. */
   | { kind: "arrayState"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
+  /** Row `index` of a column of constants the program image holds. The
+   * literal-table pass (ir/literal-tables.ts) builds the rows of a large
+   * literal in a counted loop and reads each constant that differs between
+   * rows with one of these. The column is `numbers` for an f64 cell and
+   * `strings` for a string cell; exactly one is present. `index` is an
+   * integer in [0, column length), which only that pass's loop counter
+   * guarantees, so nothing else may create the node. Reads only: allocates
+   * nothing and never throws, and a string is an immortal literal. */
+  | {
+      kind: "constCell";
+      numbers?: number[];
+      strings?: string[];
+      index: IrExpr;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** Array method/property on an array receiver: `length` (f64), `push`
    * (VARIADIC like JS — zero or more elem-typed args; every argument
    * evaluates before any appends, then each appends in order; returns the
@@ -3280,12 +3361,17 @@ export type IrExpr =
    * case so `f === f` is true (JS function identity). `adapts` marks a
    * signature adapter: captures[0] holds the function it forwards to, and
    * the new closure takes that function's identity (JS sees one function,
-   * so `===`, SameValue and searches compare identity roots). */
+   * so `===`, SameValue and searches compare identity roots). `length` is
+   * the function's own `length` where the type's parameter list does not
+   * give it: a function literal lowered with the parameter list of the slot
+   * it is written into receives the slot's remaining arguments in
+   * parameters it never declared. */
   | {
       kind: "closure";
       fnName: string;
       captures: string[];
       adapts?: true;
+      length?: number;
       type: IrType;
       loc: SrcLoc;
     }
@@ -3398,14 +3484,21 @@ export type IrExpr =
   | { kind: "awaitUnionExpr"; value: IrExpr; promiseTag: number; type: IrType; loc: SrcLoc }
   /** `new Promise<T>((resolve) => ...)`: creates a pending promise and runs
    * the executor synchronously with a resolve closure; an executor throw
-   * rejects the promise (JS-exact). Result +1. */
-  | { kind: "newPromise"; executor: IrExpr; type: IrType; loc: SrcLoc }
+   * rejects the promise (JS-exact). Result +1.
+   * `resolves`: the resolve function runs the promise resolution procedure
+   * on a checked-dynamic value that the static types do not prove plain: a
+   * promise it is given is adopted, and from then on neither resolving
+   * function nor a throw of the executor changes the promise. Only on a
+   * promise of a checked-dynamic value. */
+  | { kind: "newPromise"; executor: IrExpr; resolves?: true; type: IrType; loc: SrcLoc }
   /** `Promise.withResolvers<T>()`: a pending promise plus its runtime
    * resolve/reject closures (the newPromise pieces without an executor),
    * assembled into the record `{ promise, resolve, reject }` — `type` is
    * that record; the shape's promise field carries T, resolve is
    * (T) => void (() => void for void T), reject is (%Error) => void.
-   * Result +1; never throws. */
+   * Result +1; never throws. The resolve function of a promise of a
+   * checked-dynamic value runs the promise resolution procedure, as a
+   * newPromise with `resolves` does: its callers are not known here. */
   | { kind: "promiseWithResolvers"; type: IrType; loc: SrcLoc }
   /** `new C(args)`: allocate (fields zeroed), then call `%C.constructor`
    * with the new object as arg 0 (retained — the ctor owns and releases its
@@ -3861,8 +3954,15 @@ export type IrExpr =
    * never escapes its slot. Legal only where a field slot is written
    * directly: a recordLit field value, a recordSet value, a recordClone
    * override, or a ternary arm in one of those positions. `type` is the
-   * union named by `unionId`, which has an undefined arm. Immortal. */
-  | { kind: "fieldAbsent"; unionId: string; type: IrType; loc: SrcLoc }
+   * union named by `unionId`, which has an undefined arm. Immortal.
+   *
+   * Without `unionId` it is the same state for an OPTIONAL dyn field
+   * (`optional: true` on the shape): an immortal ScrDyn of kind
+   * SCR_DYN_UNDEF that the module emits as @sc_dyn_absent when referenced.
+   * Field reads of such a slot select it to the ordinary dyn undefined, so
+   * the marker itself never escapes its slot; `type` is then the dyn type
+   * and the marker is address-distinct from scr_dyn_undefined(). */
+  | { kind: "fieldAbsent"; unionId?: string; type: IrType; loc: SrcLoc }
   /** Union construction: wrap an arm value into a fresh tagged box (the
    * frontend inserts these wherever a `B` flows into an `A | B` slot).
    * `tag` is the arm's index in the union's canonical arm list; `value` has
@@ -4461,8 +4561,10 @@ function isJsonSafeAt(
  * Closures cross the checked-value boundary as a
  * callable dyn kind carrying the closure + a compiled per-signature call
  * thunk. Two directions, two predicates, mutually recursive with the
- * conversion domains (function types cannot ride records/unions — jsonSafe
- * excludes them — so the recursion terminates):
+ * conversion domains. A function type can sit in a record field or a union
+ * arm and name that record or union again in its parameters or result, so
+ * each domain marks the records and unions it is inside and answers a
+ * back-edge coinductively:
  *
  * IN (canBoxFuncIntoDyn, the dynFrom domain's function arm): calling the
  * box happens with DYN arguments, so every declared param must be
@@ -4507,6 +4609,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["httpClientReq", { tag: "SCR_DYNH_HTTP_CLIENT", cls: "ClientRequest" }],
   ["dgramSocket", { tag: "SCR_DYNH_DGRAM_SOCKET", cls: "Socket" }],
   ["dir", { tag: "SCR_DYNH_DIR", cls: "Dir" }],
+  ["spawnRes", { tag: "SCR_DYNH_SPAWN_RES", cls: "SpawnSyncReturns" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
 ]);
@@ -4614,28 +4717,34 @@ export function canConvertToDyn(
   }
   if (t.kind === "union") {
     const def = getUnion(t.unionId);
+    if (!def) return false;
+    // A function arm can return this union again (a step that answers the
+    // next step). The back-edge answers coinductively, as in the composite
+    // walk: the arms decide.
+    const key = `converting:${t.unionId}`;
+    if (visiting.has(key)) return true;
+    visiting.add(key);
     // JSON-safe arms box as before; BOXABLE FUNCTION and PROMISE arms join them (the
     // invalid-input probes iterate `[1, null, () => {}, true]` — the
     // union's func arm crosses through the checked-dynamic function
     // boundary exactly like a bare func dynFrom).
-    return (
-      !!def &&
-      def.arms.every(
-        (a) =>
-          a.kind === "undefinedT" ||
-          isJsonSafeType(a, getRecord, getUnion) ||
-          // Composite arms (records holding dyn, Map or Set members) box
-          // through the walker beside the promise arm: a method answering
-          // either its result or a promise of it.
-          canBoxDynComposite(a, getRecord, getUnion, visiting) ||
-          isDynTypedRefType(a) ||
-          textCodecRecordClass(a, getRecord) !== null ||
-          a.kind === "classval" ||
-          DYN_HANDLE_KINDS.has(a.kind) ||
-          (a.kind === "func" && canBoxFuncIntoDyn(a, getRecord, getUnion, visiting)) ||
-          (a.kind === "promise" && canConvertToDyn(a, getRecord, getUnion, visiting)),
-      )
+    const result = def.arms.every(
+      (a) =>
+        a.kind === "undefinedT" ||
+        isJsonSafeType(a, getRecord, getUnion) ||
+        // Composite arms (records holding dyn, Map or Set members) box
+        // through the walker beside the promise arm: a method answering
+        // either its result or a promise of it.
+        canBoxDynComposite(a, getRecord, getUnion, visiting) ||
+        isDynTypedRefType(a) ||
+        textCodecRecordClass(a, getRecord) !== null ||
+        a.kind === "classval" ||
+        DYN_HANDLE_KINDS.has(a.kind) ||
+        (a.kind === "func" && canBoxFuncIntoDyn(a, getRecord, getUnion, visiting)) ||
+        (a.kind === "promise" && canConvertToDyn(a, getRecord, getUnion, visiting)),
     );
+    visiting.delete(key);
+    return result;
   }
   return false;
 }
@@ -4777,15 +4886,17 @@ export function canDynCheckTo(
 }
 
 /** The in-progress key of a checked composite. Marking it for the duration of
- * the frame answers a recursion back-edge coinductively, and the wrapper
- * keeps it as the success memo once the frame returns true. */
+ * the frame answers a recursion back-edge coinductively. It is not the
+ * `checked:` success memo: a failed branch elsewhere clears every memo, and
+ * a frame that lost its mark that way would be entered again without end. */
 function checkedVisitKey(t: IrType): string {
-  return `checked:${typeKey(t)}`;
+  return `checking:${typeKey(t)}`;
 }
 
 /** Reuse completed subgraphs within one conversion query. A failed branch
  * invalidates successes that may depend on a coinductive back-edge to it;
- * active recursion keys remain until their owning calls unwind. */
+ * active recursion keys (`checking:`, `converting:`, and the composite
+ * walk's bare shape and union ids) remain until their owning calls unwind. */
 function clearDynConversionResults(visiting: Set<string>): void {
   for (const key of visiting) {
     if (key.startsWith("boxed:") || key.startsWith("checked:")) visiting.delete(key);
@@ -4853,16 +4964,21 @@ function canDynCheckToAt(
   if (DYN_HANDLE_KINDS.has(t.kind)) return true;
   if (t.kind === "union") {
     const def = getUnion(t.unionId);
+    if (!def) return false;
+    // A function arm can return this union again; the back-edge answers
+    // coinductively, like a recursive record.
+    const key = checkedVisitKey(t);
+    if (visiting.has(key)) return true;
+    visiting.add(key);
     // Optional native callbacks and handles retain the same checked
     // conversion as their bare value. The union matcher selects the arm
     // before its adapter/extractor runs.
-    return (
-      !!def &&
-      def.arms.every(
-        (a) =>
-          isUnitType(a) || (a.kind !== "union" && canDynCheckTo(a, getRecord, getUnion, visiting)),
-      )
+    const result = def.arms.every(
+      (a) =>
+        isUnitType(a) || (a.kind !== "union" && canDynCheckTo(a, getRecord, getUnion, visiting)),
     );
+    visiting.delete(key);
+    return result;
   }
   return false;
 }
@@ -4906,9 +5022,12 @@ export function canAdaptDynFuncTo(
 ): boolean {
   return (
     t.kind === "func" &&
-    // Checked rest and arguments packs retain all actual arguments. Typed
-
-    (t.rest !== true || t.restAbi === undefined) &&
+    // Checked rest and arguments packs retain all actual arguments; typed
+    // rest is one trailing native array in `params`, which the adapter
+    // spreads into the dyn call's argument vector element by element.
+    (t.rest !== true ||
+      t.restAbi === undefined ||
+      (t.restAbi === "typed" && t.params.at(-1)?.kind === "array")) &&
     t.params.every((p) => p.kind === "dyn" || canConvertToDyn(p, getRecord, getUnion, visiting)) &&
     (t.ret.kind === "void" ||
       t.ret.kind === "dyn" ||

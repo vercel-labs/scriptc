@@ -42,6 +42,10 @@ export type UnionRetagArm =
   | { kind: "discriminant"; field: string; fieldType: IrType; routes: UnionRetagRoute[] }
   | { kind: "classRoute"; routes: readonly UnionClassRoute[] };
 
+/** A source arm's routes by the values of one discriminant field, planned
+ * for one conversion from the checker types of its site. */
+export type UnionSiteRoute = UnionRetagArm & { kind: "discriminant" };
+
 export interface RecordUnionWrapPlan {
   field: string;
   fieldType: IrType;
@@ -137,6 +141,8 @@ export function planUnionRetag(
   widthLift: (src: IrType, dst: IrType) => WidthLift | null,
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
+  checkedLift?: (src: IrType, dst: IrType) => WidthLift | null,
+  siteRoutes?: ReadonlyMap<number, UnionSiteRoute>,
 ): UnionRetagArm[] | null {
   const result: UnionRetagArm[] = [];
   const target: IrType = { kind: "union", unionId: to.id };
@@ -230,12 +236,56 @@ export function planUnionRetag(
     // Unannotated unions retain the unique-width-arm rule. A discriminant
     // present on just one side cannot establish correspondence.
     const lift = widthLift(source, target);
-    if (!lift || lift.how !== "liftWrap") return null;
+    if (!lift || lift.how !== "liftWrap") {
+      // The CHECKED widening, for a conversion that would otherwise refuse
+      // (a narrowed `{ role: string }` arm into the wider record arm its
+      // predicate claimed): exactly one destination arm may accept it, and
+      // reaching that arm validates the payload before the value enters the
+      // union. It answers only when no destination arm accepts the source by
+      // ordinary width. A source that reaches an arm that way is not refused
+      // for want of a destination: the ordinary plan declined because several
+      // arms fit or another selection rule did, and resolving that with a
+      // route that throws would reject a value the arm it fits would hold.
+      const ordinaryArm = to.arms.some(
+        (arm) => !isUnitType(arm) && widthLift(source, arm) !== null,
+      );
+      const checked =
+        checkedLift === undefined || ordinaryArm ? null : uniqueCheckedArm(to, source, checkedLift);
+      if (checked === null) {
+        // The conversion's own routes (site-discriminant.ts), asked only
+        // for an arm no rule above places.
+        const routed = siteRoutes?.get(tag);
+        if (routed === undefined) return null;
+        result.push(routed);
+        continue;
+      }
+      result.push({ kind: "direct", route: checked });
+      continue;
+    }
     const inner = widthLift(source, lift.arm);
     if (!inner) return null;
     result.push({ kind: "direct", route: { tag: lift.tag, lift: inner, values: [] } });
   }
   return result;
+}
+
+/** The one destination arm the source can enter by the checked widening, or
+ * null when none or more than one can. Ambiguity is refused, like the
+ * unique-width-arm rule it stands beside: the value's layout alone cannot
+ * say which variant it is. */
+function uniqueCheckedArm(
+  to: IrUnionDef,
+  source: IrType,
+  checkedLift: (src: IrType, dst: IrType) => WidthLift | null,
+): UnionRetagRoute | null {
+  let found: UnionRetagRoute | null = null;
+  for (let tag = 0; tag < to.arms.length; tag++) {
+    const lift = checkedLift(source, to.arms[tag]!);
+    if (lift === null) continue;
+    if (found !== null) return null;
+    found = { tag, lift, values: [] };
+  }
+  return found;
 }
 
 function typeError(message: string, loc: SrcLoc): IrStmt {

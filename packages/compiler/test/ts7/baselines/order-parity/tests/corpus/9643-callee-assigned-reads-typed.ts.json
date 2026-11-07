@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9643-callee-assigned-reads-typed.ts"
+ ],
+ "diags": []
+}

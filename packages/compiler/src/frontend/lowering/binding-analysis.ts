@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import { dynFallbackType } from "./lowerer.js";
@@ -26,14 +27,33 @@ export function bindingNeverReassigned(
 }
 
 /** True when something in `file` writes `sym` (the writes
- * bindingNeverReassigned counts), resolving identifiers with `resolve`. */
+ * bindingNeverReassigned counts), resolving identifiers with `resolve`.
+ * With `afterPos`, a write counts only when it can run after that source
+ * position: a top-level write before it is already reflected in the value
+ * Node copies at an export statement there, while a write inside a
+ * function or class body runs on its own schedule and always counts. */
 export function fileWritesBinding(
   sym: ts.Symbol,
   file: ts.SourceFile,
   resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined,
+  afterPos?: number,
 ): boolean {
   if (declarationsWriteBinding(sym)) return true;
   let written = false;
+  /** Whether a write at `n` can execute after `afterPos`. */
+  const lateEnough = (n: ts.Node): boolean => {
+    if (afterPos === undefined || n.getStart(file) > afterPos) return true;
+    for (let p = n.parent; p !== undefined && p !== file; p = p.parent) {
+      if (
+        ts.isFunctionLike(p) ||
+        ts.isClassDeclaration(p) ||
+        ts.isClassExpression(p) ||
+        ts.isClassStaticBlockDeclaration(p)
+      )
+        return true;
+    }
+    return false;
+  };
   // Text pre-check keeps the file walk cheap: only same-named
   // identifiers pay a symbol resolution.
   const symText = ts.symbolName(sym);
@@ -60,17 +80,24 @@ export function fileWritesBinding(
     if (written) return;
     if (ts.isBinaryExpression(n)) {
       const k = n.operatorToken.kind;
-      if (k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment) {
+      if (
+        k >= ts.SyntaxKind.FirstAssignment &&
+        k <= ts.SyntaxKind.LastAssignment &&
+        lateEnough(n)
+      ) {
         scanTarget(n.left);
       }
     } else if (
       (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
-      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
+      (n.operator === ts.SyntaxKind.PlusPlusToken ||
+        n.operator === ts.SyntaxKind.MinusMinusToken) &&
+      lateEnough(n)
     ) {
       scanTarget(n.operand as ts.Expression);
     } else if (
       (ts.isForOfStatement(n) || ts.isForInStatement(n)) &&
-      !ts.isVariableDeclarationList(n.initializer)
+      !ts.isVariableDeclarationList(n.initializer) &&
+      lateEnough(n)
     ) {
       scanTarget(n.initializer as ts.Expression);
     }
@@ -151,24 +178,27 @@ function insideLoopBody(node: ts.Node): boolean {
   return false;
 }
 
-/** Strips the value-preserving wrappers off an expression: parens,
- * non-null assertions, `as`/`satisfies`/angle-bracket casts. What
- * remains is the expression that actually evaluates. */
-export function stripValueWrappers(e: ts.Expression): ts.Expression {
-  let v: ts.Expression = e;
-  for (;;) {
-    if (
-      ts.isParenthesizedExpression(v) ||
-      ts.isNonNullExpression(v) ||
-      ts.isAsExpression(v) ||
-      ts.isSatisfiesExpression(v) ||
-      ts.isTypeAssertion(v)
-    ) {
-      v = v.expression;
-      continue;
-    }
-    return v;
-  }
+/** An identifier that reads or declares a binding (not a member name).
+ * `o.value`, `{ value: 1 }`, `const { value: v } = o` and `value?: T` all put
+ * the identifier in a NAME position: the checker answers the MEMBER's symbol
+ * there, which no value slot holds. */
+export function isValueIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isQualifiedName(parent) && parent.right === node) return false;
+  if (ts.isImportSpecifier(parent) && parent.propertyName === node) return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (
+    (ts.isPropertyAssignment(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertySignature(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
+  return true;
 }
 
 /** The nullish unit `e` provably evaluates to: a bare null/undefined
@@ -176,7 +206,7 @@ export function stripValueWrappers(e: ts.Expression): ts.Expression {
  * registered NULLISH binding (nullishGenericBindingUnitOf). Null when
  * the value could be anything else. */
 export function nullishExprUnitOf(lowerer: Lowerer, e: ts.Expression): "null" | "undefined" | null {
-  const v = stripValueWrappers(e);
+  const v = withoutParenthesesTypeWrappers(e);
   if (v.kind === ts.SyntaxKind.NullKeyword) return "null";
   if (ts.isIdentifier(v)) {
     if (v.text === "undefined" && (lowerer.typeOf(v).flags & ts.TypeFlags.Undefined) !== 0) {
@@ -388,7 +418,7 @@ function allWritesNullish(lowerer: Lowerer, sym: ts.Symbol, decl: ts.Node): bool
  * unobservable. Bare identifier reads stay OUT (a read above a `let`
  * declaration is a TDZ throw Node WOULD serve). */
 function sideEffectFreeValueExpr(lowerer: Lowerer, e: ts.Expression): boolean {
-  const v = stripValueWrappers(e);
+  const v = withoutParenthesesTypeWrappers(e);
   if (ts.isArrowFunction(v) || ts.isFunctionExpression(v)) return true;
   if (
     ts.isLiteralExpression(v) ||

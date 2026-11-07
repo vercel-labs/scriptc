@@ -3,6 +3,7 @@ import { IR_VERSION } from "./serialize.js";
 import { DYN, STRING, VOID, arrayOf, type IrExpr, type IrModule, type IrLibFn } from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
+  jsObjectModelFact,
   moduleRuntimeFeatures,
   moduleUsesHttp2,
   moduleUsesTlsCa,
@@ -66,6 +67,16 @@ describe("runtime feature snapshots", () => {
       type: { kind: "bigint" },
     });
     expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
+  });
+
+  test("selects the fetch unit's Blob/File body build only for programs that build one", () => {
+    const plain = module();
+    plain.functions[0]!.body.push(call("fetch.input"));
+    expect(moduleRuntimeFeatures(plain)).toMatchObject({ fetch: true, webBodies: false });
+
+    const blob = module();
+    blob.functions[0]!.body.push(call("blob.new"), call("fetch.input"));
+    expect(moduleRuntimeFeatures(blob)).toMatchObject({ fetch: true, webBodies: true });
   });
 
   test("gates the call-time parameter bind unit on a barriered generator", () => {
@@ -286,6 +297,70 @@ describe("runtime feature snapshots", () => {
     }
   });
 
+  test("a dynamic __proto__ key selects the object model build", () => {
+    // Object.prototype's __proto__ accessor is modelled in the object model
+    // build of scr_json.c, so a source that reads or writes the member by
+    // name under a dynamic key takes that build; every other program keeps
+    // the default object, byte for byte.
+    const obj = (): IrExpr => ({ kind: "varRef", localId: "o", type: DYN, loc });
+    const key = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const read = module();
+    read.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynKeyGet", value: obj(), key: key("__proto__"), type: DYN, loc },
+    });
+    const readFeatures = moduleRuntimeFeatures(read);
+    expect(readFeatures.protoAccessor).toBe(true);
+    expect(jsObjectModelFact(readFeatures)).toBe(true);
+    for (const fn of ["dyn.keySet", "dyn.bagGet", "dyn.bagSet"] as const) {
+      const write = module();
+      write.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "libCall", fn, args: [obj(), key("__proto__"), obj()], type: VOID, loc },
+      });
+      const writeFeatures = moduleRuntimeFeatures(write);
+      expect(writeFeatures.protoAccessor, fn).toBe(true);
+      expect(jsObjectModelFact(writeFeatures), fn).toBe(true);
+    }
+    // A literal member named `__proto__` is a property definition, which the
+    // backend emits through the object model build's define entry.
+    const literal = module();
+    literal.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynObjLit",
+        fields: [{ key: key("__proto__"), value: obj() }],
+        type: DYN,
+        loc,
+      },
+    });
+    const literalFeatures = moduleRuntimeFeatures(literal);
+    expect(literalFeatures.protoAccessor).toBe(true);
+    expect(jsObjectModelFact(literalFeatures)).toBe(true);
+    const ordinary = module();
+    ordinary.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: { kind: "dynKeyGet", value: obj(), key: key("constructor"), type: DYN, loc },
+    });
+    ordinary.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynObjLit",
+        fields: [{ key: key("x"), value: obj() }],
+        type: DYN,
+        loc,
+      },
+    });
+    const ordinaryFeatures = moduleRuntimeFeatures(ordinary);
+    expect(ordinaryFeatures.protoAccessor).toBe(false);
+    expect(jsObjectModelFact(ordinaryFeatures)).toBe(false);
+  });
+
   test("selects the JavaScript object model build for writes that spell a sparse index", () => {
     // t262 W7: only a write the source spells an index past the dense
     // prefix's materialization limit (1000000 elements, scr_json.c) selects
@@ -458,6 +533,42 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(spawner)).toMatchObject({
       childProcess: true,
       childErrorFields: false,
+    });
+  });
+
+  test("installs a failed spawn's error object only where an 'error' listener can be registered", () => {
+    // The fact decides the emitted scr_child_error_event_install call: a
+    // program that only spawns keeps the settle path's hook empty and links
+    // none of the property code.
+    for (const fn of ["child.onError", "child.onDyn", "child.propsOnDyn"] as const) {
+      const listener = module();
+      listener.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(listener)).toMatchObject({
+        childProcess: true,
+        childErrorEvent: true,
+      });
+    }
+
+    // A child that becomes an untyped value can be listened to through the
+    // handle table.
+    const boxed = module();
+    boxed.functions[0]!.body.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "dynFrom",
+        value: { kind: "varRef", localId: "c", type: { kind: "child" }, loc },
+        type: { kind: "dyn" },
+        loc,
+      },
+      loc,
+    });
+    expect(moduleRuntimeFeatures(boxed).childErrorEvent).toBe(true);
+
+    const spawner = module();
+    spawner.functions[0]!.body.push(call("child.onExit"));
+    expect(moduleRuntimeFeatures(spawner)).toMatchObject({
+      childProcess: true,
+      childErrorEvent: false,
     });
   });
 });

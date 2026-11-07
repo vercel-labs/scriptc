@@ -1,6 +1,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
@@ -16,6 +17,7 @@ import {
   type SrcLoc,
   typeKey,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
 import { lowerOptionalNumber } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
@@ -158,6 +160,70 @@ export function adaptZeroArgTimerCallback(
   return { kind: "call", callee: name, args: [cb], type: toT, loc };
 }
 
+/** Node validates a timer callback synchronously — after every argument
+ * expression has evaluated, before the delay converts and before anything
+ * schedules — throwing ERR_INVALID_ARG_TYPE for a non-function. A
+ * callback without a static function type is retained in a hidden local
+ * and `timers.checkCallback` runs on the dynamic value behind it; a
+ * statically known function needs no gate, so typed callers keep their
+ * exact IR. A cast to a function type (`cb as () => void`) lowers to a
+ * dynCheck over the dynamic value: Node sees the cast erased and
+ * validates at the timer, so the gate takes the bottom of that chain and
+ * the checked casts are rebuilt over the retained value. Null when there
+ * is nothing to check. */
+function retainedTimerCallback(
+  lowerer: Lowerer,
+  cb: IrExpr,
+  loc: SrcLoc,
+): { value: IrExpr; callback: IrExpr; hold: IrStmt[] } | null {
+  const casts: (IrExpr & { kind: "dynCheck"; value: IrExpr })[] = [];
+  let source = cb;
+  while (source.type.kind !== "dyn") {
+    if (source.kind !== "dynCheck") return null;
+    casts.push(source);
+    source = source.value;
+  }
+  const held = lowerer.declareHiddenLocal("%timerCallbackArg", DYN);
+  const value = varRef(held.id, DYN, loc);
+  let callback: IrExpr = value;
+  for (const cast of casts.reverse()) callback = { ...cast, value: callback };
+  return { value, callback, hold: [{ kind: "varDecl", localId: held.id, init: source, loc }] };
+}
+
+/** A timer's callback argument, lowered. One that is statically not a
+ * function (`setTimeout("x")`, a number, undefined) crosses untyped, so
+ * the gate below throws Node's ERR_INVALID_ARG_TYPE where the call runs,
+ * exactly as it does for an untyped value that turns out not to be a
+ * function. A function, an untyped value and a checked cast are returned
+ * as lowered. */
+function timerCallbackArgument(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  const cb = lowerer.lowerExpr(node);
+  if (cb.type.kind === "func" || cb.type.kind === "dyn") return cb;
+  if (cb.kind !== "unitLit" && !lowerer.dynConvertible(cb.type)) return cb;
+  return { kind: "dynFrom", value: cb, type: DYN, loc };
+}
+
+/** The gate over a retained callback: a non-function throws Node's
+ * ERR_INVALID_ARG_TYPE synchronously (scr_timers_check_callback). */
+function timerCallbackCheck(cb: IrExpr, loc: SrcLoc): IrStmt {
+  return {
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "timers.checkCallback", args: [cb], type: VOID, loc },
+    loc,
+  };
+}
+
+/** A delay expression with no effects of its own: the gate may run before
+ * it without changing what a program observes. */
+function pureDelay(expr: IrExpr): boolean {
+  return (
+    expr.kind === "numLit" ||
+    expr.kind === "strLit" ||
+    expr.kind === "boolLit" ||
+    expr.kind === "unitLit"
+  );
+}
+
 /** The trailing-argument timer forms — `setTimeout(cb, ms, ...args)`,
  * `setInterval(cb, ms, ...args)`, `setImmediate(cb, ...args)` — invoke
  * the callback WITH those arguments (Node passes them through). The
@@ -178,18 +244,25 @@ export function timerStyleCallback(
   // parameterized ones ride the checked-dynamic boundary, trailing
   // call arguments ride the interned per-arity dyn thunk.
   return callArgs.length > 1
-    ? makeTimerArgsThunk(lowerer, callArgs[0]!, callArgs.slice(1), what, loc)
+    ? makeTimerArgsThunk(
+        lowerer,
+        lowerer.lowerExpr(callArgs[0]!),
+        callArgs[0]!,
+        callArgs.slice(1),
+        what,
+        loc,
+      )
     : adaptZeroArgTimerCallback(lowerer, lowerer.lowerExpr(callArgs[0]!), callArgs[0]!, loc);
 }
 
 function makeTimerArgsThunk(
   lowerer: Lowerer,
+  cbLowered: IrExpr,
   cbNode: ts.Expression,
   argNodes: readonly ts.Expression[],
   what: string,
   loc: SrcLoc,
 ): IrExpr {
-  const cbLowered = lowerer.lowerExpr(cbNode);
   let boxedCb: IrExpr;
   if (cbLowered.type.kind === "dyn") {
     boxedCb = cbLowered;
@@ -324,7 +397,7 @@ function optionalTimerHandle(lowerer: Lowerer, handle: IrExpr, loc: SrcLoc): IrE
   return { kind: "nullish", left: handle, right: numLit(0, loc), type: F64, loc };
 }
 
-const MOCKABLE_TIMER_FNS: ReadonlySet<string> = new Set([
+const MOCKABLE_TIMER_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "timers.setTimeout",
   "timers.setTimeoutHandle",
   "timers.setInterval",
@@ -391,25 +464,33 @@ function lowerTimerCall(
         `the supported form is ${member}(callback, ms?, ...args)`,
       );
     }
-    const cb = withTimerThis(
+    const cbNode = expr.arguments.nodes[0]!;
+    const trailing = expr.arguments.nodes.slice(2);
+    const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
+    const retained = retainedTimerCallback(lowerer, cbLowered, loc);
+    // With trailing arguments the interned thunk boxes the callback and
+    // dynCalls it when the timer fires, so the gate's dynamic value is
+    // exactly what it captures: the erased cast validates at the fire-time
+    // call instead, as Node's erased cast would.
+    const cbValue = retained
+      ? trailing.length > 0
+        ? retained.value
+        : retained.callback
+      : cbLowered;
+    let cb = withTimerThis(
       lowerer,
-      expr.arguments.nodes[0]!,
-      expr.arguments.nodes.length > 2
-        ? makeTimerArgsThunk(
-            lowerer,
-            expr.arguments.nodes[0]!,
-            expr.arguments.nodes.slice(2),
-            member,
-            loc,
-          )
-        : adaptZeroArgTimerCallback(
-            lowerer,
-            lowerer.lowerExpr(expr.arguments.nodes[0]!),
-            expr.arguments.nodes[0]!,
-            loc,
-          ),
+      cbNode,
+      trailing.length > 0
+        ? makeTimerArgsThunk(lowerer, cbValue, cbNode, trailing, member, loc)
+        : adaptZeroArgTimerCallback(lowerer, cbValue, cbNode, loc),
       loc,
     );
+    // A callback that may read `this` is bound to its timer handle, so the
+    // call needs the handle form even in statement position. The answer is
+    // recorded here because the retention below replaces the expression
+    // with a hidden local for a checked-dynamic callback with trailing
+    // arguments.
+    const cbBindsThis = cb.kind === "libCall" && cb.fn === "timers.thisCallback";
     // An omitted delay is NaN, Node's undefined: the loop clamps it to
     // 1ms, and mock.timers queues it to run at the next tick.
     let warned = false;
@@ -426,6 +507,26 @@ function lowerTimerCall(
       expr.arguments.nodes.length >= 2
         ? lowerer.lowerExpr(expr.arguments.nodes[1]!)
         : { kind: "numLit", value: NaN, type: F64, loc };
+    // A callback the runtime gate will validate: Node runs the gate after
+    // every argument expression has evaluated (the delay expression
+    // included) and before the delay converts, so the delay and the
+    // trailing-argument thunk are retained and the gate follows them.
+    const preStmts: IrStmt[] = retained ? [...retained.hold] : [];
+    if (retained) {
+      if (!pureDelay(ms)) {
+        const held = lowerer.declareHiddenLocal("%timerDelayArg", ms.type);
+        preStmts.push({ kind: "varDecl", localId: held.id, init: ms, loc });
+        ms = varRef(held.id, ms.type, loc);
+      }
+      if (trailing.length > 0) {
+        // The thunk's construction is where the trailing arguments
+        // evaluate; retaining it puts them between the delay and the gate.
+        const held = lowerer.declareHiddenLocal("%timerCallbackFn", cb.type);
+        preStmts.push({ kind: "varDecl", localId: held.id, init: cb, loc });
+        cb = varRef(held.id, cb.type, loc);
+      }
+      preStmts.push(timerCallbackCheck(retained.value, loc));
+    }
     if (ms.type.kind === "union" && !hasBoolArm(lowerer, ms.type)) {
       // A delay that may be undefined: an optional `ms?: number` passed on,
       // or an element read (`delays[0]`) whose storage keeps the
@@ -498,7 +599,7 @@ function lowerTimerCall(
     // so a throw leaves only the callback's local, which the frame
     // releases.
     let callback = cb;
-    const callbackFirst: IrStmt[] = [];
+    const callbackFirst: IrStmt[] = [...preStmts];
     if (throwingDelay) {
       const held = lowerer.declareHiddenLocal("%timerCallback", cb.type);
       const delay = lowerer.declareHiddenLocal("%timerDelayMs", F64);
@@ -528,10 +629,7 @@ function lowerTimerCall(
     // historic fire-and-forget setTimeout, no clear surface). Both ride
     // the same heap; only the handle form can be unref'd/cleared.
     const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
-    // A callback bound to its handle needs one, also in statement
-    // position.
-    const bindsThis = cb.kind === "libCall" && cb.fn === "timers.thisCallback";
-    if (bindsThis || (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent))) {
+    if (cbBindsThis || (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent))) {
       return scheduled({
         kind: "libCall",
         fn: "timers.setTimeoutHandle",
@@ -593,26 +691,43 @@ function lowerTimerCall(
         "the supported form is setImmediate(callback, ...args)",
       );
     }
-    const cb = withTimerThis(
+    const cbNode = expr.arguments.nodes[0]!;
+    const trailing = expr.arguments.nodes.slice(1);
+    const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
+    const retained = retainedTimerCallback(lowerer, cbLowered, loc);
+    // As with setTimeout's trailing form: the thunk captures the gate's
+    // dynamic value and calls it at fire time.
+    const cbValue = retained
+      ? trailing.length > 0
+        ? retained.value
+        : retained.callback
+      : cbLowered;
+    let cb = withTimerThis(
       lowerer,
-      expr.arguments.nodes[0]!,
-      expr.arguments.nodes.length > 1
-        ? makeTimerArgsThunk(
-            lowerer,
-            expr.arguments.nodes[0]!,
-            expr.arguments.nodes.slice(1),
-            "setImmediate",
-            loc,
-          )
-        : adaptZeroArgTimerCallback(
-            lowerer,
-            lowerer.lowerExpr(expr.arguments.nodes[0]!),
-            expr.arguments.nodes[0]!,
-            loc,
-          ),
+      cbNode,
+      trailing.length > 0
+        ? makeTimerArgsThunk(lowerer, cbValue, cbNode, trailing, "setImmediate", loc)
+        : adaptZeroArgTimerCallback(lowerer, cbValue, cbNode, loc),
       loc,
     );
-    return { kind: "libCall", fn: "timers.setImmediate", args: [cb], type: F64, loc };
+    if (!retained)
+      return { kind: "libCall", fn: "timers.setImmediate", args: [cb], type: F64, loc };
+    // The gate follows the callback and its trailing arguments, the only
+    // other expressions the call evaluates.
+    const preStmts: IrStmt[] = [...retained.hold];
+    if (trailing.length > 0) {
+      const held = lowerer.declareHiddenLocal("%timerCallbackFn", cb.type);
+      preStmts.push({ kind: "varDecl", localId: held.id, init: cb, loc });
+      cb = varRef(held.id, cb.type, loc);
+    }
+    preStmts.push(timerCallbackCheck(retained.value, loc));
+    return {
+      kind: "seqExpr",
+      stmts: preStmts,
+      result: { kind: "libCall", fn: "timers.setImmediate", args: [cb], type: F64, loc },
+      type: F64,
+      loc,
+    };
   }
   if (member === "clearImmediate") {
     const noop = tolerantClearNoop(lowerer, expr, loc);
@@ -677,7 +792,7 @@ function withTimerThis(lowerer: Lowerer, node: ts.Expression, cb: IrExpr, loc: S
 }
 
 function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
-  let callback = unparenthesized(node);
+  let callback = withoutParentheses(node);
   const seen = new Set<ts.Node>();
   for (;;) {
     if (ts.isArrowFunction(callback)) return false;
@@ -698,14 +813,8 @@ function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
     )
       return true;
     seen.add(declaration);
-    callback = unparenthesized(declaration.initializer);
+    callback = withoutParentheses(declaration.initializer);
   }
-}
-
-function unparenthesized(node: ts.Expression): ts.Expression {
-  let expression = node;
-  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-  return expression;
 }
 
 /** Whether a function reads its own `this`: in its body, or in the

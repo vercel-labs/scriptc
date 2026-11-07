@@ -53,6 +53,9 @@ const char *scr_lib_arg(int i);
 bool scr_lib_take_flag(const char *flag);
 /* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
 ScrArr *scr_process_exec_argv(void);
+/* process.allowedNodeEnvironmentFlags: one interned set of the option
+ * names the compatibility target accepts in NODE_OPTIONS (+1 per read). */
+ScrMap *scr_process_allowed_env_flags(void);
 /* Private self-reexec marker parsed and removed from process.argv by
  * scr_lib_init. False in an ordinary parent invocation. */
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
@@ -556,6 +559,9 @@ ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid);
 ScrPromise *scr_fsp_access(ScrStr *path, double mode);
 ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data);
 ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_flags_bytes(ScrStr *path, ScrBytes *data, double mode,
+                                           double exclusive);
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);

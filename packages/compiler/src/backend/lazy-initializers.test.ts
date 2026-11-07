@@ -138,14 +138,18 @@ function defer(mod: IrModule): { out: IrModule; verdicts: Map<string, LazyInitia
 }
 const named = (mod: IrModule, name: string): IrFunction =>
   mod.functions.find((f) => f.name === name)!;
-/** `if (!%g.%lazy.N) %lazy.N();` */
+/** `if (!%g.%lazy.N) { %lazy.N(); %g.%lazy.N = true; }` */
 const guardOf = (stmt: IrStmt | undefined): string | null =>
   stmt?.kind === "if" &&
   stmt.cond.kind === "unary" &&
   stmt.cond.operand.kind === "varRef" &&
-  stmt.then.length === 1 &&
+  stmt.then.length === 2 &&
   stmt.then[0]!.kind === "exprStmt" &&
-  stmt.then[0]!.expr.kind === "call"
+  stmt.then[0]!.expr.kind === "call" &&
+  stmt.then[1]!.kind === "assign" &&
+  stmt.then[1]!.localId === stmt.cond.operand.localId &&
+  stmt.then[1]!.value.kind === "boolLit" &&
+  stmt.then[1]!.value.value
     ? `${stmt.cond.operand.localId} ${stmt.then[0]!.expr.callee}`
     : null;
 /** The members a group's run can take: [number in the group, initializer]. */

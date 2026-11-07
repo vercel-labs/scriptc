@@ -26,6 +26,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `line-reader` | cpu | `readline` over a file stream: 'line' events for a 67 MB access log (every 50th line not ASCII), with a status count, a path tally and byte totals |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |
 | `log-summary`, `inventory-report` | cpu | the multi-module applications from `benchmarks/builds`, on 300k-line inputs |
+| `module-table-reads` | cpu | reads of a number table that another module builds at load (`benchmarks/runtime/module-table`): a hundred million through that module's one-line accessor from the entry's loop, and as many in a loop of the module's own. The table's module only computes, so its initializer runs at the first read; the workload is the cost of the check in front of a read |
 | `n-body` | cpu | five planets in an array of records advanced a million fixed steps by the pair loop over the upper triangle, then the system's total energy before and after |
 | `number-maps` | cpu | number-keyed Map/Set: a dense-id table, sparse ids in many small maps, get/has/set mixes |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |

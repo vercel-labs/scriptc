@@ -51,6 +51,8 @@ test.runIf(process.arch === "x64" || process.arch === "arm64")(
     const run = definition(llvm, "_x25_lazy_0");
     expect(run).not.toBe("");
     expect(definition(llvm, "_x25_lazy_at_\\d+")).not.toBe("");
+    // The run stays out of line: a guard is a flag test and a call.
+    expect(run.split("\n")[0]).toMatch(/\) noinline cold /);
     // The reader checks the group's flag once, ahead of its loop, and the
     // loop itself calls nothing of the group.
     const total = definition(llvm, "total");

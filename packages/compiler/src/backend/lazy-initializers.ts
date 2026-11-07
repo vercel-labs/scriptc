@@ -38,6 +38,15 @@ export interface LazyInitializerVerdict {
 }
 
 const INIT = "%init.";
+/** The run of group N is `%lazy.N`; a member's place is `%lazy.at.<module>`. */
+const RUN = "%lazy.";
+const PLACE = "%lazy.at.";
+
+/** Whether `name` is the run of a deferred group (the function a guard
+ * calls), as opposed to a member's place. */
+export function isLazyGroupRun(name: string): boolean {
+  return name.startsWith(RUN) && !name.startsWith(PLACE);
+}
 
 /** SCRIPTC_INITIALIZERS_TRACE=defer at build time prints the verdict for
  * every module initializer of the program, in the form of the trace of
@@ -464,10 +473,10 @@ function settledLength(length: IrExpr, lengths: ReadonlySet<string>): boolean {
  * member is then never put on the list, as its statements never ran.
  *
  * Every function that names one of the group's globals gets a guard
- * (`if (!active) run()`) before the first statement that does, outside any
- * loop of the function, and inside the branch (or the `try`) when only
- * that names one. A group that is never used costs a few stores; reads in
- * a loop pay no guard.
+ * (`if (!active) { run(); active = true; }`) before the first statement
+ * that does, outside any loop of the function, and inside the branch (or
+ * the `try`) when only that names one. A group that is never used costs a
+ * few stores; reads in a loop pay no guard.
  *
  * Left where they are: the roots (the entry, a fork target), a module
  * whose initializer awaits or registers a CommonJS module, a module of an
@@ -1079,8 +1088,8 @@ export function deferClosedInitializers(
   }
   const activeOf = (group: number): string => `%g.%lazy.${group}`;
   const lastOf = (group: number): string => `%g.%lazy.${group}.last`;
-  const runOf = (group: number): string => `%lazy.${group}`;
-  const placeOf = (init: string): string => `%lazy.at.${init.slice(INIT.length)}`;
+  const runOf = (group: number): string => `${RUN}${group}`;
+  const placeOf = (init: string): string => `${PLACE}${init.slice(INIT.length)}`;
   const atOf = (init: string): string => `%g.%lazy.at.${init.slice(INIT.length)}`;
   const linkOf = (init: string): string => `%g.%lazy.link.${init.slice(INIT.length)}`;
   const ownerOf = new Map<string, number>();
@@ -1230,6 +1239,12 @@ export function deferClosedInitializers(
     for (const user of users.get(id) ?? [])
       // A member runs inside its group's run; every other user is guarded.
       if (!(candidates.has(user) && groupOf.get(user) === group)) accessing.add(user);
+  // The store after the run says nothing new (the run sets the flag before
+  // it does anything else, so that a guard inside it does not start it
+  // again). It is there for the optimizer: the run is a call that could
+  // write anything, and with the store the flag is known to be set on
+  // every path out of the guard. A loop around an inlined accessor then
+  // tests the flag once instead of in every turn.
   const guardStmt = (group: number, loc: SrcLoc): IrStmt => ({
     kind: "if",
     cond: {
@@ -1239,7 +1254,7 @@ export function deferClosedInitializers(
       type: BOOL,
       loc,
     },
-    then: [callStmt(runOf(group), loc)],
+    then: [callStmt(runOf(group), loc), store(activeOf(group), flag(true, loc), loc)],
     else_: null,
     loc,
   });

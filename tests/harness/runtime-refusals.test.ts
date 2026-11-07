@@ -2,7 +2,7 @@
  * sources: which raising call a refusal message is attributed to decides
  * whether the lint sees its diagnostic code. `pnpm lint` runs the same
  * script over packages/runtime/src. */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,3 +85,22 @@ void widget_use(int kind) {
   expect(local.stdout).toContain(", 0 do not");
   expect(local.status).toBe(0);
 });
+
+test("the site list reaches a reader that is slower than the script", async () => {
+  // The list for the runtime is larger than a pipe's buffer. The reader
+  // starts after the script has written what fits and would have exited:
+  // an exit at that point drops the rest, and the status still says 0.
+  const child = spawn(process.execPath, [script, "--json"], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const status = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  let text = "";
+  child.stdout.setEncoding("utf8");
+  for await (const chunk of child.stdout) text += chunk;
+  expect(await status).toBe(0);
+  expect(text.length).toBeGreaterThan(64 * 1024);
+  const sites = JSON.parse(text) as { file: string; message: string }[];
+  expect(sites.length).toBeGreaterThan(300);
+  expect(sites.every((site) => typeof site.file === "string")).toBe(true);
+}, 30_000);

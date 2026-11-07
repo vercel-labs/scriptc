@@ -384,54 +384,63 @@ function keyOf(site) {
 }
 
 const args = new Set(process.argv.slice(2));
-const all = scan();
-const sites = all.filter((site) => !site.nodeWording && site.fatal !== true);
 
-if (args.has("--json")) {
-  process.stdout.write(JSON.stringify(all, null, 1) + "\n");
-  process.exit(0);
-}
+/** Prints what the arguments ask for and answers the exit status. The
+ * process ends by itself once its output is written: the site list is
+ * larger than a pipe's buffer, and process.exit() would drop what a slow
+ * reader had not taken yet and still report success. */
+function main() {
+  const all = scan();
+  const sites = all.filter((site) => !site.nodeWording && site.fatal !== true);
 
-if (args.has("--write") && baselinePath !== null) {
-  const entries = sites.map((site) => ({
-    file: site.file,
-    function: site.function,
-    message: site.message,
-    code: site.code,
-  }));
-  writeFileSync(baselinePath, JSON.stringify(entries, null, 1) + "\n");
-  process.stdout.write(`wrote ${entries.length} sites to ${baselinePath}\n`);
-  process.exit(0);
-}
-
-let baseline = null;
-if (baselinePath !== null)
-  try {
-    baseline = new Set(JSON.parse(readFileSync(baselinePath, "utf8")).map(keyOf));
-  } catch {
-    baseline = null;
+  if (args.has("--json")) {
+    process.stdout.write(JSON.stringify(all, null, 1) + "\n");
+    return 0;
   }
 
-const uncoded = sites.filter((site) => site.code === null);
-const unlisted = baseline === null ? [] : sites.filter((site) => !baseline.has(keyOf(site)));
-const fileCount = new Set(sites.map((site) => site.file)).size;
-process.stdout.write(
-  `runtime refusal sites: ${sites.length} in ${fileCount} files; ` +
-    `${sites.length - uncoded.length} name a diagnostic code, ${uncoded.length} do not` +
-    (baseline === null ? "" : `; ${unlisted.length} are not in the baseline`) +
-    "\n",
-);
-for (const site of uncoded)
+  if (args.has("--write") && baselinePath !== null) {
+    const entries = sites.map((site) => ({
+      file: site.file,
+      function: site.function,
+      message: site.message,
+      code: site.code,
+    }));
+    writeFileSync(baselinePath, JSON.stringify(entries, null, 1) + "\n");
+    process.stdout.write(`wrote ${entries.length} sites to ${baselinePath}\n`);
+    return 0;
+  }
+
+  let baseline = null;
+  if (baselinePath !== null)
+    try {
+      baseline = new Set(JSON.parse(readFileSync(baselinePath, "utf8")).map(keyOf));
+    } catch {
+      baseline = null;
+    }
+
+  const uncoded = sites.filter((site) => site.code === null);
+  const unlisted = baseline === null ? [] : sites.filter((site) => !baseline.has(keyOf(site)));
+  const fileCount = new Set(sites.map((site) => site.file)).size;
   process.stdout.write(
-    `  no code: packages/runtime/src/${site.file}:${site.line} ${JSON.stringify(site.message)}\n`,
+    `runtime refusal sites: ${sites.length} in ${fileCount} files; ` +
+      `${sites.length - uncoded.length} name a diagnostic code, ${uncoded.length} do not` +
+      (baseline === null ? "" : `; ${unlisted.length} are not in the baseline`) +
+      "\n",
   );
-for (const site of unlisted)
-  process.stdout.write(
-    `  not in baseline: packages/runtime/src/${site.file}:${site.line} ${JSON.stringify(site.message)}\n`,
-  );
-if (uncoded.length + unlisted.length > 0)
-  process.stdout.write(
-    "Raise a refusal with scr_throw_error_msg_code and the code of the nearest compile-time diagnostic, " +
-      "then run `node scripts/runtime-refusals.mjs --write`.\n",
-  );
-process.exit(args.has("--strict") && uncoded.length + unlisted.length > 0 ? 1 : 0);
+  for (const site of uncoded)
+    process.stdout.write(
+      `  no code: packages/runtime/src/${site.file}:${site.line} ${JSON.stringify(site.message)}\n`,
+    );
+  for (const site of unlisted)
+    process.stdout.write(
+      `  not in baseline: packages/runtime/src/${site.file}:${site.line} ${JSON.stringify(site.message)}\n`,
+    );
+  if (uncoded.length + unlisted.length > 0)
+    process.stdout.write(
+      "Raise a refusal with scr_throw_error_msg_code and the code of the nearest compile-time diagnostic, " +
+        "then run `node scripts/runtime-refusals.mjs --write`.\n",
+    );
+  return args.has("--strict") && uncoded.length + unlisted.length > 0 ? 1 : 0;
+}
+
+process.exitCode = main();

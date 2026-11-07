@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-head-cancel-response-listeners.cjs"
+ ],
+ "diags": []
+}

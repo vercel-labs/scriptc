@@ -6571,10 +6571,19 @@ export function inferredEvolvingLetType(
       invalid = true;
       return "stop";
     }
+    // `for (x in o)` writes each key: a string.
+    const forInHead =
+      ts.isIdentifier(node) &&
+      node.parent !== undefined &&
+      ts.isForInStatement(node.parent) &&
+      node.parent.initializer === node &&
+      refersToBinding(node);
+    if (forInHead) writes.push(STRING);
     if (
       closure === null &&
       ts.isIdentifier(node) &&
       node !== decl.name &&
+      !forInHead &&
       refersToBinding(node) &&
       !isPlainAssignmentTarget(node)
     ) {

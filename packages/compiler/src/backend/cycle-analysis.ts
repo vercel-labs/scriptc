@@ -16,9 +16,10 @@ import { type CycleMutability, computeCycleMutability, fieldKey } from "./cycle-
 /** Cycle capability for native code generation.
  * Nodes are shape units and unions; edges are the references their fields
  * and arms can hold (collections flattened into their element, key and
- * value types). Closures, checked values, class values, caught values and
- * promises are INTRINSIC: they can reach anything, so a unit holding one is
- * on a potential cycle. Strings never are.
+ * value types). Closures, checked values, class values, caught values,
+ * promises and HTTP responses (which own their listener closures) are
+ * INTRINSIC: they can reach anything, so a unit holding one is on a
+ * potential cycle. Strings never are.
  *
  * An edge is IMMUTABLE when it can only be stored while its owner is still
  * under construction (cycle-mutability.ts derives this from the IR): such an
@@ -46,7 +47,14 @@ export function computeTraced(
 }
 
 /** Values that can reference any object. */
-export type IntrinsicKind = "func" | "dyn" | "jsval" | "classval" | "promise" | "caught";
+export type IntrinsicKind =
+  | "func"
+  | "dyn"
+  | "jsval"
+  | "classval"
+  | "promise"
+  | "caught"
+  | "httpRes";
 
 /** Why an edge of the cycle graph exists (explanations only). */
 export type CycleEdgeLabel =
@@ -73,7 +81,8 @@ export type CycleExplanation =
   | { kind: "cycle"; steps: CycleStep[] }
   /** The unit reaches a field that holds a value able to reference any
    * object (a function, a dynamic or caught value, a class value, a
-   * promise), so it can lie on a cycle through that value. */
+   * promise, an HTTP response), so it can lie on a cycle through that
+   * value. */
   | {
       kind: "intrinsic";
       steps: CycleStep[];
@@ -129,18 +138,26 @@ function analyzeCycles(
   const programLifetime = (className: string): boolean =>
     lifetimeRoots.size > 0 && lifetimeRoots.has(rootOf(className));
   const mutability = precomputed ?? computeCycleMutability(mod, unitOfClass, stores);
+  // Whether `name` is `base` or inherits from it. The runtime bases' state
+  // (an emitter's listeners, an event target's engine) belongs to every
+  // subclass instance too, so a slot of a subclass type reaches it.
+  const inherits = (name: string, base: string): boolean => {
+    for (let cur: string | null | undefined = name; cur; cur = baseOf.get(cur))
+      if (cur === base) return true;
+    return false;
+  };
   const shapeDefs = [
     ...classes.map((c) => ({
       key: `object:${c.name}`,
       unit: unitOfClass(c.name),
       fields: [
         ...c.fields,
-        ...(c.name === RUNTIME_EMITTER_CLASS
+        ...(inherits(c.name, RUNTIME_EMITTER_CLASS)
           ? [{ name: "<listeners>", type: funcOf([], VOID) }]
           : []),
         // The EventTarget state owns listener values and the target's own
         // capsule; an Event owns its target and detail.
-        ...(c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS
+        ...(inherits(c.name, RUNTIME_EVENT_TARGET_CLASS) || inherits(c.name, RUNTIME_EVENT_CLASS)
           ? [{ name: "<engine>", type: DYN }]
           : []),
         ...(c.localCaptures !== undefined
@@ -234,6 +251,7 @@ function analyzeCycles(
       case "classval":
       case "promise":
       case "caught":
+      case "httpRes":
         from.intrinsic = true;
         from.edges.clear();
         if (from.labels !== null) {

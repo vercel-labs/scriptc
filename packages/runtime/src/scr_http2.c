@@ -1089,17 +1089,18 @@ static void scr_h2_stream_settle(ScrH2Stream *st) {
   st->close_queued = true;
   st->state = SCR_H2_S_CLOSED;
   /* the compat pair settles with the stream: req 'aborted' fires NOW for
-   * abnormal teardowns, res/req 'close' ride scr_http.c's emit queue
-   * (res before req — the http/1 drop order), and BOTH refs release —
-   * the break that unwinds the stream↔res ownership cycle */
+   * abnormal teardowns, req/res 'close' ride scr_http.c's emit queue (req
+   * before res: Node's compat request registers its stream 'close'
+   * listener first), and BOTH refs release — the break that unwinds the
+   * stream↔res ownership cycle */
   if (st->compat_req != NULL || st->compat_res != NULL) {
     ScrHttpReq *req = st->compat_req;
     ScrHttpRes *res = st->compat_res;
     st->compat_req = NULL;
     st->compat_res = NULL;
     if (req != NULL && st->aborted) scr_http_h2_req_aborted(req);
-    if (res != NULL) scr_http_h2_res_close(res);
     if (req != NULL) scr_http_h2_req_close(req);
+    if (res != NULL) scr_http_h2_res_close(res);
     scr_http_res_release(res);
     scr_http_req_release(req);
   }
@@ -1832,9 +1833,12 @@ static bool scr_h2_stream_local_closed(ScrH2Stream *st) {
 }
 
 static void scr_h2_stream_mark_local_closed(ScrH2Stream *st) {
+  bool was = scr_h2_stream_local_closed(st);
   st->state = st->state == SCR_H2_S_CLOSED_REMOTE || st->state == SCR_H2_S_CLOSED
       ? SCR_H2_S_CLOSED
       : SCR_H2_S_CLOSED_LOCAL;
+  /* END_STREAM went out: the compat response's stream finished. */
+  if (!was && st->compat_res != NULL) scr_http_h2_res_local_end(st->compat_res);
 }
 
 /* Flush window-permitting bytes; the END_STREAM rides the flush that

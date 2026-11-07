@@ -307,14 +307,30 @@ static void scr_oom(void) {
   abort();
 }
 
-static void scr_promise_free_side(ScrPromise *p) {
 #ifdef SCR_NODE_ISLANDS
-  /* A view nobody reacted to still holds the promise it converts. */
-  if (p->island_lazy == SCR_LAZY_VIEW) {
-    p->island_lazy = 0;
-    scr_promise_release(p->lazy_src);
-  }
+/* A lazy promise that is freed or settled without a first reaction: a view
+ * drops the promise it converts (its two words are the payload's from here
+ * on). Every free and every settlement runs this before it touches the
+ * payload. */
+static void scr_promise_lazy_drop(ScrPromise *p) {
+  uint8_t lazy = p->island_lazy;
+  p->island_lazy = 0;
+  if (lazy != SCR_LAZY_VIEW) return;
+  ScrPromise *src = p->lazy_src;
+  p->lazy_src = NULL;
+  p->lazy_adapt = NULL;
+  scr_promise_release(src);
+}
+#define SCR_PROMISE_LAZY_DROP(p)                                           \
+  do {                                                                     \
+    if (__builtin_expect((p)->island_lazy != 0, 0)) scr_promise_lazy_drop(p); \
+  } while (0)
+#else
+#define SCR_PROMISE_LAZY_DROP(p) ((void)0)
 #endif
+
+static void scr_promise_free_side(ScrPromise *p) {
+  SCR_PROMISE_LAZY_DROP(p);
   if (p->identity && --p->identity->rc == 0) free(p->identity);
   /* Most promises never park a fiber or a second waiter: skip the calls. */
   if (p->waiters && p->waiters != &p->waiter_inline) free(p->waiters);
@@ -559,6 +575,7 @@ void scr_promise_release(ScrPromise *p) {
   if (!p || p->rc == SIZE_MAX) return;
   if (--p->rc == 0) {
     scr_cyc_dead(p);
+    SCR_PROMISE_LAZY_DROP(p);
     scr_promise_release_payload(p);
     scr_promise_free_side(p);
     for (size_t i = 0; i < p->ncbs; i++) {
@@ -2064,6 +2081,7 @@ static void scr_promise_settle_wake(ScrPromise *p);
  * same-inner-type adapter and the rejection path both land here. */
 static void scr_promise_settle_from(ScrPromise *dst, ScrPromise *src) {
   if (dst->state == SCR_PROM_PENDING) {
+    SCR_PROMISE_LAZY_DROP(dst);
     dst->state = src->state;
     dst->payload_kind = src->payload_kind;
     dst->f64 = src->f64;
@@ -2522,6 +2540,7 @@ void *scr_promise_payload_ref(ScrPromise *p) {
  * (the cell resets to NONE). Shared by fiber completion and the new-Promise
  * executor runners; callers wake waiters themselves. */
 static void scr_promise_reject_from_cell(ScrPromise *p, ScrExcCell *cell) {
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_REJECTED;
   p->payload_kind = cell->kind;
   p->f64 = cell->f64;
@@ -3466,6 +3485,7 @@ void scr_promise_rethrow_top_level(ScrPromise *p) {
 /* Fulfillment storers, called by the compiled trampolines / resolve thunks. */
 void scr_promise_fulfill_f64(ScrPromise *p, double v) {
   if (p->state != SCR_PROM_PENDING) return; /* first settle wins */
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_F64;
   p->f64 = v;
@@ -3473,6 +3493,7 @@ void scr_promise_fulfill_f64(ScrPromise *p, double v) {
 }
 void scr_promise_fulfill_bool(ScrPromise *p, bool v) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_BOOL;
   p->b = v;
@@ -3483,6 +3504,7 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
     if (release) release(v); /* value was +1 for us; drop it */
     return;
   }
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = v ? SCR_EXC_REF : SCR_EXC_NONE;
   p->payload = v;
@@ -3493,6 +3515,7 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
 }
 void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = src->payload_kind;
   p->f64 = src->f64;
@@ -3505,6 +3528,7 @@ void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
 }
 void scr_promise_fulfill_void(ScrPromise *p) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_NONE;
   scr_promise_settle_wake(p);
@@ -3516,6 +3540,7 @@ void scr_promise_fulfill_str(ScrPromise *p, ScrStr *v) {
     scr_str_release(v);
     return;
   }
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_STR;
   p->payload = v; /* ownership moves in */
@@ -7044,6 +7069,7 @@ static void scr_reject_thunk(ScrClosure *self, ScrError *reason) {
   if (p->state != SCR_PROM_PENDING) {
     scr_error_release(reason);
   } else {
+    SCR_PROMISE_LAZY_DROP(p);
     p->state = SCR_PROM_REJECTED;
     p->payload_kind = SCR_EXC_OBJ;
     p->payload = reason; /* ownership moves in */
@@ -7081,6 +7107,7 @@ static void scr_reject_dyn_thunk(ScrClosure *self, ScrDyn *reason) {
   if (p->state != SCR_PROM_PENDING) {
     scr_dyn_release(reason);
   } else {
+    SCR_PROMISE_LAZY_DROP(p);
     p->state = SCR_PROM_REJECTED;
     p->payload_kind = SCR_EXC_REF;
     p->payload = reason; /* ownership moves in */

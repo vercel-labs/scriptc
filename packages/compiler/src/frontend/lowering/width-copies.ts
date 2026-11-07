@@ -706,8 +706,16 @@ class Observations {
     return [];
   }
 
-  private note(table: Map<string, CopyObservation>, key: string, observation: CopyObservation) {
-    if (!table.has(key)) table.set(key, observation);
+  /** Records the first observation under `key`. The description is built
+   * only then: a program writes the same fields many times. */
+  private note(
+    table: Map<string, CopyObservation>,
+    key: string,
+    how: CopyObservation["how"],
+    what: () => string,
+    loc: SrcLoc,
+  ): void {
+    if (!table.has(key)) table.set(key, { how, what: what(), loc });
   }
 
   private fmt(type: IrType): string {
@@ -754,21 +762,13 @@ class Observations {
       for (const arm of this.lowerer.unions.get(type.unionId)?.arms ?? []) this.compare(arm, loc);
       return;
     }
-    this.note(this.identity, typeKey(type), {
-      how: "identity",
-      what: `'${this.fmt(type)}' values`,
-      loc,
-    });
+    this.note(this.identity, typeKey(type), "identity", () => `'${this.fmt(type)}' values`, loc);
   }
 
   private arrayWrite(arr: IrExpr, loc: SrcLoc): void {
     const type = arr.type;
     if (type.kind !== "array") return;
-    this.note(this.arrayWrites, typeKey(type.elem), {
-      how: "write",
-      what: `a '${this.fmt(type)}'`,
-      loc,
-    });
+    this.note(this.arrayWrites, typeKey(type.elem), "write", () => `a '${this.fmt(type)}'`, loc);
   }
 
   /** The locals of `fn` that hold an object the function built and that
@@ -897,26 +897,32 @@ class Observations {
           break;
         }
         case "fieldIncDec":
-          this.note(this.fieldWrites, `object:${this.rootClass(e.className)}\0${e.field}`, {
-            how: "write",
-            what: `field '${e.field}' of a '${e.className}'`,
-            loc: e.loc,
-          });
+          this.note(
+            this.fieldWrites,
+            `object:${this.rootClass(e.className)}\0${e.field}`,
+            "write",
+            () => `field '${e.field}' of a '${e.className}'`,
+            e.loc,
+          );
           break;
         case "instanceOf":
-          this.note(this.instanceTests, e.className, {
-            how: "identity",
-            what: `'instanceof ${e.className}'`,
-            loc: e.loc,
-          });
+          this.note(
+            this.instanceTests,
+            e.className,
+            "identity",
+            () => `'instanceof ${e.className}'`,
+            e.loc,
+          );
           break;
         case "instanceOfValue":
           // The class is a run-time value: it can be any class.
-          this.note(this.instanceTests, "*", {
-            how: "identity",
-            what: "'instanceof' against a class value",
-            loc: e.loc,
-          });
+          this.note(
+            this.instanceTests,
+            "*",
+            "identity",
+            () => "'instanceof' against a class value",
+            e.loc,
+          );
           break;
         case "dynFrom":
           this.escape(e.value.type, e.loc, "reaches untyped code");
@@ -941,28 +947,34 @@ class Observations {
       switch (s.kind) {
         case "recordSet":
           if (builds(s.obj)) break;
-          this.note(this.fieldWrites, `record:${s.shapeId}\0${s.field}`, {
-            how: "write",
-            what: `field '${s.field}' of a '${this.fmt({ kind: "record", shapeId: s.shapeId })}'`,
-            loc: s.loc,
-          });
+          this.note(
+            this.fieldWrites,
+            `record:${s.shapeId}\0${s.field}`,
+            "write",
+            () => `field '${s.field}' of a '${this.fmt({ kind: "record", shapeId: s.shapeId })}'`,
+            s.loc,
+          );
           break;
         case "recordKeySet":
         case "recordKeyDelete":
           if (builds(s.obj)) break;
-          this.note(this.fieldWrites, `record:${s.shapeId}\0*`, {
-            how: "write",
-            what: `a key of a '${this.fmt({ kind: "record", shapeId: s.shapeId })}'`,
-            loc: s.loc,
-          });
+          this.note(
+            this.fieldWrites,
+            `record:${s.shapeId}\0*`,
+            "write",
+            () => `a key of a '${this.fmt({ kind: "record", shapeId: s.shapeId })}'`,
+            s.loc,
+          );
           break;
         case "fieldSet":
           if (building === null || s.obj.kind !== "varRef" || s.obj.localId !== building)
-            this.note(this.fieldWrites, `object:${this.rootClass(s.className)}\0${s.field}`, {
-              how: "write",
-              what: `field '${s.field}' of a '${s.className}'`,
-              loc: s.loc,
-            });
+            this.note(
+              this.fieldWrites,
+              `object:${this.rootClass(s.className)}\0${s.field}`,
+              "write",
+              () => `field '${s.field}' of a '${s.className}'`,
+              s.loc,
+            );
           break;
         case "arraySet":
         case "arraySetLength":
@@ -1003,13 +1015,15 @@ class Observations {
         what: `a '${this.fmt(type)}' reaches the runtime (${fn})`,
         loc,
       };
-      this.note(this.identity, key, observation);
+      if (!this.identity.has(key)) this.identity.set(key, observation);
       if (type.kind === "array") {
-        this.note(this.arrayWrites, typeKey(type.elem), observation);
+        const elem = typeKey(type.elem);
+        if (!this.arrayWrites.has(elem)) this.arrayWrites.set(elem, observation);
         stack.push(type.elem);
       } else {
         const unit = this.unitOf(type);
-        if (unit !== null) this.note(this.fieldWrites, `${unit}\0*`, observation);
+        if (unit !== null && !this.fieldWrites.has(`${unit}\0*`))
+          this.fieldWrites.set(`${unit}\0*`, observation);
         if (type.kind === "record") {
           const shape = this.lowerer.shapes.get(type.shapeId);
           for (const field of shape?.fields ?? []) stack.push(field.type);

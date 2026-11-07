@@ -8,13 +8,14 @@
 // heaps that end with the key. Some keys stay held by the program only,
 // some by the island only (the program drops its handle and gets the
 // object back at the end), and some dropped ones are watched by weak
-// references inside the island. Usage: weak-keys <n> [gc] (gc: force a full
-// V8 collection every 64 iterations).
+// references inside the island. Usage: weak-keys <n> [gc[:<every>]] (gc:
+// force a full V8 collection every 64 iterations; gc:<every>: every <every>).
 import { requireModule } from "@scriptc/node";
 
 const lib = requireModule("./weak-keys.cjs");
 const n = Number(process.argv[2] ?? "1000");
-const forceGc = process.argv[3] === "gc";
+const gcArg = process.argv[3] ?? "";
+const gcEvery = gcArg === "gc" ? 64 : gcArg.startsWith("gc:") ? Number(gcArg.slice(3)) : 0;
 
 const map = new WeakMap();
 const set = new WeakSet();
@@ -76,7 +77,7 @@ for (let i = 0; i < n; i++) {
     }
   }
   if (i % 7 === 6 && !map.delete(key)) throw new Error(`entry ${i} was not there to delete`);
-  if (forceGc && i % 64 === 63) lib.fullGc();
+  if (gcEvery > 0 && i % gcEvery === gcEvery - 1) lib.fullGc();
 }
 for (let round = 0; round < 12; round++) {
   lib.fullGc();

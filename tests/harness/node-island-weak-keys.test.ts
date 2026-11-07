@@ -77,14 +77,18 @@ describe.skipIf(skip)("Node island objects as native weak keys", () => {
   }, 300_000);
 
   test("entries go with their keys: nothing grows with the keys dropped", async () => {
-    // V8 runs a major collection about every 50,000 iterations here (the
-    // exports' external memory schedules it), and the peak follows what is
-    // dropped between two of them. It is still rising at 200,000 iterations
-    // (342 MB measured) and level from 800,000 (433 MB there, at 1.6 and at
-    // 3.2 million), so both runs are past that point.
+    // V8 collects on its own schedule, and the peak follows what was dropped
+    // since its last collection: on a machine that lets it keep a larger heap
+    // it collects less often, and the peak keeps rising with the iteration
+    // count (measured: 155 MB at 800,000 and 319 MB at 1,600,000). Both runs
+    // force a full collection at the same iteration interval, so the peak
+    // reflects what the entries keep alive rather than how often the engine
+    // collected. The sanitized lane does not compare memory (ASan's
+    // quarantine decides its resident set).
     const [few, many] = sanitize ? [4_000, 40_000] : [800_000, 1_600_000];
-    const small = await run([String(few)]);
-    const large = await run([String(many)]);
+    const cadence = sanitize ? [] : [`gc:${Math.floor(few / 40)}`];
+    const small = await run([String(few), ...cadence]);
+    const large = await run([String(many), ...cadence]);
     for (const r of [small, large]) {
       expect(r.stdout).toMatch(
         /^sum \d+ check \d+ kept (\d+) and (\d+)\ndropped keys alive 0 of \d+\n$/,

@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { observeSourceText } from "./ts7/ast-node.js";
+import { equivalentSourceEdit, type EquivalentSourceEdit } from "./token-equivalence.js";
+import {
+  observeSourceText,
+  type SourceTextPredicate,
+  type SourceTextSpan,
+} from "./ts7/ast-node.js";
 
 /**
  * Filesystem observations made while constructing and lowering one frontend
@@ -25,8 +30,34 @@ export type FrontendInputProbe =
    * (hostFact): `path` is the fact's name. */
   | { op: "host"; path: string; value: string | null }
   /** The frontend's output depends on the file's raw text or line
-   * positions, not only on its tokens (observeSourceText). */
-  | { op: "text"; path: string };
+   * positions, not only on its tokens (SourceTextObserver): on exactly the
+   * answers `reads` names, or on any of the text when `reads` is absent. */
+  | { op: "text"; path: string; reads?: SourceTextReads };
+
+/** What the frontend took from one source file's raw text, as questions that
+ * can be asked again of an edited version of the file (token-equivalence.ts
+ * answers them): the text between pairs of offsets, the line and character
+ * of offsets, and predicates with the answers they gave. Offsets are in the
+ * text the file probe of the same path digests. A range's two offsets are
+ * anchored (SourceTextSpan): each is stored doubled, plus one when it is the
+ * start of a token rather than the place the token before it ended. */
+export interface SourceTextReads {
+  /** Anchored `start, end` pairs, in order. */
+  ranges: number[];
+  /** Plain offsets. */
+  positions: number[];
+  facts: SourceTextFact[];
+}
+
+/** One predicate's answers: `whole` over the file's text when it was asked
+ * that, and the anchored `start, end` pairs of the ranges it held for
+ * (`yes`) and did not (`no`). */
+export interface SourceTextFact {
+  predicate: SourceTextPredicate;
+  whole?: boolean;
+  yes: number[];
+  no: number[];
+}
 
 export interface FrontendInputSnapshot {
   version: 1;
@@ -165,6 +196,62 @@ function systemRealpath(path: string): string {
     : realpathSync.native(path);
 }
 
+/** Anchored offsets below this bound pack two to a number (packedRange). */
+const OFFSET_BOUND = 2 ** 26;
+
+/** One file's SourceTextReads while they are collected. */
+class TextReads {
+  /** Packed ranges (packedRange). */
+  readonly ranges = new Set<number>();
+  readonly positions = new Set<number>();
+  /** By sourceTextPredicateKey. */
+  readonly facts = new Map<string, TextFact>();
+
+  /** Records one answer. False when the predicate already gave the other
+   * answer for the same text: the text is not what it was. */
+  addFact(predicate: SourceTextPredicate, result: boolean, range: number | null): boolean {
+    const key = sourceTextPredicateKey(predicate);
+    let fact = this.facts.get(key);
+    if (fact === undefined)
+      this.facts.set(key, (fact = { predicate, whole: null, yes: new Set(), no: new Set() }));
+    if (range === null) {
+      if (fact.whole !== null && fact.whole !== result) return false;
+      fact.whole = result;
+      return true;
+    }
+    if ((result ? fact.no : fact.yes).has(range)) return false;
+    (result ? fact.yes : fact.no).add(range);
+    return true;
+  }
+}
+
+/** One SourceTextFact while it is collected, with packed ranges. */
+interface TextFact {
+  predicate: SourceTextPredicate;
+  whole: boolean | null;
+  yes: Set<number>;
+  no: Set<number>;
+}
+
+/** The range from `start` to `end` with its anchors, as one number. */
+function packedRange(start: number, end: number, span: SourceTextSpan): number {
+  return (start * 2 + (span & 1)) * OFFSET_BOUND + end * 2 + ((span >> 1) & 1);
+}
+
+/** The `start, end` pairs of packed ranges, in order. */
+function unpackedRanges(packed: ReadonlySet<number>): number[] {
+  const pairs: number[] = [];
+  for (const range of [...packed].sort((a, b) => a - b))
+    pairs.push(Math.floor(range / OFFSET_BOUND), range % OFFSET_BOUND);
+  return pairs;
+}
+
+function sourceTextPredicateKey(predicate: SourceTextPredicate): string {
+  return predicate.kind === "includes"
+    ? `includes\0${predicate.needle}`
+    : `matches\0${predicate.flags}\0${predicate.source}`;
+}
+
 const activeTracker = new AsyncLocalStorage<FrontendInputTracker>();
 let synchronousTracker: FrontendInputTracker | undefined;
 
@@ -279,6 +366,7 @@ export class FrontendInputTracker {
     return activeTracker.run(this, () => {
       const result = fn();
       for (const probe of this.probes.values()) parent.record(probe);
+      for (const probe of this.textProbes()) parent.record(probe);
       if (!this.stable) parent.markUnstable();
       return result;
     });
@@ -297,6 +385,7 @@ export class FrontendInputTracker {
       synchronousTracker = parent;
       if (parent !== undefined && parent !== this) {
         for (const probe of this.probes.values()) parent.record(probe);
+        for (const probe of this.textProbes()) parent.record(probe);
         if (!this.stable) parent.markUnstable();
         // The cause goes to the parent with it.
         if (this.unstable !== undefined) parent.markUnstable(this.unstable);
@@ -304,19 +393,183 @@ export class FrontendInputTracker {
     }
   }
 
-  /** Raw file names whose source text this tracker recorded. */
-  private readonly notedTexts = new Set<string>();
+  /** What was read of each source file's raw text, by resolved path: null
+   * when a reader took the whole text. */
+  private readonly texts = new Map<string, TextReads | null>();
+  /** The resolved path of each file name a text read named. */
+  private readonly textPaths = new Map<string, string>();
+  /** By resolved path, the text of a syntax tree that is the content this
+   * tracker read from the file: offsets into it are offsets into the
+   * content the file probe digests. */
+  private readonly digestedTexts = new Map<string, string>();
 
-  /** Records a raw read of a source file's text, once per file name. */
+  private textPath(fileName: string): string {
+    let path = this.textPaths.get(fileName);
+    if (path === undefined) this.textPaths.set(fileName, (path = resolve(fileName)));
+    return path;
+  }
+
+  /** This tracker's read of `path`, made now: null when it fails, or when
+   * the tracker is not the one reads are recorded under. */
+  private readSource(path: string): CachedRead | null {
+    if (activeFrontendTracker() !== this || virtualSources.has(path)) return null;
+    trackedReadSource(path);
+    return this.reads.get(path) ?? null;
+  }
+
+  /** The file name of the last whole-text read: a scanner that indexes
+   * `sourceFile.text` reports one read per character. */
+  private lastWholeText: string | undefined;
+
+  /** Records a read of a source file's whole text. */
   noteText(fileName: string): void {
-    if (this.notedTexts.has(fileName)) return;
-    this.notedTexts.add(fileName);
-    this.record({ op: "text", path: resolve(fileName) });
+    if (fileName === this.lastWholeText) return;
+    this.lastWholeText = fileName;
+    this.texts.set(this.textPath(fileName), null);
+  }
+
+  /** Records that a reader other than the parser took the content of `path`
+   * (trackedReadFile). */
+  noteRawRead(path: string): void {
+    this.texts.set(path, null);
+  }
+
+  /** The precise reads of the file `text` is the content of, or null when
+   * its whole text counts as read: a reader took all of it, or `text` is
+   * not the content this tracker read from the file (a rewritten or
+   * synthesized source, a read made under another tracker), so offsets into
+   * it and predicates over it say nothing about the file. */
+  private preciseReads(fileName: string, text: string): TextReads | null {
+    const path = this.textPath(fileName);
+    let reads = this.texts.get(path);
+    if (reads === null) return null;
+    if (this.digestedTexts.get(path) !== text) {
+      // A syntax tree another process parsed (the shared checker server) is
+      // of a file this tracker may not have read yet: read it now, which
+      // records its content like any other read.
+      const read = this.reads.has(path) ? this.reads.get(path) : this.readSource(path);
+      if (read?.text !== text) {
+        this.texts.set(path, null);
+        return null;
+      }
+      this.digestedTexts.set(path, text);
+    }
+    if (reads === undefined) this.texts.set(path, (reads = new TextReads()));
+    return reads;
+  }
+
+  /** Whether `start` and `end` name a range of `text` that packs. */
+  private static validRange(text: string, start: number, end: number): boolean {
+    return start >= 0 && start <= end && end <= text.length && end * 2 + 1 < OFFSET_BOUND;
+  }
+
+  /** Records a read of `text` from `start` to `end`. */
+  noteTextRange(
+    fileName: string,
+    text: string,
+    start: number,
+    end: number,
+    span: SourceTextSpan,
+  ): void {
+    const reads = this.preciseReads(fileName, text);
+    if (reads === null) return;
+    if (!FrontendInputTracker.validRange(text, start, end)) this.noteText(fileName);
+    else reads.ranges.add(packedRange(start, end, span));
+  }
+
+  /** Records a read of the line and character of `position` in `text`. */
+  noteTextPosition(fileName: string, text: string, position: number): void {
+    const reads = this.preciseReads(fileName, text);
+    if (reads === null) return;
+    if (!(position >= 0 && position <= text.length && position < OFFSET_BOUND))
+      this.noteText(fileName);
+    else reads.positions.add(position);
+  }
+
+  /** Records a predicate's answer over `text`, or over its range from
+   * `start` to `end` when `start` is not negative. */
+  noteTextFact(
+    fileName: string,
+    text: string,
+    predicate: SourceTextPredicate,
+    result: boolean,
+    start: number,
+    end: number,
+    span: SourceTextSpan,
+  ): void {
+    const reads = this.preciseReads(fileName, text);
+    if (reads === null) return;
+    if (start >= 0 && !FrontendInputTracker.validRange(text, start, end)) this.noteText(fileName);
+    else if (!reads.addFact(predicate, result, start < 0 ? null : packedRange(start, end, span)))
+      this.noteText(fileName);
+  }
+
+  /** The text probes of this tracker's reads, one per file. */
+  private textProbes(): FrontendInputProbe[] {
+    const probes: FrontendInputProbe[] = [];
+    for (const [path, reads] of this.texts) {
+      if (reads === null) {
+        probes.push({ op: "text", path });
+        continue;
+      }
+      probes.push({
+        op: "text",
+        path,
+        reads: {
+          ranges: unpackedRanges(reads.ranges),
+          positions: [...reads.positions].sort((a, b) => a - b),
+          facts: [...reads.facts.keys()].sort().map((key) => {
+            const fact = reads.facts.get(key)!;
+            return {
+              predicate: fact.predicate,
+              ...(fact.whole === null ? {} : { whole: fact.whole }),
+              yes: unpackedRanges(fact.yes),
+              no: unpackedRanges(fact.no),
+            };
+          }),
+        },
+      });
+    }
+    return probes;
+  }
+
+  /** Joins another tracker's text probe of a file with this one's reads. */
+  private recordText(probe: Extract<FrontendInputProbe, { op: "text" }>): void {
+    const current = this.texts.get(probe.path);
+    if (current === null) return;
+    if (probe.reads === undefined) {
+      this.texts.set(probe.path, null);
+      return;
+    }
+    const reads = current ?? new TextReads();
+    if (current === undefined) this.texts.set(probe.path, reads);
+    const { ranges, positions, facts } = probe.reads;
+    for (let index = 0; index + 1 < ranges.length; index += 2)
+      reads.ranges.add(ranges[index]! * OFFSET_BOUND + ranges[index + 1]!);
+    for (const position of positions) reads.positions.add(position);
+    let consistent = true;
+    for (const fact of facts) {
+      if (fact.whole !== undefined && !reads.addFact(fact.predicate, fact.whole, null))
+        consistent = false;
+      for (const [list, result] of [
+        [fact.yes, true],
+        [fact.no, false],
+      ] as const)
+        for (let index = 0; index + 1 < list.length; index += 2)
+          if (
+            !reads.addFact(fact.predicate, result, list[index]! * OFFSET_BOUND + list[index + 1]!)
+          )
+            consistent = false;
+    }
+    if (!consistent) this.texts.set(probe.path, null);
   }
 
   record(probe: FrontendInputProbe): void {
+    if (probe.op === "text") {
+      this.recordText(probe);
+      return;
+    }
     const key = `${probe.op}\0${probe.path}`;
-    if (probe.op === "text" && this.probes.has(key)) return;
     const previous = this.probes.get(key);
     const merged = previous === undefined ? null : sameFileContent(previous, probe);
     if (
@@ -368,7 +621,7 @@ export class FrontendInputTracker {
   snapshot(): FrontendInputSnapshot {
     return {
       version: 1,
-      probes: [...this.probes.values()].sort((a, b) =>
+      probes: [...this.probes.values(), ...this.textProbes()].sort((a, b) =>
         a.path === b.path ? a.op.localeCompare(b.op) : a.path.localeCompare(b.path),
       ),
       stable: this.stable,
@@ -430,9 +683,19 @@ export function invalidateTrackedFilesystem(): void {
 
 // Source text the frontend reads raw (call-site text in messages, comptime
 // callbacks, line numbers) changes with edits that keep the tokens.
-observeSourceText((fileName) => {
-  const tracker = synchronousTracker ?? activeTracker.getStore();
-  if (tracker !== undefined) tracker.noteText(fileName);
+observeSourceText({
+  whole(fileName) {
+    activeFrontendTracker()?.noteText(fileName);
+  },
+  range(fileName, text, start, end, span) {
+    activeFrontendTracker()?.noteTextRange(fileName, text, start, end, span);
+  },
+  position(fileName, text, position) {
+    activeFrontendTracker()?.noteTextPosition(fileName, text, position);
+  },
+  fact(fileName, text, predicate, result, start, end, span) {
+    activeFrontendTracker()?.noteTextFact(fileName, text, predicate, result, start, end, span);
+  },
 });
 
 /** Mark the active frontend as unsafe to persist because an exact host query
@@ -479,7 +742,26 @@ export function clearVirtualSources(): void {
   virtualSources.clear();
 }
 
+/** The content of `path` for a reader that inspects it: the read pins the
+ * whole content (a `text` probe), so no edit of the file is taken for an
+ * equivalent one. The parser's read is trackedReadSource. */
 export function trackedReadFile(path: string): string | null {
+  path = resolve(path);
+  const text = trackedReadSource(path);
+  if (text !== null && !virtualSources.has(path)) activeFrontendTracker()?.noteRawRead(path);
+  return text;
+}
+
+/** Records that a reader took the whole content of `path` by a way that is
+ * not a tracked read (the text a program host serves). */
+export function trackedWholeText(path: string): void {
+  activeFrontendTracker()?.noteRawRead(resolve(path));
+}
+
+/** The content of `path` for the parser, which takes its tokens: whatever
+ * else the frontend reads of the text is reported from the syntax tree
+ * (SourceTextObserver). */
+export function trackedReadSource(path: string): string | null {
   path = resolve(path);
   const virtual = virtualSources.get(path);
   if (virtual !== undefined) return virtual;
@@ -781,25 +1063,47 @@ export function changedFrontendInput(
 /**
  * Validate all non-source frontend probes exactly while allowing only
  * caller-approved semantic-equivalent file edits. The old source text is a
- * cache payload; every unchanged input remains content-hash checked.
+ * cache payload; every unchanged input remains content-hash checked. An
+ * edited source must be one the entry holds as it was read from the file.
+ * Whatever the caller's notion of an equivalent edit, the edit must also
+ * leave unchanged what the frontend read of the file's raw text (its `text`
+ * probe): every recorded read is replayed over the current text
+ * (equivalentSourceEdit), and a file whose whole text was read admits no
+ * edit. The returned snapshot holds the reads of an edited file as reads of
+ * its current text, so the entry it refreshes can be compared with a later
+ * edit.
  */
 export function frontendInputsSemanticallyMatch(
   snapshot: FrontendInputSnapshot,
   previousSources: ReadonlyMap<string, string>,
   isSemanticEquivalent: (path: string, previous: string, current: string) => boolean,
   exclusions: FrontendInputExclusions = {},
+  /** Receives the first source that rules the match out, and why: no probe
+   * read it, the build compiled a rewritten form of it, or its edit is not
+   * equivalent. */
+  refused?: (path: string, why: "unread" | "rewritten" | "edit") => void,
 ): FrontendSemanticMatch | null {
   if (!validFrontendInputSnapshot(snapshot)) return null;
   const sourceProbes = new Map<string, Extract<FrontendInputProbe, { op: "file" }>>();
-  const rawText = new Set<string>();
+  // Null for a file whose whole text was read.
+  const rawText = new Map<string, SourceTextReads | null>();
   for (const probe of snapshot.probes) {
     if (probe.op === "file") sourceProbes.set(probe.path, probe);
-    else if (probe.op === "text") rawText.add(probe.path);
+    else if (probe.op === "text") {
+      // Two probes of one file never come from one tracker; read them as the whole text.
+      rawText.set(probe.path, rawText.has(probe.path) ? null : (probe.reads ?? null));
+    }
   }
-  for (const [path, previous] of previousSources) {
-    if (sourceProbes.get(path)?.digest !== frontendSourceDigest(previous)) return null;
+  // A source no probe read came from somewhere this snapshot cannot check.
+  for (const path of previousSources.keys()) {
+    if (!sourceProbes.has(path)) {
+      refused?.(path, "unread");
+      return null;
+    }
   }
   const changed: FrontendSemanticChange[] = [];
+  // By edited file with recorded reads: the reads over its current text.
+  const carriedReads = new Map<string, SourceTextReads>();
   const currentSources = new Map<string, string>();
   const probes: FrontendInputProbe[] = [];
   for (const probe of snapshot.probes) {
@@ -820,31 +1124,85 @@ export function frontendInputsSemanticallyMatch(
       return null;
     }
     const currentDigest = frontendSourceDigest(current);
-    currentSources.set(probe.path, current);
     if (currentDigest === probe.digest) {
+      // Unchanged: the entry's source stays, rewritten or not.
+      currentSources.set(probe.path, previous);
       probes.push(probe);
       continue;
     }
-    // One edit that is not equivalent already rules out the match, and so
-    // does any edit of a file whose raw text the frontend read.
-    if (rawText.has(probe.path) || !isSemanticEquivalent(probe.path, previous, current))
+    currentSources.set(probe.path, current);
+    // The edit is compared with the content the entry was built from. A
+    // source the build compiled in a rewritten form (an overlay, a package
+    // rewrite) is not that content, and its edit cannot be compared.
+    if (frontendSourceDigest(previous) !== probe.digest) {
+      refused?.(probe.path, "rewritten");
       return null;
+    }
+    // One edit that is not equivalent already rules out the match, and so
+    // does any edit of a file whose whole raw text the frontend read.
+    const reads = rawText.get(probe.path);
+    const carried =
+      reads === null || !isSemanticEquivalent(probe.path, previous, current)
+        ? null
+        : reads === undefined
+          ? NO_READS
+          : equivalentSourceEdit(probe.path, previous, current, false, reads);
+    if (carried === null) {
+      refused?.(probe.path, "edit");
+      return null;
+    }
+    if (carried.reads !== undefined) carriedReads.set(probe.path, carried.reads);
     changed.push({ path: probe.path, previous, current });
     probes.push({ op: "file", path: probe.path, digest: currentDigest });
   }
-  const adjusted: FrontendInputSnapshot = { ...snapshot, probes };
+  // The reads of an edited file are offsets into its previous text.
+  const adjusted: FrontendInputSnapshot = {
+    ...snapshot,
+    probes: probes.map((probe) => {
+      const reads = probe.op === "text" ? carriedReads.get(probe.path) : undefined;
+      return reads === undefined ? probe : { op: "text", path: probe.path, reads };
+    }),
+  };
   if (!frontendInputsStillMatch(adjusted, exclusions)) return null;
-  for (const [path, previous] of previousSources) {
-    if (!currentSources.has(path)) {
-      try {
-        currentSources.set(path, readFileSync(path, "utf8"));
-      } catch {
-        currentSources.set(path, previous);
-      }
-    }
-  }
   return { changed, currentSources, snapshot: adjusted };
 }
+
+function validSourceTextReads(value: unknown): value is SourceTextReads {
+  if (value === null || typeof value !== "object") return false;
+  const reads = value as { ranges?: unknown; positions?: unknown; facts?: unknown };
+  const offsets = (list: unknown): list is number[] =>
+    Array.isArray(list) &&
+    list.every((offset) => Number.isSafeInteger(offset) && offset >= 0 && offset < OFFSET_BOUND);
+  const pairs = (list: unknown): boolean => offsets(list) && list.length % 2 === 0;
+  return (
+    pairs(reads.ranges) &&
+    offsets(reads.positions) &&
+    Array.isArray(reads.facts) &&
+    reads.facts.every((fact: unknown) => {
+      if (fact === null || typeof fact !== "object") return false;
+      const entry = fact as Record<string, unknown>;
+      const predicate = entry.predicate as Record<string, unknown> | null | undefined;
+      if (predicate === null || typeof predicate !== "object") return false;
+      const known =
+        predicate.kind === "includes"
+          ? typeof predicate.needle === "string"
+          : predicate.kind === "matches" &&
+            typeof predicate.source === "string" &&
+            typeof predicate.flags === "string" &&
+            // A stateful pattern answers differently when asked again.
+            !/[gy]/.test(predicate.flags);
+      return (
+        known &&
+        (entry.whole === undefined || typeof entry.whole === "boolean") &&
+        pairs(entry.yes) &&
+        pairs(entry.no)
+      );
+    })
+  );
+}
+
+/** The edit of a file with no recorded reads. */
+const NO_READS: EquivalentSourceEdit = { reads: undefined };
 
 /** Pure validator used by the persistent-cache reader before any path probes. */
 export function validFrontendInputSnapshot(snapshot: unknown): snapshot is FrontendInputSnapshot {
@@ -888,7 +1246,7 @@ export function validFrontendInputSnapshot(snapshot: unknown): snapshot is Front
       case "host":
         return value.value === null || typeof value.value === "string";
       case "text":
-        return true;
+        return value.reads === undefined || validSourceTextReads(value.reads);
       default:
         return false;
     }

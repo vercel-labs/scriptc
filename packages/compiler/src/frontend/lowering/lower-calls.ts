@@ -9001,8 +9001,13 @@ function lowerObjectStaticCall(
     // fixed record is exactly Object.keys' construction, and boxing a typed
     // record would link the dynamic tier into a program that needs none of
     // it. The descriptor and symbol forms have no static walk, so a record
-    // takes the view there.
-    const staticWalk = member === "getOwnPropertyNames" && object.type.kind === "record";
+    // takes the view there. A tuple is an array to Node (its own names are
+    // its indices and "length"), which the static walk cannot list, so it
+    // takes the view as an array does.
+    const staticWalk =
+      member === "getOwnPropertyNames" &&
+      object.type.kind === "record" &&
+      lowerer.shapes.get(object.type.shapeId)?.tuple !== true;
     if (!staticWalk && object.type.kind !== "dyn" && lowerer.dynConvertible(object.type))
       object = lowerer.coerceToExpected(object, DYN);
     if (object.type.kind === "dyn")

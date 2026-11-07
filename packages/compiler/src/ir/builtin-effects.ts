@@ -845,6 +845,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.throwReadOnly",
   "class.throwNotExtensible",
   "record.throwFrozen",
+  // `delete r.k` of a key the record's kept source holds throws Node's
+  // TypeError on a frozen record in strict code.
+  "record.sourceDelete",
   "dyn.toString",
   "dyn.valueOf",
   // Primitive wrapper objects (scr_js_wrapper.c): the conversions run

@@ -1874,7 +1874,12 @@ export class LlDyn {
       }
       default: {
         const h = DYN_HANDLE_KINDS.get(t.kind);
-        if (!h) throw new LlvmUnsupportedError(`dynMatch:${t.kind}`);
+        if (!h)
+          throw new LlvmUnsupportedError(
+            `dynMatch:${t.kind}`,
+            undefined,
+            `a checked-dynamic value tested against type ${typeKey(t)}`,
+          );
         const kd = this.kindOf(B, "%d");
         const isHandle = B.tmp();
         B.line(`${isHandle} = icmp eq i32 ${kd}, ${DYN_KIND.HANDLE}`);
@@ -3585,7 +3590,7 @@ export class LlDyn {
           B.terminate(`ret ptr ${r}`);
           break;
         }
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
       }
     }
     this.defs.push(
@@ -4306,7 +4311,7 @@ export class LlDyn {
           B.terminate(`ret ptr ${r}`);
           break;
         }
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
       }
     }
     this.defs.push(

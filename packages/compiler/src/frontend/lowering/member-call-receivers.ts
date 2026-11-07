@@ -126,11 +126,17 @@ function readsOwnReceiver(fn: ts.FunctionLikeDeclaration): boolean {
   return ts.forEachChild(fn, (child) => (reads(child) ? true : undefined)) === true;
 }
 
+/** The member a property name names: an identifier, a string or numeric
+ * literal, or a computed name whose expression is one of those literals
+ * (`["make"]`, `[`make`]`, `[7]`). */
 function memberName(name: ts.PropertyName | undefined): string | null {
   if (name === undefined) return null;
-  return ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)
-    ? name.text
-    : null;
+  const key = ts.isComputedPropertyName(name) ? name.expression : name;
+  return ts.isIdentifier(key) && key === name
+    ? key.text
+    : ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)
+      ? key.text
+      : null;
 }
 
 /** The census of one program. It walks every compiled source once to find
@@ -265,20 +271,39 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
       if (parent.condition !== root) followValue(parent);
       return;
     }
-    // A store: the member's own classification finds the reader.
+    // A store: the reader reaches the member it names, whatever the
+    // member's own classification makes of the stored expression (a
+    // parameter the reader was passed as is opaque to it). A computed key
+    // that is not a literal names no member: keyed calls carry.
+    const reached = (name: string | null): void => {
+      if (name === null) keyedStore = true;
+      else carrying.add(name);
+    };
     if (
       (ts.isPropertyAssignment(parent) && parent.initializer === root) ||
-      ts.isShorthandPropertyAssignment(parent) ||
       (ts.isPropertyDeclaration(parent) && parent.initializer === root)
-    )
+    ) {
+      reached(memberName(parent.name));
       return;
+    }
+    if (ts.isShorthandPropertyAssignment(parent)) {
+      reached(parent.name.text ?? null);
+      return;
+    }
     if (ts.isBinaryExpression(parent)) {
       const operator = parent.operatorToken.kind;
       if (ASSIGNMENTS.has(operator) && parent.right === root) {
         const target = unwrap(parent.left);
-        if (ts.isPropertyAccessExpression(target)) return;
+        if (ts.isPropertyAccessExpression(target)) {
+          reached(target.name.text);
+          return;
+        }
         if (ts.isElementAccessExpression(target)) {
-          if (!ts.isStringLiteralLike(target.argumentExpression)) keyedStore = true;
+          reached(
+            ts.isStringLiteralLike(target.argumentExpression)
+              ? target.argumentExpression.text
+              : null,
+          );
           return;
         }
         if (ts.isIdentifier(target)) {
@@ -353,8 +378,14 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
     if (followed.has(symbol)) return;
     followed.add(symbol);
     for (const use of identifiers.get(name.text) ?? []) {
-      if (use === name || symbolOf(use) !== symbol) continue;
+      if (use === name) continue;
       const parent = use.parent;
+      // A shorthand property's name is the binding it reads (`{ callback }`).
+      const read =
+        parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === use
+          ? (checker.getShorthandAssignmentValueSymbol(parent) ?? undefined)
+          : symbolOf(use);
+      if (read !== symbol) continue;
       // Declaration names and the name side of a member access are not uses.
       if (parent !== undefined && ts.isPropertyAccessExpression(parent) && parent.name === use)
         continue;

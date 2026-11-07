@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { beforeEach, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
-import { skipUnownedTest } from "./shard.js";
+import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -29,12 +29,7 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 const effectBuildTimeout =
   sanitize || process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" ? 900_000 : undefined;
 // Measured milliseconds per test on a CI runner (scripts/ci-test-costs.mjs).
-const testCosts = (
-  JSON.parse(readFileSync(new URL("./npm-static-costs.json", import.meta.url), "utf8")) as {
-    plain: Record<string, number>;
-    san: Record<string, number>;
-  }
-)[sanitize ? "san" : "plain"];
+const testCosts = suiteCosts(import.meta.filename);
 
 interface RunResult {
   stdout: Buffer;

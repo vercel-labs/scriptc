@@ -40,7 +40,7 @@ const everything = [
   /^\.node-version$/,
   /^patches\//,
   /^vitest\.config\.ts$/,
-  /^tests\/harness\/(shard\.ts|suite-lock\.mjs)$/,
+  /^tests\/harness\/(shard\.ts|shard-balance\.mjs|suite-lock\.mjs)$/,
   /^packages\/[^/]+\/package\.json$/,
 ];
 const documentation = [/^docs\//, /\.mdx?$/, /^LICENSE$/, /^CHANGELOG\.md$/];

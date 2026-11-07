@@ -6,7 +6,7 @@ import { enableCompileCache } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { CLI_OPTIONS, USAGE } from "./usage.js";
+import { CLI_FAST_PATHS, CLI_OPTIONS, firstCliOptionOutside, USAGE } from "./usage.js";
 
 // Node 24 can persist V8's compiled module bytecode. scriptc's CLI imports
 // the compiler and its lowering/backend graph before handling any command, so
@@ -65,28 +65,13 @@ async function tryFastPath(): Promise<number | null> {
   if (
     (command !== "build" && command !== "run") ||
     inputArg === undefined ||
+    // The route below keys or handles these options only. The full CLI owns
+    // every other one: it uses the option or refuses it.
+    firstCliOptionOutside(values, CLI_FAST_PATHS.executable.options) !== undefined ||
     (values.emit !== undefined && values.emit !== "exe") ||
-    values.print !== undefined ||
-    values["emit-ir"] ||
-    values.lib ||
-    values["provenance-sources"] ||
-    // The full compiler keys these builds by the profile's bytes.
-    values["profile-generate"] !== undefined ||
-    values["profile-use"] !== undefined ||
-    values.sparse ||
     // A --libnode=beside build places the pack and the island modules next
     // to the executable, which a routed hit does not do.
     values.libnode === "beside" ||
-    // The full compiler resolves `native` against the build host.
-    values["target-cpu"] !== undefined ||
-    // The experimental stdout policy changes the program object, which the
-    // routed cache key would need to carry; the full compiler owns it.
-    values["stdout-buffering"] ||
-    // The full CLI validates the value.
-    values.exceptions !== undefined ||
-    (values["external-types"] ?? []).length > 0 ||
-    // The full CLI validates the Node island policy flags.
-    hasNodeIslandFlags(values) ||
     // The full compiler writes the representation report and keys the heap
     // census build (backend/llvm/repr-report.ts, heap-census.ts).
     (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
@@ -155,7 +140,7 @@ async function tryFastPath(): Promise<number | null> {
     entryPath: input,
     outDir,
     outPath,
-    emitIr: values["emit-ir"],
+    emitIr: false,
     sanitize: values.sanitize,
     backend: "llvm",
     ...(optimization === "dev" || optimization === "speed" ? { optimization } : {}),
@@ -221,21 +206,6 @@ async function tryFastPath(): Promise<number | null> {
   });
 }
 
-function hasNodeIslandFlags(
-  values: ReturnType<
-    typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
-  >["values"],
-): boolean {
-  return (
-    values["node-islands"] !== undefined ||
-    (values["node-island"] ?? []).length > 0 ||
-    (values.native ?? []).length > 0 ||
-    values.node !== undefined ||
-    values["explain-island"] !== undefined ||
-    values["strict-user-js"]
-  );
-}
-
 /** An unchanged program's coverage verdict replays from the verdict cache
  * without loading the compiler graph. Anything else (a miss, a comment-only
  * edit, options the replay does not cover) defers to the full CLI. */
@@ -251,30 +221,12 @@ async function coverageFastPath(
   if (
     inputArg === undefined ||
     positionalCount !== 2 ||
+    // The replay is the verdict of the default analysis. The full CLI owns
+    // every option that changes the analysis or the report, and every one it
+    // refuses.
+    firstCliOptionOutside(values, CLI_FAST_PATHS.coverage.options) !== undefined ||
     (print !== undefined && print !== "diagnostics") ||
-    (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
-    values.emit !== undefined ||
-    values.strip ||
-    values.static ||
-    values["detached-exit"] ||
-    values["large-pages"] ||
-    values["stdout-buffering"] ||
-    values.exceptions !== undefined ||
-    values["target-cpu"] !== undefined ||
-    values["cpu-dispatch"] !== undefined ||
-    values.lib ||
-    values.profile !== undefined ||
-    values.ffi !== undefined ||
-    values.backend !== undefined ||
-    values.optimization !== undefined ||
-    values["windows-subsystem"] !== undefined ||
-    values["provenance-sources"] ||
-    values["emit-ir"] ||
-    (values["npm-static"] ?? []).length > 0 ||
-    values["shape-overlay"] === false ||
-    (values["external-types"] ?? []).length > 0 ||
-    // The replay covers the default Node island policy only.
-    hasNodeIslandFlags(values)
+    (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences")
   )
     return null;
   let startup: typeof import("@scriptc/compiler/startup-cache");

@@ -250,8 +250,6 @@ export interface CcOptions {
    * %main emits. The fact ORs into jsObjectModel, so the unit's definition
    * of the JavaScript object model build is already on. */
   mutableBuffers?: boolean;
-  /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
-  stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
    * (scr_fs_flags.c and that build of scr_fs_cp.c). */
   fsFlags?: boolean;
@@ -265,14 +263,11 @@ export interface CcOptions {
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
-   * stdin.isRaw and server.off. */
+   * stdin.isRaw and server.off (the dyn-async and net units). */
   processExtras?: boolean;
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
-  /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
-   * (the write method as a value, its replacement, run-time-typed chunks). */
-  stdioWriteSlot?: boolean;
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;

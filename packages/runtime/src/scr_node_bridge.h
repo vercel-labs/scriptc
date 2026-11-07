@@ -115,8 +115,8 @@ enum {
    * generator prototype (its Symbol.iterator answers the generator itself),
    * and a native async generator (Symbol.asyncIterator), so island loops,
    * spread and destructuring accept them. */
-  SCR_NVF_ITERATOR = 1024,
-  SCR_NVF_ASYNC_ITERATOR = 2048,
+  SCR_NVF_ITERATOR = 4096,
+  SCR_NVF_ASYNC_ITERATOR = 8192,
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
 typedef struct ScrNodeValue {

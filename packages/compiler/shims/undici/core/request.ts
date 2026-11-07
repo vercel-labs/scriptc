@@ -13,7 +13,13 @@ export class Request {
   origin: string;
   method: string;
   path: string;
-  body: Buffer | null;
+  /** Null until the constructor derives it; the initializer is what keeps
+   * the field definitely assigned when a project disables
+   * strictPropertyInitialization. */
+  /** Null until the constructor derives it; the initializer is what keeps
+   * the field definitely assigned when a project disables
+   * strictPropertyInitialization. */
+  body: Buffer | null = null;
   /** Header name/value pairs in insertion order (host and content-length
    * are consumed into their own fields, like undici). */
   headerPairs: string[];

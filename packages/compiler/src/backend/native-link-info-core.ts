@@ -122,6 +122,11 @@ export interface NativeLinkFeatures {
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** The keyed collections' prototype objects and member values, their
+   * constructors' adder lookup, Map.prototype's dynamic forEach and the
+   * ES2025 Set compositions: scr_dyn_collections.c. Absent (false)
+   * otherwise. */
+  dynCollections?: boolean;
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * scr_dyn_integrity.c. Absent (false) for programs without it. */
   dynIntegrityQueries?: boolean;
@@ -139,6 +144,11 @@ export interface NativeLinkFeatures {
   /** Web streams in checked-dynamic code: scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
+  /** A program that builds a Blob or File: selects scr_fetch.c's
+   * SCR_WEB_BODIES build, which sends the blob's bytes and its type as
+   * Content-Type, as Node does. Absent (false) for programs that build
+   * neither, which keep the default fetch unit byte for byte. */
+  webBodies?: boolean;
   /** AbortController and AbortSignal: scr_abort.c, unless the program
    * links the fetch unit, which has them. */
   abortSignal?: boolean;

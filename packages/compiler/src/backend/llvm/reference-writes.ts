@@ -118,6 +118,7 @@ const INERT_LIB_CALLS = new Set([
   "process.cwd",
   "process.argv",
   "process.execArgv",
+  "process.allowedEnvFlags",
   "process.platform",
   "process.execPath",
   "process.isTTY",

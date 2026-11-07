@@ -102,11 +102,13 @@ export interface EarlyExecutableNativeFeatures {
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
   genBind?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
+  webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;

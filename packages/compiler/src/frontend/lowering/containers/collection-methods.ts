@@ -1,6 +1,14 @@
 import { keyedHelperName } from "../stable-names.js";
 import { primitiveElement } from "../array-values.js";
-import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  nodeThrowExpr,
+  boolLit,
+  countedFor,
+  dynUndefinedExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
@@ -28,6 +36,7 @@ import {
 } from "../../../ir/ir.js";
 import {
   COLLECTION_ITERATOR_METHODS,
+  type DynCollectionClass,
   MAP_METHODS,
   SET_COMBINE_METHODS,
   SET_METHODS,
@@ -40,6 +49,7 @@ import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../opti
 import {
   collectionInput,
   collectionDestinationMatches,
+  dynCollectionSeed,
   ingestCollection,
   lowerCollectionInput,
 } from "../collection-ingestion.js";
@@ -49,6 +59,70 @@ import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { generatorDrain, lowerCollectionIteratorValue } from "../iterator-adapters.js";
+
+/** `<collection>.forEach(...)` in a JavaScript source whose call form the
+ * typed desugar cannot express (a non-callable or differently shaped
+ * callback, a thisArg the lib does not lower, a missing callback): the
+ * checked-dynamic forEach, which brand-checks the receiver, throws Node's
+ * `<value> is not a function` for a non-callable callback, and visits with
+ * (value, key, collection) for a Map and (value, value, collection) for a
+ * Set. `fnArg` is the already-lowered callback when the caller has one.
+ * Null when a value of the call cannot be a checked-dynamic one. */
+function lowerCollectionForEachDyn(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  receiver: IrExpr,
+  klass: DynCollectionClass,
+  fnArg: IrExpr | null,
+): IrExpr | null {
+  const loc = locOf(call);
+  const receiverNode = ts.isPropertyAccessExpression(call.expression)
+    ? call.expression.expression
+    : call.expression;
+  const rtReceiver =
+    receiver.type.kind === "dyn" ? receiver : lowerer.coerceInto(receiverNode, receiver, DYN);
+  if (rtReceiver.type.kind !== "dyn") return null;
+  let rtCallback: IrExpr;
+  const callbackNode = call.arguments.nodes[0];
+  if (!callbackNode) rtCallback = dynUndefinedExpr(loc);
+  else if (ts.isSpreadElement(callbackNode)) return null;
+  else {
+    const lowered = fnArg ?? lowerer.lowerExpr(callbackNode);
+    rtCallback =
+      lowered.type.kind === "dyn" ? lowered : lowerer.coerceInto(callbackNode, lowered, DYN);
+    if (rtCallback.type.kind !== "dyn") return null;
+  }
+  const thisNode = call.arguments.nodes[1];
+  let rtThis: IrExpr;
+  if (thisNode === undefined) rtThis = dynUndefinedExpr(loc);
+  else if (ts.isSpreadElement(thisNode)) return null;
+  else {
+    rtThis = lowerer.coerceInto(thisNode, lowerer.lowerExpr(thisNode), DYN);
+    if (rtThis.type.kind !== "dyn") return null;
+  }
+  return {
+    kind: "libCall",
+    fn: "dyn.collectionForEach",
+    args: [rtReceiver, strLit(klass, loc), rtCallback, rtThis],
+    type: VOID,
+    loc,
+  };
+}
+
+/** The collection arm of a unit-armed union — `Map | undefined`, the
+ * layout of a JS class field first assigned below the constructor's top
+ * level. Null unless the non-unit arm is exactly one Map (or Set) and every
+ * other arm is a unit: the runtime presence check below then narrows it. */
+function unitArmedCollectionArm(
+  lowerer: Lowerer,
+  type: IrType | null | undefined,
+  kind: "map" | "set",
+): IrType | null {
+  if (type?.kind !== "union") return null;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  const arm = arms.find((a) => a.kind === kind);
+  return arm && arms.every((a) => a === arm || isUnitType(a)) ? arm : null;
+}
 
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
@@ -72,6 +146,7 @@ export function lowerMapMethodCall(
       probedUntyped = true;
     }
   }
+  if (receiverIr?.kind !== "map") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "map");
   if (receiverIr?.kind !== "map") return null;
   // Collection views can refine has() while retaining its native ABI.
   if (!probedUntyped && !lowerer.isStdlibMember(access) && name !== "has") return null;
@@ -471,7 +546,12 @@ export function lowerMapForEachCall(
   bindUntyped = false,
 ): IrExpr {
   const loc = locOf(call);
+  const jsSource = isJsSourceFile(ts.getSourceFileOfNode(call));
   const argNode = call.arguments.nodes[0];
+  if (jsSource && (call.arguments.nodes.length !== 1 || !argNode || ts.isSpreadElement(argNode))) {
+    const dynamic = lowerCollectionForEachDyn(lowerer, call, receiver, "Map", null);
+    if (dynamic) return dynamic;
+  }
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const previousRuntime: { symbol: ts.Symbol; type: IrType | undefined }[] = [];
   const previousImplicit = lowerer.implicitParamTypes;
@@ -525,6 +605,13 @@ export function lowerMapForEachCall(
     (fnArg.type.params.length >= 1 && !typeEquals(fnArg.type.params[0]!, mapT.value)) ||
     (fnArg.type.params.length === 2 && !typeEquals(fnArg.type.params[1]!, mapT.key))
   ) {
+    // A JavaScript source lowers the call anyway: a non-callable callback
+    // throws Node's `<value> is not a function`, and a callback of another
+    // shape is called with (value, key, map) at run time.
+    if (jsSource) {
+      const dynamic = lowerCollectionForEachDyn(lowerer, call, receiver, "Map", fnArg);
+      if (dynamic) return dynamic;
+    }
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   // A void-returning contextual type accepts callbacks returning anything
@@ -626,6 +713,7 @@ export function lowerSetMethodCall(
       probedUntyped = true;
     }
   }
+  if (receiverIr?.kind !== "set") receiverIr = unitArmedCollectionArm(lowerer, receiverIr, "set");
   if (receiverIr?.kind !== "set") return null;
   // A collection interface may refine has() into a type predicate.
   // Type mapping checked that view's native ABI; the value check below
@@ -655,7 +743,7 @@ export function lowerSetMethodCall(
     return lowerCollectionIteratorCall(lowerer, call, receiver, name);
   }
   if (SET_COMBINE_METHODS.has(name)) {
-    return lowerSetCombineCall(lowerer, call, name, receiver, receiverIr);
+    return lowerSetCombineCall(lowerer, call, name, receiver, receiverIr, access.expression);
   }
   if (name === "add") {
     const v = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.elem);
@@ -704,7 +792,12 @@ export function lowerSetForEachCall(
   setT: IrType & { kind: "set" },
 ): IrExpr {
   const loc = locOf(call);
+  const jsSource = isJsSourceFile(ts.getSourceFileOfNode(call));
   const argNode = call.arguments.nodes[0];
+  if (jsSource && (call.arguments.nodes.length > 1 || !argNode || ts.isSpreadElement(argNode))) {
+    const dynamic = lowerCollectionForEachDyn(lowerer, call, receiver, "Set", null);
+    if (dynamic) return dynamic;
+  }
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const fnArg = lowerer.lowerExpr(argNode);
   if (
@@ -712,6 +805,15 @@ export function lowerSetForEachCall(
     fnArg.type.params.length > 2 ||
     !fnArg.type.params.every((p) => typeEquals(p, setT.elem))
   ) {
+    // A JavaScript source lowers the call anyway: a non-callable callback
+    // throws Node's `<value> is not a function`, a callback of another shape
+    // is called with (value, value, set) at run time, and forEach's optional
+    // thisArg crosses too, so a callback reading `this` sees what Node
+    // passes.
+    if (jsSource) {
+      const dynamic = lowerCollectionForEachDyn(lowerer, call, receiver, "Set", fnArg);
+      if (dynamic) return dynamic;
+    }
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   const arity = fnArg.type.params.length;
@@ -749,6 +851,7 @@ function lowerSetCombineCall(
   name: string,
   receiver: IrExpr,
   setT: IrType & { kind: "set" },
+  receiverNode: ts.Expression,
 ): IrExpr {
   const loc = locOf(call);
   const argNode = call.arguments.nodes[0];
@@ -760,15 +863,35 @@ function lowerSetCombineCall(
     );
   }
   const other = lowerer.lowerExpr(argNode);
-  if (other.type.kind !== "set" && other.type.kind !== "map") {
-    lowerer.noLowering(
-      `Set.prototype.${name} over a set-like argument of type '${lowerer.checker.typeToString(lowerer.typeOf(argNode))}'`,
-      argNode,
-      "only a real Set or Map lowers (the argument's has/size/keys must be the builtins) — build one first: new Set(...)",
-    );
-  }
   const otherT = other.type;
-  if (!typeEquals(otherT.kind === "set" ? otherT.elem : otherT.key, setT.elem)) {
+  const staticArgument =
+    (otherT.kind === "set" || otherT.kind === "map") &&
+    typeEquals(otherT.kind === "set" ? otherT.elem : otherT.key, setT.elem);
+  if (!staticArgument) {
+    // A JavaScript source lowers the spec's set-like protocol instead: the
+    // runtime reads size/has/keys off the argument and may call a user
+    // `has`, which the typed desugar cannot express.
+    if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const rtReceiver =
+        receiver.type.kind === "dyn" ? receiver : lowerer.coerceInto(receiverNode, receiver, DYN);
+      const rtOther = otherT.kind === "dyn" ? other : lowerer.coerceInto(argNode, other, DYN);
+      if (rtReceiver.type.kind === "dyn" && rtOther.type.kind === "dyn") {
+        return {
+          kind: "libCall",
+          fn: "dyn.setCombine",
+          args: [rtReceiver, strLit(name, loc), rtOther],
+          type: DYN,
+          loc,
+        };
+      }
+    }
+    if (otherT.kind !== "set" && otherT.kind !== "map") {
+      lowerer.noLowering(
+        `Set.prototype.${name} over a set-like argument of type '${lowerer.checker.typeToString(lowerer.typeOf(argNode))}'`,
+        argNode,
+        "only a real Set or Map lowers (the argument's has/size/keys must be the builtins) — build one first: new Set(...)",
+      );
+    }
     lowerer.noLowering(
       `Set.prototype.${name} across element types`,
       call,
@@ -978,6 +1101,143 @@ function buildSetCombineFn(
   };
 }
 
+/** Whether a JavaScript source file writes `Set.prototype`: a direct
+ * assignment or update of a member, a `delete`, or an install through
+ * Object.assign/Object.defineProperty(Object|Properties)/Reflect.set(
+ * defineProperty). Such a program makes the constructor's `add` lookup
+ * observable (Set([ iterable ]) step 7), so `new Set(seed)` takes the
+ * checked-dynamic constructor, which consults the prototype and steps the
+ * iterable (and closes it when `add` throws). Every other program keeps the
+ * bulk native construction. */
+
+export function jsSourcePatchesSetPrototype(lowerer: Lowerer, node: ts.Node): boolean {
+  return jsSourcePatchesCollectionPrototype(lowerer, node, "Set");
+}
+
+/** Whether a JavaScript source file writes `<Class>.prototype` for any of
+ * the keyed-collection classes: a direct assignment or update of a member, a
+ * `delete`, or an install through Object.assign/Object.defineProperty(Object|
+ * Properties)/Reflect.set(defineProperty). Such a program makes the
+ * constructor's adder lookup observable (Set([ iterable ]) step 7, Map
+ * ([ iterable ]) step 8), so `new Set(seed)` / `new Map(seed)` takes the
+ * checked-dynamic constructor, which consults the prototype and steps the
+ * iterable (and closes it when the adder throws). Every other program keeps
+ * the bulk native construction. */
+export function jsSourcePatchesCollectionPrototype(
+  lowerer: Lowerer,
+  node: ts.Node,
+  klass: DynCollectionClass,
+): boolean {
+  const file = ts.getSourceFileOfNode(node);
+  if (!isJsSourceFile(file)) return false;
+  let cached = lowerer.collectionPrototypePatches.get(file);
+  if (cached === undefined) {
+    cached = new Map();
+    lowerer.collectionPrototypePatches.set(file, cached);
+  }
+  // Both answers are cached: a file with many constructors that never
+  // patches the prototype scans it once, not once per constructor.
+  const known = cached.get(klass);
+  if (known !== undefined) return known;
+  const isPrototype = (expr: ts.Node | undefined): boolean => {
+    if (!expr) return false;
+    let node: ts.Node = expr;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    return (
+      ts.isPropertyAccessExpression(node) &&
+      !node.questionDotToken &&
+      lowerer.stdlibGlobalMember(node, klass) === "prototype"
+    );
+  };
+  // A write target below or at %Set.prototype%.
+  const writesPrototype = (expr: ts.Node): boolean => {
+    let node: ts.Node = expr;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+      return isPrototype(node.expression);
+    return isPrototype(node);
+  };
+  const installsOnto = (expr: ts.Node): boolean => {
+    let node: ts.Node = expr;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (!ts.isCallExpression(node)) return false;
+    const callee = node.expression;
+    if (!ts.isPropertyAccessExpression(callee)) return false;
+    const name = callee.name.text;
+    if (
+      name !== "assign" &&
+      name !== "defineProperty" &&
+      name !== "defineProperties" &&
+      name !== "set"
+    )
+      return false;
+    const first = node.arguments.nodes[0];
+    return !!first && !ts.isSpreadElement(first) && isPrototype(first);
+  };
+  let patched = false;
+  const visit = (child: ts.Node): void => {
+    if (patched) return;
+    if (
+      (ts.isBinaryExpression(child) &&
+        ts.isAssignmentOperator(child.operatorToken.kind) &&
+        writesPrototype(child.left)) ||
+      (ts.isDeleteExpression(child) && writesPrototype(child.expression)) ||
+      ((ts.isPrefixUnaryExpression(child) || ts.isPostfixUnaryExpression(child)) &&
+        (child.operator === ts.SyntaxKind.PlusPlusToken ||
+          child.operator === ts.SyntaxKind.MinusMinusToken) &&
+        writesPrototype(child.operand)) ||
+      installsOnto(child)
+    ) {
+      patched = true;
+      return;
+    }
+    ts.forEachChild(child, visit);
+  };
+  ts.forEachChild(file, visit);
+  cached.set(klass, patched);
+  return patched;
+}
+
+/** A Set seed whose checked-dynamic representation keeps the value the
+ * program observes: dynamic values and the scalars, bytes (retained views)
+ * and scalar arrays the to-dyn walker boxes without copying identity. */
+function dynCollectionsSeedPreservesIdentity(t: IrType): boolean {
+  const scalar = (arm: IrType): boolean =>
+    arm.kind === "dyn" || arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool";
+  if (scalar(t) || t.kind === "bytes") return true;
+  return t.kind === "array" && scalar(t.elem);
+}
+
+/** `new Set(dyn ?? fallback)` / `new Map(dyn ?? fallback)`: the checked-
+ * dynamic left selects the lazy fallback exactly when it is nullish and
+ * otherwise seeds from the dynamic iterable. The left lowers once. */
+function dynSeedOrFallback(
+  lowerer: Lowerer,
+  source: IrExpr,
+  destination: IrType & { kind: "map" | "set" },
+  fallback: () => IrExpr | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  const other = fallback();
+  if (!other) return null;
+  const saved = lowerer.declareHiddenLocal("%dynSeed", DYN);
+  const ref = varRef(saved.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: saved.id, init: source, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "nullish", value: ref, type: BOOL, loc },
+      then: other,
+      else_: dynCollectionSeed(lowerer, ref, destination, loc),
+      type: destination,
+      loc,
+    },
+    type: destination,
+    loc,
+  };
+}
+
 /** Consume a Set seed immediately, including optional inherited sets used
  * by compiler tables. Nullish seeds construct empty sets; a lazy fallback
  * consumes its evaluated branch even when it reassigns the source binding. */
@@ -992,6 +1252,39 @@ export function lowerSetSeedNew(
   const undefinedSeed = lowerStaticallyUndefinedArgument(lowerer, node);
   if (undefinedSeed)
     return defaultAfterUndefined(undefinedSeed, { kind: "setNew", type: setT, loc });
+  // A program that patches Set.prototype owns `add`, so the constructor
+  // must run it per iterated value instead of bulk-adding the seed. A
+  // literal seed is checked at the element type it is built at.
+  const literalSeed =
+    ts.isArrayLiteralExpression(node) && !node.elements.nodes.some(ts.isSpreadElement);
+  const seedIr = literalSeed ? setT.elem : lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (
+    seedIr &&
+    dynCollectionsSeedPreservesIdentity(seedIr) &&
+    jsSourcePatchesSetPrototype(lowerer, node)
+  ) {
+    const constructed: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.collectionConstruct",
+      args: [strLit("Set", loc), lowerer.lowerExprExpecting(node, DYN)],
+      type: DYN,
+      loc,
+    };
+    if (setT.elem.kind === "dyn") return { kind: "dynCheck", value: constructed, type: setT, loc };
+    // A native Set destination keeps its element ABI: read the values the
+    // program's own `add` inserted back and add them in order.
+    return {
+      kind: "setNew",
+      seed: {
+        kind: "dynCheck",
+        value: { kind: "libCall", fn: "dyn.setValues", args: [constructed], type: DYN, loc },
+        type: arrayOf(setT.elem),
+        loc,
+      },
+      type: setT,
+      loc,
+    };
+  }
   if (
     ts.isBinaryExpression(node) &&
     node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
@@ -1007,6 +1300,14 @@ export function lowerSetSeedNew(
       const selected = lowerSetSeedNew(lowerer, fallback, setT);
       return selected ? defaultAfterUndefined(source, selected) : null;
     }
+    if (source.type.kind === "dyn")
+      return dynSeedOrFallback(
+        lowerer,
+        source,
+        setT,
+        () => lowerSetSeedNew(lowerer, fallback, setT),
+        loc,
+      );
     return setFromSeedValue(lowerer, source, setT, () => lowerSetSeedNew(lowerer, fallback, setT));
   }
   if (ts.isConditionalExpression(node)) {
@@ -1059,8 +1360,14 @@ export function lowerSetSeedNew(
       kind: "dynCheck",
       value: {
         kind: "libCall",
-        fn: "dyn.nativeSetNew",
-        args: [lowerer.coerceInto(node, source, DYN)],
+        // Elements are dynamic values either way, so the checked-dynamic
+        // constructor costs nothing beyond the patched-prototype protocol.
+        fn: jsSourcePatchesSetPrototype(lowerer, node)
+          ? "dyn.collectionConstruct"
+          : "dyn.nativeSetNew",
+        args: jsSourcePatchesSetPrototype(lowerer, node)
+          ? [strLit("Set", loc), lowerer.coerceInto(node, source, DYN)]
+          : [lowerer.coerceInto(node, source, DYN)],
         type: DYN,
         loc,
       },
@@ -1068,6 +1375,11 @@ export function lowerSetSeedNew(
       loc,
     };
   }
+  // A declared collection view whose element layout differs from the
+  // destination cannot keep element identity, so refuse it rather than let
+  // the dynamic seed convert (or fail) at run time. The Map seed refuses the
+  // same shape (collection-ingestion's destination check).
+  if (input && !collectionDestinationMatches(lowerer, input, setT)) return null;
   if (declared?.kind === "array" && typeEquals(declared.elem, setT.elem)) {
     // Preserve the existing checked scalar-iterable bridge. Reference
     // elements must retain identity and cannot enter via a copying exit.
@@ -1163,6 +1475,9 @@ function setFromSeedValue(
     const drained = generatorDrain(lowerer, generator, setT.elem, loc);
     return drained ? { kind: "setNew", seed: drained, type: setT, loc } : null;
   }
+  // A checked-dynamic iterable: step the dynamic iterator protocol once and
+  // add every value the element type checks into.
+  if (source.type.kind === "dyn") return dynCollectionSeed(lowerer, source, setT, loc);
   let seed: IrExpr;
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
@@ -1203,6 +1518,28 @@ export function lowerMapSeedNew(
   mapT: IrType & { kind: "map" },
 ): IrExpr | null {
   if (ts.isSpreadElement(argNode)) return null;
+  // A JavaScript source that patches Map.prototype owns `set`, so the
+  // constructor must run it per iterated entry instead of bulk-inserting the
+  // seed (Map ( [ iterable ] ), step 8), and close the iterator when it
+  // throws. The checked-dynamic constructor does that and returns the map it
+  // built; a native key/value layout then re-seeds from the entries the
+  // program's own `set` inserted, in order.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(argNode)) &&
+    jsSourcePatchesCollectionPrototype(lowerer, argNode, "Map")
+  ) {
+    const loc = locOf(argNode);
+    const constructed: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.collectionConstruct",
+      args: [strLit("Map", loc), lowerer.lowerExprExpecting(argNode, DYN)],
+      type: DYN,
+      loc,
+    };
+    if (mapT.key.kind === "dyn" && mapT.value.kind === "dyn")
+      return { kind: "dynCheck", value: constructed, type: mapT, loc };
+    return mapFromSeedValue(lowerer, constructed, mapT);
+  }
   const empty = lowerer.emptyCollectionFor(argNode, mapT);
   if (empty) return empty;
   while (ts.isParenthesizedExpression(argNode)) argNode = argNode.expression;
@@ -1218,6 +1555,14 @@ export function lowerMapSeedNew(
       const fallback = lowerMapSeedNew(lowerer, argNode.right, mapT);
       return fallback ? defaultAfterUndefined(source, fallback) : null;
     }
+    if (source.type.kind === "dyn")
+      return dynSeedOrFallback(
+        lowerer,
+        source,
+        mapT,
+        () => lowerMapSeedNew(lowerer, argNode.right, mapT),
+        locOf(argNode),
+      );
     if (source.type.kind !== "union") return mapFromSeedValue(lowerer, source, mapT);
     const arms = lowerer.unions.get(source.type.unionId)?.arms;
     if (!arms) return null;
@@ -1406,10 +1751,13 @@ export function mapFromSeedValue(
     return { kind: "mapIntrinsic", method: "clone", receiver: seed, args: [], type: mapT, loc };
   }
 
+  // A checked-dynamic iterable: step the dynamic iterator protocol once and
+  // set every entry's checked key and value into native storage.
+  if (seed.type.kind === "dyn") return dynCollectionSeed(lowerer, seed, mapT, loc);
+
   if (
-    seed.type.kind === "dyn" ||
-    (seed.type.kind === "array" &&
-      !(seed.type.elem.kind === "record" && lowerer.shapes.get(seed.type.elem.shapeId)?.tuple))
+    seed.type.kind === "array" &&
+    !(seed.type.elem.kind === "record" && lowerer.shapes.get(seed.type.elem.shapeId)?.tuple)
   ) {
     const key = `checked-seed:${typeKey(mapT)}`;
     let name = lowerer.mapHofHelpers.get(key);
@@ -1500,8 +1848,7 @@ export function mapFromSeedValue(
         loc,
       });
     }
-    const source: IrExpr =
-      seed.type.kind === "dyn" ? seed : { kind: "dynFrom", value: seed, type: DYN, loc };
+    const source: IrExpr = { kind: "dynFrom", value: seed, type: DYN, loc };
     return { kind: "call", callee: name, args: [source], type: mapT, loc };
   }
   if (seed.type.kind !== "array" || seed.type.elem.kind !== "record") return null;

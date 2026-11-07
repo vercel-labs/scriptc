@@ -92,7 +92,14 @@ const KNOWN: Record<string, Known> = {
   "node24-mime": { run: "SC2020" },
   "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
-  "node24-parseargs": { run: "SC1090" },
+  // The dynamic `__proto__` writes in the args loop now match Node, so the
+  // program reaches a later limitation: the checked conversion of the options
+  // array's element union, whose `{ __proto__: null, ... }` arm (B.3.1) leaves
+  // a value without the `__proto__` member its literal type declares.
+  "node24-parseargs": {
+    divergence:
+      "the checked conversion into the options-literal union fails its `__proto__: null` arm",
+  },
   "node24-promise-timers": { run: "SC2020" },
   // The decoding, encoding and input-error lines match Node; the closing
   // `d.encoding = 'hex'` assignment refuses.

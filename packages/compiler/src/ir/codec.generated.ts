@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "4ca8667f1df09b03";
+export const IR_CODEC_LAYOUT = "78410613fc8df424";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -24,7 +24,7 @@ export function decodeIrFunction(r: IrReader): IrFunction {
   return decIrFunction(r);
 }
 
-const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","recordLinks","threadSlotKeys","bytesHeadersMutable","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
+const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","recordLinks","recordSourcesFolded","threadSlotKeys","bytesHeadersMutable","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
 const KEYS1: readonly string[] = ["name","sourceName","displayName","identityRoot","identityLength","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
 const KEYS2: readonly string[] = ["libnode","nodeVersion","modules"];
 const KEYS3: readonly string[] = ["profileName","prefix","initSymbol","sinkRegisterSymbol","collectSymbol","resultResetSymbol","threadInstances","callbackRegisterSymbol","callbacks","exports","trapOverlays","identity"];
@@ -307,6 +307,11 @@ function encIrModule(w: IrWriter, v: IrModule): void {
     w.byte(1);
     encT9(w, v.recordLinks);
   }
+  if (v.recordSourcesFolded === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    encT8(w, v.recordSourcesFolded);
+  }
   if (v.threadSlotKeys === undefined) w.byte(0);
   else {
     w.byte(1);
@@ -394,21 +399,22 @@ function decIrModule(r: IrReader): IrModule {
   const f12 = r.tag(2, "IrModule.lifetimeRegions") === 0 ? undefined : (r.bool() as NonNullable<IrModule["lifetimeRegions"]>);
   const f13 = r.tag(2, "IrModule.foreignElementKeys") === 0 ? undefined : decT8(r);
   const f14 = r.tag(2, "IrModule.recordLinks") === 0 ? undefined : decT9(r);
-  const f15 = r.tag(2, "IrModule.threadSlotKeys") === 0 ? undefined : decT8(r);
-  const f16 = r.tag(2, "IrModule.bytesHeadersMutable") === 0 ? undefined : (r.bool() as NonNullable<IrModule["bytesHeadersMutable"]>);
-  const f17 = r.tag(2, "IrModule.freezableArrays") === 0 ? undefined : decT8(r);
-  const f18 = r.tag(2, "IrModule.sloppyDynWrites") === 0 ? undefined : decT8(r);
-  const f19 = r.tag(2, "IrModule.untypedIntegrity") === 0 ? undefined : (r.bool() as NonNullable<IrModule["untypedIntegrity"]>);
-  const f20 = r.tag(2, "IrModule.commonJsEntry") === 0 ? undefined : r.bool();
-  const f21 = r.tag(2, "IrModule.nodeIsland") === 0 ? undefined : decT10(r);
-  const f22 = r.tag(2, "IrModule.ffiImports") === 0 ? undefined : decT11(r);
-  const f23 = r.tag(2, "IrModule.lib") === 0 ? undefined : decIrLibSection(r);
-  const f24 = r.tag(2, "IrModule.contracts") === 0 ? undefined : decIrContracts(r);
-  const f25 = r.tag(2, "IrModule.int32ArrayCandidates") === 0 ? undefined : decT8(r);
-  const f26 = r.tag(2, "IrModule.wasmModules") === 0 ? undefined : decT14(r);
-  const f27 = r.tag(2, "IrModule.wasmUntranslated") === 0 ? undefined : decT15(r);
-  const f28 = r.tag(2, "IrModule.wasmCustomSections") === 0 ? undefined : r.bool();
-  const o: IrModule = { irVersion: f0, sourceFile: f1, functions: f2, ...(f3 !== undefined ? { classes: f3 } : {}), ...(f4 !== undefined ? { globals: f4 } : {}), ...(f5 !== undefined ? { records: f5 } : {}), ...(f6 !== undefined ? { unions: f6 } : {}), entry: f7, ...(f8 !== undefined ? { workers: f8 } : {}), ...(f9 !== undefined ? { declBoundary: f9 } : {}), ...(f10 !== undefined ? { inferredFactFiles: f10 } : {}), ...(f11 !== undefined ? { declOrigins: f11 } : {}), ...(f12 !== undefined ? { lifetimeRegions: f12 } : {}), ...(f13 !== undefined ? { foreignElementKeys: f13 } : {}), ...(f14 !== undefined ? { recordLinks: f14 } : {}), ...(f15 !== undefined ? { threadSlotKeys: f15 } : {}), ...(f16 !== undefined ? { bytesHeadersMutable: f16 } : {}), ...(f17 !== undefined ? { freezableArrays: f17 } : {}), ...(f18 !== undefined ? { sloppyDynWrites: f18 } : {}), ...(f19 !== undefined ? { untypedIntegrity: f19 } : {}), ...(f20 !== undefined ? { commonJsEntry: f20 } : {}), ...(f21 !== undefined ? { nodeIsland: f21 } : {}), ...(f22 !== undefined ? { ffiImports: f22 } : {}), ...(f23 !== undefined ? { lib: f23 } : {}), ...(f24 !== undefined ? { contracts: f24 } : {}), ...(f25 !== undefined ? { int32ArrayCandidates: f25 } : {}), ...(f26 !== undefined ? { wasmModules: f26 } : {}), ...(f27 !== undefined ? { wasmUntranslated: f27 } : {}), ...(f28 !== undefined ? { wasmCustomSections: f28 } : {}) };
+  const f15 = r.tag(2, "IrModule.recordSourcesFolded") === 0 ? undefined : decT8(r);
+  const f16 = r.tag(2, "IrModule.threadSlotKeys") === 0 ? undefined : decT8(r);
+  const f17 = r.tag(2, "IrModule.bytesHeadersMutable") === 0 ? undefined : (r.bool() as NonNullable<IrModule["bytesHeadersMutable"]>);
+  const f18 = r.tag(2, "IrModule.freezableArrays") === 0 ? undefined : decT8(r);
+  const f19 = r.tag(2, "IrModule.sloppyDynWrites") === 0 ? undefined : decT8(r);
+  const f20 = r.tag(2, "IrModule.untypedIntegrity") === 0 ? undefined : (r.bool() as NonNullable<IrModule["untypedIntegrity"]>);
+  const f21 = r.tag(2, "IrModule.commonJsEntry") === 0 ? undefined : r.bool();
+  const f22 = r.tag(2, "IrModule.nodeIsland") === 0 ? undefined : decT10(r);
+  const f23 = r.tag(2, "IrModule.ffiImports") === 0 ? undefined : decT11(r);
+  const f24 = r.tag(2, "IrModule.lib") === 0 ? undefined : decIrLibSection(r);
+  const f25 = r.tag(2, "IrModule.contracts") === 0 ? undefined : decIrContracts(r);
+  const f26 = r.tag(2, "IrModule.int32ArrayCandidates") === 0 ? undefined : decT8(r);
+  const f27 = r.tag(2, "IrModule.wasmModules") === 0 ? undefined : decT14(r);
+  const f28 = r.tag(2, "IrModule.wasmUntranslated") === 0 ? undefined : decT15(r);
+  const f29 = r.tag(2, "IrModule.wasmCustomSections") === 0 ? undefined : r.bool();
+  const o: IrModule = { irVersion: f0, sourceFile: f1, functions: f2, ...(f3 !== undefined ? { classes: f3 } : {}), ...(f4 !== undefined ? { globals: f4 } : {}), ...(f5 !== undefined ? { records: f5 } : {}), ...(f6 !== undefined ? { unions: f6 } : {}), entry: f7, ...(f8 !== undefined ? { workers: f8 } : {}), ...(f9 !== undefined ? { declBoundary: f9 } : {}), ...(f10 !== undefined ? { inferredFactFiles: f10 } : {}), ...(f11 !== undefined ? { declOrigins: f11 } : {}), ...(f12 !== undefined ? { lifetimeRegions: f12 } : {}), ...(f13 !== undefined ? { foreignElementKeys: f13 } : {}), ...(f14 !== undefined ? { recordLinks: f14 } : {}), ...(f15 !== undefined ? { recordSourcesFolded: f15 } : {}), ...(f16 !== undefined ? { threadSlotKeys: f16 } : {}), ...(f17 !== undefined ? { bytesHeadersMutable: f17 } : {}), ...(f18 !== undefined ? { freezableArrays: f18 } : {}), ...(f19 !== undefined ? { sloppyDynWrites: f19 } : {}), ...(f20 !== undefined ? { untypedIntegrity: f20 } : {}), ...(f21 !== undefined ? { commonJsEntry: f21 } : {}), ...(f22 !== undefined ? { nodeIsland: f22 } : {}), ...(f23 !== undefined ? { ffiImports: f23 } : {}), ...(f24 !== undefined ? { lib: f24 } : {}), ...(f25 !== undefined ? { contracts: f25 } : {}), ...(f26 !== undefined ? { int32ArrayCandidates: f26 } : {}), ...(f27 !== undefined ? { wasmModules: f27 } : {}), ...(f28 !== undefined ? { wasmUntranslated: f28 } : {}), ...(f29 !== undefined ? { wasmCustomSections: f29 } : {}) };
   return o;
 }
 

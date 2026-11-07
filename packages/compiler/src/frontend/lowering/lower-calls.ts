@@ -52,6 +52,7 @@ import {
   lowerFsStreamMethodCall,
 } from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import {
   isZlibStreamMember,
   lowerPromisifiedZlibCall,
@@ -10460,6 +10461,14 @@ function lowerObjectStaticCall(
   if (argIr?.kind === "union") {
     return lowerObjectEnumerationOverRecordUnion(lowerer, call, member, locOf(call));
   }
+  // An enum that has no object (enum-object-layout.ts): its own fence names
+  // the reason, where the builtin's would name `Object.${member}`.
+  if (argIr === null) {
+    const argType = lowerer.typeOf(argNode);
+    const argSymbol = argType.getSymbol();
+    if (argSymbol !== undefined && (argSymbol.flags & ts.SymbolFlags.Enum) !== 0)
+      lowerer.badType(argNode, argType);
+  }
   if (argIr?.kind !== "record") return null; // Maps, classes, arrays → the SC2020 fence
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence
@@ -12332,6 +12341,14 @@ export function lowerObjectMethodCall(
       loc,
       ts.getTextOfNode(access),
       original,
+      // The declared dispatch answers while nothing is replaced, for the
+      // calls whose dynamic form is not chosen for another reason (a spread
+      // argument, an inferred JavaScript result).
+      call.arguments.nodes.some(ts.isSpreadElement) ||
+        !declarerFile ||
+        (isJsSourceFile(declarerFile) && !lowerer.checkedJsFile(declarerFile))
+        ? undefined
+        : info,
     );
     return {
       kind: "seqExpr",
@@ -13226,12 +13243,6 @@ function jsAssignsOwnToString(lowerer: Lowerer, receiver: ts.Expression): boolea
   return targets.has(decl);
 }
 
-const unparenthesized = (e: ts.Expression): ts.Expression => {
-  let out = e;
-  while (ts.isParenthesizedExpression(out)) out = out.expression;
-  return out;
-};
-
 /** The declaration of the binding an identifier names, through imports. */
 function bindingDeclaration(lowerer: Lowerer, id: ts.Identifier): ts.Node | undefined {
   let sym = lowerer.checker.getSymbolAtLocation(id);
@@ -13248,14 +13259,14 @@ function ownToStringTargets(lowerer: Lowerer, sf: ts.SourceFile): Set<ts.Node> {
   const targets = new Set<ts.Node>();
   const visit = (node: ts.Node): void => {
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      const left = unparenthesized(node.left);
+      const left = withoutParentheses(node.left);
       const named =
         (ts.isPropertyAccessExpression(left) && left.name.text === "toString") ||
         (ts.isElementAccessExpression(left) &&
           ts.isStringLiteralLike(left.argumentExpression) &&
           left.argumentExpression.text === "toString");
       const target = named
-        ? unparenthesized(
+        ? withoutParentheses(
             (left as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression,
           )
         : undefined;
@@ -13287,11 +13298,11 @@ function iifeArgumentDeclaration(lowerer: Lowerer, param: ts.Node): ts.Node | un
   const index = fn.parameters.nodes.indexOf(param);
   let arg = index < 0 ? undefined : call.arguments.nodes[index];
   if (arg === undefined) return undefined;
-  arg = unparenthesized(arg);
+  arg = withoutParentheses(arg);
   if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-    arg = unparenthesized(arg.left);
+    arg = withoutParentheses(arg.left);
   if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.EqualsToken)
-    arg = unparenthesized(arg.left);
+    arg = withoutParentheses(arg.left);
   return ts.isIdentifier(arg) ? bindingDeclaration(lowerer, arg) : undefined;
 }
 

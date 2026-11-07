@@ -14,7 +14,8 @@
  * for the namespace helper), the binding becomes the plain `require()` of
  * the builtin and `x.default` becomes `x`. */
 import * as ts from "./ts7/syntax.js";
-import { applyEdits, unparen, type Edit } from "./npm-static-bundled-chunks.js";
+import { withoutParentheses } from "./outer-expressions.js";
+import { applyEdits, type Edit } from "./npm-static-bundled-chunks.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
 
 /** True when the text may hold such a binding (a cheap probe). */
@@ -25,12 +26,12 @@ export function mayHoldTscBuiltinImport(source: string): boolean {
 /** `__importDefault(require("<builtin>"))` / `__importStar(…)`: the helper
  * and builtin spec, or null. */
 function builtinInterop(init: ts.Expression): { helper: string; spec: string } | null {
-  const e = unparen(init);
+  const e = withoutParentheses(init);
   if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression) || e.arguments.nodes.length !== 1)
     return null;
   const helper = e.expression.text;
   if (helper !== "__importDefault" && helper !== "__importStar") return null;
-  const req = unparen(e.arguments.nodes[0]!);
+  const req = withoutParentheses(e.arguments.nodes[0]!);
   if (
     !ts.isCallExpression(req) ||
     !ts.isIdentifier(req.expression) ||

@@ -11,7 +11,7 @@ import { recordSourceTest } from "./record-sources.js";
 import { keyedHelperName } from "./stable-names.js";
 import { OBJECT_PROTOTYPE_KEYS } from "./expressions/relational.js";
 import { jsGlobalValueByName } from "./global-values.js";
-import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
+import { lowerTupleAliasDecl } from "./typed-arguments.js";
 import {
   islandHandleBinding,
   lowerIslandExpr,
@@ -84,6 +84,7 @@ import { InternalCompilerError } from "../../errors.js";
  * explicit resource management, and blocked-binding poisoning. */
 import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/web-streams-dyn.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
@@ -7271,8 +7272,8 @@ export function lowerVarDecl(
   if (
     !decl.type &&
     init.type.kind === "func" &&
-    (lowerer.typedArgumentsLambdas.has(stripTypeWrappers(decl.initializer)) ||
-      lowerer.nullishFuncResults.has(stripTypeWrappers(decl.initializer)))
+    (lowerer.typedArgumentsLambdas.has(withoutParenthesesTypeWrappers(decl.initializer)) ||
+      lowerer.nullishFuncResults.has(withoutParenthesesTypeWrappers(decl.initializer)))
   )
     type = init.type;
   // A TypeScript lambda whose closure returns the runtime result (a missing
@@ -7908,10 +7909,6 @@ function jsObjectBindingExpands(
   let scope: ts.Node = decl;
   while (scope.parent && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope)) scope = scope.parent;
   const aliases = new Set([symbol]);
-  const unwrap = (node: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(node)) node = node.expression;
-    return node;
-  };
   let changed = true;
   while (changed) {
     changed = false;
@@ -7923,7 +7920,7 @@ function jsObjectBindingExpands(
         !node.type &&
         !hasJsTypeAnnotation(node)
       ) {
-        const source = unwrap(node.initializer);
+        const source = withoutParentheses(node.initializer);
         const sourceSymbol = ts.isIdentifier(source)
           ? lowerer.resolveValueSymbol(source)
           : undefined;
@@ -7941,7 +7938,7 @@ function jsObjectBindingExpands(
   const property = (node: ts.Node): string | null | undefined => {
     if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node))
       return undefined;
-    const receiver = unwrap(node.expression);
+    const receiver = withoutParentheses(node.expression);
     const receiverSymbol = ts.isIdentifier(receiver)
       ? lowerer.resolveValueSymbol(receiver)
       : undefined;
@@ -7963,8 +7960,8 @@ function jsObjectBindingExpands(
       if (name === null || (name !== undefined && !names.has(name))) expands = true;
       // `state = { _tag: "Done", right }` stores an object with properties
       // the initializer's shape lacks; later reads of them must see them.
-      const target = unwrap(node.left);
-      const value = unwrap(node.right);
+      const target = withoutParentheses(node.left);
+      const value = withoutParentheses(node.right);
       const targetSymbol = ts.isIdentifier(target) ? lowerer.resolveValueSymbol(target) : undefined;
       if (
         targetSymbol &&
@@ -8229,15 +8226,11 @@ function immediateAbsenceGuard(
   const next = index >= 0 ? statements[index + 1] : undefined;
   if (!next || !ts.isIfStatement(next)) return null;
   const binding = lowerer.resolveValueSymbol(decl.name);
-  const peel = (node: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(node)) node = node.expression;
-    return node;
-  };
   const isBinding = (node: ts.Expression): boolean => {
-    const operand = peel(node);
+    const operand = withoutParentheses(node);
     return ts.isIdentifier(operand) && lowerer.resolveValueSymbol(operand) === binding;
   };
-  const condition = peel(next.expression);
+  const condition = withoutParentheses(next.expression);
   if (ts.isPrefixUnaryExpression(condition))
     return condition.operator === ts.SyntaxKind.ExclamationToken && isBinding(condition.operand)
       ? "falsy"
@@ -8251,7 +8244,7 @@ function immediateAbsenceGuard(
     op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken;
   if (!strict && !loose) return null;
   const isUndefined = (node: ts.Expression): boolean => {
-    const operand = peel(node);
+    const operand = withoutParentheses(node);
     if (ts.isVoidExpression(operand)) return true;
     return (
       ts.isIdentifier(operand) &&
@@ -8259,14 +8252,15 @@ function immediateAbsenceGuard(
       (lowerer.typeOf(operand).flags & ts.TypeFlags.Undefined) !== 0
     );
   };
-  const isNull = (node: ts.Expression): boolean => peel(node).kind === ts.SyntaxKind.NullKeyword;
+  const isNull = (node: ts.Expression): boolean =>
+    withoutParentheses(node).kind === ts.SyntaxKind.NullKeyword;
   const missing = (node: ts.Expression): boolean => isUndefined(node) || (loose && isNull(node));
   const isTypeofBinding = (node: ts.Expression): boolean => {
-    const operand = peel(node);
+    const operand = withoutParentheses(node);
     return ts.isTypeOfExpression(operand) && isBinding(operand.expression);
   };
   const isUndefinedTag = (node: ts.Expression): boolean => {
-    const operand = peel(node);
+    const operand = withoutParentheses(node);
     return ts.isStringLiteralLike(operand) && operand.text === "undefined";
   };
   const { left, right } = condition;
@@ -10642,27 +10636,23 @@ function lowerLogicalBranch(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt
  * stdlibGlobalNameOf) — user shadows and computed receivers keep their
  * ordinary lowerings and fences. */
 function droppedPureStdlibStatement(lowerer: Lowerer, expr: ts.Expression): boolean {
-  const strip = (e: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    return e;
-  };
   if (ts.isCallExpression(expr)) {
-    const callee = strip(expr.expression);
+    const callee = withoutParentheses(expr.expression);
     if (!ts.isPropertyAccessExpression(callee)) return false;
     if (!PURE_PROTOTYPE_METHODS.has(callee.name.text)) return false;
-    const proto = strip(callee.expression);
+    const proto = withoutParentheses(callee.expression);
     if (!ts.isPropertyAccessExpression(proto) || proto.name.text !== "prototype") return false;
     if (!isStdlibMember(lowerer, proto) || !isStdlibMember(lowerer, callee)) return false;
-    const root = stdlibGlobalNameOf(lowerer, strip(proto.expression));
+    const root = stdlibGlobalNameOf(lowerer, withoutParentheses(proto.expression));
     if (root !== "Array" && root !== "String") return false;
     return expr.arguments.nodes.every((a) => sideEffectFreeOptionValue(a));
   }
   if (ts.isPropertyAccessExpression(expr)) {
-    return stdlibGlobalNameOf(lowerer, strip(expr.expression)) !== null;
+    return stdlibGlobalNameOf(lowerer, withoutParentheses(expr.expression)) !== null;
   }
   if (ts.isElementAccessExpression(expr)) {
     return (
-      stdlibGlobalNameOf(lowerer, strip(expr.expression)) !== null &&
+      stdlibGlobalNameOf(lowerer, withoutParentheses(expr.expression)) !== null &&
       sideEffectFreeOptionValue(expr.argumentExpression)
     );
   }

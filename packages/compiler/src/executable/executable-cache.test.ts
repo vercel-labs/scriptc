@@ -873,6 +873,18 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
   "provenance-sources": {
     unkeyed: "a build that rewrites its sources for provenance uses no cache (cacheRoot is null)",
   },
+  "emit-lowered": {
+    unkeyed:
+      "a build that writes a lowered program reads no entry (usesLoweredProgram), so it always runs the frontend and writes the file, and it builds the executable the same build without the option builds",
+  },
+  "from-lowered": {
+    unkeyed:
+      "a build from a lowered program reads no entry (usesLoweredProgram) and marks its frontend inputs unstable, so it publishes none (fromLoweredProgram)",
+  },
+  "from-lowered-accept": {
+    unkeyed:
+      "the option is refused without --from-lowered, whose builds neither read nor write an entry",
+  },
   tier: { keyed: (o) => ({ ...o, tier: "static-only" }) },
   "dynamic-tier-warning": {
     unkeyed:

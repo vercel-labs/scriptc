@@ -410,9 +410,10 @@ import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from
 import { VirtualBorrows } from "./virtual-borrows.js";
 import {
   absentTrapLines,
+  PARTIAL_DECLINE_TEXT,
   planRecordViews,
   recordViewFieldPtr,
-  recordViewTestLines,
+  recordViewTest,
 } from "./record-views.js";
 import { LlvmUnsupportedError, anchorRefusal } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
@@ -1122,6 +1123,7 @@ const POLL_EVERY_ITERATION = "%worker.poll.every";
 
 /** Runtime library calls (readsLoopMetrics). */
 const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
+const DYN_CHECK_KINDS: readonly IrNodeKind[] = ["dynCheck"];
 const CLOSURE_KINDS: readonly IrNodeKind[] = ["closure"];
 
 /** [A-Za-z0-9_] */
@@ -2906,14 +2908,39 @@ export class LlEmitter {
       const views = planRecordViews(mod, {
         traced: (id) => this.tracedShapes.has(`record:${id}`),
         // A tagged shape's values share field reads with the other arms of
-        // its shape union.
+        // its shape union, and a published value is read by threads that
+        // have no entry for it (record-views.ts).
         excluded: (id) =>
           this.nullableUnions.shapeNumber(id) !== 0 ||
-          this.publishedTypes?.recordGuarded(id) === true ||
-          mod.workers === true,
+          this.publishedTypes?.recordGuarded(id) === true,
+        workers: mod.workers === true,
       });
       this.shapeHost.recordViews = views;
       this.recordViewTargets = views.targets as Set<string>;
+      // A partial record assertion without a view would compile into a
+      // checked conversion that throws every time it runs: name it instead.
+      const refused = views.declinedPartials.map(
+        (site) =>
+          new LlvmUnsupportedError(
+            `partialRecordAssertion:${site.reason}`,
+            site.loc,
+            undefined,
+            "this object literal leaves required properties of the asserted type unwritten, and " +
+              `${PARTIAL_DECLINE_TEXT[site.reason]}, so the object cannot be completed in place: ` +
+              "write every required property in the literal, or collect the properties in a " +
+              "Record<string, T> or Partial<T> value and assert that once it is complete",
+          ),
+      );
+      if (refused.length > 0) {
+        const first = refused[0]!;
+        throw new LlvmUnsupportedError(
+          first.kind,
+          first.loc,
+          undefined,
+          first.hint,
+          refused.slice(1),
+        );
+      }
     }
     // Integer clones signal a stack overflow through their result. Worker
     // programs have them only as ELF executables, where the stack guard
@@ -3319,6 +3346,17 @@ export class LlEmitter {
     const weak = [...this.decls].some(
       (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
     );
+    // The frontend removed the source tests of these record types because
+    // nothing in the module gives a record a source
+    // (IrModule.recordSourcesFolded). A helper that keeps one for such a
+    // type all the same would make records whose undeclared keys and key
+    // order no surface reads: stop instead of emitting a program that
+    // answers wrongly.
+    const kept = this.mod.recordSourcesFolded?.find((id) => this.dyn.keptSourceShapes.has(id));
+    if (kept !== undefined)
+      throw new InternalCompilerError(
+        `llvm emitter bug: a helper keeps a source for record type ${kept}, whose source tests were removed`,
+      );
     return [
       `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
       `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources || this.hasRecordLinks()}`,
@@ -5805,6 +5843,7 @@ export class LlEmitter {
         this.rcMode === undefined,
         (text) => this.cstr(text),
         this.shapeHost.recordViews?.partialTargets.has(shapeId) === true,
+        this.shapeHost.recordViews?.marked.has(shapeId) === true,
       );
     } else {
       p = this.B.tmp();
@@ -5814,6 +5853,54 @@ export class LlEmitter {
     }
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
+  }
+
+  /** Whether the record `obj` of view target `shapeId` is a view (an i1). */
+  recordIsView(objName: string, shapeId: string): string {
+    return recordViewTest(
+      this.B,
+      this.sizeType,
+      objName,
+      (decl) => this.declare(decl),
+      this.shapeHost.recordViews?.marked.has(shapeId) === true,
+    );
+  }
+
+  /** The fields some partial record assertion of the module leaves unwritten
+   * (`shapeId\0field`), from the module alone. */
+  private partialUnwritten: Set<string> | undefined;
+
+  /** Whether some partial record assertion leaves `field` of `shapeId`
+   * unwritten, whether or not it gets its view (record-views.ts). A read of
+   * such a field answers a value of its own (readPartialField), with no
+   * slot that keeps it alive, so no reader borrows it. Unlike
+   * partialFieldMissing this needs no view plan: the borrow analyses that
+   * run before the views are planned decide as the emission does. */
+  partialFieldUnwritten(shapeId: string, field: string): boolean {
+    let unwritten = this.partialUnwritten;
+    if (unwritten === undefined) {
+      unwritten = new Set();
+      const scan = this.nodeIndex.scan(DYN_CHECK_KINDS);
+      for (const fn of this.fnByName.values())
+        eachNodeOfKinds(fn, scan, (node) => {
+          if (
+            node.kind !== "dynCheck" ||
+            node.partialView !== true ||
+            node.type.kind !== "record" ||
+            node.value.kind !== "dynFrom" ||
+            node.value.value.type.kind !== "record"
+          )
+            return;
+          const target = this.recordsById.get(node.type.shapeId);
+          const source = this.recordsById.get(node.value.value.type.shapeId);
+          if (target === undefined || source === undefined) return;
+          for (const f of target.fields)
+            if (!source.fields.some((written) => written.name === f.name))
+              unwritten!.add(`${target.id}\0${f.name}`);
+        });
+      this.partialUnwritten = unwritten;
+    }
+    return unwritten.size > 0 && unwritten.has(`${shapeId}\0${field}`);
   }
 
   /** Whether a value of `shapeId` may lack field `field`: a PARTIAL record
@@ -5859,14 +5946,12 @@ export class LlEmitter {
     const B = this.B;
     const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
     const inline = this.inlineUnions.record(type);
-    const isView = B.tmp();
+    const isView = this.recordIsView(objName, shapeId);
     const view = B.newLabel("pf.view");
     const notView = B.newLabel("pf.slot");
     const slots = B.newLabel("pf.slots");
     const extra = B.newLabel("pf.extra");
     const answer = B.newLabel("pf.answer");
-    for (const line of recordViewTestLines(this.sizeType, objName, isView))
-      B.line(line.trimStart());
     B.condBr(isView, view, notView);
     // Not a view: the field's own slot.
     B.startBlock(notView);
@@ -5947,15 +6032,13 @@ export class LlEmitter {
   ): void {
     const B = this.B;
     const idx = this.recordShape(shapeId).fields.findIndex((f) => f.name === field);
-    const isView = B.tmp();
+    const isView = this.recordIsView(objName, shapeId);
     const notView = B.newLabel("ps.slot");
     const view = B.newLabel("ps.view");
     const present = B.newLabel("ps.present");
     const store = B.newLabel("ps.store");
     const extra = B.newLabel("ps.extra");
     const done = B.newLabel("ps.done");
-    for (const line of recordViewTestLines(this.sizeType, objName, isView))
-      B.line(line.trimStart());
     B.condBr(isView, view, notView);
     B.startBlock(notView);
     const own = B.tmp();
@@ -5981,9 +6064,10 @@ export class LlEmitter {
     storeAt(addr);
     B.br(done);
     B.startBlock(extra);
-    const boxed = B.tmp();
-    const box = this.dyn.toDynHelper(type);
-    B.line(`${boxed} = call ptr @${box}(${this.llType(type)} ${value.name})`);
+    // A record, an array or a union holding one is kept as the value itself
+    // (a live capsule), so the property is the object the program stored,
+    // as a slot would hold it; every other type converts by value.
+    const boxed = this.dyn.liveReadToDyn(B, type, value.name);
     this.declare(`declare void @scr_record_view_extra_set(ptr, ptr, ${this.sizeType}, ptr)`);
     B.line(
       `call void @scr_record_view_extra_set(ptr ${objName}, ptr ${this.cstr(field)}, ${this.sizeType} ${Buffer.byteLength(field, "utf8")}, ptr ${boxed})`,
@@ -8783,8 +8867,10 @@ export class LlEmitter {
     switch (e.kind) {
       case "fieldGet":
         return this.nullableFieldGet(e) === null && !this.inlineArrayRead(e);
+      // A field a partial record assertion leaves unwritten has no slot to
+      // lend: its read answers a value of its own.
       case "recordGet":
-        return true;
+        return !this.partialFieldUnwritten(e.shapeId, e.field);
       // A keyed read whose hits are all the result's own pointer.
       case "recordKeyGet":
         return pointerRecordKeyGet(this, e);

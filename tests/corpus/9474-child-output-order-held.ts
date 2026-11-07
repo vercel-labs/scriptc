@@ -8,6 +8,9 @@
 //    the parent's, the piped one is delivered before 'close'.
 // 3. A child that points its stderr at its stdout: everything arrives on
 //    stdout in the order written, and stderr ends without data.
+// 4. A spawn that fails: 'error' is a next-tick event and comes before the
+//    pipes' 'end', stdout's before stderr's, from ordinary code and from
+//    inside another child's listeners.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -87,11 +90,50 @@ function merged(): Promise<string> {
   });
 }
 
+function failing(seen: string[], done: () => void): void {
+  const child = spawn("definitely-not-a-binary-zzz", ["x"], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout!.on("data", () => seen.push("data"));
+  child.stdout!.on("end", () => seen.push("stdout end"));
+  child.stderr!.on("end", () => seen.push("stderr end"));
+  child.on("error", (err) => seen.push(`error ${err.message.split(" ").pop()}`));
+  child.on("exit", () => seen.push("exit"));
+  child.on("close", (code) => {
+    seen.push(`close:${code}`);
+    done();
+  });
+}
+
+function failed(from: "start" | "exit" | "data"): Promise<string> {
+  return new Promise((resolve) => {
+    const seen: string[] = [];
+    const done = (): void => resolve(seen.join(", "));
+    if (from === "start") {
+      failing(seen, done);
+      return;
+    }
+    const first = spawn("/bin/sh", ["-c", "echo out"], { stdio: ["ignore", "pipe", "pipe"] });
+    first.stdout!.on("data", () => {
+      seen.push("first data");
+      if (from === "data") failing(seen, done);
+    });
+    // When the first child's 'exit' falls relative to the failed one's pipes
+    // is timing, so it is recorded only where it starts the failed spawn.
+    first.on("exit", () => {
+      if (from !== "exit") return;
+      seen.push("first exit");
+      failing(seen, done);
+    });
+  });
+}
+
 async function main(): Promise<void> {
   console.log("held:", await held());
   console.log("inherit stdout:", await inheritStdout());
   console.log("inherit stderr:", await inheritStderr());
   console.log("merged:", await merged());
+  console.log("failed spawn:", await failed("start"));
+  console.log("failed spawn in an exit listener:", await failed("exit"));
+  console.log("failed spawn in a data listener:", await failed("data"));
   rmSync(dir, { recursive: true, force: true });
 }
 main();

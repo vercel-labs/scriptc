@@ -729,6 +729,20 @@ export function nodeIslandNativeUseDiag(
   };
 }
 
+/** SC8010 — an array that holds generators in a program that can hand a
+ * value to a Node island. A generator that crosses the boundary is not the
+ * same value on the other side yet, so the checked-dynamic array such a
+ * slot becomes in a program without an island would find, compare and hand
+ * back another generator than Node does. */
+export function nodeIslandGeneratorArrayDiag(type: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8010",
+    message: `values of type '${type}' (an array that holds generators) are not supported in a program that runs a Node island yet`,
+    loc,
+    hint: "a generator does not keep its identity across the island boundary yet; the same array compiles in a program that runs no Node island",
+  };
+}
+
 /** SC8023 — the build that ran fenced packages as Node islands failed, so
  * the program was built natively with those runtime fences (each throws
  * when reached). A warning on the native build, with the island build's

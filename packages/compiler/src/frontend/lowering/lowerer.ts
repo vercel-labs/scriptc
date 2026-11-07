@@ -148,6 +148,7 @@ import {
 } from "./builtins/web-streams-dyn.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
+import { finalizeGeneratorArrays } from "./generator-arrays.js";
 import { iterableSlotValue } from "./iterable-values.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
@@ -1311,6 +1312,10 @@ export interface DegradedType {
   /** The type maps exactly from its canonical form (stage N2): its slots
    * are static. */
   canonical?: true;
+  /** The type's canonical form maps but for an array of generators, which
+   * has no array storage: the slot that failed first and the type as
+   * written (generator-arrays.ts). */
+  generatorArray?: { loc: SrcLoc; type: string };
 }
 
 /** The Lowerer's pass configuration (see lowerToIr). */
@@ -12199,6 +12204,7 @@ export class Lowerer {
     // instance from the record is refused while a module can still fail.
     refuseObservedClassCopies(this, functions);
     finalizeRecordLinks(this, functions);
+    finalizeGeneratorArrays(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
     if (!library) installBuiltinStatics(this, functions);
@@ -13907,7 +13913,7 @@ export class Lowerer {
       this.diags.splice(i, 1);
     }
     if (committed === undefined) return null;
-    this.degradeType(type, committed.code, committed.message);
+    this.degradeType(type, committed.code, committed.message, committed.loc);
     const canonical = this.isCanonicalDegraded(id);
     const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
     return {
@@ -14058,43 +14064,79 @@ export class Lowerer {
   /** Degrades a type for a commit point: its lenient (pushed-down) form
    * first; a type already degraded that still fails falls back to the
    * whole-slot checked dynamic. False when nothing is left to degrade. */
-  private degradeType(type: ts.Type, code: string, reason: string): boolean {
+  private degradeType(type: ts.Type, code: string, reason: string, loc: SrcLoc): boolean {
     const id = (type as { id?: number }).id;
     if (id === undefined) return false;
     const known = this.degradedTypes.get(id);
     if (known !== undefined) {
       if (known.lenient?.kind === "dyn") return false;
-      this.degradedTypes.set(id, { lenient: DYN, code, reason });
+      this.degradedTypes.set(id, {
+        lenient: DYN,
+        code,
+        reason,
+        ...(known.generatorArray ? { generatorArray: known.generatorArray } : {}),
+      });
       return true;
     }
     // Canonical normalization (stage N2): a type the per-form rules miss
     // maps exactly from its canonical form when that form maps; no dynamic
     // slot then. Otherwise the lenient (pushed-down) form.
-    const canonical = this.canonicalType(type);
+    const notes: CanonMapNotes = { collapsedToDynamic: false };
+    const mapped = this.canonicalType(type, notes);
+    // A form that maps but for an array of generators: the array has no
+    // storage, so the slot takes the lenient form, where the array is a
+    // checked-dynamic value. A build with a Node island keeps the array
+    // type instead, and with it every refusal of its uses
+    // (generator-arrays.ts).
+    const generatorArray =
+      mapped !== null && notes.generatorArray === true
+        ? { generatorArray: { loc, type: this.checker.typeToString(type) } }
+        : {};
+    const canonical =
+      generatorArray.generatorArray !== undefined && !this.hasNodeIslands() ? null : mapped;
     if (canonical !== null) {
-      this.degradedTypes.set(id, { lenient: canonical, code, reason, canonical: true });
+      this.degradedTypes.set(id, {
+        lenient: canonical,
+        code,
+        reason,
+        canonical: true,
+        ...generatorArray,
+      });
       return true;
     }
     this.degradedTypes.set(id, {
       lenient: this.wholeSlotDegradation ? DYN : this.lenientType(type),
       code,
       reason,
+      ...generatorArray,
     });
     return true;
+  }
+
+  /** Whether the build runs a package or a module in a Node island, so
+   * that a value of the program can cross into one. */
+  hasNodeIslands(): boolean {
+    const islands = this.nodeIslands;
+    return islands !== null && (islands.packages.size > 0 || islands.modules.size > 0);
   }
 
   /** The IR type of a type's canonical form (canon-map.ts), or null when
    * the form is irreducible, unbound, only the checked dynamic, or holds a
    * union that mapped to the checked dynamic (such a slot is dynamic in
    * part, so it degrades like any other). Runs only at localized failure's
-   * commit points, so a program that compiles today never consults it. */
-  canonicalType(type: ts.Type): IrType | null {
+   * commit points, so a program that compiles today never consults it. An
+   * array of generators in the form maps to an array type without storage
+   * and is noted in `notes`: degradeType decides what the slot becomes. */
+  canonicalType(
+    type: ts.Type,
+    notes: CanonMapNotes = { collapsedToDynamic: false },
+  ): IrType | null {
     try {
       const resolve = this.typeCtx.resolveTypeParamTs;
       const c = new Normalizer(this.checker).canon(type, resolve ? (t) => resolve(t) : new Map());
       if (c.k === "opaque" || c.k === "param") return null;
       const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
-      const notes: CanonMapNotes = { collapsedToDynamic: false };
+      notes.generatorArraysMap = true;
       const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false }, 0, notes);
       if (notes.collapsedToDynamic) return null;
       return mapped === null || mapped.kind === "void" || mapped.kind === "dyn" ? null : mapped;
@@ -18049,9 +18091,10 @@ export class Lowerer {
                   code: prior.code,
                   reason: prior.reason,
                   ...(prior.canonical === true ? { canonical: true as const } : {}),
+                  ...(prior.generatorArray ? { generatorArray: prior.generatorArray } : {}),
                 },
         });
-        this.degradeType(type, diag.code, diag.message);
+        this.degradeType(type, diag.code, diag.message, diag.loc);
         const canonical = this.isCanonicalDegraded(id);
         const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
         slots.push({

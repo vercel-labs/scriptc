@@ -912,31 +912,16 @@ const TEMPORAL_LIB = "lib.esnext.temporal.d.ts";
  * mention in a comment or string also counts, which only adds the lib
  * slice. */
 function programNamesTemporal7(program: ts.Program): boolean {
-  for (const sf of program.getImplementationSourceFiles()) {
-    const text = sf.text;
-    for (
-      let at = text.indexOf(TEMPORAL_GLOBAL);
-      at >= 0;
-      at = text.indexOf(TEMPORAL_GLOBAL, at + 8)
-    ) {
-      if (!isIdentifierCharAt(text, at - 1) && !isIdentifierCharAt(text, at + 8)) return true;
-    }
-  }
+  for (const sf of program.getImplementationSourceFiles())
+    if (ts.sourceTextMatches(sf, TEMPORAL_WORD)) return true;
   return false;
 }
 
-function isIdentifierCharAt(text: string, index: number): boolean {
-  if (index < 0 || index >= text.length) return false;
-  const c = text.charCodeAt(index);
-  return (
-    (c >= 48 && c <= 57) ||
-    (c >= 65 && c <= 90) ||
-    (c >= 97 && c <= 122) ||
-    c === 36 ||
-    c === 95 ||
-    c > 127
-  );
-}
+/** The temporal global's name with no identifier character on either side:
+ * an ASCII letter, digit, `$` or `_`, or any code unit outside ASCII. */
+const TEMPORAL_WORD = new RegExp(
+  `(?<![0-9A-Za-z$_\\u0080-\\uffff])${TEMPORAL_GLOBAL}(?![0-9A-Za-z$_\\u0080-\\uffff])`,
+);
 
 /** "require" for a CommonJS edge (`require("x")`, `import x = require("x")`),
  * "import" for every ESM form — the resolution kind preflight uses. */
@@ -1611,14 +1596,13 @@ function declBoundaryUserFiles(program: ts.Program, packages: readonly string[])
     const name = sf.fileName.split("\\").join("/");
     if (name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name)) continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
-    const text = sf.text;
     if (
       packages.some(
         (pkg) =>
-          text.includes(`"${pkg}"`) ||
-          text.includes(`'${pkg}'`) ||
-          text.includes(`"${pkg}/`) ||
-          text.includes(`'${pkg}/`),
+          ts.sourceTextIncludes(sf, `"${pkg}"`) ||
+          ts.sourceTextIncludes(sf, `'${pkg}'`) ||
+          ts.sourceTextIncludes(sf, `"${pkg}/`) ||
+          ts.sourceTextIncludes(sf, `'${pkg}/`),
       )
     )
       out.push(sf.fileName);
@@ -1842,7 +1826,7 @@ function splitRequireBindings7(
   if (cached !== undefined) return cached;
   const out = new Map<ts.VariableDeclaration, ts.CallExpression>();
   memo.set(sf, out);
-  if (sf.isDeclarationFile || !isCjsJsFile7(sf, program) || !sf.text.includes("require"))
+  if (sf.isDeclarationFile || !isCjsJsFile7(sf, program) || !ts.sourceTextIncludes(sf, "require"))
     return out;
   const checker = program.getTypeChecker();
   const stmts = sf.statements.nodes;
@@ -7111,7 +7095,7 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
     reach(entry, startup);
     const covered = new Set<ts.SourceFile>();
     for (const sf of userFiles) {
-      if (!sf.text.includes("import")) continue;
+      if (!ts.sourceTextIncludes(sf, "import")) continue;
       for (const call of moduleSourceCandidates(program, sf).calls) {
         const arg = call.arguments.nodes[0];
         if (call.expression.kind !== ts.SyntaxKind.ImportKeyword || arg === undefined) continue;
@@ -7293,7 +7277,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
     }
     if (names.size === 0) return false;
     const sf = p.getSourceFile(d.fileName);
-    return sf !== undefined && names.has(sf.text.slice(d.pos, d.end));
+    return sf !== undefined && names.has(ts.sourceTextRange(sf, d.pos, d.end));
   };
 
   const npmStaticFileSuppressed = (d: ts.Diagnostic): boolean =>
@@ -7328,7 +7312,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
     if (insideBlockComment(sf.text, d.pos)) return true;
-    return d.code === 2300 && commentDup.has(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
+    return (
+      d.code === 2300 && commentDup.has(`${d.fileName}:${ts.sourceTextRange(sf, d.pos, d.end)}`)
+    );
   };
 
   // A `return` at the top level of a CommonJS module (TS1108): Node runs
@@ -7354,7 +7340,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
       return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
-    const spec = sf.text.slice(d.pos, d.end).replace(/^['"]|['"]$/g, "");
+    const spec = ts.sourceTextRange(sf, d.pos, d.end).replace(/^['"]|['"]$/g, "");
     const pkg = packageNameOfSpecifier(spec);
     return isWorkspacePackageName(pkg) || (spec !== pkg && isFrontendIsland(pkg));
   };

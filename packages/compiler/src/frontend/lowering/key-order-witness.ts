@@ -2208,7 +2208,10 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     )
       continue;
     const orders = variants.get(first.source);
-    if (orders === undefined || mirrors.has(first.source)) continue;
+    // A source value that keeps its own key list is in that order, not the
+    // one its index names: what is built from it takes the list when the
+    // construction runs (trackOrders), which no mirrored index can name.
+    if (orders === undefined || mirrors.has(first.source) || sourced(first.source)) continue;
     const table = tableOf(candidate.shape);
     const tested = first.suffix.filter((k) => maybeAbsent(first.source, k));
     if (tested.length > 4) continue;

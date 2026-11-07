@@ -118,3 +118,20 @@ show("duo of parsed", withoutA(parsedTrio));
 show("duo of cloned", withoutA(clonedTrio));
 show("duo literal", madeDuo);
 show("duo of plain", withoutA({ a: 1, b: 2, c: 3 }));
+
+// A type built only by a rest copy of a type whose literals disagree (so
+// each value of the source records which order it was written in): a copy
+// of a parsed value still keeps that value's key order.
+interface Mixed { a: number; b?: number; c?: string; d: string }
+type Tail = { b?: number; c?: string; d: string };
+function tailOf(mixed: Mixed): Tail {
+  const { a, ...tail } = mixed;
+  return tail;
+}
+const mixedOne: Mixed = { d: "one", a: 1, c: "c" };
+const mixedTwo: Mixed = { a: 2, d: "two", b: 2 };
+const mixedParsed = JSON.parse('{"c":"p","b":8,"d":"parsed","a":6}') as Mixed;
+show("tail of one", tailOf(mixedOne));
+show("tail of two", tailOf(mixedTwo));
+show("tail of parsed", tailOf(mixedParsed));
+show("mixed parsed", mixedParsed);

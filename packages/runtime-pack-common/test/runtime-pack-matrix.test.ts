@@ -80,6 +80,21 @@ test("Node islands select the dynamic promise build that adopts island thenables
   ]);
 });
 
+test("Node islands select the invoke build that reaches an island promise's own methods", () => {
+  const plain = { jsObjectModel: false, nodeIsland: false, workers: false };
+  expect(selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+});
+
 test("web streams and Node islands select an async build that defines both", () => {
   const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
   expect(variant.defines).toEqual(

@@ -14378,6 +14378,15 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     return;
   }
 
+#ifdef SCR_NODE_ISLANDS
+  /* An island promise is an island object too (scr_dyn_promise_key_get):
+   * a member an island Promise subclass has is written there. */
+  if (recv->kind == SCR_DYN_PROMISE && scr_ni_dyn_ops != NULL &&
+      scr_ni_dyn_ops->promise_set != NULL &&
+      scr_ni_dyn_ops->promise_set(recv, key->data, key->len, (ScrDyn *)value))
+    return;
+#endif
+
   ScrJsonBuf b;
   scr_jb_init(&b);
   if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL) {

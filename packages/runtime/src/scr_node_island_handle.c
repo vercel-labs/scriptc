@@ -1734,6 +1734,14 @@ static int nh_promise_has(const ScrDyn *promise, const char *key, size_t len) {
   return found == 1 ? 1 : 0;
 }
 
+static int nh_promise_set(const ScrDyn *promise, const char *key, size_t len, ScrDyn *value) {
+  ScrDyn *island = nh_promise_object(promise, key, len);
+  if (island == NULL) return 0;
+  (void)scr_ni_set_str(island, key, len, value);
+  scr_dyn_release(island);
+  return 1;
+}
+
 static int nh_promise_get(const ScrDyn *promise, const char *key, size_t len, ScrDyn **out) {
   ScrDyn *island = nh_promise_object(promise, key, len);
   if (island == NULL) return 0;
@@ -1863,6 +1871,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .error_has = nh_error_has,
     .promise_get = nh_promise_get,
     .promise_has = nh_promise_has,
+    .promise_set = nh_promise_set,
 };
 
 __attribute__((constructor)) static void nh_install(void) {

@@ -3371,6 +3371,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.worker_threads.SHARE_ENV",
+      "kind": "node-builtin",
+      "name": "worker_threads.SHARE_ENV",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
       "id": "node-builtin.worker_threads.Worker",
       "kind": "node-builtin",
       "name": "worker_threads.Worker",

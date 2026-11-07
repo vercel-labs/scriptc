@@ -44,7 +44,7 @@ for (const end of Object.values(line)) console.log(Object.keys(end).join(","), J
 for (const [name, end] of Object.entries(line)) console.log(name, end.x, end.y, "label" in end);
 console.log(JSON.stringify(line), JSON.stringify(Object.entries(flags)));
 
-// Inspection and assignment.
+// Inspection, and a list of records.
 console.log(origin, named, line, flags);
 const rows: Flags[] = [flags, { name: "g", count: 0, on: false }];
 console.log(rows.map((row) => Object.keys(row).join("")).join(" "), JSON.stringify(rows));

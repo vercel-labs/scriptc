@@ -260,26 +260,19 @@ export function functionKeepsRecordSources(
   scan: KeepsSourceScan,
 ): boolean {
   const exposes = (t: IrType): boolean => exposesKeptRecord(lowerer, t, scan);
-  // The immediate operands of the node being looked at: whether one is
-  // untyped, then whether one is typed and exposes a record that keeps a
-  // source. Each visitor stops at its first hit.
-  let untyped = false;
+  // Whether an operand of the node being walked is untyped: each expression
+  // says so to the node that holds it, as the one walk passes. Only a node
+  // with an untyped side is then asked for a typed side that exposes a
+  // record, so typed code pays the walk and nothing else.
+  let untypedOperand = false;
   let exposed = false;
-  const untypedOperand = (child: IrExpr): boolean => !(untyped = isUntyped(child.type));
   const exposedOperand = (child: IrExpr): boolean => !(exposed = exposes(child.type));
   const nested = (): boolean => true;
-  /** Whether an untyped value and an exposing typed one meet in a node
-   * whose own type is `own` (null for a statement). */
-  const meets = (own: IrType | null, look: (visit: typeof untypedOperand) => void): boolean => {
-    untyped = own !== null && isUntyped(own);
-    if (!untyped) look(untypedOperand);
-    if (!untyped) return false;
-    exposed = own !== null && exposes(own);
-    if (!exposed) look(exposedOperand);
-    return exposed;
-  };
   // Both visitors answer false at the first keeping node, which ends the walk.
   const expr = (e: IrExpr): boolean => {
+    const untyped = isUntyped(e.type);
+    if (untyped) untypedOperand = true;
+    let guarded = false;
     switch (e.kind) {
       case "varRef":
       case "numLit":
@@ -301,23 +294,46 @@ export function functionKeepsRecordSources(
         if (exposes(e.type)) return false;
         break;
       case "ternary":
-        if (impliesRecordSource(e.cond)) return expr(e.cond) && expr(e.else_);
+        guarded = impliesRecordSource(e.cond);
         break;
       case "logical":
-        if (e.op === "&&" && impliesRecordSource(e.left)) return expr(e.left);
+        guarded = e.op === "&&" && impliesRecordSource(e.left);
         break;
       default:
         break;
     }
-    if (meets(e.type, (visit) => everyExprChild(e, visit, nested))) return false;
-    return everyExprChild(e, expr, stmt);
+    const holder = untypedOperand;
+    untypedOperand = false;
+    // Of a guarded node, the test and what runs without it.
+    const walked = !guarded
+      ? everyExprChild(e, expr, stmt)
+      : e.kind === "ternary"
+        ? expr(e.cond) && expr(e.else_)
+        : e.kind === "logical" && expr(e.left);
+    const meets = untyped || untypedOperand;
+    untypedOperand = holder;
+    if (!walked) return false;
+    if (guarded || !meets) return true;
+    exposed = exposes(e.type);
+    if (!exposed) everyExprChild(e, exposedOperand, nested);
+    return !exposed;
   };
   const stmt = (s: IrStmt): boolean => {
-    if (s.kind === "if" && impliesRecordSource(s.cond))
-      return expr(s.cond) && (s.else_ === null || s.else_.every(stmt));
+    const guarded = s.kind === "if" && impliesRecordSource(s.cond);
+    const holder = untypedOperand;
+    untypedOperand = false;
+    const walked =
+      s.kind === "if" && guarded
+        ? expr(s.cond) && (s.else_ === null || s.else_.every(stmt))
+        : everyStmtChild(s, expr, stmt);
+    const meets = untypedOperand;
+    untypedOperand = holder;
+    if (!walked) return false;
     if (s.kind === "throw" && exposes(s.value.type)) return false;
-    if (meets(null, (visit) => everyStmtChild(s, visit, nested))) return false;
-    return everyStmtChild(s, expr, stmt);
+    if (guarded || !meets) return true;
+    exposed = false;
+    everyStmtChild(s, exposedOperand, nested);
+    return !exposed;
   };
   return !fn.body.every(stmt);
 }

@@ -14,9 +14,9 @@ import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.j
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
 import { outsideGraphIslands } from "../node-islands/graph-islands.js";
 import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
-import type { IslandPackage } from "../node-islands/boundary.js";
 import {
   admitRecorded,
+  type IslandRoundState,
   islandDecisionKey,
   readIslandDecision,
   staleByOutcome,
@@ -163,6 +163,9 @@ export function analyzeWithFrontend(
     // the program, so it needs no reload.
     const lowerFrontend = (islands: NodeIslandSet | null): Frontend => {
       const packages = islands === null ? [] : [...islands.packages.keys()].sort();
+      // User modules in the set leave the compiled graph, as in a build's
+      // reload (executable/prepare.ts).
+      const modules = islands === null ? [] : [...islands.modules.keys()].sort();
       const compiled = packages.filter((name) =>
         fe.npmStatic.some((e) => e.package === name && e.status === "static"),
       );
@@ -171,20 +174,22 @@ export function analyzeWithFrontend(
       // later load replaces the first one's program. A replayed decision
       // whose islands are decided again goes back to a smaller set after a
       // reload, and that set gets a load of its own.
-      if (compiled.length === 0 && lowerLoad.fe === null) return fe;
-      const key = packages.join("\n");
+      if (compiled.length === 0 && modules.length === 0 && lowerLoad.fe === null) return fe;
+      const key = JSON.stringify([packages, modules]);
       if (lowerLoad.fe === null || key !== lowerLoad.key) {
         lowerLoad.fe?.dispose();
         lowerLoad.fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
           nodeIslands: true,
           ...(compiled.length === 0 ? {} : { islandPackages: new Set(packages) }),
+          ...(modules.length === 0 ? {} : { islandModules: new Set(modules) }),
         });
         lowerLoad.key = key;
       }
       return lowerLoad.fe;
     };
     const lowerWith = (islands: NodeIslandSet | null): LowerResult => {
-      const islandsActive = islands !== null && islands.packages.size > 0;
+      const islandsActive =
+        islands !== null && (islands.packages.size > 0 || islands.modules.size > 0);
       return lowerFrontend(islands).lower({
         coverage: true,
         targetPlatform: buildPlatform,
@@ -283,11 +288,13 @@ export function analyzeWithFrontend(
     // added for the recorded build's outcome still stand when this program
     // ends the other way? An analysis never writes the file: the build
     // records.
-    const withRecorded = (packages: ReadonlyMap<string, IslandPackage>): NodeIslandSet | null => {
-      if (packages.size === 0) return lowerIslands;
-      const merged = new Map(packages);
-      for (const [name, island] of lowerIslands?.packages ?? []) merged.set(name, island);
-      return nodeIslandSet(merged, lowerIslands?.modules ?? new Map());
+    const withRecorded = (state: IslandRoundState): NodeIslandSet | null => {
+      if (state.packages.size === 0 && state.modules.size === 0) return lowerIslands;
+      const packages = new Map(state.packages);
+      for (const [name, island] of lowerIslands?.packages ?? []) packages.set(name, island);
+      const modules = new Map(state.modules);
+      for (const [file, island] of lowerIslands?.modules ?? []) modules.set(file, island);
+      return nodeIslandSet(packages, modules);
     };
     const decisionFile = opts.nodeIslands?.decision;
     const recorded =
@@ -304,19 +311,24 @@ export function analyzeWithFrontend(
             ),
             policy,
           );
-    let replayed: ReadonlyMap<string, IslandPackage> =
+    // The packages and the user modules the record names, as a build that
+    // replays the file starts from them.
+    let replayed: IslandRoundState =
       recorded === null || scan === undefined
-        ? new Map()
-        : admitRecorded(recorded, scan, new Map()).packages;
+        ? { packages: new Map(), modules: new Map() }
+        : admitRecorded(recorded, scan, new Map());
     let lowered = lowerFrom(withRecorded(replayed));
     if (recorded !== null) {
       const stale = staleByOutcome(
         recorded.outcome,
-        replayed,
+        replayed.packages,
         preflight.length === 0 && lowered.diagnostics.length === 0,
       );
       if (stale.size > 0) {
-        replayed = withoutPackages(replayed, stale, new Map<string, string>());
+        replayed = {
+          packages: withoutPackages(replayed.packages, stale, new Map<string, string>()),
+          modules: replayed.modules,
+        };
         lowered = lowerFrom(withRecorded(replayed));
       }
     }
@@ -339,7 +351,7 @@ export function analyzeWithFrontend(
               lowered.unreached?.runtimeFences ?? [],
             ]),
             policy,
-            ...(replayed.size > 0 ? { recorded: replayed } : {}),
+            ...(replayed.packages.size > 0 ? { recorded: replayed.packages } : {}),
           });
     const nodeIslands =
       islandReport !== null && hasNodeIslandFindings(islandReport) ? islandReport : null;

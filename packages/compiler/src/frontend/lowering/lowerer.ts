@@ -15396,8 +15396,7 @@ export class Lowerer {
    * check this coercion creates names the package declaration that types
    * the slot (decl-origin.ts). */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
-    if (!this.inPackageFileOf(node))
-      return this.coerceIntoSlot(node, expr, expected, payloadSite);
+    if (!this.inPackageFileOf(node)) return this.coerceIntoSlot(node, expr, expected, payloadSite);
     const outer = this.coercionOriginNode;
     const outerUnion = this.coercionOriginUnion;
     this.coercionOriginNode = node;
@@ -16526,10 +16525,13 @@ export class Lowerer {
   }
 
   /** A union flowing into a record slot that is one of its arms, where
-   * the checker types the value `site`: every arm it still sees there is a
-   * value of the slot's type, so it is the slot's own arm or converts into
-   * it (coerceToExpected). One that does neither is reported like the
-   * plain flow of that arm into the slot. */
+   * the checker types the value `site`: every record or class instance arm
+   * it still sees there is a value of the slot's type, so it is the slot's
+   * own arm or converts into it (coerceToExpected). One that does neither
+   * is reported like the plain flow of that arm into the slot. Arms of
+   * another kind are not this conversion's to judge (a promise beside the
+   * record it settles with is adopted where the slot takes one) and keep
+   * the checked extraction. */
   private requireSeenArmsConvert(
     node: ts.Node,
     unionId: string,
@@ -16538,8 +16540,8 @@ export class Lowerer {
   ): void {
     const seen = site.kind === "union" ? (this.unions.get(site.unionId)?.arms ?? []) : [site];
     for (const arm of seen) {
-      if (isUnitType(arm) || typeEquals(arm, expected)) continue;
-      if (this.armTag(unionId, arm) < 0) continue;
+      if (arm.kind !== "record" && arm.kind !== "object") continue;
+      if (typeEquals(arm, expected) || this.armTag(unionId, arm) < 0) continue;
       if (this.widthLiftPlan(arm, expected) === null) this.requireExactShape(node, arm, expected);
     }
   }

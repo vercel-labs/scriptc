@@ -579,7 +579,12 @@ export function widthNarrowHelper(
  * `target`, that hold a value and convert into `target` by the slot's own
  * width conversion; `among` restricts them to the arms of that type (the
  * type the checker gives the site). Empty when there is none: the checked
- * extraction then has nothing to convert. */
+ * extraction then has nothing to convert.
+ *
+ * Arms a discriminant tells apart never convert into each other, whatever
+ * their layouts: each has its own literals, so a value of one is not a
+ * value of the other's type (`{ kind: "a" }` beside `{ kind: "b"; extra }`),
+ * and one found in the other's place was narrowed or asserted there. */
 export function liftableBesideArm(
   lowerer: Lowerer,
   fromId: string,
@@ -588,6 +593,9 @@ export function liftableBesideArm(
 ): number[] {
   const from = lowerer.unions.get(fromId);
   if (!from || target.kind !== "record") return [];
+  const targetTag = lowerer.armTag(fromId, target);
+  const cases = from.discriminant?.cases ?? [];
+  const told = (tag: number): boolean => cases.some((c) => c.tag === tag);
   const seen =
     among === undefined
       ? null
@@ -596,7 +604,8 @@ export function liftableBesideArm(
         : [among];
   const tags: number[] = [];
   from.arms.forEach((arm, tag) => {
-    if (isUnitType(arm) || typeEquals(arm, target)) return;
+    if (isUnitType(arm) || tag === targetTag) return;
+    if (told(tag) && told(targetTag)) return;
     if (seen !== null && !seen.some((s) => typeEquals(s, arm))) return;
     if (lowerer.widthLiftPlan(arm, target) !== null) tags.push(tag);
   });

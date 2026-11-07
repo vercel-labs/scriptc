@@ -336,3 +336,28 @@ test("pausing a child's output selects the child build with the flowing state", 
     }).defines,
   ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"]);
 });
+
+test("the installed island table has every entry the shared units call through it", () => {
+  // The shared units build once, so an island path in them is a call through
+  // ScrNiDynOps (a native weak collection keyed by an island object, for
+  // one: scr_json.c's weak_get, weak_test and weak_set). An entry the island
+  // unit's initializer leaves out is NULL there, and nothing notices before
+  // an island program takes that path.
+  const source = (name: string): string => readFileSync(join(runtimeSources, name), "utf8");
+  const struct = /typedef struct ScrNiDynOps \{([\s\S]*?)\n\} ScrNiDynOps;/.exec(
+    source("scr_node_island.h"),
+  );
+  const declared = [...struct![1]!.matchAll(/\(\*(\w+)\)\(/g)].map((match) => match[1]!);
+  const table = /static const ScrNiDynOps nh_dyn_ops = \{([\s\S]*?)\n\};/.exec(
+    source("scr_node_island_handle.c"),
+  );
+  const installed = [...table![1]!.matchAll(/^\s*\.(\w+) = /gm)].map((match) => match[1]!);
+  // In the struct's order: a new entry goes last in both, because the
+  // runtime every program links reads the table by offset.
+  expect(installed).toEqual(declared);
+  const called = new Set<string>();
+  for (const name of readdirSync(runtimeSources).filter((name) => name.endsWith(".c")))
+    for (const match of source(name).matchAll(/\bscr_ni_dyn_ops->(\w+)\(/g)) called.add(match[1]!);
+  expect([...called].filter((entry) => !installed.includes(entry))).toEqual([]);
+  expect([...called]).toEqual(expect.arrayContaining(["weak_get", "weak_test", "weak_set"]));
+});

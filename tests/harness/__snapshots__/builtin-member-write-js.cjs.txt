@@ -5,7 +5,7 @@ builtin-member-write-js.cjs:6:1 - error SC1092: replacing the built-in 'Array.pr
     | ^~~~~~~~~~~~~~~~~~~~
   7 |   return savedPush.apply(this, arguments);
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
 builtin-member-write-js.cjs:9:1 - error SC1092: replacing the built-in 'Map.prototype.get' is not supported: compiled code calls built-in members directly and would not see the change
 
@@ -14,7 +14,7 @@ builtin-member-write-js.cjs:9:1 - error SC1092: replacing the built-in 'Map.prot
      | ^~~~~~~~~~~~~~~~~
   10 | Number.prototype.toFixed = function () {
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
 builtin-member-write-js.cjs:10:1 - error SC1092: replacing the built-in 'Number.prototype.toFixed' is not supported: compiled code calls built-in members directly and would not see the change
 
@@ -23,7 +23,7 @@ builtin-member-write-js.cjs:10:1 - error SC1092: replacing the built-in 'Number.
      | ^~~~~~~~~~~~~~~~~~~~~~~~
   11 |   return "";
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
 builtin-member-write-js.cjs:13:1 - error SC1092: replacing the built-in 'Number.isInteger' is not supported: compiled code calls built-in members directly and would not see the change
 
@@ -32,7 +32,7 @@ builtin-member-write-js.cjs:13:1 - error SC1092: replacing the built-in 'Number.
      | ^~~~~~~~~~~~~~~~
   14 |   return true;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
 builtin-member-write-js.cjs:16:8 - error SC1092: deleting the built-in 'Array.prototype.pop' is not supported: compiled code calls built-in members directly and would not see the change
 
@@ -41,7 +41,7 @@ builtin-member-write-js.cjs:16:8 - error SC1092: deleting the built-in 'Array.pr
      |        ^~~~~~~~~~~~~~~~~~~
   17 | delete String.prototype.trim;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
 builtin-member-write-js.cjs:17:8 - error SC1092: deleting the built-in 'String.prototype.trim' is not supported: compiled code calls built-in members directly and would not see the change
 
@@ -50,103 +50,94 @@ builtin-member-write-js.cjs:17:8 - error SC1092: deleting the built-in 'String.p
      |        ^~~~~~~~~~~~~~~~~~~~~
   18 | Object.assign(Array.prototype, { shift() {} });
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
 builtin-member-write-js.cjs:18:34 - error SC1092: replacing the built-in 'Array.prototype.shift' is not supported: compiled code calls built-in members directly and would not see the change
 
   17 | delete String.prototype.trim;
   18 | Object.assign(Array.prototype, { shift() {} });
      |                                  ^~~~~~~~~~
-  19 | Array.prototype.toJSON = function () {
+  19 | // Every writer of a prototype object the dynamic tier holds as a value.
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:19:1 - error SC1092: adding 'Array.prototype.toJSON' to a built-in object is not supported: compiled code does not read this member from the object
+builtin-member-write-js.cjs:20:43 - error SC1092: replacing the built-in 'Date.prototype.getTime' is not supported: compiled code calls built-in members directly and would not see the change
 
-  18 | Object.assign(Array.prototype, { shift() {} });
-  19 | Array.prototype.toJSON = function () {
-     | ^~~~~~~~~~~~~~~~~~~~~~
-  20 |   return "array";
-
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write-js.cjs:23:43 - error SC1092: replacing the built-in 'Date.prototype.getTime' is not supported: compiled code calls built-in members directly and would not see the change
-
-  22 | // Every writer of a prototype object the dynamic tier holds as a value.
-  23 | Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } });
+  19 | // Every writer of a prototype object the dynamic tier holds as a value.
+  20 | Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } });
      |                                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  24 | Object.defineProperty(Date.prototype, "getTime", { value: () => 42 });
+  21 | Object.defineProperty(Date.prototype, "getTime", { value: () => 42 });
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:24:1 - error SC1092: replacing the built-in 'Date.prototype.getTime' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write-js.cjs:21:1 - error SC1092: replacing the built-in 'Date.prototype.getTime' is not supported: compiled code calls built-in members directly and would not see the change
 
-  23 | Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } });
-  24 | Object.defineProperty(Date.prototype, "getTime", { value: () => 42 });
+  20 | Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } });
+  21 | Object.defineProperty(Date.prototype, "getTime", { value: () => 42 });
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  25 | Object.assign(Date.prototype, { getTime: () => 42 });
+  22 | Object.assign(Date.prototype, { getTime: () => 42 });
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:25:33 - error SC1092: replacing the built-in 'Date.prototype.getTime' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write-js.cjs:22:33 - error SC1092: replacing the built-in 'Date.prototype.getTime' is not supported: compiled code calls built-in members directly and would not see the change
 
-  24 | Object.defineProperty(Date.prototype, "getTime", { value: () => 42 });
-  25 | Object.assign(Date.prototype, { getTime: () => 42 });
+  21 | Object.defineProperty(Date.prototype, "getTime", { value: () => 42 });
+  22 | Object.assign(Date.prototype, { getTime: () => 42 });
      |                                 ^~~~~~~~~~~~~~~~~
-  26 | Object.defineProperty(Promise, "resolve", { value: 1 });
+  23 | Object.defineProperty(Promise, "resolve", { value: 1 });
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:26:1 - error SC1092: replacing the built-in 'Promise.resolve' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write-js.cjs:23:1 - error SC1092: replacing the built-in 'Promise.resolve' is not supported: compiled code calls built-in members directly and would not see the change
 
-  25 | Object.assign(Date.prototype, { getTime: () => 42 });
-  26 | Object.defineProperty(Promise, "resolve", { value: 1 });
+  22 | Object.assign(Date.prototype, { getTime: () => 42 });
+  23 | Object.defineProperty(Promise, "resolve", { value: 1 });
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  27 | 
+  24 | 
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:30:3 - error SC1092: replacing the built-in 'Object.keys' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write-js.cjs:27:3 - error SC1092: replacing the built-in 'Object.keys' is not supported: compiled code calls built-in members directly and would not see the change
 
-  29 | function install() {
-  30 |   Object.keys = function () {
+  26 | function install() {
+  27 |   Object.keys = function () {
      |   ^~~~~~~~~~~
-  31 |     return [];
+  28 |     return [];
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:35:3 - error SC1092: replacing the built-in 'JSON.stringify' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write-js.cjs:32:3 - error SC1092: replacing the built-in 'JSON.stringify' is not supported: compiled code calls built-in members directly and would not see the change
 
-  34 | try {
-  35 |   JSON.stringify = function () {
+  31 | try {
+  32 |   JSON.stringify = function () {
      |   ^~~~~~~~~~~~~~
-  36 |     return "";
+  33 |     return "";
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:42:3 - error SC1092: replacing the built-in 'Math.round' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write-js.cjs:39:3 - error SC1092: replacing the built-in 'Math.round' is not supported: compiled code calls built-in members directly and would not see the change
 
-  41 | if (process.argv.length > 2) {
-  42 |   Math.round = function () {
+  38 | if (process.argv.length > 2) {
+  39 |   Math.round = function () {
      |   ^~~~~~~~~~
-  43 |     return 0;
+  40 |     return 0;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:50:3 - error SC1092: replacing the built-in 'String.prototype.at' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write-js.cjs:47:3 - error SC1092: replacing the built-in 'String.prototype.at' is not supported: compiled code calls built-in members directly and would not see the change
 
-  49 |   var atHelper = function () {};
-  50 |   String.prototype.at = atHelper;
+  46 |   var atHelper = function () {};
+  47 |   String.prototype.at = atHelper;
      |   ^~~~~~~~~~~~~~~~~~~
-  51 | }
+  48 | }
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write-js.cjs:54:3 - error SC1092: replacing the built-in 'Array.prototype.at' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write-js.cjs:51:3 - error SC1092: replacing the built-in 'Array.prototype.at' is not supported: compiled code calls built-in members directly and would not see the change
 
-  53 | if (Array.prototype.at) {
-  54 |   Array.prototype.at = function () {};
+  50 | if (Array.prototype.at) {
+  51 |   Array.prototype.at = function () {};
      |   ^~~~~~~~~~~~~~~~~~
-  55 | }
+  52 | }
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead

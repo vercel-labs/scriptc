@@ -1,278 +1,233 @@
-builtin-member-write.ts:18:1 - error SC1092: replacing the built-in 'Array.prototype.push' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:7:1 - error SC1092: replacing the built-in 'Array.prototype.push' is not supported: compiled code calls built-in members directly and would not see the change
 
-  17 | // A prototype method, by assignment.
-  18 | Array.prototype.push = function <T>(this: T[], ...items: T[]): number {
-     | ^~~~~~~~~~~~~~~~~~~~
-  19 |   calls++;
+  6 | // A prototype method, by assignment.
+  7 | Array.prototype.push = function <T>(this: T[], ...items: T[]): number {
+    | ^~~~~~~~~~~~~~~~~~~~
+  8 |   calls++;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:23:1 - error SC1092: replacing the built-in 'Array.from' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:12:1 - error SC1092: replacing the built-in 'Array.from' is not supported: compiled code calls built-in members directly and would not see the change
 
-  22 | // Static members and namespace functions.
-  23 | Array.from = ((): unknown[] => []) as typeof Array.from;
+  11 | // Static members and namespace functions.
+  12 | Array.from = ((): unknown[] => []) as typeof Array.from;
      | ^~~~~~~~~~
-  24 | JSON.parse = ((): unknown => 1) as typeof JSON.parse;
+  13 | JSON.parse = ((): unknown => 1) as typeof JSON.parse;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:24:1 - error SC1092: replacing the built-in 'JSON.parse' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:13:1 - error SC1092: replacing the built-in 'JSON.parse' is not supported: compiled code calls built-in members directly and would not see the change
 
-  23 | Array.from = ((): unknown[] => []) as typeof Array.from;
-  24 | JSON.parse = ((): unknown => 1) as typeof JSON.parse;
+  12 | Array.from = ((): unknown[] => []) as typeof Array.from;
+  13 | JSON.parse = ((): unknown => 1) as typeof JSON.parse;
      | ^~~~~~~~~~
-  25 | Math.random = (): number => 0.5;
+  14 | Math.random = (): number => 0.5;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:25:1 - error SC1092: replacing the built-in 'Math.random' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:14:1 - error SC1092: replacing the built-in 'Math.random' is not supported: compiled code calls built-in members directly and would not see the change
 
-  24 | JSON.parse = ((): unknown => 1) as typeof JSON.parse;
-  25 | Math.random = (): number => 0.5;
+  13 | JSON.parse = ((): unknown => 1) as typeof JSON.parse;
+  14 | Math.random = (): number => 0.5;
      | ^~~~~~~~~~~
-  26 | Date.now = (): number => 0;
+  15 | Date.now = (): number => 0;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:26:1 - error SC1092: replacing the built-in 'Date.now' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:15:1 - error SC1092: replacing the built-in 'Date.now' is not supported: compiled code calls built-in members directly and would not see the change
 
-  25 | Math.random = (): number => 0.5;
-  26 | Date.now = (): number => 0;
+  14 | Math.random = (): number => 0.5;
+  15 | Date.now = (): number => 0;
      | ^~~~~~~~
-  27 | // A literal key and a well-known symbol key.
+  16 | // A literal key and a well-known symbol key.
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:28:1 - error SC1092: replacing the built-in 'Array.prototype.pop' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:17:1 - error SC1092: replacing the built-in 'Array.prototype.pop' is not supported: compiled code calls built-in members directly and would not see the change
 
-  27 | // A literal key and a well-known symbol key.
-  28 | Array.prototype["pop"] = function <T>(this: T[]): T | undefined {
+  16 | // A literal key and a well-known symbol key.
+  17 | Array.prototype["pop"] = function <T>(this: T[]): T | undefined {
      | ^~~~~~~~~~~~~~~~~~~~~~
-  29 |   return undefined;
+  18 |   return undefined;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:31:1 - error SC1092: replacing the built-in 'Array.prototype[Symbol.iterator]' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:20:1 - error SC1092: replacing the built-in 'Array.prototype[Symbol.iterator]' is not supported: compiled code calls built-in members directly and would not see the change
 
-  30 | };
-  31 | Array.prototype[Symbol.iterator] = function <T>(this: T[]): ArrayIterator<T> {
+  19 | };
+  20 | Array.prototype[Symbol.iterator] = function <T>(this: T[]): ArrayIterator<T> {
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  32 |   return [].values() as ArrayIterator<T>;
+  21 |   return [].values() as ArrayIterator<T>;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:35:1 - error SC1092: replacing the built-in 'Number.MAX_SAFE_INTEGER' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:24:1 - error SC1092: replacing the built-in 'Number.MAX_SAFE_INTEGER' is not supported: compiled code calls built-in members directly and would not see the change
 
-  34 | // A compound assignment and an update.
-  35 | (Number as { MAX_SAFE_INTEGER: number }).MAX_SAFE_INTEGER += 1;
+  23 | // A compound assignment and an update.
+  24 | (Number as { MAX_SAFE_INTEGER: number }).MAX_SAFE_INTEGER += 1;
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  36 | (Number as { MIN_SAFE_INTEGER: number }).MIN_SAFE_INTEGER--;
+  25 | (Number as { MIN_SAFE_INTEGER: number }).MIN_SAFE_INTEGER--;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:36:1 - error SC1092: replacing the built-in 'Number.MIN_SAFE_INTEGER' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:25:1 - error SC1092: replacing the built-in 'Number.MIN_SAFE_INTEGER' is not supported: compiled code calls built-in members directly and would not see the change
 
-  35 | (Number as { MAX_SAFE_INTEGER: number }).MAX_SAFE_INTEGER += 1;
-  36 | (Number as { MIN_SAFE_INTEGER: number }).MIN_SAFE_INTEGER--;
+  24 | (Number as { MAX_SAFE_INTEGER: number }).MAX_SAFE_INTEGER += 1;
+  25 | (Number as { MIN_SAFE_INTEGER: number }).MIN_SAFE_INTEGER--;
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  37 | // The descriptor and copy calls.
+  26 | // The descriptor and copy calls.
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:38:1 - error SC1092: replacing the built-in 'Array.prototype.shift' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:27:1 - error SC1092: replacing the built-in 'Array.prototype.shift' is not supported: compiled code calls built-in members directly and would not see the change
 
-  37 | // The descriptor and copy calls.
-  38 | Object.defineProperty(Array.prototype, "shift", { value: (): number => 0 });
+  26 | // The descriptor and copy calls.
+  27 | Object.defineProperty(Array.prototype, "shift", { value: (): number => 0 });
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  39 | Object.defineProperties(Math, { max: { value: (): number => 0 } });
+  28 | Object.defineProperties(Math, { max: { value: (): number => 0 } });
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:39:33 - error SC1092: replacing the built-in 'Math.max' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:28:33 - error SC1092: replacing the built-in 'Math.max' is not supported: compiled code calls built-in members directly and would not see the change
 
-  38 | Object.defineProperty(Array.prototype, "shift", { value: (): number => 0 });
-  39 | Object.defineProperties(Math, { max: { value: (): number => 0 } });
+  27 | Object.defineProperty(Array.prototype, "shift", { value: (): number => 0 });
+  28 | Object.defineProperties(Math, { max: { value: (): number => 0 } });
      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  40 | Object.assign(String.prototype, { trim: (): string => "" });
+  29 | Object.assign(String.prototype, { trim: (): string => "" });
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:40:35 - error SC1092: replacing the built-in 'String.prototype.trim' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:29:35 - error SC1092: replacing the built-in 'String.prototype.trim' is not supported: compiled code calls built-in members directly and would not see the change
 
-  39 | Object.defineProperties(Math, { max: { value: (): number => 0 } });
-  40 | Object.assign(String.prototype, { trim: (): string => "" });
+  28 | Object.defineProperties(Math, { max: { value: (): number => 0 } });
+  29 | Object.assign(String.prototype, { trim: (): string => "" });
      |                                   ^~~~~~~~~~~~~~~~~~~~~~
-  41 | const extras: Record<string, unknown> = {};
+  30 | Reflect.set(Set.prototype, "add", (): number => 0);
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:42:30 - error SC1092: copying members onto the built-in 'Map.prototype' from a value the build cannot read is not supported: it may replace built-in members, which compiled code calls directly
+builtin-member-write.ts:30:1 - error SC1092: replacing the built-in 'Set.prototype.add' is not supported: compiled code calls built-in members directly and would not see the change
 
-  41 | const extras: Record<string, unknown> = {};
-  42 | Object.assign(Map.prototype, extras);
-     |                              ^~~~~~
-  43 | Reflect.set(Set.prototype, "add", (): number => 0);
-
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead. Spell the new members in an object literal
-
-builtin-member-write.ts:43:1 - error SC1092: replacing the built-in 'Set.prototype.add' is not supported: compiled code calls built-in members directly and would not see the change
-
-  42 | Object.assign(Map.prototype, extras);
-  43 | Reflect.set(Set.prototype, "add", (): number => 0);
+  29 | Object.assign(String.prototype, { trim: (): string => "" });
+  30 | Reflect.set(Set.prototype, "add", (): number => 0);
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  44 | Reflect.defineProperty(Math, "min", { value: (): number => 0 });
+  31 | Reflect.defineProperty(Math, "min", { value: (): number => 0 });
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:44:1 - error SC1092: replacing the built-in 'Math.min' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:31:1 - error SC1092: replacing the built-in 'Math.min' is not supported: compiled code calls built-in members directly and would not see the change
 
-  43 | Reflect.set(Set.prototype, "add", (): number => 0);
-  44 | Reflect.defineProperty(Math, "min", { value: (): number => 0 });
+  30 | Reflect.set(Set.prototype, "add", (): number => 0);
+  31 | Reflect.defineProperty(Math, "min", { value: (): number => 0 });
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  45 | Reflect.deleteProperty(Math, "abs");
+  32 | Reflect.deleteProperty(Math, "abs");
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:45:1 - error SC1092: deleting the built-in 'Math.abs' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:32:1 - error SC1092: deleting the built-in 'Math.abs' is not supported: compiled code calls built-in members directly and would not see the change
 
-  44 | Reflect.defineProperty(Math, "min", { value: (): number => 0 });
-  45 | Reflect.deleteProperty(Math, "abs");
+  31 | Reflect.defineProperty(Math, "min", { value: (): number => 0 });
+  32 | Reflect.deleteProperty(Math, "abs");
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  46 | // Deleting a member.
+  33 | // Deleting a member.
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:47:8 - error SC1092: deleting the built-in 'Array.prototype.unshift' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:34:8 - error SC1092: deleting the built-in 'Array.prototype.unshift' is not supported: compiled code calls built-in members directly and would not see the change
 
-  46 | // Deleting a member.
-  47 | delete (Array.prototype as { unshift?: unknown }).unshift;
+  33 | // Deleting a member.
+  34 | delete (Array.prototype as { unshift?: unknown }).unshift;
      |        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  48 | delete (Math as { floor?: unknown }).floor;
+  35 | delete (Math as { floor?: unknown }).floor;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:48:8 - error SC1092: deleting the built-in 'Math.floor' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:35:8 - error SC1092: deleting the built-in 'Math.floor' is not supported: compiled code calls built-in members directly and would not see the change
 
-  47 | delete (Array.prototype as { unshift?: unknown }).unshift;
-  48 | delete (Math as { floor?: unknown }).floor;
+  34 | delete (Array.prototype as { unshift?: unknown }).unshift;
+  35 | delete (Math as { floor?: unknown }).floor;
      |        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  49 | // Through a const alias of the prototype or of the constructor.
+  36 | // Through a const alias of the prototype or of the constructor.
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:51:1 - error SC1092: replacing the built-in 'Array.prototype.slice' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:38:1 - error SC1092: replacing the built-in 'Array.prototype.slice' is not supported: compiled code calls built-in members directly and would not see the change
 
-  50 | const proto = Array.prototype;
-  51 | proto.slice = function <T>(this: T[]): T[] {
+  37 | const proto = Array.prototype;
+  38 | proto.slice = function <T>(this: T[]): T[] {
      | ^~~~~~~~~~~
+  39 |   return [];
+
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+
+builtin-member-write.ts:42:1 - error SC1092: replacing the built-in 'Array.prototype.splice' is not supported: compiled code calls built-in members directly and would not see the change
+
+  41 | const A = Array;
+  42 | A.prototype.splice = function <T>(this: T[]): T[] {
+     | ^~~~~~~~~~~~~~~~~~
+  43 |   return [];
+
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+
+builtin-member-write.ts:46:1 - error SC1092: replacing the built-in 'Array.prototype.concat' is not supported: compiled code calls built-in members directly and would not see the change
+
+  45 | // Through the global object, and the global binding itself.
+  46 | globalThis.Array.prototype.concat = function <T>(this: T[]): T[] {
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  47 |   return [];
+
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+
+builtin-member-write.ts:49:1 - error SC1092: replacing the built-in 'globalThis.Math' is not supported: compiled code calls built-in members directly and would not see the change
+
+  48 | };
+  49 | (globalThis as Record<string, unknown>).Math = {};
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  50 | // Through the prototype of a value the source spells out.
+
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+
+builtin-member-write.ts:51:1 - error SC1092: replacing the built-in 'Array.prototype.reverse' is not supported: compiled code calls built-in members directly and would not see the change
+
+  50 | // Through the prototype of a value the source spells out.
+  51 | Object.getPrototypeOf([]).reverse = function (): unknown[] {
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   52 |   return [];
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:55:1 - error SC1092: replacing the built-in 'Array.prototype.splice' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:55:1 - error SC1092: replacing the built-in 'Uint8Array.prototype.fill' is not supported: compiled code calls built-in members directly and would not see the change
 
-  54 | const A = Array;
-  55 | A.prototype.splice = function <T>(this: T[]): T[] {
-     | ^~~~~~~~~~~~~~~~~~
-  56 |   return [];
-
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write.ts:59:1 - error SC1092: replacing the built-in 'Array.prototype.concat' is not supported: compiled code calls built-in members directly and would not see the change
-
-  58 | // Through the global object, and the global binding itself.
-  59 | globalThis.Array.prototype.concat = function <T>(this: T[]): T[] {
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  60 |   return [];
-
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write.ts:62:1 - error SC1092: replacing the built-in 'globalThis.Math' is not supported: compiled code calls built-in members directly and would not see the change
-
-  61 | };
-  62 | (globalThis as Record<string, unknown>).Math = {};
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  63 | // Through the prototype of a value the source spells out.
-
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write.ts:64:1 - error SC1092: replacing the built-in 'Array.prototype.reverse' is not supported: compiled code calls built-in members directly and would not see the change
-
-  63 | // Through the prototype of a value the source spells out.
-  64 | Object.getPrototypeOf([]).reverse = function (): unknown[] {
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  65 |   return [];
-
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write.ts:68:1 - error SC1092: replacing the built-in 'Uint8Array.prototype.fill' is not supported: compiled code calls built-in members directly and would not see the change
-
-  67 | // A member the object inherits from another built-in: the write shadows it.
-  68 | Uint8Array.prototype.fill = function (this: Uint8Array): Uint8Array {
+  54 | // A member the object inherits from another built-in: the write shadows it.
+  55 | Uint8Array.prototype.fill = function (this: Uint8Array): Uint8Array {
      | ^~~~~~~~~~~~~~~~~~~~~~~~~
-  69 |   return this;
+  56 |   return this;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:72:1 - error SC1092: adding 'BigInt.prototype.toJSON' to a built-in object is not supported: compiled code does not read this member from the object
+builtin-member-write.ts:59:15 - error SC1092: replacing the built-in 'Math.sign' is not supported: compiled code calls built-in members directly and would not see the change
 
-  71 | // A member the language reads itself, even where the object has none yet.
-  72 | BigInt.prototype.toJSON = function (this: bigint): string {
-     | ^~~~~~~~~~~~~~~~~~~~~~~
-  73 |   return this.toString();
-
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write.ts:78:1 - error SC1093: adding 'Map.prototype.added' to a built-in prototype is not supported: values of that built-in do not read members from its prototype object
-
-  77 | // constructors and namespace objects take new members.
-  78 | Map.prototype.added = 7;
-     | ^~~~~~~~~~~~~~~~~~~
-  79 | String.prototype.shout = function (this: string): string {
-
-  hint: a member added to Array.prototype is read by untyped arrays, and members can be added to constructors and to namespace objects such as Math; for other built-ins, call a function of your own instead. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write.ts:79:1 - error SC1093: adding 'String.prototype.shout' to a built-in prototype is not supported: values of that built-in do not read members from its prototype object
-
-  78 | Map.prototype.added = 7;
-  79 | String.prototype.shout = function (this: string): string {
-     | ^~~~~~~~~~~~~~~~~~~~~~
-  80 |   return this.toUpperCase();
-
-  hint: a member added to Array.prototype is read by untyped arrays, and members can be added to constructors and to namespace objects such as Math; for other built-ins, call a function of your own instead. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write.ts:82:1 - error SC1093: adding 'Set.prototype.extra' to a built-in prototype is not supported: values of that built-in do not read members from its prototype object
-
-  81 | };
-  82 | Object.defineProperty(Set.prototype, "extra", { value: 1 });
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  83 | // In expression position, and behind a test the build cannot decide.
-
-  hint: a member added to Array.prototype is read by untyped arrays, and members can be added to constructors and to namespace objects such as Math; for other built-ins, call a function of your own instead. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
-
-builtin-member-write.ts:84:15 - error SC1092: replacing the built-in 'Math.sign' is not supported: compiled code calls built-in members directly and would not see the change
-
-  83 | // In expression position, and behind a test the build cannot decide.
-  84 | const kept = (Math.sign = (): number => 1);
+  58 | // In expression position, and behind a test the build cannot decide.
+  59 | const kept = (Math.sign = (): number => 1);
      |               ^~~~~~~~~
-  85 | if (calls > 0) Math.sqrt = (): number => 0;
+  60 | if (calls > 0) Math.sqrt = (): number => 0;
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:85:16 - error SC1092: replacing the built-in 'Math.sqrt' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:60:16 - error SC1092: replacing the built-in 'Math.sqrt' is not supported: compiled code calls built-in members directly and would not see the change
 
-  84 | const kept = (Math.sign = (): number => 1);
-  85 | if (calls > 0) Math.sqrt = (): number => 0;
+  59 | const kept = (Math.sign = (): number => 1);
+  60 | if (calls > 0) Math.sqrt = (): number => 0;
      |                ^~~~~~~~~
-  86 | // A logical assignment that does assign.
+  61 | // A logical assignment that does assign.
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
 
-builtin-member-write.ts:87:1 - error SC1092: replacing the built-in 'Math.cos' is not supported: compiled code calls built-in members directly and would not see the change
+builtin-member-write.ts:62:1 - error SC1092: replacing the built-in 'Math.cos' is not supported: compiled code calls built-in members directly and would not see the change
 
-  86 | // A logical assignment that does assign.
-  87 | Math.cos &&= (): number => 0;
+  61 | // A logical assignment that does assign.
+  62 | Math.cos &&= (): number => 0;
      | ^~~~~~~~
-  88 | 
+  63 | 
 
-  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+  hint: existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead

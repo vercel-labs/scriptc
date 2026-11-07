@@ -445,11 +445,27 @@ static void ni_adopted_keep(ScrDyn *island) {
   ni_adopted[ni_nadopted++] = scr_dyn_retain(island);
 }
 
+/* A twin argument naming the island object an earlier argument in the
+ * same list named (+1), or NULL. The bridge converts a whole argument list
+ * before the runtime sees any of it, so an island object named twice
+ * arrives as two handles with one id and no export on either: each would
+ * ask for its own adoption. The second is the value the first one became. */
+static ScrDyn *ni_repeated_arg(const ScrNodeValue *args, ScrDyn *const *done, size_t i) {
+  if (args[i].tag != SCR_NV_HANDLE || (args[i].flags & SCR_NVF_TWIN) == 0) return NULL;
+  for (size_t j = 0; j < i; j++)
+    if (args[j].tag == SCR_NV_HANDLE && args[j].u.handle == args[i].u.handle && done[j] != NULL)
+      return scr_dyn_retain(done[j]);
+  return NULL;
+}
+
 /* Arguments as runtime values (+1 each). */
 static ScrDyn **ni_args_in(const ScrNodeValue *args, size_t argc, ScrDyn **small, size_t nsmall) {
   ScrDyn **out = argc <= nsmall ? small : malloc(argc * sizeof *out);
   if (out == NULL) ni_export_oom();
-  for (size_t i = 0; i < argc; i++) out[i] = scr_ni_arg_in(&args[i]);
+  for (size_t i = 0; i < argc; i++) {
+    ScrDyn *repeated = ni_repeated_arg(args, out, i);
+    out[i] = repeated != NULL ? repeated : scr_ni_arg_in(&args[i]);
+  }
   return out;
 }
 
@@ -511,7 +527,10 @@ int scr_ni_host_export_construct(uint32_t id, const ScrNodeValue *args, size_t a
   } else {
     ScrDyn *list = scr_dyn_new_arr();
     size_t reading = ni_read_begin();
-    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(list, scr_ni_value_in(&args[i]));
+    for (size_t i = 0; i < argc; i++) {
+      ScrDyn *repeated = ni_repeated_arg(args, list->v.arr.items, i);
+      scr_dyn_arr_push(list, repeated != NULL ? repeated : scr_ni_value_in(&args[i]));
+    }
     ni_read_end(reading);
     ScrStr *what = scr_str_new("constructor", 11);
     result = scr_dyn_construct(ctor, list, what);

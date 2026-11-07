@@ -29,6 +29,16 @@ async function transport(url: string, signal: AbortSignal): Promise<string> {
   return response.text();
 }
 
+// A native callback that compares the signal it is given twice, and keeps
+// it to see the island abort it afterwards.
+let kept: AbortSignal | undefined;
+
+function twice(first: AbortSignal, second: AbortSignal): string {
+  const keyed = new Map<AbortSignal, string>([[first, "first"]]);
+  kept = first;
+  return `${first === second} ${keyed.get(second) ?? "missing"} ${first.aborted}`;
+}
+
 async function main(port: number): Promise<void> {
   const base = `http://127.0.0.1:${port}`;
 
@@ -51,6 +61,13 @@ async function main(port: number): Promise<void> {
   const map = new Map<unknown, string>([[second.signal, "second"]]);
   console.log("identity", map.get(second.signal), lib.keep(second.signal), lib.keep(second.signal));
 
+  // The same island signal in two arguments of one native call: one native
+  // signal, a Map keyed by either of them answers, and it is the one the
+  // island aborts after the call.
+  console.log("two arguments", lib.pair(twice));
+  console.log("two arguments aborted", kept?.aborted, String(kept?.reason));
+  // The same signal again in a later call, and another signal between two
+  // mentions of one.
   let seen: AbortSignal | undefined;
   const sameTwice = (a: AbortSignal, b: AbortSignal): boolean => {
     const same = a === b && (seen === undefined || seen === a);

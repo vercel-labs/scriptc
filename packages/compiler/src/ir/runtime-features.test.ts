@@ -536,6 +536,38 @@ describe("runtime feature snapshots", () => {
     });
   });
 
+  test("gates Node's pipe lifecycle on a pipe, an unpipe or a pipeline", () => {
+    // A stream program that never pipes links the stream unit alone.
+    const writer = module();
+    writer.functions[0]!.body.push(call("writable.write"));
+    expect(moduleRuntimeFeatures(writer)).toMatchObject({ stream: true, streamPipeEvents: false });
+
+    const piping = ["readable.pipe", "readable.unpipe", "stream.pipeline", "sp.pipeline"] as const;
+    for (const fn of piping) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).streamPipeEvents).toBe(true);
+    }
+
+    // A member named pipe called on an untyped value can reach a native
+    // stream's own method.
+    const untyped = module();
+    untyped.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynInvoke",
+        recv: { kind: "unitLit", unit: "undefined", type: DYN, loc },
+        method: "pipe",
+        calleeName: "source.pipe",
+        args: [],
+        type: DYN,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(untyped).streamPipeEvents).toBe(true);
+  });
+
   test("installs a failed spawn's error object only where an 'error' listener can be registered", () => {
     // The fact decides the emitted scr_child_error_event_install call: a
     // program that only spawns keeps the settle path's hook empty and links

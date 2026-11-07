@@ -7360,6 +7360,12 @@ double scr_stream_flowing(ScrStream *s) {
   return f < 0 ? -1 : f;
 }
 
+/* The table scr_stream_pipe_events.c installs for a program that pipes
+ * (scr_stream.h). pipe() and unpipe() are linked by every stream program,
+ * so the listeners and Node's unpipe are reached only through it, and a
+ * program that never pipes links neither. */
+const ScrStreamPipeOps *scr_stream_pipe_ops = NULL;
+
 ScrStream *scr_stream_pipe(ScrStream *src, ScrStream *dst, bool end) {
   ScrStreamState *st = src->st;
   if (st->pipes.n == st->pipes.cap) {
@@ -7371,6 +7377,10 @@ ScrStream *scr_stream_pipe(ScrStream *src, ScrStream *dst, bool end) {
   st->pipes.dst[st->pipes.n] = scr_stream_retain(dst);
   st->pipes.end[st->pipes.n] = end;
   st->pipes.n++;
+  if (scr_stream_pipe_ops != NULL) {
+    scr_stream_pipe_ops->listen(src, dst, end);
+    if (scr_exc_pending()) return scr_stream_retain(dst);
+  }
   scr_stream_emit_stream(dst, "pipe", src); /* Node emits 'pipe' synchronously */
   if (!scr_exc_pending() && st->r.flowing != 1 && st->await_drain == 0) {
     st->r.flowing = 1;
@@ -7380,6 +7390,7 @@ ScrStream *scr_stream_pipe(ScrStream *src, ScrStream *dst, bool end) {
 }
 
 ScrStream *scr_stream_unpipe(ScrStream *src, ScrStream *dst) {
+  if (scr_stream_pipe_ops != NULL) return scr_stream_pipe_ops->unpipe(src, dst);
   ScrStreamState *st = src->st;
   for (size_t i = 0; i < st->pipes.n;) {
     if (dst == NULL || st->pipes.dst[i] == dst) {
@@ -9601,3 +9612,244 @@ ScrPromise *scr_stream_async_dispose(ScrStream *s) {
   if (scr_exc_pending()) scr_promise_reject_pending(p);
   return p;
 }
+
+/* ── pipe()'s listeners (Readable.prototype.pipe, lib/internal/streams/
+ * readable.js) ─────────────────────────────────────────────────────────
+ * Node's pipe() does more than record the destination. It listens on the
+ * destination for 'unpipe', 'error' (ahead of the program's listeners),
+ * 'close' and 'finish', and on a source piped with end: false for 'end'.
+ * 'finish', 'close' and 'error' unpipe the destination, the source's 'end'
+ * does when nothing ends the destination, and the 'unpipe' listener
+ * removes the others (Node's cleanup). Here each listener is a native
+ * closure over the same seven boxes — the source, the destination and the
+ * five listeners — so any of them can unpipe and remove the rest, and the
+ * collector traces every edge. The data path and the end of a destination
+ * piped with end: true stay the pipe table's. */
+enum {
+  SCR_PL_SRC,
+  SCR_PL_DST,
+  SCR_PL_UNPIPE,
+  SCR_PL_ERROR,
+  SCR_PL_CLOSE,
+  SCR_PL_FINISH,
+  SCR_PL_END,
+  SCR_PL_CAPS,
+};
+
+static const char *const scr_pl_names[SCR_PL_CAPS] = {
+    NULL, NULL, "unpipe", "error", "close", "finish", "end",
+};
+
+/* One 'unpipe' reaches every listener set pipe() left on the destination,
+ * and only the first one whose source it names cleans up: Node's
+ * unpipeInfo.hasUnpiped, for a source piped into one destination twice.
+ * The flag belongs to the emit in progress: an 'unpipe' listener can
+ * unpipe another stream, so each emit keeps the outer one's value and puts
+ * it back (scr_stream_unpipe_events). */
+static SCR_TL bool scr_pl_unpiped;
+
+/* Removes one listener of the set (borrowed through any member `c`) from
+ * the stream it listens on and forgets it. */
+static void scr_pl_off(ScrClosure *c, int which) {
+  if (c->caps[which]->slot == 0) return; /* not registered, or already removed */
+  ScrClosure *listener = scr_box_get_ref(c->caps[which]);
+  ScrStream *on = scr_box_get_ref(c->caps[which == SCR_PL_END ? SCR_PL_SRC : SCR_PL_DST]);
+  ScrStr *name = scr_stream_event_name(scr_pl_names[which]);
+  scr_emitter_release(scr_emitter_off((ScrEmitter *)on, name, listener));
+  scr_str_release(name);
+  scr_stream_release(on);
+  scr_closure_release(listener);
+  scr_box_set_ref(c->caps[which], NULL);
+}
+
+/* Node's cleanup(): the listeners go, and a source that waits for this
+ * destination's 'drain' stops waiting, flowing again when something still
+ * consumes it. */
+static void scr_pl_cleanup(ScrClosure *c) {
+  static const int order[] = {SCR_PL_CLOSE, SCR_PL_FINISH, SCR_PL_ERROR, SCR_PL_UNPIPE, SCR_PL_END};
+  for (size_t i = 0; i < sizeof order / sizeof order[0]; i++) {
+    scr_pl_off(c, order[i]);
+    if (scr_exc_pending()) return;
+  }
+  ScrStream *src = scr_box_get_ref(c->caps[SCR_PL_SRC]);
+  ScrStream *dst = scr_box_get_ref(c->caps[SCR_PL_DST]);
+  ScrStreamState *st = src->st, *dstt = dst->st;
+  for (size_t i = 0; i < dstt->drain_srcs.n; i++) {
+    if (dstt->drain_srcs.src[i] != src) continue;
+    memmove(dstt->drain_srcs.src + i, dstt->drain_srcs.src + i + 1,
+            (dstt->drain_srcs.n - i - 1) * sizeof *dstt->drain_srcs.src);
+    dstt->drain_srcs.n--;
+    scr_stream_release(src);
+    if (st->await_drain > 0 && --st->await_drain == 0 && !st->destroyed &&
+        (st->r.data_listeners || st->pipes.n > 0)) {
+      st->r.flowing = 1;
+      scr_stream_resume_kick(src);
+    }
+    break;
+  }
+  scr_stream_release(dst);
+  scr_stream_release(src);
+}
+
+/* src.unpipe(dst), from a listener of the set. */
+static void scr_pl_unpipe(ScrClosure *c) {
+  ScrStream *src = scr_box_get_ref(c->caps[SCR_PL_SRC]);
+  ScrStream *dst = scr_box_get_ref(c->caps[SCR_PL_DST]);
+  scr_stream_release(scr_stream_unpipe(src, dst));
+  scr_stream_release(dst);
+  scr_stream_release(src);
+}
+
+/* The listeners hold themselves for the call: the set's boxes own them,
+ * and cleanup empties the boxes while one of them runs. */
+static void scr_pl_on_finish(ScrClosure *c) {
+  scr_closure_retain(c);
+  scr_pl_off(c, SCR_PL_CLOSE);
+  if (!scr_exc_pending()) scr_pl_unpipe(c);
+  scr_closure_release(c);
+}
+
+static void scr_pl_on_close(ScrClosure *c) {
+  scr_closure_retain(c);
+  scr_pl_off(c, SCR_PL_FINISH);
+  if (!scr_exc_pending()) scr_pl_unpipe(c);
+  scr_closure_release(c);
+}
+
+static void scr_pl_on_end(ScrClosure *c) {
+  scr_closure_retain(c);
+  scr_pl_unpipe(c);
+  scr_closure_release(c);
+}
+
+/* A destination error stops the pipe into it. Node then emits the error
+ * again when its own listener was the only one, which throws it: the
+ * program's unhandled 'error'. A for-await loop or a finished()/pipeline
+ * watcher on the destination takes the error instead, as the error tick
+ * decides for a stream without listeners. */
+static void scr_pl_on_error(ScrClosure *c, ScrError *err) {
+  scr_closure_retain(c);
+  scr_pl_unpipe(c);
+  if (!scr_exc_pending()) scr_pl_off(c, SCR_PL_ERROR);
+  if (!scr_exc_pending()) {
+    ScrStream *dst = scr_box_get_ref(c->caps[SCR_PL_DST]);
+    ScrStreamState *dstt = dst->st;
+    if (!scr_emitter_has((ScrEmitter *)dst, "error") && !dstt->next_err_consumed &&
+        dstt->fin.n == 0) {
+      scr_stream_emit_error(dst, err);
+    }
+    scr_stream_release(dst);
+  }
+  scr_closure_release(c);
+}
+
+static void scr_pl_on_unpipe(ScrClosure *c, ScrStream *readable) {
+  ScrStream *src = scr_box_get_ref(c->caps[SCR_PL_SRC]);
+  bool mine = src == readable;
+  scr_stream_release(src);
+  if (!mine || scr_pl_unpiped) return;
+  scr_pl_unpiped = true;
+  scr_closure_retain(c);
+  scr_pl_cleanup(c);
+  scr_closure_release(c);
+}
+
+/* Registers the set for one pipe() call, in Node's order: the source's
+ * 'end' (or the next tick when it already ended), then the destination's
+ * 'unpipe', 'error' (prepended), 'close' and 'finish'. */
+static void scr_pl_listen(ScrStream *src, ScrStream *dst, bool end) {
+  ScrBox *boxes[SCR_PL_CAPS];
+  for (int i = 0; i < SCR_PL_CAPS; i++) {
+    boxes[i] = i <= SCR_PL_DST
+        ? scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, &scr_stream_trace)
+        : scr_box_new(SCR_BOX_FUNC);
+  }
+  scr_box_set_ref(boxes[SCR_PL_SRC], scr_stream_retain(src));
+  scr_box_set_ref(boxes[SCR_PL_DST], scr_stream_retain(dst));
+  static void *const fns[SCR_PL_CAPS] = {
+      NULL,
+      NULL,
+      (void *)&scr_pl_on_unpipe,
+      (void *)&scr_pl_on_error,
+      (void *)&scr_pl_on_close,
+      (void *)&scr_pl_on_finish,
+      (void *)&scr_pl_on_end,
+  };
+  ScrClosure *listeners[SCR_PL_CAPS] = {NULL};
+  for (int which = SCR_PL_UNPIPE; which < SCR_PL_CAPS; which++) {
+    /* A destination that pipe() ends needs no 'end' listener here. */
+    if (which == SCR_PL_END && end) continue;
+    ScrClosure *listener = scr_closure_new(fns[which], SCR_PL_CAPS);
+    for (int i = 0; i < SCR_PL_CAPS; i++) listener->caps[i] = scr_box_retain(boxes[i]);
+    listeners[which] = listener;
+  }
+  for (int i = 0; i < SCR_PL_CAPS; i++) scr_box_release(boxes[i]);
+  bool ended = src->st->r.end_emitted;
+  static const int order[] = {SCR_PL_END, SCR_PL_UNPIPE, SCR_PL_ERROR, SCR_PL_CLOSE, SCR_PL_FINISH};
+  for (size_t i = 0; i < sizeof order / sizeof order[0]; i++) {
+    int which = order[i];
+    ScrClosure *listener = listeners[which];
+    if (!listener) continue;
+    if (scr_exc_pending() || (which == SCR_PL_END && ended)) continue;
+    scr_box_set_ref(listener->caps[which], scr_closure_retain(listener));
+    ScrStream *on = which == SCR_PL_END ? src : dst;
+    ScrStr *name = scr_stream_event_name(scr_pl_names[which]);
+    bool once = which == SCR_PL_END || which == SCR_PL_CLOSE || which == SCR_PL_FINISH;
+    scr_emitter_release(scr_emitter_on((ScrEmitter *)on, name, scr_closure_retain(listener),
+                                       which == SCR_PL_UNPIPE || which == SCR_PL_ERROR
+                                           ? scr_ee_inv_fixed1
+                                           : scr_ee_inv_fixed0,
+                                       once, which == SCR_PL_ERROR));
+    scr_str_release(name);
+  }
+  /* A source that already ended unpipes on the next tick. */
+  if (listeners[SCR_PL_END] && ended && !scr_exc_pending()) {
+    scr_next_tick(scr_closure_retain(listeners[SCR_PL_END]));
+  }
+  for (int which = SCR_PL_UNPIPE; which < SCR_PL_CAPS; which++) {
+    if (listeners[which]) scr_closure_release(listeners[which]);
+  }
+}
+
+/* Node's unpipe, scr_stream_unpipe's body in a program that pipes (see
+ * scr_stream_pipe_ops): the destination leaves the table first; the
+ * source pauses, with 'pause', once it pipes nowhere; then the
+ * destination hears 'unpipe', whose pipe() listener cleans up. Without a
+ * destination every one leaves, the source pauses once, and each hears
+ * 'unpipe' in the order it was piped. */
+static ScrStream *scr_stream_unpipe_events(ScrStream *src, ScrStream *dst) {
+  ScrStreamState *st = src->st;
+  if (st->pipes.n == 0) return scr_stream_retain(src);
+  size_t first = 0, count = st->pipes.n;
+  if (dst != NULL) {
+    while (first < st->pipes.n && st->pipes.dst[first] != dst) first++;
+    if (first == st->pipes.n) return scr_stream_retain(src);
+    count = 1;
+  }
+  ScrStream *one[1];
+  ScrStream **gone = count == 1 ? one : malloc(count * sizeof *gone);
+  if (!gone) scr_stream_oom();
+  memcpy(gone, st->pipes.dst + first, count * sizeof *gone);
+  memmove(st->pipes.dst + first, st->pipes.dst + first + count,
+          (st->pipes.n - first - count) * sizeof *st->pipes.dst);
+  memmove(st->pipes.end + first, st->pipes.end + first + count,
+          (st->pipes.n - first - count) * sizeof *st->pipes.end);
+  st->pipes.n -= count;
+  if (st->pipes.n == 0) scr_stream_release(scr_stream_pause(src));
+  for (size_t i = 0; i < count; i++) {
+    if (!scr_exc_pending()) {
+      bool outer = scr_pl_unpiped;
+      scr_pl_unpiped = false;
+      scr_stream_emit_stream(gone[i], "unpipe", src);
+      scr_pl_unpiped = outer;
+    }
+    scr_stream_release(gone[i]);
+  }
+  if (gone != one) free(gone);
+  return scr_stream_retain(src);
+}
+
+const ScrStreamPipeOps scr_stream_pipe_events_ops = {
+    &scr_pl_listen,
+    &scr_stream_unpipe_events,
+};

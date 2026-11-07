@@ -417,6 +417,21 @@ bool scr_stream_is_paused(ScrStream *s);
 double scr_stream_flowing(ScrStream *s); /* -1 = null, 0 = false, 1 = true */
 ScrStream *scr_stream_pipe(ScrStream *src, ScrStream *dst, bool end); /* dst +1 */
 ScrStream *scr_stream_unpipe(ScrStream *src, ScrStream *dst /*NULL = all*/); /* recv +1 */
+/* Node's pipe lifecycle: pipe() registers listeners on the destination
+ * ('unpipe', 'error', 'close', 'finish') and on a source piped with end:
+ * false ('end'), so the destination hears 'unpipe' when it finishes,
+ * closes or errors; unpipe pauses the source, with 'pause', once it pipes
+ * nowhere. scr_stream_pipe and scr_stream_unpipe call through
+ * scr_stream_pipe_ops when it is set. scr_stream_pipe_events.c sets it to
+ * scr_stream_pipe_events_ops (the implementation, in scr_stream.c beside
+ * the state it reads) in a program that pipes; any other program keeps
+ * the table NULL and links none of the implementation. */
+typedef struct ScrStreamPipeOps {
+  void (*listen)(ScrStream *src, ScrStream *dst, bool end);
+  ScrStream *(*unpipe)(ScrStream *src, ScrStream *dst);
+} ScrStreamPipeOps;
+extern const ScrStreamPipeOps *scr_stream_pipe_ops;
+extern const ScrStreamPipeOps scr_stream_pipe_events_ops;
 
 /* The writable surface. write borrows its chunk; cb (when non-NULL)
  * MOVES and fires after the chunk's user write completes. */

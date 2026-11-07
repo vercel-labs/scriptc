@@ -262,3 +262,20 @@ test("extended spawn options beside an error read keep both child builds", () =>
       .defines,
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
 });
+
+test("Node's pipe lifecycle is a unit of its own and the stream unit has no build for it", () => {
+  // A program that pipes links the unit that installs the lifecycle into
+  // the stream unit; the stream unit itself builds once more only for the
+  // write-error callbacks it already had.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_stream_pipe_events.c",
+  );
+  expect(unit.predicate).toEqual({ all: ["stream", "streamPipeEvents"] });
+  const stream = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_stream.c");
+  expect(stream.variants.some((v: { defines: string[] }) => v.defines.length > 2)).toBe(false);
+  expect(
+    stream.variants
+      .flatMap((v: { defines: string[] }) => v.defines)
+      .filter((d: string) => /PIPE/.test(d)),
+  ).toEqual([]);
+});

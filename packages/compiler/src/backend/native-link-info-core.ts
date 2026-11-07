@@ -69,6 +69,9 @@ export interface NativeLinkFeatures {
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
+  /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
+   * which installs Node's pipe lifecycle into the stream unit. */
+  streamPipeEvents?: boolean;
   /** The program reaches the process output streams' write slot: links the
    * SCR_STDIO_WRITE_SLOT build of the events unit. */
   stdioWriteSlot?: boolean;

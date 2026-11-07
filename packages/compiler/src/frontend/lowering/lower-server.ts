@@ -8165,6 +8165,27 @@ function lowerHttpClientMethodCall(
                   : "http.clientOnFinish";
         return { kind: "libCall", fn, args: [receiver, cb, once], type: VOID, loc };
       }
+      if (event === "information") {
+        // Every 1xx response but 101 (Node's parserOnIncomingClient). The
+        // event's argument is an ordinary object, so it crosses as a
+        // checked-dynamic value: Node's seven keys, a real `headers` object.
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[1]!,
+          "information listeners",
+          1,
+          (p) => p.kind === "dyn",
+          "use (info) or ()",
+          [DYN],
+        );
+        return {
+          kind: "libCall",
+          fn: "http.clientOnInformation",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
+      }
       if (event === "upgrade") {
         // The client half of the WebSocket handover: a 101 response fires
         // (res, socket, head) INSTEAD of 'response'; no listener destroys
@@ -8207,7 +8228,7 @@ function lowerHttpClientMethodCall(
       lowerer.noLowering(
         `request.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         args[0]!,
-        '"response", "socket", "upgrade", "error", "timeout", "finish", "abort", and "close" are the supported request events (as literals)',
+        '"response", "socket", "upgrade", "continue", "information", "error", "timeout", "finish", "abort", and "close" are the supported request events (as literals)',
       );
     };
     const registration = register();

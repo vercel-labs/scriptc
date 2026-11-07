@@ -56027,6 +56027,8 @@
           "tests/corpus/2986-http-static-client-socket-finish.ts",
           "tests/corpus/2987-http-static-timeout-errors.ts",
           "tests/corpus/2988-http-static-client-abort.ts",
+          "tests/corpus/compat-http-interim-responses.mjs",
+          "tests/corpus/compat-http-interim-responses.ts",
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/net-paused-socket-exit.cjs",
@@ -57376,8 +57378,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.'continue'",
+        "tests": [
+          "tests/corpus/compat-http-interim-responses.ts",
+          "tests/corpus/compat-http-interim-responses.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -57425,8 +57431,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.'information'",
+        "tests": [
+          "tests/corpus/compat-http-interim-responses.ts",
+          "tests/corpus/compat-http-interim-responses.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -57964,8 +57974,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.'checkContinue'",
+        "tests": [
+          "tests/corpus/compat-http-interim-responses.ts",
+          "tests/corpus/compat-http-interim-responses.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

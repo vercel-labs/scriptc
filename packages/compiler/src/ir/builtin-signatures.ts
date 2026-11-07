@@ -3001,6 +3001,10 @@ function buildLibFnSignatures() {
       argTypes: [HTTPCLIENTREQ_T, { kind: "func", params: [], ret: VOID }, BOOL],
       result: VOID,
     },
+    /** request.on("information", (info) => ...): every 1xx response but
+     * 101. The listener is void with no parameter or one checked-dynamic
+     * parameter, Node's event object. */
+    "http.clientOnInformation": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
     /** execFileSync/execSync as ONE entry (args: cmd, argv, shell, input,
      * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, buffers —
      * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"

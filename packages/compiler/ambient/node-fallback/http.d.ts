@@ -232,6 +232,17 @@ declare module "http" {
   }
   /* Node's keepAlive global agent for requests without an agent option. */
   export const globalAgent: Agent;
+  /* The argument of a ClientRequest's 'information' event: the status line
+   * and headers of a 1xx response. An ordinary object, as in Node. */
+  export interface InformationEvent {
+    statusCode: number;
+    statusMessage: string;
+    httpVersion: string;
+    httpVersionMajor: number;
+    httpVersionMinor: number;
+    headers: { [name: string]: string | undefined };
+    rawHeaders: string[];
+  }
   export interface ClientRequest {
     readonly destroyed: boolean;
     readonly aborted: boolean;
@@ -272,6 +283,7 @@ declare module "http" {
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
     on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    on(event: "information", listener: (info: InformationEvent) => void): this;
     on(event: "error", listener: (err: Error) => void): this;
     /* addListener IS on (Node aliases them) — the suite spells both. Each
      * answers the request, as Node's does. */
@@ -281,7 +293,11 @@ declare module "http" {
       event: "upgrade",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
-    addListener(event: "timeout" | "close" | "finish" | "abort", listener: () => void): this;
+    addListener(
+      event: "timeout" | "close" | "finish" | "abort" | "continue",
+      listener: () => void,
+    ): this;
+    addListener(event: "information", listener: (info: InformationEvent) => void): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     once(event: "response", listener: (res: IncomingMessage) => void): this;
     once(event: "socket", listener: (socket: Socket) => void): this;
@@ -290,6 +306,7 @@ declare module "http" {
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
     once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    once(event: "information", listener: (info: InformationEvent) => void): this;
     once(event: "error", listener: (err: Error) => void): this;
   }
   export function createServer(

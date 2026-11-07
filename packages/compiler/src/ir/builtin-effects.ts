@@ -399,6 +399,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.clientWriteDyn",
   "http.clientEndDyn",
   "http.clientAddTrailers",
+  // setHeader and removeHeader throw ERR_HTTP_HEADERS_SENT once the head is
+  // out (flushHeaders(), a first write, or an Expect header at
+  // construction), and setHeader throws Node's name and value checks.
+  "http.clientSetHeader",
+  "http.clientRemoveHeader",
   "http.clientFlushHeaders",
   "http.clientUncork",
   "http.clientWrite",

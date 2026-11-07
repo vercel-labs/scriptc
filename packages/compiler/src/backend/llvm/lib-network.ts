@@ -715,6 +715,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
   }
   if (
     e.fn === "http.clientOnResponse" ||
+    e.fn === "http.clientOnInformation" ||
     e.fn === "http.clientOnError" ||
     e.fn === "http.reqOnError"
   ) {
@@ -728,11 +729,16 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
         ? cbT.params.length === 0
           ? "scr_http_resp_thunk0"
           : "scr_http_resp_thunk_res"
-        : cbT.params.length === 0
-          ? "scr_child_err_thunk0"
-          : "scr_child_err_thunk_error";
+        : e.fn === "http.clientOnInformation"
+          ? cbT.params.length === 0
+            ? "scr_http_resp_thunk0"
+            : "scr_http_information_thunk_dyn"
+          : cbT.params.length === 0
+            ? "scr_child_err_thunk0"
+            : "scr_child_err_thunk_error";
     const entry = {
       "http.clientOnResponse": "scr_http_client_on_response",
+      "http.clientOnInformation": "scr_http_client_on_information",
       "http.clientOnError": "scr_http_client_on_error",
       "http.reqOnError": "scr_http_req_on_error",
     }[e.fn]!;

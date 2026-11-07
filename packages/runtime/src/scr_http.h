@@ -323,6 +323,11 @@ void scr_http_client_on_socket(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, Sc
 void scr_http_client_on_finish(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_abort(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_continue(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
+/* 'information': every 1xx response but 101. `fn` is scr_http_resp_thunk0
+ * for a zero-parameter listener or scr_http_information_thunk_dyn, which
+ * hands the listener Node's event object. */
+void scr_http_client_on_information(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpRespFn fn, bool once);
+void scr_http_information_thunk_dyn(ScrClosure *cb, ScrHttpReq *res /* +1 */);
 void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);

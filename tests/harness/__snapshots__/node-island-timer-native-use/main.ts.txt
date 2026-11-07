@@ -1,0 +1,8 @@
+node-island-timer-native-use/main.ts:8:11 - error SC8010: an island value of type 'Timeout' used as a native value (a timer created by island code stays the island's object: keep it in a const, clear it, call its methods or pass it back to the island) cannot cross into or out of a Node island yet
+
+  7 | let pending: ReturnType<typeof setTimeout> | undefined;
+  8 | pending = start(10, "stored in a typed slot");
+    |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 | clearTimeout(pending);
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on

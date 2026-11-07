@@ -502,8 +502,9 @@ bool scr_timer_has_ref(double handle);
 void scr_timer_refresh(double handle);
 /* setImmediate/clearImmediate — Node's check phase: FIFO once per loop
  * turn after due timers, immediates queued mid-phase wait for the next
- * turn. The handle is an f64 id in its own space (clearTimeout of an
- * Immediate is a no-op, like Node); the Immediate ref trio mirrors the
+ * turn. The handle is an f64 id from the timer sequence, so its number
+ * names no timeout (clearTimeout of an Immediate is a no-op, like Node);
+ * the Immediate ref trio mirrors the
  * Timeout one (unref'd pending immediates don't keep the loop alive and
  * never fire once nothing reffed remains). scr_timers_teardown sweeps
  * the immediate queue too. */

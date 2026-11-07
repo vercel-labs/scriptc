@@ -407,6 +407,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     tracked: "FOLLOWUPS 2026-10-30",
     lowererFields: [],
   },
+  {
+    name: "imports-node-api",
+    file: `${SRC}/frontend/node-api-import.ts`,
+    symbol: "programImportsNodeApi",
+    source: "syntax",
+    scope: "program",
+    setBy: "an import of `@scriptc/node` in any source file of the program",
+    gates:
+      "clearTimeout, clearInterval and clearImmediate of a checked-dynamic handle also ask the Node island unit to clear an island's timer, and take such a handle in TypeScript",
+    narrower:
+      "the handle, at run time: a requireModule result and everything reached from it is untyped, so no site knows whether its value came from an island",
+    tracked: "pi-decisions DECISIONS island-timers-iteration 2026-11-07",
+    lowererFields: ["importsNodeApi"],
+  },
 ];
 
 /** Why a whole-program scan decides no registered fact.
@@ -644,6 +658,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "key",
     "a digest of the files a reused unit does not own",
   ),
+  decides("frontend/node-api-import.ts#programImportsNodeApi", 1, "imports-node-api"),
   scan(
     "frontend/pipeline.ts#addDynamicImportGraph",
     1,

@@ -286,6 +286,10 @@ bool scr_node_island_instanceof(ScrDyn *value, ScrDyn *ctor);
 bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name);
 ScrDyn *scr_node_island_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *args);
 ScrDyn *scr_node_island_promisify(ScrDyn *fn);
+/* clearTimeout / clearInterval / clearImmediate (which 0, 1, 2) of a
+ * checked-dynamic value that is not a number: an island timer is cleared in
+ * Node, any other value is ignored. */
+void scr_node_island_clear_timer(ScrDyn *value, double which);
 void scr_node_island_set(ScrDyn *obj, ScrStr *key, ScrDyn *value);
 void scr_node_island_set_key(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
 ScrDyn *scr_node_island_subclass(ScrDyn *base, ScrStr *name, ScrDyn *ctor, ScrDyn *fields, ScrDyn *methods, ScrDyn *getters, ScrDyn *setters);

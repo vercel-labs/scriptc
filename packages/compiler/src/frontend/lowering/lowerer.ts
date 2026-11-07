@@ -4076,6 +4076,10 @@ export class Lowerer {
   /** Whether a compiled source creates primitive wrapper objects
    * (programCreatesWrappers), computed on first use. */
   createsWrappers: boolean | undefined = undefined;
+  /** Whether the program imports @scriptc/node (programImportsNodeApi), so
+   * a checked-dynamic value may be a Node island value; computed on first
+   * use. */
+  importsNodeApi: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5223,6 +5227,7 @@ export class Lowerer {
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
+    "importsNodeApi",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",

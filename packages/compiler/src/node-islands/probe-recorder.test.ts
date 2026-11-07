@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
+import type { IrModule } from "../ir/ir.js";
 import { PROBE_RECORDER } from "./probe-recorder.js";
+import { finalizeDeferredIslands, type ProbeOutput } from "./snapshot.js";
 
 const made: string[] = [];
 afterEach(() => {
@@ -28,16 +30,28 @@ interface ProbeResult {
 
 /** Runs the recorder in a Node process of its own, as the probe host runs
  * it in libnode, over `modules`. */
-function probe(root: string, modules: string[]): ProbeResult[] {
+function probeOutput(
+  root: string,
+  modules: string[],
+  env: Record<string, string> = {},
+): ProbeOutput {
   writeFileSync(join(root, "recorder.cjs"), PROBE_RECORDER);
   writeFileSync(
     join(root, "run.cjs"),
     `const out = require("./recorder.cjs").probe({ modules: ${JSON.stringify(modules)} });\n` +
-      `process.stdout.write(JSON.stringify(out.results));\n`,
+      `process.stdout.write(JSON.stringify(out));\n`,
   );
-  const run = spawnSync(process.execPath, [join(root, "run.cjs")], { cwd: root, encoding: "utf8" });
+  const run = spawnSync(process.execPath, [join(root, "run.cjs")], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
   expect(run.status, run.stderr).toBe(0);
-  return JSON.parse(run.stdout) as ProbeResult[];
+  return JSON.parse(run.stdout) as ProbeOutput;
+}
+
+function probe(root: string, modules: string[]): ProbeResult[] {
+  return probeOutput(root, modules).results;
 }
 
 // A source file that, when it evaluates, writes `evaluated-<name>` beside itself.
@@ -71,6 +85,50 @@ test("the probe never evaluates the program's own source", () => {
   ]);
   expect(existsSync(join(root, "src/evaluated-program"))).toBe(false);
   expect(existsSync(join(root, "src/evaluated-shared"))).toBe(false);
+});
+
+test("a shared dependency's environment reads reach every load that gets its exports", () => {
+  const secret = "postgres://admin:hunter2@db.internal/prod";
+  const root = project({
+    "package.json": '{ "name": "app" }',
+    "node_modules/common/package.json": '{ "name": "common" }',
+    "node_modules/common/index.js": "module.exports = { token: process.env.PROBE_DB_URL };\n",
+    // `middle` re-exports what its dependency read, and both island modules
+    // load it: the first evaluates it, the second gets the module cache's.
+    "node_modules/middle/package.json": '{ "name": "middle" }',
+    "node_modules/middle/index.js": 'module.exports = { token: require("common").token };\n',
+    "node_modules/first/package.json": '{ "name": "first" }',
+    "node_modules/first/index.js": 'require("middle");\nmodule.exports = { ready: true };\n',
+    "node_modules/second/package.json": '{ "name": "second" }',
+    "node_modules/second/index.js": 'module.exports = { token: require("middle").token };\n',
+  });
+  const first = join(root, "node_modules/first/index.js");
+  const second = join(root, "node_modules/second/index.js");
+  const out = probeOutput(root, [first, second], { PROBE_DB_URL: secret });
+  expect(out.results[0]!.env).toEqual([["PROBE_DB_URL", secret]]);
+  // The second load runs none of the dependency's code, and what it exports
+  // is that load's: the read is part of its record too.
+  expect(out.results[1]!.env).toEqual([["PROBE_DB_URL", secret]]);
+
+  const call = (path: string) => ({
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [
+      { kind: "strLit", value: path },
+      { kind: "strLit", value: "" },
+    ],
+  });
+  const calls = [call(first), call(second)];
+  const mod = {
+    entry: "%main",
+    functions: [{ name: "%main", body: calls }],
+    globals: [],
+  } as unknown as IrModule;
+  const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => out);
+  expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+  expect(decisions[1]!.reason).toContain("PROBE_DB_URL");
+  expect(JSON.stringify(mod)).not.toContain("hunter2");
+  expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
 });
 
 test("a package that catches the refusal does not defer, nor does one that loads it later", () => {

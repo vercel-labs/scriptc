@@ -112,8 +112,10 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  *
  * The walk follows the entry: each initializer's statements in order, into
  * another module's initializer where it is called (`%init.<n>`, once, as
- * the run-once guard has it). An initializer that awaits is left there and
- * taken up again after the code that called it, in the order of the
+ * the run-once guard has it), and through a sequence (`seqExpr`): an inline
+ * require() lowers to the required module's %init ahead of its export read,
+ * both at the require's position. An initializer that awaits is left there
+ * and taken up again after the code that called it, in the order of the
  * awaits, as module evaluation continues with later siblings while one is
  * suspended. Loads the walk does not reach (inside functions, dynamic
  * imports, conditions other than the ones below) keep IR order after it. */
@@ -137,6 +139,12 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
       enter(e.callee);
       return false;
     }
+    if (e.kind === "seqExpr") {
+      // An inline require() lowers to the required module's %init ahead of
+      // the export read, both where the require is written.
+      for (const s of e.stmts) if (statement(s)) return true;
+      return evaluate(e.result);
+    }
     if (e.kind === "awaitExpr") {
       evaluate(e.value);
       return true;
@@ -147,20 +155,24 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
     }
     return false;
   }
+  /** Evaluates what the walk follows of `s`; true when it awaits. */
+  function statement(s: IrStmt): boolean {
+    if (s.kind === "exprStmt") return evaluate(s.expr);
+    if (s.kind === "assign") return evaluate(s.value);
+    if (s.kind === "varDecl") return s.init !== null && evaluate(s.init);
+    if (s.kind === "if") {
+      // The run-once guard returns on a revisit; a fork or worker root is
+      // one branch of a selection.
+      run(flatStatements(s.then), 0);
+      if (s.else_ !== null) run(flatStatements(s.else_), 0);
+    }
+    return false;
+  }
   function run(stmts: IrStmt[], from: number): void {
     for (let i = from; i < stmts.length; i++) {
       const s = stmts[i]!;
-      let awaits = false;
-      if (s.kind === "exprStmt") awaits = evaluate(s.expr);
-      else if (s.kind === "assign") awaits = evaluate(s.value);
-      else if (s.kind === "varDecl") awaits = s.init !== null && evaluate(s.init);
-      else if (s.kind === "if") {
-        // The run-once guard returns on a revisit; a fork or worker root is
-        // one branch of a selection.
-        run(flatStatements(s.then), 0);
-        if (s.else_ !== null) run(flatStatements(s.else_), 0);
-      } else if (s.kind === "return") return;
-      if (awaits) {
+      if (s.kind === "return") return;
+      if (statement(s)) {
         suspended.push({ stmts, at: i + 1 });
         return;
       }

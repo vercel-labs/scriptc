@@ -184,6 +184,27 @@ describe("the order deferred loads are probed in", () => {
     expect(paths(mod, [b, a, c])).toEqual(["a", "b", "c"]);
   });
 
+  test("an inline require() is walked through the sequence it lowers to", () => {
+    // A top-level `require("./dep")` lowers to seqExpr([%init.1 call], read):
+    // the loads inside the required module come where the require is written,
+    // ahead of the ones the rest of the initializer reaches.
+    const required = defer("required");
+    const later = defer("later");
+    const require = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(required)] },
+        { name: "%main", body: [{ kind: "exprStmt", expr: require }, load(later)] },
+      ],
+    };
+    expect(paths(mod, [later, required])).toEqual(["required", "later"]);
+  });
+
   test("an initializer that awaits continues after the code that called it", () => {
     // dep awaits between its two loads; the importer starts its next
     // dependency before waiting for either.

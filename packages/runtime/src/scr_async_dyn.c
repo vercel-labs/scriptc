@@ -605,6 +605,17 @@ static int scr_uncaught_dispatch(bool from_promise) {
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_uncaught_sync_hook();
+  if (!ok && scr_context_is_main()) {
+    /* A listener itself threw: Node leaves through its fatal exit (status
+     * 7), which emits no 'exit' event and runs nothing else. The report
+     * and the exit are the ones a throwing 'exit' listener takes
+     * (scr_run_exit_listeners). A worker reports through its own path. */
+    scr_caught_release(caught);
+    scr_exc_print_uncaught();
+    scr_stdout_settle();
+    fflush(stdout);
+    _Exit(7);
+  }
   if (ok && !handled) scr_rethrow(caught);
   scr_caught_release(caught);
   return !ok ? -1 : handled ? 1 : 0;

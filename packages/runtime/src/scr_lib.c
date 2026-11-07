@@ -4029,7 +4029,7 @@ static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii)
       ScrStr *message = scr_jb_finish(&b);
       scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_INVALID_ARG_TYPE");
       scr_str_release(message);
-    } else scr_fs_throw(error, "read", path);
+    } else scr_fs_throw(error, "read", NULL); /* the read fails on the descriptor: Node names no path */
     return NULL;
   }
   if (ascii) *ascii = out.ascii;
@@ -4043,7 +4043,7 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path) {
   ScrFileRead out;
   int error = scr_file_read_all(f, -1, false, &out);
   fclose(f);
-  if (error) { scr_fs_throw(error, "read", path); return NULL; }
+  if (error) { scr_fs_throw(error, "read", NULL); return NULL; }
   /* Node answers a Buffer: the brand is observable (Buffer.isBuffer,
    * .constructor, instanceof, inspect), so the read's bytes carry it. */
   ScrBytes *bytes = scr_bytes_take_data(out.bytes, out.len);

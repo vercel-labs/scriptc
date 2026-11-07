@@ -49,7 +49,7 @@ import {
   operatorUnsupported,
   runtimeOptionalStorageOperand,
   symbolFieldInfo,
-  typeofAnswer,
+  typeofAnswerOf,
 } from "../lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.js";
 import { lowerElementCompoundParts } from "./element-access.js";
@@ -90,6 +90,7 @@ import {
   lowerRuntimeConstructorIs,
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
+import { lowerInstanceConstructorIs } from "../class-instance-constructor.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
@@ -1769,6 +1770,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
         return lowerRuntimeConstructorIs(lowerer, ctor.receiver, target.info, negated, loc);
       }
+      // `x.constructor === K` for an instance of a program class: whether
+      // the instance's own class is K (class-instance-constructor.ts).
+      const programClass = lowerInstanceConstructorIs(
+        lowerer,
+        side,
+        other,
+        op === ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        loc,
+      );
+      if (programClass !== null) return programClass;
     }
   }
   // `C === EventEmitter` between two builtin class references: the
@@ -3530,7 +3541,7 @@ function lowerUnionTypeofTest(
     if (value.type.kind !== "union") continue; // defensive: an already-narrowed use
     const unionId = value.type.unionId;
     const def = lowerer.unions.get(unionId);
-    const answers = def?.arms.map(typeofAnswer);
+    const answers = def?.arms.map(typeofAnswerOf(lowerer));
     if (!def || !answers || !answers.every((s): s is string => s !== null)) continue;
     const tags = answers.flatMap((s, i) => (s === b.text ? [i] : []));
     if (tags.length === 0 || tags.length === def.arms.length) {

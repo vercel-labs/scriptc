@@ -3160,6 +3160,26 @@ function buildLibFnSignatures() {
     /** Runtime options normalized into the native spawn core; unsupported
      * process features retain explicit refusals. (command, args, options). */
     "cp.spawnDynamic": { argTypes: [STRING, arrayOf(STRING), DYN], result: CHILD_T },
+    /** Node's argument checks for the child launch that follows
+     * (normalizeSpawnArguments, normalizeExecArgs): a NUL in the file or
+     * command, an argument, cwd or an environment key or value, or an
+     * empty file, throws ERR_INVALID_ARG_VALUE before a process starts.
+     * (form, cmd, args, envPairs, cwd): form 0 reads cmd as the file and
+     * args as its arguments; 1 and 2 are the /bin/sh -c launches, whose
+     * args[1] is exec's command (1) or execFile's file (2); 3 is fork,
+     * which has no file. An absent cwd is "", an inherited environment an
+     * empty array. */
+    "cp.checkArgs": {
+      argTypes: [F64, STRING, arrayOf(STRING), arrayOf(STRING), STRING],
+      result: VOID,
+    },
+    /** cp.checkArgs for a launch that may join its arguments into a shell
+     * line (cp.shellLine): the same checks, with a hole of the list read
+     * as Node reads it (scr_child_shell.c). */
+    "cp.checkShellArgs": {
+      argTypes: [F64, STRING, arrayOf(STRING), arrayOf(STRING), STRING],
+      result: VOID,
+    },
     // The callback's func type is program-dependent (zero params, or the
     // `number | null` union / the %Error class) — the libCall case checks
     // the shape; the slot here only pins arity and the child receiver.
@@ -4119,7 +4139,11 @@ function buildLibFnSignatures() {
      * super(message) call of an `extends Error` constructor — borrowed
      * receiver (already allocated by the derived class's new) + borrowed
      * message, void; the receiver's type names the builtin class whose name
-     * field to stamp. error.toString: borrowed `%Error`-typed receiver, +1
+     * field to stamp. Both may omit the message: `new Error()` and `super()`
+     * create no own message property. Source constructions take these typed
+     * entries when the message is a native string or absent and no options
+     * argument is passed; every other form takes error.newOptions and
+     * error.ctorOptions. error.toString: borrowed `%Error`-typed receiver, +1
      * string in Node's "name: message" shape. Formatting can invoke a user
      * message accessor, which can throw. */
     "error.new": { argTypes: [STRING], result: VOID },
@@ -5371,6 +5395,13 @@ function buildLibFnSignatures() {
      * (inspect, Object.keys/values/entries) then answer through its live
      * checked view. The receiver is any such record type. Never throws. */
     "record.sourceHas": { argTypes: [null], result: BOOL },
+    /** `record.sourceDelete(record, key, strict)`: `delete record.key` of a
+     * key the record's declared layout does not hold — the key lives in the
+     * record's kept source, and the delete removes it there. Answers
+     * `delete`'s boolean (true when the property is gone), and throws
+     * Node's TypeError for a frozen record in strict code (`strict` is the
+     * delete's own mode). `key` is a constant literal. */
+    "record.sourceDelete": { argTypes: [null, STRING, BOOL], result: BOOL },
     /** `record.sourceSpread(built, value)`: the record a literal starting
      * with `...value` just built keeps the order of value's kept source
      * (key-order-witness.ts ordered spreads). Both are record types. Never

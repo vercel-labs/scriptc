@@ -638,7 +638,16 @@ export function finishOptionalChain(
       `'?.' where the result '${lowerer.fmt(type)}' has no undefined arm (narrow the receiver with 'if (x !== undefined)' instead)`,
     );
   }
-  const wrapped = lowerer.coerceToExpected(body, type);
+  let wrapped = lowerer.coerceToExpected(body, type);
+  // The checker narrowed the CHAIN itself (`typeof j?.n === "string" ? … :
+  // j?.n` reads `number | undefined` in the false arm) while the guarded
+  // read still answers the member's stored union. The chain node's type
+  // names the arms still possible, so the stranded ones trap, as at every
+  // slot a narrowed union flows into (coerceIntoSlot's sub-union bridge).
+  if (wrapped.type.kind === "union" && type.kind === "union" && !typeEquals(wrapped.type, type)) {
+    const helper = lowerer.narrowedRetagHelper(expr, wrapped.type.unionId, type.unionId, loc);
+    if (helper) wrapped = { kind: "call", callee: helper, args: [wrapped], type, loc };
+  }
   if (!typeEquals(wrapped.type, type)) lowerer.badType(expr, lowerer.typeOf(expr));
   return { kind: "optChain", id, receiver, body: wrapped, type, loc };
 }

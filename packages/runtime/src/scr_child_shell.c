@@ -74,3 +74,28 @@ ScrStr *scr_child_shell_line(ScrStr *file, ScrArr *args) {
   free(line);
   return joined;
 }
+
+/* cp.checkShellArgs: cp.checkArgs for a launch that may join its arguments
+ * into a shell line. Node's validateArgumentsNullCheck reads a hole as
+ * undefined, which is not a string with a NUL, and the join above reads it
+ * as the empty string; scr_child_check_args reads every element as a
+ * string. So a sparse list is checked through a dense copy whose holes are
+ * empty strings, which keeps each argument's index for the error's name.
+ * Borrows all its arguments. */
+void scr_child_shell_check_args(double form, ScrStr *cmd, ScrArr *args, ScrArr *env_pairs,
+                                ScrStr *cwd) {
+  size_t n = (size_t)scr_arr_len(args);
+  size_t dense = 0;
+  while (dense < n && scr_arr_peek_ref(args, (double)dense) != NULL) dense++;
+  if (dense == n) {
+    scr_child_check_args(form, cmd, args, env_pairs, cwd);
+    return;
+  }
+  ScrArr *filled = scr_arr_new(SCR_ELEM_STR, n);
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *arg = (ScrStr *)scr_arr_peek_ref(args, (double)i);
+    scr_arr_push_ref(filled, arg != NULL ? scr_str_retain(arg) : scr_str_empty_value());
+  }
+  scr_child_check_args(form, cmd, filled, env_pairs, cwd);
+  scr_arr_release(filled);
+}

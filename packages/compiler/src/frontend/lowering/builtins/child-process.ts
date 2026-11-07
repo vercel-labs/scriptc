@@ -19,6 +19,7 @@ import {
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
   arrayOf,
 } from "../../../ir/ir.js";
 import { staticForkModulePath } from "../../fork-target.js";
@@ -41,6 +42,121 @@ export function lowerChildArgsArg(
     return { kind: "arrayLit", elems, type: arrayOf(STRING), loc: locOf(node) };
   }
   return lowerer.lowerExprExpecting(node, arrayOf(STRING));
+}
+
+/** Where Node's `file` or `command` sits in a launch's arguments: 0, the
+ * command argument is the file and the list its arguments; 1, the
+ * /bin/sh -c launch of exec and execSync, whose list holds the command;
+ * 2, the same launch for execFile with shell: true, whose list holds
+ * Node's file; 3, fork, whose first argument is the module to start, not
+ * a file, and whose list follows the module path in what Node spawns. */
+export type ChildLaunchForm = 0 | 1 | 2 | 3;
+
+/** Node checks what a child launch hands to the operating system before
+ * it starts a process (normalizeSpawnArguments and normalizeExecArgs): a
+ * NUL in the file or command, an argument, `cwd` or an environment key or
+ * value, or an empty file, throws ERR_INVALID_ARG_VALUE. The launch's
+ * arguments are evaluated first, in their order, into hidden locals; the
+ * may-throw cp.checkArgs call reads them; the launch follows. `launch`
+ * starts with the command and the argument list; `options` picks the
+ * `cwd` and environment-pairs arguments it carries, if any. A launch
+ * whose checked values are all literals that pass gets no check.
+ *
+ * `launched` maps the arguments Node checks to the ones the entry point
+ * takes, for a launch that builds its command from them: a shell launch
+ * with separate arguments runs the joined line (shellCommandLine). Node
+ * builds that line, and warns, after it has checked the file, the
+ * arguments and `cwd`, and before it checks the environment, so the mapped
+ * arguments are evaluated between those two checks. Such a launch reads
+ * its list through cp.checkShellArgs, which takes a hole as Node does (the
+ * join reads it as the empty string). */
+export function withChildArgsCheck(
+  lowerer: Lowerer,
+  launch: Extract<IrExpr, { kind: "libCall" | "call" }>,
+  form: ChildLaunchForm,
+  options: (args: readonly IrExpr[]) => { cwd?: IrExpr | undefined; envPairs?: IrExpr | undefined },
+  loc: SrcLoc,
+  launched?: (args: readonly IrExpr[]) => IrExpr[],
+): IrExpr {
+  const passes = (e: IrExpr | undefined, mayBeEmpty: boolean): boolean =>
+    e === undefined ||
+    (e.kind === "strLit" && !e.value.includes("\0") && (mayBeEmpty || e.value !== ""));
+  const allPass = (e: IrExpr | undefined): boolean =>
+    e === undefined || (e.kind === "arrayLit" && e.elems.every((elem) => passes(elem, true)));
+  const cmd = launch.args[0]!;
+  const list = launch.args[1]!;
+  const given = options(launch.args);
+  const fileAndArgsPass =
+    form === 0
+      ? passes(cmd, false) && allPass(list)
+      : form === 3
+        ? allPass(list)
+        : list.kind === "arrayLit" && list.elems[1] !== undefined && passes(list.elems[1], false);
+  const beforeLinePass = fileAndArgsPass && passes(given.cwd, true);
+  const envPasses = allPass(given.envPairs);
+  if (beforeLinePass && envPasses) {
+    return launched === undefined ? launch : { ...launch, args: launched(launch.args) };
+  }
+  const stmts: IrStmt[] = [];
+  // Literals and function literals have no evaluation to order, and a
+  // function-typed local read is the callback itself.
+  const held = (arg: IrExpr): IrExpr => {
+    if (
+      arg.kind === "numLit" ||
+      arg.kind === "strLit" ||
+      arg.kind === "boolLit" ||
+      arg.kind === "closure" ||
+      (arg.kind === "varRef" && arg.type.kind === "func")
+    )
+      return arg;
+    const local = lowerer.declareHiddenLocal("%childArg", arg.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: arg, loc });
+    return varRef(local.id, arg.type, loc);
+  };
+  const args = launch.args.map(held);
+  const checked = options(args);
+  const noStrings = (): IrExpr => ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc });
+  const check = (
+    checkedForm: ChildLaunchForm,
+    file: IrExpr,
+    values: IrExpr,
+    envPairs: IrExpr | undefined,
+    cwd: IrExpr | undefined,
+    fn: "cp.checkArgs" | "cp.checkShellArgs" = "cp.checkArgs",
+  ): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn,
+      args: [
+        numLit(checkedForm, loc),
+        file,
+        values,
+        envPairs ?? noStrings(),
+        cwd ?? strLit("", loc),
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  const file = form === 3 ? strLit("", loc) : args[0]!;
+  if (launched === undefined) {
+    stmts.push(check(form, file, args[1]!, checked.envPairs, checked.cwd));
+    return { kind: "seqExpr", stmts, result: { ...launch, args }, type: launch.type, loc };
+  }
+  if (envPasses) {
+    stmts.push(check(form, file, args[1]!, undefined, checked.cwd, "cp.checkShellArgs"));
+    const result = { ...launch, args: launched(args) };
+    return { kind: "seqExpr", stmts, result, type: launch.type, loc };
+  }
+  // The file, the arguments and `cwd`; the line; then the environment.
+  // Form 3 with no list checks neither a file nor an argument.
+  if (!beforeLinePass)
+    stmts.push(check(form, file, args[1]!, undefined, checked.cwd, "cp.checkShellArgs"));
+  const taken = launched(args).map((arg, i) => (arg === args[i] ? arg : held(arg)));
+  stmts.push(check(3, strLit("", loc), noStrings(), checked.envPairs, undefined));
+  return { kind: "seqExpr", stmts, result: { ...launch, args: taken }, type: launch.type, loc };
 }
 
 /** A stdio value whose TYPE is a union of supported literals — the
@@ -124,6 +240,30 @@ function staticallyEmptyArgs(node: ts.Expression | undefined): boolean {
  * take that line with an empty args list. */
 function shellCommandLine(file: IrExpr, args: IrExpr, loc: SrcLoc): IrExpr {
   return { kind: "libCall", fn: "cp.shellLine", args: [file, args], type: STRING, loc };
+}
+
+/** withChildArgsCheck's `launched` mapping for a launch that runs separate
+ * arguments as one shell line: the line and an empty list take the place
+ * of the command and the arguments. `shell` is the position of the
+ * launch's run-time shell flag among its arguments, where the line is
+ * built only when the flag is on and the command and the list pass as they
+ * are when it is off; null when the shell is always on. */
+function shellLaunch(
+  shell: number | null,
+  listType: IrType,
+  loc: SrcLoc,
+): (args: readonly IrExpr[]) => IrExpr[] {
+  return (a) => {
+    const line = shellCommandLine(a[0]!, a[1]!, loc);
+    const noArgs: IrExpr = { kind: "arrayLit", elems: [], type: listType, loc };
+    if (shell === null) return [line, noArgs, ...a.slice(2)];
+    const on = a[shell]!;
+    return [
+      { kind: "ternary", cond: on, then: line, else_: a[0]!, type: STRING, loc },
+      { kind: "ternary", cond: on, then: noArgs, else_: a[1]!, type: listType, loc },
+      ...a.slice(2),
+    ];
+  };
 }
 
 /** The signal names Node's table (and the runtime's twin) resolves —
@@ -251,81 +391,43 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         // run time. Separate arguments then run as Node runs them: joined
         // onto the command when the member is on (shellCommandLine, with
         // its warning), passed as the argument vector when it is off. The
-        // command and its arguments are evaluated once, before the record
-        // is read, as the call's own argument order has them.
+        // check holds the command and its arguments in locals, evaluated
+        // once and before the record is read, as the call's own argument
+        // order has them; the line is built from those after the check.
         const shellArgs = !staticallyEmptyArgs(expr.arguments.nodes[1]);
-        const shellPrelude: IrStmt[] = [];
-        let shellCmd = cmd;
-        let shellArgv = argv;
-        if (shellArgs) {
-          const cmdLocal = lowerer.declareHiddenLocal("%spawnSyncCmd", cmd.type);
-          const argvLocal = lowerer.declareHiddenLocal("%spawnSyncArgs", argv.type);
-          const lineLocal = lowerer.declareHiddenLocal("%spawnSyncLine", STRING);
-          const lineArgvLocal = lowerer.declareHiddenLocal("%spawnSyncLineArgs", argv.type);
-          const cmdRef = varRef(cmdLocal.id, cmd.type, loc);
-          const argvRef = varRef(argvLocal.id, argv.type, loc);
-          shellPrelude.push(
-            { kind: "varDecl", localId: cmdLocal.id, init: cmd, loc },
-            { kind: "varDecl", localId: argvLocal.id, init: argv, loc },
-            {
-              kind: "varDecl",
-              localId: lineLocal.id,
-              init: {
-                kind: "ternary",
-                cond: runtime.shell,
-                then: shellCommandLine(cmdRef, argvRef, loc),
-                else_: cmdRef,
-                type: STRING,
-                loc,
-              },
-              loc,
-            },
-            {
-              kind: "varDecl",
-              localId: lineArgvLocal.id,
-              init: {
-                kind: "ternary",
-                cond: runtime.shell,
-                then: { kind: "arrayLit", elems: [], type: argv.type, loc },
-                else_: argvRef,
-                type: argv.type,
-                loc,
-              },
-              loc,
-            },
-          );
-          shellCmd = varRef(lineLocal.id, STRING, loc);
-          shellArgv = varRef(lineArgvLocal.id, argv.type, loc);
-        }
-        const withShellPrelude = (result: IrExpr): IrExpr =>
-          shellPrelude.length === 0
-            ? result
-            : { kind: "seqExpr", stmts: shellPrelude, result, type: SPAWNRES_T, loc };
         const call = (
           fn: "cp.spawnSyncExt" | "cp.spawnSyncExtEnv",
           extra: IrExpr[],
-          callCmd: IrExpr = shellCmd,
-          callArgs: IrExpr = shellArgv,
-        ): IrExpr => ({
-          kind: "libCall",
-          fn,
-          args: [
-            callCmd,
-            callArgs,
-            runtime.timeout,
-            killSignal,
-            runtime.inMode,
-            runtime.outMode,
-            runtime.errMode,
-            runtime.cwd,
-            runtime.input,
-            runtime.hasInput,
-            runtime.shell,
-            ...extra,
-          ],
-          type: SPAWNRES_T,
-          loc,
-        });
+          callCmd: IrExpr = cmd,
+          callArgs: IrExpr = argv,
+        ): IrExpr =>
+          withChildArgsCheck(
+            lowerer,
+            {
+              kind: "libCall",
+              fn,
+              args: [
+                callCmd,
+                callArgs,
+                runtime.timeout,
+                killSignal,
+                runtime.inMode,
+                runtime.outMode,
+                runtime.errMode,
+                runtime.cwd,
+                runtime.input,
+                runtime.hasInput,
+                runtime.shell,
+                ...extra,
+              ],
+              type: SPAWNRES_T,
+              loc,
+            },
+            0,
+            (a) => ({ cwd: a[7], envPairs: a[11] }),
+            loc,
+            shellArgs ? shellLaunch(10, argv.type, loc) : undefined,
+          );
         // An absent `env` inherits our environment; a present one replaces
         // it. The two entry points differ only in that argument, so the
         // member's presence test picks one at the call. Node evaluates the
@@ -334,18 +436,6 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         // that adds or drops `env` in the record decides the entry point,
         // as it does under Node.
         if (runtime.hasEnv !== null && runtime.envPairs !== null) {
-          // The shell prelude already holds the command and its arguments
-          // in locals the presence test follows.
-          if (shellArgs) {
-            return withShellPrelude({
-              kind: "ternary",
-              cond: runtime.hasEnv,
-              then: call("cp.spawnSyncExtEnv", [runtime.envPairs]),
-              else_: call("cp.spawnSyncExt", []),
-              type: SPAWNRES_T,
-              loc,
-            });
-          }
           const cmdLocal = lowerer.declareHiddenLocal("%spawnSyncCmd", cmd.type);
           const argvLocal = lowerer.declareHiddenLocal("%spawnSyncArgs", argv.type);
           const cmdArg = varRef(cmdLocal.id, cmd.type, loc);
@@ -368,7 +458,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
             loc,
           };
         }
-        return withShellPrelude(call("cp.spawnSyncExt", []));
+        return call("cp.spawnSyncExt", []);
       }
       lowerer.noLowering(
         "spawnSync with a non-literal options argument",
@@ -596,7 +686,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     }
   }
   if (plain) {
-    return { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv], type: SPAWNRES_T, loc };
+    return withChildArgsCheck(
+      lowerer,
+      { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv], type: SPAWNRES_T, loc },
+      0,
+      () => ({}),
+      loc,
+    );
   }
   if (stdioStr !== null && envPairs !== null) {
     lowerer.noLowering(
@@ -613,13 +709,19 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         'pass stdio as a "pipe"/"ignore"/"inherit" literal when cwd, input, or shell is set',
       );
     }
-    return {
-      kind: "libCall",
-      fn: "cp.spawnSyncStdioStr",
-      args: [cmd, argv, timeout, killSignal, stdioStr],
-      type: SPAWNRES_T,
+    return withChildArgsCheck(
+      lowerer,
+      {
+        kind: "libCall",
+        fn: "cp.spawnSyncStdioStr",
+        args: [cmd, argv, timeout, killSignal, stdioStr],
+        type: SPAWNRES_T,
+        loc,
+      },
+      0,
+      () => ({}),
       loc,
-    };
+    );
   }
   if (extOptions) {
     // Node ignores `input` when stdio[0] takes the child's fd 0 away
@@ -697,53 +799,64 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         ? boolLit(false, loc)
         : hasInput;
     // A literal `shell: true` beside separate arguments: the call runs the
-    // joined line with an empty argument vector. The join follows the
-    // options' evaluation, where Node's normalizeSpawnArguments builds it
-    // (an option expression that throws reports no warning).
-    const callCmd = shellJoinsArgs ? shellCommandLine(cmdArg, argvArg, loc) : cmdArg;
-    const callArgv: IrExpr = shellJoinsArgs
-      ? { kind: "arrayLit", elems: [], type: argv.type, loc }
-      : argvArg;
-    const call: IrExpr = {
-      kind: "libCall",
-      fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
-      args: [
-        callCmd,
-        callArgv,
-        timeoutArg,
-        killSignal,
-        stdinModeArg,
-        outModeArg,
-        errModeArg,
-        cwdArg,
-        inputArg,
-        hasInputArg,
-        shell,
-        ...(envArg !== null ? [envArg] : []),
-      ],
-      type: SPAWNRES_T,
+    // joined line with an empty argument vector. Node's
+    // normalizeSpawnArguments builds the line after the options are
+    // evaluated (an option expression that throws reports no warning) and
+    // after it has checked the file and the arguments it joins, so the
+    // check sees those and the launch takes the line.
+    const call = withChildArgsCheck(
+      lowerer,
+      {
+        kind: "libCall",
+        fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
+        args: [
+          cmdArg,
+          argvArg,
+          timeoutArg,
+          killSignal,
+          stdinModeArg,
+          outModeArg,
+          errModeArg,
+          cwdArg,
+          inputArg,
+          hasInputArg,
+          shell,
+          ...(envArg !== null ? [envArg] : []),
+        ],
+        type: SPAWNRES_T,
+        loc,
+      },
+      0,
+      (a) => ({ cwd: a[7], envPairs: a[11] }),
       loc,
-    };
+      shellJoinsArgs ? shellLaunch(null, argv.type, loc) : undefined,
+    );
     return prelude.length === 0
       ? call
       : { kind: "seqExpr", stmts: prelude, result: call, type: SPAWNRES_T, loc };
   }
-  return {
-    kind: "libCall",
-    fn: envPairs !== null ? "cp.spawnSyncEnv" : "cp.spawnSyncOpts",
-    args: [
-      cmd,
-      argv,
-      timeout,
-      killSignal,
-      inMode,
-      outMode,
-      errMode,
-      ...(envPairs !== null ? [envPairs] : []),
-    ],
-    type: SPAWNRES_T,
+  return withChildArgsCheck(
+    lowerer,
+    {
+      kind: "libCall",
+      fn: envPairs !== null ? "cp.spawnSyncEnv" : "cp.spawnSyncOpts",
+      args: [
+        cmd,
+        argv,
+        timeout,
+        killSignal,
+        inMode,
+        outMode,
+        errMode,
+        ...(envPairs !== null ? [envPairs] : []),
+      ],
+      type: SPAWNRES_T,
+      loc,
+    },
+    0,
+    (a) => ({ envPairs: a[7] }),
     loc,
-  };
+  );
 }
 
 /** The RUNTIME half of the spawnSync options story: a non-literal
@@ -1476,28 +1589,41 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   }
   const argv = lowerChildArgsArg(lowerer, argsNode, loc);
   if (plain) {
-    return { kind: "libCall", fn: "cp.spawn", args: [cmd, argv], type: CHILD_T, loc };
+    return withChildArgsCheck(
+      lowerer,
+      { kind: "libCall", fn: "cp.spawn", args: [cmd, argv], type: CHILD_T, loc },
+      0,
+      () => ({}),
+      loc,
+    );
   }
-  const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr => ({
-    kind: "libCall",
-    fn: "cp.spawnOpts",
-    args: [
-      callCmd,
-      callArgs,
-      inMode,
-      outMode,
-      errMode,
-      outFd,
-      errFd,
-      detached,
-      shell,
-      hasEnv,
-      envPairs,
-      cwd,
-    ],
-    type: CHILD_T,
-    loc,
-  });
+  const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr =>
+    withChildArgsCheck(
+      lowerer,
+      {
+        kind: "libCall",
+        fn: "cp.spawnOpts",
+        args: [
+          callCmd,
+          callArgs,
+          inMode,
+          outMode,
+          errMode,
+          outFd,
+          errFd,
+          detached,
+          shell,
+          hasEnv,
+          envPairs,
+          cwd,
+        ],
+        type: CHILD_T,
+        loc,
+      },
+      0,
+      (a) => ({ envPairs: a[10], cwd: a[11] }),
+      loc,
+    );
   if (valuePrelude.length === 0) return callOf(cmd, argv);
   // The bound member values were collected in source order; the command and
   // the arguments precede them, so an earlier value that changes a later
@@ -1669,22 +1795,28 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
   }
   if (!sawStdio && silent) inMode = outMode = errMode = 3;
 
-  return {
-    kind: "libCall",
-    fn: "cp.fork",
-    args: [
-      numLit(targetId, loc),
-      lowerChildArgsArg(lowerer, argsNode, loc),
-      numLit(inMode, loc),
-      numLit(outMode, loc),
-      numLit(errMode, loc),
-      hasEnv,
-      envPairs,
-      cwd,
-    ],
-    type: CHILD_T,
+  return withChildArgsCheck(
+    lowerer,
+    {
+      kind: "libCall",
+      fn: "cp.fork",
+      args: [
+        numLit(targetId, loc),
+        lowerChildArgsArg(lowerer, argsNode, loc),
+        numLit(inMode, loc),
+        numLit(outMode, loc),
+        numLit(errMode, loc),
+        hasEnv,
+        envPairs,
+        cwd,
+      ],
+      type: CHILD_T,
+      loc,
+    },
+    3,
+    (a) => ({ envPairs: a[6], cwd: a[7] }),
     loc,
-  };
+  );
 }
 
 /** `execFile(file[, args][, options], callback)` — the asynchronous callback
@@ -1878,20 +2010,35 @@ export function lowerExecFileCall(
       );
     }
   }
+  // exec's first argument is Node's `command`; execFile's is its `file`,
+  // in the shell launch too.
+  const form: ChildLaunchForm = shell ? 1 : execShell ? 2 : 0;
   if (cwd !== null) {
-    return {
+    return withChildArgsCheck(
+      lowerer,
+      {
+        kind: "libCall",
+        fn: "cp.execFileCwd",
+        args: [cmd, argv, callback, boolLit(shellForm, loc), cwd],
+        type: CHILD_T,
+        loc,
+      },
+      form,
+      (a) => ({ cwd: a[4] }),
+      loc,
+    );
+  }
+  return withChildArgsCheck(
+    lowerer,
+    {
       kind: "libCall",
-      fn: "cp.execFileCwd",
-      args: [cmd, argv, callback, boolLit(shellForm, loc), cwd],
+      fn: "cp.execFile",
+      args: [cmd, argv, callback, boolLit(shellForm, loc)],
       type: CHILD_T,
       loc,
-    };
-  }
-  return {
-    kind: "libCall",
-    fn: "cp.execFile",
-    args: [cmd, argv, callback, boolLit(shellForm, loc)],
-    type: CHILD_T,
+    },
+    form,
+    () => ({}),
     loc,
-  };
+  );
 }

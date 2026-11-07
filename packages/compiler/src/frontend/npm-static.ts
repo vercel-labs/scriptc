@@ -367,8 +367,13 @@ function isNodeModulesPathNorm(path: string): boolean {
  * runtime file keeps the island typed by its declarations, exactly as the
  * flagless build types it; the island never compiles the file. Declarations
  * stay, and an UNTYPED island package keeps the any-surface stub the shadow
- * already serves for it (there is no declaration to shadow). */
-function isIslandRuntimeFile(path: string): boolean {
+ * already serves for it (there is no declaration to shadow).
+ *
+ * Every program the flagged load builds applies this, the authored project
+ * world included (program.ts: authored()): that world has no shadow of its
+ * own, but it is created while the flag is active and so admits the same
+ * JS. */
+export function isIslandRuntimeFile(path: string): boolean {
   if (!/\.(js|cjs|mjs)$/.test(path) || !isNodeModulesPathNorm(path)) return false;
   const pkg = npmPackageNameOf(path.split("\\").join("/"));
   return pkg !== null && isFrontendIsland(pkg) && !packageIsUntyped(path);

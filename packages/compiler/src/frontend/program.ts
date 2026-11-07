@@ -67,6 +67,7 @@ import {
 } from "./resolve.js";
 import { probeNodeImportRefusal, probeNodeRequireRefusal } from "./npm.js";
 import {
+  isIslandRuntimeFile,
   isNpmStaticPackage,
   npmStaticActive,
   npmStaticFsShadow,
@@ -1414,7 +1415,16 @@ export function loadProgram(
   let authoredLoad: ReturnType<typeof loadProgram7> | null = null;
   const authored = (): ReturnType<typeof loadProgram7> => {
     if (!authoredLoad) {
-      authoredHost = services.createProgramHost({ cwd: dirname(entryPath) });
+      // The authored world reads the files as published, with one exception
+      // it shares with the lowering world: an island package's shipped JS
+      // stays out of the checker (npm-static.ts: isIslandRuntimeFile). The
+      // flag admits node_modules JS to this world too, and a real file
+      // shadows the ambient declarations the island is typed by, so user
+      // code would be checked against the island's JSDoc instead.
+      authoredHost = services.createProgramHost({
+        cwd: dirname(entryPath),
+        fsShadow: { readFile: () => undefined, hideFile: isIslandRuntimeFile },
+      });
       authoredLoad = loadProgram7(authoredHost, entryPath, externalTypes);
     }
     return authoredLoad;
@@ -7272,15 +7282,31 @@ function preflightGate7(load: LoadResult): PreflightGate {
   // its 7016: a bare import of a package that ships no declarations is the
   // typed-import case the `scriptc types patch` workflow exists for, and it
   // refuses until the project declares the surface it uses.
+  //
+  // Under --npm-static the island's shipped JS is hidden from the checker
+  // (npm-static.ts: isIslandRuntimeFile), so the same undeclared subpath
+  // reports "cannot find module" (2307) instead: the file Node loads is
+  // there, the checker just may not read it. That is the same fact and gets
+  // the same answer. A subpath with no runtime file keeps its 2307.
   const packageModuleImplicitAnySuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 7016 || d.fileName === undefined || d.pos === undefined || d.end === undefined)
+    if (
+      (d.code !== 7016 && d.code !== 2307) ||
+      d.fileName === undefined ||
+      d.pos === undefined ||
+      d.end === undefined
+    )
       return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
     const spec = sf.text.slice(d.pos, d.end).replace(/^['"]|['"]$/g, "");
     const pkg = packageNameOfSpecifier(spec);
-    if (isWorkspacePackageName(pkg)) return true;
-    return spec !== pkg && isFrontendIsland(pkg);
+    if (d.code === 7016 && isWorkspacePackageName(pkg)) return true;
+    if (spec === pkg || !isFrontendIsland(pkg)) return false;
+    if (d.code === 7016) return true;
+    const runtime =
+      resolveBareModule(d.fileName, spec, "js-only") ??
+      resolveBareModule(d.fileName, spec, "js-only", "require");
+    return runtime !== null && isIslandRuntimeFile(runtime.typesFile);
   };
   // A JavaScript file that TypeScript checks keeps the type errors that
   // protect its JSDoc types: a value of another type reaching a typed slot,

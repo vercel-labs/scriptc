@@ -21,8 +21,9 @@
  * export). Merged declarations, computed or referencing members, and any
  * other write to the variable keep the original text. */
 import * as ts from "./ts7/syntax.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
-import { applyEdits, unparen, type Edit } from "./npm-static-bundled-chunks.js";
+import { applyEdits, type Edit } from "./npm-static-bundled-chunks.js";
 
 /** True when the text may hold an enum IIFE (a cheap probe). */
 export function mayHoldEnumIife(source: string): boolean {
@@ -80,9 +81,9 @@ function enumIife(
   name: string,
 ): { members: Members; exportName: string | null } | null {
   if (!ts.isExpressionStatement(stmt)) return null;
-  const call = unparen(stmt.expression);
+  const call = withoutParentheses(stmt.expression);
   if (!ts.isCallExpression(call) || call.arguments.nodes.length !== 1) return null;
-  const fn = unparen(call.expression);
+  const fn = withoutParentheses(call.expression);
   if (!ts.isFunctionExpression(fn) || fn.name !== undefined || fn.asteriskToken !== undefined)
     return null;
   if (fn.modifiers !== undefined && fn.modifiers.nodes.length > 0) return null;
@@ -100,17 +101,17 @@ function enumIife(
 /** The export name the argument assigns (null: not exported), or
  * undefined when it is not one of the enum spellings. */
 function enumArgument(arg: ts.Expression, name: string): string | null | undefined {
-  const e = unparen(arg);
+  const e = withoutParentheses(arg);
   if (!ts.isBinaryExpression(e)) return undefined;
   // `Kind = exports.Kind || (exports.Kind = {})`
   if (e.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
     if (!isName(e.left, name)) return undefined;
-    const or = unparen(e.right);
+    const or = withoutParentheses(e.right);
     if (!ts.isBinaryExpression(or) || or.operatorToken.kind !== ts.SyntaxKind.BarBarToken)
       return undefined;
     const exported = exportsMember(or.left);
     if (exported === null) return undefined;
-    const init = unparen(or.right);
+    const init = withoutParentheses(or.right);
     if (
       !ts.isBinaryExpression(init) ||
       init.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
@@ -121,14 +122,14 @@ function enumArgument(arg: ts.Expression, name: string): string | null | undefin
     return exported;
   }
   if (e.operatorToken.kind !== ts.SyntaxKind.BarBarToken || !isName(e.left, name)) return undefined;
-  const init = unparen(e.right);
+  const init = withoutParentheses(e.right);
   if (!ts.isBinaryExpression(init) || init.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
     return undefined;
   // `Kind || (Kind = {})`
   if (isName(init.left, name)) return isEmptyObject(init.right) ? null : undefined;
   // `Kind || (exports.Kind = Kind = {})`
   const exported = exportsMember(init.left);
-  const inner = unparen(init.right);
+  const inner = withoutParentheses(init.right);
   if (
     exported === null ||
     !ts.isBinaryExpression(inner) ||
@@ -160,7 +161,7 @@ function enumMembers(body: readonly ts.Statement[], param: string): Members | nu
     // E[E["K"] = v] = "K"
     const target = e.left;
     if (!ts.isElementAccessExpression(target) || !isName(target.expression, param)) return null;
-    const inner = unparen(target.argumentExpression);
+    const inner = withoutParentheses(target.argumentExpression);
     if (!ts.isBinaryExpression(inner) || inner.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
       return null;
     const innerKey = memberKey(inner.left, param);
@@ -174,7 +175,7 @@ function enumMembers(body: readonly ts.Statement[], param: string): Members | nu
 
 function memberKey(target: ts.Expression, param: string): string | null {
   if (ts.isElementAccessExpression(target) && isName(target.expression, param)) {
-    const k = unparen(target.argumentExpression);
+    const k = withoutParentheses(target.argumentExpression);
     return ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) ? k.text : null;
   }
   if (
@@ -187,7 +188,7 @@ function memberKey(target: ts.Expression, param: string): string | null {
 }
 
 function literalValue(expr: ts.Expression): string | number | null {
-  const e = unparen(expr);
+  const e = withoutParentheses(expr);
   if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text;
   if (ts.isNumericLiteral(e)) return numberOf(e.text);
   if (
@@ -265,12 +266,12 @@ function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
 }
 
 function isName(e: ts.Expression, name: string): boolean {
-  const u = unparen(e);
+  const u = withoutParentheses(e);
   return ts.isIdentifier(u) && u.text === name;
 }
 
 function exportsMember(e: ts.Expression): string | null {
-  const u = unparen(e);
+  const u = withoutParentheses(e);
   return ts.isPropertyAccessExpression(u) &&
     ts.isIdentifier(u.expression) &&
     u.expression.text === "exports" &&
@@ -280,6 +281,6 @@ function exportsMember(e: ts.Expression): string | null {
 }
 
 function isEmptyObject(e: ts.Expression): boolean {
-  const u = unparen(e);
+  const u = withoutParentheses(e);
   return ts.isObjectLiteralExpression(u) && u.properties.nodes.length === 0;
 }

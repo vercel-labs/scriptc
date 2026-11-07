@@ -20,7 +20,9 @@ import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
+import { zstdInputs } from "./zstd-inputs.mjs";
 import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
+import { assertUnwindTails, moveUnwindTailLast, unwindTailCompileFlags } from "./unwind-tail.mjs";
 
 const run = promisify(execFile);
 
@@ -113,6 +115,7 @@ async function build() {
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
+  const zstd = join(vendorRoot, "zstd", "lib");
   // ICU is fetched from its pinned release, not vendored (see icu-inputs.mjs),
   // and only a pack that ships it pays for the download.
   const icuSourceRoot = async () =>
@@ -120,10 +123,21 @@ async function build() {
   const qjsSources = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const lreSources = ["libregexp.c", "libunicode.c"];
   const zlibBuild = zlibInputs(config.target.llvm_triple);
+  const zstdBuild = zstdInputs(config.target.llvm_triple);
   const sha256 = async (path) =>
     createHash("sha256")
       .update(await readFile(path))
       .digest("hex");
+  // Every ELF object of the pack ends its unwind table with the entry of a
+  // function no executable links (unwind-tail.mjs), so that an edit to one
+  // function of a unit leaves the unwind entries of the unit's other
+  // functions, and every executable that links only those, byte-identical.
+  const unwindTailFlags = unwindTailCompileFlags(matrix.target.object_format);
+  const endUnwindTable = async (object) => {
+    if (unwindTailFlags.length === 0) return;
+    const bytes = await readFile(object);
+    if (moveUnwindTailLast(bytes)) await writeFile(object, bytes);
+  };
   const compile = async (source, output, flags) => {
     await mkdir(dirname(output), { recursive: true });
     // Zig emits DWARF by default even for optimized C. Packaged runtime
@@ -132,6 +146,7 @@ async function build() {
     await run(compiler, [
       ...compilerArgs,
       ...sourcePathFlags,
+      ...unwindTailFlags,
       ...flags,
       "-g0",
       "-c",
@@ -139,6 +154,7 @@ async function build() {
       "-o",
       output,
     ]);
+    await endUnwindTable(output);
   };
   // Speed-flavor executable units are emitted through the host LLVM helper
   // (runtime-unit.mjs), which promotes their local symbols and applies the
@@ -334,6 +350,7 @@ async function build() {
       await run(cxx[0], [
         ...cxx.slice(1),
         ...sourcePathFlags,
+        ...unwindTailFlags,
         ...unit.flags,
         ...(unit.define === undefined ? [] : [`-D${unit.define}`]),
         "-g0",
@@ -342,6 +359,7 @@ async function build() {
         "-o",
         output,
       ]);
+      await endUnwindTable(output);
       return output;
     });
     const output = join(root, "libscriptc-icu.a");
@@ -432,6 +450,7 @@ async function build() {
                 ? ["-I", zlib]
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
+              ...(unit.source === "scr_zstd.c" ? ["-I", zstd] : []),
               // scr_intl.c includes ICU's C API headers straight from the
               // fetched release: the core ones in source/common/unicode/*.h,
               // and the format ones (udat.h, unumberformatter.h) in
@@ -473,6 +492,7 @@ async function build() {
                   run(compiler, [
                     ...compilerArgs,
                     ...sourcePathFlags,
+                    ...unwindTailFlags,
                     ...unitFlags,
                     "-g0",
                     ...(speedProfile === null ? [] : ["-Xclang", "-disable-llvm-passes"]),
@@ -495,6 +515,7 @@ async function build() {
                   ),
               }))
             ) {
+              await endUnwindTable(output);
               if (unitBuild.profile !== undefined) profileMatches.push(unitBuild.profile);
               for (const name of unitBuild.functions ?? []) profiledFunctions.add(name);
             } else {
@@ -614,6 +635,20 @@ async function build() {
                   ]),
                 ]
               : []),
+            ...(requestedArchives.has("zstd")
+              ? [
+                  await archive("zstd", zstdBuild.sources, zstd, [
+                    ...vendorTarget,
+                    "-std=c11",
+                    "-O3",
+                    ...zstdBuild.defines.map((define) => `-D${define}`),
+                    ...zstdBuild.compileFlags,
+                    ...codeAlignment,
+                    "-I",
+                    zstd,
+                  ]),
+                ]
+              : []),
             ...(requestedArchives.has("icu") ? [await icuArchive()] : []),
             ...(requestedArchives.has("mbedtls")
               ? [
@@ -692,6 +727,7 @@ async function build() {
       stagedOutputRoot,
       runtimeForbiddenStrings(config.forbiddenArtifactStrings),
     );
+    if (unwindTailFlags.length > 0) await assertUnwindTails(stagedOutputRoot);
     const archiveSpecs = new Map(matrix.archives.map((entry) => [entry.id, entry]));
     const licensed = [
       [join(runtimeRoot, "LICENSE"), "artifacts/licenses/scriptc-runtime.txt", "Apache-2.0"],
@@ -710,6 +746,7 @@ async function build() {
       [join(zlib, "LICENSE"), "artifacts/licenses/zlib.txt", "Zlib"],
       [join(zlib, "LICENSE.chromium"), "artifacts/licenses/zlib-chromium.txt", "BSD-3-Clause"],
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
+      [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
       // ICU's terms cover both the sources and the data file it ships; only a
       // pack that ships them carries its license.
@@ -752,7 +789,9 @@ async function build() {
           "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
+          "SCR_WEB_BODIES",
           "SCR_YIN",
+          "SCR_CHILD_ERR_FIELDS",
           "SCR_NODE_ISLANDS",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],

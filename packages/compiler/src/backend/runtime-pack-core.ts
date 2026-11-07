@@ -33,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls" | "icu";
+  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -96,36 +96,54 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   handleProps: boolean;
   childLifecycle: boolean;
   childOptionExt: boolean;
+  spawnCaptureBytes: boolean;
+  childErrorFields: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   dynForAwait: boolean;
+  dynCollections: boolean;
   dynIntegrityQueries: boolean;
+  reflectProtoTarget: boolean;
+  recordSourceDelete: boolean;
+  recordViewFrozen: boolean;
   genBind: boolean;
+  genReceiver: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
   webStreams: boolean;
+  webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
+  fsPathValue: boolean;
   builtinValues: boolean;
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c). */
   stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (scr_data_view_proto.c). */
+  dataViewPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`
+   * (scr_global_host_absent.c). */
+  hostAbsentGlobals?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype and Boolean.prototype as values
-   * (scr_dyn_builtin_prototype.c). */
-  builtinPrototypeValue?: boolean;
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
-  recordViewPartial: boolean;
+  promiseRejectDyn: boolean;
   /** The JavaScript object model build (t262-da §J): the runtime code every
    * feature reached only from JavaScript sources shares, the
    * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
    * dynTier. */
   jsObjectModel: boolean;
+  /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
+   * JavaScript source resizes, grows or detaches an ArrayBuffer. */
+  mutableBuffers?: boolean;
   stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
@@ -135,9 +153,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   stdioWriteSlot: boolean;
   nodeIsland: boolean;
   brotli: boolean;
+  zstd: boolean;
   moduleNamespace: boolean;
   moduleNamespaceDyn: boolean;
   primitiveWrapper: boolean;
+  iteratorProto: boolean;
   nativeFetch: boolean;
   abortSignalOnly: boolean;
   netEffective: boolean;
@@ -329,9 +349,16 @@ export function effectiveRuntimeFeatures(
   // their migrations share one build of each unit they touch instead of one
   // build column per feature.
   const jsObjectModel = jsObjectModelFact(features);
+  // A Node island can hand its own AbortSignal to any native receiver of
+  // one, and a native signal then stands for it (scr_node_island_abort.c):
+  // a program with islands and a receiver links the signal unit too.
+  const abortSignal =
+    features.abortSignal === true ||
+    (features.nodeIsland === true && features.eventTarget === true);
   return {
     ...features,
     workers: features.workers === true,
+    staticLink: features.staticLink === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
@@ -342,39 +369,53 @@ export function effectiveRuntimeFeatures(
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
     childOptionExt: features.childOptionExt === true,
+    spawnCaptureBytes: features.spawnCaptureBytes === true,
+    childErrorFields: features.childErrorFields === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,
+    dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
+    reflectProtoTarget: features.reflectProtoTarget === true,
+    recordSourceDelete: features.recordSourceDelete === true,
+    recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
+    genReceiver: features.genReceiver === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
-    abortSignal: features.abortSignal === true,
+    webBodies: features.webBodies === true,
+    abortSignal,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
+    fsPathValue: features.fsPathValue === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
+    dataViewPrototypeValue: features.dataViewPrototypeValue === true,
+    hostAbsentGlobals: features.hostAbsentGlobals === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
-    builtinPrototypeValue: features.builtinPrototypeValue === true,
+    builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
-    recordViewPartial: features.recordViewPartial === true,
+    promiseRejectDyn: features.promiseRejectDyn === true,
     jsObjectModel,
+    mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioWriteSlot: features.stdioWriteSlot === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
+    zstd: features.zstd === true,
     moduleNamespace: features.moduleNamespace === true,
     moduleNamespaceDyn: features.moduleNamespaceDyn === true,
     primitiveWrapper: features.primitiveWrapper === true,
+    iteratorProto: features.iteratorProto === true,
     nativeFetch,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
-    abortSignalOnly: features.abortSignal === true && !nativeFetch,
+    abortSignalOnly: abortSignal && !nativeFetch,
     netEffective,
     httpEffective,
     tlsEffective,

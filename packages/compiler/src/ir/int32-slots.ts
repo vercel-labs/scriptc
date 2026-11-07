@@ -1,4 +1,5 @@
 import type { IrClassDef, IrExpr, IrFunction, IrGlobal, IrModule, IrStmt, IrType } from "./ir.js";
+import type { IrLibFn } from "./builtin-signatures.js";
 import {
   analyzeIntegerRanges,
   INT32_RANGE,
@@ -514,7 +515,7 @@ const BOUNDARY_KINDS = new Set<IrExpr["kind"]>([
  * none of them reaches scr_dyn_typed_ref_commit with a caller-supplied
  * target). Any other helper that receives a dynamic value may store any
  * property, except literal-keyed `dyn.keySet`/`dyn.keyDelete`. */
-const DYN_READ_ONLY = new Set<string>([
+const DYN_READ_ONLY = new Set<IrLibFn>([
   "arrayBuffer.new",
   "arrayBuffer.viewF16",
   "arrayBuffer.viewF32",
@@ -539,6 +540,7 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.arrLen",
   "dyn.bagGet",
   "dyn.bitwise",
+  "dyn.classHash",
   "dyn.compare",
   // Adoption reads the native value it was built into and turns shared
   // source nodes into capsules of it; it stores no property into a capsule.

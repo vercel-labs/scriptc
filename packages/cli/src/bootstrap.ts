@@ -58,12 +58,20 @@ async function tryFastPath(): Promise<number | null> {
   }
   const [command, inputArg] = positionals;
   if (command === "coverage") return coverageFastPath(values, inputArg, positionals.length);
+  // Computed-access sites emit different code by default; an explicit value
+  // other than "1" is an opt-out or one the full compiler validates
+  // (backend/llvm/js-ic.ts).
+  const indexFastpath = process.env["SCRIPTC_DYN_INDEX_FASTPATH"];
   if (
     (command !== "build" && command !== "run") ||
     inputArg === undefined ||
     (values.emit !== undefined && values.emit !== "exe") ||
     values.print !== undefined ||
     values["emit-ir"] ||
+    // A build that writes or reads a lowered program always runs.
+    values["emit-lowered"] !== undefined ||
+    values["from-lowered"] !== undefined ||
+    (values["from-lowered-accept"] ?? []).length > 0 ||
     values.lib ||
     values["provenance-sources"] ||
     // The full compiler keys these builds by the profile's bytes.
@@ -75,6 +83,9 @@ async function tryFastPath(): Promise<number | null> {
     values.libnode === "beside" ||
     // The full compiler resolves `native` against the build host.
     values["target-cpu"] !== undefined ||
+    // The experimental stdout policy changes the program object, which the
+    // routed cache key would need to carry; the full compiler owns it.
+    values["stdout-buffering"] ||
     // The full CLI validates the value.
     values.exceptions !== undefined ||
     (values["external-types"] ?? []).length > 0 ||
@@ -83,7 +94,11 @@ async function tryFastPath(): Promise<number | null> {
     // The full compiler writes the representation report and keys the heap
     // census build (backend/llvm/repr-report.ts, heap-census.ts).
     (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
-    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== ""
+    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== "" ||
+    // An attribution build emits a different way count, and the full compiler
+    // keys the build by it (backend/llvm/js-ic.ts).
+    (process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] ?? "") !== "" ||
+    (indexFastpath !== undefined && indexFastpath !== "" && indexFastpath !== "1")
   )
     return null;
   const backend = values.backend;
@@ -155,6 +170,9 @@ async function tryFastPath(): Promise<number | null> {
     ...(values["cpu-dispatch"] === true ? { cpuDispatch: true as const } : {}),
     ...(checker === undefined ? {} : { checker }),
     npmStatic,
+    // Only builds with the computed-access shape reach this route, and the
+    // full compiler keys those builds by it (backend/llvm/js-ic.ts).
+    dynIndexFastpath: true as const,
     // Mirrors the full compiler's key: shape inference's overlay is opt-in
     // (SCRIPTC_SHAPE_OVERLAY=1) and --no-shape-overlay turns it off.
     ...(process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" && values["shape-overlay"] !== false
@@ -244,6 +262,7 @@ async function coverageFastPath(
     values.static ||
     values["detached-exit"] ||
     values["large-pages"] ||
+    values["stdout-buffering"] ||
     values.exceptions !== undefined ||
     values["target-cpu"] !== undefined ||
     values["cpu-dispatch"] !== undefined ||
@@ -255,6 +274,9 @@ async function coverageFastPath(
     values["windows-subsystem"] !== undefined ||
     values["provenance-sources"] ||
     values["emit-ir"] ||
+    values["emit-lowered"] !== undefined ||
+    values["from-lowered"] !== undefined ||
+    (values["from-lowered-accept"] ?? []).length > 0 ||
     (values["npm-static"] ?? []).length > 0 ||
     values["shape-overlay"] === false ||
     (values["external-types"] ?? []).length > 0 ||

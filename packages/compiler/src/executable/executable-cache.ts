@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeProfileMatch } from "../backend/native-profile.js";
 import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
@@ -20,6 +21,8 @@ import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
 import { type TargetCpu, cpuDispatchKeyParts, targetCpuKeyParts } from "../backend/target-cpu.js";
+import { laneShapesFromEnvironment, laneShapesKeyParts } from "../ir/lane-plans.js";
+import { nativeBuildPartitions } from "../backend/native-codegen-core.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -65,22 +68,29 @@ export interface EarlyExecutableNativeFeatures {
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
-  recordViewPartial?: boolean;
+  promiseRejectDyn?: boolean;
   jsObjectModel?: boolean;
+  /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
+  mutableBuffers: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
+  fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
   /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
   stdioWriteSlot?: boolean;
+  /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
+  childErrorFields?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
   primitiveWrapper?: boolean;
+  iteratorProto?: boolean;
   zlib: boolean;
   brotli?: boolean;
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -91,17 +101,25 @@ export interface EarlyExecutableNativeFeatures {
   handleProps?: boolean;
   childLifecycle?: boolean;
   childOptionExt?: boolean;
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
+  dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
+  reflectProtoTarget?: boolean;
+  recordSourceDelete?: boolean;
+  recordViewFrozen?: boolean;
   genBind?: boolean;
+  genReceiver?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
+  webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;
+  fsPathValue?: boolean;
   builtinValues?: boolean;
   computedRequire?: boolean;
   events: boolean;
@@ -113,6 +131,14 @@ export interface EarlyExecutableNativeFeatures {
   /** A standard library prototype object read as a value in a JavaScript
    * source: scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source:
+   * scr_data_view_proto.c. */
+  dataViewPrototypeValue?: boolean;
+  /** Promise statics with a foreign constructor: scr_js_promise_generic.c. */
+  promiseGeneric?: boolean;
+  /** A computed read of the global object, or `… in globalThis`:
+   * scr_global_host_absent.c. */
+  hostAbsentGlobals?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
@@ -120,9 +146,10 @@ export interface EarlyExecutableNativeFeatures {
   dynBuiltinStream: boolean;
   /** Array.prototype methods over array-like receivers: scr_dyn_array_like.c. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype and Boolean.prototype as values:
-   * scr_dyn_builtin_prototype.c. */
-  builtinPrototypeValue?: boolean;
+  /** A builtin prototype method (String's trim family, RegExp's exec/test/
+   * toString) as a function value:
+   * scr_dyn_builtin_methods.c. */
+  builtinMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -171,6 +198,12 @@ interface EarlyExecutableCacheStamp {
   libnode?: string;
   /** How a --profile-use build's profile matched, which a cache hit reports. */
   profileMatch?: NativeProfileMatch;
+  /** The partitions the executable was linked from (native-codegen-core.ts
+   * nativeBuildPartitions; one for a module small enough to stay whole, and
+   * left out of a link of a single native object). Part of the entry rather
+   * than of the key: the count follows from the cached translation unit, so a
+   * hit can derive it again. */
+  partitions?: number;
   integrity: string;
 }
 
@@ -191,6 +224,8 @@ export interface EarlyExecutableCacheOptions {
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** Omitted unless --stdout-buffering is set. */
+  stdoutBuffering?: true;
   /** The identity of the libnode pack a program that calls into Node.js
    * records (node-islands/libnode.ts libnodeCacheKey), or undefined when the
    * build names none. Not part of the key: an entry of a program that calls
@@ -217,6 +252,10 @@ export interface EarlyExecutableCacheOptions {
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
+  /** Omitted for the default tier policy (`--tier=auto`), which keeps the
+   * keys it had. `static-only` refuses programs that `auto` compiles, so
+   * its verdict must not be answered from an `auto` entry. */
+  tier?: "static-only";
   /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
   heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
@@ -228,6 +267,14 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless shape inference types the program's own JavaScript
    * (SCRIPTC_INFER_JS=1, frontend/js-inference.ts). */
   jsInference?: true;
+  /** Omitted unless SCRIPTC_DEBUG_JS_IC_WAYS asks for an attribution build,
+   * which emits a different number of inline cache ways
+   * (backend/llvm/js-ic.ts). */
+  jsIcWays?: 0 | 1 | 2;
+  /** Omitted unless computed-access sites index integral numbers without
+   * forming the property key (on by default; SCRIPTC_DYN_INDEX_FASTPATH=0
+   * opts out) (backend/llvm/js-ic.ts). */
+  dynIndexFastpath?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -289,6 +336,9 @@ export interface EarlyExecutableCacheHit {
 
 export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   nativeDependencies?: NativeArtifactDependency[];
+  /** The partitions the native helper compiled, when the build divided the
+   * module; omitted when it linked one object. */
+  partitions?: number;
 }
 
 function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
@@ -310,52 +360,14 @@ function isProfileMatch(value: unknown): value is NativeProfileMatch {
   });
 }
 
-const BOOLEAN_NATIVE_KEYS = [
-  "regex",
-  "copying",
-  "textDecoderLegacy",
-  "bigintBytes",
-  "fileHandle",
-  "fetch",
-  "zlib",
-  "assert",
-  "inspect",
-  "dynInvoke",
-  "dc",
-  "dynAsync",
-  "events",
-  "emitter",
-  "symbol",
-  "bigint",
-  "searchParams",
-  "qs",
-  "utilPromisify",
-  "dynBuiltinClass",
-  "dynBuiltinStream",
-  "parseArgs",
-  "stream",
-  "net",
-  "http",
-  "http2",
-  "dgram",
-  "dnsPromises",
-  "dgramDyn",
-  "textCodecDyn",
-  "watch",
-  "watchFile",
-  "foreignFfi",
-  "nodeTest",
-  "tls",
-  "tlsCa",
-  "cipher",
-  "ecdh",
-  "dh",
-  "pki",
-  "ed25519",
-  "x509",
-  "webcrypto",
-  "perfLoop",
-] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
+/** The keys a cached record always spells: the required keys of the link
+ * features it is built from (executableNativeFeatures in index.ts), and
+ * mutableBuffers, which the record spells where the link features leave it
+ * out when off. */
+const BOOLEAN_NATIVE_KEYS: readonly (keyof EarlyExecutableNativeFeatures)[] = [
+  ...REQUIRED_LINK_FEATURES,
+  "mutableBuffers",
+];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {
   return validSharedNativeFeatures<EarlyExecutableNativeFeatures>(
@@ -388,19 +400,24 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.staticLink ? ["static-link"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.stdoutBuffering ? ["stdout-buffering"] : []),
     ...(options.largePages ? ["large-pages"] : []),
     ...(options.noHugeText ? ["no-huge-text"] : []),
     ...(options.exceptions === "rare" ? ["exceptions-rare"] : []),
     ...targetCpuKeyParts(options.targetCpu),
     ...cpuDispatchKeyParts(options.cpuDispatch),
+    ...laneShapesKeyParts(laneShapesFromEnvironment()),
     ...(options.profile !== undefined ? [options.profile] : []),
     ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
+    ...(options.tier === "static-only" ? ["tier-static-only"] : []),
     ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
     ...(options.heapCensus ? ["heap-census"] : []),
     ...(options.shapeOverlay ? ["shape-overlay"] : []),
     ...(options.jsInference ? ["js-inference"] : []),
+    ...(options.jsIcWays !== undefined ? [`js-ic-ways:${options.jsIcWays}`] : []),
+    ...(options.dynIndexFastpath ? ["dyn-index-fastpath"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -441,19 +458,24 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.staticLink) hash.update("static-link\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.stdoutBuffering) hash.update("stdout-buffering\0");
   if (options.largePages) hash.update("large-pages\0");
   if (options.noHugeText) hash.update("no-huge-text\0");
   if (options.exceptions === "rare") hash.update("exceptions-rare\0");
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
+  for (const part of laneShapesKeyParts(laneShapesFromEnvironment())) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
   if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
+  if (options.tier === "static-only") hash.update("tier-static-only\0");
   if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
   if (options.heapCensus) hash.update("heap-census\0");
   if (options.shapeOverlay) hash.update("shape-overlay\0");
   if (options.jsInference) hash.update("js-inference\0");
+  if (options.jsIcWays !== undefined) hash.update(`js-ic-ways:${options.jsIcWays}\0`);
+  if (options.dynIndexFastpath) hash.update("dyn-index-fastpath\0");
   hash
     .update(
       options.npmStatic === null
@@ -475,6 +497,17 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
     hash.update(resolve(options.ffiProfile.path)).update("\0").update(options.ffiProfile.bytes);
   }
   return hash.digest("hex");
+}
+
+/** The two keys a build's cache entries are stored under: the entry's and
+ * the route's (the launcher's shortcut to it). For tests of what the keys
+ * cover; a build option that changes the verdict or the output must change
+ * both. */
+export function earlyExecutableCacheKeys(options: EarlyExecutableCacheOptions): {
+  entry: string;
+  route: string;
+} {
+  return { entry: cacheKey(options), route: routeKey(options) };
 }
 
 function routePath(
@@ -655,6 +688,8 @@ async function readExecutableCache(
           (stamp.files.debugSymbols !== undefined)) ||
       (stamp.files.executable === null) !== (stamp.nativeDependencies === null) ||
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
+      (stamp.partitions !== undefined &&
+        (!Number.isInteger(stamp.partitions) || stamp.partitions < 1)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
       (stamp.native.nodeIsland === true &&
@@ -697,6 +732,22 @@ async function readExecutableCache(
       (stamp.files.ir !== null && ir === null) ||
       (stamp.files.executable !== null && executable === null) ||
       (stamp.files.debugSymbols !== undefined && debugSymbols === null)
+    )
+      return null;
+    // A module's partition count follows from its text and, above the size
+    // that keeps it whole, the host's thread count (nativeProgramPartitions),
+    // and the executable is linked from those partitions: one built for
+    // another count is not the executable this host builds, so it is a miss.
+    // A module small enough to stay one partition gets that count on every
+    // host and keeps hitting, and so does one a --cpu-dispatch build keeps
+    // whole (nativeBuildPartitions).
+    if (
+      stamp.partitions !== undefined &&
+      stamp.partitions !==
+        nativeBuildPartitions(translationUnit.length, {
+          cpuDispatch: options.cpuDispatch === true,
+          unoptimized: options.optimization === "dev",
+        })
     )
       return null;
 
@@ -973,6 +1024,9 @@ export async function publishEarlyExecutableCache(
       },
       nativeDependencies: executable === null ? null : result.nativeDependencies!,
       native: result.native,
+      ...(executable !== null && result.partitions !== undefined
+        ? { partitions: result.partitions }
+        : {}),
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),

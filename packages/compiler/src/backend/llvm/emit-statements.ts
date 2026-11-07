@@ -8,7 +8,15 @@ import {
   adoptingAwaitOf,
   MAX_BYTES_LOOP_VERSION_DEPTH,
 } from "./emitter.js";
-import { CAUGHT, F64, type IrExpr, type IrStmt, STRING, isRefCounted } from "../../ir/ir.js";
+import {
+  CAUGHT,
+  F64,
+  type IrExpr,
+  type IrStmt,
+  STRING,
+  isRefCounted,
+  keyedRecordFields,
+} from "../../ir/ir.js";
 import { emitStringSliceSnapshot } from "./string-slices.js";
 import {
   canDeferSplitPiece,
@@ -97,9 +105,11 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
+import { emitLaneLoop, laneLoopPlan } from "./lanes.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
+import { emitFusedRecordSet } from "./record-entry-fusion.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
 const MAX_CALLBACK_VERSION_COST = 400;
@@ -311,10 +321,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // Whole-value uses still retain their own copies, so returning or
       // storing the alias preserves the ordinary heap representation.
       // Boxed captures, reassigned sources and projections need ownership.
+      // A tree value has one owner and no copy to lend: the alias would be
+      // a second pointer the source's scope exit still destroys.
       if (
         b.kind === "local" &&
         b.local &&
         isRefCounted(b.type) &&
+        !emitter.isTreeValue(b.type) &&
         emitter.stableCallBindings.has(s.localId) &&
         (emitter.canBorrowCallArgument(s.init) || emitter.unwrittenAlias(s))
       ) {
@@ -693,6 +706,35 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         );
       } else if (emitter.publishedTypes?.recordGuarded(s.shapeId) === true)
         emitter.emitPublishedFieldGuard(obj.name, null, s.field);
+      if (s.kind === "recordSet" && emitter.partialFieldMissing(s.shapeId, s.field)) {
+        // A field a partial record view may lack: the view keeps it as a
+        // boxed property when the viewed record does not declare it.
+        const fieldType = emitter
+          .recordShape(s.shapeId)
+          .fields.find((f) => f.name === s.field)!.type;
+        const fieldInline = emitter.recordFieldInline(s.shapeId, s.field);
+        emitter.storePartialField(
+          obj.name,
+          s.shapeId,
+          s.field,
+          fieldType,
+          v,
+          (slot) => {
+            // A result-slot entry fills zeroed caller storage, each field
+            // once; a constructor's first store to its own field fills the
+            // slot `new` left.
+            if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+              emitter.initField(slot, fieldType, fieldInline, v);
+            else emitter.replaceField(slot, fieldType, fieldInline, v);
+          },
+          // The store owns the value on the slot path; the extra-property
+          // path boxes it (retaining) and gives up the store's reference.
+          () => {
+            if (!fieldInline && isRefCounted(fieldType)) emitter.releaseHeap(v.name, fieldType);
+          },
+        );
+        break;
+      }
       const { ptr, type, inline } =
         s.kind === "fieldSet"
           ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
@@ -744,6 +786,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // whose writes validate and can throw, stay refused), undeclared
       // keys insert/replace in the overflow map. Evaluation order: obj,
       // key, value; the write OWNS the value (+1 moves in).
+      const paired = emitter.recordEntryFusion?.writes.get(s);
+      const pairedIv = paired === undefined ? undefined : emitter.recordShape(s.shapeId).indexValue;
+      if (paired !== undefined && (pairedIv?.kind === "f64" || pairedIv?.kind === "bool")) {
+        // Paired with a fused read of the same object and key binding
+        // (record-entry-fusion.ts): the read already evaluated both and
+        // parked the overflow entry, so the write evaluates only the value
+        // and overwrites the entry's value slot in place. A miss takes the
+        // ordinary insert with the parked map and key.
+        const v = emitter.emitExpr(s.value);
+        const vAcc = pairedIv.kind === "f64" ? "f64" : "bool";
+        if (
+          emitFusedRecordSet(emitter, s, { name: v.name, access: vAcc }, (map, key) =>
+            emitter.mapSet(map, "str", vAcc, key, v.name),
+          )
+        )
+          break;
+        // The paired read took a non-fused lowering: finish with the
+        // ordinary set. Both bindings are plain variables, so reading them
+        // after the value is unobservable.
+        const objFallback = emitter.emitExpr(s.obj);
+        const keyFallback = emitter.emitExpr(s.key);
+        emitter.mapSet(
+          emitter.recordOvfPtr(objFallback.name, s.shapeId),
+          "str",
+          vAcc,
+          keyFallback.name,
+          v.name,
+        );
+        break;
+      }
       const obj = emitter.emitExpr(s.obj);
       const key = emitter.emitExpr(s.key);
       const v = emitter.emitExpr(s.value);
@@ -751,11 +823,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.emitPublishedFieldGuard(obj.name, null, "[key]");
       if (isRefCounted(v.type)) emitter.toHeap(v);
       const shape = emitter.recordShape(s.shapeId);
+      // The fields a key can name (never the hidden key-order index).
+      const keyed = keyedRecordFields(shape);
       // Signature-free shapes dispatch over their (one-typed) declared
       // fields and TRAP on a miss (scr_record_key_miss — JS would add
       // the property, which a monomorphic struct cannot); overflow
       // shapes keep the map insert tail.
-      const iv = shape.indexValue ?? shape.fields[0]?.type;
+      const iv = shape.indexValue ?? keyed[0]?.type;
       if (!iv)
         throw new InternalCompilerError(
           `llvm emitter bug: keyed write on field-free non-overflow shape ${s.shapeId}`,
@@ -777,7 +851,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         // store anything, the documented divergence); undeclared keys
         // insert the dyn value into the overflow map as-is.
         emitter.declare(`declare void @scr_dyn_release(ptr)`);
-        for (const f of shape.fields) {
+        for (const f of keyed) {
           const hit = B.tmp();
           B.line(
             `${hit} = call zeroext i1 ${emitter.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
@@ -833,10 +907,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(join);
         // MAY THROW exactly when a dyn value can validate against a
         // declared field (stmts.ts's condition).
-        if (shape.fields.length > 0) emitter.emitPendingCheck();
+        if (keyed.length > 0) emitter.emitPendingCheck();
         break;
       }
-      for (const f of shape.fields) {
+      for (const f of keyed) {
         // typeEquals(f.type, iv) — the frontend fences everything else.
         const hit = B.tmp();
         B.line(
@@ -846,19 +920,32 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const ln = B.newLabel("rks.n");
         B.condBr(hit, lh, ln);
         B.startBlock(lh);
-        const { ptr, type, inline } = emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
-        if (inline) {
-          // The write owns the moved-in value; the slot copies its bits.
-          emitter.storeField(ptr, type, v.name, true);
-          emitter.releaseHeap(v.name, type);
-        } else if (isRefCounted(type)) {
-          const old = B.tmp();
-          B.line(`${old} = load ptr, ptr ${ptr}`);
-          emitter.storeField(ptr, type, v.name, false);
-          emitter.releaseHeap(old, type);
-        } else {
-          emitter.storeField(ptr, type, v.name, false);
-        }
+        const partial = emitter.partialFieldMissing(s.shapeId, f.name);
+        // A field a partial record view may lack has no slot to address:
+        // its write goes through the view's extra-property store.
+        const field = partial
+          ? { type: f.type, inline: emitter.recordFieldInline(s.shapeId, f.name), ptr: "" }
+          : emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
+        const { ptr, type, inline } = field;
+        const storeAt = (slot: string): void => {
+          if (inline) {
+            // The write owns the moved-in value; the slot copies its bits.
+            emitter.storeField(slot, type, v.name, true);
+            emitter.releaseHeap(v.name, type);
+          } else if (isRefCounted(type)) {
+            const old = B.tmp();
+            B.line(`${old} = load ptr, ptr ${slot}`);
+            emitter.storeField(slot, type, v.name, false);
+            emitter.releaseHeap(old, type);
+          } else {
+            emitter.storeField(slot, type, v.name, false);
+          }
+        };
+        if (partial)
+          emitter.storePartialField(obj.name, s.shapeId, f.name, type, v, storeAt, () => {
+            if (inline || isRefCounted(type)) emitter.releaseHeap(v.name, type);
+          });
+        else storeAt(ptr);
         B.br(join);
         B.startBlock(ln);
       }
@@ -1483,6 +1570,23 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.br(lc, backEdge);
         }
       };
+      // A planned loop runs whole vectors first and leaves the rest to its
+      // own copies, which start at the counter the lane loop leaves behind
+      // (lanes.ts). The plan is consulted here, before any copy is chosen:
+      // the speculative, int32 and strip-mined copies keep their values in
+      // layouts the lane body does not write.
+      const lane =
+        integerLoop !== null && integerSlot !== null && !stripMined && capturedLets.length === 0
+          ? laneLoopPlan(emitter, s)
+          : null;
+      if (lane !== null)
+        emitLaneLoop(
+          emitter,
+          lane,
+          integerLoop!.limitReceiver,
+          integerSlot!,
+          B.newLabel("lane.after"),
+        );
       emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
         // Speculative copies resume iterations inside the copy they enter,
         // which must keep its polls.
@@ -1736,7 +1840,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       if (!target || target.contLabel === null)
         throw new InternalCompilerError("llvm emitter bug: continue target not found");
       emitter.emitFinallysForJump(target.finallyDepth, target.frameDepth, target.scopeDepth);
-      if (!B.isTerminated()) B.terminate(`br label %${target.contLabel}`);
+      if (!B.isTerminated()) {
+        emitter.framePositions?.continueLoop(s.label);
+        B.terminate(`br label %${target.contLabel}`);
+      }
       break;
     }
     case "return": {

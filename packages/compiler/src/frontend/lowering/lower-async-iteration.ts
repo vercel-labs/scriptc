@@ -5,6 +5,7 @@ import { dynUndefinedExpr } from "../../ir/build.js";
  * and a try/finally performs IteratorClose on every abrupt completion while
  * leaving normal exhaustion alone. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -49,19 +50,6 @@ interface ClassAsyncIteratorPlan {
   closeResult: IrType | null;
 }
 
-function unwrapExpression(node: ts.Expression): ts.Expression {
-  let expression = node;
-  while (
-    ts.isParenthesizedExpression(expression) ||
-    ts.isAsExpression(expression) ||
-    ts.isTypeAssertion(expression) ||
-    ts.isNonNullExpression(expression)
-  ) {
-    expression = expression.expression;
-  }
-  return expression;
-}
-
 function propertyName(node: ts.ObjectLiteralElementLike): string | null {
   if (!ts.isPropertyAssignment(node) && !ts.isShorthandPropertyAssignment(node)) {
     return null;
@@ -91,7 +79,7 @@ function literalBooleanOption(
     lowerer.unsupported("SC1090", call, `${api} with this argument shape`);
     return fallback;
   }
-  const argument = unwrapExpression(argumentNode);
+  const argument = withoutParenthesesAssertionsNonNull(argumentNode);
   if (!ts.isObjectLiteralExpression(argument)) {
     lowerer.unsupported(
       "SC1090",
@@ -121,7 +109,7 @@ function literalBooleanOption(
         `${api} with a runtime '${option}' value (write '${option}: true' or '${option}: false')`,
       );
     }
-    const value = unwrapExpression(member.initializer);
+    const value = withoutParenthesesAssertionsNonNull(member.initializer);
     if (value.kind === ts.SyntaxKind.TrueKeyword) answer = true;
     else if (value.kind === ts.SyntaxKind.FalseKeyword) answer = false;
     else {
@@ -146,7 +134,7 @@ function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeRead
       return { source: expression, type: direct, destroyOnReturn: true };
     }
   }
-  const call = unwrapExpression(expression);
+  const call = withoutParenthesesAssertionsNonNull(expression);
   if (!ts.isCallExpression(call) || call.questionDotToken) return null;
   const iteratorCall =
     ts.isPropertyAccessExpression(call.expression) &&
@@ -173,7 +161,7 @@ function symbolAsyncIteratorCall(
   lowerer: Lowerer,
   expression: ts.Expression,
 ): ts.CallExpression | null {
-  const call = unwrapExpression(expression);
+  const call = withoutParenthesesAssertionsNonNull(expression);
   if (
     !ts.isCallExpression(call) ||
     call.questionDotToken ||
@@ -182,7 +170,7 @@ function symbolAsyncIteratorCall(
   ) {
     return null;
   }
-  const key = unwrapExpression(call.expression.argumentExpression);
+  const key = withoutParenthesesAssertionsNonNull(call.expression.argumentExpression);
   if (
     !ts.isPropertyAccessExpression(key) ||
     key.name.text !== "asyncIterator" ||
@@ -198,7 +186,7 @@ function webReadablePlan(lowerer: Lowerer, expression: ts.Expression): WebReadab
   if (directElement) {
     return { source: expression, element: directElement, preventCancel: false };
   }
-  const unwrapped = unwrapExpression(expression);
+  const unwrapped = withoutParenthesesAssertionsNonNull(expression);
   const propertyCall =
     ts.isCallExpression(unwrapped) &&
     !unwrapped.questionDotToken &&
@@ -225,6 +213,23 @@ function webReadablePlan(lowerer: Lowerer, expression: ts.Expression): WebReadab
       propertyCall ? "ReadableStream.values" : "ReadableStream[Symbol.asyncIterator]",
     ),
   };
+}
+
+/** `stream.values(...)` or `stream[Symbol.asyncIterator](...)` on a web
+ * ReadableStream — the view `lowerWebReadable` consumes directly. Its TYPE
+ * is AsyncIterableIterator<T>, which the type mapper lowers like any other
+ * async iteration protocol, so the loop checks this first: the stream view
+ * takes its own lowering, not the async-generator one. */
+export function isWebReadableIteratorSource(lowerer: Lowerer, expression: ts.Expression): boolean {
+  return webReadablePlan(lowerer, expression) !== null;
+}
+
+/** `readable.iterator(...)` or `readable[Symbol.asyncIterator](...)` on a
+ * Node readable — the view `lowerNodeReadable` consumes directly. Its TYPE
+ * is AsyncIterableIterator<T> too, and the loop must reach that lowering
+ * rather than lower the call as an async-generator value. */
+export function isNodeReadableIteratorSource(lowerer: Lowerer, expression: ts.Expression): boolean {
+  return nodeReadablePlan(lowerer, expression) !== null;
 }
 
 function classAsyncIteratorPlan(

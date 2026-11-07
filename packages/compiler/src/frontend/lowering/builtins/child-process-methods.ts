@@ -1,9 +1,10 @@
 import { boolLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { isChildSurfaceMember } from "../surfaces.js";
+import { isChildSurfaceMember, isChildWriterSurfaceMember } from "../surfaces.js";
 import { bufEncoding } from "../containers/bytes.js";
 import {
   BOOL,
@@ -24,7 +25,6 @@ import {
   ipcMessageListener,
   ipcDisconnectListener,
 } from "./ipc.js";
-import { stripTypeCasts } from "./arguments.js";
 import { resultIsDiscarded } from "../call-position.js";
 
 export function lowerChildMethodCall(
@@ -140,7 +140,7 @@ export function lowerChildMethodCall(
         loc,
       });
     }
-    const listenerNode = stripTypeCasts(call.arguments.nodes[1]!);
+    const listenerNode = withoutParenthesesAssertionsNonNull(call.arguments.nodes[1]!);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(listenerNode)) &&
       (ts.isArrowFunction(listenerNode) || ts.isFunctionExpression(listenerNode)) &&
@@ -526,7 +526,7 @@ export function lowerChildWriterMethodCall(
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "childWriter") return null;
-  if (!lowerer.isStdlibMember(access)) return null;
+  if (!isChildWriterSurfaceMember(lowerer, access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
 

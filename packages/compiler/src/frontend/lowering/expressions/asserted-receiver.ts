@@ -27,7 +27,9 @@ import * as ts from "../../ts7/adapter.js";
 import { type IrExpr, type IrType, type SrcLoc, isUnitType, typeEquals } from "../../../ir/ir.js";
 import type { Lowerer } from "../lowerer.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { hostedStorageView } from "./hosted-narrowing.js";
+import { locOf } from "../../program.js";
+import { assertedOptionalExtension, hostedStorageView } from "./hosted-narrowing.js";
+import { nsMemberIdentOf } from "../lower-namespaces.js";
 
 /** The assertion node at the root of `node`, through parentheses; null
  * when `node` is not an (`as` / `<T>`) assertion. */
@@ -37,6 +39,23 @@ export function assertedReceiverNode(
   let e = node;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   return ts.isAsExpression(e) || ts.isTypeAssertion(e) ? e : null;
+}
+
+/** The assertion a non-null assertion wraps (`(value as T | undefined)!`),
+ * through parentheses; null for every other node. */
+function nonNullAssertedNode(node: ts.Expression): ts.AsExpression | ts.TypeAssertion | null {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return ts.isNonNullExpression(e) ? assertedReceiverNode(e.expression) : null;
+}
+
+/** The record a possibly absent value holds when it is present: the one
+ * arm beside `undefined` and `null`. Null for any other type. */
+function presentRecord(lowerer: Lowerer, type: IrType): (IrType & { kind: "record" }) | null {
+  if (type.kind !== "union") return null;
+  const present = (lowerer.unions.get(type.unionId)?.arms ?? []).filter((arm) => !isUnitType(arm));
+  const only = present[0];
+  return present.length === 1 && only?.kind === "record" ? only : null;
 }
 
 /** The member a probe access names: a property access's name, or an
@@ -221,4 +240,170 @@ export function applyDeferredAssertion(
   }
   lowerer.assertedValues.set(value, target);
   return value;
+}
+
+/** The binding `node` names, through parentheses and the non-null
+ * assertion: `(x).member` and `x!.member` read the same binding `x` does.
+ * A namespace-import member (`ns.x`) names the exporter's binding: the
+ * checker types the access at the exported assertion, while the lowering
+ * reads the exporter's global, so its member name resolves like a bare
+ * reference. Null for any other receiver expression. */
+function bindingIdentifier(lowerer: Lowerer, node: ts.Expression): ts.Identifier | null {
+  let e = node;
+  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+  if (ts.isIdentifier(e)) return e;
+  return ts.isPropertyAccessExpression(e) ? nsMemberIdentOf(lowerer, e) : null;
+}
+
+/** Whether the binding `ident` names DECLARES `member`: its annotation or
+ * the asserted type of its initializer. Checker-only, and narrowing never
+ * enters a declaration's own type, so a member a test narrows in at a use
+ * site is not one the declaration holds. */
+function declaredMember(lowerer: Lowerer, ident: ts.Identifier, member: string): boolean {
+  const decl = lowerer.checker.getSymbolAtLocation(ident)?.valueDeclaration;
+  if (decl === undefined) return false;
+  const name = ts.isParameter(decl)
+    ? decl.name
+    : ts.isVariableDeclaration(decl)
+      ? decl.name
+      : undefined;
+  if (name === undefined || !ts.isIdentifier(name)) return false;
+  return (
+    lowerer.checker.getPropertyOfType(lowerer.checker.getTypeAtLocation(name), member) !== undefined
+  );
+}
+
+/** A member access whose asserted type adds a member the value's own record
+ * layout does not hold (assertedOptionalExtension): `x.member` on a binding
+ * whose declared type is an optional extension of the layout it stores, or
+ * on an assertion `(value as T)` directly. The checker admits the member;
+ * Node reads it off the object the binding holds.
+ *
+ * `storage` is the layout of that object; `field` is the member as the
+ * asserted type declares it. Null for every other access — a member the
+ * stored layout declares is an ordinary field of it. An optional chain
+ * over a value whose layout is a record (`x?.member`) needs no separate
+ * answer: its nullish test never fires. Over a nullable value
+ * (`(x as T | undefined)?.member`) the chain's guard binds the present
+ * record to the receiver, and that record is the object read here; the
+ * non-null spelling (`(x as T | undefined)!.member`) reads the same one. */
+function assertedOptionalMember(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  member: string,
+): {
+  asserted: IrType & { kind: "record" };
+  storage: IrType & { kind: "record" };
+  field: { name: string; type: IrType };
+} | null {
+  // The value's own layout: the assertion erases (Node reads the property
+  // off the value), and a binding stores what its initializer produced.
+  const assertion = assertedReceiverNode(receiver);
+  const nonNull = assertion ? null : nonNullAssertedNode(receiver);
+  let storage: IrType | null | undefined;
+  let binding: ts.Identifier | null = null;
+  if (assertion) {
+    storage =
+      lowerer.chainRecvByNode.get(receiver)?.type ??
+      lowerer.mapTypeOf(lowerer.typeOf(assertion.expression));
+  } else if (nonNull) {
+    // `(value as T | undefined)!.member`: the non-null assertion erases
+    // too, and reads the record the value holds when it is present.
+    const operand = lowerer.mapTypeOf(lowerer.typeOf(nonNull.expression));
+    storage = operand ? (presentRecord(lowerer, operand) ?? operand) : operand;
+  } else {
+    binding = bindingIdentifier(lowerer, receiver);
+    if (binding === null) return null;
+    storage = lowerer.peekLocal(binding)?.type ?? lowerer.globalOf(binding)?.type;
+  }
+  // Cheap rejection for the ordinary `x.member` read: the binding's own
+  // layout answers it, so no asserted member is involved.
+  if (storage?.kind !== "record") return null;
+  if (lowerer.shapes.get(storage.shapeId)?.fields.some((f) => f.name === member)) {
+    return null;
+  }
+  // A binding's assertion is its DECLARED type. A member a narrowing test
+  // adds (`"k" in x`, `typeof x.k === "string"`) is not one the assertion
+  // declares, and its read has its own lowering — the checked-dynamic
+  // keyed read — which this hook leaves byte-identical. Parentheses and
+  // the non-null assertion spell the same binding.
+  if (binding !== null && !declaredMember(lowerer, binding, member)) return null;
+  // The asserted type may spell the added member as an intersection
+  // (`Base & { icons?: unknown }`) or as a declared record or interface
+  // that extends the stored one (`item as WithIcons`); both only ADD
+  // members Node reads off the object.
+  const asserted = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+  if (asserted?.kind !== "record") return null;
+  const field = lowerer.shapes.get(asserted.shapeId)?.fields.find((f) => f.name === member);
+  if (!field) return null;
+  if (!assertedOptionalExtension(lowerer, storage, asserted)) return null;
+  return { asserted, storage, field };
+}
+
+/** The asserted-only optional member read: `(value as T).member`, or a
+ * binding whose asserted type `T` only adds optional members to the record
+ * layout the value has (assertedOptionalExtension). Node erases the
+ * assertion and reads the property off the value, so the answer comes from
+ * the record's kept source (assertedOnlyFieldRead) — the value when the
+ * object carries the key, undefined when it does not. Null for every other
+ * read, which keeps its own lowering.
+ *
+ * A read the source cannot answer (a layout that cannot keep a source, a
+ * name on Object.prototype) is refused by name: answering the width copy's
+ * absent slot with undefined would be a silent divergence. */
+export function assertedOptionalMemberRead(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const member = assertedOptionalMember(lowerer, access.expression, access.name.text);
+  if (member === null) return null;
+  const assertion = assertedReceiverNode(access.expression);
+  // Inside an optional chain's guard the receiver is already evaluated: the
+  // chain bound its present value to the receiver node.
+  const value =
+    lowerer.chainRecvByNode.get(access.expression) ??
+    lowerer.lowerExpr(assertion?.expression ?? access.expression);
+  if (value.type.kind !== "record") {
+    // `(value as T | undefined)!.member`: the value is still nullable
+    // here, and the member has no slot in the record it holds when present.
+    if (nonNullAssertedNode(access.expression) && presentRecord(lowerer, value.type))
+      lowerer.unsupported(
+        "SC1090",
+        access,
+        `reading '${access.name.text}' through a non-null assertion over a type assertion to a member the value's own layout does not hold (rule the absent value out first, then assert the type)`,
+      );
+    return null;
+  }
+  if (!assertedOptionalExtension(lowerer, value.type, member.asserted)) return null;
+  const answer = lowerer.assertedOnlyFieldRead(
+    access.name.text,
+    value.type,
+    () => value,
+    member.field.type,
+    locOf(access),
+  );
+  if (answer !== null) return answer;
+  lowerer.unsupported(
+    "SC1090",
+    access,
+    `reading '${access.name.text}' through a type assertion to a member the value's own layout does not hold (the record's kept source properties cannot answer it; declare the member on the value's type)`,
+  );
+}
+
+/** The write twin of assertedOptionalMemberRead. Node's write adds or
+ * replaces the property on the object itself; the record the binding holds
+ * has no slot for it, and a width copy would take the write and drop it —
+ * a silent divergence. Refused by name instead. */
+export function assertedOnlyMemberWrite(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  member: string,
+  blame: ts.Node,
+): void {
+  if (assertedOptionalMember(lowerer, receiver, member) === null) return;
+  lowerer.unsupported(
+    "SC1090",
+    blame,
+    `writing '${member}' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type)`,
+  );
 }

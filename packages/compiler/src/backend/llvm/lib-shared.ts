@@ -1,6 +1,7 @@
 /* Shared tables and emission shapes for LLVM standard-library dispatch. */
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 
 /** Emit a validation-ladder call that always throws, preserving the typed
  * dummy-result ownership shape until the pending check unwinds it. */
@@ -27,7 +28,7 @@ export function emitAlwaysThrowLibCall(
  * (scr_assert.c). The first argument is the verdict; the value is the index
  * of the `negated` flag, or null when the call fails exactly when the
  * verdict is false. A passing assertion branches around the call. */
-export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Map([
+export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<IrLibFn, number | null> = new Map([
   ["assert.ok", null],
   ["assert.looseResult", 1],
   ["assert.deepResult", 1],
@@ -37,7 +38,7 @@ export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Ma
 
 /** The Math functions that call scr_ieee754.c. They read and write no
  * memory, so calls with the same argument fold and loops may hoist them. */
-export const PURE_MATH_LIB_FNS: ReadonlySet<string> = new Set([
+export const PURE_MATH_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "math.sin",
   "math.sinh",
   "math.cos",
@@ -64,6 +65,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.expectsErrDyn": "scr_assert_expects_err_dyn",
   "assert.throwsValidate": "scr_assert_throws_validate",
   "insp.jsonDyn": "scr_util_format_j",
+  "insp.jsonDynValue": "scr_util_format_j_value",
   "http.reqH2StreamOrThrow": "scr_http_req_h2_stream_or_throw",
   "intl.segmenterNew": "scr_intl_segmenter_new",
   "intl.segmenterRefusing": "scr_intl_segmenter_refusing",
@@ -86,6 +88,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sharedArrayBuffer.new": "scr_shared_array_buffer_new",
   "sharedArrayBuffer.is": "scr_shared_array_buffer_is",
   "arrayBuffer.new": "scr_array_buffer_new",
+  "arrayBuffer.newResizable": "scr_js_buffer_new_resizable",
+  "sharedArrayBuffer.newGrowable": "scr_js_buffer_new_growable",
+  "arrayBuffer.armMutable": "scr_js_buffers_arm",
   "ffi.argument": "scr_ffi_argument",
   "ffi.memoryModule": "scr_ffi_memory_module",
   "arrayBuffer.is": "scr_array_buffer_is",
@@ -266,11 +271,17 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.userName": "scr_os_user_name",
   "os.userShell": "scr_os_user_shell",
   "os.userHomedir": "scr_os_user_homedir",
+  "url.revokeObjectURL": "scr_url_revoke_object_url",
+  "os.userNameBuf": "scr_os_user_name_bytes",
+  "os.userShellBuf": "scr_os_user_shell_bytes",
+  "os.userHomedirBuf": "scr_os_user_homedir_bytes",
   "os.userUid": "scr_os_user_uid",
   "os.userGid": "scr_os_user_gid",
+  "os.userInfoBegin": "scr_os_user_info_begin",
   "os.tmpdir": "scr_os_tmpdir",
   "process.argv": "scr_process_argv",
   "process.execArgv": "scr_process_exec_argv",
+  "process.allowedEnvFlags": "scr_process_allowed_env_flags",
   "process.platform": "scr_process_platform",
   "process.cwd": "scr_process_cwd",
   "process.pid": "scr_process_pid",
@@ -303,7 +314,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.clear": "scr_console_clear",
   "console.table": "scr_console_table",
   "console.dirDyn": "scr_console_dir_dyn",
+  "console.dirHidden": "scr_console_dir_hidden",
   "global.native": "scr_global_native",
+  "global.hostAbsent": "scr_global_host_absent_install",
+  "dyn.globalHas": "scr_global_host_absent_has",
   "global.installValues": "scr_global_values_install",
   "dyn.installBuiltinStatics": "scr_builtin_statics_install",
   "global.forInObject": "scr_global_for_in_object",
@@ -317,6 +331,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "module.namespaceValue": "scr_module_namespace_value",
   "module.namespaceDyn": "scr_module_namespace_dyn_value",
   "wrapper.new": "scr_js_wrapper_new",
+  "iterator.prototype": "scr_js_iterator_prototype",
+  "iterator.constructor": "scr_js_iterator_constructor",
+  "iterator.construct": "scr_js_iterator_construct",
+  "iterator.from": "scr_js_iterator_from",
+  "iterator.instanceOf": "scr_js_iterator_instance_of",
   "wrapper.toObject": "scr_js_wrapper_to_object",
   "wrapper.instanceOf": "scr_js_wrapper_instance_of",
   "wrapper.objectTag": "scr_js_wrapper_object_tag",
@@ -400,6 +419,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stdio": "scr_process_stdio",
   "process.stdioSlot": "scr_process_stdio",
   "process.stdioWriteDyn": "scr_process_stdio_write_dyn",
+  "process.stdioWriteStr": "scr_stdio_write_str_dyn",
   "process.stderrWrite": "scr_process_stderr_write",
   "process.isTTY": "scr_process_is_tty",
   "process.isTTYValue": "scr_process_is_tty_value",
@@ -467,6 +487,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.realpathValue": "scr_fs_realpath_value",
   "dyn.validateString": "scr_value_string",
   "dyn.validateStrings": "scr_value_strings",
+  "dyn.validateFsPath": "scr_value_fs_path",
   "path.resolveValue": "scr_path_resolve_value",
   "path.parseValue": "scr_path_parse_value",
   "path.formatValue": "scr_path_format_value",
@@ -597,6 +618,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.readFileSyncBuf": "scr_fs_read_file_bytes",
   "fs.readFileSyncBytes": "scr_fs_read_file_bytes",
   "fs.writeFileSyncBytes": "scr_fs_write_file_bytes",
+  "fs.writeFileSyncBytesFlags": "scr_fs_write_file_flags_bytes",
   "fs.writeFileSyncFd": "scr_fs_write_file_fd",
   "fs.appendFileSyncBytes": "scr_fs_append_file_bytes",
   "fs.readFdSyncBytes": "scr_fs_read_fd_bytes",
@@ -621,7 +643,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.statfsSync": "scr_fs_statfs_checked",
   "fs.readlinkSyncStr": "scr_fs_readlink_str",
   "fs.readlinkSyncBuffer": "scr_fs_readlink_buffer",
-  "fs.openSync": "scr_fs_open",
+  "fs.openSync": "scr_fs_open_mode",
   "fs.openNumericSync": "scr_fs_open_numeric",
   "fs.readSync": "scr_fs_read_sync",
   "fs.readSyncDyn": "scr_fs_read_sync_dyn",
@@ -714,6 +736,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "zlib.inflateSync": "scr_zlib_inflate",
   "zlib.crc32": "scr_zlib_crc32",
   "zlib.brotliInstall": "scr_brotli_install",
+  "zlib.zstdInstall": "scr_zstd_install",
   // The CA-store unit. get/set throw (an unknown type name, a
   // certificate-free set) and take the generic path's pending check.
   "tlsca.root": "scr_tls_ca_root",
@@ -812,6 +835,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.begin": "scr_insp_begin",
   "insp.layout": "scr_insp_layout",
   "insp.maxArrayLength": "scr_insp_max_array_length",
+  "insp.maxStringLength": "scr_insp_max_string_length",
+  "insp.getters": "scr_insp_getters",
+  "insp.gettersMode": "scr_insp_getters_mode",
+  "insp.accessorValue": "scr_insp_accessor_result",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
   "insp.moreItems": "scr_insp_more_items",
@@ -820,6 +847,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.mark": "scr_insp_mark",
   "insp.unwind": "scr_insp_unwind",
   "insp.nestedEnd": "scr_insp_nested_end",
+  "insp.nestedRestore": "scr_insp_nested_restore",
   // Circular references over cycle-capable composites (Node's
   // seen/circular machinery — none of these throw; refWrap borrows its
   // string and answers +1).
@@ -829,6 +857,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  // scr_record_source_delete.c, a gated unit.
+  "record.sourceDelete": "scr_record_source_delete",
   "record.sourceSpread": "scr_record_source_spread",
   "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",
@@ -864,6 +894,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "url.fileURLToPathBuffer": "scr_url_checked_to_path_buffer",
   "url.pathToFileURLChecked": "scr_url_checked_from_path",
   "url.fileURLToPathStr": "scr_url_str_to_path",
+  "url.legacyClass": "scr_url_legacy_class",
   "url.legacyParse": "scr_url_legacy_parse",
   "url.legacyFormat": "scr_url_legacy_format",
   "url.legacyResolve": "scr_url_legacy_resolve",
@@ -929,6 +960,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // (execSync/execCapture throw — the may-throw check); handle getters
   // are pure reads. Registration forms are special-cased (moves + per-
   // shape adapters); spawn itself is special-cased for usesTimers.
+  "cp.checkArgs": "scr_child_check_args",
   "cp.spawnSync": "scr_spawn_sync",
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
@@ -939,7 +971,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.execCapture": "scr_exec_capture",
   "spawnRes.stdout": "scr_spawn_res_stdout",
   "spawnRes.stderr": "scr_spawn_res_stderr",
+  "spawnRes.stdoutBytes": "scr_spawn_res_stdout_bytes",
+  "spawnRes.stderrBytes": "scr_spawn_res_stderr_bytes",
   "child.killed": "scr_child_killed",
+  "child.spawnfile": "scr_child_spawnfile",
+  "child.spawnargs": "scr_child_spawnargs",
   "child.offSpawn": "scr_child_off_spawn",
   "child.offExit": "scr_child_off_exit",
   "child.offClose": "scr_child_off_close",
@@ -981,6 +1017,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.truncate": "scr_fsp_truncate",
   "fsp.appendFile": "scr_fsp_append_file",
   "fsp.appendFileBytes": "scr_fsp_append_file_bytes",
+  "fsp.writeFileBytes": "scr_fsp_write_file_bytes",
+  "fsp.writeFileBytesFlags": "scr_fsp_write_file_flags_bytes",
   "fsp.copyFile": "scr_fsp_copyfile",
   "fsp.mkdtemp": "scr_fsp_mkdtemp",
   "fsp.readFileEncoded": "scr_fsp_read_file_encoded",
@@ -1017,6 +1055,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dir.path": "scr_dir_path",
   "dir.closeSync": "scr_dir_close",
   "dir.close": "scr_dir_close_promise",
+  "dir.readCb": "scr_dir_read_callback",
+  "dir.closeCb": "scr_dir_close_callback",
+  "dir.dispose": "scr_dir_dispose",
+  "dir.asyncDispose": "scr_dir_async_dispose",
   "fsp.open": "scr_fsp_open",
   "fileHandle.fd": "scr_file_handle_fd",
   "fileHandle.close": "scr_file_handle_close_promise",
@@ -1092,6 +1134,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "event.handleEventReader": "scr_event_handle_event_reader",
   "event.targetDispatch": "scr_event_target_obj_dispatch",
   "event.targetCall": "scr_event_target_obj_call",
+  "event.targetListeners": "scr_event_target_listeners",
+  "event.targetListenersDyn": "scr_event_target_listeners_dyn",
+  "event.targetListenerCount": "scr_event_target_listener_count",
+  "event.targetListenerCountDyn": "scr_event_target_listener_count_dyn",
+  "event.targetGetMax": "scr_event_target_get_max",
+  "event.targetSetMax": "scr_event_target_set_max",
   "event.call": "scr_event_obj_call",
   "event.get": "scr_event_obj_get",
   "event.set": "scr_event_obj_set",
@@ -1145,6 +1193,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.callSync": "scr_node_island_call_sync",
   "nodeIsland.call": "scr_node_island_call",
   "nodeIsland.require": "scr_ni_require",
+  "nodeIsland.processReport": "scr_ni_process_report",
   "nodeIsland.defer": "scr_node_island_defer",
   "nodeIsland.import": "scr_ni_import",
   "nodeIsland.get": "scr_node_island_get",
@@ -1174,8 +1223,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.keySetComputed": "scr_dyn_key_set_computed",
   "dyn.keyDelete": "scr_dyn_key_delete",
   "dyn.keyDeleteComputed": "scr_dyn_key_delete_computed",
+  "dyn.primitiveDelete": "scr_dyn_primitive_delete",
   "dyn.reflectDeleteProperty": "scr_dyn_reflect_delete_property",
   "dyn.reflectHasTarget": "scr_dyn_reflect_has_target",
+  "dyn.reflectGetPrototypeTarget": "scr_dyn_reflect_get_prototype_target",
   "dyn.hasKeyComputed": "scr_dyn_has_key_computed",
   "dyn.hasOwnComputed": "scr_dyn_has_own_computed",
   "dyn.propertyIsEnumerableComputed": "scr_dyn_property_is_enumerable_computed",
@@ -1221,7 +1272,14 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
   "dyn.promiseResolve": "scr_dyn_promise_resolve",
-  "child.propsInstall": "scr_dyn_handle_props_install",
+  "handle.propsInstall": "scr_dyn_handle_props_install",
+  "handle.propsGrant": "scr_dyn_handle_props_grant",
+  "handle.propsDefineProps": "scr_dyn_define_props_hp",
+  "handle.propsGuard": "scr_dyn_handle_props_guard",
+  "handle.propsGuardList": "scr_dyn_handle_props_guard_list",
+  "handle.propsCheck": "scr_dyn_handle_props_check",
+  // Promise statics with a foreign `this` (scr_js_promise_generic.c).
+  "promise.genericStatic": "scr_js_promise_generic_call",
   "child.propsDefine": "scr_dyn_define_property_hp",
   "child.propsDescriptor": "scr_dyn_get_own_property_descriptor_hp",
   "child.propsResolve": "scr_dyn_promise_resolve_hp",
@@ -1242,6 +1300,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "collection.preventExtensions": "scr_map_prevent_extensions",
   "collection.isExtensible": "scr_map_is_extensible",
   "dyn.nativeSetNew": "scr_dyn_native_set_new",
+  "dyn.collectionConstruct": "scr_dyn_collection_construct",
+  "dyn.setValues": "scr_dyn_set_values",
   "dyn.nativeSetIs": "scr_dyn_native_set_is",
   "dyn.nativeMapIs": "scr_dyn_native_map_is",
   "dyn.nativeUrlIs": "scr_dyn_native_url_is",
@@ -1366,6 +1426,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "event.broadcastInstall": "scr_et_broadcast_install",
   "process.stdinDestroy": "scr_process_stdin_destroy",
   "process.stdinSetRawMode": "scr_process_stdin_set_raw_mode",
+  "stdin.pause": "scr_stdin_pause",
+  "stdin.resume": "scr_stdin_resume",
+  "stdin.isPaused": "scr_stdin_is_paused",
+  "stdin.readableLength": "scr_stdin_readable_length",
   // node:events EventEmitter (scr_events_emitter.c): receivers borrowed,
   // chaining forms answer the receiver +1 (Node's `return this`). The
   // registration/removal family and emitError are may-throw (meta
@@ -1390,6 +1454,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.listeners": "scr_emitter_listeners",
   "emitter.listenersDyn": "scr_emitter_listeners_dyn",
   "emitter.hasTyped": "scr_emitter_has_typed",
+  "emitter.hasDyn": "scr_emitter_has_dyn",
   "emitter.setMax": "scr_emitter_set_max",
   "emitter.setMaxChk": "scr_emitter_set_max_chk",
   "emitter.setDefaultMaxChk": "scr_emitter_set_default_max_chk",
@@ -1445,6 +1510,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "rl.getPrompt": "scr_rl_get_prompt",
   "rl.write": "scr_rl_write",
   "rl.writeKey": "scr_rl_write_key",
+  "rl.off": "scr_rl_off",
+  "rl.offAll": "scr_rl_off_all",
+  "rl.listenerCount": "scr_rl_listener_count",
+  "rl.listenerCountFn": "scr_rl_listener_count_fn",
+  "rl.eventNames": "scr_rl_event_names",
   "rl.iterOpen": "scr_rl_iter_open",
   "rl.iterNext": "scr_rl_iter_next",
   "rl.iterReturn": "scr_rl_iter_return",
@@ -1700,6 +1770,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.serverMaxHeaderSize": "scr_http_server_max_header_size",
   "http.clientMaxHeaderSize": "scr_http_client_max_header_size",
   "http.clientSignalCheck": "scr_http_client_signal_check",
+  "http.clientProtocolCheck": "scr_http_client_protocol_check",
+  "http.clientProtocolCheckAgent": "scr_http_client_protocol_check_agent",
   "https.nextServername": "scr_https_set_next_servername",
   "http.clientAbort": "scr_http_client_abort",
   "http.clientAborted": "scr_http_client_aborted",
@@ -1835,7 +1907,14 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",
+  "dyn.collectionMethod": "scr_dyn_collection_method",
+  "dyn.collectionPrototype": "scr_dyn_collection_prototype",
+  "dyn.collectionGetPrototype": "scr_dyn_collection_get_prototype",
+  "dyn.setCombine": "scr_dyn_set_combine",
+  "dyn.collectionForEach": "scr_dyn_collection_for_each",
+  "dyn.builtinMethodValue": "scr_dyn_builtin_method_value",
   "dyn.stdlibPrototype": "scr_dyn_stdlib_prototype",
+  "dyn.dataViewPrototype": "scr_data_view_prototype",
   "dyn.classPrototype": "scr_dyn_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
@@ -1891,6 +1970,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.
   "timers.queueMicrotaskDyn": "scr_queue_microtask_dyn",
+  "timers.checkCallback": "scr_timers_check_callback",
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
   "timers.userDelay": "scr_timer_user_delay",
@@ -1931,7 +2011,7 @@ export function mockTimerSym(
   return host.mockTimers && !e.realTimer ? MOCK_TIMER_SYMS[e.fn] : undefined;
 }
 
-export const USES_TIMERS_LIB_FNS = new Set<string>([
+export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.generateKeyPairCb",
   "crypto.diffieHellman",
   "crypto.checkPrimeCb",
@@ -1984,6 +2064,16 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   // object as process.stdio and call back from a nextTick.
   "process.stdioSlot",
   "process.stdioWriteDyn",
+  // The untyped one-string write reaches the same stream objects and calls
+  // a replacement, so it links the events unit too.
+  "process.stdioWriteStr",
+  // stdin.resume() and stdin.read() start the runtime's stdin watch (a
+  // resumed stream, a read demand above the held input, or a parked
+  // for-await), which the loop services until end-of-input: without the
+  // loop a program that only waits for input exits at once instead of at
+  // EOF, as Node's does.
+  "stdin.resume",
+  "stdin.read",
   "fetch.start",
   "fetch.input",
   "fetch.function",
@@ -2147,6 +2237,12 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "http.requestDynCb",
   "https.requestDyn",
   "https.requestDynCb",
+  "https.requestFnDyn",
+  "https.requestFnDynCb",
+  "http.requestUrlDyn",
+  "http.requestUrlDynCb",
+  "https.requestUrlDyn",
+  "https.requestUrlDynCb",
   "https.request",
   "https.requestCb",
   "https.requestUrl",
@@ -2175,6 +2271,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "nodeIsland.call",
   "nodeIsland.callSync",
   "nodeIsland.require",
+  "nodeIsland.processReport",
   "nodeIsland.defer",
   "nodeIsland.import",
   "nodeIsland.awaitCopy",

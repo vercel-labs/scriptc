@@ -27,11 +27,13 @@
  * unit, present in every link including the runtime's own unit-test
  * subsets) rather than in the console unit. */
 _Noreturn void scr_trap(const char *msg) {
+  scr_stdout_settle(); /* buffered stdout (--stdout-buffering) stays source-ordered */
   fputs(msg, stderr);
   abort();
 }
 
 _Noreturn void scr_trap_fmt(const char *fmt, ...) {
+  scr_stdout_settle();
   va_list ap;
   va_start(ap, fmt);
   vfprintf(stderr, fmt, ap);
@@ -700,8 +702,10 @@ void scr_exc_print_uncaught(void) {
   }
 #endif
   scr_exit_code_note(scr_uncaught_handler_failed ? 7 : 1);
-  /* Settle any runtime-internal stdout fragment before the stderr line when
-   * both share an fd. JavaScript-visible writes already flush themselves. */
+  /* Settle stdout before the stderr line when both share an fd: the
+   * runtime's own fragments, and — in a --stdout-buffering build — the
+   * JavaScript-visible bytes it buffers. */
+  scr_stdout_settle();
   fflush(stdout);
 #ifdef SCR_NODE_ISLANDS
   /* An error thrown by Node island code: Node's own report (the throw
@@ -732,7 +736,9 @@ void scr_exc_print_uncaught(void) {
   case SCR_EXC_OBJ:
     /* Error instances (builtin or user subclass) render like Node's first
      * line: "name: message" (toString rules for the empty halves). Node
-     * appends a stack trace; scriptc has none (documented divergence). */
+     * appends a stack trace; scriptc appends the frames the error captured
+     * when it was created, which only builds that keep source frames have
+     * (the compiler's observesStacks). */
     if (scr_error_is(scr_exc_payload)) {
       const ScrError *error = (const ScrError *)scr_exc_payload;
       ScrStr *s = scr_error_to_string((ScrError *)scr_exc_payload);
@@ -743,6 +749,7 @@ void scr_exc_print_uncaught(void) {
       if (scr_uncaught_unnamed_sc_code(error->code, s))
         fprintf(stderr, " [%.*s]", (int)error->code->len, error->code->data);
       scr_str_release(s);
+      scr_error_report_frames(error);
       break;
     }
     /* fall through: non-Error hierarchy objects render like other refs */

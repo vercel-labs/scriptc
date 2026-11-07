@@ -63,6 +63,7 @@ const REASON_RULES: Record<string, NodeIslandRule> = {
   "loader-hook": "R1.4",
   "engine-internal": "R1.5",
   "weak-ref": "R1.6",
+  "host-global": "R1.6",
   "constructor-function": "R2.1",
   "prototype-write": "R2.2",
   "define-property": "R2.3",
@@ -72,6 +73,10 @@ const REASON_RULES: Record<string, NodeIslandRule> = {
   "direct-eval": "R2.4",
   "annexb-block-function": "R2.4",
   "sloppy-this": "R2.4",
+  // A sloppy-mode write to a name no declaration binds: ECMAScript creates
+  // the global at run time. Native lowering refuses it (SC1091); the module
+  // runs in a Node island instead.
+  "implicit-global-write": "R2.4",
   "builtin-write": "R2.5",
   "builtin-patch": "R2.5",
   proxy: "R2.5",

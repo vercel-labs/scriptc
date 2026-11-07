@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
-import { resolveImportMetaRuntime, runtimePathForTarget } from "./runtime-resolve.js";
+import {
+  resolveImportMetaRuntime,
+  resolveRequireRuntime,
+  runtimePathForTarget,
+} from "./runtime-resolve.js";
+import { FrontendInputTracker, changedFrontendInput } from "./input-tracker.js";
 import { FrontendServices } from "./services.js";
 import { clearResolveCaches } from "./resolve.js";
 
@@ -102,4 +107,45 @@ test("pure runtime URL and builtin resolution needs no process services", () => 
     error: { name: "TypeError", code: "ERR_INVALID_URL" },
   });
   expect(resolveImportMetaRuntime(entry, "#unimplemented", process.platform)).toBeNull();
+});
+
+test("a relative lookup path records the working directory as an input", () => {
+  const entry = join(process.cwd(), "main.mjs");
+  const relative = new FrontendInputTracker();
+  relative.run(() => {
+    resolveRequireRuntime(entry, "lookup-fixture", process.platform, ["./vendor"]);
+  });
+  const cwdProbe = { op: "host", path: "cwd", value: process.cwd() };
+  expect(relative.snapshot().probes).toContainEqual(cwdProbe);
+  expect(relative.snapshot().stable).toBe(true);
+  // An absolute lookup path names its own directory, and a resolution
+  // without lookup paths starts from the requesting file.
+  for (const paths of [[process.cwd()], undefined]) {
+    const absolute = new FrontendInputTracker();
+    absolute.run(() => {
+      resolveRequireRuntime(entry, "lookup-fixture", process.platform, paths);
+    });
+    expect(absolute.snapshot().probes).not.toContainEqual(cwdProbe);
+  }
+});
+
+test("a frontend entry recorded under another working directory is not reused", () => {
+  const entry = join(process.cwd(), "main.mjs");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    resolveRequireRuntime(entry, "lookup-fixture", process.platform, ["./vendor"]);
+  });
+  const snapshot = tracker.snapshot();
+  expect(changedFrontendInput(snapshot)).toBeNull();
+  const elsewhere = {
+    ...snapshot,
+    probes: snapshot.probes.map((probe) =>
+      probe.op === "host" && probe.path === "cwd" ? { ...probe, value: "/elsewhere" } : probe,
+    ),
+  };
+  expect(changedFrontendInput(elsewhere)).toEqual({
+    op: "host",
+    path: "cwd",
+    value: "/elsewhere",
+  });
 });

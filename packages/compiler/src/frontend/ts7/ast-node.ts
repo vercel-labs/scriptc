@@ -17,14 +17,191 @@ import {
 import type { ImportClause, SourceFile } from "./ast-types.js";
 import { SyntaxKind, NodeFlags } from "./enums.js";
 
-/** Receives the file name of a source file whose raw text or line
- * positions a reader takes: the text of a node other than a token
- * (getText), a node's text with its trivia (getFullText), or line starts. */
-let sourceTextObserver: ((fileName: string) => void) | undefined;
+/** Receives every read of a source file's raw text, with the file's name and
+ * the text that was read. The tokens of a file are what the checker and the
+ * syntax tree carry; anything a reader takes from the text beside them (the
+ * spelling between two tokens, a comment, a line number, whether a word
+ * occurs anywhere) is reported here, so a cache can tell an edit that leaves
+ * every such answer unchanged from one that does not.
+ *
+ * A reader that says what it derives is reported precisely: a `range` of the
+ * text (a node's own text, its leading trivia), the line and character of a
+ * `position`, or the answer of a predicate over the text or a range of it
+ * (`fact`; `start` is negative for the whole text). Every other read of the
+ * text is `whole`: the reader may depend on any of it. */
+export interface SourceTextObserver {
+  whole(fileName: string): void;
+  range(fileName: string, text: string, start: number, end: number, span: SourceTextSpan): void;
+  position(fileName: string, text: string, position: number): void;
+  fact(
+    fileName: string,
+    text: string,
+    predicate: SourceTextPredicate,
+    result: boolean,
+    start: number,
+    end: number,
+    span: SourceTextSpan,
+  ): void;
+}
 
-/** Installs the observer of raw source text reads (sourceTextObserver). */
-export function observeSourceText(observer: ((fileName: string) => void) | undefined): void {
+/** Where the two offsets of a range stand among the tokens. An offset is
+ * either the start of a token or the place the token before it ended (a
+ * node's `pos` and `end`); where two tokens touch, and at the start of the
+ * file, one number is both, and only the reader knows which it means. Bit 0
+ * is set when the range starts at a token's start, bit 1 when it ends at
+ * one. */
+export type SourceTextSpan = 0 | 1 | 2 | 3;
+/** From a token's start to a token's end: a node's own text. */
+export const TOKEN_SPAN: SourceTextSpan = 1;
+/** From the end of the token before a node (its `pos`) to a token's end: a
+ * node's text with its leading comments and whitespace. */
+export const FULL_SPAN: SourceTextSpan = 0;
+/** From the end of the token before a node (its `pos`) to a token's start:
+ * the comments and whitespace that lead up to that token. */
+export const LEADING_SPAN: SourceTextSpan = 2;
+
+/** A question about text that can be asked again of another version of it:
+ * whether it includes `needle`, or whether the regular expression `source`
+ * with `flags` matches it. */
+export type SourceTextPredicate =
+  | { kind: "includes"; needle: string }
+  | { kind: "matches"; source: string; flags: string };
+
+/** The function that answers `predicate` over a text. */
+export function sourceTextPredicateTest(predicate: SourceTextPredicate): (text: string) => boolean {
+  if (predicate.kind === "includes") return (text) => text.includes(predicate.needle);
+  const pattern = new RegExp(predicate.source, predicate.flags);
+  return (text) => pattern.test(text);
+}
+
+let sourceTextObserver: SourceTextObserver | undefined;
+
+/** Installs the observer of raw source text reads (SourceTextObserver). */
+export function observeSourceText(observer: SourceTextObserver | undefined): void {
   sourceTextObserver = observer;
+}
+
+/** The installed observer of raw source text reads. */
+export function observedSourceText(): SourceTextObserver | undefined {
+  return sourceTextObserver;
+}
+
+/** The syntax tree file of source file `sf`, or undefined for a source
+ * file that is not one of this layer's trees (a stand-in a test passes):
+ * such a file has only its `text`, and nothing observes reads of it. */
+function treeOf(sf: AstNode): AstFile | undefined {
+  const file: AstFile | undefined = sf.file;
+  return file !== undefined && file.isSourceFile() ? file : undefined;
+}
+
+function includesPredicate(
+  sf: AstNode,
+  needle: string,
+  start: number,
+  end: number,
+  span: SourceTextSpan,
+): boolean {
+  const file = treeOf(sf);
+  const text = file === undefined ? (sf.text ?? "") : file.sourceText();
+  const result = (start < 0 ? text : text.substring(start, end)).includes(needle);
+  if (sourceTextObserver !== undefined && file !== undefined)
+    sourceTextObserver.fact(
+      file.root.fileName,
+      text,
+      { kind: "includes", needle },
+      result,
+      start,
+      end,
+      span,
+    );
+  return result;
+}
+
+function matchesPredicate(
+  sf: AstNode,
+  pattern: RegExp,
+  start: number,
+  end: number,
+  span: SourceTextSpan,
+): boolean {
+  // The pattern carries no state between calls.
+  if (pattern.global || pattern.sticky)
+    throw new Error("a source text pattern takes no g or y flag");
+  const file = treeOf(sf);
+  const text = file === undefined ? (sf.text ?? "") : file.sourceText();
+  const result = pattern.test(start < 0 ? text : text.substring(start, end));
+  if (sourceTextObserver !== undefined && file !== undefined)
+    sourceTextObserver.fact(
+      file.root.fileName,
+      text,
+      { kind: "matches", source: pattern.source, flags: pattern.flags },
+      result,
+      start,
+      end,
+      span,
+    );
+  return result;
+}
+
+/** Whether the text of source file `sf` includes `needle`, reported as that
+ * fact instead of a read of the whole text. */
+export function sourceTextIncludes(sf: AstNode, needle: string): boolean {
+  return includesPredicate(sf, needle, -1, -1, TOKEN_SPAN);
+}
+
+/** Whether `pattern` (without the g and y flags) matches the text of source
+ * file `sf`, reported as that fact instead of a read of the whole text. */
+export function sourceTextMatches(sf: AstNode, pattern: RegExp): boolean {
+  return matchesPredicate(sf, pattern, -1, -1, TOKEN_SPAN);
+}
+
+/** sourceTextIncludes over the text from `start` to `end` (offsets as for
+ * sourceTextRange): the answer is reported, not the range's text. */
+export function sourceTextRangeIncludes(
+  sf: AstNode,
+  start: number,
+  end: number,
+  needle: string,
+  span: SourceTextSpan = TOKEN_SPAN,
+): boolean {
+  return includesPredicate(sf, needle, start, end, span);
+}
+
+/** sourceTextMatches over the text from `start` to `end` (offsets as for
+ * sourceTextRange): the answer is reported, not the range's text. */
+export function sourceTextRangeMatches(
+  sf: AstNode,
+  start: number,
+  end: number,
+  pattern: RegExp,
+  span: SourceTextSpan = TOKEN_SPAN,
+): boolean {
+  return matchesPredicate(sf, pattern, start, end, span);
+}
+
+/** The text of source file `sf` from `start` to `end`, reported as a read of
+ * that range. `span` says where the offsets stand among the tokens; an
+ * offset that is not where it says has no counterpart in an edited version
+ * of the file, and the read then counts as one of the whole text when a
+ * cache replays it. */
+export function sourceTextRange(
+  sf: AstNode,
+  start: number,
+  end: number,
+  span: SourceTextSpan = TOKEN_SPAN,
+): string {
+  const file = treeOf(sf);
+  if (file === undefined) return (sf.text ?? "").substring(start, end);
+  file.noteTextRange(start, end, span);
+  return file.sourceText().substring(start, end);
+}
+
+/** The text of source file `sf` for a consumer that carries it and derives
+ * nothing from it: the build's record of its sources (diagnostic frames,
+ * debug information, the cache's copy), and content digests that key a
+ * memo. Not reported. A consumer that inspects the text reads `sf.text`. */
+export function carriedSourceText(sf: AstNode): string {
+  return treeOf(sf)?.sourceText() ?? sf.text ?? "";
 }
 
 /** A list of child nodes with the list's own position, the shape of tsc-ts's
@@ -62,7 +239,7 @@ export class AstNodeList<T extends AstNode = AstNode> {
   hasTrailingComma(): boolean {
     const last = this.nodes[this.nodes.length - 1];
     if (last === undefined) return false;
-    const text = last.getSourceFile().text;
+    const text = last.file.sourceText();
     const next = astSkipTrivia(text, last.end, false, false);
     return next < this.end && text.charCodeAt(next) === 44;
   }
@@ -238,10 +415,34 @@ export class AstFile {
     return result;
   }
 
-  /** Reports a read of this file's raw text or line positions. */
+  /** Whether the root is a source file (not a checker-made fragment). */
+  isSourceFile(): boolean {
+    return this.root.kind === SyntaxKind.SourceFile;
+  }
+
+  /** The root's text, without reporting a read: for this layer's own
+   * token arithmetic (a token's start, a trailing comma), whose answers
+   * are the same in every token-equivalent version. */
+  sourceText(): string {
+    return this.root.unobservedText() ?? "";
+  }
+
+  /** Reports a read of this file's whole raw text. */
   noteSourceText(): void {
     if (sourceTextObserver !== undefined && this.root.kind === SyntaxKind.SourceFile)
-      sourceTextObserver(this.root.fileName);
+      sourceTextObserver.whole(this.root.fileName);
+  }
+
+  /** Reports a read of the text from `start` to `end`. */
+  noteTextRange(start: number, end: number, span: SourceTextSpan): void {
+    if (sourceTextObserver !== undefined && this.root.kind === SyntaxKind.SourceFile)
+      sourceTextObserver.range(this.root.fileName, this.sourceText(), start, end, span);
+  }
+
+  /** Reports a read of the line and character of `position`. */
+  noteTextPosition(position: number): void {
+    if (sourceTextObserver !== undefined && this.root.kind === SyntaxKind.SourceFile)
+      sourceTextObserver.position(this.root.fileName, this.sourceText(), position);
   }
 
   /** The file name of the source file node at `index`; the root's is
@@ -253,9 +454,10 @@ export class AstFile {
     return name;
   }
 
+  /** The offsets at which lines start. Not reported: the caller reports
+   * what it takes from them (one position's line, or all of them). */
   lineStarts(): number[] {
-    this.noteSourceText();
-    if (this.lines === undefined) this.lines = astLineStarts(this.root.text ?? "");
+    if (this.lines === undefined) this.lines = astLineStarts(this.sourceText());
     return this.lines;
   }
 }
@@ -376,6 +578,13 @@ export class AstNode {
     return this.parentCache;
   }
   get text(): string | undefined {
+    // A source file's text read as a string: the reader may depend on any
+    // of it (see SourceTextObserver).
+    if (this.index === 1) this.file.noteSourceText();
+    return this.unobservedText();
+  }
+  /** `text` without reporting a read of a source file's text. */
+  unobservedText(): string | undefined {
     if (!this.textResolved) {
       this.textCache = this.file.wire.text(this.index);
       this.textResolved = true;
@@ -525,7 +734,7 @@ export class AstNode {
   getStart(sourceFile?: AstNode, includeJsDocComment?: boolean): number {
     if (this.pos === this.end && this.pos >= 0 && this.kind !== AstKind.EndOfFile) return this.pos;
     const source = sourceFile ?? this.file.root;
-    const text = source.text ?? "";
+    const text = source.file.sourceText();
     if (
       (this.kind >= AstKind.FirstJSDocNode && this.kind <= AstKind.LastJSDocNode) ||
       this.kind === AstKind.JsxText
@@ -555,14 +764,15 @@ export class AstNode {
   }
   getFullText(sourceFile?: AstNode): string {
     const source = sourceFile ?? this.file.root;
-    source.file.noteSourceText();
-    return (source.text ?? "").substring(this.pos, this.end);
+    source.file.noteTextRange(this.pos, this.end, FULL_SPAN);
+    return source.file.sourceText().substring(this.pos, this.end);
   }
   getText(sourceFile?: AstNode): string {
     const source = sourceFile ?? this.file.root;
+    const start = this.getStart(source);
     // A token's text is the same in every token-equivalent version.
-    if (this.kind > SyntaxKind.LastToken) source.file.noteSourceText();
-    return (source.text ?? "").substring(this.getStart(source), this.end);
+    if (this.kind > SyntaxKind.LastToken) source.file.noteTextRange(start, this.end, TOKEN_SPAN);
+    return source.file.sourceText().substring(start, this.end);
   }
 
   get containsOnlyTriviaWhiteSpaces(): boolean {
@@ -1932,10 +2142,13 @@ export class AstNode {
     return index === 0 ? undefined : index === this.index ? true : this.file.node(index);
   }
   getLineStarts(): number[] {
+    // Every line's start: a read of the whole text.
+    this.file.noteSourceText();
     return this.file.lineStarts();
   }
   getLineAndCharacterOfPosition(position: number): { line: number; character: number } {
-    const starts = this.getLineStarts();
+    this.file.noteTextPosition(position);
+    const starts = this.file.lineStarts();
     const line = astLineOfPosition(starts, position);
     return { line, character: position - starts[line]! };
   }

@@ -1,0 +1,13 @@
+early-error-private-names.js:14:13 - error SC0009: the private name '#value' is not declared in an enclosing class
+
+  13 | const box = new Box();
+  14 | console.log(box.#value);
+     |             ^~~~~~~~~~
+  15 | 
+
+early-error-private-names.js:14:17 - error SC0001: Property '#value' is not accessible outside class 'Box' because it has a private identifier.
+
+  13 | const box = new Box();
+  14 | console.log(box.#value);
+     |                 ^~~~~~
+  15 | 

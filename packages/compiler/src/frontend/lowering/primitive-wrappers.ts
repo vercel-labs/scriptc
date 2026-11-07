@@ -18,6 +18,7 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
@@ -151,7 +152,7 @@ export function wrapperConstructors(lowerer: Lowerer, loc: SrcLoc): IrExpr[] {
  * compare). Until they know the slot, a wrapper reaching one refuses: each
  * dynamic argument passes through wrapper.guard, which throws the
  * not-supported Error when the value's own data graph holds a wrapper. */
-const GUARDED_CONSUMERS: ReadonlySet<string> = new Set([
+export const GUARDED_CONSUMERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "json.stringifyValue",
   "json.stringifyReplacer",
   "util.isDeepStrictEqual",
@@ -159,6 +160,7 @@ const GUARDED_CONSUMERS: ReadonlySet<string> = new Set([
   "assert.looseDeepDyn",
   "assert.partialDeepDyn",
   "console.dirDyn",
+  "console.dirHidden",
   "insp.format",
   "insp.formatPrimitives",
   "insp.formatList",
@@ -177,7 +179,7 @@ const WRAPPER_TYPE_PROBES: ReadonlySet<string> = new Set([
 ]);
 
 /** The consumer as the refusal names it. */
-function consumerName(fn: string): string {
+export function consumerName(fn: string): string {
   if (fn.startsWith("json.")) return "JSON.stringify";
   if (fn === "dyn.structuredClone") return "structuredClone";
   if (fn === "util.isDeepStrictEqual") return "util.isDeepStrictEqual";

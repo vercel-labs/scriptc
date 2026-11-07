@@ -14,6 +14,8 @@
  *    maps still find it (tests/fixtures/node-island/gc-capsule).
  *  - Exports the island keeps for the whole run schedule no major GCs of
  *    their own once a GC found them live (tests/fixtures/node-island/gc-held.mjs).
+ *  - A native AbortSignal's twin in the island is collected with it, and
+ *    lives while either side holds the signal (tests/fixtures/node-island/gc-signals.mjs).
  * Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -39,8 +41,12 @@ interface Run {
 
 let binary = "";
 
-async function run(args: string[], env: Record<string, string> = {}): Promise<Run> {
-  const { stdout, stderr } = await execFileAsync(binary, args, {
+async function run(
+  args: string[],
+  env: Record<string, string> = {},
+  program: string = binary,
+): Promise<Run> {
+  const { stdout, stderr } = await execFileAsync(program, args, {
     cwd: fixtures,
     env: { ...process.env, SCRIPTC_NODE_ISLANDS_TRACE: "gc", ...env },
     encoding: "utf8",
@@ -126,6 +132,37 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     expect(major).toBeGreaterThan(0);
     expect(major).toBeLessThanOrEqual(3);
   }, 300_000);
+
+  test("AbortSignal twins are collected with their requests", async () => {
+    // One native controller per request, its signal handed to the island in
+    // a record and dropped by both sides. A twin lives while either side
+    // holds its signal, so the ten controllers the program keeps still reach
+    // the island's listeners at the end, and nothing else is left.
+    const dir = join(outDir, "gc-signals");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-signals.mjs"), {
+      outPath: join(dir, "gc-signals"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const small = await run(["10000"], {}, result.binaryPath);
+    const large = await run(["100000"], {}, result.binaryPath);
+    // Requests, aborts the island's listeners saw, and the signals the
+    // island holds that aborted: the two that follow a kept controller.
+    expect(small.stdout).toBe("10000 20 2/6 0\n");
+    expect(large.stdout).toBe("100000 110 2/6 0\n");
+    for (const r of [small, large]) expect(r.totals["analyzed"]).toBe(r.totals["major"]);
+    // Three exports per iteration: the options record and the signal the
+    // program made, and the native signal that stands for the island's.
+    // What is left at the end is what the iterations since the last major
+    // collection made, which V8 schedules by the exports' size and not by
+    // their count so far: bounded, where a leak would hold all 300,000.
+    expect(large.totals["freed exports"]).toBeGreaterThan(3 * 100_000 - 40_000);
+    expect(large.totals["held exports"]).toBeLessThan(40_000);
+    expect(large.totals["representatives"]).toBeLessThan(40_000);
+  }, 600_000);
 
   test("a native object the program keeps keeps its identity in island weak maps", async () => {
     // A typed object crosses in a capsule the export table alone holds;

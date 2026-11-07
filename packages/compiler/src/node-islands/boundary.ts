@@ -44,21 +44,71 @@ export interface IslandModule {
   decision: "marked" | "auto";
 }
 
+/** The islands a build installed outside node_modules (a linked or hoisted
+ * workspace member), by directory, and the answer already given for each
+ * file. The memo lives on the set it describes, and an island set with no
+ * linked member never fills it. */
+export interface IslandDirIdentity {
+  byDir: Map<string, IslandPackage>;
+  answered: Map<string, IslandPackage | null>;
+  /** Whether `byDir` has been built from the set's packages. */
+  built: boolean;
+}
+
 /** The program's island packages, by package name, and island modules, by
  * absolute file path. */
 export interface NodeIslandSet {
   packages: ReadonlyMap<string, IslandPackage>;
   modules: ReadonlyMap<string, IslandModule>;
+  /** islandPackageOfFile's answers by file spelling. A set is assembled
+   * before its lowering starts and is not changed afterwards, so every
+   * answer is fixed for the set's lifetime; the two memos live in the set
+   * so they cannot outlive it, and a new set starts empty. */
+  packagesOfFile?: Map<string, IslandPackage | null>;
+  /** islandModuleOfFile's answers by file spelling (same lifetime as
+   * packagesOfFile). */
+  modulesOfFile?: Map<string, IslandModule | null>;
+  /** The directory index for islands installed outside node_modules, and
+   * the answers already given from it (see `IslandDirIdentity`). */
+  linked: IslandDirIdentity;
+}
+
+/** An island set with the boundary's directory index in place. */
+export function nodeIslandSet(
+  packages: ReadonlyMap<string, IslandPackage>,
+  modules: ReadonlyMap<string, IslandModule>,
+): NodeIslandSet {
+  return {
+    packages,
+    modules,
+    linked: { byDir: new Map(), answered: new Map(), built: false },
+  };
 }
 
 function normalizePath(file: string): string {
   return file.replaceAll("\\", "/");
 }
 
+/* What an island set answers about one file, keyed by the file. A set is
+ * assembled before its lowering starts and is never modified afterwards
+ * (executable/prepare.ts builds a fresh one for every island round), so an
+ * answer is fixed for the set's lifetime. The memo is stored on the set
+ * object, so it cannot outlive the set and a reload can never read another
+ * program's answer. */
+
 /** The island module at `file`, or null. */
 export function islandModuleOfFile(islands: NodeIslandSet, file: string): IslandModule | null {
   if (islands.modules.size === 0) return null;
-  return islands.modules.get(file) ?? islands.modules.get(normalizePath(file)) ?? null;
+  let answers = islands.modulesOfFile;
+  if (answers === undefined) {
+    answers = new Map();
+    islands.modulesOfFile = answers;
+  }
+  const known = answers.get(file);
+  if (known !== undefined) return known;
+  const module = islands.modules.get(file) ?? islands.modules.get(normalizePath(file)) ?? null;
+  answers.set(file, module);
+  return module;
 }
 
 /** Whether `file` (a path as the checker spells it, or its real path) is a
@@ -82,14 +132,66 @@ export function islandOwnerOfFile(
 /** The island package that owns a declaration or JavaScript file, or null.
  * `@types/<name>` declarations type the package `<name>`. */
 export function islandPackageOfFile(islands: NodeIslandSet, file: string): IslandPackage | null {
-  const at = packageDirOf(file);
-  if (at === null) return null;
-  let name = at.name;
-  if (name.startsWith("@types/")) {
-    const bare = name.slice("@types/".length);
-    name = bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+  if (islands.packages.size === 0) return null;
+  let answers = islands.packagesOfFile;
+  if (answers === undefined) {
+    answers = new Map();
+    islands.packagesOfFile = answers;
   }
-  return islands.packages.get(name) ?? null;
+  const known = answers.get(file);
+  if (known !== undefined) return known;
+  const at = packageDirOf(file);
+  let island: IslandPackage | null = null;
+  if (at !== null) {
+    let name = at.name;
+    if (name.startsWith("@types/")) {
+      const bare = name.slice("@types/".length);
+      name = bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+    }
+    island = islands.packages.get(name) ?? null;
+  }
+  const found = island ?? islandPackageUnderDir(islands, file);
+  answers.set(file, found);
+  return found;
+}
+
+/* A workspace-linked package's realpath elides the node_modules segment the
+ * file path names it by, so its files carry no package name at all: the
+ * island's installed directory is the only identity left. The index holds
+ * only islands installed OUTSIDE node_modules — a package there is already
+ * named by the paths above — so an ordinary build never reaches the prefix
+ * scan, and a per-file memo keeps it off the hot path when it does. Both
+ * live on the island set (see `IslandDirIdentity`). */
+function islandPackageUnderDir(islands: NodeIslandSet, file: string): IslandPackage | null {
+  const linked = islands.linked;
+  if (!linked.built) {
+    linked.built = true;
+    for (const pkg of islands.packages.values()) {
+      const dir = normalizePath(pkg.dir).replace(/\/+$/, "");
+      if (packageDirOf(`${dir}/package.json`) !== null) continue;
+      linked.byDir.set(dir, pkg);
+    }
+  }
+  if (linked.byDir.size === 0) return null;
+  const path = normalizePath(file);
+  const known = linked.answered.get(path);
+  if (known !== undefined) return known;
+  let answer: IslandPackage | null = null;
+  for (const [dir, pkg] of linked.byDir) {
+    if (path !== dir && !path.startsWith(`${dir}/`)) continue;
+    // The directory fallback applies only to files whose path carries no
+    // package identity: a workspace link's realpath elides the node_modules
+    // segment its files are named by. A package installed under the island's
+    // directory — `<island>/node_modules/<name>`, that package's @types twin,
+    // a pnpm-store copy — is a separate package, and the name lookup above
+    // already declined it, so the island's directory names only the island's
+    // own files.
+    if (path.slice(dir.length).split("/").includes("node_modules")) continue;
+    answer = pkg;
+    break;
+  }
+  linked.answered.set(path, answer);
+  return answer;
 }
 
 /* Native classes extending island classes (scope-B NI-5b): their class
@@ -99,6 +201,13 @@ const islandSubclassDecls = new Set<ts.Node>();
 
 export function markIslandSubclass(decl: ts.ClassDeclaration): void {
   islandSubclassDecls.add(decl);
+}
+
+/** How many island subclasses are registered: a registry that only grows, so
+ * a memo of isForeignType's answers holds while this is unchanged (see
+ * Lowerer.foreignType). */
+export function islandSubclassCount(): number {
+  return islandSubclassDecls.size;
 }
 
 export function isIslandSubclassDecl(decl: ts.Node | undefined): boolean {
@@ -172,6 +281,13 @@ const COPIED =
   ts.TypeFlags.Undefined |
   ts.TypeFlags.Void;
 
+/** Whether a checker type is a primitive the boundary copies: a number,
+ * string, boolean or bigint (literal types included), null, undefined or
+ * void. */
+export function isCopiedTsType(type: ts.Type): boolean {
+  return (type.flags & COPIED) !== 0;
+}
+
 export function crossingOf(
   islands: NodeIslandSet,
   type: ts.Type,
@@ -179,12 +295,17 @@ export function crossingOf(
 ): BoundaryCrossing {
   if (type.isUnionType()) {
     const arms = ts.constituentTypes(type);
-    if (arms.every((t) => (t.flags & COPIED) !== 0)) return "copy";
+    if (arms.every(isCopiedTsType)) return "copy";
     if (isForeignType(islands, type, checker)) return "handle";
     return "refused";
   }
-  if ((type.flags & COPIED) !== 0) return "copy";
+  if (isCopiedTsType(type)) return "copy";
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return "dyn";
+  // Checker flow can narrow a live value to never (a failed type
+  // predicate whose type is `unknown` subtracts every member). The value
+  // still exists at run time, so it crosses as a handle-agnostic dyn
+  // value rather than a refusal; nothing can observe an uninhabited type.
+  if ((type.flags & ts.TypeFlags.Never) !== 0) return "dyn";
   if (isForeignType(islands, type, checker)) return "handle";
   return "refused";
 }
@@ -213,6 +334,16 @@ export function setFrontendIslands(names: ReadonlySet<string>): void {
   frontendIslands = names;
 }
 
+/* Packages a caller wants to know this set was asked about. The npm-static
+ * ladder records them around one rung, so a recorded rung can tell which
+ * island sets answer it identically (see pipeline.ts's LadderRung). */
+let islandReads: Set<string> | null = null;
+
+export function recordFrontendIslandReads(into: Set<string> | null): void {
+  islandReads = into;
+}
+
 export function isFrontendIsland(pkg: string): boolean {
+  islandReads?.add(pkg);
   return frontendIslands.size > 0 && frontendIslands.has(pkg);
 }

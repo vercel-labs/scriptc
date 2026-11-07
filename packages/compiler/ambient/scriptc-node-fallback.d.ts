@@ -23,6 +23,19 @@
  * has a lowering (throw sites stamp the errno name — "ENOENT" and
  * friends; reads answer `string | undefined`), errno/syscall/path
  * typecheck and fence per member. */
+/* A typed array or a DataView as a builtin's parameter: the three members
+ * every view has, so each of them, a Buffer and a value typed with the ES
+ * library's `ArrayBufferView` are arguments. The builtin declarations use
+ * this interface instead of the library's: that one is the type of a
+ * program's own values and maps to the checked-dynamic value wherever one
+ * flows, and a builtin's signature keeps its shape whatever a program's
+ * values are. It has no value representation of its own: a builtin lowers
+ * its view argument at the call. */
+interface ScriptcBufferView<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike> {
+  readonly buffer: TArrayBuffer;
+  readonly byteLength: number;
+  readonly byteOffset: number;
+}
 declare namespace NodeJS {
   interface ProcessVersions {
     readonly node: string;
@@ -55,6 +68,22 @@ declare namespace NodeJS {
     headersUrl?: string | undefined;
     libUrl?: string | undefined;
     lts?: string | undefined;
+  }
+  /* process.report: the diagnostic report of this process. A build with a
+   * Node island answers it from the island — the same process, so the
+   * report's sharedObjects lists the binary's real libraries; a build
+   * without islands fences the member rather than fabricating a report.
+   * The report object itself is checked-dynamic. */
+  interface ProcessReport {
+    directory: string;
+    filename: string;
+    compact: boolean;
+    excludeNetwork: boolean;
+    signal: string;
+    reportOnFatalError: boolean;
+    reportOnSignal: boolean;
+    reportOnUncaughtException: boolean;
+    getReport(error?: Error): object;
   }
   interface ResourceUsage {
     userCPUTime: number;
@@ -270,6 +299,9 @@ declare var process: {
   /* The extra CLI arguments Node itself consumed (--expose-internals,
    * ...): a compiled binary consumed none, so this is always []. */
   readonly execArgv: string[];
+  /* The option names the compatibility target accepts in NODE_OPTIONS —
+   * one stable set, like Node's. */
+  readonly allowedNodeEnvironmentFlags: ReadonlySet<string>;
   /* Node's internal "exit sequence started" flag (real, undocumented
    * surface — the test harness reads it): true while 'exit' listeners
    * run, false otherwise. */
@@ -293,6 +325,8 @@ declare var process: {
   title: string;
   argv0: string;
   readonly release: NodeJS.ProcessRelease;
+  /* The diagnostic report (Node islands only; see NodeJS.ProcessReport). */
+  readonly report: NodeJS.ProcessReport;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -333,12 +367,14 @@ declare var process: {
   stdout: import("tty").WriteStream;
   stderr: import("tty").WriteStream;
   /* The stdin stream, the piped-input slice: the TTY probe, the
-   * data/end/error events and readline's 'keypress' (on and once — a 'data' listener keeps the
-   * event loop alive until EOF, like Node's flowing stdin), destroy()
-   * (full teardown: nothing fires after, the loop stops waiting), and
-   * async iteration (`for await (const chunk of process.stdin)` — chunks
-   * are Uint8Array values, ending at EOF). setEncoding has no lowering
-   * (chunks stay bytes; decode with TextDecoder). */
+   * data/end/error/readable events and readline's 'keypress' (on and once
+   * — a 'data' or 'readable' listener keeps the event loop alive until
+   * EOF, like Node's flowing stdin), the paused-mode reads (pause,
+   * resume, isPaused, read, readableLength), destroy() (full teardown:
+   * nothing fires after, the loop stops waiting), and async iteration
+   * (`for await (const chunk of process.stdin)` — chunks are Uint8Array
+   * values, ending at EOF). setEncoding has no lowering (chunks stay
+   * bytes; decode with TextDecoder). */
   stdin: {
     readonly isTTY: boolean;
     /* The descriptor the stream is built over (Node reports 0 here and
@@ -350,6 +386,10 @@ declare var process: {
     on(event: "data", listener: (chunk: Uint8Array) => void): void;
     on(event: "end", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
+    /* Paused mode, as in Node: input stays buffered for read(), and the
+     * listener runs when input arrives while a read wanted more, and once
+     * at EOF. A 'readable' listener keeps the loop alive until EOF. */
+    on(event: "readable", listener: () => void): void;
     /* readline.emitKeypressEvents(process.stdin)'s keys */
     on(
       event: "keypress",
@@ -358,10 +398,28 @@ declare var process: {
     once(event: "data", listener: (chunk: Uint8Array) => void): void;
     once(event: "end", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    once(event: "readable", listener: () => void): void;
     once(
       event: "keypress",
       listener: (str: string | undefined, key: import("readline").Key) => void,
     ): void;
+    /* The readable half of the stream. pause()/resume() set Node's flowing
+     * flag (input buffers instead of reaching 'data' listeners while
+     * paused, and flows again on resume); Node answers `this` and this
+     * call is statement-position only. read([size]) takes held input with
+     * Node's size coercion: a fractional size truncates, NaN (or no size)
+     * reads everything held, a size of zero or less reads nothing, and a
+     * size above 1 GiB throws Node's ERR_OUT_OF_RANGE. Null answers
+     * "nothing yet", and the answer is a Buffer, both exactly Node's.
+     * readableLength is what waits.
+     * isPaused() answers Node's paused mode: true after pause() or once a
+     * 'readable' listener is attached, and resume() with such a listener
+     * (or 'end') does not clear it. */
+    pause(): void;
+    resume(): void;
+    isPaused(): boolean;
+    read(size?: number): Buffer | null;
+    readonly readableLength: number;
     destroy(): void;
     setEncoding(encoding: "utf8"): void;
     /* Termios raw mode on a TTY stdin (libuv's UV_TTY_MODE_RAW, the mode
@@ -866,6 +924,8 @@ interface Buffer<
     encoding?: BufferEncoding,
   ): number;
   subarray(start?: number, end?: number): Buffer<TArrayBuffer>;
+  /* The JSON snapshot JSON.stringify calls. */
+  toJSON(): { type: "Buffer"; data: number[] };
   /* @types/node's spelling — the ArrayBuffer instantiation keeps the
    * override compatible with the lib's Uint8Array.slice. */
   slice(start?: number, end?: number): Buffer<ArrayBuffer>;
@@ -1219,9 +1279,9 @@ declare var CountQueuingStrategy: {
   new (init: { highWaterMark: number }): CountQueuingStrategy;
   readonly prototype: CountQueuingStrategy;
 };
-interface ByteLengthQueuingStrategy extends QueuingStrategy<ArrayBufferView> {
+interface ByteLengthQueuingStrategy extends QueuingStrategy<ScriptcBufferView> {
   readonly highWaterMark: number;
-  readonly size: QueuingStrategySize<ArrayBufferView>;
+  readonly size: QueuingStrategySize<ScriptcBufferView>;
 }
 declare var ByteLengthQueuingStrategy: {
   new (init: { highWaterMark: number }): ByteLengthQueuingStrategy;
@@ -1300,7 +1360,7 @@ interface ResponseInit {
 }
 declare var Response: {
   new (
-    body?: string | Uint8Array | ReadableStream<Uint8Array> | null,
+    body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null,
     init?: ResponseInit,
   ): Response;
   readonly prototype: Response;
@@ -1329,7 +1389,7 @@ interface Blob {
 }
 declare var Blob: {
   new (
-    sources?: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    sources?: readonly (string | ArrayBuffer | ScriptcBufferView | Blob)[],
     options?: BlobPropertyBag,
   ): Blob;
   readonly prototype: Blob;
@@ -1340,7 +1400,7 @@ interface File extends Blob {
 }
 declare var File: {
   new (
-    sources: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    sources: readonly (string | ArrayBuffer | ScriptcBufferView | Blob)[],
     fileName: string,
     options?: FilePropertyBag,
   ): File;
@@ -1374,7 +1434,7 @@ interface Request {
 interface RequestInit {
   method?: string;
   headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
-  body?: string | Uint8Array | ReadableStream<Uint8Array> | null;
+  body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
   duplex?: "half";
   redirect?: "follow" | "error" | "manual";
   signal?: AbortSignal;
@@ -1538,6 +1598,9 @@ declare var URL: {
   new (input: string | { toString: () => string }, base?: string | URL): URL;
   canParse(input: string | URL, base?: string | URL): boolean;
   parse(input: string | URL, base?: string | URL): URL | null;
+  /* The id is coerced to a string before the registry lookup; a
+   * compiled program registers no blob URLs, so every id misses. */
+  revokeObjectURL(url: string | URL): void;
 };
 
 /* URLSearchParams — the WHATWG application/x-www-form-urlencoded list.
@@ -1555,7 +1618,10 @@ interface URLSearchParams {
   set(name: string, value: string): void;
   sort(): void;
   toString(): string;
-  forEach(callback: (value: string, name: string, searchParams: URLSearchParams) => void): void;
+  forEach(
+    callback: (value: string, name: string, searchParams: URLSearchParams) => void,
+    thisArg?: unknown,
+  ): void;
   keys(): IterableIterator<string>;
   values(): IterableIterator<string>;
   entries(): IterableIterator<[string, string]>;
@@ -1629,6 +1695,66 @@ declare module "readline" {
     ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
+    /* prependListener and prependOnceListener register the listener at
+     * the FRONT of the event's list, so it runs before the ones already
+     * there ('once' entries still leave after their one call). */
+    prependListener(event: "line", listener: (input: string) => void): this;
+    prependListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependListener(event: "error", listener: (err: Error) => void): this;
+    prependListener(event: "history", listener: (history: string[]) => void): this;
+    prependOnceListener(event: "line", listener: (input: string) => void): this;
+    prependOnceListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependOnceListener(event: "error", listener: (err: Error) => void): this;
+    prependOnceListener(event: "history", listener: (history: string[]) => void): this;
+    /* removeListener/off remove the LAST registration of that same
+     * function (a once registration leaves as the listener itself); an
+     * event with nothing left drops out of eventNames(). */
+    removeListener(event: "line", listener: (input: string) => void): this;
+    removeListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "history", listener: (history: string[]) => void): this;
+    off(event: "line", listener: (input: string) => void): this;
+    off(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    off(event: "history", listener: (history: string[]) => void): this;
+    removeAllListeners(
+      event?:
+        | "line"
+        | "close"
+        | "pause"
+        | "resume"
+        | "error"
+        | "history"
+        | "SIGINT"
+        | "SIGTSTP"
+        | "SIGCONT",
+    ): this;
+    /* listenerCount counts the listeners of the event (the async
+     * iterator's own count too); with a function only that function's
+     * registrations. eventNames answers the events that have a listener,
+     * in first-registration order: every readline event name is a string,
+     * so the array is string[] rather than EventEmitter's
+     * (string | symbol)[]. */
+    listenerCount(event: "line", listener?: (input: string) => void): number;
+    listenerCount(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener?: () => void,
+    ): number;
+    listenerCount(event: "error", listener?: (err: Error) => void): number;
+    listenerCount(event: "history", listener?: (history: string[]) => void): number;
+    eventNames(): string[];
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
@@ -1747,6 +1873,66 @@ declare module "readline/promises" {
     ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
+    /* prependListener and prependOnceListener register the listener at
+     * the FRONT of the event's list, so it runs before the ones already
+     * there ('once' entries still leave after their one call). */
+    prependListener(event: "line", listener: (input: string) => void): this;
+    prependListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependListener(event: "error", listener: (err: Error) => void): this;
+    prependListener(event: "history", listener: (history: string[]) => void): this;
+    prependOnceListener(event: "line", listener: (input: string) => void): this;
+    prependOnceListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependOnceListener(event: "error", listener: (err: Error) => void): this;
+    prependOnceListener(event: "history", listener: (history: string[]) => void): this;
+    /* removeListener/off remove the LAST registration of that same
+     * function (a once registration leaves as the listener itself); an
+     * event with nothing left drops out of eventNames(). */
+    removeListener(event: "line", listener: (input: string) => void): this;
+    removeListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "history", listener: (history: string[]) => void): this;
+    off(event: "line", listener: (input: string) => void): this;
+    off(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    off(event: "history", listener: (history: string[]) => void): this;
+    removeAllListeners(
+      event?:
+        | "line"
+        | "close"
+        | "pause"
+        | "resume"
+        | "error"
+        | "history"
+        | "SIGINT"
+        | "SIGTSTP"
+        | "SIGCONT",
+    ): this;
+    /* listenerCount counts the listeners of the event (the async
+     * iterator's own count too); with a function only that function's
+     * registrations. eventNames answers the events that have a listener,
+     * in first-registration order: every readline event name is a string,
+     * so the array is string[] rather than EventEmitter's
+     * (string | symbol)[]. */
+    listenerCount(event: "line", listener?: (input: string) => void): number;
+    listenerCount(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener?: () => void,
+    ): number;
+    listenerCount(event: "error", listener?: (err: Error) => void): number;
+    listenerCount(event: "history", listener?: (history: string[]) => void): number;
+    eventNames(): string[];
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }

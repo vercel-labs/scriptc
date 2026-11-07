@@ -11,8 +11,17 @@
  *            as source-anchored diagnostics (SC0004), and the ECMAScript
  *            early errors the checker does not model: a duplicated or
  *            `var`-colliding lexical declaration in a block or switch
- *            statement list (SC0005/SC0006) and a declaration where the
- *            grammar admits only a Statement (SC0007)
+ *            statement list (SC0005/SC0006), a declaration where the
+ *            grammar admits only a Statement (SC0007), an ImportCall
+ *            argument list the grammar does not allow (SC0008), a private
+ *            name with no declaring enclosing class (SC0009), an
+ *            assignment target that is not a variable or a property access
+ *            (SC0010), `await` used as an identifier where the grammar
+ *            makes it an operator (SC0011), `arguments` in a class field
+ *            initializer or static block (SC0012), a script-top-level
+ *            `using` declaration (SC0013), assignment to `eval` or
+ *            `arguments` in strict code (SC0014), and a catch parameter
+ *            the catch block redeclares (SC0015)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected
@@ -91,6 +100,7 @@
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
+import type { NodeIslandPackageMark, NodeIslandPathMark } from "../node-islands/policy.js";
 import type { DiagnosticCode } from "./codes.js";
 
 /* Internal prioritization buckets. NEVER rendered to users — user-facing
@@ -396,6 +406,124 @@ export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc
   };
 }
 
+/** How a mark reads in a message: the flag, or the project setting. */
+function islandMarkOf(source: "cli" | "config"): string {
+  return source === "cli" ? "--node-island" : "scriptc.nodeIslands.modules";
+}
+
+/** SC8006 — the entry module is marked to run in a Node island. The entry
+ * always stays native (a whole-file island is a different feature), so the
+ * mark would be accepted and ignored: the build refuses it instead. */
+export function nodeIslandEntryMarkDiag(
+  file: string,
+  source: "cli" | "config",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `${islandMarkOf(source)} marks the entry module to run in a Node island, and the entry module stays native`,
+    loc,
+    hint: `move the code that needs Node into a module of its own and mark that module; the entry module ${file} is the program the build compiles`,
+  };
+}
+
+/** SC8006 — a user TypeScript module is marked to run in a Node island but
+ * uses syntax Node cannot run with type stripping only. */
+export function nodeIslandMarkStripDiag(
+  file: string,
+  source: "cli" | "config",
+  construct: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `${islandMarkOf(source)} marks '${file}' to run in a Node island, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a .js module can run in a Node island as it is",
+  };
+}
+
+/** The package a path under node_modules belongs to (the last
+ * `node_modules` segment, scope-aware), or null outside node_modules. */
+function packageOfNodeModulesPath(path: string): string | null {
+  const parts = path.replaceAll("\\", "/").split("/");
+  const at = parts.lastIndexOf("node_modules");
+  const first = at < 0 ? undefined : parts[at + 1];
+  if (first === undefined || first === "" || first.includes("*")) return null;
+  if (!first.startsWith("@")) return first;
+  const second = parts[at + 2];
+  return second === undefined || second === "" || second.includes("*")
+    ? null
+    : `${first}/${second}`;
+}
+
+/** SC8006 — a `--node-island` value read as a path or glob matches no
+ * module of the program: the build would run nothing in Node for it. The
+ * message says how the value was read, and the hint how to write the other
+ * reading. */
+export function nodeIslandUnmatchedMarkDiag(mark: NodeIslandPathMark, loc: SrcLoc): ScrDiagnostic {
+  const read =
+    mark.why === "glob"
+      ? `read as the glob ${mark.pattern}, because a value with '*' is a glob over the program's own modules`
+      : mark.why === "explicit"
+        ? `read as the path ${mark.pattern}, because a value that starts with '.' or '/' is a path`
+        : mark.why === "node-modules"
+          ? `read as the path ${mark.pattern}, because no package is named node_modules`
+          : `read as the path ${mark.pattern}, because that file exists and the entry module resolves no package of that name`;
+  const pkg = packageOfNodeModulesPath(mark.pattern);
+  const hint =
+    pkg !== null
+      ? `a path or glob marks the program's own modules; code under node_modules runs in a Node island by package: to mark the package write --node-island=${pkg}`
+      : mark.why === "file"
+        ? `a path marks one of the program's own modules, and the program loads no module from this file; while the file exists, a package of the same name is marked in package.json ("scriptc": { "packages": { "<name>": "node" } })`
+        : "a path or glob marks the program's own modules, resolved from the working directory; to mark a package write its name as the program imports it (--node-island=<package>)";
+  return {
+    code: "SC8006",
+    message: `--node-island=${mark.value} names no module of this program: ${read}`,
+    loc,
+    hint,
+  };
+}
+
+/** SC8006 — `--node-island` names a package the build runs nothing of in
+ * Node: scriptc compiles the package from its own implementation (`shim`),
+ * the package is a Node builtin under another name (`builtin`), `--native`
+ * names the same package (`native`), or the program loads no module of it
+ * from node_modules (`absent`: not imported, imported for its types only, or
+ * a workspace package compiled from source, which is the program's own
+ * code). The `absent` message says how the value was read, and the hint how
+ * to write the other reading. */
+export function nodeIslandUnmatchedPackageDiag(
+  mark: NodeIslandPackageMark,
+  why: "shim" | "builtin" | "native" | "absent",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const { value, name } = mark;
+  const read =
+    mark.why === "installed"
+      ? `read as the package '${name}', because the entry module resolves a package of that name, which wins over the file ${mark.file}`
+      : `read as the package '${name}', because no file ${mark.file} exists`;
+  const message =
+    why === "shim"
+      ? `--node-island=${value} cannot run '${name}' in a Node island: scriptc compiles this package from its own implementation, not from the installed one`
+      : why === "builtin"
+        ? `--node-island=${value} cannot run '${name}' in a Node island: at its installed version the package is a Node builtin module, which the program reaches directly`
+        : why === "native"
+          ? `--node-island=${value} and --native=${name} contradict each other`
+          : `--node-island=${value} names no package this program loads from node_modules: ${read}`;
+  return {
+    code: "SC8006",
+    message,
+    loc,
+    hint:
+      why === "absent"
+        ? `a package runs in a Node island when the program imports a module of it; a workspace package compiled from source is the program's own code, so mark its modules by path; a path starts with ./ (--node-island=./${value})`
+        : why === "native"
+          ? "drop one of the two flags: a package compiles natively or runs in a Node island"
+          : "drop the flag: this package has no island form",
+  };
+}
+
 /** SC8006 — the entry module reads a builtin module member that an island
  * module patches. The entry always stays native, so it cannot join the
  * island set: Node would show this read the patch, the native build cannot.
@@ -433,6 +561,22 @@ export function nodeIslandReaderStripDiag(
     message: `'${file}' reads '${member}', which island module ${patchFile} patches, but Node cannot strip its types: ${construct}`,
     loc,
     hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this read",
+  };
+}
+
+/** SC8020 — native code reads a name that only an island module's sloppy
+ * implicit-global write creates: the global lives on Node's global object,
+ * which the native build does not have. */
+export function nodeIslandImplicitGlobalReadDiag(
+  name: string,
+  writerFile: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8020",
+    message: `'${name}' is created as an implicit global by ${writerFile}, which runs in a Node island; the native build has no global object, so this read cannot see it. Declare '${name}' in this module, or move the code that reads it into ${writerFile}.`,
+    loc,
+    hint: "a declared binding holds the same value in both tiers",
   };
 }
 
@@ -561,6 +705,25 @@ export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic
     message: `${what} cannot cross into or out of a Node island yet`,
     loc,
     hint: "pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on",
+  };
+}
+
+/** SC8010 — a value a Node island made (a function it exports, an object of
+ * a type it declares) sits where the program needs a native value of that
+ * type, and the type has no native form. The package's implementation is
+ * not missing: it runs in the island, and the value is a handle. */
+export function nodeIslandNativeUseDiag(
+  what: string,
+  loc: SrcLoc,
+  callable: boolean,
+): ScrDiagnostic {
+  return {
+    code: "SC8010",
+    message: `${what} is used here as a native value, which a Node island's value of this type cannot become yet`,
+    loc,
+    hint: callable
+      ? "call it from a function of the program, such as `(a, b) => f(a, b)`, or give the slot a function type the program declares"
+      : "use the value through the island (read its members, call its methods, pass it back), or declare the slot `unknown`",
   };
 }
 
@@ -814,7 +977,7 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   SC1091: {
     feature: "writing an undeclared name in a JavaScript source",
     milestone: "later",
-    hint: "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)",
+    hint: "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
   },
   SC1100: {
     feature: "operations on 'unknown' values",
@@ -1175,6 +1338,23 @@ export function noLoweringDiag(
   };
 }
 
+/** A use of a Node 24 global the native runtime does not implement
+ * (host-globals.ts): constructing or calling its constructor value, or
+ * reading one of its members. A bare read compiles and answers the
+ * constructor (host-global-values.ts). Node has the class and its surface,
+ * so answering undefined or refusing to build the module would both
+ * diverge; the reason id lets a Node island run the module instead. */
+export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${name}' is a Node global that native code does not provide`,
+    loc,
+    milestone: "later",
+    hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
+    reason: "host-global",
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's
@@ -1515,9 +1695,10 @@ export function libExportUnresolvedDiag(
     message: `library export '${exportName}' cannot be resolved: ${detail}`,
     loc,
     hint:
-      "the export map may only name function declarations exported directly by the profile's ONE entry module; " +
-      "when a function lives in another module, the entry module declares an exported wrapper function that " +
-      "forwards to it, such as export function handle(msg: string) { return realHandle(msg); }",
+      "the export map may only name exports of the profile's ONE entry module, and the entry module decides " +
+      'where the function lives: re-export it from another module (export { handle } from "./sdk/handler", ' +
+      'or export * from "./sdk/handler"), declare it there and export it through a list (export { handle }), ' +
+      "or declare a forwarding wrapper function",
   };
 }
 

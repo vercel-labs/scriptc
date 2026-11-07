@@ -9,6 +9,8 @@ import {
 } from "./emitter.js";
 import { type IrFunction, type IrModule, type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
 import { INT32_FALLBACK_SUFFIX } from "../../ir/parameter-versions.js";
+import { planJsGroups } from "../../ir/js-groups.js";
+import { jsImmediates } from "./jsval.js";
 import { BlockBuilder } from "./blocks.js";
 import { findPrivateSplitLocals } from "./split-loops.js";
 import {
@@ -28,6 +30,7 @@ import {
 } from "./map-read-lifetimes.js";
 import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
+import { findRecordEntryFusions } from "./record-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
 import { findLocalUnionStorage } from "./local-union-storage.js";
@@ -61,9 +64,11 @@ import { f64Lit } from "./common.js";
 import { RESULT_ENTRY_PREFIX } from "./record-results.js";
 import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
 import { beginFunctionLoops, LOOPS } from "./loop-state.js";
+import { beginFunctionLanes } from "./lanes.js";
 import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
 import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
+import { frameText } from "./frame-positions.js";
 
 /** The function attribute of a fallback body that the LLVM helper's
  * partitioner places by its own name (isPlacedByName, partition.cpp): it
@@ -103,6 +108,13 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.findInt32Allocations(fn);
   emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
+  // Guard groups (js-groups.ts): dynamic-tier reads of one subject inside
+  // one statement share one layout probe.
+  emitter.groupRuns.clear();
+  emitter.jsGroupPlan =
+    fn.tier === "dynamic" && jsImmediates(emitter)
+      ? planJsGroups(fn, emitter.jsIcSites, emitter.int32Abis)
+      : null;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
   B.excCellInvariant = fn.async !== true && fn.generator === undefined;
@@ -143,6 +155,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const initializerBindings = emitter.initializerBindings.get(fn.name) ?? [];
   const numericFn = withInitializerBindings(fn, initializerBindings);
   emitter.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
+  emitter.constLengthParams.clear();
+  for (const param of numericFn.params)
+    if (param.constLength !== undefined)
+      emitter.constLengthParams.set(param.localId, param.constLength);
   emitter.borrowedParameters.clear();
   emitter.referenceWrites?.enter(fn);
   emitter.reboundOwnerSlots.clear();
@@ -176,6 +192,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerTemps.clear();
   emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   beginFunctionLoops(emitter, fn, numericFn);
+  beginFunctionLanes(emitter, numericFn);
   emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
   emitter.loopCopiesEnabled = fn.plainLoops !== true;
   emitter.speculativeFunction = fn.name;
@@ -252,6 +269,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
   emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
+  emitter.recordEntryFusion = emitter.debug === null ? findRecordEntryFusions(emitter, fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,
     emitter.callLifetimes,
@@ -279,7 +297,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   beginLoopEntryVersions(emitter, numericFn, slotFacts, rangeFacts);
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
-  emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
+  emitter.bytesBounds =
+    emitter.mod.bytesHeadersMutable === true
+      ? new Set()
+      : findBytesBounds(numericFn, emitter.integerRanges);
   emitter.bytesOwned = new Set();
   // Debug builds keep every number local a double for the debugger's
   // variable view. Lazily boxed captured parameters keep their double,
@@ -561,19 +582,31 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // Stackful native fibers and native coroutine frames retain these frames
   // while suspended. The active exception context owns the chain, so
   // concurrent fibers isolate it.
+  emitter.framePositions = null;
+  const positions = emitter.framePositionsOf(fn);
   if (
     emitter.stackTraces &&
     !emitter.wasi &&
-    fn.sourceName !== undefined &&
+    (fn.sourceName !== undefined || positions !== null) &&
     !emitter.unframedFunctions.has(fn.name)
   ) {
     B.entryAllocas.push(`%source_frame = alloca { ptr, ptr }`);
-    const frame = emitter.cstr(`    at ${fn.sourceName} (${fn.loc.file})`);
+    // Until its first statement runs, a positioned frame names the function
+    // itself (the stack guard's RangeError is raised there).
+    const frame = emitter.cstr(
+      positions?.textAt(fn.loc) ??
+        (fn.sourceName === undefined
+          ? `    at ${fn.loc.file}`
+          : frameText(fn.sourceName, fn.loc.file)),
+    );
     if (
       B.excCellInvariant &&
       emitter.mod.lib === undefined &&
       emitter.mod.workers !== true &&
-      emitter.sizeType === "i64"
+      emitter.sizeType === "i64" &&
+      // Unoptimized code would keep the inline push's values in stack
+      // slots of their own; the calls add the frame's 16 bytes and no more.
+      !emitter.positionedFrames
     ) {
       // Executables link the active-cell pointer as a plain global, and a
       // synchronous body sees one cell from entry to every return: push
@@ -594,10 +627,12 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${frame})`);
       B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
     }
+    emitter.framePositions = positions;
   }
   if (emitter.stackChecks?.has(fn.name)) emitter.emitStackCheck();
   if (emitter.workerEntryPolls?.has(fn.name)) emitter.emitPendingCheck(undefined, true);
   emitter.emitStmts(fn.body, true);
+  emitter.framePositions = null;
   // Implicit exit of a void function: release the function scope unless
   // the body already terminated its final block (return, or a throw
   // whose unwind released everything down to depth 0).
@@ -913,6 +948,10 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       ...argPackLines,
     ];
     if (fn.generator.bindAtCall === true) emitter.declare(`declare void @scr_gen_bind(ptr)`);
+    // A generator body that reads `this` runs after the call returned: the
+    // spawn records the call's receiver for it (RuntimeFeatures.genReceiver).
+    const capturesReceiver = emitter.runtimeFeatures.genReceiver;
+    if (capturesReceiver) emitter.declare(`declare void @scr_gen_capture_receiver(ptr)`);
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
     const asyncGenNew =
@@ -923,6 +962,7 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       settleAsync === null
         ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
         : `  %gg = call ptr @${asyncGenNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+      ...(capturesReceiver ? [`  call void @scr_gen_capture_receiver(ptr %gg)`] : []),
       ...(fn.generator.tag !== undefined
         ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${emitter.cstr(fn.generator.tag)})`]
         : []),

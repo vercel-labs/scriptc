@@ -47,8 +47,16 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         "scr_inspect.c",
         "scr_console_native.c",
         "scr_copying.c",
+        "scr_js_buffers.c",
       ])
         expect(sources).toContain(source);
+      // A library whose program moves a buffer names scr_js_buffers_arm, so
+      // the unit keeps its object model build here too.
+      expect(
+        flavor.runtime_units
+          .find((unit) => unit.source === "scr_js_buffers.c")
+          .variants.map((variant) => variant.id),
+      ).toEqual(["default", "js-om"]);
       for (const unit of flavor.runtime_units)
         for (const variant of unit.variants) expect(variant.defines).not.toContain("SCR_DYNAMIC");
       // BigInt typed arrays read their elements through the JavaScript object

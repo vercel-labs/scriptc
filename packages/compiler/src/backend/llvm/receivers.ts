@@ -141,6 +141,8 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   if (e.kind === "recordGet" || e.kind === "fieldGet") {
     const receiver = emitter.emitReadReceiver(e.obj);
     if (e.kind === "recordGet") {
+      // A field a partial view may lack has no slot to lend.
+      if (emitter.partialFieldMissing(e.shapeId, e.field)) return emitter.emitExpr(e);
       // An inline union field answers a private stack box.
       const { ptr, type, inline } = emitter.recordFieldPtr(receiver.name, e.shapeId, e.field);
       return { name: emitter.loadRecordField(ptr, type, inline), type: e.type };
@@ -316,11 +318,15 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
     // An inline union field has no box to lend: projections read it
     // through emitReadReceiver's private stack box. An inline array field
     // has no array to lend.
+    // A field a partial record assertion leaves unwritten has no slot to
+    // lend either: its read answers a value of its own, which a borrower
+    // would use after the read's frame released it.
     case "fieldGet":
     case "recordGet":
       return (
         !emitter.inlineFieldGet(e) &&
         !emitter.inlineArrayRead(e) &&
+        !(e.kind === "recordGet" && emitter.partialFieldUnwritten(e.shapeId, e.field)) &&
         emitter.canBorrowReceiver(e.obj)
       );
     case "ternary":

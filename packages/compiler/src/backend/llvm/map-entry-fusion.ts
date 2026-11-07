@@ -52,7 +52,7 @@ function fusableOp(e: IrExpr, method: "get" | "set"): e is MapOp {
 /** Expression kinds that run no user code and mutate no collection or
  * reference (reads, scalar arithmetic, control within the expression, and
  * compiler-resolved throws, which leave the statement). */
-const INERT_KINDS: ReadonlySet<string> = new Set([
+export const INERT_KINDS: ReadonlySet<string> = new Set([
   "numLit",
   "strLit",
   "boolLit",
@@ -72,7 +72,7 @@ const INERT_KINDS: ReadonlySet<string> = new Set([
   "fieldGet",
 ]);
 
-function inert(e: IrExpr, allowed: IrExpr | null): boolean {
+export function inert(e: IrExpr, allowed: IrExpr | null): boolean {
   if (e === allowed) return true;
   if (e.kind === "mapIntrinsic") {
     if (!borrowsMapReadInputs(e) || (e.method !== "get" && e.method !== "has")) return false;
@@ -88,7 +88,7 @@ function inert(e: IrExpr, allowed: IrExpr | null): boolean {
 
 /** Whether evaluating `e` always evaluates `target` (it is not behind a
  * short-circuit or a conditional arm). */
-function alwaysEvaluates(e: IrExpr, target: IrExpr): boolean {
+export function alwaysEvaluates(e: IrExpr, target: IrExpr): boolean {
   if (e === target) return true;
   switch (e.kind) {
     case "bin":

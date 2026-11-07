@@ -722,7 +722,7 @@ static uint64_t entry_hash(const ScrMap *m, size_t e) {
   if (!scr_map_entry_live(m, e)) return 0;
   const ScrMapEntry *entry = scr_map_entry_at(m, e);
   if (m->key_kind != SCR_MAP_KEY_F64) return entry->hash;
-  uint64_t h = scr_key_mix(entry->key);
+  uint64_t h = scr_key_word_hash(entry->key);
   return h ? h : 1;
 }
 

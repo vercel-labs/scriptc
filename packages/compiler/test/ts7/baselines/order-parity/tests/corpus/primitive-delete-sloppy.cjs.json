@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/primitive-delete-sloppy.cjs"
+ ],
+ "diags": []
+}

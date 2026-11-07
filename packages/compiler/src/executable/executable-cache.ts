@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeProfileMatch } from "../backend/native-profile.js";
 import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
@@ -73,6 +74,7 @@ export interface EarlyExecutableNativeFeatures {
   mutableBuffers: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
+  fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
@@ -99,12 +101,16 @@ export interface EarlyExecutableNativeFeatures {
   handleProps?: boolean;
   childLifecycle?: boolean;
   childOptionExt?: boolean;
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   dynForAwait?: boolean;
   dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
+  reflectProtoTarget?: boolean;
+  recordSourceDelete?: boolean;
   genBind?: boolean;
+  genReceiver?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
@@ -112,6 +118,7 @@ export interface EarlyExecutableNativeFeatures {
   abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;
+  fsPathValue?: boolean;
   builtinValues?: boolean;
   computedRequire?: boolean;
   events: boolean;
@@ -244,6 +251,10 @@ export interface EarlyExecutableCacheOptions {
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
+  /** Omitted for the default tier policy (`--tier=auto`), which keeps the
+   * keys it had. `static-only` refuses programs that `auto` compiles, so
+   * its verdict must not be answered from an `auto` entry. */
+  tier?: "static-only";
   /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
   heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
@@ -348,53 +359,14 @@ function isProfileMatch(value: unknown): value is NativeProfileMatch {
   });
 }
 
-const BOOLEAN_NATIVE_KEYS = [
-  "regex",
-  "copying",
-  "textDecoderLegacy",
-  "bigintBytes",
+/** The keys a cached record always spells: the required keys of the link
+ * features it is built from (executableNativeFeatures in index.ts), and
+ * mutableBuffers, which the record spells where the link features leave it
+ * out when off. */
+const BOOLEAN_NATIVE_KEYS: readonly (keyof EarlyExecutableNativeFeatures)[] = [
+  ...REQUIRED_LINK_FEATURES,
   "mutableBuffers",
-  "fileHandle",
-  "fetch",
-  "zlib",
-  "assert",
-  "inspect",
-  "dynInvoke",
-  "dc",
-  "dynAsync",
-  "events",
-  "emitter",
-  "symbol",
-  "bigint",
-  "searchParams",
-  "qs",
-  "utilPromisify",
-  "dynBuiltinClass",
-  "dynBuiltinStream",
-  "parseArgs",
-  "stream",
-  "net",
-  "http",
-  "http2",
-  "dgram",
-  "dnsPromises",
-  "dgramDyn",
-  "textCodecDyn",
-  "watch",
-  "watchFile",
-  "foreignFfi",
-  "nodeTest",
-  "tls",
-  "tlsCa",
-  "cipher",
-  "ecdh",
-  "dh",
-  "pki",
-  "ed25519",
-  "x509",
-  "webcrypto",
-  "perfLoop",
-] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
+];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {
   return validSharedNativeFeatures<EarlyExecutableNativeFeatures>(
@@ -438,6 +410,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
+    ...(options.tier === "static-only" ? ["tier-static-only"] : []),
     ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
     ...(options.heapCensus ? ["heap-census"] : []),
     ...(options.shapeOverlay ? ["shape-overlay"] : []),
@@ -495,6 +468,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
+  if (options.tier === "static-only") hash.update("tier-static-only\0");
   if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
   if (options.heapCensus) hash.update("heap-census\0");
   if (options.shapeOverlay) hash.update("shape-overlay\0");
@@ -522,6 +496,17 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
     hash.update(resolve(options.ffiProfile.path)).update("\0").update(options.ffiProfile.bytes);
   }
   return hash.digest("hex");
+}
+
+/** The two keys a build's cache entries are stored under: the entry's and
+ * the route's (the launcher's shortcut to it). For tests of what the keys
+ * cover; a build option that changes the verdict or the output must change
+ * both. */
+export function earlyExecutableCacheKeys(options: EarlyExecutableCacheOptions): {
+  entry: string;
+  route: string;
+} {
+  return { entry: cacheKey(options), route: routeKey(options) };
 }
 
 function routePath(

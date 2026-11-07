@@ -95,7 +95,7 @@ import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { functionKeepsRecordSources } from "./record-sources.js";
-import { exprFunctionReference } from "../../ir/function-references.js";
+import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
@@ -10996,6 +10996,16 @@ export class Lowerer {
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
+    // Lowering lifts functions it later stops using: a fused pipeline's
+    // stage loops and their callbacks, a helper a rebuilt call replaced, a
+    // callback lowered once per attempt. The module is the lifted functions
+    // its code and metadata still reach, and every table below is derived
+    // from those.
+    if (module) {
+      const lifted = new Set<string>();
+      for (const fn of this.liftedFns) lifted.add(fn.name);
+      module.functions = withoutUnreachedFunctions(module, lifted).functions;
+    }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
     if (module) checkCycleBindingAccesses(this, module);

@@ -303,8 +303,9 @@ static int ni_error_slot(const ScrStr *name) {
 }
 
 /* Whether slot `slot` of `e` is an own property, and its attribute bits
- * (SCR_NODE_EXPORT_OWN's): writable and configurable, enumerable when an
- * assignment made it. */
+ * (SCR_NODE_EXPORT_OWN's) as an error is made with them: writable and
+ * configurable, enumerable when an assignment made it. A descriptor the
+ * program defined since is the view's to say (ni_slot_defined_bits). */
 static bool ni_error_slot_own(const ScrError *e, int slot, int *bits) {
   bool own = slot == NI_SLOT_MESSAGE ? e->message_present
              : slot == NI_SLOT_NAME  ? e->name_present
@@ -314,6 +315,29 @@ static bool ni_error_slot_own(const ScrError *e, int slot, int *bits) {
                                             : e->cause_enumerable;
   *bits = 1 | 4 | (enumerable ? 2 : 0);
   return own;
+}
+
+/* The writable and configurable bits of a slot property as the error's
+ * view holds them: the slot keeps the value, and what
+ * Object.defineProperty(err, "message", { writable: false }) said lives on
+ * the view. `bits` keeps the slot's own enumerable bit. false with the
+ * exception pending when reading the descriptor threw. */
+static bool ni_slot_defined_bits(ScrDyn *target, ScrDyn *key, int *bits) {
+  ScrDyn *descriptor = scr_dyn_get_own_property_descriptor(target, key);
+  if (scr_exc_pending()) {
+    scr_dyn_release(descriptor);
+    return false;
+  }
+  if (descriptor != NULL && descriptor->kind == SCR_DYN_OBJ &&
+      scr_dyn_obj_get(descriptor, "value", 5) != NULL) {
+    const ScrDyn *writable = scr_dyn_obj_get(descriptor, "writable", 8);
+    const ScrDyn *configurable = scr_dyn_obj_get(descriptor, "configurable", 12);
+    *bits &= ~(1 | 4);
+    if (writable != NULL && writable->kind == SCR_DYN_BOOL && writable->v.b) *bits |= 1;
+    if (configurable != NULL && configurable->kind == SCR_DYN_BOOL && configurable->v.b) *bits |= 4;
+  }
+  scr_dyn_release(descriptor);
+  return true;
 }
 
 /* Whether the view itself holds `name` as an accessor (an error whose
@@ -603,6 +627,12 @@ static int ni_export_own(ScrDyn *target, ScrNodeValue *out) {
     int slot_bits;
     if (e != NULL && slot != NI_SLOT_NONE && !ni_view_accessor(target, key->v.str) &&
         ni_error_slot_own(e, slot, &slot_bits)) {
+      if (!ni_slot_defined_bits(target, key, &slot_bits)) {
+        scr_dyn_release(list);
+        scr_dyn_release(names);
+        scr_error_release(e);
+        return ni_threw(out);
+      }
       listed[slot] = true;
       scr_dyn_arr_push(list, scr_dyn_retain(key));
       scr_dyn_arr_push(list, scr_dyn_new_num(slot_bits));

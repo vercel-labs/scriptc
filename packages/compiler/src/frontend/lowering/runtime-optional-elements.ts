@@ -19,6 +19,9 @@ export interface ElementStateHost {
   /** Iterating `node`, an iterable other than an array (a Set, a Map's
    * values, a generator), can yield `undefined`. */
   iterationMayYieldUndefined?(node: ts.Expression): boolean;
+  /** An entry of the `Promise.all` call `node` can settle with `undefined`:
+   * the checker types an element of its result as possibly undefined. */
+  settledMayBeUndefined?(node: ts.CallExpression): boolean;
   /** A callback argument can return `undefined` at runtime. */
   callbackReturnsUndefined(node: ts.Expression): boolean;
   /** The value may be a plain array-like object, whose missing indices
@@ -266,15 +269,17 @@ export class ArrayElementStates {
     }
     if (this.host.isGlobal(owner, "Promise")) {
       if (method === "all") {
-        // Promise.all fulfills with each entry's settled value. A typed
-        // promise settles with a value of its own type, which the result's
-        // element ABI already records, so the result holds undefined only
-        // where an entry is a hole or an undefined value.
+        // Promise.all fulfills with each entry's settled value, so the
+        // result holds undefined where an entry is a hole or an undefined
+        // value, or where an entry's settled type admits undefined
+        // (`Promise<T | undefined>`, whose result stores T elements).
         const source = args[0];
         return {
           undefined:
             source !== undefined &&
             (ts.isSpreadElement(source) ||
+              !ts.isCallExpression(node) ||
+              (this.host.settledMayBeUndefined?.(node) ?? true) ||
               this.mayYieldUndefined(source) ||
               (this.host.iterationMayYieldUndefined?.(source) ?? false)),
           holes: false,

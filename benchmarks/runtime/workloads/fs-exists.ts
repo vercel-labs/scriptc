@@ -1,6 +1,5 @@
 // fs.existsSync probe loop over the same entry four ways: a string path and a
-// Buffer path, each present and absent, so the typed call and the value form
-// are both measured.
+// typed Buffer path, each present and absent.
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";

@@ -2405,6 +2405,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   fs: {
     // Inline numeric O_* flags use a target-neutral runtime entry point.
     openSync: ["fs.openNumericSync"],
+    // The Buffer path: the typed entry point for a statically typed one
+    // (fs.existsSyncBytes), and the value form when only the runtime knows
+    // the arm (fs.existsSyncValue, which reports DEP0187 for other values).
+    existsSync: ["fs.existsSyncValue", "fs.existsSyncBytes"],
     // The Buffer form (no encoding), the fd forms (readFileSync(fd[,
     // "utf8"])), and the checked-dynamic encoding form.
     readFileSync: [

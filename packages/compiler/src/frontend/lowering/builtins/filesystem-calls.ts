@@ -1649,12 +1649,15 @@ function parseMkdirOptions(
 
 /** fs.existsSync(path) where the path value is not statically a string: a
  * Buffer path, an `any`-typed value, or a union of those with strings and the
- * unit arms. Node answers false for any other value and reports DEP0187
- * once, which the value form (scr_fs_exists_dyn.c) does; a plain string
- * argument keeps the typed call. Null for the URL type, which converts to a
- * string path before the call, and for every union holding an arm the value
- * form cannot answer. Node ignores arguments past the first but still
- * evaluates them, so surplus arguments are lowered here rather than dropped.
+ * unit arms. A statically typed Buffer takes the typed entry point
+ * (scr_fs_exists_bytes); an `any`-typed value or a union takes the value
+ * form, which decides the arm at run time. Node answers false for any other
+ * value and reports DEP0187 once, which the value form (scr_fs_exists_dyn.c)
+ * does; a plain string argument keeps the typed call. Null for the URL type,
+ * which converts to a string path before the call, and for every union
+ * holding an arm the value form cannot answer. Node ignores arguments past
+ * the first but still evaluates them, so surplus arguments are lowered here
+ * rather than dropped.
  */
 export function lowerFsExistsValueCall(
   lowerer: Lowerer,
@@ -1678,14 +1681,22 @@ export function lowerFsExistsValueCall(
     value = arms.some(ok) && arms.every((arm) => ok(arm) || unit(arm));
   }
   if (!value) return null;
-  const lowered = lowerer.lowerExprExpecting(arg, DYN);
+  // A statically typed Buffer path answers through its own entry point
+  // (scr_fs_exists_bytes): the value form would box it, and a fully typed
+  // program links no dynamic tier. A `dyn` or union path keeps the value
+  // form, which decides the arm at run time.
+  const bytesPath = type !== null && typeEquals(type, BYTES_U8);
+  const lowered = bytesPath
+    ? lowerer.lowerExprExpecting(arg, BYTES_U8)
+    : lowerer.lowerExprExpecting(arg, DYN);
+  const fn = bytesPath ? "fs.existsSyncBytes" : "fs.existsSyncValue";
   const surplus = expr.arguments.nodes.slice(1);
   if (surplus.length === 0) {
-    return { kind: "libCall", fn: "fs.existsSyncValue", args: [lowered], type: BOOL, loc };
+    return { kind: "libCall", fn, args: [lowered], type: BOOL, loc };
   }
   // Stage the path, then evaluate the ignored arguments in source order, so
   // their effects happen before the call and after the argument before them.
-  const pathLocal = lowerer.declareHiddenLocal("%existsPath", DYN);
+  const pathLocal = lowerer.declareHiddenLocal("%existsPath", lowered.type);
   const stmts: IrStmt[] = [
     { kind: "varDecl", localId: pathLocal.id, init: lowered, loc: lowered.loc },
   ];
@@ -1698,8 +1709,8 @@ export function lowerFsExistsValueCall(
     stmts,
     result: {
       kind: "libCall",
-      fn: "fs.existsSyncValue",
-      args: [varRef(pathLocal.id, DYN, loc)],
+      fn,
+      args: [varRef(pathLocal.id, lowered.type, loc)],
       type: BOOL,
       loc,
     },

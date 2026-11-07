@@ -122,6 +122,7 @@ import {
   type IntegerRanges,
 } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
+import { rollLiteralTables } from "../../ir/literal-tables.js";
 import { runPairedWhileLoopsAsFor } from "../../ir/paired-while-loops.js";
 import { copyStableCaptures } from "../../ir/capture-values.js";
 import { resolveSelfCaptures } from "../../ir/self-captures.js";
@@ -595,7 +596,11 @@ export interface LlvmTargetOptions {
   /** Marks emission's serial steps: `llvm-emit-rewrites` after the module
    * passes, `llvm-emit-int32` after int32 selection, and
    * `llvm-emit-analyses` after the emitter's whole-program analyses. The
-   * caller's next phase is the function bodies. */
+   * caller's next phase is the function bodies. An emission that ends with
+   * functions breaking the unwinding ABI marks `llvm-emit-unwind-retry`
+   * (its retry number, how many functions go back to the pending flag and
+   * the first of their names, the size of the unwinding set and of the
+   * module); the analyses and the function bodies then run again. */
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
@@ -780,11 +785,24 @@ function inlineArraysPass(options: LlvmTargetOptions, mod: IrModule): IrModule {
   return inlineArrayReads(mod, planInlineArrays(mod, programLifetimeClassOf(mod)));
 }
 
-/** The emitter for `input` after the module passes every emission runs. */
-function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
+/** A module after the passes every emission runs, with the facts those
+ * passes computed for its emitter. The unwinding ABI changes none of it, so
+ * an emission that runs again (emitModuleText) starts from the same one. */
+interface PreparedModule {
+  readonly mod: IrModule;
+  /** The int32 analysis of `mod`, when the passes ended with one. */
+  readonly analysis: Int32SlotAnalysis | null;
+  /** The node index of the latest module the passes analyzed. */
+  readonly nodes: IrNodeIndex | undefined;
+}
+
+/** `input` after the module passes every emission runs. */
+function prepareModule(input: IrModule, options: LlvmTargetOptions): PreparedModule {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
-  const mod = unshareNodes(input);
+  // Large literals build their rows in loops first: every later pass and
+  // the emitter then see the loop, not thousands of row expressions.
+  const mod = rollLiteralTables(unshareNodes(input));
   // Each proof selectInt32Arrays asks for analyzes a marked module; the
   // emitter of the module it returns reuses the last one. A proof that
   // revised functions analyzed the module of the functions it ended with.
@@ -821,7 +839,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
     return { kept: keptInt32Arrays(rounds.last), functions: rounds.functions };
   };
   // Keep source storage intact for debugger inspection in dev builds.
-  if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
+  if (options.debugSources !== undefined) return { mod, analysis: null, nodes: undefined };
   const timing = options.timing ?? (() => {});
   // One index of the module the passes start from. Each pass skips the
   // functions the index records without the node kinds it rewrites, and
@@ -919,14 +937,18 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   if (process.env["SCRIPTC_INT32_VERIFY"] === "1")
     verifyInt32Selection(passed, emitted, prepared?.mod === emitted ? prepared : null);
   timing("llvm-emit-int32");
-  const emitter = new LlEmitter(
-    emitted,
-    options,
-    null,
-    prepared?.mod === emitted ? prepared : null,
-    rounds.nodes,
-  );
-  timing("llvm-emit-analyses");
+  return {
+    mod: emitted,
+    analysis: prepared?.mod === emitted ? prepared : null,
+    nodes: rounds.nodes,
+  };
+}
+
+/** The emitter of a prepared module: its whole-program analyses, which
+ * `llvm-emit-analyses` times. */
+function moduleEmitter(prepared: PreparedModule, options: LlvmTargetOptions): LlEmitter {
+  const emitter = new LlEmitter(prepared.mod, options, null, prepared.analysis, prepared.nodes);
+  if (options.debugSources === undefined) options.timing?.("llvm-emit-analyses");
   return emitter;
 }
 
@@ -964,26 +986,98 @@ function verifyInt32Selection(
   }
 }
 
-/** Emits the module's parts, emitting it again with the functions an
- * UnwindAbiViolation names on the pending-flag ABI. */
+/** Emits the module's parts. When emission finds functions breaking the
+ * unwinding ABI (UnwindAbiViolation), they go back to the pending-flag ABI
+ * and the module is emitted again from the prepared module: the passes that
+ * prepare it do not read the ABI, so only the emitter's analyses and the
+ * function bodies run again. That costs a large program most of an
+ * emission, so a function the IR shows reached through a pointer belongs in
+ * the classification (unwindAbiFunctions), which keeps it on the flag from
+ * the start; what is left for this loop is what only the emitted text
+ * shows: a body that tests the flag without raising, or a raising
+ * function's address in text the emitter generates. Each emission that
+ * ends this way marks `llvm-emit-unwind-retry`. */
 function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
-  for (let excluded = options.unwindExcluded ?? new Set<string>(); ;) {
-    const emitter = moduleEmitter(input, { ...options, unwindExcluded: excluded });
+  const prepared = prepareModule(input, options);
+  const given = options.unwindExcluded ?? new Set<string>();
+  for (let excluded = given, retry = 1; ; retry++) {
+    const emitter = moduleEmitter(prepared, { ...options, unwindExcluded: excluded });
+    let moved: string[];
     try {
       const parts = emitter.emitParts();
-      writeRepresentationReport(emitter);
-      return parts;
+      moved = retry === 1 ? requestedUnwindFailures(emitter) : [];
+      if (moved.length === 0) {
+        if (excluded !== given && process.env["SCRIPTC_EMIT_UNWIND_VERIFY"] === "1")
+          verifyRetriedEmission(input, options, excluded, parts);
+        writeRepresentationReport(emitter);
+        return parts;
+      }
     } catch (error) {
       if (!(error instanceof UnwindAbiViolation)) throw error;
-      const names = new Set(excluded);
+      moved = [];
       for (const name of emitter.unwindAbi)
         for (const symbol of [mangleFunction(name), mangleBorrowedFunction(name)])
-          if (error.symbols.has(symbol) || error.symbols.has(symbol + INT32_ABI_SUFFIX))
-            names.add(name);
-      if (names.size === excluded.size) throw error;
-      excluded = names;
+          if (
+            (error.symbols.has(symbol) || error.symbols.has(symbol + INT32_ABI_SUFFIX)) &&
+            !moved.includes(name)
+          )
+            moved.push(name);
+      if (moved.length === 0) throw error;
     }
+    // The emission that ends here is discarded: the event's time is its
+    // function bodies and the scan that found the violation.
+    options.timing?.("llvm-emit-unwind-retry", {
+      retry,
+      functions: moved.length,
+      names: moved.slice(0, UNWIND_RETRY_NAMES),
+      unwinding: emitter.unwindAbi.size,
+      module_functions: emitter.mod.functions.length,
+    });
+    excluded = new Set([...excluded, ...moved]);
   }
+}
+
+/** How many of the functions a retry moves to the pending flag its timing
+ * event names. */
+const UNWIND_RETRY_NAMES = 20;
+
+/** SCRIPTC_EMIT_UNWIND_FAIL=n, for tests of the retry: the first emission
+ * ends as if it had found every n-th unwinding-ABI function, in the
+ * module's order, breaking the ABI. */
+function requestedUnwindFailures(emitter: LlEmitter): string[] {
+  const every = Number(process.env["SCRIPTC_EMIT_UNWIND_FAIL"] ?? "0");
+  if (!Number.isInteger(every) || every < 1) return [];
+  const names: string[] = [];
+  let seen = 0;
+  for (const fn of emitter.mod.functions)
+    if (emitter.unwindAbi.has(fn.name) && seen++ % every === 0) names.push(fn.name);
+  return names;
+}
+
+/** SCRIPTC_EMIT_UNWIND_VERIFY=1: throws unless `parts`, the text of an
+ * emission that ran again, is the text one emission of `input` gives when
+ * it starts with `excluded` on the pending flag. The parts are compared one
+ * by one: a large program's text is longer than one string can be. */
+function verifyRetriedEmission(
+  input: IrModule,
+  options: LlvmTargetOptions,
+  excluded: ReadonlySet<string>,
+  parts: readonly string[],
+): void {
+  const { timing: _timing, ...quiet } = options;
+  const once = { ...quiet, unwindExcluded: excluded };
+  const expected = moduleEmitter(prepareModule(input, once), once).emitParts();
+  let part = 0;
+  while (part < expected.length && part < parts.length && expected[part] === parts[part]) part++;
+  if (part === expected.length && part === parts.length) return;
+  const want = expected[part] ?? "";
+  const got = parts[part] ?? "";
+  let at = 0;
+  while (at < want.length && want.charCodeAt(at) === got.charCodeAt(at)) at++;
+  const line = want.lastIndexOf("\n", at) + 1;
+  throw new InternalCompilerError(
+    `unwinding ABI: the emission that ran again differs from one emission in part ${part} of ${expected.length} (${parts.length}) at ${at}: ${want.slice(line, line + 200)} != ${got.slice(line, line + 200)}`,
+  );
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
@@ -1635,6 +1729,9 @@ export class LlEmitter {
     string,
     { sym: string; type: "i32" | "double"; values: readonly string[] }
   >();
+  /** Constant data the program image holds for large literals (imageData):
+   * the definition's text → its symbol. */
+  readonly imageDataSyms = new Map<string, string>();
   /** Method-id slots of checked-dynamic method calls
    * (scr_dyn_invoke_prepared_id): method name → symbol of an i32 the
    * runtime fills with the name's id on the first call. */
@@ -2717,6 +2814,7 @@ export class LlEmitter {
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       closureNames: () => this.closureNames(),
+      threadLocalState: mod.workers === true || mod.lib?.threadInstances === true,
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
@@ -3893,6 +3991,20 @@ export class LlEmitter {
     }
     this.journal?.entry("arrayConst", key, c);
     return { data: `@${c.sym}`, header: `@${c.sym}_h` };
+  }
+
+  /** A global of the program image holding the data of a large literal
+   * (a run of numbers an array literal appends, the columns of a literal
+   * table): `definition` is the global's text after `@<sym> = `. Equal
+   * definitions share one global, named by its content — `@`-ref. */
+  imageData(definition: string): string {
+    let sym = this.imageDataSyms.get(definition);
+    if (sym === undefined) {
+      sym = this.contentSymbol("sc_data_", definition);
+      this.imageDataSyms.set(definition, sym);
+    }
+    this.journal?.entry("imageData", definition, sym);
+    return `@${sym}`;
   }
 
   /** Interned NUL-terminated C-string constant (the scr_jb_puts /
@@ -6529,6 +6641,15 @@ export class LlEmitter {
           names,
         );
         return;
+      case "imageData": {
+        let own = this.imageDataSyms.get(key);
+        if (own === undefined) {
+          own = this.contentSymbol("sc_data_", key);
+          this.imageDataSyms.set(key, own);
+        }
+        if (own !== value) names.set(value as string, own);
+        return;
+      }
       case "mapOps": {
         let own = this.mapOpsConsts.get(key);
         if (own === undefined) {
@@ -7683,6 +7804,7 @@ export class LlEmitter {
       | "arrayGet"
       | "arrayHas"
       | "arrayState"
+      | "constCell"
       | "arrIntrinsic"
       | "bytesNew"
       | "bytesIntrinsic"

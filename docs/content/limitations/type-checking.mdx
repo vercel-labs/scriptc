@@ -4,3 +4,11 @@ Some declarations differ from TypeScript's standard library or `@types/node`: `J
 A program that passes its project's TypeScript check may still use unsupported operations.
 A second preflight using the project's declarations distinguishes those sites from ordinary type errors and reports scriptc diagnostics with rewrite hints.
 Declared APIs without a compiler implementation, such as unsupported console members, produce `SC2020`.
+
+From the nearest `tsconfig.json`, scriptc takes the strictness flags, `paths` and `baseUrl`, the JSX settings, the declaration files that `files` and `include` name, the packages that `types` names, and `verbatimModuleSyntax`, `isolatedModules` and `preserveConstEnums` for [import elision](/docs/dependencies#package-resolution).
+A project whose `target` is below ES2022, or that sets `useDefineForClassFields` to `false`, has its parameter properties assigned before its class field initializers run, as in tsc's output; a field declared without an initializer is still an own property that holds `undefined`.
+The other settings keep one meaning.
+`lib` does not change the library above, and the DOM library is never loaded.
+TypeScript files are ES modules or CommonJS by Node.js's rules (the file extension and the nearest `package.json`), whatever `module` and `moduleResolution` say, so `import x = require()` and `export =` are refused with `SC0016` in a project that sets `module` to `commonjs`.
+Legacy decorators (`experimentalDecorators`) are refused with `SC0016`, except a class decorator of one parameter, which behaves the same under both decorator semantics.
+A project that does not enable `strict` or `strictNullChecks` is refused with `SC0002`.

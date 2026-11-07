@@ -1,0 +1,8 @@
+tsconfig-legacy-decorators/main.ts:14:3 - error SC0016: this project's tsconfig sets "experimentalDecorators", which scriptc does not follow: a decorator here has the legacy semantics (it is called with the target, the member name and a descriptor, in another order), and scriptc compiles standard decorators only (3 places in this program)
+
+  13 | class Row {
+  14 |   @column id = 1;
+     |   ^~~~~~~
+  15 |   @column name = "n";
+
+  hint: remove the decorators from the compiled program, or write them as standard decorators and drop the setting

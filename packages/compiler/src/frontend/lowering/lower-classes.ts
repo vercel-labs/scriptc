@@ -8514,8 +8514,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         // of construction, the parameter-property assignments open the
         // constructor body (probed — a field initializer reading a
         // parameter property sees undefined).
-        body.push(...lowerer.fieldInitStmts(info, thisLocal));
-        body.push(...paramPropInitStmts(lowerer, info, thisLocal));
+        body.push(...ownFieldAndParamPropInitStmts(lowerer, info, thisLocal));
         if (info.ctor.body) body.push(...lowerer.lowerStmts(info.ctor.body.statements.nodes));
       } else if (info.ctor.body) {
         body.push(...lowerer.lowerDerivedCtorBody(info, thisLocal));
@@ -9513,6 +9512,30 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
  * Each assignment reads the parameter's BODY local (defaults already
  * applied by the declareParams prologue), whose type the collection made
  * the field's type — slot-exact by construction. */
+/** A class's own field initializers and parameter-property assignments, in
+ * the order its file is compiled for. ES2022 class fields run the
+ * initializers first, so one that reads a parameter property sees
+ * undefined. A project that compiles class fields in the constructor
+ * (`target` below ES2022, or `useDefineForClassFields: false`) assigns the
+ * parameter properties first, as tsc's output does. */
+function ownFieldAndParamPropInitStmts(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  thisLocal: IrLocal,
+): IrStmt[] {
+  const declaration = info.ctor ?? info.decl;
+  if (
+    lowerer.parameterPropertiesFirst !== null &&
+    declaration !== null &&
+    lowerer.parameterPropertiesFirst.has(ts.getSourceFileOfNode(declaration).fileName)
+  ) {
+    const assigned = paramPropInitStmts(lowerer, info, thisLocal);
+    return [...assigned, ...lowerer.fieldInitStmts(info, thisLocal)];
+  }
+  const initialized = lowerer.fieldInitStmts(info, thisLocal);
+  return [...initialized, ...paramPropInitStmts(lowerer, info, thisLocal)];
+}
+
 function paramPropInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
   const out: IrStmt[] = [];
   const thisType: IrType = { kind: "object", className: info.def.name };
@@ -9725,10 +9748,7 @@ export function lowerDerivedCtorBody(
     });
     delete context.superInitialized;
     try {
-      statements.push(
-        ...lowerer.fieldInitStmts(info, thisLocal),
-        ...paramPropInitStmts(lowerer, info, thisLocal),
-      );
+      statements.push(...ownFieldAndParamPropInitStmts(lowerer, info, thisLocal));
     } finally {
       context.superInitialized = initialized;
     }

@@ -44,6 +44,7 @@ import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
 import { InternalCompilerError } from "../errors.js";
+import { moduleKindName, scriptTargetName } from "./ts7/enums.js";
 import { isSourcePhaseImport } from "./ts7/ast-node.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
@@ -52,6 +53,7 @@ import {
   invalidPackageConfigDiag,
   strictNullChecksFloorDiag,
   tscPassthroughDiag,
+  unfollowedSettingDiag,
   unsupportedDiag,
 } from "../diagnostics/diagnostic.js";
 import {
@@ -232,6 +234,18 @@ const FORCED_OPTIONS: ts.Ts7CompilerOptions = {
  * MESSAGE is JSON.parse's, not 5.9.3's ("'}' expected.") — the one
  * remaining wording delta on this path, unpinned by any snapshot. */
 function jsoncSyntaxError(text: string): string | null {
+  const out = jsoncAsJson(text);
+  if (out.trim() === "") return null; // an empty config file is legal
+  try {
+    JSON.parse(out);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** A JSONC text with its comments and trailing commas removed. */
+function jsoncAsJson(text: string): string {
   let out = "";
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]!;
@@ -255,13 +269,29 @@ function jsoncSyntaxError(text: string): string | null {
     out += ch;
   }
   // Trailing commas: `,` followed only by whitespace before } or ].
-  out = out.replace(/,(\s*[}\]])/g, "$1");
-  if (out.trim() === "") return null; // an empty config file is legal
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+
+/** The two import settings TypeScript 5.5 removed, which tsgo's config
+ * parser no longer reports: read from the tsconfig's own text (a project
+ * that still sets them compiles with an older tsc, whose output keeps the
+ * imports they name). Values an `extends` chain supplies are not seen. */
+function removedImportOptions(configText: string): Record<string, unknown> {
   try {
-    JSON.parse(out);
-    return null;
-  } catch (e) {
-    return e instanceof Error ? e.message : String(e);
+    const config = JSON.parse(jsoncAsJson(configText)) as { compilerOptions?: unknown };
+    const options = config.compilerOptions;
+    if (typeof options !== "object" || options === null) return {};
+    const own = options as Record<string, unknown>;
+    return {
+      ...(own["importsNotUsedAsValues"] === undefined
+        ? {}
+        : { importsNotUsedAsValues: own["importsNotUsedAsValues"] }),
+      ...(own["preserveValueImports"] === undefined
+        ? {}
+        : { preserveValueImports: own["preserveValueImports"] }),
+    };
+  } catch {
+    return {};
   }
 }
 
@@ -303,6 +333,12 @@ function adoptProjectConfig7(
   projectLib?: readonly string[];
   forcedStrictNullChecks?: boolean;
   checkJs?: boolean;
+  /** The project's own declarations: the `.d.ts` files its `files` and
+   * `include` name, and the entry declarations of the packages its `types`
+   * names. They join the program as roots. */
+  declarations?: readonly string[];
+  /** The project's `module` setting, as the tsconfig spells it. */
+  module?: string;
 } {
   const configFile = ts.findConfigFile(dirname(entryPath), ts.sys.fileExists) ?? null;
   if (!configFile) {
@@ -351,8 +387,34 @@ function adoptProjectConfig7(
   const nullChecks = adopted["strictNullChecks"] ?? adopted["strict"] ?? false;
   const forcedStrictNullChecks = nullChecks !== true;
   if (forcedStrictNullChecks) {
-    diags.push(strictNullChecksFloorDiag(configFile));
+    diags.push(
+      strictNullChecksFloorDiag(
+        configFile,
+        adopted["strictNullChecks"] !== undefined || adopted["strict"] !== undefined,
+      ),
+    );
     adopted["strictNullChecks"] = true;
+  }
+  // The project's own ambient declarations (global augmentations, module
+  // declarations for assets, members a library version lacks): tsc loads
+  // every file `files` and `include` name, where scriptc's program grows
+  // from the entry's imports and would never meet them.
+  const declarations = parsed.fileNames.filter(
+    (file) => /\.d\.[mc]?ts$/.test(file) && !isNodeModulesPath(file),
+  );
+  // `types`: the type packages whose globals the project asks for. "node"
+  // is resolved on its own (resolveNodeTypes7); a name that resolves to
+  // nothing is tsc's error to report, not a reason to stop here.
+  const typeRoots = parsed.options["typeRoots"];
+  const types = parsed.options["types"];
+  if (Array.isArray(types)) {
+    for (const name of types) {
+      if (typeof name !== "string" || name === "node") continue;
+      const entry =
+        typeRootEntry(Array.isArray(typeRoots) ? typeRoots : [], name, dirname(configFile)) ??
+        resolveTypeDirective(name, configFile);
+      if (entry !== null && !declarations.includes(entry)) declarations.push(entry);
+    }
   }
   // The project's own library selection, kept only to explain errors: the
   // checker always uses scriptc's fixed library set (FORCED_OPTIONS).
@@ -367,43 +429,119 @@ function adoptProjectConfig7(
     ...(projectLib === undefined ? {} : { projectLib }),
     forcedStrictNullChecks,
     checkJs: parsed.options["checkJs"] === true,
+    ...(declarations.length > 0 ? { declarations } : {}),
+    ...(parsed.options["module"] === undefined
+      ? {}
+      : { module: moduleSettingName(parsed.options["module"]) }),
   };
 }
 
-/** The import elision settings of the tsconfig that governs each file: the
- * nearest `tsconfig.json` above it, as for tsc's own editors and for
- * single-file transpilers. A file with no tsconfig above it, a file under
- * `node_modules`, and a file whose tsconfig sets `verbatimModuleSyntax` keep
- * Node's rule (null). Each directory and each tsconfig is read once. */
-function importElisionSettings7(
-  host: ts.Ts7Host,
-): (fileName: string) => ImportElisionOptions | null {
-  const byDirectory = new Map<string, ImportElisionOptions | null>();
-  const byConfig = new Map<string, ImportElisionOptions | null>();
-  const ofConfig = (configFile: string): ImportElisionOptions | null => {
-    let options = byConfig.get(configFile);
-    if (options === undefined) {
+/** A tsconfig `module` value as the tsconfig spells it (the parser answers
+ * the name or the enum's number). */
+function moduleSettingName(value: unknown): string {
+  return typeof value === "number"
+    ? (moduleKindName(value) ?? String(value)).toLowerCase()
+    : String(value).toLowerCase();
+}
+
+/** A `types` entry found under one of the project's `typeRoots`: the
+ * package directory's `types`/`typings` file, or its index.d.ts. */
+function typeRootEntry(
+  typeRoots: readonly unknown[],
+  name: string,
+  configDir: string,
+): string | null {
+  for (const root of typeRoots) {
+    if (typeof root !== "string") continue;
+    const base = resolve(isAbsolute(root) ? root : resolve(configDir, root), name);
+    const pkg = trackedReadFile(resolve(base, "package.json"));
+    if (pkg !== null) {
+      try {
+        const manifest = JSON.parse(pkg) as { types?: unknown; typings?: unknown };
+        for (const field of [manifest.types, manifest.typings]) {
+          if (typeof field === "string" && trackedFileExists(resolve(base, field)))
+            return resolve(base, field);
+        }
+      } catch {
+        // A malformed manifest names no entry; the index file may.
+      }
+    }
+    if (trackedFileExists(resolve(base, "index.d.ts"))) return resolve(base, "index.d.ts");
+  }
+  return null;
+}
+
+/** What the tsconfig that governs a TypeScript file says about how tsc
+ * compiles it, where that changes the program. */
+interface FileDialect {
+  /** tsc's import elision settings (import-elision.ts), or null when the
+   * tsconfig sets `verbatimModuleSyntax`: Node's rule for imports. */
+  elision: ImportElisionOptions | null;
+  /** Class fields are initialized in the constructor, after its parameter
+   * properties: `target` below ES2022, or `useDefineForClassFields: false`.
+   * ES2022 class fields run their initializers first. */
+  parameterPropertiesFirst: boolean;
+  /** `experimentalDecorators`: decorators have the legacy semantics. A
+   * class decorator of one parameter is called the same way under both
+   * semantics, so only the others differ ("members": method, property,
+   * accessor and parameter decorators), unless `emitDecoratorMetadata` makes
+   * every decorated class carry metadata the program can read ("all"). */
+  legacyDecorators: "all" | "members" | null;
+}
+
+/** `target` values below ES2022, as the config parser answers them (the
+ * name, or the enum's number). */
+function targetBelowEs2022(target: unknown): boolean {
+  const name = typeof target === "number" ? scriptTargetName(target) : target;
+  if (typeof name !== "string") return false;
+  const year = /^es(\d+)$/i.exec(name)?.[1];
+  // ES3, ES5 and ES6 are the pre-year spellings.
+  return year !== undefined && (year.length < 4 || Number(year) < 2022);
+}
+
+/** The dialect of the tsconfig that governs each file: the nearest
+ * `tsconfig.json` above it, as for tsc's editors and for single-file
+ * transpilers. A file with no tsconfig above it and a file under
+ * `node_modules` are written for Node's type stripping and have none
+ * (null). Each directory and each tsconfig is read once. */
+function fileDialects7(host: ts.Ts7Host): (fileName: string) => FileDialect | null {
+  const byDirectory = new Map<string, FileDialect | null>();
+  const byConfig = new Map<string, FileDialect | null>();
+  const ofConfig = (configFile: string): FileDialect | null => {
+    let dialect = byConfig.get(configFile);
+    if (dialect === undefined) {
+      dialect = null;
       // A config that does not parse selects nothing: the entry's own is
       // reported by adoptProjectConfig7, and a file keeps Node's rule.
-      options =
-        jsoncSyntaxError(ts.sys.readFile(configFile) ?? "") !== null
-          ? null
-          : importElisionOptions(host.parseConfigFile(configFile).options);
-      byConfig.set(configFile, options);
+      const text = ts.sys.readFile(configFile) ?? "";
+      if (jsoncSyntaxError(text) === null) {
+        const options = host.parseConfigFile(configFile).options;
+        dialect = {
+          elision: importElisionOptions({ ...options, ...removedImportOptions(text) }),
+          parameterPropertiesFirst:
+            options["useDefineForClassFields"] === false || targetBelowEs2022(options["target"]),
+          legacyDecorators:
+            options["experimentalDecorators"] !== true
+              ? null
+              : options["emitDecoratorMetadata"] === true
+                ? "all"
+                : "members",
+        };
+      }
+      byConfig.set(configFile, dialect);
     }
-    return options;
+    return dialect;
   };
   return (fileName) => {
-    const normalized = fileName.split("\\").join("/");
-    if (normalized.includes("/node_modules/")) return null;
+    if (isNodeModulesPath(fileName)) return null;
     const directory = dirname(fileName);
-    let options = byDirectory.get(directory);
-    if (options === undefined) {
+    let dialect = byDirectory.get(directory);
+    if (dialect === undefined) {
       const configFile = ts.findConfigFile(directory, ts.sys.fileExists) ?? null;
-      options = configFile === null ? null : ofConfig(configFile);
-      byDirectory.set(directory, options);
+      dialect = configFile === null ? null : ofConfig(configFile);
+      byDirectory.set(directory, dialect);
     }
-    return options;
+    return dialect;
   };
 }
 
@@ -425,6 +563,12 @@ export interface TypeWorldDifferences {
   /** The project's tsconfig sets `checkJs` (scriptc's own checker always
    * reads JavaScript files; this records whether the project's does). */
   projectCheckJs: boolean;
+  /** The files with decorators the project compiles under
+   * `experimentalDecorators`: refused by name (SC0016), which stands in for
+   * the checker's errors about those decorators' signatures. */
+  legacyDecoratorFiles: ReadonlySet<string>;
+  /** The project's `module` setting, or null. */
+  projectModule: string | null;
 }
 
 export interface LoadResult {
@@ -487,6 +631,11 @@ export interface LoadResult {
   /** SC6008 warnings: imports the build keeps although tsc's output drops
    * them (import-elision.ts, inlinedOnly). */
   importWarnings?: ScrDiagnostic[];
+  /** The TypeScript files whose tsconfig compiles class fields in the
+   * constructor (`target` below ES2022, or `useDefineForClassFields: false`):
+   * a class declared there assigns its parameter properties before its
+   * field initializers run. Absent when there is none. */
+  parameterPropertiesFirst?: ReadonlySet<string>;
   /** The files whose JSX the program lowers (jsx-source.ts), by file name.
    * The program holds their rewritten text; positions in diagnostics refer
    * to it. */
@@ -887,6 +1036,8 @@ function entryPackageProgramRoots7(
  * programs whose sources name the global (programNamesTemporal7). */
 const TEMPORAL_LIB = "lib.esnext.temporal.d.ts";
 
+const DECORATORS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.Decorator]);
+
 /** True when a program source (user code or compiled npm JavaScript)
  * contains the temporal global's name as a whole word. A cheap syntactic
  * scan of the implementation files root discovery already materialized; a
@@ -1035,6 +1186,7 @@ function loadProgram7(
     ...(nodeTypes === null
       ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
       : [nodeTypes]),
+    ...(config.declarations ?? []),
   ];
   const programRoots = [...coreRoots];
   // One project lineage for the whole load: the root-discovery passes and
@@ -1222,7 +1374,8 @@ function loadProgram7(
     // project that does not set `verbatimModuleSyntax` is compiled with the
     // imports and exports tsc keeps. The tsc gate reads the files as
     // written; the rewrite keeps their offsets.
-    const elision = elideProgramImports(program, importElisionSettings7(host));
+    const dialectOf = fileDialects7(host);
+    const elision = elideProgramImports(program, (file) => dialectOf(file)?.elision ?? null);
     const elisions = elision.texts;
     const importWarnings = elision.inlinedOnly.map((kept) =>
       inlinedImportKeptDiag(kept.specifier, { file: kept.file, start: kept.start, end: kept.end }),
@@ -1253,6 +1406,53 @@ function loadProgram7(
       if (gateWorld.program !== before) before.dispose();
       assertElisionKeptValues7(program, elisions.keys());
     }
+    // The other two things a file's tsconfig decides: the order of class
+    // field initializers and parameter properties, which the lowering
+    // follows, and legacy decorators, which it refuses by name.
+    const parameterPropertiesFirst = new Set<string>();
+    const legacyDecoratorFiles = new Set<string>();
+    let legacyDecorators = 0;
+    let firstLegacyDecorator: ts.Node | null = null;
+    for (const sf of program.getImplementationSourceFiles()) {
+      if (sf.isDeclarationFile || !/\.(?:[mc]?ts|tsx)$/.test(sf.fileName)) continue;
+      const dialect = dialectOf(sf.fileName);
+      if (dialect === null) continue;
+      if (dialect.parameterPropertiesFirst) parameterPropertiesFirst.add(sf.fileName);
+      const legacy = dialect.legacyDecorators;
+      if (legacy === null) continue;
+      ts.walkPreorder(
+        sf,
+        (node) => {
+          const decorated = node.parent;
+          if (
+            legacy === "members" &&
+            decorated !== undefined &&
+            (ts.isClassDeclaration(decorated) || ts.isClassExpression(decorated))
+          )
+            return;
+          legacyDecorators++;
+          legacyDecoratorFiles.add(sf.fileName);
+          firstLegacyDecorator ??= node;
+        },
+        DECORATORS,
+      );
+    }
+    if (firstLegacyDecorator !== null) {
+      const at: ts.Node = firstLegacyDecorator;
+      config.diags.push(
+        unfollowedSettingDiag(
+          '"experimentalDecorators"',
+          "a decorator here has the legacy semantics (it is called with the target, the member name and a descriptor, in another order), and scriptc compiles standard decorators only",
+          {
+            file: ts.getSourceFileOfNode(at).fileName,
+            start: ts.tokenStartOfNode(at),
+            end: at.end,
+          },
+          legacyDecorators,
+          "remove the decorators from the compiled program, or write them as standard decorators and drop the setting",
+        ),
+      );
+    }
     const entry = program.getSourceFile(entryPath);
     if (!entry) throw new Error(`could not load ${entryPath}`);
     const externalTypeSpecifiersByFile = externalTypeFileClosure7(program, externalTypes);
@@ -1265,11 +1465,14 @@ function loadProgram7(
       configDiags: config.diags,
       ...(declBoundaryNotes.length > 0 ? { declBoundaryNotes } : {}),
       ...(importWarnings.length > 0 ? { importWarnings } : {}),
+      ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
       typeWorld: {
         nodeFallback: nodeTypes === null,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,
+        legacyDecoratorFiles,
+        projectModule: config.module ?? null,
       },
       externalTypes,
       externalTypeSpecifiersByFile,
@@ -7445,7 +7648,8 @@ function preflightGate7(load: LoadResult): PreflightGate {
       !namespaceCalleeSuppressed(p, d) &&
       !workspaceImplicitAnySuppressed(p, d) &&
       !cjsTopLevelReturnSuppressed(p, d) &&
-      !jsdocTypeSuppressed(p, d, commentDup);
+      !jsdocTypeSuppressed(p, d, commentDup) &&
+      !parameterPropertyOrderSuppressed(p, d, load.parameterPropertiesFirst);
     // Every filter except the opinion admission, in its historical order.
     const keptApartFromOpinion = (d: ts.Diagnostic): boolean =>
       keptApartFromOpinionTextually(d) &&
@@ -7514,8 +7718,25 @@ function preflightGate7(load: LoadResult): PreflightGate {
       tscWorld === undefined || tscWorld.declWorldFallback === true
         ? load.projectWorld()
         : (tscWorld.projectWorld ?? tscWorld.program);
+    // The errors a tsconfig setting scriptc does not follow produces, one
+    // by one: a single SC0016 names the setting instead.
+    const legacyDecoratorFiles = load.typeWorld?.legacyDecoratorFiles;
+    const projectModule = load.typeWorld?.projectModule ?? null;
+    const moduleFormat: ScrDiagnostic[] = [];
     for (const d of errorsOf(world)) {
+      // The legacy decorators themselves are refused where the first one
+      // stands (loadProgram7).
+      if (
+        LEGACY_DECORATOR_ERRORS.has(d.code) &&
+        d.fileName !== undefined &&
+        legacyDecoratorFiles?.has(d.fileName) === true
+      )
+        continue;
       const diag = toPassthrough(d);
+      if (projectModule !== null && (d.code === 1202 || d.code === 1203)) {
+        moduleFormat.push(diag);
+        continue;
+      }
       const lowered = tscWorld === undefined ? undefined : load.jsxSources?.get(diag.loc.file);
       if (lowered !== undefined) {
         diag.loc = {
@@ -7525,6 +7746,17 @@ function preflightGate7(load: LoadResult): PreflightGate {
         };
       }
       diags.push(diag);
+    }
+    if (moduleFormat.length > 0) {
+      diags.push(
+        unfollowedSettingDiag(
+          `"module": "${projectModule}"`,
+          "TypeScript files are compiled as ES modules, the format Node gives them, where 'import x = require(…)' and 'export =' do not exist",
+          moduleFormat[0]!.loc,
+          moduleFormat.length,
+          `write 'import x from "m"' or 'import * as x from "m"', and 'export default'`,
+        ),
+      );
     }
   } else if (load.jsxSources !== undefined) {
     for (const file of load.jsxSources.keys()) {
@@ -8737,6 +8969,58 @@ const DOM_GLOBALS = new Set([
 ]);
 /** Root identifiers whose members the bundled Node fallback declares. */
 const NODE_GLOBAL_ROOTS = new Set(["process", "Buffer", "console", "globalThis"]);
+
+/** TypeScript's errors about a decorator's signature when it is checked as
+ * a standard decorator: TS1238 to TS1241 (unable to resolve the signature of
+ * a class, parameter, property or method decorator), TS1270 and TS1271 (its
+ * return type). */
+const LEGACY_DECORATOR_ERRORS: ReadonlySet<number> = new Set([1238, 1239, 1240, 1241, 1270, 1271]);
+
+/** TS2729 ("Property 'x' is used before its initialization") for a field
+ * initializer that reads a parameter property, in a file whose tsconfig
+ * compiles class fields in the constructor: there the parameter properties
+ * are assigned first, the lowering follows that order
+ * (LoadResult.parameterPropertiesFirst), and the read is defined. The same
+ * error about a field declared further down stays: that read is undefined
+ * in either order. */
+function parameterPropertyOrderSuppressed(
+  program: ts.Program,
+  d: ts.Diagnostic,
+  files: ReadonlySet<string> | undefined,
+): boolean {
+  if (d.code !== 2729 || files === undefined || d.fileName === undefined) return false;
+  if (d.pos === undefined || !files.has(d.fileName)) return false;
+  const sf = program.getSourceFile(d.fileName);
+  if (sf === undefined) return false;
+  const pos = d.pos;
+  const name = sf.text.slice(pos, d.end ?? pos);
+  // The innermost class around the read, and its constructor's parameters.
+  let owner: ts.Node | null = null;
+  ts.walkPreorder(
+    sf,
+    (node) => {
+      if (ts.tokenStartOfNode(node) > pos || node.end <= pos) return "skip";
+      owner = node;
+      return undefined;
+    },
+    CLASSES,
+  );
+  if (owner === null) return false;
+  const members = (owner as ts.ClassDeclaration).members.nodes;
+  for (const member of members) {
+    if (!ts.isConstructorDeclaration(member)) continue;
+    for (const parameter of member.parameters.nodes) {
+      if (!ts.isIdentifier(parameter.name) || parameter.name.text !== name) continue;
+      if ((ts.getModifiers(parameter)?.length ?? 0) > 0) return true;
+    }
+  }
+  return false;
+}
+
+const CLASSES: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.ClassDeclaration,
+  ts.SyntaxKind.ClassExpression,
+]);
 
 /** A hint when a TypeScript error comes from scriptc's own type world rather
  * than from the project: a library member newer than ES2025, a global of

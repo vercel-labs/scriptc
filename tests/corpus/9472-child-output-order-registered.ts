@@ -13,9 +13,11 @@
 //
 // Several children that have all exited by then fire 'exit' in spawn order
 // and then 'close' in reverse (Node's 'close' for a child with pipes comes
-// from libuv's closing queue, last closed first).
+// from libuv's closing queue, last closed first). Children whose pipes
+// ended in an earlier turn have nothing left to close: each 'close' follows
+// its 'exit'.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -140,6 +142,53 @@ function runThreeIgnored(): Promise<string> {
   });
 }
 
+// Three children that close both output pipes at once and exit later, all
+// in one turn of the parent. The parent waits in its loop until every pipe
+// has ended, tells the children to exit two timers later, and computes
+// until all three have.
+function runThreeClosedEarly(): Promise<string> {
+  return new Promise((resolve) => {
+    const seen: string[] = [];
+    const names = ["a", "b", "c"];
+    const marker = join(dir, "closed-early");
+    const pids: number[] = [];
+    let open = 3;
+    let ended = 0;
+    const onEnd = (): void => {
+      if (++ended < 6) return;
+      setTimeout(() => {
+        setTimeout(() => {
+          writeFileSync(marker, "");
+          const start = Date.now();
+          while (!pids.every(exited)) {
+            if (Date.now() - start > 20000) {
+              seen.push("still running");
+              break;
+            }
+          }
+        }, 10);
+      }, 10);
+    };
+    for (let i = 0; i < 3; i++) {
+      const name = names[i];
+      const script = 'exec 1>&- 2>&-; while [ ! -e "$1" ]; do sleep 0.01; done';
+      const child = spawn("/bin/sh", ["-c", script, "sh", marker], { stdio: ["ignore", "pipe", "pipe"] });
+      pids.push(child.pid ?? 0);
+      child.stdout!.on("data", () => {});
+      child.stdout!.on("end", onEnd);
+      child.stderr!.on("data", () => {});
+      child.stderr!.on("end", onEnd);
+      child.on("exit", () => {
+        seen.push(`${name}.exit`);
+      });
+      child.on("close", () => {
+        seen.push(`${name}.close`);
+        if (--open === 0) resolve(seen.join(" "));
+      });
+    }
+  });
+}
+
 async function main(): Promise<void> {
   console.log("wrote err, out:", await run("echo err 1>&2; echo out", false));
   console.log("wrote out, err:", await run("echo out; echo err 1>&2", false));
@@ -149,6 +198,7 @@ async function main(): Promise<void> {
   console.log("wrote err, out, err:", await run("echo a 1>&2; echo b; echo c 1>&2", false));
   console.log("three children:", await runThree());
   console.log("three children, no pipes:", await runThreeIgnored());
+  console.log("three children, pipes ended a turn earlier:", await runThreeClosedEarly());
   rmSync(dir, { recursive: true, force: true });
 }
 main();

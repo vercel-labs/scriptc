@@ -4322,6 +4322,7 @@ struct ScrChildStream {
   bool arm_queued; /* registers at the loop's next poll (scr_child_arm_queue) */
   uint32_t arm_seq; /* names this registration in the kernel's events */
   uint32_t born;    /* creation order among the thread's streams */
+  unsigned long eof_pass; /* the pass (scr_children_pass) that ended it */
   bool uncounted; /* counted into scr_children_unwatched (arm failure) */
   bool short_read_yields; /* a short read ends this pass's reads */
   unsigned long short_read_pass;
@@ -4382,14 +4383,16 @@ static void scr_child_writer_dearm(ScrChildWriter *w);
 static bool scr_child_writers_blocked(void);
 static bool scr_child_writers_ready(void);
 /* Registers the streams that asked for their read filter since the last
- * poll (scr_child_streams_arm_flush, set by the first stream that asks).
- * The wait and the wake fd reach it through this pointer, and the pointer
- * has external linkage, on purpose: a direct call, or a static pointer the
- * compiler can see through, puts the registration code in front of the
- * wait in this object, and with it the unit's first mention of the libc
- * functions it calls. The linker orders an executable's imports by first
- * mention, so every program that links any part of this unit would change. */
-void (*scr_child_streams_arm_flush_hook)(void) = NULL;
+ * poll (scr_child_streams_arm_flush, set by the thread's first stream that
+ * asks; per thread, like the queue it flushes, so worker threads do not
+ * share a write). The wait and the wake fd reach it through this pointer,
+ * and the pointer has external linkage, on purpose: a direct call, or a
+ * static pointer the compiler can see through, puts the registration code
+ * in front of the wait in this object, and with it the unit's first mention
+ * of the libc functions it calls. The linker orders an executable's imports
+ * by first mention, so every program that links any part of this unit would
+ * change. */
+SCR_TL void (*scr_child_streams_arm_flush_hook)(void) = NULL;
 /* How many events one poll of the child watch takes. Streams past that
  * wait for the next poll: their filters are level-triggered, and the
  * kernel queue keeps their order. */
@@ -4860,6 +4863,7 @@ static void scr_child_stream_finish_in(ScrChildStream *s, bool fire_end) {
     scr_children_unwatched--;
   }
   s->eof = true;
+  s->eof_pass = scr_children_pass;
   if (s->fd >= 0) {
     close(s->fd);
     s->fd = -1;
@@ -6470,6 +6474,11 @@ bool scr_children_failed_pending(void) {
   return false;
 }
 
+/* True for an output pipe that ended in the pass that is running. */
+static bool scr_child_stream_ended_now(const ScrChildStream *s) {
+  return s != NULL && s->eof && s->eof_pass == scr_children_pass;
+}
+
 static bool scr_child_close_ready(const ScrChild *c) {
   return (c->out_stream == NULL || c->out_stream->eof) &&
          (c->err_stream == NULL || c->err_stream->eof) &&
@@ -6607,17 +6616,19 @@ static void scr_child_settle_in(ScrChild *c) {
   if (c->n_close == 0) {
     c->close_done = true;
     scr_child_release(c); /* the settle registry's reference */
-  } else if (scr_child_close_ready(c) && c->out_stream == NULL && c->err_stream == NULL) {
+  } else if (scr_child_close_ready(c) && !scr_child_stream_ended_now(c->out_stream) &&
+             !scr_child_stream_ended_now(c->err_stream)) {
+    /* Nothing to wait for: no output pipe, or pipes that ended in an
+     * earlier pass. 'close' follows 'exit' at once, in Node as well. */
     scr_child_fire_close(c);
   } else {
-    /* A child with an output pipe: 'close' waits for the pipes to end, and
-     * when they already have, for the end of this pass's sweep, where the
-     * closing list fires newest first. Node's order for children that
-     * exit in one turn is every 'exit' in spawn order and then the
+    /* 'close' waits for the output pipes to end, and when they ended in
+     * this pass, for the end of the pass's sweep, where the closing list
+     * fires newest first. Node's order for children whose pipes end and
+     * that exit in one turn is every 'exit' in spawn order and then the
      * 'close' events in reverse: a pipe's 'close' comes from libuv's
      * closing queue, which runs after the turn's callbacks, last closed
-     * first. A child without an output pipe has nothing to wait for and
-     * fires 'close' right after its 'exit', in Node as well. */
+     * first. */
     c->next = scr_children_closing;
     scr_children_closing = c; /* transfer the settle registry's reference */
   }

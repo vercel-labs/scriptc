@@ -88,3 +88,24 @@ variadic-callback-library-slots.ts:21:20 - error SC1090: a function that takes a
   21 | process.on("exit", (...args: unknown[]) => console.log(args.length));
      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   22 | 
+
+variadic-callback-library-slots.ts:31:12 - error SC1090: 'arguments.length' in a function expression handed where no function type is expected (the count each call passes is not known: name the parameters the function uses) is not supported yet
+
+  30 |   loose(function () {
+  31 |     return arguments.length;
+     |            ^~~~~~~~~~~~~~~~
+  32 |   }),
+
+variadic-callback-library-slots.ts:35:10 - error SC1090: 'arguments.length' in a function expression handed where no function type is expected (the count each call passes is not known: name the parameters the function uses) is not supported yet
+
+  34 | const held: unknown = function () {
+  35 |   return arguments.length;
+     |          ^~~~~~~~~~~~~~~~
+  36 | };
+
+variadic-callback-library-slots.ts:41:14 - error SC1090: 'arguments.length' in a function expression handed where no function type is expected (the count each call passes is not known: name the parameters the function uses) is not supported yet
+
+  40 |     function () {
+  41 |       return arguments.length;
+     |              ^~~~~~~~~~~~~~~~
+  42 |     },

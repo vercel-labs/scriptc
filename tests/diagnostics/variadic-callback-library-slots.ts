@@ -19,3 +19,28 @@ console.log(Map.groupBy(xs, (...args: unknown[]) => String(args.length)).size);
 Promise.resolve(1).then((...args: unknown[]) => console.log(args.length));
 process.stdout.write("x", (...args: unknown[]) => console.log(args.length));
 process.on("exit", (...args: unknown[]) => console.log(args.length));
+
+// `arguments.length` in a function expression folds to the count its slot's
+// function type names. Handed where no function type is expected, its
+// callers pass what they like, so the read is refused by name.
+function loose(f: any): unknown {
+  return f(1, 2);
+}
+console.log(
+  loose(function () {
+    return arguments.length;
+  }),
+);
+const held: unknown = function () {
+  return arguments.length;
+};
+console.log(typeof held);
+console.log(
+  Reflect.apply(
+    function () {
+      return arguments.length;
+    },
+    undefined,
+    [1, "two"],
+  ),
+);

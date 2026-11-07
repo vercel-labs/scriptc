@@ -183,6 +183,18 @@ export function contextualCallCount(
   return count;
 }
 
+/** Whether the function expression `node` is handed where a type is
+ * expected that does not say how it is called: an untyped parameter
+ * (`any`, `unknown`, a JavaScript module's function), `Function`, an
+ * object type, or a type with several call signatures. Its callers pass
+ * what they like, so no constant is the count `arguments.length` reads. */
+export function handedWithoutCallCount(lowerer: Lowerer, node: ts.Expression): boolean {
+  return (
+    lowerer.checker.getContextualType(node) !== undefined &&
+    contextualCallCount(lowerer, node) === null
+  );
+}
+
 /** Whether a program reference to the function declaration or method `fn`
  * reads it as a value (`xs.map(f)`, `const g = f`, `xs.map(C.parse)`) rather
  * than calling it. Export specifiers and default exports only name a

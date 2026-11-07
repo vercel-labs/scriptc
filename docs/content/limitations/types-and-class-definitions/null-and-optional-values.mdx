@@ -10,3 +10,4 @@
   A variadic function passed directly to a library function that calls its callback with a fixed argument list is refused with `SC1090`.
   Event listeners, promise executors, timers, and `process.nextTick` pass such a function every argument, as do the methods of arrays whose elements are `unknown`.
   In a function expression written where a callback or listener is expected, `arguments.length` is the number of parameters that slot's function type declares.
+  Handed where no function type is expected (an `any` or `unknown` slot, a JavaScript module's function, `Reflect.apply`), such a function expression is refused with `SC1090`.

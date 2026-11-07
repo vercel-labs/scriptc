@@ -297,6 +297,22 @@ function withJsObjectModel(variants) {
   return variants;
 }
 
+/** One twin of each JavaScript object model build of a unit whose object
+ * model code carries a feature only some programs reach (t262-w5): the
+ * program's fact (`when`) selects the twin, which adds its define, and every
+ * other object model program keeps the plain build, byte for byte. */
+function withObjectModelTwin(variants, { suffix, fact, define }) {
+  for (const { id, when, defines } of variants.slice()) {
+    if (!id.startsWith("js-om")) continue;
+    variants.push({
+      id: `${id}-${suffix}`,
+      when: { ...when, [fact]: true },
+      defines: [...defines, define],
+    });
+  }
+  return variants;
+}
+
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths
@@ -330,6 +346,15 @@ export function variantsFor(source) {
     // tier's primitives and each one gets its object model twin. Every other
     // program keeps the default object, byte for byte.
     withJsObjectModel(variants);
+    // The proxy's reflection internal methods, the Reflect entry points and
+    // the proxy-aware construct live only in the proxy build: a program that
+    // can reach a Proxy selects it, and every other program keeps the plain
+    // object model build, byte for byte.
+    withObjectModelTwin(variants, {
+      suffix: "proxy",
+      fact: "dynProxyTier",
+      define: "SCR_JS_OBJECT_MODEL_PROXY",
+    });
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
@@ -374,6 +399,18 @@ export function variantsFor(source) {
   // object.
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);
+  }
+  // `RegExp(pattern, flags)` through a constructor read as a value compiles a
+  // pattern with scr_regex.c, so that answer lives only in the constructor
+  // value build: a program that reads a builtin constructor as a value
+  // (dynCtorValue) links it and with it the regex unit, and every other
+  // object model program keeps the plain build, byte for byte.
+  if (source === "scr_dyn_invoke.c") {
+    withObjectModelTwin(variants, {
+      suffix: "ctor-value",
+      fact: "dynCtorValue",
+      define: "SCR_JS_OBJECT_MODEL_CTOR_VALUE",
+    });
   }
   // console.table reads the cells of a row's typed array, so a BigInt view
   // needs the element accessor that answers BigInts. The default object keeps

@@ -51,6 +51,18 @@ export interface NativeLinkFeatures {
    * (jsObjectModelFact), so it selects no build column of its own. Absent
    * for every other program, so their objects stay identical. */
   mutableBuffers?: boolean;
+  /** The program's dynamic values may be proxies: links the
+   * SCR_JS_OBJECT_MODEL_PROXY build of scr_json.c, which carries the proxy
+   * reflection internal methods, the Reflect entry points and the
+   * proxy-aware construct. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
+  dynProxyTier?: boolean;
+  /** The program reads a builtin constructor as a value: links the
+   * SCR_JS_OBJECT_MODEL_CTOR_VALUE build of scr_dyn_invoke.c, which carries
+   * the `RegExp(pattern, flags)` answers. It ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. */
+  dynCtorValue?: boolean;
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;

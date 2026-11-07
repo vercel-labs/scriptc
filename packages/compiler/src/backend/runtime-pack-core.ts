@@ -143,6 +143,12 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
    * JavaScript source resizes, grows or detaches an ArrayBuffer. */
   mutableBuffers?: boolean;
+  /** The proxy build of the JavaScript object model (scr_json.c): selected
+   * when the program's dynamic values may be proxies (dynProxyTier). */
+  dynProxyTier?: boolean;
+  /** The constructor value build of scr_dyn_invoke.c: selected when the
+   * program reads a builtin constructor as a value (dynCtorValue). */
+  dynCtorValue?: boolean;
   stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
@@ -393,6 +399,8 @@ export function effectiveRuntimeFeatures(
     promiseRejectDyn: features.promiseRejectDyn === true,
     jsObjectModel,
     mutableBuffers: features.mutableBuffers === true,
+    dynProxyTier: features.dynProxyTier === true,
+    dynCtorValue: features.dynCtorValue === true,
     bigintBytes: features.bigintBytes === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,

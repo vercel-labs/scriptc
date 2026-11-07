@@ -1225,12 +1225,15 @@ const PROTO_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
- * (BigInt views today, array attributes and handle property tables next), so
- * pack selection and the source build (RUNTIME_DEFINES, the library's
- * cflags) agree on when the build is on. */
+ * (BigInt views, Proxy.revocable with the Reflect entry points and the
+ * constructor value answers today, array attributes and handle property
+ * tables next), so pack selection and the source build (RUNTIME_DEFINES, the
+ * library's cflags) agree on when the build is on. */
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  dynProxyTier?: boolean;
+  dynCtorValue?: boolean;
   handleProps?: boolean;
   mutableBuffers?: boolean;
   protoAccessor?: boolean;
@@ -1239,6 +1242,8 @@ export function jsObjectModelFact(features: {
   return (
     features.jsObjectModel === true ||
     features.bigintBytes === true ||
+    features.dynProxyTier === true ||
+    features.dynCtorValue === true ||
     features.handleProps === true ||
     features.mutableBuffers === true ||
     features.protoAccessor === true ||
@@ -1820,6 +1825,40 @@ const RUNTIME_FEATURE_RULES = {
       node.args[0]?.kind === "strLit" &&
       BIGINT_BYTES_NAMES.has(node.args[0].value),
   }),
+  /** The program reads the `RegExp` constructor as a value (`const R =
+   * RegExp`), so it can call or construct through it: those answers live in
+   * the constructor value build of scr_dyn_invoke.c
+   * (SCR_JS_OBJECT_MODEL_CTOR_VALUE, t262-w5) together with scr_regex.c, and
+   * the fact selects that twin of the unit. Reading another builtin
+   * constructor as a value answers the same refusals in every build, so it
+   * stays out of this fact and keeps the object it had. The fact ORs into
+   * jsObjectModel (jsObjectModelFact), and every other program keeps the
+   * plain object model object, byte for byte. */
+  dynCtorValue: rule({
+    libCall: (node) =>
+      node.fn === "dyn.globalConstructor" &&
+      node.args[0]?.kind === "strLit" &&
+      node.args[0].value === "RegExp",
+  }),
+  /** The program's dynamic values may be proxies: it creates one (`new
+   * Proxy`, Proxy.revocable) or uses the Reflect entry points and proxy
+   * reflection traps, whose revocation checks and trap completion live in
+   * the composition of the object model build (t262-da §J) that carries them
+   * (SCR_JS_OBJECT_MODEL_PROXY, t262-w5). The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects the proxy twin of every object model
+   * build, and every other program keeps the plain object model object, byte
+   * for byte. */
+  dynProxyTier: rule({
+    fns: [
+      "dyn.proxyNew",
+      "dyn.proxyRevocable",
+      "dyn.reflectSetPrototypeOf",
+      "dyn.reflectPreventExtensions",
+      "dyn.reflectIsExtensible",
+      "dyn.reflectConstruct",
+      "dyn.reflectConstructDefault",
+    ],
+  }),
   /** `new Promise` whose executor takes a checked-dynamic reject parameter,
    * and `Promise.withResolvers` on a checked-dynamic promise whose resolver
    * record does: that reason is the program's own value, not an Error, so
@@ -2094,6 +2133,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     warningReplace: false,
     promiseRejectDyn: false,
     bigintBytes: false,
+    dynCtorValue: false,
+    dynProxyTier: false,
     sparseArrays: false,
     wasm: false,
     webcrypto: false,
@@ -2194,6 +2235,18 @@ function scanRuntimeFeatures(
     features.dynTier = mod.functions.some(
       (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
     );
+  // The constructor value build of scr_dyn_invoke.c answers `RegExp (
+  // pattern, flags )` through a stored constructor, which builds its pattern
+  // with scr_regex.c and the vendored engine: a program that selects that
+  // build links the regex unit with it. The condition is the executable's own
+  // link test for scr_dyn_invoke.c, so no program widens its command line
+  // without the object that needs it, and a program that never reads a
+  // constructor as a value never links the regex unit.
+  if (
+    features.dynCtorValue &&
+    (features.dynInvoke || features.fetch || features.nodeIsland === true)
+  )
+    features.regex = true;
   return features;
 }
 

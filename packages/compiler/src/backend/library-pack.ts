@@ -37,6 +37,10 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     // registry's arming entry point, so the archive must carry the unit and
     // the JavaScript object model build it belongs to.
     ...(options.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    // A proxied program's archive carries the proxy build of the json unit,
+    // the one its emitted calls name at link time.
+    ...(options.dynProxyTier === true ? { dynProxyTier: true } : {}),
+    ...(options.dynCtorValue === true ? { dynCtorValue: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,

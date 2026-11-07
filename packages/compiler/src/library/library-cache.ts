@@ -83,6 +83,10 @@ export interface EarlyLibraryNativeFeatures {
   /** The buffer views registry (scr_js_buffers.c) and the archive's
    * JavaScript object model build of its bytes and json units. */
   mutableBuffers: boolean;
+  /** The archive's proxy build of its json unit
+   * (SCR_JS_OBJECT_MODEL_PROXY). */
+  dynProxyTier?: boolean;
+  dynCtorValue?: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }

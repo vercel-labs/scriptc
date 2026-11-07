@@ -521,6 +521,13 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
+  // The proxy build of the object model (t262-w5): a program that can reach
+  // a Proxy names the build the pack matrix ships under the same define.
+  { define: "SCR_JS_OBJECT_MODEL_PROXY", when: (opts) => opts.dynProxyTier },
+  // The constructor value build of the object model: a program that reads a
+  // builtin constructor as a value names the build the pack matrix ships
+  // under the same define.
+  { define: "SCR_JS_OBJECT_MODEL_CTOR_VALUE", when: (opts) => opts.dynCtorValue },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
   // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form

@@ -318,11 +318,15 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
     // An inline union field has no box to lend: projections read it
     // through emitReadReceiver's private stack box. An inline array field
     // has no array to lend.
+    // A field a partial record assertion leaves unwritten has no slot to
+    // lend either: its read answers a value of its own, which a borrower
+    // would use after the read's frame released it.
     case "fieldGet":
     case "recordGet":
       return (
         !emitter.inlineFieldGet(e) &&
         !emitter.inlineArrayRead(e) &&
+        !(e.kind === "recordGet" && emitter.partialFieldUnwritten(e.shapeId, e.field)) &&
         emitter.canBorrowReceiver(e.obj)
       );
     case "ternary":

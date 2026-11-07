@@ -55,7 +55,7 @@ import {
   islandModuleGlobal,
   islandRooted,
 } from "./lower-node-island.js";
-import { stripTypeWrappers } from "./typed-arguments.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 /** A module-level constant whose initializer the island evaluates. */
 export interface ClosedConstant {
@@ -400,7 +400,7 @@ function closedDeclaration(
   declaration: ts.VariableDeclaration,
 ): ClosedConstant | null {
   if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) return null;
-  const initializer = stripTypeWrappers(declaration.initializer);
+  const initializer = withoutParenthesesTypeWrappers(declaration.initializer);
   // The initializer is an island operation today (islandRooted), so its
   // value meets its static type through fromIsland either way.
   if (

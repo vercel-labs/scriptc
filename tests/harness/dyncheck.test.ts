@@ -119,6 +119,80 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
+  test("an Extract member pattern assertion checks the member the literal selects", async () => {
+    const r = await compileAndRun(
+      "extract-member-pattern-assertion",
+      `
+      type Circle = { kind: "circle"; radius: number };
+      type Square = { kind: "square"; side: number };
+      type Shape = Circle | Square;
+      function pick<K extends Shape["kind"]>(shape: Shape, kind: K): string {
+        const picked = shape as Extract<Shape, { kind: K }>;
+        return JSON.stringify(picked);
+      }
+      console.log(pick({ kind: "circle", radius: 1 }, "circle"));
+      try { console.log(pick({ kind: "square", side: 2 }, "circle")); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"kind":"circle","radius":1}\n' +
+        "true a '{ kind: string; side: number }' value is not representable in the target union (a value narrowed or asserted past it still held it)\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("a value routed by a partial discriminant is checked into the arm it names", async () => {
+    const r = await compileAndRun(
+      "partial-discriminant-route",
+      `
+      type Reply =
+        | { op: "open"; ok: true; data: { handle: number } }
+        | { op: "close"; ok: true }
+        | { op: "list"; ok: true; data: { names: string[] } }
+        | { op: string; ok: false; error: string };
+      const done = <T extends "open" | "close" | "list">(op: T, data: object): Reply => ({ op, ok: true, data }) as Reply;
+      console.log(JSON.stringify(done("open", { handle: 1 })));
+      try { console.log(JSON.stringify(done("list", { handle: 1 }))); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      try { console.log(JSON.stringify(done("other" as "open", {}))); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"op":"open","ok":true,"data":{"handle":1}}\n' +
+        "true expected array at $.names, got undefined\n" +
+        "true invalid 'op' discriminant in record conversion\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("a record beside undefined asserted to a subtype checks the value", async () => {
+    const r = await compileAndRun(
+      "asserted-subtype-beside-undefined",
+      `
+      interface Reply { handled?: boolean }
+      interface Routed extends Reply { handled: true; origin: { x: number } }
+      function produce(n: number): Reply | undefined { return n === 0 ? undefined : { handled: n > 1 }; }
+      function read(n: number): string {
+        const result = produce(n);
+        try { const routed = result as Routed; return "routed " + routed.origin.x; }
+        catch (error) { return (error instanceof TypeError) + " " + (error as Error).message; }
+      }
+      console.log(read(0));
+      console.log(read(2));
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "true undefined is not representable in the target union (a value narrowed or asserted past it still held it)\n" +
+        "true expected object at $.origin, got undefined\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("assertions narrowing record members or union arms check the value", async () => {
     const r = await compileAndRun(
       "narrowing-record-assertions",

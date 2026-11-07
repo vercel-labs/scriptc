@@ -257,7 +257,7 @@
     },
     "island:zod": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+      "signature": "exit 1, Node 0: TypeError: expected object at $, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, or copy i"
     }
   },
   "npm/hot-shots-buffered": {

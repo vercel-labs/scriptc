@@ -3617,10 +3617,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ScrStr *iterator = scr_insp_native_iterator(d, recurse, depth);
         if (iterator) return iterator;
       }
-#ifdef SCR_NODE_ISLANDS
-      /* An island object prints as Node's util.inspect prints it. */
-      if (d->v.handle.tag == SCR_DYNH_NODE_ISLAND) return scr_ni_inspect(d, recurse, depth);
-#endif
+      /* An island object prints as Node's util.inspect prints it; only a
+       * program that links the island units, which install the table, can
+       * hold one. */
+      if (d->v.handle.tag == SCR_DYNH_NODE_ISLAND)
+        return scr_ni_dyn_ops->inspect(d, recurse, depth);
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
       if (ops->inspect_custom_only && !g_custom_inspect) {
         if (recurse > depth) return insp_bracketed_class(ops->cls);

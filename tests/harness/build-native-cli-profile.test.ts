@@ -64,7 +64,17 @@ test("CI checks the committed profile in a build that keeps the committed layout
   };
   const job = workflow.jobs.native_profile!;
   expect(job.if).toContain("needs.lanes.outputs.profile == 'true'");
-  const build = job.steps.find((step) => step.run === "pnpm build:native-compiler")!;
+  // The build runs through the self-compile budget, which runs the script
+  // `pnpm build:native-compiler` runs and judges the build's own cost.
+  const build = job.steps.find(
+    (step) => step.run === "node scripts/self-compile-budget.mjs --native-build",
+  )!;
+  expect(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).toContain(
+    '"build:native-compiler": "node --max-old-space-size=8192 --import tsx scripts/build-native-cli.mts"',
+  );
+  expect(
+    readFileSync(new URL("../../scripts/self-compile-budget.mjs", import.meta.url), "utf8"),
+  ).toContain('"--import", "tsx", join(root, "scripts/build-native-cli.mts")');
   // The check reports the match and fails only when the profile cannot be
   // judged. The committed layout must stay in use: the profile was collected
   // with it, and a build without it matches fewer functions however fresh the

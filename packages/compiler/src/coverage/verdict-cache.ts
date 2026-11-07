@@ -8,6 +8,7 @@
  * only touch TypeScript comments also reuse it, with every reported
  * location moved to the edited text. */
 import type { DynamicSlotEntry } from "../diagnostics/dynamic-slots.js";
+import type { TypeClaimSite } from "../diagnostics/type-claims.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -43,6 +44,7 @@ export interface CachedCoverage {
   divergences?: ScrDiagnostic[];
   performance?: ScrDiagnostic[];
   dynamicSlots?: DynamicSlotEntry[];
+  typeClaims?: TypeClaimSite[];
   npmStatic?: NpmStaticStatus[];
   wasmModules?: WasmModuleReport[];
   nodeIslands?: NodeIslandReport;
@@ -161,6 +163,7 @@ function cacheable(coverage: AnalyzeResult["coverage"]): CachedCoverage | null {
   if (coverage.divergences !== undefined) out.divergences = coverage.divergences;
   if (coverage.performance !== undefined) out.performance = coverage.performance;
   if (coverage.dynamicSlots !== undefined) out.dynamicSlots = coverage.dynamicSlots;
+  if (coverage.typeClaims !== undefined) out.typeClaims = coverage.typeClaims;
   if (coverage.npmStatic !== undefined) out.npmStatic = coverage.npmStatic;
   if (coverage.wasmModules !== undefined) out.wasmModules = coverage.wasmModules;
   if (coverage.nodeIslands !== undefined) out.nodeIslands = coverage.nodeIslands;
@@ -181,6 +184,7 @@ function restore(cached: CachedCoverage, sources: CachedSource[]): AnalyzeResult
   if (cached.divergences !== undefined) coverage.divergences = cached.divergences;
   if (cached.performance !== undefined) coverage.performance = cached.performance;
   if (cached.dynamicSlots !== undefined) coverage.dynamicSlots = cached.dynamicSlots;
+  if (cached.typeClaims !== undefined) coverage.typeClaims = cached.typeClaims;
   if (cached.npmStatic !== undefined) coverage.npmStatic = cached.npmStatic;
   if (cached.wasmModules !== undefined) coverage.wasmModules = cached.wasmModules;
   if (cached.nodeIslands !== undefined) coverage.nodeIslands = cached.nodeIslands;

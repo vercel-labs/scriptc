@@ -21,7 +21,7 @@ import {
   llvmEmitterRequest,
   type LlvmEmitterRequest,
 } from "./self-hosting-llvm-emitter-cases.js";
-import { skipUnownedTest } from "./shard.js";
+import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const entry = join(root, "tests/fixtures/self-hosting/llvm-emitter.ts");
@@ -114,12 +114,8 @@ const title = `the complete LLVM emitter bootstraps natively (${backend})`;
 
 // The bootstrap's two halves are separate tests so SCRIPTC_TEST_SHARD can run
 // them on different shards (tests/harness/shard.ts). Both need the seed: a
-// shard builds it once for whichever halves it owns. Milliseconds measured
-// under ASan, where the fixed point takes three times the cases' share.
-const halfCosts = {
-  [`${title}: emitter cases and programs`]: 232_000,
-  [`${title}: fixed point`]: 741_000,
-};
+// shard builds it once for whichever halves it owns.
+const halfCosts = suiteCosts(import.meta.filename);
 
 const dir = mkdtempSync(
   join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-llvm-emitter-"),

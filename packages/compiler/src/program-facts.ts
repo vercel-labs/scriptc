@@ -285,6 +285,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "degraded-types",
+    file: `${SRC}/frontend/lowering/lowerer.ts`,
+    symbol: "degradedTypes",
+    source: "types",
+    scope: "type",
+    setBy:
+      "one slot whose type has no layout and whose unit is about to fail the build (localized failure's commit point): a generic call instantiated at `any[]`, for example",
+    gates:
+      "every later mapping of that checker type anywhere in the program takes the degraded layout (`any[]` becomes an array of checked-dynamic elements) where it had none, so sites that chose their own storage for the type now convert to that layout",
+    narrower: "the slot that failed, once slot layouts are decided before bodies lower",
+    tracked: "FOLLOWUPS 2026-11-07 (pi-fences-typebox); pi-build-speed PLAN-2 D17",
+    lowererFields: [],
+  },
+  {
     name: "dyn-async-protocol",
     file: `${SRC}/frontend/lowering/lowerer.ts`,
     symbol: "requiresDynAsyncProtocol",

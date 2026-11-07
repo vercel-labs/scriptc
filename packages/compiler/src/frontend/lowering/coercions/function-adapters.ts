@@ -5,6 +5,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrParam, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import {
   canAdaptDynFuncTo,
+  canBoxFuncIntoDyn,
   canDynCheckTo,
   DYN,
   F64,
@@ -126,7 +127,8 @@ export function omittableTrailingParam(lowerer: Lowerer, type: IrType): boolean 
 
 /** Whether all parameters and the result adapt without a trap-only path.
  * Rest signatures are excluded, except a typed-rest source in a slot with
- * fixed parameters (the rest packing adapter); extra destination
+ * fixed parameters (the rest packing adapter) and a checked-dynamic
+ * variadic source (variadicBoundaryFits); extra destination
  * parameters are ignored. A source with MORE parameters than the slot is
  * clean when every extra trailing one is omittable — the adapter passes
  * that absent value explicitly (funcCoerceAdapter's omittedParams), the
@@ -143,6 +145,7 @@ export function cleanFuncAdaptable(
   dst: IrType & { kind: "func" },
 ): boolean {
   if (restPackingAdapterFits(lowerer, src, dst)) return true;
+  if (variadicBoundaryFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
   // In checked mode (a method field's adapter, WidthLift funcAdaptChecked)
   // the width conversions below include checked retags.
@@ -214,6 +217,7 @@ export function funcSlotAdaptable(
   loc: SrcLoc,
 ): boolean {
   if (restPackingAdapterFits(lowerer, src, dst)) return true;
+  if (variadicBoundaryFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
   for (let i = dst.params.length; i < src.params.length; i++) {
     const param = src.params[i]!;
@@ -236,6 +240,92 @@ export function funcSlotAdaptable(
     return true;
   if (lowerer.widthLiftPlan(src.ret, dst.ret)) return true;
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
+}
+
+/** Why a checked-dynamic variadic function (`(...args) => R`, the hidden
+ * argument-array ABI) cannot serve a slot of another signature, or null
+ * when it can. Such a value has no native call form: every call of it, a
+ * direct one included, boxes the function and applies it to a runtime
+ * argument list. A slot of another signature therefore holds the same
+ * boxed function behind the checked function boundary's adapter, which
+ * passes the slot's arguments as that list and converts the result:
+ * dropped for a `void` slot, checked into any other result type.
+ *
+ * "count": the adapter passes one argument per fixed parameter of the slot,
+ * and a variadic function observes how many it receives. A call through a
+ * slot whose last fixed parameter is optional completes the omitted
+ * argument with undefined, where the JavaScript call passes nothing. A
+ * function type does not record which parameters are optional, so a last
+ * fixed parameter that can hold the completed undefined (omittableTrailingParam)
+ * blocks. "domain": a parameter or result type does not cross the
+ * boundary. */
+export function variadicBoundaryBlocker(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): "count" | "domain" | null {
+  const shape = (id: string) => lowerer.shapes.get(id);
+  const union = (id: string) => lowerer.unions.get(id);
+  if (!canBoxFuncIntoDyn(fromT, shape, union) || !canAdaptDynFuncTo(toT, shape, union))
+    return "domain";
+  // An all-arguments slot hands over every argument its caller passed.
+  if (toT.argumentsAll === true) return null;
+  const fixed = toT.restAbi === "typed" ? toT.params.slice(0, -1) : toT.params;
+  const last = fixed.at(-1);
+  return last !== undefined && omittableTrailingParam(lowerer, last) ? "count" : null;
+}
+
+/** Whether a checked-dynamic variadic function value converts into a slot
+ * of another signature (variadicBoundaryBlocker). */
+export function variadicBoundaryFits(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): boolean {
+  if (fromT.rest !== true || fromT.restAbi !== undefined || typeEquals(fromT, toT)) return false;
+  return variadicBoundaryBlocker(lowerer, fromT, toT) === null;
+}
+
+/** The conversion for variadicBoundaryFits: box the function, then adapt
+ * the boxed value to the slot. The adapter closure takes the function's
+ * identity, so `===` and searches still see the one function. */
+function variadicBoundaryAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string {
+  const key = `fnvariadic:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%fn.adapt", key);
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "f.0", name: "f", type: fromT }],
+    returnType: toT,
+    locals: [{ id: "f.0", name: "f", type: fromT, mutable: false }],
+    body: [
+      {
+        kind: "return",
+        value: {
+          kind: "dynCheck",
+          value: {
+            kind: "dynFrom",
+            value: { kind: "varRef", localId: "f.0", type: fromT, loc },
+            type: DYN,
+            loc,
+          },
+          type: toT,
+          loc,
+        },
+        loc,
+      },
+    ],
+    loc,
+  });
+  return name;
 }
 
 /** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot
@@ -428,9 +518,10 @@ export function sortComparatorResultAdapter(
  * converting its arguments and result. Unsupported parameter/result pairs
  * produce checked traps when called. Rest signatures are refused, except a
  * typed-rest source in a slot with fixed parameters, which the rest
- * packing adapter serves, and a fixed-parameter function into a
- * checked-dynamic rest signature without fixed parameters
- * (funcIntoDynRestAdapter). */
+ * packing adapter serves, a checked-dynamic variadic source, which crosses
+ * the checked function boundary (variadicBoundaryAdapter), and a
+ * fixed-parameter function into a checked-dynamic rest signature without
+ * fixed parameters (funcIntoDynRestAdapter). */
 export function funcCoerceAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
@@ -439,6 +530,8 @@ export function funcCoerceAdapter(
 ): string | null {
   if (restPackingAdapterFits(lowerer, fromT, toT))
     return restPackingAdapter(lowerer, fromT, toT, loc);
+  if (variadicBoundaryFits(lowerer, fromT, toT))
+    return variadicBoundaryAdapter(lowerer, fromT, toT, loc);
   if (toT.rest === true && toT.restAbi === undefined && toT.params.length === 0)
     return funcIntoDynRestAdapter(lowerer, fromT, toT, loc);
   if (fromT.rest === true || toT.rest === true) return null;

@@ -225,6 +225,7 @@ import {
 import { narrowStoredClassValue, structuralReadType } from "../class-unions.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { lowerUnionFieldRead, narrowedArmRead, narrowedUnionView } from "./union-fields.js";
+import { deferSourceAwareArmRead } from "../record-sources.js";
 import { errorPropertyRead } from "../error-methods.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { partialAssertionFields, partialFieldRead } from "../partial-assertions.js";
@@ -5842,6 +5843,30 @@ export function fieldGetExpr(
       if (helper) return { kind: "call", callee: helper, args: [read], type: inner, loc };
     }
     return read;
+  }
+  // A narrowing-proved read whose guard a kept source can contradict: the
+  // deferred answer dispatches on the runtime tag (record-sources.ts).
+  if (target.container === "record" && target.obj.kind === "unionNarrow") {
+    const narrowed = target.obj;
+    const read: IrExpr = {
+      kind: "recordGet",
+      obj: target.obj,
+      shapeId: target.shapeId,
+      field: target.field,
+      type: target.fieldType,
+      loc,
+    };
+    const deferred = deferSourceAwareArmRead(
+      lowerer,
+      read,
+      narrowed.value,
+      narrowed.tag,
+      target.field,
+      target.fieldType,
+      loc,
+      (union) => ({ ...read, obj: { ...narrowed, value: union } }),
+    );
+    if (deferred) return deferred;
   }
   // A field some partial record assertion leaves unwritten (a partial
   // record view, partial-assertions.ts): a read of an absent field throws

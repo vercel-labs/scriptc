@@ -1016,6 +1016,14 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       implementations.push(cls);
     }
   }
+  // Every conversion asks questions about its target type, and each walk
+  // follows the type graph: whether the target is inside the JSON domain,
+  // whether a checked-dynamic value converts into it. A program built from
+  // recursive types, and the compiler's own IR types are one, makes each walk
+  // large, while the questions repeat: the record and union tables are fixed
+  // for the module and typeKey is injective, so one answer per type serves
+  // every site.
+  const typeAnswers = new Map<string, boolean>();
   for (const fn of mod.functions) {
     validateFunction(
       fn,
@@ -1033,6 +1041,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       new Set(mod.threadSlotKeys ?? []),
       mod.declOrigins?.length ?? 0,
       mod.recordLinks ?? [],
+      typeAnswers,
     );
   }
   return errors;
@@ -1054,10 +1063,48 @@ function validateFunction(
   threadSlotKeys: ReadonlySet<string>,
   declOriginCount: number,
   recordLinks: readonly IrRecordLink[],
+  typeAnswers: Map<string, boolean>,
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
     errors.push({ message: `in ${fn.name}: ${message}`, loc });
+  // A question is `typeKey` plus which question it asks: the checked-JSON
+  // domain (isJsonSafeType), the JSON.stringify one (isJsonStringifySafeType),
+  // or whether a checked-dynamic value converts into the type (canDynCheckTo).
+  const typeAnswerOf = (prefix: string, t: IrType, answer: () => boolean): boolean => {
+    const key = prefix + typeKey(t);
+    const known = typeAnswers.get(key);
+    if (known !== undefined) return known;
+    const settled = answer();
+    typeAnswers.set(key, settled);
+    return settled;
+  };
+  // Whether a checked-dynamic value converts into `t`: the checked
+  // extraction's domain (`value as T`, the automatic dynCheck).
+  const dynCheckableOf = (t: IrType): boolean =>
+    typeAnswerOf("check:", t, () =>
+      canDynCheckTo(
+        t,
+        (id) => records.get(id),
+        (id) => unions.get(id),
+      ),
+    );
+  const jsonSafeOf = (t: IrType): boolean =>
+    typeAnswerOf("json:", t, () =>
+      isJsonSafeType(
+        t,
+        (id) => records.get(id),
+        (id) => unions.get(id),
+      ),
+    );
+  const jsonStringifySafeOf = (t: IrType): boolean =>
+    typeAnswerOf("stringify:", t, () =>
+      isJsonStringifySafeType(
+        t,
+        (id) => records.get(id),
+        (id) => unions.get(id),
+      ),
+    );
   // Invariant I1 (ir/tiers.ts): a static function reaches dynamic values
   // only through boundary operations and moves.
   const staticTier = functionTier(fn) === "static";
@@ -6408,14 +6455,7 @@ function validateFunction(
         // JSON-safe (the frontend rejects the rest with a specific message).
         // A dyn ROOT is the one non-static shape allowed: the runtime's dyn
         // walker serializes it (scr_dyn_format_j), no emitted serializer.
-        if (
-          e.value.type.kind !== "dyn" &&
-          !isJsonStringifySafeType(
-            e.value.type,
-            (id) => records.get(id),
-            (id) => unions.get(id),
-          )
-        ) {
+        if (e.value.type.kind !== "dyn" && !jsonStringifySafeOf(e.value.type)) {
           err(`jsonStringify of non-JSON-safe type ${e.value.type.kind}`, e.loc);
         }
         break;
@@ -6436,12 +6476,6 @@ function validateFunction(
         // Bare undefined-armed unions of JSON-safe arms are additionally
         // valid: the checked-dynamic tree holds a first-class undefined value (overflow
         // reads), which matches exactly the undefined arm.
-        const jsonOk = (t: IrType): boolean =>
-          isJsonSafeType(
-            t,
-            (id) => records.get(id),
-            (id) => unions.get(id),
-          );
         const undefArmedOk =
           e.type.kind === "union" &&
           (unions
@@ -6449,7 +6483,7 @@ function validateFunction(
             ?.arms.every(
               (a) =>
                 a.kind === "undefinedT" ||
-                jsonOk(a) ||
+                jsonSafeOf(a) ||
                 isDynTypedRefType(a) ||
                 DYN_HANDLE_KINDS.has(a.kind),
             ) ??
@@ -6473,11 +6507,7 @@ function validateFunction(
         // retained reference, no copy — DYN_HANDLE_KINDS).
         const handleOk = DYN_HANDLE_KINDS.has(e.type.kind);
         if (
-          !canDynCheckTo(
-            e.type,
-            (id) => records.get(id),
-            (id) => unions.get(id),
-          ) &&
+          !dynCheckableOf(e.type) &&
           !undefArmedOk &&
           !bytesOk &&
           !errorOk &&

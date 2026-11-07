@@ -450,3 +450,194 @@ test("the toggle is read once at start-up, not per loop", async () => {
   expect(llvm).toMatch(/= call ptr @getenv\(ptr @sc_lanes_env\)/);
   expect(llvm.match(/call void @sc_lanes_init\(\)/g)).toHaveLength(1);
 });
+
+const OUTER_SOURCE = `class Pair {
+  re: number;
+  im: number;
+  constructor(re: number, im: number) {
+    this.re = re;
+    this.im = im;
+  }
+  plus(o: Pair): Pair {
+    return new Pair(this.re + o.re, this.im + o.im);
+  }
+  times(o: Pair): Pair {
+    return new Pair(this.re * o.re - this.im * o.im, this.re * o.im + this.im * o.re);
+  }
+  norm(): number {
+    return this.re * this.re + this.im * this.im;
+  }
+}
+
+function row(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+function rowAgain(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+function numbers(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const cre = (x / size) * 3 - 2;
+    let zr = 0;
+    let zi = 0;
+    let keep = 0;
+    let n = 0;
+    while (n < limit && zr * zr + zi * zi <= 4) {
+      keep = zr;
+      zr = zr * zr - zi * zi + cre;
+      zi = 2 * keep * zi + cim;
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+function twoLoops(size: number, limit: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    let n = 0;
+    while (n < limit) n++;
+    let m = 0;
+    while (m < limit) m++;
+    if (n + m === limit * 2) inside++;
+  }
+  return inside;
+}
+
+console.log(row(9, 20, -0.5), row(9.5, 3, 0.75), rowAgain(7.5, 5, -0.25));
+console.log(numbers(9, 20, -0.5), numbers(9.5, 3, 0.75), twoLoops(5, 4));
+`;
+
+test("a planned outer row runs a group of rows and masks the lanes that stop", async () => {
+  const llvm = await emittedLlvm("outer", OUTER_SOURCE, { plan: "outer" });
+  const fn = body(llvm, "sc_f_row");
+  // One group: the counter's vector, the row's own declarations, the masked
+  // inner body, the count of rows that ran to the limit, and the advance.
+  expect(fn).toMatch(/outer\.init\d+:/);
+  expect(fn).toMatch(/outer\.g\d+:/);
+  expect(fn).toMatch(/outer\.s\d+:/);
+  expect(fn).toMatch(/outer\.b\d+:/);
+  expect(fn).toMatch(/outer\.x\d+:/);
+  expect(fn).toMatch(/outer\.done\d+:/);
+  // The counter vector starts at the group's first row: the lane offsets are
+  // built once and added to each lane's start.
+  expect(fn).toMatch(/insertelement <4 x double> poison, double 0\.0, i32 0/);
+  expect(fn).toMatch(/insertelement <4 x double> [^,]+, double 3\.0, i32 3/);
+  expect(fn).toMatch(/fadd <4 x double> [^,]+, %t\d+/);
+  // The inner loop's test is the lanes' own; a lane that fails takes no step.
+  expect(fn).toMatch(/bitcast <4 x i1> [^,]+ to i4/);
+  expect(fn).toMatch(/icmp ne i4 [^,]+, 0/);
+  expect(fn).toMatch(/select <4 x i1> [^,]+, <4 x double>/);
+  // The row's constant and its carried instance are per-lane slots.
+  expect(fn).toMatch(/alloca <4 x double> ; lane c\.re/);
+  expect(fn).toMatch(/alloca <4 x double> ; lane z\.im/);
+  expect(fn).toMatch(/alloca <4 x double> ; lane n/);
+});
+
+test("the outer row's guard bounds the start, the bound and the accumulator", async () => {
+  const llvm = await emittedLlvm("outer-guard", OUTER_SOURCE, { plan: "outer" });
+  const fn = body(llvm, "sc_f_row");
+  // One whole group, then the run-time toggle, then the counter's start and
+  // the accumulator as exact integers below 2^45.
+  expect(fn).toMatch(/fadd double [^,]+, 4\.0/);
+  expect(fn).toMatch(/fcmp ole double [^,]+, 0x42C0000000000000/);
+  expect(fn).toMatch(/load i32, ptr @sc_lanes/);
+  expect(fn).toMatch(/fptosi double [^ ]+ to i64/);
+  expect(fn).toMatch(/sitofp i64 [^ ]+ to double/);
+  // Negative zero is not an exact integer here: the round trip would turn its
+  // bits into positive zero without the comparison noticing.
+  expect(fn).toMatch(/bitcast double [^ ]+ to i64/);
+  expect(fn).toMatch(/icmp eq i64 [^,]+, -9223372036854775808/);
+  // The count the handler leaves: the mask is widened and summed once per
+  // group, then added to the accumulator's own slot.
+  expect(fn).toMatch(/zext <4 x i1> [^,]+ to <4 x i64>/);
+  expect(fn.match(/extractelement <4 x i64>/g)!.length).toBeGreaterThanOrEqual(4);
+  expect(fn).toMatch(/fadd double [^,]+, [^,]+\n\s*store double [^,]+, ptr %sc_l_inside_0/);
+});
+
+test("the target's vector width decides the row's lane count", async () => {
+  const v3 = await emittedLlvm("outer-v3", OUTER_SOURCE, { plan: "outer", targetCpu: "x86-64-v3" });
+  expect(body(v3, "sc_f_row")).toMatch(/bitcast <8 x i1> [^,]+ to i8/);
+  expect(body(v3, "sc_f_row")).toMatch(/alloca <8 x double> ; lane z\.re/);
+  const v4 = await emittedLlvm("outer-v4", OUTER_SOURCE, { plan: "outer", targetCpu: "x86-64-v4" });
+  expect(body(v4, "sc_f_row")).toMatch(/bitcast <16 x i1> [^,]+ to i16/);
+  expect(body(v4, "sc_f_row")).toMatch(/alloca <16 x double> ; lane z\.re/);
+  const v2 = await emittedLlvm("outer-v2", OUTER_SOURCE, { plan: "outer", targetCpu: "x86-64-v2" });
+  expect(body(v2, "sc_f_row")).toMatch(/bitcast <4 x i1> [^,]+ to i4/);
+});
+
+test("rows the lane body cannot take keep their scalar loops", async () => {
+  const llvm = await emittedLlvm("outer-refused", OUTER_SOURCE, { plan: "outer" });
+  // A row of plain numbers has its counter in an integer register, and a row
+  // with two inner loops has no single inner test to mask.
+  expect(body(llvm, "sc_f_numbers")).not.toMatch(/outer\./);
+  expect(body(llvm, "sc_f_twoLoops")).not.toMatch(/outer\./);
+  // The row is planned once: both functions that carry it lower it.
+  expect(body(llvm, "sc_f_rowAgain")).toMatch(/outer\.g\d+:/);
+});
+
+test("a row's chained initializers read their slots instead of inlining the chain", async () => {
+  const plain = body(
+    await emittedLlvm("outer-chain-plain", OUTER_SOURCE, { plan: "outer" }),
+    "sc_f_row",
+  );
+  // Eight declarations that each reuse the previous temp, feeding the row's
+  // constant. Inlining every initializer's tree into the next would make the
+  // row grow by a factor with each line.
+  const chain = ["    let t0 = (x / size) * 3 - 2;"];
+  for (let i = 1; i <= 8; i++) chain.push(`    let t${i} = t${i - 1} * t${i - 1} + t${i - 1} + 1;`);
+  const source = OUTER_SOURCE.replace(
+    "    const c = new Pair((x / size) * 3 - 2, cim);",
+    [...chain, "    const c = new Pair(t8, cim);"].join("\n"),
+  );
+  const fn = body(await emittedLlvm("outer-chain", source, { plan: "outer" }), "sc_f_row");
+  expect(fn).toMatch(/outer\.g\d+:/);
+  // Each temp is one lane slot, and the next temp's value loads the slot the
+  // earlier declaration stored, in that order.
+  const slot = (name: string): string => {
+    const found = fn.match(new RegExp(`%(\\w+) = alloca <4 x double> ; lane ${name}\\n`));
+    if (found === null) throw new Error(`no lane slot for ${name}`);
+    return found[1]!;
+  };
+  const seven = slot("t7"),
+    eight = slot("t8");
+  const firstLoad = fn.indexOf(`load <4 x double>, ptr %${seven}`);
+  const lastStore = fn.indexOf(`ptr %${eight}`);
+  expect(firstLoad).toBeGreaterThanOrEqual(0);
+  expect(lastStore).toBeGreaterThan(firstLoad);
+  // The chain costs a fixed few lines per declaration: the row stays close to
+  // the plain row's size instead of multiplying it.
+  expect(fn.length).toBeLessThan(plain.length * 2);
+});
+
+test("the other shapes alone do not lower an outer row", async () => {
+  const llvm = await emittedLlvm("outer-other", OUTER_SOURCE, { plan: "sum,count,store" });
+  expect(body(llvm, "sc_f_row")).not.toMatch(/outer\./);
+  expect(llvm).not.toMatch(/bitcast <4 x i1>/);
+});

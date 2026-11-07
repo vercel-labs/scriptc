@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8834-union-spread-key-order.ts"
+ ],
+ "diags": []
+}

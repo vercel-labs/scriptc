@@ -995,3 +995,146 @@ test("a spread of a converted value into a wider shape orders the wider shape", 
   expect(f.order(ab)).toEqual(["b", "a"]);
   expect(f.order(abc)).toEqual(["b", "a", "c"]);
 });
+
+/** A spread literal wrapped in the prologue lowering gives a width copy:
+ * each spread source is evaluated into a binding the literal's fields read. */
+function widthSite(
+  f: Fixture,
+  literal: IrExpr,
+  type: IrType & { kind: "record" },
+  sources: { localId: string; init: IrExpr }[],
+): IrExpr & { kind: "seqExpr" } {
+  f.notes.width(
+    literal,
+    sources.map((source) => ({
+      kind: "spread",
+      value: ref(source.localId, source.init.type) as IrExpr & { kind: "varRef" },
+    })),
+    false,
+  );
+  return {
+    kind: "seqExpr",
+    stmts: sources.map((source) => decl(source.localId, source.init)),
+    result: literal,
+    type,
+    loc,
+  };
+}
+
+test("a copy of a union spread keeps the order of the record it copies", () => {
+  const f = fixture();
+  const base = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+    ],
+    ["a", "b", "c"],
+  );
+  const arm = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  // The arm's value is created b-first, so no static table names its order.
+  const armValue = f.literal(arm, ["b", "a"]);
+  // `{ ...base, ...extra }` into the base shape: the union arm may be absent,
+  // so the copy keeps the order its own sources created.
+  const inner = f.literal(
+    base,
+    ["a", "b", "c"],
+    [
+      { kind: "spread", shapeId: base.shapeId, maybeAbsent: false },
+      { kind: "spread", shapeId: arm.shapeId, maybeAbsent: true },
+    ],
+  );
+  const innerSite = widthSite(f, inner, base, [
+    { localId: "p", init: f.literal(base, ["b", "a", "c"]) },
+    { localId: "q", init: armValue },
+  ]);
+  // `{ ...inner, d: 1 }` into a wider shape reads the copy the union spread
+  // built, so it must keep that copy's order too.
+  const wide = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+      ["d", F64],
+    ],
+    ["a", "b", "c", "d"],
+  );
+  const outer = f.literal(
+    wide,
+    ["a", "b", "c", "d"],
+    [
+      { kind: "spread", shapeId: base.shapeId, maybeAbsent: false },
+      { kind: "key", name: "d", definite: true },
+    ],
+  );
+  const outerSite = widthSite(f, outer, wide, [{ localId: "u", init: innerSite }]);
+  f.run([
+    decl("arm0", armValue),
+    observe(f.literal(wide, ["a", "b", "c", "d"])),
+    observe(outerSite),
+  ]);
+  expect(f.notes.keptWidthSpreads).toBe(2);
+});
+
+// A proof that re-proves a shared source at every builder level takes
+// time exponential in the chain length; the memoized pass finishes in
+// microseconds.
+test("a chain of builders proves each source's order once", { timeout: 10_000 }, () => {
+  const f = fixture();
+  const depth = 24;
+  let fields: [string, IrType][] = [["a", F64]];
+  let order = ["a"];
+  let previous = f.record(fields, order);
+  const stmts: IrStmt[] = [decl("t0", f.literal(previous, ["a"]))];
+  // Each builder merges two values of the preceding shape, so proving one
+  // shape's order proves its source twice at every level.
+  for (let i = 1; i <= depth; i++) {
+    fields = [...fields, [`c${i}`, F64]];
+    order = [...order, `c${i}`];
+    const next = f.record(fields, order);
+    stmts.push(
+      decl(
+        `t${i}`,
+        f.literal(next, order, [
+          { kind: "spread", shapeId: previous.shapeId, maybeAbsent: false },
+          { kind: "spread", shapeId: previous.shapeId, maybeAbsent: false },
+          { kind: "key", name: `c${i}`, definite: true },
+        ]),
+      ),
+    );
+    previous = next;
+  }
+  const arm = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const final = f.record([...fields, ["b", F64], ["z", F64]], [...order, "b", "z"]);
+  // A site whose copy has to prove the builder chain: a union arm that may be
+  // absent.
+  const last = f.literal(
+    final,
+    [...order, "b", "z"],
+    [
+      { kind: "spread", shapeId: previous.shapeId, maybeAbsent: false },
+      { kind: "spread", shapeId: arm.shapeId, maybeAbsent: true },
+      { kind: "key", name: "z", definite: true },
+    ],
+  );
+  const site = widthSite(f, last, final, [
+    { localId: "td", init: ref(`t${depth}`, previous) },
+    { localId: "su", init: f.literal(arm, ["b", "a"]) },
+  ]);
+  stmts.push(observe(f.literal(final, [...order, "b", "z"])));
+  stmts.push(observe(site));
+  f.run(stmts);
+  expect(f.notes.keptWidthSpreads).toBe(1);
+});

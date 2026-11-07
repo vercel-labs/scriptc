@@ -687,6 +687,23 @@ function isUndefinedOrNull(e: ts.Expression): boolean {
   );
 }
 
+/** Whether an operand isUndefinedOrNull accepts has to run: `void e` is
+ * undefined whatever `e` is, and evaluates it. `void 0` and the other
+ * literals are the spellings of undefined and do nothing; any other operand
+ * (`void f()`, `void x`, which may throw) is evaluated for what it does. */
+function unitOperandRuns(e: ts.Expression): boolean {
+  const x = withoutParentheses(e);
+  if (!ts.isVoidExpression(x)) return false;
+  const operand = withoutParentheses(x.expression);
+  return !(
+    ts.isNumericLiteral(operand) ||
+    ts.isStringLiteral(operand) ||
+    operand.kind === ts.SyntaxKind.TrueKeyword ||
+    operand.kind === ts.SyntaxKind.FalseKeyword ||
+    operand.kind === ts.SyntaxKind.NullKeyword
+  );
+}
+
 /** `typeof X.m` for a member whose answer is fixed: "function" for a
  * function. Truthy data is some other type, which is enough to answer a
  * comparison against "function" or "undefined". */
@@ -714,8 +731,9 @@ function typeofComparison(lowerer: Lowerer, operand: ts.Expression, text: string
  * uses the answer records the test with noteBuiltinFeatureTest). Without
  * `skipped` the answer is one that needs no evaluation at all: every operand
  * that would run is such a test. With it, the answer may also be one that an
- * operand with effects cannot change, and `skipped.operand` says so: the
- * caller then has to keep the test's evaluation. */
+ * operand with effects cannot change (`effect() && !X.m`, `X.m === void
+ * effect()`), and `skipped.operand` says so: the caller then has to keep the
+ * test's evaluation. */
 export function builtinPresenceTest(
   lowerer: Lowerer,
   expr: ts.Expression,
@@ -768,9 +786,19 @@ export function builtinPresenceTest(
     else if (ts.isTypeOfExpression(right) && ts.isStringLiteral(left))
       answer = typeofComparison(lowerer, right.expression, left.text);
     else {
-      const read = isUndefinedOrNull(right) ? left : isUndefinedOrNull(left) ? right : null;
+      const unit = isUndefinedOrNull(right) ? right : isUndefinedOrNull(left) ? left : null;
+      const read = unit === null ? null : unit === right ? left : right;
       const member = read === null ? null : testedMemberOf(lowerer, read);
-      if (member !== null && alwaysTruthy(member)) answer = false;
+      if (unit !== null && member !== null && alwaysTruthy(member)) {
+        // `X.m === void effect()`: the operand does not change the answer
+        // and still runs, so only a caller that keeps the test's
+        // evaluation may use it.
+        if (unitOperandRuns(unit)) {
+          if (skipped === undefined) return null;
+          skipped.operand = true;
+        }
+        answer = false;
+      }
     }
     return answer === null ? null : equal ? answer : !answer;
   }

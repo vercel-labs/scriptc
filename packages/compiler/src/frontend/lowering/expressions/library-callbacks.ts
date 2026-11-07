@@ -24,6 +24,7 @@
 import * as ts from "../../ts7/adapter.js";
 import { BOOL, type IrExpr, type IrStmt, type IrType, type SrcLoc, VOID } from "../../../ir/ir.js";
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import { identifierReadSymbol, sideEffectFreeOptionValue } from "../surfaces.js";
@@ -199,14 +200,7 @@ const deferring = new WeakSet<ts.Node>();
  * a `let`, a `var`, a parameter or another module's exported binding, and a
  * `const` read before its declaration throws where it is read. */
 function isConstantOperand(lowerer: Lowerer, node: ts.Expression): boolean {
-  let e = node;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAssertionExpression(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
+  const e = withoutParenthesesTypeWrappers(node);
   if (
     ts.isStringLiteralLike(e) ||
     ts.isNumericLiteral(e) ||
@@ -266,8 +260,7 @@ function isConstantOperand(lowerer: Lowerer, node: ts.Expression): boolean {
  * receiver the chain has already evaluated. */
 function calleeOperand(call: ts.CallExpression | ts.NewExpression): ts.Expression | null {
   if ((call.flags & ts.NodeFlags.OptionalChain) !== 0) return null;
-  let callee: ts.Expression = call.expression;
-  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  const callee = withoutParentheses(call.expression);
   if (ts.isIdentifier(callee)) return callee;
   if (ts.isPropertyAccessExpression(callee)) return callee.expression;
   return null;
@@ -307,14 +300,7 @@ export function lowerDeferredCallbackCall(
   if (deferring.has(call)) return null;
   const args = call.arguments?.nodes ?? [];
   for (let index = 0; index < args.length - 1; index++) {
-    let expr: ts.Expression = args[index]!;
-    while (
-      ts.isParenthesizedExpression(expr) ||
-      ts.isAssertionExpression(expr) ||
-      ts.isSatisfiesExpression(expr) ||
-      ts.isNonNullExpression(expr)
-    )
-      expr = expr.expression;
+    const expr = withoutParenthesesTypeWrappers(args[index]!);
     if (!ts.isIdentifier(expr)) continue;
     const symbol = identifierReadSymbol(lowerer, expr);
     if (symbol === undefined || !lowerer.earlyReadVars.has(symbol)) continue;

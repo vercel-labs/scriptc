@@ -502,6 +502,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
+  // `fn.constructor = value` on a value the checker types as a function.
+  unit((u) => u.opts.functionOwnWrite === true, "scr_dyn_fn_own.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */

@@ -141,6 +141,8 @@ export interface EarlyExecutableNativeFeatures {
   /** A computed read of the global object, or `… in globalThis`:
    * scr_global_host_absent.c. */
   hostAbsentGlobals?: boolean;
+  /** `fn.constructor = value` on a function value: scr_dyn_fn_own.c. */
+  functionOwnWrite?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;

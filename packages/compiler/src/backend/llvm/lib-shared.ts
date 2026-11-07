@@ -1224,6 +1224,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.copyArrays": "scr_node_island_copy_arrays",
   "nodeIsland.awaitCopy": "scr_node_island_await_copy",
   "dyn.keySet": "scr_dyn_key_set",
+  "dyn.fnOwnSet": "scr_dyn_fn_own_set",
   "dyn.keySetComputed": "scr_dyn_key_set_computed",
   "dyn.keyDelete": "scr_dyn_key_delete",
   "dyn.keyDeleteComputed": "scr_dyn_key_delete_computed",

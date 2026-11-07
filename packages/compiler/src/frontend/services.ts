@@ -4,6 +4,10 @@ import { lowerEsmInitsWithParser, rewriteBundlerCjsWithParser } from "./npm-stat
 import { isBundlerCjsCandidate } from "./npm-static-rewrite-syntax.js";
 import { normalizeCjsFunctionExports } from "./npm-static-cjs-exports-alias.js";
 import {
+  mayHoldCjsExportsAccessor,
+  normalizeCjsExportsAccessor,
+} from "./npm-static-cjs-exports-accessor.js";
+import {
   mayBundleChunks,
   splitBundledChunks,
   type BundledChunkSplit,
@@ -173,6 +177,14 @@ export class FrontendServices {
     this.ensureOpen();
     if (!source.includes("module.exports")) return null;
     return normalizeCjsFunctionExports(this.parse(path, source, "js"));
+  }
+  /** A CommonJS module that installs an accessor as its export object,
+   * respelled as the whole-export assignment of the getter's value (null:
+   * none). */
+  cjsExportsAccessor(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!mayHoldCjsExportsAccessor(source)) return null;
+    return normalizeCjsExportsAccessor(this.parse(path, source, "js"));
   }
   /** A package module with tsc's interop bindings of builtin modules
    * unwrapped to plain requires (null: none). */

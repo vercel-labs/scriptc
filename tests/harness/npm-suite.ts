@@ -48,6 +48,10 @@ const KNOWN: Record<string, Known> = {
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
   "bytes-exit": { island: true },
+  // chalk 4 compiles natively; the colour models convert through
+  // color-convert, required inside a function of ansi-styles and shipped
+  // without declarations: that package runs in a Node island.
+  chalk4: { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },

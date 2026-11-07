@@ -469,6 +469,8 @@ import {
 } from "./lower-modules.js";
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
+  accessorRequirerAssign,
+  accessorRequirerSlot,
   type SplitRequireBinding,
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
@@ -3287,6 +3289,10 @@ export class Lowerer {
   readonly cjsWholeExportSymbols = new Map<ts.SourceFile, ts.Symbol | null>();
   /** Per-module live member-export classification (cjs-inline-require.ts). */
   readonly cjsLiveMemberExports = new Map<ts.SourceFile, boolean>();
+  /** Per requiring module and accessor-exporting module, the storage of
+   * what that module's `require()` answered (accessorRequirerSlot); null
+   * for a pair without one. A cache: a miss finds the global again. */
+  readonly accessorRequirerSlots = new Map<string, IrGlobal | null>();
   /** Inline program-module require calls whose %init the enclosing member
    * read or member call is already sequencing (cjs-inline-require.ts). */
   readonly inlineRequireInitDone = new Set<ts.CallExpression>();
@@ -5389,6 +5395,7 @@ export class Lowerer {
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
+    "accessorRequirerSlots",
     "requireWholeExportSlots",
     "cjsNamespaces",
     "runtimeExports",
@@ -7849,7 +7856,13 @@ export class Lowerer {
     }
     for (const d of symbol.declarations) {
       const byDecl = this.globalsByDeclNode.get(d);
-      if (byDecl) return byDecl;
+      // A binding of a module whose export object is an accessor reads the
+      // value its own module's `require()` got (accessorRequirerSlot).
+      if (byDecl)
+        return (
+          accessorRequirerSlot(this, ts.getSourceFileOfNode(ident), ts.getSourceFileOfNode(d)) ??
+          byDecl
+        );
     }
     return null;
   }
@@ -8129,9 +8142,13 @@ export class Lowerer {
       expr: { kind: "call", callee: initName, args: [], type: VOID, loc },
       loc,
     };
+    // A module whose export object is an accessor answers this `require()`
+    // a value of its own, taken after the module has loaded.
+    const own = accessorRequirerAssign(this, ts.getSourceFileOfNode(node), dep, loc);
     const parentModule = this.cjsModuleIdOf.get(ts.getSourceFileOfNode(node));
     const childModule = this.cjsModuleIdOf.get(dep);
-    if (parentModule === undefined || childModule === undefined) return init;
+    if (parentModule === undefined || childModule === undefined)
+      return own.length === 0 ? init : { kind: "block", body: [init, ...own], loc };
     return {
       kind: "block",
       body: [
@@ -8147,6 +8164,7 @@ export class Lowerer {
           loc,
         },
         init,
+        ...own,
       ],
       loc,
     };

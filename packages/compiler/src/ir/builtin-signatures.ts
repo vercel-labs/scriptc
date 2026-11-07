@@ -270,6 +270,7 @@ function buildLibFnSignatures() {
      * SEMANTICS.md notes the sloppy divergence: the write throws). Void
      * result; in the may-throw seed set. */
     "dyn.keySet": { argTypes: [DYN, STRING, DYN], result: VOID },
+    "dyn.fnOwnSet": { argTypes: [DYN, STRING, DYN], result: VOID },
     "dyn.keySetComputed": { argTypes: [DYN, DYN, DYN], result: VOID },
     /** Delete an ordinary checked-native object's own key. Borrows both
      * arguments; other receiver representations retain a runtime refusal. */

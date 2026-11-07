@@ -291,6 +291,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
   // instead of answering undefined.
   ["scr_global_host_absent.c", "hostAbsentGlobals"],
+  // `fn.constructor = value` on a value the checker types as a function: the
+  // write into the function's own property table (lower-stmts.ts,
+  // lowerFunctionConstructorWrite).
+  ["scr_dyn_fn_own.c", "functionOwnWrite"],
 ];
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript

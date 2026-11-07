@@ -364,6 +364,7 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_builtin_method_value",
   "scr_dyn_construct",
   "scr_dyn_function_apply",
+  "scr_dyn_fn_own_",
   "scr_dyn_fn_get",
   "scr_dyn_this_get",
   // Dynamic operators and coercions.

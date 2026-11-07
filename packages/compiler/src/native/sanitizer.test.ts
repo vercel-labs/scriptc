@@ -42,6 +42,8 @@ const features = {
   builtinValues: false,
   computedRequire: false,
   warningReplace: false,
+  dynArrayAttrs: false,
+  recordViewPartial: false,
   promiseRejectDyn: false,
   jsObjectModel: false,
   stdioExtended: false,

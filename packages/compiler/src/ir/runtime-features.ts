@@ -858,6 +858,16 @@ const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
  * SCR_STDIO_EXTENDED events unit): stdin.setEncoding and 'resize'. */
 const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resize"]);
 
+/** The user-level calls that can make a dynamic array's index or length
+ * part of its state (the jsObjectModel rule): Object/Reflect.defineProperty,
+ * and the integrity mutators that can make an array non-extensible. */
+const DYN_ARRAY_ATTRS_FNS: ReadonlySet<string> = new Set([
+  "dyn.defineProperty",
+  "dyn.preventExtensions",
+  "dyn.freeze",
+  "dyn.seal",
+]);
+
 /** The libCall nodes the rules below test. */
 type LibCallNode = IrExpr & { kind: "libCall" };
 
@@ -1225,12 +1235,13 @@ const PROTO_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
- * (BigInt views today, array attributes and handle property tables next), so
+ * (BigInt views and array attributes today, handle property tables next), so
  * pack selection and the source build (RUNTIME_DEFINES, the library's
  * cflags) agree on when the build is on. */
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  dynArrayAttrs?: boolean;
   handleProps?: boolean;
   mutableBuffers?: boolean;
   protoAccessor?: boolean;
@@ -1239,6 +1250,7 @@ export function jsObjectModelFact(features: {
   return (
     features.jsObjectModel === true ||
     features.bigintBytes === true ||
+    features.dynArrayAttrs === true ||
     features.handleProps === true ||
     features.mutableBuffers === true ||
     features.protoAccessor === true ||
@@ -1429,6 +1441,9 @@ const RUNTIME_FEATURE_RULES = {
   /** A builtin prototype method as a function value (String's trim family,
    * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
   builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
+  /** Number.prototype and Boolean.prototype as values
+   * (scr_dyn_builtin_prototype.c). */
+  builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -1468,6 +1483,21 @@ const RUNTIME_FEATURE_RULES = {
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
   dynTier: rule({ prefixes: ["js."] }),
+  /** Object.defineProperty on a checked-dynamic array's index or length:
+   * the dynamic tier keeps per-element writable/enumerable/configurable bits
+   * and a length-writability bit only for programs that can set them, and
+   * the code lives in the JavaScript object model build t262-da §J shares
+   * (jsObjectModelFact ORs this fact in), so every other program keeps the
+   * default runtime object. The program's own
+   * defineProperty (and the integrity calls that can make an array
+   * non-extensible) mark the call mayTargetArray; the lowering's own calls
+   * on targets it built — class machinery, tagged-template `raw`, object
+   * literal accessors, bound-function defineProps — leave it unset, so
+   * they select nothing and an Object.defineProperties of an array keeps
+   * its precise refusal. */
+  dynArrayAttrs: rule({
+    libCall: (node) => node.mayTargetArray === true && DYN_ARRAY_ATTRS_FNS.has(node.fn),
+  }),
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
   streamDyn: rule({
@@ -1807,6 +1837,13 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** A record literal asserted to a wider record type answers a partial
+   * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
+   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c, so neither program
+   * links the other's code. */
+  recordViewPartial: rule({
+    expr: (node) => node.kind === "dynCheck" && node.partialView === true,
+  }),
   /** A BigInt typed-array constructor read as a value (BigInt64Array,
    * BigUint64Array): their element kinds, which no double represents, live
    * in the JavaScript object model build (t262-da §J) of scr_bytes.c,
@@ -2010,11 +2047,14 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinStream: false,
     stdlibPrototypeValue: false,
     dataViewPrototypeValue: false,
+    builtinPrototypeValue: false,
     hostAbsentGlobals: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,
+    recordViewPartial: false,
     dynTier: false,
+    dynArrayAttrs: false,
     ecdh: false,
     x509: false,
     dh: false,

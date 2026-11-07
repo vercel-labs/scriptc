@@ -48,6 +48,40 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("marks the array-attribute fact only for the program's own call", () => {
+    const call = (fn: IrLibFn, mayTargetArray?: true) => ({
+      kind: "exprStmt" as const,
+      loc,
+      expr: {
+        kind: "libCall" as const,
+        fn,
+        args: [],
+        type: VOID,
+        loc,
+        ...(mayTargetArray ? { mayTargetArray } : {}),
+      },
+    });
+    const define = module();
+    define.functions[0]!.body.push(call("dyn.defineProperty", true));
+    expect(moduleRuntimeFeatures(define)).toMatchObject({ dynArrayAttrs: true });
+
+    for (const fn of ["dyn.freeze", "dyn.seal", "dyn.preventExtensions"] as const) {
+      const integrity = module();
+      integrity.functions[0]!.body.push(call(fn, true));
+      expect(moduleRuntimeFeatures(integrity)).toMatchObject({ dynArrayAttrs: true });
+    }
+
+    // The lowering's own calls on targets it built (class machinery,
+    // tagged-template `raw`, bound-function metadata) select nothing.
+    const internal = module();
+    internal.functions[0]!.body.push(
+      call("dyn.defineProperty"),
+      call("dyn.freeze"),
+      call("dyn.defineProps"),
+    );
+    expect(moduleRuntimeFeatures(internal)).toMatchObject({ dynArrayAttrs: false });
+  });
+
   test("links the inspect unit for a BigInt rendered in Node's form", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("bigint.inspect"));

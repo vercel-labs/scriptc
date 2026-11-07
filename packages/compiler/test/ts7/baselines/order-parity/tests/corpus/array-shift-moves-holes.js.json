@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-shift-moves-holes.js"
+ ],
+ "diags": []
+}

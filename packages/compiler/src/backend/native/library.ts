@@ -136,7 +136,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // The program's unit reads the JavaScript object model build
     // (t262-da §J): the archive's bytes and json units must carry it too, so
     // the program names the same build the pack matrix selects.
-    ...(opts.jsObjectModel || opts.bigintBytes || opts.mutableBuffers
+    ...(opts.jsObjectModel || opts.bigintBytes || opts.dynArrayAttrs || opts.mutableBuffers
       ? ["-DSCR_JS_OBJECT_MODEL"]
       : []),
     "-I",

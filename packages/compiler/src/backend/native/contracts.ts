@@ -233,6 +233,14 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** Object.defineProperty on a checked-dynamic array's index or length
+   * (per-element attributes, a read-only length). The fact ORs into
+   * jsObjectModel (jsObjectModelFact), so the program names the shared
+   * SCR_JS_OBJECT_MODEL builds (t262-da §J). */
+  dynArrayAttrs?: boolean;
+  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
+   * NULL for a field a partial record view does not have. */
+  recordViewPartial?: boolean;
   /** SCR_PROMISE_REJECT_DYN: the scr_async.c build with the reject closure
    * a checked-dynamic promise reasons with. */
   promiseRejectDyn?: boolean;
@@ -510,6 +518,10 @@ export interface LibArchiveOptions {
   /** See CcOptions.jsObjectModel: the archive's bytes and json units carry
    * the JavaScript object model build. */
   jsObjectModel?: boolean;
+  /** See CcOptions.dynArrayAttrs: the program can set an array element's or
+   * length's attributes, so the archive's bytes and json units must carry
+   * the JavaScript object model build that answers it. */
+  dynArrayAttrs?: boolean;
   /** See CcOptions.mutableBuffers: the archive carries the buffer views
    * registry, scr_js_buffers.c. */
   mutableBuffers?: boolean;

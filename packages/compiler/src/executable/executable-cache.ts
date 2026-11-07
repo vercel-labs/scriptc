@@ -68,6 +68,8 @@ export interface EarlyExecutableNativeFeatures {
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
+  dynArrayAttrs?: boolean;
+  recordViewPartial?: boolean;
   promiseRejectDyn?: boolean;
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */

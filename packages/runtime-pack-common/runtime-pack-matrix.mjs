@@ -212,6 +212,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_child_lifecycle.c", "childLifecycle"],
   // The spawnSync capture Buffers; a unit of its own for the same reason.
   ["scr_child_capture.c", "spawnCaptureBytes"],
+  // process.features as a value: the stable flags object.
+  ["scr_process_features.c", "processFeatures"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.

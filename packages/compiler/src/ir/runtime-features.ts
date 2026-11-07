@@ -1276,6 +1276,11 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** process.features read as a value (an alias, `in`, Object.keys): the
+   * stable flags object of scr_process_features.c, a unit of its own so
+   * every other program keeps scr_lib.c's object. A member read
+   * (`process.features.tls`) is a constant and links nothing. */
+  processFeatures: rule({ fns: ["process.features"] }),
   /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
    * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
    * own, so a program that never passes those options keeps the default
@@ -2029,6 +2034,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    processFeatures: false,
     childOptionExt: false,
     spawnCaptureBytes: false,
     childErrorFields: false,

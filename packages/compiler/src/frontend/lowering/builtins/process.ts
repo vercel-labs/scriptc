@@ -647,10 +647,51 @@ export function processDataMemberValue(
       return { kind: "libCall", fn: "process.allowedEnvFlags", args: [], type: setOf(STRING), loc };
     case "versions":
       return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
+    case "features":
+      return { kind: "libCall", fn: "process.features", args: [], type: DYN, loc };
     default:
       return null;
   }
 }
+
+/** process.features: Node's own keys in Node's order (lib/internal/
+ * bootstrap/node.js), each with the value that is true of a compiled
+ * binary. Where a flag describes a capability the program can use, the
+ * value is whether scriptc implements it; where it describes Node's own
+ * build, it says what is linked here. The runtime's process.features
+ * object (scr_process_features) holds the same table.
+ *
+ * - inspector: no V8 inspector is linked (Node reports false too when it is
+ *   built without one).
+ * - debug: not a debug build of Node.
+ * - uv: no libuv is linked; process.versions.uv is absent for the same
+ *   reason.
+ * - ipv6: the net unit binds and connects over IPv6.
+ * - tls, tls_alpn, tls_sni: the tls module, ALPNProtocols and servername
+ *   are implemented.
+ * - tls_ocsp: requestOCSP has no implementation (a runtime fence), so a
+ *   program must not be told to wait for an 'OCSPResponse'.
+ * - openssl_is_boringssl: the TLS library is not BoringSSL.
+ * - cached_builtins: there are no JavaScript builtins to code-cache.
+ * - require_module: require() of an ES module compiles and runs.
+ * - quic: no QUIC implementation.
+ * - typescript: the binary cannot load TypeScript source at run time;
+ *   Node's "strip" would tell a loader that import() of a .ts path works. */
+export const PROCESS_FEATURES: readonly (readonly [name: string, value: boolean])[] = [
+  ["inspector", false],
+  ["debug", false],
+  ["uv", false],
+  ["ipv6", true],
+  ["tls_alpn", true],
+  ["tls_sni", true],
+  ["tls_ocsp", false],
+  ["tls", true],
+  ["openssl_is_boringssl", false],
+  ["cached_builtins", false],
+  ["require_module", true],
+  ["quic", false],
+  ["typescript", false],
+];
 
 export function lowerProcessProperty(
   lowerer: Lowerer,
@@ -711,17 +752,22 @@ export function lowerProcessProperty(
       loc,
     };
   }
+  // process.features.<flag>: Node's own keys answer the compiled binary's
+  // value (PROCESS_FEATURES); any other name reads undefined, as it does
+  // on Node's object.
   // The capability-probe members that honestly DON'T EXIST in a
   // compiled binary — each reads undefined (their declared types carry
   // the undefined arm), so feature probes take their documented
   // fallbacks: no gyp build config (process.config.variables.* — no QUIC
   // — and process.config.target_defaults; v8_enable_i18n_support is the
-  // exception below, answered from the binary's linked ICU), no feature
-  // flags (process.features.* — no inspector, not a debug build).
+  // exception below, answered from the binary's linked ICU).
   if (!expr.questionDotToken && ts.isPropertyAccessExpression(expr.expression)) {
     const container = lowerer.stdlibGlobalMember(expr.expression, "process");
     if (container === "features") {
-      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
+      const loc = locOf(expr);
+      const flag = PROCESS_FEATURES.find(([name]) => name === expr.name.text);
+      if (flag === undefined) return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
+      return boolLit(flag[1], loc);
     }
     if (
       container === "config" &&
@@ -792,10 +838,11 @@ export function lowerProcessProperty(
       loc,
     };
   }
-  // process.features as a value (`"sea" in process.features`): an object
-  // holding none of the flags, consistent with the member reads above.
+  // process.features as a value (`"sea" in process.features`, Object.keys,
+  // a stored alias): one stable object holding the flags the member reads
+  // above answer, in Node's key order.
   if (member === "features") {
-    return { kind: "dynObjLit", type: DYN, loc };
+    return { kind: "libCall", fn: "process.features", args: [], type: DYN, loc };
   }
   // process.noDeprecation / process.throwDeprecation: the values the
   // program assigned (undefined before that — no Node flags reach a

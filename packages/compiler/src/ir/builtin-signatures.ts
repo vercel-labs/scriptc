@@ -4000,6 +4000,10 @@ function buildLibFnSignatures() {
     /** process.release: the compatibility target's stable release object
      * (name, lts, sourceUrl, headersUrl, and libUrl on Windows). +1. */
     "process.release": { argTypes: [], result: DYN },
+    /** process.features: the stable object of Node's feature flags with a
+     * compiled binary's values (the lowering's PROCESS_FEATURES table, in
+     * Node's key order). +1. */
+    "process.features": { argTypes: [], result: DYN },
     /** process.execPath: the compiled binary's own resolved absolute path
      * (one interned string, +1 per read) — the honest answer where Node's
      * is the node executable's (SEMANTICS.md divergence 12). Never throws. */

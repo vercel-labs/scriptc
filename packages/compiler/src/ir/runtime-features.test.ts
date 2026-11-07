@@ -535,4 +535,12 @@ describe("runtime feature snapshots", () => {
       childErrorFields: false,
     });
   });
+
+  test("gates the process.features object on reading it as a value", () => {
+    // Member reads are constants; only the value form links the unit.
+    const reader = module();
+    reader.functions[0]!.body.push(call("process.features"));
+    expect(moduleRuntimeFeatures(reader).processFeatures).toBe(true);
+    expect(moduleRuntimeFeatures(module()).processFeatures).toBe(false);
+  });
 });

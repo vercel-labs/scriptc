@@ -6066,7 +6066,22 @@ static void scr_hosted_deciding_tick(void) {
  * (the loop pass's root check), so it is decided at once. */
 void scr_loop_hosted_microtasks_done(void) {
   if (scr_nunhandled == 0 || scr_hosted_deciding) return;
+  if (!scr_hosted_unobserved_rejections()) return;
+  const ScrPromise *root = scr_loop_root;
+  if (root != NULL && root->state == SCR_PROM_REJECTED && !root->rejection_observed &&
+      !root->top_level_handled) {
+    /* Also when Node holds the listeners (below): the report raises the
+     * rejection through Node's process._fatalException
+     * (scr_uncaught_exception_hook), at once, where handing it to Node's
+     * tracking would let the turn's ticks run first. */
+    if (scr_report_unhandled_rejections()) {
+      scr_discard_unhandled_rejections();
+      scr_process_exit((double)scr_exit_code_hint_get());
+    }
+    scr_hosted_settle_exception();
+  }
   if (scr_urj_node_fn != NULL) {
+    if (scr_nunhandled == 0) return; /* the main module's rejection was all there was */
     /* Node's `process` holds the listeners (scr_node_island_events.c), so
      * Node decides: each rejection nobody observed becomes the rejection
      * of the promise's V8 promise, which Node tracks like its own. The
@@ -6088,16 +6103,6 @@ void scr_loop_hosted_microtasks_done(void) {
     }
     free(reported);
     return;
-  }
-  if (!scr_hosted_unobserved_rejections()) return;
-  const ScrPromise *root = scr_loop_root;
-  if (root != NULL && root->state == SCR_PROM_REJECTED && !root->rejection_observed &&
-      !root->top_level_handled) {
-    if (scr_report_unhandled_rejections()) {
-      scr_discard_unhandled_rejections();
-      scr_process_exit((double)scr_exit_code_hint_get());
-    }
-    scr_hosted_settle_exception();
   }
   scr_hosted_deciding = true;
   scr_next_tick_raw(scr_hosted_deciding_tick);

@@ -2434,14 +2434,33 @@ function lowerFromSource(
   const elem = srcT?.kind === "array" ? typedElem(srcT.elem) : null;
   const opts0 = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
   const opts = opts0 ? { ...opts0, flags: opts0.flags | duplexFlag } : opts0;
+  // The source as an instance of `t`, the class the checker gives it. The
+  // value can be held another way: a JavaScript source infers the class of
+  // `this.inner.make()` while the call goes through an untyped member and
+  // answers a checked-dynamic value. That value crosses the checked boundary
+  // into its class here, as at any typed slot (a value of another class
+  // throws a TypeError). Null when it has no checked conversion to the class:
+  // the source then takes the checked-dynamic form below.
+  const sourceInstance = (node: ts.Expression, t: IrType & { kind: "object" }): IrExpr | null => {
+    const held = lowerer.lowerExpr(node);
+    if (held.type.kind !== "dyn") return held;
+    const checked = lowerer.coerceToExpected(held, t);
+    return checked.type.kind === "object" ? checked : null;
+  };
   // A class whose [Symbol.iterator]() or [Symbol.asyncIterator]() is a
   // generator method: from.js calls the method when the stream is built,
   // then reads the generator like any other.
   const genMethod = srcT?.kind === "object" ? classGeneratorMethodOf(lowerer, srcT) : null;
   const genT = srcT?.kind === "generator" ? srcT : (genMethod?.gen ?? null);
-  if (srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)) {
-    // A compiled generator: the runtime pulls it through interned helpers.
-    const recv = lowerer.lowerExpr(srcNode);
+  // A compiled generator: the runtime pulls it through interned helpers.
+  const genRecv =
+    srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)
+      ? genMethod && srcT?.kind === "object"
+        ? sourceInstance(srcNode, srcT)
+        : lowerer.lowerExpr(srcNode)
+      : null;
+  if (genRecv && genT && opts) {
+    const recv = genRecv;
     const gen =
       genMethod && srcT?.kind === "object"
         ? accessorCall(lowerer, srcT.className, genMethod.method, recv, [], genT, loc)
@@ -2465,12 +2484,16 @@ function lowerFromSource(
     lowerer.classes.has(srcT.className) &&
     lowerer.findMethodOn(lowerer.classes.get(srcT.className)!, "sym:asyncIterator") !== null;
   const cit = srcT?.kind === "object" && !asyncOpen ? classIteratorOf(lowerer, srcT) : null;
-  if (srcNode && cit && opts && fromGenChunk(lowerer, cit.valueT)) {
+  const citRecv =
+    srcNode && srcT?.kind === "object" && cit && opts && fromGenChunk(lowerer, cit.valueT)
+      ? sourceInstance(srcNode, srcT)
+      : null;
+  if (citRecv && cit && opts) {
     // A class iterable: from.js takes the iterator when the stream is
     // built (the typed [Symbol.iterator]() call here), and the runtime
     // pulls it through a checked-dynamic { next } object. Class iterators
     // declare no return() or throw(), so destroy calls neither.
-    const recv = lowerer.lowerExpr(srcNode);
+    const recv = citRecv;
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
     return {
       kind: "libCall",
@@ -2485,8 +2508,12 @@ function lowerFromSource(
     };
   }
   const acit = srcT?.kind === "object" && asyncOpen ? classAsyncIteratorOf(lowerer, srcT) : null;
-  if (srcNode && acit && opts && fromGenChunk(lowerer, acit.valueT)) {
-    const recv = lowerer.lowerExpr(srcNode);
+  const acitRecv =
+    srcNode && srcT?.kind === "object" && acit && opts && fromGenChunk(lowerer, acit.valueT)
+      ? sourceInstance(srcNode, srcT)
+      : null;
+  if (acitRecv && acit && opts) {
+    const recv = acitRecv;
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
     return {
       kind: "libCall",

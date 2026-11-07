@@ -311,6 +311,9 @@ const char *scr_error_event_code(const ScrStr *msg);
 ScrError *scr_error_from_event_message(ScrStr *msg);
 ScrStr *scr_error_code(ScrError *e);
 SCR_COLD void scr_throw_error_msg_code(int kind, const char *message, size_t len, const char *code);
+/* A deferred refusal fires (scr_deferred_fence.c): reports the site on
+ * stderr the first time, then throws its Error with `code` stamped. */
+SCR_COLD void scr_deferred_fence(const char *message, size_t len, const char *code);
 /* The compiler-resolved Node-parity throw (error.nodeThrow): builtin
  * error of `kind`, `code` stamped when non-empty. Borrows both. */
 SCR_COLD void scr_throw_node_coded(double kind, const ScrStr *code, const ScrStr *msg);

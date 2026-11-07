@@ -1,4 +1,5 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
+import { isDeferredDiagnosticFence } from "../../ir/deferred-fence.js";
 import { emitInlineArrayInit, inlineFieldTail } from "./inline-arrays.js";
 import { emitLoopBytesHeaders } from "./bytes-headers.js";
 import { noteBytesReceiver } from "./expr-bytes.js";
@@ -1979,14 +1980,27 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "runtimeFence": {
-      // The deferred JS compile fence: throw a catchable Error naming
-      // the construct (message) with the SC code stamped on `code`,
-      // then unwind exactly like `throw`. SCR_ERR_ERROR = 0.
+      // Throw a catchable Error naming the construct (message) with the
+      // SC code stamped on `code`, then unwind exactly like `throw`.
+      // SCR_ERR_ERROR = 0. A fence that stands for a diagnostic the
+      // compiler deferred (ir/deferred-fence.ts) throws through the
+      // runtime's reporter, which names the site on stderr the first time
+      // it fires, keyed by the interned message constant: a handler that
+      // catches the Error cannot hide the refusal.
       const bytes = Buffer.byteLength(s.message, "utf8");
-      emitter.declare(`declare void @scr_throw_error_msg_code(i32, ptr, ${emitter.sizeType}, ptr)`);
-      B.line(
-        `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
-      );
+      if (isDeferredDiagnosticFence(s.code, s.message)) {
+        emitter.declare(`declare void @scr_deferred_fence(ptr, ${emitter.sizeType}, ptr)`);
+        B.line(
+          `call void @scr_deferred_fence(ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+        );
+      } else {
+        emitter.declare(
+          `declare void @scr_throw_error_msg_code(i32, ptr, ${emitter.sizeType}, ptr)`,
+        );
+        B.line(
+          `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+        );
+      }
       emitter.emitUnwind();
       break;
     }

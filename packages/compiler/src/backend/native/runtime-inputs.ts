@@ -63,6 +63,9 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_exception.c",
   "scr_unwind.c",
   "scr_error.c",
+  // The stderr report of a deferred refusal that fires; it links only into
+  // programs that contain one.
+  "scr_deferred_fence.c",
   "scr_console.c",
   "scr_lib.c",
   "scr_hash.c",

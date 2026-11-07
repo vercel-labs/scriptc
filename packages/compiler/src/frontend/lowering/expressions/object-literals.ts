@@ -27,6 +27,7 @@ import {
 } from "../../../diagnostics/diagnostic.js";
 import { PoisonError, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
+import { lowerDeclaredMemberLiteral, viewLiteralStorage, viewTargetOf } from "../view-literals.js";
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
 import type { IndexMergeContributor } from "../containers/indexed-objects.js";
 import type { KeyOrderSegment, WidthSegment } from "../key-order-witness.js";
@@ -47,6 +48,7 @@ import {
 import { planUnionRetag } from "../union-retag.js";
 import { literalValues } from "../../literal-values.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
+import { isIslandImportBinding } from "../lower-node-island.js";
 import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
@@ -337,6 +339,10 @@ export function lowerDynObjectLiteral(
   expr: ts.ObjectLiteralExpression,
   boxValue?: (node: ts.Expression, value: IrExpr) => IrExpr,
   conditionalArms = false,
+  /** The literal is the dynamic object of a checked-identity view: its
+   * array and object members are built at their declared types and held by
+   * reference (view-literals.ts). */
+  declaredMembers = false,
 ): IrExpr {
   const loc = locOf(expr);
   let fields: { key: IrExpr; value: IrExpr }[] = [];
@@ -547,22 +553,28 @@ export function lowerDynObjectLiteral(
     let raw: IrExpr;
     const propDiagsBefore = lowerer.diags.length;
     try {
+      const declared =
+        declaredMembers && ts.isPropertyAssignment(prop)
+          ? lowerDeclaredMemberLiteral(lowerer, prop.initializer)
+          : null;
       const lowerValue = (): IrExpr =>
-        ts.isMethodDeclaration(prop)
-          ? lowerer.lowerLambda(prop, true)
-          : ts.isShorthandPropertyAssignment(prop) && shorthandBuiltinValue(lowerer, prop)
-            ? shorthandBuiltinValue(lowerer, prop)!
-            : !boxValue &&
-                (ts.isObjectLiteralExpression(valueExpr) ||
-                  (ts.isArrayLiteralExpression(valueExpr) &&
-                    // An empty literal takes whatever the object's users
-                    // store into it (`{ [kChildren]: [] }`), so it is a
-                    // checked-dynamic array rather than its `never[]` layout.
-                    (valueExpr.elements.nodes.length === 0 ||
-                      holdsEvolvingArray(lowerer, valueExpr) ||
-                      lowerer.untypedLiteralContext(valueExpr))))
-              ? lowerer.lowerExprExpecting(valueExpr, DYN)
-              : lowerer.lowerExpr(valueExpr as ts.Expression);
+        declared !== null
+          ? declared
+          : ts.isMethodDeclaration(prop)
+            ? lowerer.lowerLambda(prop, true)
+            : ts.isShorthandPropertyAssignment(prop) && shorthandBuiltinValue(lowerer, prop)
+              ? shorthandBuiltinValue(lowerer, prop)!
+              : !boxValue &&
+                  (ts.isObjectLiteralExpression(valueExpr) ||
+                    (ts.isArrayLiteralExpression(valueExpr) &&
+                      // An empty literal takes whatever the object's users
+                      // store into it (`{ [kChildren]: [] }`), so it is a
+                      // checked-dynamic array rather than its `never[]` layout.
+                      (valueExpr.elements.nodes.length === 0 ||
+                        holdsEvolvingArray(lowerer, valueExpr) ||
+                        lowerer.untypedLiteralContext(valueExpr))))
+                ? lowerer.lowerExprExpecting(valueExpr, DYN)
+                : lowerer.lowerExpr(valueExpr as ts.Expression);
       raw = fenceClosureProbe(lowerer, valueExpr, undefined, lowerValue) ?? lowerValue();
     } catch (err) {
       // A PURE member read a JS file cannot lower (a namespace object
@@ -964,6 +976,21 @@ function lowerOptionalIndexSpreadSource(
   return prefix.length === 0
     ? selected
     : { kind: "seqExpr", stmts: prefix, result: selected, type: recordType, loc };
+}
+
+/** The declared type a literal flows into: its contextual type, or for
+ * `lit satisfies T` (where the literal is typed by itself) the contextual
+ * type of the whole `satisfies` expression. */
+function viewContextOf(
+  lowerer: Lowerer,
+  expr: ts.ObjectLiteralExpression,
+  contextual: ts.Type,
+): ts.Type {
+  let outer: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(outer.parent) || ts.isSatisfiesExpression(outer.parent))
+    outer = outer.parent;
+  if (outer === expr) return contextual;
+  return lowerer.checker.getContextualType(outer) ?? contextual;
 }
 
 export function lowerObjectLiteral(
@@ -1396,6 +1423,19 @@ export function lowerObjectLiteral(
           if (arm) mapped = arm;
         }
       }
+    }
+  }
+  // A literal that flows into a checked-identity view holds what the
+  // declared type says its members hold, not what its own initializers
+  // would give them (view-literals.ts).
+  if (!exact && mapped?.kind === "record" && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const target = viewTargetOf(lowerer, viewContextOf(lowerer, expr, tsType));
+    if (target !== null) {
+      const own = lowerer.shapes.get(mapped.shapeId);
+      // An accessor is a property of the dynamic object the view is.
+      if (own && shapeHasAccessorSlots(own))
+        return lowerDynObjectLiteral(lowerer, expr, undefined, false, true);
+      mapped = viewLiteralStorage(lowerer, target, mapped) ?? mapped;
     }
   }
   // The CJS EXPORT-TABLE literal in VALUE position (JS): importers reach
@@ -2809,7 +2849,7 @@ export function lowerObjectLiteral(
             ts.isObjectLiteralExpression(init) ||
             ts.isConditionalExpression(init))
             ? lowerer.lowerExprExpecting(prop.initializer, fieldType)
-            : lowerer.lowerExpr(prop.initializer));
+            : lowerer.lowerAtSlot(prop.initializer, fieldType ?? shape.indexValue));
       } else if (ts.isShorthandPropertyAssignment(prop)) {
         value = lowerer.lowerShorthandValue(prop);
       } else if (ts.isMethodDeclaration(prop)) {
@@ -4383,6 +4423,9 @@ export function lowerShorthandValue(
   }
   const builtinValue = shorthandBuiltinValue(lowerer, prop);
   if (builtinValue) return builtinValue;
+  // A Node island's export (`{ compare }`): the value the long form
+  // `{ compare: compare }` reads.
+  if (isIslandImportBinding(lowerer, propName)) return lowerer.lowerExpr(propName);
   if (symbol) {
     if (lowerer.ctx.selfSymbol === symbol) {
       return { kind: "selfRef", type: lowerer.ctx.selfType!, loc };

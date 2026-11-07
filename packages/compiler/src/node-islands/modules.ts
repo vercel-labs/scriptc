@@ -1198,13 +1198,27 @@ export function providedModulePlaceholder(path: string): Uint8Array {
 }
 
 /** The manifest the executable records (scr_node_island.c reads it):
- * `{"files":[[path,size,sha256],...],"links":[[path,target],...]}`. Its
- * SHA-256 names the tree. */
+ * `{"tree":name,"files":[[path,size,sha256],...],"links":[[path,target],...]}`.
+ * `tree` is the tree's name (nodeIslandTreeName), taken here and written
+ * first so that a start reads it without parsing or hashing the manifest.
+ * Programs that ship the same files share one installed tree. */
 export function nodeIslandManifest(modules: IrNodeIslandModules): string {
-  return JSON.stringify({
+  const { files, links } = manifestTables(modules);
+  return JSON.stringify({ tree: nodeIslandTreeName(modules), files, links });
+}
+
+function manifestTables(modules: IrNodeIslandModules): { files: unknown[]; links: unknown[] } {
+  return {
     files: modules.files.map((file) => [file.path, file.size, file.sha256]),
     links: modules.links.map((link) => [link.path, link.target]),
-  });
+  };
+}
+
+/** The tree's name: 64 hexadecimal digits, the SHA-256 of its files and
+ * links as JSON. It names the directory an executable installs its tree
+ * in, and the build writes it beside a tree it places itself. */
+export function nodeIslandTreeName(modules: IrNodeIslandModules): string {
+  return sha256(new TextEncoder().encode(JSON.stringify(manifestTables(modules))));
 }
 
 /** The tree's files concatenated in manifest order, each checked against
@@ -1237,7 +1251,9 @@ export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array 
 }
 
 /** Writes the tree to `target` (replacing it), for `--libnode=beside`, or
- * returns the reason it cannot. */
+ * returns the reason it cannot. The tree's name goes into `<target>.tree`:
+ * a start compares it with the name in the executable's manifest and uses
+ * the tree without hashing it when they agree (scr_node_island.c). */
 export function placeNodeIslandModules(
   modules: IrNodeIslandModules,
   target: string,
@@ -1257,6 +1273,7 @@ export function placeNodeIslandModules(
       return `the island module tree links outside it ('${entry.path}' to '${entry.target}')`;
   }
   rmSync(target, { recursive: true, force: true });
+  rmSync(`${target}.tree`, { force: true });
   mkdirSync(target, { recursive: true });
   let offset = 0;
   for (const file of modules.files) {
@@ -1270,5 +1287,7 @@ export function placeNodeIslandModules(
     mkdirSync(dirname(path), { recursive: true });
     symlinkSync(link.target, path);
   }
+  // Last: the name says that the tree beside it is complete.
+  writeFileSync(`${target}.tree`, `${nodeIslandTreeName(modules)}\n`);
   return null;
 }

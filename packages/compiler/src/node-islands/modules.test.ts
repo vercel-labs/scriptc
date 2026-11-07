@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -564,7 +565,14 @@ describe("the collected module tree", () => {
     const collector = new NodeIslandModuleCollector();
     collector.add(join(root, "main.ts"), "./m.cjs");
     const tree = collector.tree()!;
-    expect(nodeIslandManifest(tree)).not.toContain(root);
+    const manifest = nodeIslandManifest(tree);
+    expect(manifest).not.toContain(root);
+    // The tree's name is the digest of its files and links, first in the
+    // text, in the one form the runtime reads without a JSON parser.
+    const { tree: name, ...rest } = JSON.parse(manifest) as { tree: string };
+    expect(name).toBe(createHash("sha256").update(JSON.stringify(rest)).digest("hex"));
+    expect(manifest.startsWith(`{"tree":"${name}","files":[["m.cjs",20,"`)).toBe(true);
+    expect(manifest.endsWith(`"]],"links":[]}`)).toBe(true);
     expect(readNodeIslandModules(tree)).toEqual(new TextEncoder().encode("exports.f = () => 1;"));
     writeFileSync(join(root, "m.cjs"), "exports.f = () => 2;");
     expect(readNodeIslandModules(tree)).toBe(`${join(root, "m.cjs")} changed during the build`);

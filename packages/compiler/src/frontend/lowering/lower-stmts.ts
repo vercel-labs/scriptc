@@ -70,6 +70,7 @@ import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { lowerDeclaredMemberLiteral, viewTargetOf } from "./view-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
 import { nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
@@ -6968,6 +6969,7 @@ export function lowerVarDecl(
             ts.isObjectLiteralExpression(decl.initializer))
           ? DYN
           : undefined,
+        g.type,
       );
     if (
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
@@ -7146,6 +7148,7 @@ export function lowerVarDecl(
               decl.type && (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Never) === 0
                 ? annotatedInitializerTarget(lowerer, decl.name)
                 : undefined,
+              bindingSlot(lowerer, decl),
             );
   } catch (e) {
     if (e instanceof PoisonError) {
@@ -7688,6 +7691,25 @@ export function lowerVarDecl(
   return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
 }
 
+/** The type a local binding gives a function literal that initializes it:
+ * the type of the name (the annotation's, or the checker's for an
+ * unannotated TypeScript binding), with the parameters the optional-read
+ * analysis widened for values a missing element can leave undefined. Every
+ * later read of the binding spells that type. Undefined when the
+ * initializer is not a function literal or the type has no lowering; the
+ * literal then keeps its own signature. */
+function bindingSlot(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | undefined {
+  let init = decl.initializer;
+  while (init && (ts.isParenthesizedExpression(init) || ts.isSatisfiesExpression(init)))
+    init = init.expression;
+  if (!init || !(ts.isArrowFunction(init) || ts.isFunctionExpression(init))) return undefined;
+  if (!ts.isIdentifier(decl.name) || isJsSourceFile(ts.getSourceFileOfNode(decl))) return undefined;
+  const type = lowerer.typeOf(decl.name);
+  if ((type.flags & ts.TypeFlags.Never) !== 0) return undefined;
+  const mapped = lowerer.mapTypeOf(type);
+  return mapped ? lowerer.runtimeOptionalBindingType(decl.name, mapped) : undefined;
+}
+
 /** The destination an annotated declaration builds its initializer for:
  * the declared type, or the record layout the optional-read analysis
  * widened for fields a missing element can leave undefined. */
@@ -7745,6 +7767,7 @@ function lowerVariableInitializer(
   lowerer: Lowerer,
   node: ts.Expression,
   expected?: IrType,
+  slot?: IrType,
 ): IrExpr {
   let value = node;
   while (
@@ -7763,12 +7786,23 @@ function lowerVariableInitializer(
     // instances must retain their nominal layout for generic dispatch.
     const empty = expected ? lowerer.emptyCollectionFor(node, expected) : null;
     if (empty) return lowerer.coerceInto(node, empty, expected!);
+    // A function literal takes the signature of the binding it initializes
+    // (`slot`: the binding's type where that is known before the
+    // initializer lowers), so the binding holds it without an adapter.
     return ts.isArrayLiteralExpression(value) || ts.isConditionalExpression(value)
       ? lowerer.lowerExprExpecting(node, expected)
-      : lowerer.lowerExpr(node);
+      : lowerer.lowerAtSlot(node, slot);
   }
 
-  if (expected?.kind === "dyn") return lowerDynObjectLiteral(lowerer, value);
+  if (expected?.kind === "dyn") {
+    // The dynamic object of a checked-identity view holds its array and
+    // object members at their declared types (view-literals.ts).
+    const contextual = isJsSourceFile(ts.getSourceFileOfNode(value))
+      ? undefined
+      : lowerer.checker.getContextualType(value);
+    const view = contextual !== undefined && viewTargetOf(lowerer, contextual) !== null;
+    return lowerDynObjectLiteral(lowerer, value, undefined, false, view);
+  }
 
   const previous = new Map<ts.Expression, IrExpr | undefined>();
   for (const property of value.properties.nodes) {
@@ -9888,7 +9922,14 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
               type: STRING,
               loc: locOf(expr.left.name),
             };
-            const value = lowerer.lowerExprExpecting(expr.right, DYN);
+            // A fresh literal stored into a member of a checked-identity
+            // view is built at the member's declared type and held by
+            // reference, so a typed read of the member answers that value
+            // (view-literals.ts).
+            const value =
+              (viewTargetOf(lowerer, lowerer.typeOf(expr.left.expression)) !== null
+                ? lowerDeclaredMemberLiteral(lowerer, expr.right)
+                : null) ?? lowerer.lowerExprExpecting(expr.right, DYN);
             return {
               kind: "exprStmt",
               expr: {

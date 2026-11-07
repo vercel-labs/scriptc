@@ -136,6 +136,28 @@ async function main() {
     console.log("insufficient", outcome);
     console.log("insufficient closed", closed);
   }
+
+  // A read takes every byte the queue can give it before it answers, so the
+  // bytes a later queued chunk holds for the next read stay after the bytes
+  // this read already holds.
+  {
+    let controller;
+    const stream = new ReadableStream({
+      type: "bytes",
+      start(c) {
+        controller = c;
+        c.enqueue(new Uint8Array([1, 2, 3, 4, 5, 6]));
+        c.enqueue(new Uint8Array([7, 8, 9, 10]));
+      },
+    });
+    const reader = stream.getReader({ mode: "byob" });
+    const first = await reader.read(new Uint32Array(2));
+    const firstBytes = new Uint8Array(first.value.buffer, first.value.byteOffset, first.value.byteLength);
+    console.log("queue-fill", first.done, first.value.length, Array.from(firstBytes).join(","));
+    controller.close();
+    const second = await reader.read(new Uint8Array(8));
+    console.log("queue-fill rest", second.done, second.value.length, Array.from(second.value).join(","));
+  }
 }
 
 main();

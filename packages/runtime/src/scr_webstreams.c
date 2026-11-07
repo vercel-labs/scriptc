@@ -1392,26 +1392,33 @@ static void ws_bytes_handle_queue_drain(WsRController *c) {
   ws_readable_close(c->stream);
 }
 
-/* Fills pending reads from the queued chunks, oldest first. */
+/* Fills pending reads from the queued chunks, oldest first. A read takes
+ * every queued byte its view can hold before it answers, as Node's fill from
+ * the queue does, so the bytes a later chunk leaves for the next read stay
+ * after the bytes this read already holds. */
 static void ws_bytes_process_queue(WsRController *c) {
-  while (c->queue.length && c->into_head) {
-    double size;
-    ScrDyn *value = ws_queue_shift(&c->queue, &size);
-    c->queue_total_size = fmax(0, c->queue_total_size - size);
-    ScrBytes *bytes = value->v.bytes;
-    size_t total = (size_t)scr_bytes_byte_len(bytes);
-    size_t used = ws_pull_into_write(c->into_head, bytes, 0, total);
-    if (used < total) {
-      ScrBytes *rest = scr_bytes_subarray(bytes, (double)used, (double)total);
-      double rest_size = scr_bytes_byte_len(rest);
-      ScrDyn *entry = scr_dyn_new_bytes(rest);
-      scr_bytes_release(rest); /* the entry holds its own reference */
-      ws_queue_unshift(&c->queue, entry, rest_size);
-      scr_dyn_release(entry);
-      c->queue_total_size += rest_size;
+  while (c->into_head) {
+    WsPullInto *d = c->into_head;
+    while (c->queue.length && ws_pull_into_remaining(d) > 0) {
+      double size;
+      ScrDyn *value = ws_queue_shift(&c->queue, &size);
+      c->queue_total_size = fmax(0, c->queue_total_size - size);
+      ScrBytes *bytes = value->v.bytes;
+      size_t total = (size_t)scr_bytes_byte_len(bytes);
+      size_t used = ws_pull_into_write(d, bytes, 0, total);
+      if (used < total) {
+        ScrBytes *rest = scr_bytes_subarray(bytes, (double)used, (double)total);
+        double rest_size = scr_bytes_byte_len(rest);
+        ScrDyn *entry = scr_dyn_new_bytes(rest);
+        scr_bytes_release(rest); /* the entry holds its own reference */
+        ws_queue_unshift(&c->queue, entry, rest_size);
+        scr_dyn_release(entry);
+        c->queue_total_size += rest_size;
+      }
+      scr_dyn_release(value);
     }
-    scr_dyn_release(value);
-    if (c->into_head->filled >= c->into_head->min) ws_bytes_commit(c);
+    if (d->filled < d->min) break;
+    ws_bytes_commit(c);
   }
   ws_bytes_handle_queue_drain(c);
 }
@@ -1423,8 +1430,8 @@ static void ws_bytes_commit(WsRController *c) {
   if (!c->into_head) c->into_tail = NULL;
   ws_byob_invalidate(c);
   /* A BYOB read answers whole elements only. The bytes past the last whole
-   * element move to the end of the queue as a copy, where the next read
-   * takes them, exactly as Node's respond moves them. */
+   * element go back to the front of the queue as a copy, where the read that
+   * follows takes them before any chunk queued after them. */
   if (d->byob && d->filled) {
     size_t width = scr_bytes_elem_size(d->view->elem);
     size_t remainder = width > 1 ? d->filled % width : 0;
@@ -1434,7 +1441,7 @@ static void ws_bytes_commit(WsRController *c) {
       ws_copy_bytes(rest, 0, d->view, d->filled - remainder, remainder);
       ScrDyn *entry = scr_dyn_new_bytes(rest);
       scr_bytes_release(rest); /* the entry holds its own reference */
-      ws_queue_push(&c->queue, entry, (double)remainder);
+      ws_queue_unshift(&c->queue, entry, (double)remainder);
       scr_dyn_release(entry);
       c->queue_total_size += (double)remainder;
       d->filled -= remainder;

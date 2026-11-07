@@ -861,6 +861,18 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
       "the command removes the kept LLVM text after the build, cached or not; the build is the same",
   },
   "emit-ir": { keyed: (o) => ({ ...o, emitIr: !o.emitIr }) },
+  "emit-lowered": {
+    unkeyed:
+      "the build is the one without the option and also writes the lowered program: it reads no entry (compileTracked's usesLoweredProgram), since a hit runs no frontend and would write no file, and the entry it leaves is the plain build's",
+  },
+  "from-lowered": {
+    unkeyed:
+      "a build from a lowered program reads no entry (usesLoweredProgram) and marks its frontend inputs unstable (executable/lowered.ts), and an unstable build publishes no entry",
+  },
+  "from-lowered-accept": {
+    unkeyed:
+      "it only goes with --from-lowered, whose build neither reads nor leaves an entry; given alone the build is refused (executable/lowered.ts)",
+  },
   sanitize: { keyed: (o) => ({ ...o, sanitize: !o.sanitize }) },
   ffi: {
     keyed: (o) => ({

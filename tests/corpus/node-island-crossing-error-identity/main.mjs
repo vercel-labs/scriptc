@@ -97,6 +97,21 @@ log("island reads", lib.describe(thrower(Object.assign(new Error("coded"), { cod
 log("island reads", lib.describe(thrower(many)));
 log("island reads", lib.describe(thrower(new Error())));
 
+// Island code that keeps a native error sees what native code changes on
+// it afterwards: message, name, code, stack and fields.
+const changing = new Error("first");
+changing.status = 1;
+lib.keep(changing);
+log("kept error", lib.read(changing));
+changing.message = "second";
+changing.status = 2;
+log("kept error", lib.read(changing));
+changing.name = "Renamed";
+changing.code = "E_CHANGED";
+log("kept error", lib.read(changing));
+changing.stack = "replaced stack\n    at nowhere";
+log("kept error", lib.read(changing));
+
 // The other direction: an island error through native frames.
 const island = lib.make("from the island", 7);
 const islandStack = island.stack;

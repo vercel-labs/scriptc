@@ -210,6 +210,10 @@ struct ScrPromise {
    * such a promise at another inner type; 0 otherwise (scr_promise_reacted
    * below). The flag takes padding: the size is the same in every build. */
   uint8_t island_lazy;
+  /* An executor resolved this promise with an island thenable, which has
+   * not settled it yet: the promise is resolved, so the executor's own
+   * resolve, reject and throw no longer change it (SCR_PROMISE_RESOLVED). */
+  bool island_resolved;
 #endif
   /* Payload (fulfillment value or rejection reason), ScrExcCell-style.
    * trace_fn is non-NULL iff the REF payload type carries a cycle header
@@ -307,14 +311,38 @@ static void scr_oom(void) {
   abort();
 }
 
-static void scr_promise_free_side(ScrPromise *p) {
 #ifdef SCR_NODE_ISLANDS
-  /* A view nobody reacted to still holds the promise it converts. */
-  if (p->island_lazy == SCR_LAZY_VIEW) {
-    p->island_lazy = 0;
-    scr_promise_release(p->lazy_src);
-  }
+/* A lazy promise that is freed or settled without a first reaction: a view
+ * drops the promise it converts (its two words are the payload's from here
+ * on). Every free and every settlement runs this before it touches the
+ * payload. */
+static void scr_promise_lazy_drop(ScrPromise *p) {
+  uint8_t lazy = p->island_lazy;
+  p->island_lazy = 0;
+  if (lazy != SCR_LAZY_VIEW) return;
+  ScrPromise *src = p->lazy_src;
+  p->lazy_src = NULL;
+  p->lazy_adapt = NULL;
+  scr_promise_release(src);
+}
+#define SCR_PROMISE_LAZY_DROP(p)                                           \
+  do {                                                                     \
+    if (__builtin_expect((p)->island_lazy != 0, 0)) scr_promise_lazy_drop(p); \
+  } while (0)
+#else
+#define SCR_PROMISE_LAZY_DROP(p) ((void)0)
 #endif
+
+/* Whether an executor's resolving functions and its throw still settle `p`:
+ * it is pending and no resolution of it is under way. */
+#ifdef SCR_NODE_ISLANDS
+#define SCR_PROMISE_UNRESOLVED(p) ((p)->state == SCR_PROM_PENDING && !(p)->island_resolved)
+#else
+#define SCR_PROMISE_UNRESOLVED(p) ((p)->state == SCR_PROM_PENDING)
+#endif
+
+static void scr_promise_free_side(ScrPromise *p) {
+  SCR_PROMISE_LAZY_DROP(p);
   if (p->identity && --p->identity->rc == 0) free(p->identity);
   /* Most promises never park a fiber or a second waiter: skip the calls. */
   if (p->waiters && p->waiters != &p->waiter_inline) free(p->waiters);
@@ -559,6 +587,7 @@ void scr_promise_release(ScrPromise *p) {
   if (!p || p->rc == SIZE_MAX) return;
   if (--p->rc == 0) {
     scr_cyc_dead(p);
+    SCR_PROMISE_LAZY_DROP(p);
     scr_promise_release_payload(p);
     scr_promise_free_side(p);
     for (size_t i = 0; i < p->ncbs; i++) {
@@ -2064,6 +2093,7 @@ static void scr_promise_settle_wake(ScrPromise *p);
  * same-inner-type adapter and the rejection path both land here. */
 static void scr_promise_settle_from(ScrPromise *dst, ScrPromise *src) {
   if (dst->state == SCR_PROM_PENDING) {
+    SCR_PROMISE_LAZY_DROP(dst);
     dst->state = src->state;
     dst->payload_kind = src->payload_kind;
     dst->f64 = src->f64;
@@ -2522,6 +2552,7 @@ void *scr_promise_payload_ref(ScrPromise *p) {
  * (the cell resets to NONE). Shared by fiber completion and the new-Promise
  * executor runners; callers wake waiters themselves. */
 static void scr_promise_reject_from_cell(ScrPromise *p, ScrExcCell *cell) {
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_REJECTED;
   p->payload_kind = cell->kind;
   p->f64 = cell->f64;
@@ -3466,6 +3497,7 @@ void scr_promise_rethrow_top_level(ScrPromise *p) {
 /* Fulfillment storers, called by the compiled trampolines / resolve thunks. */
 void scr_promise_fulfill_f64(ScrPromise *p, double v) {
   if (p->state != SCR_PROM_PENDING) return; /* first settle wins */
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_F64;
   p->f64 = v;
@@ -3473,6 +3505,7 @@ void scr_promise_fulfill_f64(ScrPromise *p, double v) {
 }
 void scr_promise_fulfill_bool(ScrPromise *p, bool v) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_BOOL;
   p->b = v;
@@ -3483,6 +3516,7 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
     if (release) release(v); /* value was +1 for us; drop it */
     return;
   }
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = v ? SCR_EXC_REF : SCR_EXC_NONE;
   p->payload = v;
@@ -3493,6 +3527,7 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
 }
 void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = src->payload_kind;
   p->f64 = src->f64;
@@ -3505,6 +3540,7 @@ void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
 }
 void scr_promise_fulfill_void(ScrPromise *p) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_NONE;
   scr_promise_settle_wake(p);
@@ -3516,6 +3552,7 @@ void scr_promise_fulfill_str(ScrPromise *p, ScrStr *v) {
     scr_str_release(v);
     return;
   }
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_STR;
   p->payload = v; /* ownership moves in */
@@ -7001,9 +7038,17 @@ void scr_resolve_ref_impl(ScrClosure *self, void *v, void *(*retain)(void *), vo
 #ifdef SCR_NODE_ISLANDS
   /* An executor's resolve(v) with an island object: it may be a thenable,
    * which the resolution adopts (scr_async_dyn.c reads its `then` in V8). */
+  if (p->island_resolved) {
+    /* Resolved with a thenable already: the first resolution stands. */
+    if (v != NULL) release(v);
+    scr_promise_release(p);
+    return;
+  }
   if (retain == scr_dyn_retain_v && v != NULL && scr_ni_dyn_handle((const ScrDyn *)v) &&
       p->state == SCR_PROM_PENDING) {
     scr_dyn_promise_resolve_with(p, (ScrDyn *)v);
+    /* Still pending: `v` is a thenable whose job settles the promise. */
+    if (p->state == SCR_PROM_PENDING) p->island_resolved = true;
     scr_dyn_release((ScrDyn *)v);
     scr_promise_release(p);
     return;
@@ -7041,9 +7086,10 @@ ScrClosure *scr_make_resolve_fn(ScrPromise *p, void *fn) {
  * own its param, like every compiled callee. */
 static void scr_reject_thunk(ScrClosure *self, ScrError *reason) {
   ScrPromise *p = scr_resolve_target(self);
-  if (p->state != SCR_PROM_PENDING) {
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
     scr_error_release(reason);
   } else {
+    SCR_PROMISE_LAZY_DROP(p);
     p->state = SCR_PROM_REJECTED;
     p->payload_kind = SCR_EXC_OBJ;
     p->payload = reason; /* ownership moves in */
@@ -7078,9 +7124,10 @@ ScrClosure *scr_make_reject(ScrPromise *p) {
  * byte for byte. */
 static void scr_reject_dyn_thunk(ScrClosure *self, ScrDyn *reason) {
   ScrPromise *p = scr_resolve_target(self);
-  if (p->state != SCR_PROM_PENDING) {
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
     scr_dyn_release(reason);
   } else {
+    SCR_PROMISE_LAZY_DROP(p);
     p->state = SCR_PROM_REJECTED;
     p->payload_kind = SCR_EXC_REF;
     p->payload = reason; /* ownership moves in */
@@ -7107,7 +7154,7 @@ ScrClosure *scr_make_reject_dyn(ScrPromise *p) {
  * the promise settled is swallowed, like resolve-then-throw in JS. */
 static void scr_executor_check_throw(ScrPromise *p) {
   if (!scr_exc_pending()) return;
-  if (p->state == SCR_PROM_PENDING) {
+  if (SCR_PROMISE_UNRESOLVED(p)) {
     scr_promise_reject_from_cell(p, scr_exc_current_cell());
     scr_promise_settle_wake(p);
   } else {

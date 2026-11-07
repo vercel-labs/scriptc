@@ -643,16 +643,15 @@ void scr_ni_settle_value(uint32_t token, int rejected, const ScrNodeValue *value
     if (nh_waiters[i].token != token) continue;
     ScrPromise *p = nh_waiters[i].promise;
     nh_waiters[i] = nh_waiters[--nh_nwaiters];
+    /* The value converts first (reading an island Error may run its
+     * getters): only the settlement's own jobs are collected. */
+    ScrDyn *d = NULL;
+    if (rejected) nh_throw_value(value);
+    else d = nh_from_node(value);
     scr_loop_hosted_settle_begin();
-    if (rejected) {
-      nh_throw_value(value);
-      scr_promise_reject_pending(p);
-    } else {
-      ScrDyn *d = nh_from_node(value);
-      if (d != NULL)
-        scr_promise_fulfill_ref(p, d, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-      scr_promise_reject_pending(p); /* no-op unless a conversion error is pending */
-    }
+    if (d != NULL)
+      scr_promise_fulfill_ref(p, d, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_promise_reject_pending(p); /* the rejection, or a conversion error; else a no-op */
     scr_promise_release(p);
     scr_loop_hosted_settle_run();
     return;

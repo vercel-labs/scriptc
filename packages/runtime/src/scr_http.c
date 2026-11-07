@@ -5554,6 +5554,20 @@ void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, boo
 
 /* ── response parsing (the conn's client mode) ───────────────────────── */
 
+/* Whether a 101 response switches protocols. Node's parser decides it from
+ * the head, as for a request: an Upgrade header together with a Connection
+ * header that names it. A 101 without them is an ordinary final response. */
+static bool scr_http_client_response_upgrades(const ScrHttpReq *res) {
+  bool has_upgrade_hdr = false;
+  bool conn_upgrade_token = false;
+  for (size_t i = 0; i < res->nheaders; i++) {
+    if (scr_http_name_is(res->hnames[i], "upgrade")) has_upgrade_hdr = true;
+    else if (scr_http_name_is(res->hnames[i], "connection") &&
+             scr_http_header_has_token(res->hvalues[i], "upgrade")) conn_upgrade_token = true;
+  }
+  return has_upgrade_hdr && conn_upgrade_token;
+}
+
 /* Parses one complete response HEAD sitting at buf[0..head_len):
  * "HTTP/1.x SP status SP reason CRLF" then headers. Returns false on
  * malformed input (the caller hangs up). */
@@ -5635,8 +5649,8 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
   /*
    * Informational responses do not settle the request: Node emits
    * 'continue' for a 100 and keeps parsing until the final response. The
-   * 'information' event has no listener surface here yet. 101 is the
-   * upgrade case below.
+   * 'information' event has no listener surface here yet. 101 is a
+   * final response: the upgrade case below, or an ordinary one.
    */
   if (status >= 100 && status < 200 && status != 101) {
     memmove(conn->buf, conn->buf + head_len, conn->len - head_len);
@@ -5657,13 +5671,17 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
     return false;
   }
   bool head_req = c->method->len == 4 && memcmp(c->method->data, "HEAD", 4) == 0;
-  bool no_body = head_req || status == 204 || status == 304;
+  /* a 101 that is not an upgrade (below) ends at its head, whatever
+   * framing it declares: to Node's parser what follows a 101 is another
+   * protocol */
+  bool no_body = head_req || status == 204 || status == 304 || status == 101;
 
-  /* 101 Switching Protocols: 'upgrade' fires INSTEAD of 'response' with
-   * (res, socket, head) — the parser steps aside and the raw socket is
-   * the listener's (the server-side handover, mirrored). With no
-   * listener Node destroys the connection; so does this slice. */
-  if (status == 101) {
+  /* 101 Switching Protocols with the upgrade headers: 'upgrade' fires
+   * INSTEAD of 'response' with (res, socket, head) — the parser steps
+   * aside and the raw socket is the listener's (the server-side handover,
+   * mirrored). With no listener Node destroys the connection and the
+   * request closes without a response or an error; so does this slice. */
+  if (status == 101 && scr_http_client_response_upgrades(res)) {
     conn->client_resp_started = true;
     c->response_started = true;
     c->response_done = true; /* the exchange settled: no timeout/hang-up paths */
@@ -5673,6 +5691,9 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
     if (c->upgrade_ls.n == 0) {
       scr_http_req_release(res);
       conn->len = 0;
+      /* response_done keeps the socket's teardown from settling the
+       * request, so its 'close' queues here */
+      scr_http_client_queue_close(c);
       scr_net_sock_destroy(conn->sock);
       return true;
     }

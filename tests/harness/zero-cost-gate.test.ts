@@ -1,6 +1,12 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import {
+  allowProgramsLines,
+  allowProgramsSummary,
   cachedComparison,
   cachegrindCounts,
   changedFunctions,
@@ -10,6 +16,7 @@ import {
   confinedToRuntime,
   definedFunctionNames,
   dynamicTierSymbols,
+  elfPrivateConstants,
   linkedRuntimeFiles,
   objectFunctionHashes,
   mergeReports,
@@ -17,11 +24,13 @@ import {
   pairPrograms,
   changedProgram,
   programChange,
+  parseAllowPrograms,
   programInputsHash,
   programLines,
   programVerdict,
   recordedBaseline,
   runtimePackDiff,
+  symbolCheck,
   timingGroups,
   timingVerdict,
 } from "../../scripts/zero-cost-compare.mjs";
@@ -184,6 +193,287 @@ test("the zero-cost gate reads function names from ELF and Mach-O nm output", ()
     "scr_dyn_obj_get",
   ]);
 });
+
+test("the zero-cost gate judges ICU and Node island symbols against the baseline", () => {
+  const own = ["main", "scr_string_concat", "scr_intl_segmenter_new"];
+  const icu = [
+    "ubrk_open_78",
+    "icudt78_dat",
+    "_ZN6icu_7813UnicodeString6appendEPKDsi",
+    "unum_open_78",
+    "u_strToUTF8_78",
+    "_ZTVN6icu_7813UnicodeStringE",
+  ];
+  const check = (baseline: string[], candidate: string[], allowed = false) =>
+    symbolCheck({ typed: false, allowed, baseline, candidate });
+  // An Intl program links ICU on both sides. Its executable differs because
+  // a runtime unit it links changed, which is not an ICU finding.
+  expect(check([...own, ...icu], [...own, "scr_date_new_helper", ...icu])).toMatchObject({
+    icu: [],
+    failures: [],
+  });
+  // A program that starts linking ICU fails, and the line names the symbols.
+  const linked = check(own, [...own, ...icu]);
+  expect(linked.icu).toEqual([...icu].sort());
+  expect(linked.failures).toEqual([
+    "gained ICU symbols: _ZN6icu_7813UnicodeString6appendEPKDsi, _ZTVN6icu_7813UnicodeStringE, " +
+      "icudt78_dat, u_strToUTF8_78, ubrk_open_78, ... (6 in all)",
+  ]);
+  // So does one that links more of ICU than it did.
+  expect(check([...own, ...icu.slice(0, 4)], [...own, ...icu]).failures).toEqual([
+    "gained ICU symbols: _ZTVN6icu_7813UnicodeStringE, u_strToUTF8_78",
+  ]);
+  // Dropping ICU symbols is not a gain, and an allowed program may gain them.
+  expect(check([...own, ...icu], [...own, ...icu.slice(0, 2)]).failures).toEqual([]);
+  expect(check(own, [...own, ...icu], true)).toMatchObject({ icu: [...icu].sort(), failures: [] });
+
+  // The Node island runtime follows the same rule.
+  const island = ["scr_node_island_call", "scr_loop_set_node_island_wake"];
+  expect(check([...own, ...island], [...own, "scr_date_new_helper", ...island]).failures).toEqual(
+    [],
+  );
+  expect(check(own, [...own, ...island]).failures).toEqual([
+    "gained Node island symbols: scr_loop_set_node_island_wake, scr_node_island_call",
+  ]);
+  expect(check(own, [...own, ...island], true).failures).toEqual([]);
+  // A workload with Node islands is a program that calls into Node.js.
+  expect(
+    symbolCheck({
+      typed: false,
+      allowed: false,
+      island: true,
+      baseline: own,
+      candidate: [...own, ...island],
+    }).failures,
+  ).toEqual([]);
+
+  // The dynamic-tier rules are as they were: no program gains such symbols,
+  // and a fully typed one defines none, whatever the baseline did.
+  const dyn = ["scr_dyn_obj_read", "scr_js_load_ic"];
+  expect(check([...own, ...dyn], [...own, ...dyn])).toEqual({
+    typed: false,
+    count: 2,
+    added: [],
+    nodeIsland: [],
+    icu: [],
+    failures: [],
+  });
+  expect(check([...own, dyn[0]!], [...own, ...dyn]).failures).toEqual([
+    "gained dynamic-tier symbols: scr_js_load_ic",
+  ]);
+  expect(
+    symbolCheck({
+      typed: true,
+      allowed: true,
+      baseline: [...own, ...dyn],
+      candidate: [...own, ...dyn],
+    }).failures,
+  ).toEqual(["fully typed program links dynamic-tier symbols: scr_dyn_obj_read, scr_js_load_ic"]);
+});
+
+test("the zero-cost gate reads an allow list of program ids and says what became of it", () => {
+  const ids = parseAllowPrograms(
+    [
+      "# programs that read Date, which this change touches",
+      "corpus/date-basic.ts",
+      "",
+      "  bench/log-summary  ",
+      "corpus/date-basic.ts",
+      "self/cli\r",
+      "#corpus/commented-out.ts",
+      "corpus/dir/main.ts",
+      "corpus/refused.ts",
+    ].join("\n"),
+  );
+  expect(ids).toEqual([
+    "corpus/date-basic.ts",
+    "bench/log-summary",
+    "self/cli",
+    "corpus/dir/main.ts",
+    "corpus/refused.ts",
+  ]);
+  expect(parseAllowPrograms("")).toEqual([]);
+
+  const entry = (id: string, verdict: string) => ({ id, verdict, artifacts: {} });
+  const programs = [
+    entry("corpus/date-basic.ts", "allowed"),
+    entry("bench/log-summary", "identical"),
+    entry("corpus/refused.ts", "both-fail"),
+    entry("corpus/unlisted.ts", "identical"),
+  ];
+  const summary = allowProgramsSummary(ids, programs);
+  expect(summary).toEqual({
+    listed: 5,
+    differ: ["corpus/date-basic.ts"],
+    identical: ["bench/log-summary"],
+    unbuilt: ["corpus/refused.ts"],
+    unselected: ["self/cli", "corpus/dir/main.ts"],
+  });
+  // A list broader than the change needs shows: the identical ids are named.
+  expect(allowProgramsLines(summary)).toEqual([
+    "listed     5 programs in --allow-programs: 1 differ, 1 identical, 1 did not build, 2 not compared in this run",
+    "listed     identical, so the list need not name: bench/log-summary",
+  ]);
+  expect(
+    allowProgramsLines(allowProgramsSummary(["self/cli"], [entry("self/cli", "allowed")])),
+  ).toEqual(["listed     1 program in --allow-programs: 1 differ, 0 identical"]);
+
+  // Shards each see part of the list; the merged report accounts for all of it.
+  const shard = (programs: object[]) => ({
+    schema: 1,
+    trees: { baseline: { revision: "a" }, candidate: { revision: "b" } },
+    allowPrograms: { file: "list.txt", ids },
+    programs,
+    failures: [],
+    globalFailures: [],
+    timing: null,
+    elapsedMs: 1,
+  });
+  const merged = mergeReports([
+    shard(programs.slice(0, 2)),
+    shard([...programs.slice(2), entry("self/cli", "allowed")]),
+  ]);
+  expect(merged.report.allowPrograms).toEqual({ file: "list.txt", ids });
+  expect(merged.allowLines).toEqual([
+    "listed     5 programs in --allow-programs: 2 differ, 1 identical, 1 did not build, 1 not compared by any shard",
+    "listed     identical, so the list need not name: bench/log-summary",
+    "listed     not compared by any shard: corpus/dir/main.ts",
+  ]);
+  expect(merged.report.verdict).toBe("pass");
+  expect(mergeReports([{ ...shard(programs), allowPrograms: null }]).allowLines).toEqual([]);
+});
+
+test("the zero-cost gate allows listed programs and refuses a stale list", () => {
+  // Two checkouts whose "compiler" writes LLVM for a program from its entry's
+  // name. The candidate's differs for one emitter fixture.
+  const root = mkdtempSync(join(tmpdir(), "scriptc-gate-test-"));
+  const compiler = (changed: string) =>
+    [
+      'const { writeFileSync } = require("node:fs");',
+      "const args = process.argv.slice(2);",
+      'const out = args[args.indexOf("-o") + 1];',
+      `const body = ${JSON.stringify(changed)} !== "" && args[1].includes(${JSON.stringify(changed)}) ? "unreachable" : "ret void";`,
+      "writeFileSync(out, `define void @main() {\\n  ${body}\\n}\\n`);",
+    ].join("\n");
+  const write = (file: string, text: string) => {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, text);
+  };
+  for (const [tree, changed] of [
+    ["baseline", ""],
+    ["candidate", "llvm-emitter"],
+  ] as const)
+    write(join(root, tree, "packages/cli/dist/bootstrap.js"), compiler(changed));
+  write(join(root, "baseline/tests/corpus/date-basic.ts"), "console.log(1);\n");
+  write(join(root, "baseline/tests/corpus/legacy/main.js"), "console.log(1);\n");
+  const command = [
+    process.execPath,
+    fileURLToPath(new URL("../../scripts/zero-cost-gate.mjs", import.meta.url)),
+    `--baseline=${join(root, "baseline")}`,
+    `--candidate=${join(root, "candidate")}`,
+  ];
+  const gate = (...args: string[]) =>
+    spawnSync(command[0]!, [...command.slice(1), "--set=self", "--timing-runs=0", ...args], {
+      encoding: "utf8",
+    });
+  const list = (name: string, ids: string[]) => {
+    write(join(root, name), ["# emitter fixtures", ...ids, ""].join("\n"));
+    return `--allow-programs=${join(root, name)}`;
+  };
+  try {
+    const unlisted = gate();
+    expect(unlisted.stdout).toContain("DIFFERS    fixture/llvm-emitter  llvm: changed main");
+    expect(unlisted.stdout).toContain("  fixture/llvm-emitter: differs");
+    expect(unlisted.stdout).not.toContain("listed ");
+    expect(unlisted.status).toBe(1);
+
+    // The list may name programs of sets, languages and shards this run does
+    // not select: they are programs, so the list is not stale.
+    const listed = gate(
+      list("allow.txt", [
+        "fixture/llvm-emitter",
+        "fixture/llvm-layouts",
+        "corpus/date-basic.ts",
+        "corpus/legacy/main.js",
+      ]),
+    );
+    expect(listed.stderr).toBe("");
+    expect(listed.stdout).toContain("allowed    fixture/llvm-emitter  llvm: changed main");
+    expect(listed.stdout).toContain(
+      "listed     4 programs in --allow-programs: 1 differ, 1 identical, 2 not compared in this run\n" +
+        "listed     identical, so the list need not name: fixture/llvm-layouts\n" +
+        "zero-cost gate: PASS — ",
+    );
+    expect(listed.status).toBe(0);
+
+    // --list names the programs a run compares and checks the list first.
+    const ids = gate("--list", "--only=^fixture/", list("allow.txt", ["corpus/legacy/main.js"]));
+    expect(ids.stdout).toBe("fixture/llvm-emitter\nfixture/llvm-layouts\n");
+    expect(ids.status).toBe(0);
+    expect(gate("--list", list("stale.txt", ["corpus/legacy/main.ts"])).status).toBe(2);
+
+    const stale = gate(
+      list("stale.txt", [
+        "fixture/llvm-emitter",
+        "corpus/date-renamed.ts",
+        "bench/no-such-workload",
+      ]),
+    );
+    expect(stale.stderr).toBe(
+      `--allow-programs ${join(root, "stale.txt")}: 2 of 3 listed ids name no program of the ` +
+        `good-code set in ${join(root, "baseline")}:\n  corpus/date-renamed.ts\n  bench/no-such-workload\n`,
+    );
+    expect(stale.stdout).toBe("");
+    expect(stale.status).toBe(2);
+
+    // A driver reads the list through a pipe, and may read it late. The list
+    // of a real corpus is larger than a pipe holds, and all of it arrives.
+    const programs = 2500;
+    for (let index = 0; index < programs; index++)
+      write(join(root, `baseline/tests/corpus/a-program-with-a-long-name-${index}.ts`), "");
+    const piped = spawnSync(
+      "sh",
+      ["-c", '"$@" | (sleep 1; wc -l)', "sh", ...command, "--set=corpus", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(Number(piped.stdout.trim())).toBe(programs + 1);
+
+    // So does a merged report: one line per program that is not identical,
+    // the verdict, and one line per failure.
+    const shard = {
+      schema: 1,
+      trees: { baseline: { revision: "a" }, candidate: { revision: "b" } },
+      programs: Array.from({ length: programs }, (_, index) => ({
+        id: `corpus/a-program-with-a-long-name-${index}.ts`,
+        verdict: "differs",
+        artifacts: { exe: { identical: false, first: "resized main" } },
+      })),
+      failures: Array.from(
+        { length: programs },
+        (_, index) => `corpus/a-program-with-a-long-name-${index}.ts: differs`,
+      ),
+      globalFailures: [],
+      timing: null,
+      elapsedMs: 1,
+    };
+    write(join(root, "shard.json"), JSON.stringify(shard));
+    const merged = spawnSync(
+      "sh",
+      [
+        "-c",
+        '"$@" | (sleep 1; wc -l)',
+        "sh",
+        process.execPath,
+        fileURLToPath(new URL("../../scripts/zero-cost-merge.mjs", import.meta.url)),
+        join(root, "shard.json"),
+      ],
+      { encoding: "utf8" },
+    );
+    expect(Number(merged.stdout.trim())).toBe(2 * programs + 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);
 
 test("the zero-cost gate fails differing programs unless they match the signature", () => {
   const ok = { ok: true };
@@ -438,6 +728,186 @@ test("the zero-cost gate names the runtime pack files and functions that changed
     added: ["scr new"],
     removed: [],
   });
+});
+
+/** A minimal ELF64 relocatable object: `sections` after the null section,
+ * then the symbol table, its names and the section names. */
+function elfObject(
+  sections: { name: string; flags: number; entsize: number; data: Buffer }[],
+  symbols: { name: string; section: number; value: number; size: number; global?: boolean }[],
+) {
+  const names = (list: string[]) => {
+    const offsets = new Map<string, number>();
+    let text = "\0";
+    for (const name of list) {
+      offsets.set(name, text.length);
+      text += `${name}\0`;
+    }
+    return { offsets, data: Buffer.from(text, "latin1") };
+  };
+  const strtab = names(symbols.map((symbol) => symbol.name));
+  const symtab = Buffer.alloc(24 * (symbols.length + 1));
+  symbols.forEach((symbol, index) => {
+    const at = 24 * (index + 1);
+    symtab.writeUInt32LE(strtab.offsets.get(symbol.name)!, at);
+    symtab[at + 4] = ((symbol.global ? 1 : 0) << 4) | (symbol.size > 0 ? 1 : 0);
+    symtab.writeUInt16LE(symbol.section, at + 6);
+    symtab.writeBigUInt64LE(BigInt(symbol.value), at + 8);
+    symtab.writeBigUInt64LE(BigInt(symbol.size), at + 16);
+  });
+  const all = [
+    ...sections.map((section) => ({ ...section, type: 1, link: 0 })),
+    { name: ".symtab", type: 2, flags: 0, entsize: 24, data: symtab, link: sections.length + 2 },
+    { name: ".strtab", type: 3, flags: 0, entsize: 0, data: strtab.data, link: 0 },
+  ];
+  const shstrtab = names([...all.map((section) => section.name), ".shstrtab"]);
+  all.push({ name: ".shstrtab", type: 3, flags: 0, entsize: 0, data: shstrtab.data, link: 0 });
+  const header = Buffer.alloc(64);
+  header.write("\x7fELF", 0, "latin1");
+  header[4] = 2; // 64-bit
+  header[5] = 1; // little-endian
+  header.writeUInt16LE(1, 0x10); // relocatable
+  const headers = Buffer.alloc(64 * (all.length + 1));
+  let offset = header.length;
+  all.forEach((section, index) => {
+    const at = 64 * (index + 1);
+    headers.writeUInt32LE(shstrtab.offsets.get(section.name)!, at);
+    headers.writeUInt32LE(section.type, at + 4);
+    headers.writeBigUInt64LE(BigInt(section.flags), at + 8);
+    headers.writeBigUInt64LE(BigInt(offset), at + 24);
+    headers.writeBigUInt64LE(BigInt(section.data.length), at + 32);
+    headers.writeUInt32LE(section.link, at + 40);
+    headers.writeBigUInt64LE(BigInt(section.entsize), at + 56);
+    offset += section.data.length;
+  });
+  header.writeBigUInt64LE(BigInt(offset), 0x28);
+  header.writeUInt16LE(64, 0x3a);
+  header.writeUInt16LE(all.length + 1, 0x3c);
+  header.writeUInt16LE(all.length, 0x3e);
+  return Buffer.concat([header, ...all.map((section) => section.data), headers]);
+}
+
+test("the zero-cost gate names a private constant by its bytes, not by its number", () => {
+  // A unit's constant pool (`.LCPI<function>_<n>`) and its string literals
+  // (`.L.str.<n>`), as clang lays them out in mergeable sections.
+  const object = (pool: [string, number][], strings: [string, string, boolean?][]) => {
+    const texts = strings.map(([, text]) => `${text}\0`);
+    return elfObject(
+      [
+        {
+          name: ".rodata.cst8",
+          flags: 0x12,
+          entsize: 8,
+          data: Buffer.concat(
+            pool.map(([, value]) => {
+              const bytes = Buffer.alloc(8);
+              bytes.writeDoubleLE(value);
+              return bytes;
+            }),
+          ),
+        },
+        {
+          name: ".rodata.str1.1",
+          flags: 0x32,
+          entsize: 1,
+          data: Buffer.from(texts.join(""), "latin1"),
+        },
+        { name: ".data.scr_table", flags: 0x3, entsize: 0, data: Buffer.alloc(8) },
+      ],
+      [
+        ...pool.map(([name], index) => ({ name, section: 1, value: 8 * index, size: 0 })),
+        ...strings.map(([name, text, unsized], index) => ({
+          name,
+          section: 2,
+          value: texts.slice(0, index).join("").length,
+          size: unsized ? 0 : text.length + 1,
+        })),
+        // Neither a label outside a mergeable section nor a global is one.
+        { name: ".L__const.scr_f.table", section: 3, value: 0, size: 8 },
+        { name: "scr_pool", section: 1, value: 0, size: 8, global: true },
+      ],
+    );
+  };
+  const before = object(
+    [
+      [".LCPI1_0", 1],
+      [".LCPI4_0", 0.5],
+    ],
+    [
+      [".L.str", "hi"],
+      [".L.str.1", "bye", true],
+    ],
+  );
+  expect([...elfPrivateConstants(before)]).toEqual([
+    [".LCPI1_0", ".rodata.cst8:000000000000f03f"],
+    [".LCPI4_0", ".rodata.cst8:000000000000e03f"],
+    [".L.str", ".rodata.str1.1:686900"],
+    [".L.str.1", ".rodata.str1.1:62796500"],
+  ]);
+  expect(elfPrivateConstants(Buffer.from("not an object file"))).toEqual(new Map());
+
+  // Another function ahead of scr_f and another literal ahead of its string
+  // renumber both labels; the constants they name are the same.
+  const after = object(
+    [
+      [".LCPI1_0", 2],
+      [".LCPI2_0", 1],
+      [".LCPI5_0", 0.5],
+    ],
+    [
+      [".L.str", "hi"],
+      [".L.str.1", "new"],
+      [".L.str.2", "bye"],
+    ],
+  );
+  const objdump = (pool: string, text: string) =>
+    [
+      "<scr_f>:",
+      "               \tmovsd\t(%rip), %xmm0           # 0x8 <scr_f+0x8>",
+      `\t\tR_X86_64_PC32\t${pool}-0x4`,
+      "               \tleaq\t(%rip), %rdi            # 0xf <scr_f+0xf>",
+      `\t\tR_X86_64_PC32\t${text}-0x4`,
+      "               \tleaq\t(%rip), %rsi            # 0x16 <scr_f+0x16>",
+      "\t\tR_X86_64_PC32\t.data.scr_table-0x4",
+      "               \tretq",
+      "",
+    ].join("\n");
+  const unchanged = { changed: [], added: [], removed: [] };
+  const hashes = (bytes: Buffer, pool: string, text: string) =>
+    objectFunctionHashes(objdump(pool, text), elfPrivateConstants(bytes));
+  // By label, the renumbered function reads as changed.
+  expect(
+    changedFunctions(
+      objectFunctionHashes(objdump(".LCPI1_0", ".L.str.1")),
+      objectFunctionHashes(objdump(".LCPI2_0", ".L.str.2")),
+    ).changed,
+  ).toEqual(["scr_f"]);
+  expect(
+    changedFunctions(hashes(before, ".LCPI1_0", ".L.str.1"), hashes(after, ".LCPI2_0", ".L.str.2")),
+  ).toEqual(unchanged);
+  // The same labels over other bytes are a change: scr_f would read 2 and "new".
+  expect(
+    changedFunctions(hashes(before, ".LCPI1_0", ".L.str.1"), hashes(after, ".LCPI1_0", ".L.str.2"))
+      .changed,
+  ).toEqual(["scr_f"]);
+  expect(
+    changedFunctions(hashes(before, ".LCPI1_0", ".L.str.1"), hashes(after, ".LCPI2_0", ".L.str.1"))
+      .changed,
+  ).toEqual(["scr_f"]);
+  // So is another constant of the same function, or another offset into one.
+  expect(
+    changedFunctions(hashes(before, ".LCPI1_0", ".L.str.1"), hashes(before, ".LCPI4_0", ".L.str.1"))
+      .changed,
+  ).toEqual(["scr_f"]);
+  expect(
+    changedFunctions(
+      hashes(before, ".LCPI1_0", ".L.str.1"),
+      objectFunctionHashes(
+        objdump(".LCPI1_0", ".L.str.1").replace(".LCPI1_0-0x4", ".LCPI1_0+0x4"),
+        elfPrivateConstants(before),
+      ),
+    ).changed,
+  ).toEqual(["scr_f"]);
 });
 
 test("the zero-cost gate confines runtime-only differences to runtime symbols", () => {

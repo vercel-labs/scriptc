@@ -8,7 +8,7 @@ import {
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
-  trackedReadFile,
+  trackedReadSource,
 } from "../frontend/input-tracker.js";
 import {
   publishEarlyLibraryCache,
@@ -72,7 +72,7 @@ test("early library cache restores generated artifacts and metadata", async () =
   const f = await fixture();
   const tracker = new FrontendInputTracker();
   tracker.run(() => {
-    trackedReadFile(f.source);
+    trackedReadSource(f.source);
     trackedFileExists(f.missing);
   });
   const native = {
@@ -124,7 +124,7 @@ test("early library cache publishes after creating a fresh output directory", as
     trackedAccessibleEntries(f.options.outDir);
     trackedDirectoryExists(outDir);
     trackedAccessibleEntries(outDir);
-    trackedReadFile(f.source);
+    trackedReadSource(f.source);
   });
 
   await mkdir(outDir);
@@ -159,7 +159,7 @@ test("early library cache publishes after creating a fresh output directory", as
 test("early library cache hits refresh every payload's LRU time", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -205,7 +205,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
   const f = await fixture();
   const tracker = new FrontendInputTracker();
   tracker.run(() => {
-    trackedReadFile(f.source);
+    trackedReadSource(f.source);
     trackedFileExists(f.missing);
   });
   await publishEarlyLibraryCache(f.root, f.options, {
@@ -237,7 +237,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
   await writeFile(f.llvmPath, "; generated llvm v2\n");
   const editedTracker = new FrontendInputTracker();
   editedTracker.run(() => {
-    trackedReadFile(f.source);
+    trackedReadSource(f.source);
     trackedFileExists(f.missing);
   });
   await publishEarlyLibraryCache(f.root, f.options, {
@@ -291,7 +291,7 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
     entry: "__main",
   } satisfies IrModule;
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -357,7 +357,7 @@ test("semantic library cache refuses token and directive edits", async () => {
     entry: "__main",
   } satisfies IrModule;
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -408,7 +408,7 @@ test("semantic LLVM cache accepts comment edits that shift source lines", async 
     entry: "__main",
   } satisfies IrModule;
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -449,7 +449,7 @@ test("semantic LLVM cache accepts line separator normalization", async () => {
     ].join(separator);
     await writeFile(f.source, sourceBefore);
     const tracker = new FrontendInputTracker();
-    tracker.run(() => trackedReadFile(f.source));
+    tracker.run(() => trackedReadSource(f.source));
     await publishEarlyLibraryCache(f.root, f.options, {
       llvmPath: f.llvmPath,
       irPath: f.irPath,
@@ -511,8 +511,8 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
   } satisfies IrModule;
   const tracker = new FrontendInputTracker();
   tracker.run(() => {
-    trackedReadFile(f.source);
-    trackedReadFile(imported);
+    trackedReadSource(f.source);
+    trackedReadSource(imported);
   });
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
@@ -555,7 +555,7 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
 test("early library cache is separated by the host Node version", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -589,7 +589,7 @@ test("early library cache is separated by the host Node version", async () => {
 test("early library cache rejects corrupted artifacts and metadata", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -626,7 +626,7 @@ test("early library cache rejects corrupted artifacts and metadata", async () =>
 test("disabled early library cache performs no reads or writes", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   const publish = {
     llvmPath: f.llvmPath,
     irPath: f.irPath,

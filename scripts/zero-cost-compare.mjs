@@ -786,6 +786,8 @@ export function programLines(entry) {
     nondeterministic: "nondet   ",
     "build-error": "ERROR    ",
     "both-fail": "both-fail",
+    "changed-by-pr": "PR-change",
+    "removed-by-pr": "PR-remove",
   }[entry.verdict];
   const notes = [];
   for (const [kind, result] of Object.entries(entry.artifacts))
@@ -821,6 +823,13 @@ export function programLines(entry) {
   }
   if (entry.nondeterministic)
     notes.push(`the baseline's own rebuild differs in ${entry.nondeterministic.join(", ")}`);
+  if (entry.pr === "changed" || entry.pr === "added")
+    notes.push(
+      `source ${entry.pr === "added" ? "added" : "changed"} by the PR, built from the candidate checkout`,
+    );
+  if (entry.verdict === "changed-by-pr")
+    notes.push("the baseline compiler cannot build it, so the gate did not compare it");
+  if (entry.verdict === "removed-by-pr") notes.push("the candidate checkout removed it");
   for (const failure of entry.dynamicTier?.failures ?? []) notes.push(`SYMBOLS: ${failure}`);
   lines.push(`${label}  ${entry.id}${notes.length ? `  ${notes.join("; ")}` : ""}`);
   // A build error's first line is often a warning; print all of it.
@@ -907,7 +916,10 @@ export function allowProgramsLines(summary, { merged = false } = {}) {
  * A difference the baseline also shows when it builds the program again is
  * "nondeterministic": `nondeterministic` lists the artifact kinds whose
  * baseline rebuild differs, and every differing artifact must be among
- * them. Neither fails the gate unless `strict` is set. */
+ * them. Neither fails the gate unless `strict` is set.
+ * `changedSource` says both checkouts built the source the change itself
+ * provides, so the baseline compiler refusing it is the change's own
+ * source, not a regression in what the baseline used to build. */
 export function programVerdict({
   baseline,
   candidate,
@@ -917,8 +929,11 @@ export function programVerdict({
   runtimeOnly = false,
   nondeterministic = [],
   strict = false,
+  changedSource = false,
 }) {
   if (!baseline.ok || !candidate.ok) {
+    if (!baseline.ok && candidate.ok && changedSource)
+      return { verdict: "changed-by-pr", fails: false };
     if (!baseline.ok && !candidate.ok && baseline.error === candidate.error)
       return { verdict: "both-fail", fails: required };
     return { verdict: "build-error", fails: true };
@@ -931,6 +946,55 @@ export function programVerdict({
   if (differing.every(([kind]) => nondeterministic.includes(kind)))
     return { verdict: "nondeterministic", fails: strict };
   return { verdict: "differs", fails: true };
+}
+
+/* ── programs the change rewrites or deletes ───────────────────────────── */
+
+/** One row per program id out of the programs of the checkout the gate reads
+ * its programs from (`own`) and those of the other compared checkout
+ * (`counterpart`): `own`'s programs in their order, each with the
+ * counterpart's program of the same id (null when it has none), then the
+ * programs only the counterpart has. Programs pair by id, not by entry path:
+ * a benchmark that keeps its workload name while its entry moves is one
+ * program whose source changed, and no id appears twice (mergeReports
+ * refuses a report that repeats one). */
+export function pairPrograms(own, counterpart) {
+  const theirs = new Map(counterpart.map((program) => [program.id, program]));
+  const ids = new Set(own.map((program) => program.id));
+  return [
+    ...own.map((program) => ({ own: program, counterpart: theirs.get(program.id) ?? null })),
+    ...counterpart
+      .filter((program) => !ids.has(program.id))
+      .map((program) => ({ own: null, counterpart: program })),
+  ];
+}
+
+/** What a change does to one program, from the program's source in each
+ * checkout: `{ entry, files }` with the entry's path relative to its
+ * checkout and a Map from each file the program reads (relative path) to
+ * its content hash, or null where the checkout has no such program.
+ * "removed" (only the baseline has it), "added" (only the candidate has
+ * it), or "changed" (both have it, at another entry path or with different
+ * files or contents); undefined when the two copies match. */
+export function programChange(before, after) {
+  if (after === null) return before === null ? undefined : "removed";
+  if (before === null) return "added";
+  if (before.entry !== after.entry || before.files.size !== after.files.size) return "changed";
+  for (const [file, hash] of before.files) if (after.files.get(file) !== hash) return "changed";
+  return undefined;
+}
+
+/** What both compilers build of a program the change rewrites: everything
+ * the gate reads from the program's source and definition comes from the
+ * candidate checkout's copy, not only the entry. The optimization level is
+ * named in the entry's head and the workload carries the arguments, so
+ * either can change with the source. */
+export function changedProgram(candidate) {
+  return {
+    entry: candidate.entry,
+    optimization: candidate.optimization,
+    workload: candidate.workload,
+  };
 }
 
 export function median(values) {

@@ -7674,25 +7674,32 @@ void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key) {
   if (entry) entry->fenced = true;
 }
 
+/* The box of a closure with an identity root when that root is a Node
+ * island function's: the island's own handle (+1; the closure is released),
+ * so the box compares equal to the function and crosses back into the island
+ * as it. NULL for every other root. The table is installed only in a program
+ * that links the island units. Kept out of line: scr_dyn_new_func is inlined
+ * into every unit function that boxes a function, and none of them should
+ * carry this path. */
+static __attribute__((noinline)) ScrDyn *scr_dyn_island_function_box(ScrClosure *clo) {
+  if (scr_ni_dyn_ops == NULL) return NULL;
+  ScrDyn *island = scr_ni_dyn_ops->function_of_identity(clo->identity);
+  if (island != NULL) scr_closure_release(clo);
+  return island;
+}
+
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {
   if (clo->function_kind & SCR_CLOSURE_KIND_CHECKED_ADAPTER) {
     ScrDyn *original = scr_box_get_ref(clo->caps[0]);
     scr_closure_release(clo);
     return original;
   }
-#ifdef SCR_NODE_ISLANDS
   /* A signature adapter over a view of a Node island's function is still
-   * that function: its box is the island's own handle, so it compares equal
-   * to the function and crosses back into the island as it. */
-  if (clo->identity != NULL && scr_ni_dyn_ops != NULL &&
-      scr_ni_dyn_ops->function_of_identity != NULL) {
-    ScrDyn *island = scr_ni_dyn_ops->function_of_identity(clo->identity);
-    if (island != NULL) {
-      scr_closure_release(clo);
-      return island;
-    }
+   * that function: its box is the island's own handle. */
+  if (clo->identity != NULL) {
+    ScrDyn *island = scr_dyn_island_function_box(clo);
+    if (island != NULL) return island;
   }
-#endif
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_FUNC);
   d->v.fn.clo = clo;
   d->v.fn.thunk = thunk;
@@ -11429,13 +11436,12 @@ int scr_dyn_function_kind(const ScrDyn *value) {
 void scr_dyn_adopt_identity(ScrClosure *adapter, const ScrDyn *value) {
   if (value->kind == SCR_DYN_FUNC && value->v.fn.class_obj == NULL)
     scr_closure_adopt_identity(adapter, value->v.fn.clo, value->v.fn.arity);
-#ifdef SCR_NODE_ISLANDS
   /* A Node island's function is one function however many typed views the
-   * program holds of it: each view adopts the handle's identity root. */
-  else if (scr_ni_dyn_handle(value) && scr_ni_dyn_ops != NULL &&
-           scr_ni_dyn_ops->function_identity != NULL)
+   * program holds of it: each view adopts the handle's identity root. Only
+   * a program that links the island units, which install the table, can
+   * hold one. */
+  else if (scr_ni_dyn_handle(value))
     scr_closure_adopt_identity(adapter, scr_ni_dyn_ops->function_identity(value), 0);
-#endif
 }
 
 bool scr_dyn_is_object(const ScrDyn *d) {
@@ -11530,12 +11536,10 @@ static ScrStr *scr_dyn_string_tag(const ScrDyn *d) {
 }
 
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
-#ifdef SCR_NODE_ISLANDS
   /* An island object answers from Node, which reads its builtin tag and
-   * its @@toStringTag: an island array is "[object Array]". */
-  if (scr_ni_dyn_handle(d) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->object_tag != NULL)
-    return scr_ni_dyn_ops->object_tag(d);
-#endif
+   * its @@toStringTag: an island array is "[object Array]". Only a program
+   * that links the island units, which install the table, can hold one. */
+  if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->object_tag(d);
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
     return NULL;
@@ -14539,13 +14543,11 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
   scr_dyn_path_render(&b, path);
   scr_jb_puts(&b, ", got ");
   scr_jb_puts(&b, scr_dyn_kind_name(got));
-#ifdef SCR_NODE_ISLANDS
   /* The value has no wrong shape: it is a Node island's object, which this
    * type has no way to hold. Say so, and what does hold it. */
   if (scr_ni_dyn_handle(got))
     scr_jb_puts(&b, " from a Node island (an island object stays an island value: declare the island's "
                     "type or 'unknown' for it, or copy it with structuredClone)");
-#endif
   /* A real TypeError instance: catch bindings narrow it with instanceof
    * and read the path off e.message; the uncaught line ("Uncaught
    * TypeError: expected ...") is byte-identical to the old string form. */
@@ -16662,14 +16664,11 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
 ScrDyn *scr_json_parse_reviver(ScrStr *text, const ScrDyn *reviver) {
   ScrDyn *parsed = scr_json_parse(text);
   if (!parsed) return NULL; /* No callback runs on invalid input. */
-#ifdef SCR_NODE_ISLANDS
-  /* A function a Node island made is a reviver function. */
+  /* A function a Node island made is a reviver function. Only a program
+   * that links the island units, which install the table, can hold one. */
   if (reviver->kind != SCR_DYN_FUNC &&
-      !(scr_ni_dyn_handle(reviver) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(reviver)))
+      !(scr_ni_dyn_handle(reviver) && scr_ni_dyn_ops->is_function(reviver)))
     return parsed;
-#else
-  if (reviver->kind != SCR_DYN_FUNC) return parsed;
-#endif
   ScrDyn *holder = scr_dyn_new_obj();
   scr_dyn_obj_set(holder, "", 0, parsed);
   ScrStr *key = scr_str_new("", 0);
@@ -17117,14 +17116,13 @@ ScrDyn *scr_json_stringify_value(const ScrDyn *value, const ScrDyn *replacer, co
     size_t length = isnan(count) || count <= 0 ? 0 : count >= 10 ? 10 : (size_t)count;
     gap = scr_str_new("          ", length);
   } else gap = scr_str_new("", 0);
-#ifdef SCR_NODE_ISLANDS
-  /* A function a Node island made is a replacer function. */
-  if (scr_ni_dyn_handle(replacer) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(replacer)) {
+  /* A function a Node island made is a replacer function. Only a program
+   * that links the island units, which install the table, can hold one. */
+  if (scr_ni_dyn_handle(replacer) && scr_ni_dyn_ops->is_function(replacer)) {
     ScrDyn *replaced = scr_json_stringify_replacer(value, replacer, gap);
     scr_str_release(gap);
     return replaced;
   }
-#endif
   bool list = replacer->kind == SCR_DYN_ARR || (replacer->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(replacer));
   ScrDyn *result = scr_json_stringify_replacer(value, replacer->kind == SCR_DYN_FUNC || list ? replacer : scr_dyn_undefined(), gap);
   scr_str_release(gap);
@@ -18004,16 +18002,14 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
         "ReferenceError", "EvalError", "URIError", "AggregateError",
     };
     size_t hit = scr_errdyn_find(d, false);
-#ifdef SCR_NODE_ISLANDS
     /* An error island code threw keeps its own realm's constructor (the
      * island unit answers it from V8), so the island's TypeError is the
-     * one `e.constructor` names. */
-    if (hit != SIZE_MAX && scr_ni_dyn_ops != NULL &&
-        scr_ni_dyn_ops->error_constructor != NULL) {
+     * one `e.constructor` names. The table is NULL in a program without
+     * the island units. */
+    if (hit != SIZE_MAX && scr_ni_dyn_ops != NULL) {
       ScrDyn *island = NULL;
       if (scr_ni_dyn_ops->error_constructor(scr_errdyn_cache[hit].err, &island)) return island;
     }
-#endif
     const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
     for (size_t kind = 0; vt && kind < sizeof names / sizeof names[0]; kind++) {
       if (!names[kind]) continue;
@@ -19433,11 +19429,11 @@ static void scr_dyn_assign_linked_from(ScrDyn *target, const ScrDyn *src, bool d
 }
 
 static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
-#ifdef SCR_NODE_ISLANDS
   /* An island object's own enumerable string keys, read in Node as
    * Object.keys of one reads them: `{ ...islandObject }` and Object.assign
-   * copy them where they copied nothing. */
-  if (scr_ni_dyn_handle(src) && scr_ni_dyn_ops != NULL) {
+   * copy them where they copied nothing. Only a program that links the
+   * island units, which install the table, can hold one. */
+  if (scr_ni_dyn_handle(src)) {
     ScrDyn *keys = scr_ni_dyn_ops->own_keys((ScrDyn *)src, 0);
     if (keys == NULL) return;
     for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
@@ -19451,7 +19447,6 @@ static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) 
     scr_dyn_release(keys);
     return;
   }
-#endif
   if (scr_typed_ref_linked_copy(src)) {
     scr_dyn_assign_linked_from(target, src, define);
     return;

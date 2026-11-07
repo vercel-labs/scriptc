@@ -36,7 +36,7 @@ import { locOf } from "../program.js";
 export function hostGlobalValue(lowerer: Lowerer, name: string, node: ts.Node): IrExpr {
   const loc = locOf(node);
   const helper = `%builtin.hostGlobal.${name}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === helper))
+  if (lowerer.liftedFnNamed(helper) === undefined)
     defineHostGlobalBuilder(lowerer, name, helper, node);
   lowerer.noteEdge(helper);
   return { kind: "call", callee: helper, args: [], type: DYN, loc };
@@ -52,7 +52,7 @@ function defineHostGlobalBuilder(
 ): void {
   const loc = locOf(node);
   const fence = `%builtin.fence.global.${name}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === fence)) {
+  if (lowerer.liftedFnNamed(fence) === undefined) {
     const diag = hostGlobalDiag(name, loc);
     lowerer.liftedFns.push({
       name: fence,

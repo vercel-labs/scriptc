@@ -161,6 +161,21 @@ export function lowerCallbackArg(
   if (cb.type.kind === "dyn" && options.dynZero && maxParams === 0) {
     cb = { kind: "dynCheck", value: cb, type: funcOf([], VOID), loc: locOf(node) };
   }
+  // A function or undefined: an optional callback read from storage that
+  // can hold undefined (a binding code can read before its first store keeps
+  // the stored value where the library's parameter admits undefined).
+  const arms = cb.type.kind === "union" ? lowerer.unions.get(cb.type.unionId)?.arms : undefined;
+  if (
+    arms?.length === 2 &&
+    arms.some((arm) => arm.kind === "func") &&
+    arms.some((arm) => arm.kind === "undefinedT")
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `${what} that may be undefined (pass a function: test the value first, or wrap it in an arrow function)`,
+    );
+  }
   if (cb.type.kind !== "func" || cb.type.params.length > maxParams) {
     lowerer.unsupported(
       "SC1090",

@@ -150,7 +150,7 @@ function lowerBytesSortCall(
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   const arity = fnArg.type.params.length;
-  const keyed = closureKeyOrder(lowerer.liftedFns, fnArg);
+  const keyed = closureKeyOrder(lowerer, fnArg);
   const order = keyed?.length === 1 && keyed[0]!.read === null ? keyed[0]!.order : null;
   const helper = helperFor(`${arity}${order === null ? "" : `:keyed${order}`}`, arity, true, order);
   return {
@@ -780,7 +780,7 @@ export function lowerBytesStaticCall(
       lowerer.noLowering("TypedArray.from mapper over this source representation", call);
     const loc = locOf(call);
     const key = `%builtin.${elem}.fromMapped`;
-    if (!lowerer.liftedFns.some((fn) => fn.name === key)) {
+    if (lowerer.liftedFnNamed(key) === undefined) {
       const context = newFnCtx(false, null, null, bytesOf(elem));
       lowerer.fnStack.push(context);
       try {

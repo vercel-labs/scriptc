@@ -38,6 +38,7 @@ import * as ts from "../ts7/adapter.js";
 import { DYN, type IrExpr, type IrType } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
 import { isJsSourceFile, locOf } from "../program.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 
@@ -59,18 +60,6 @@ const ASSIGNMENTS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.BarBarEqualsToken,
   ts.SyntaxKind.AmpersandAmpersandEqualsToken,
 ]);
-
-function unwrap(node: ts.Expression): ts.Expression {
-  while (
-    ts.isParenthesizedExpression(node) ||
-    ts.isAsExpression(node) ||
-    ts.isNonNullExpression(node) ||
-    ts.isSatisfiesExpression(node) ||
-    ts.isTypeAssertion(node)
-  )
-    node = node.expression;
-  return node;
-}
 
 /** The expression `node` is the whole value of, through parentheses and
  * type-only syntax. */
@@ -198,7 +187,7 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
   /** The name a key expression names, as `x[key]` and `[key]: v` do. */
   const elementKey = (key: ts.Expression | undefined): string | null => {
     if (key === undefined) return null;
-    const literal = unwrap(key);
+    const literal = withoutParenthesesTypeWrappers(key);
     if (ts.isStringLiteralLike(literal) || ts.isNumericLiteral(literal))
       return literal.text ?? null;
     return lowerer.foldedStringKeyOf(key);
@@ -216,7 +205,7 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
   const renamed = new Set<string>();
   /** A destructuring assignment's target reads the members it names. */
   const patternReads = (pattern: ts.Expression): void => {
-    const target = unwrap(pattern);
+    const target = withoutParenthesesTypeWrappers(pattern);
     if (ts.isObjectLiteralExpression(target)) {
       for (const property of target.properties.nodes) {
         if (ts.isSpreadAssignment(property)) continue;
@@ -241,7 +230,7 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
         if (declared.has(node.text ?? "")) push(uses, node.text ?? "", node);
       } else if (ts.isPropertyAccessExpression(node)) {
         push(reads, node.name.text ?? "", node);
-        const owner = unwrap(node.expression);
+        const owner = withoutParenthesesTypeWrappers(node.expression);
         if (
           ts.isIdentifier(owner) &&
           (owner.text === "Object" || owner.text === "Reflect") &&
@@ -268,7 +257,7 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        const target = unwrap(node.left);
+        const target = withoutParenthesesTypeWrappers(node.left);
         if (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target))
           patternReads(target);
       } else if (
@@ -366,7 +355,7 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
     if (ts.isBinaryExpression(parent)) {
       const operator = parent.operatorToken.kind;
       if (operator === ts.SyntaxKind.EqualsToken && parent.right === root) {
-        const target = unwrap(parent.left);
+        const target = withoutParenthesesTypeWrappers(parent.left);
         if (ts.isPropertyAccessExpression(target)) hold(target.name.text ?? null);
         else if (ts.isElementAccessExpression(target)) hold(elementKey(target.argumentExpression));
         else escaped = true;
@@ -558,7 +547,7 @@ function report(start: number, readers: number, names: number, escaped: boolean)
  * lowering. */
 export function memberCallHolder(lowerer: Lowerer, call: ts.CallExpression): ts.Expression | null {
   if (isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
-  const callee = unwrap(call.expression);
+  const callee = withoutParenthesesTypeWrappers(call.expression);
   let name: string | null;
   if (ts.isPropertyAccessExpression(callee)) name = callee.name.text;
   else if (ts.isElementAccessExpression(callee))
@@ -629,7 +618,7 @@ export function stableBinding(lowerer: Lowerer, value: IrExpr, node: ts.Expressi
   const global = lowerer.globalsList.find((candidate) => candidate.id === value.localId);
   if (global !== undefined && !global.mutable && global.tdz !== true) return true;
   if (local === undefined || local.tdz === true) return false;
-  const name = unwrap(node);
+  const name = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(name)) return false;
   const symbol = lowerer.resolveValueSymbol(name);
   const declaration = symbol?.valueDeclaration;

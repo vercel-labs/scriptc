@@ -2617,7 +2617,7 @@ export function lowerIntrinsicProperty(
   if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype") {
     const loc = locOf(expr);
     const name = "%dyn.functionPrototype";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name))
+    if (lowerer.liftedFnNamed(name) === undefined)
       lowerer.liftedFns.push({
         name,
         params: [],
@@ -5878,6 +5878,15 @@ export function fieldGetExpr(
           type: inner,
           loc,
         };
+      }
+      // A field declared with a union type reads as that union: the
+      // unassigned arm traps like the checked extraction of a single arm.
+      if (inner.kind === "union" && undefTag >= 0) {
+        const retag = lowerer.unionRetagHelper(unionId, inner.unionId, loc, new Set([undefTag]));
+        if (retag) {
+          lowerer.coercions.deferredRetags.add(retag);
+          return { kind: "call", callee: retag, args: [read], type: inner, loc };
+        }
       }
       const helper = lowerer.deferredReadHelper(target.fieldType.unionId, inner, loc);
       if (helper) return { kind: "call", callee: helper, args: [read], type: inner, loc };

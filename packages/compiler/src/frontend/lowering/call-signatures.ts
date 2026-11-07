@@ -38,6 +38,7 @@ import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { funcSlotAdaptable, restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
+import { mayResolveThroughThen } from "./promise-resolution.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
  * completes every call to the one full signature, so the IR and backends
@@ -1485,7 +1486,11 @@ export function lambdaSignature(
       !inferredLiteral &&
       ret.kind !== "void" &&
       ctxSigs.length === 1 &&
-      !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void)
+      !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void) &&
+      !(
+        (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+        finallyObservesResult(lowerer, node)
+      )
     ) {
       ret = VOID;
     }
@@ -1537,7 +1542,29 @@ function voidContextualSlot(
   const sigs = contextualSigs();
   return (
     sigs.length === 1 &&
-    (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0
+    (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0 &&
+    !finallyObservesResult(lowerer, node)
+  );
+}
+
+/** Whether `node` is the callback of a promise's `finally` and may return a
+ * promise or a thenable. The library types that callback `() => void`, but
+ * `finally` waits for what it returns and rejects with its rejection, so
+ * such a callback keeps its own result. One that returns a plain value is
+ * the discarded result the void slot describes. */
+function finallyObservesResult(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): boolean {
+  const call = node.parent;
+  if (!ts.isCallExpression(call) || call.arguments.nodes[0] !== node) return false;
+  const access = call.expression;
+  if (!ts.isPropertyAccessExpression(access) || access.name.text !== "finally") return false;
+  if (!lowerer.isStdlibMember(access)) return false;
+  const signature = lowerer.checker.getSignatureFromDeclaration(node);
+  return (
+    signature !== undefined &&
+    mayResolveThroughThen(lowerer, lowerer.checker.getReturnTypeOfSignature(signature))
   );
 }
 

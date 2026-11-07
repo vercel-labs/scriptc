@@ -924,14 +924,20 @@ function topLevelStatement(node: ts.Node): ts.Node {
 
 const IDENTIFIERS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.Identifier]);
 
-/** Whether the module names `name` before `end`, other than at `except`. */
-function namedBefore(sf: ts.SourceFile, name: string, end: number, except: ts.Node): boolean {
+/** Whether code that runs before `end` can reach the function `name`
+ * declares: the module names it before `end` (other than at `except`, its
+ * declaration), or exports it by name, which lets a module of an import
+ * cycle call it before this module's own code runs. */
+function reachableBefore(sf: ts.SourceFile, name: string, end: number, except: ts.Node): boolean {
   let found = false;
   ts.walkPreorder(
     sf,
     (n) => {
-      if (ts.tokenStartOfNode(n) >= end) return "stop";
       if (n === except || !ts.isIdentifier(n) || n.text !== name) return undefined;
+      const exported =
+        n.parent !== undefined &&
+        (ts.isExportSpecifier(n.parent) || ts.isExportAssignment(n.parent));
+      if (!exported && ts.tokenStartOfNode(n) >= end) return undefined;
       found = true;
       return "stop";
     },
@@ -945,7 +951,8 @@ function namedBefore(sf: ts.SourceFile, name: string, end: number, except: ts.No
  * function and loop, in the module that holds all of the writes, and each
  * write comes after it. A write inside a function comes after it when the
  * function cannot have been called yet: a function expression made later,
- * or a declared function the module does not name before the site. */
+ * or a declared function the module neither names before the site nor
+ * exports. */
 function runsBeforeWrites(site: ts.Node, writes: readonly BuiltinMemberWrite[]): boolean {
   // A function's own site (an async function resolves what it returns)
   // stands for its body, which runs when it is called.
@@ -966,7 +973,7 @@ function runsBeforeWrites(site: ts.Node, writes: readonly BuiltinMemberWrite[]):
     if (ts.isFunctionDeclaration(scope)) {
       // Hoisted: only code that names it can have called it.
       if (scope.name === undefined || hasModifier(scope, ts.SyntaxKind.ExportKeyword)) return false;
-      if (namedBefore(sf, scope.name.text, end, scope.name)) return false;
+      if (reachableBefore(sf, scope.name.text, end, scope.name)) return false;
     } else if (ts.tokenStartOfNode(topLevelStatement(scope)) < end) return false;
   }
   return true;

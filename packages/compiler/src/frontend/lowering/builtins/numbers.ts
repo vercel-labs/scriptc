@@ -3,6 +3,7 @@ import { type Lowerer, own } from "../lowerer.js";
 import { lowerCheckedPredicateValue } from "../lower-builtin-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { BOOL, F64, STRING, type IrExpr, type IrLibFn, type SrcLoc } from "../../../ir/ir.js";
+import { boolLit } from "../../../ir/build.js";
 import { lowerBuiltinValuePreservingUndefined, lowerOptionalNumberPredicate } from "./arguments.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { lowerStaticNumberGlobal } from "../lower-calls.js";
@@ -19,10 +20,40 @@ function isStringLike(lowerer: Lowerer, type: IrType): boolean {
   );
 }
 
+/** Types whose values are never a JavaScript number: the primitives other
+ * than number, and the native containers and objects. A union is one when
+ * every arm is. Anything a number could hide behind (an untyped value, an
+ * opaque runtime handle) is not. */
+function neverNumber(lowerer: Lowerer, type: IrType): boolean {
+  switch (type.kind) {
+    case "string":
+    case "bool":
+    case "bigint":
+    case "symbol":
+    case "undefinedT":
+    case "nullT":
+    case "void":
+    case "array":
+    case "map":
+    case "set":
+    case "regex":
+    case "date":
+    case "record":
+    case "func":
+      return true;
+    case "union":
+      return (lowerer.unions.get(type.unionId)?.arms ?? [type]).every(
+        (arm) => arm !== type && neverNumber(lowerer, arm),
+      );
+    default:
+      return false;
+  }
+}
+
 /** The lowered Number statics, by member name. The predicate quartet has
  * static C implementations (JS-exact: the ES2015 statics never coerce, so
- * only f64-typed arguments route through — anything else fences honestly
- * instead of folding to false past possible side effects). */
+ * only f64-typed arguments route through; an argument of any other type
+ * evaluates and the predicate answers false). */
 const NUMBER_STATIC_PREDICATES: Record<string, IrLibFn | undefined> = {
   isFinite: "number.isFinite",
   isNaN: "number.isNaN",
@@ -62,11 +93,26 @@ export function lowerNumberStaticCall(
 
     const optional = lowerOptionalNumberPredicate(lowerer, arg, fn, loc);
     if (optional) return optional;
+    if (neverNumber(lowerer, arg.type)) {
+      // The statics never coerce: a value that is not a number answers
+      // false, after the argument has evaluated. Generic JavaScript reaches
+      // this form (`IsNumber(value)` instantiated for a string).
+      // A literal has nothing to evaluate.
+      if (arg.kind === "unitLit" || arg.kind === "strLit" || arg.kind === "boolLit")
+        return boolLit(false, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: arg, loc: locOf(argNode) }],
+        result: boolLit(false, loc),
+        type: BOOL,
+        loc,
+      };
+    }
     if (arg.type.kind !== "f64") {
       lowerer.noLowering(
         `Number.${member} of '${lowerer.fmt(arg.type)}' values`,
         argNode,
-        "the Number statics never coerce — a statically non-number argument is constantly false in JS (narrow unions first, or write the constant)",
+        "the Number statics never coerce — narrow the value to a number first",
       );
     }
     return { kind: "libCall", fn, args: [arg], type: BOOL, loc };

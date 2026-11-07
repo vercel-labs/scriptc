@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { consoleHasKey, isConsoleExpression } from "../coercions/console-records.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
 import { boxedHandleReceiver } from "../handle-properties.js";
@@ -175,6 +176,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (hostGlobalNameOfRead(lowerer, expr.right) !== null)
     return hostGlobalInstanceOfAnswer(lowerer, expr, false, loc);
   if (lowerer.isStdlibGlobal(expr.right, "Function")) {
+    // A function a Node island made is a Function instance, as it is in
+    // Node, where the package and the program share one realm.
+    if (lowerer.islandFunctionType(lowerer.typeOf(expr.left)))
+      return hostGlobalInstanceOfAnswer(lowerer, expr, true, loc);
     const value =
       hostGlobalNameOfRead(lowerer, expr.left) ??
       hostGlobalConstructorOfPrototype(lowerer, expr.left);
@@ -2121,6 +2126,12 @@ export function lowerInExpression(
   const globalKey = globalSymbolKey(lowerer, expr.right, expr.left);
   if (globalKey)
     return { kind: "libCall", fn: "dyn.globalSymbolHas", args: [globalKey], type: BOOL, loc };
+  // `key in console`: console is a native handle with no key table, so
+  // the answer comes from the keys Node's console has (console-records.ts).
+  if (isConsoleExpression(lowerer, expr.right)) {
+    const has = consoleHasKey(lowerer, expr.left, loc);
+    if (has) return has;
+  }
   // `#name in obj` — the ergonomic brand check (ES2022) — resolves
   // before any string-key machinery: the left operand is a private
   // NAME, not a value.

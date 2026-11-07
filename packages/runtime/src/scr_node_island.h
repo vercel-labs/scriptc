@@ -151,6 +151,15 @@ typedef struct ScrNiDynOps {
   /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);
+  /* The identity root of an island function (borrowed, owned by the
+   * function's handle): every typed view of the function adopts it, so the
+   * views are one function to `===`, searches and collection keys. NULL for
+   * a value that is not a function. */
+  struct ScrClosure *(*function_identity)(const ScrDyn *fn);
+  /* The island function whose identity root is `root`, as its handle (+1);
+   * NULL when `root` is not such a root. A signature adapter over a view of
+   * an island function boxes as the function itself through this. */
+  ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

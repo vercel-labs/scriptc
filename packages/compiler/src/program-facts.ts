@@ -550,6 +550,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "references to one class of an import cycle",
   ),
   scan(
+    "frontend/lowering/enum-objects.ts#enumObjectUsed",
+    1,
+    "closed-world",
+    "whether one enum is ever used as a value; the text test skips files that spell none of its names",
+  ),
+  scan(
     "frontend/lowering/expressions/property-access.ts#globalThisWrittenNames",
     2,
     "closed-world",

@@ -228,9 +228,9 @@ test("a node10 project finds declarations by path where the exports map names no
     const main = join(dir, "main.ts");
     // Node loads the file the map names, so the import is not a refusal;
     // its declarations are where a lookup by path finds them.
-    expect(resolveTypesAsProject(main, "rule-kit/cli", { typeRoots: [], byPath: true }, false)).toBe(
-      join(dir, "node_modules/rule-kit/cli.d.ts"),
-    );
+    expect(
+      resolveTypesAsProject(main, "rule-kit/cli", { typeRoots: [], byPath: true }, false),
+    ).toBe(join(dir, "node_modules/rule-kit/cli.d.ts"));
     expect(
       resolveTypesAsProject(main, "rule-kit/cli", { typeRoots: [], byPath: false }, false),
     ).toBeNull();
@@ -242,7 +242,8 @@ test("a node10 project finds declarations by path where the exports map names no
 
 test("a module without declarations in node_modules is found under a type root", async () => {
   const dir = await projectTree({
-    "node_modules/tiny-lines/package.json": '{ "name": "tiny-lines", "version": "0.1.1", "main": "index.js" }',
+    "node_modules/tiny-lines/package.json":
+      '{ "name": "tiny-lines", "version": "0.1.1", "main": "index.js" }',
     "node_modules/tiny-lines/index.js": "exports.parse = () => [];\n",
     "node_modules/typed-kit/package.json":
       '{ "name": "typed-kit", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }',
@@ -284,7 +285,9 @@ test("a module without declarations in node_modules is found under a type root",
     expect(resolveTypesAsProject(main, "count-kit", project, true)).toBe(
       join(dir, "typings/count-kit.d.ts"),
     );
-    expect(resolveTypesAsProject(main, "tiny-lines", { typeRoots: [], byPath: false }, false)).toBeNull();
+    expect(
+      resolveTypesAsProject(main, "tiny-lines", { typeRoots: [], byPath: false }, false),
+    ).toBeNull();
   } finally {
     clearResolveCaches();
     await rm(dir, { recursive: true, force: true });

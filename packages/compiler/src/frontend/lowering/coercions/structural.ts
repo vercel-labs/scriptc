@@ -3,6 +3,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { constructedValue } from "../constructor-returns.js";
 import { countedFor, dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import type { FieldLift } from "./structural-plans.js";
+import { liftableBesideArm, widthNarrowHelper } from "./unions.js";
 import { buildArrayConversion } from "./builders.js";
 import { arrayValueRead, arrayValueStore, primitiveElement } from "../array-values.js";
 import type { WidthLift } from "../width-lift.js";
@@ -328,7 +329,16 @@ export function applyWidthLift(
     case "narrow": {
       if (value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: narrow lift on a non-union");
-      const helper = lowerer.narrowedArmHelper(value.type.unionId, dst, loc);
+      // A member or element typed by a union that holds the destination
+      // record beside arms that convert into it (`{ v: S | T }` into
+      // `{ v: T }`, S assignable to T): a declared member type is not
+      // narrowed, so those arms are values of the slot's type and convert
+      // on their own tag instead of throwing.
+      const converts = liftableBesideArm(lowerer, value.type.unionId, dst);
+      const helper =
+        converts.length > 0
+          ? widthNarrowHelper(lowerer, value.type.unionId, dst, loc, converts)
+          : lowerer.narrowedArmHelper(value.type.unionId, dst, loc);
       if (!helper)
         throw new InternalCompilerError("lowerer bug: planned narrow lift failed to intern");
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
@@ -415,54 +425,13 @@ export function unionRecordWidthHelper(
   if (!from) throw new InternalCompilerError("lowerer bug: missing record union");
   const body: IrStmt[] = [];
   from.arms.forEach((arm, tag) => {
-    const cond: IrExpr = {
-      kind: "unionIsTag",
-      unionId: fromId,
-      tag,
-      negated: false,
-      value,
-      type: BOOL,
-      loc,
-    };
-    // A unit arm beside the destination's own arm (widthLiftPlan's own-arm
-    // rule): the slot holds no unit, the checker excluded that arm, and
-    // only a value narrowed or asserted past it still carries it.
-    if (isUnitType(arm)) {
-      const what = arm.kind === "nullT" ? "null" : "undefined";
-      body.push({
-        kind: "if",
-        cond,
-        then: [
-          {
-            kind: "throw",
-            value: {
-              kind: "libCall",
-              fn: "error.new",
-              args: [
-                {
-                  kind: "strLit",
-                  value: `${what} is not representable in a '${lowerer.fmt(target)}' slot (a value narrowed or asserted past the type still held it)`,
-                  type: STRING,
-                  loc,
-                },
-              ],
-              type: { kind: "object", className: "%TypeError" },
-              loc,
-            },
-            loc,
-          },
-        ],
-        else_: null,
-        loc,
-      });
-      return;
-    }
     const lift = lowerer.widthLiftPlan(arm, target);
-    if (!lift) throw new InternalCompilerError("lowerer bug: invalid union record plan");
+    if (!lift || arm.kind !== "record")
+      throw new InternalCompilerError("lowerer bug: invalid union record plan");
     const narrowed: IrExpr = { kind: "unionNarrow", unionId: fromId, tag, value, type: arm, loc };
     body.push({
       kind: "if",
-      cond,
+      cond: { kind: "unionIsTag", unionId: fromId, tag, negated: false, value, type: BOOL, loc },
       then: [{ kind: "return", value: lowerer.applyWidthLift(lift, narrowed, target, loc), loc }],
       else_: null,
       loc,

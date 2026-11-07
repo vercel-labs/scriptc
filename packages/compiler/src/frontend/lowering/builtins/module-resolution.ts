@@ -996,11 +996,41 @@ function staticResolveOptionPaths(
   return paths;
 }
 
+/** A createRequire loader's `resolve` (or `resolve.paths`) named where
+ * TypeScript source has no value for it: the function exists there only as
+ * the callee of a direct call, which resolves at build time. Node's
+ * function closes over its module and never reads `this`, so a call that
+ * reaches it through a choice of callees (lowerDirectOnlyChoiceCall) is its
+ * direct call. JavaScript source reads the function as a value instead
+ * (createRequireResolveValue). */
+export function isDirectOnlyResolveCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
+  if (isJsSourceFile(ts.getSourceFileOfNode(callee))) return false;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return false;
+  let resolve: ts.PropertyAccessExpression = callee;
+  if (callee.name.text === "paths") {
+    if (
+      !ts.isPropertyAccessExpression(callee.expression) ||
+      callee.expression.questionDotToken !== undefined
+    )
+      return false;
+    resolve = callee.expression;
+  }
+  return (
+    resolve.name.text === "resolve" &&
+    createRequireCalleeFileOf(lowerer, resolve.expression) !== null
+  );
+}
+
 /** CommonJS require.resolve and require.resolve.paths for the ambient
  * wrapper or a supported createRequire binding. Results are build-time
- * constants; failures lower to Node's catchable error object. */
-export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
-  const callee = call.expression;
+ * constants; failures lower to Node's catchable error object. `callee` is
+ * the function the call reaches when its own callee expression only chooses
+ * it (lowerDirectOnlyChoiceCall). */
+export function lowerRequireResolveCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  callee: ts.Expression = call.expression,
+): IrExpr | null {
   if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return null;
   let receiver: ts.Expression;
   let pathsCall = false;

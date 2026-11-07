@@ -66,6 +66,7 @@ import {
 import { markRequireEarlyBindings } from "./require-initialization.js";
 import {
   cjsHasLiveMemberExports,
+  cjsNamespaceModule,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   nestedCjsExportAssignmentsOf,
@@ -1532,6 +1533,12 @@ function withoutRejectedClassMembers(
  * storage all resolve through alias plumbing (lowerCjsSingleValueExport). */
 function cjsIdentExportSnapshotType(lowerer: Lowerer, id: ts.Identifier): IrType | null {
   if (splitRequireBindingOfIdent(lowerer, id) !== null) return null;
+  // A require or import binding of a single-value module names that
+  // module's own export value, which the export statement neither
+  // evaluates nor stores (lowerCjsSingleValueExport): registering a slot
+  // here would leave requirers reading a global nothing ever writes.
+  const dep = lowerer.cjsModuleBindingDepOf(id);
+  if (dep !== null && !cjsNamespaceModule(lowerer, dep)) return null;
   const sym = lowerer.resolveValueSymbol(id);
   if (sym === null) return null;
   if (
@@ -1862,6 +1869,32 @@ export function collectGlobals(
             !hasMemberExports
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
+        // A source binding that owns module storage and is REASSIGNED
+        // somewhere in its module (`var $gOPD = …; …; module.exports = $gOPD`
+        // — gopd's shape): Node copies the VALUE at this statement, so
+        // requirers must not read the live binding, which may change
+        // afterwards. Register one snapshot slot keyed by the statement,
+        // like the scalar and factory forms; the statement lowering assigns
+        // it and requirer aliases resolve to it
+        // (requireWholeExportSlotSymbolOf). A module that also attaches
+        // member exports to that object keeps the statement-level fence:
+        // those writes would have to reach the SAME object the snapshot
+        // holds.
+        if (ts.isIdentifier(rhs) && splitWholeBinding === null && !hasMemberExports) {
+          const vSym = lowerer.checker.getSymbolAtLocation(rhs);
+          const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
+          const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
+          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+            const g: IrGlobal = {
+              id: `%g.${tag}exports`,
+              name: "exports",
+              type: vG.type,
+              mutable: false,
+            };
+            lowerer.globalsByDeclNode.set(cjs.expr, g);
+            lowerer.globalsList.push(g);
+          }
+        }
         // An identifier whose binding owns no module storage and has no
         // alias target (`var $defineProperty = Object.defineProperty ||
         // false` — an inferred union the type mapping does not carry):

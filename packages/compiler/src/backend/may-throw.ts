@@ -802,6 +802,7 @@ const BOUNDED_KINDS: ReadonlySet<string> = new Set([
   "strLit",
   "boolLit",
   "unitLit",
+  "constCell",
   "varRef",
   "assignExpr",
   "incDec",

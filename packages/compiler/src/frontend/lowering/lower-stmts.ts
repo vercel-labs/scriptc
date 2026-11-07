@@ -121,6 +121,7 @@ import {
   arrayValueStore,
   arrayValueType,
   unionArrayValueRead,
+  unionArrayValueType,
   lowerSafeIndexRead,
 } from "./array-values.js";
 import {
@@ -9207,6 +9208,18 @@ function lowerCjsSingleValueExport(
     }
     const g = lowerer.globalsBySymbol.get(sym);
     if (g) {
+      // A source that is REASSIGNED in this module has a snapshot slot
+      // keyed by this statement (collectGlobals): Node stores the VALUE
+      // here, so the export keeps its own storage and requirers read it.
+      const slot = lowerer.globalsByDeclNode.get(expr);
+      if (slot !== undefined) {
+        return {
+          kind: "assign",
+          localId: slot.id,
+          value: lowerer.lowerExprExpecting(rhs, slot.type),
+          loc: locOf(rhs),
+        };
+      }
       if (g.mutable && !unchangedAfterExport(lowerer, rhs, expr)) {
         lowerer.unsupported(
           "SC1090",
@@ -9216,6 +9229,13 @@ function lowerCjsSingleValueExport(
       }
       return { kind: "block", body: [], loc };
     }
+    // A require binding of another module's whole export whose value lives
+    // in that module's snapshot global (`const snap = require("./w");
+    // module.exports = snap`, where w exports a reassigned binding): the
+    // binding already names that storage, so this statement exports the
+    // same value and requirer bindings reconnect to the same slot.
+    if (sym.declarations.some((d) => lowerer.globalsByDeclNode.has(d)))
+      return { kind: "block", body: [], loc };
     // A binding with no module storage and no alias target (an inferred
     // union or otherwise unmappable type): the export is the snapshot
     // global collectGlobals registered at this statement.
@@ -12370,6 +12390,10 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     fields: { name: string; type: IrType }[];
     elem: IrType;
   } | null = null;
+  // A union of native arrays (`string[] | Chunk[]`): one walk over the
+  // value, whose length and element reads dispatch on the arm the value
+  // holds. `elem` is the join of the arms' element values.
+  let arrayUnionSource: { unionId: string; arms: readonly IrType[]; elem: IrType } | null = null;
   // A nested loop receiver can be an OOB-safe array read from the outer
   // loop (`for (const row of grid) for (const cell of row)`). The checker
   // sees the inner value as an array, while its runtime slot retains
@@ -12527,21 +12551,67 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       return lowerForOfDyn(lowerer, stmt, iterable, labels, stmt.awaitModifier !== undefined);
     }
     if (tupleSource === null) {
-      lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
+      // Every arm is an array, so JavaScript runs the same array iterator
+      // whichever arm the value holds: the live length bounds the walk and
+      // each position reads through its own arm's element representation.
+      // Arms of another iterable kind (a Set, a string, a tuple) run other
+      // protocols and keep the fence.
+      const arrayArms = (type: IrType | null): readonly IrType[] | null => {
+        if (type?.kind !== "union" || stmt.awaitModifier) return null;
+        const arms = lowerer.unions.get(type.unionId)?.arms;
+        return arms !== undefined && arms.length > 1 && arms.every((arm) => arm.kind === "array")
+          ? arms
+          : null;
+      };
+      // A slot that keeps other arms where the checker sees only the arrays
+      // (an optional member a guard narrowed): the checked narrowing first,
+      // as for a single array above.
+      if (
+        iterable.type.kind === "union" &&
+        checkerIterable?.kind === "union" &&
+        arrayArms(iterable.type) === null &&
+        arrayArms(checkerIterable) !== null
+      ) {
+        const helper = lowerer.narrowedRetagHelper(
+          iterSrc,
+          iterable.type.unionId,
+          checkerIterable.unionId,
+          locOf(iterSrc),
+        );
+        if (helper)
+          iterable = {
+            kind: "call",
+            callee: helper,
+            args: [iterable],
+            type: checkerIterable,
+            loc: locOf(iterSrc),
+          };
+      }
+      const arms = arrayArms(iterable.type);
+      const elem = arms === null ? null : unionArrayValueType(lowerer, iterable.type);
+      if (iterable.type.kind !== "union" || arms === null || elem === null)
+        lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
+      arrayUnionSource = { unionId: iterable.type.unionId, arms, elem };
     }
   }
-  const elementType = iterable.type.kind === "array" ? iterable.type.elem : tupleSource!.elem;
+  const elementType =
+    iterable.type.kind === "array"
+      ? iterable.type.elem
+      : tupleSource !== null
+        ? tupleSource.elem
+        : arrayUnionSource!.elem;
   const privateSplit = !awaitArray && isPrivateSplitConsumer(lowerer, iterSrc, iterable);
   // An array the optional-read analysis proved free of holes and stored
   // undefined yields its payload directly, with no per-element state test.
   const presentElements =
     tupleSource === null &&
+    arrayUnionSource === null &&
     !privateSplit &&
     !awaitArray &&
     elementType.kind !== "dyn" &&
     lowerer.presentElementLoops.has(stmt);
   const yieldedT =
-    tupleSource === null && !privateSplit && !presentElements
+    tupleSource === null && arrayUnionSource === null && !privateSplit && !presentElements
       ? arrayValueType(lowerer, elementType)
       : elementType;
   let elemValueT = yieldedT;
@@ -12647,6 +12717,13 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
           loc,
         };
       }
+    } else if (arrayUnionSource !== null) {
+      yielded = unionArrayValueRead(
+        lowerer,
+        varRef(source.id, sourceT, loc),
+        varRef(cursor.id, F64, loc),
+        loc,
+      )!;
     } else if (presentElements) {
       yielded = {
         kind: "arrayGet",
@@ -12703,17 +12780,53 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
           loc,
         }
       : readValue;
+    const lengthOf = (receiver: IrExpr): IrExpr => ({
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver,
+      args: [],
+      type: F64,
+      loc,
+    });
+    // The live length of the arm a union of arrays holds: a tag test per
+    // arm but the last, which answers untested.
+    const unionLength = (union: { unionId: string; arms: readonly IrType[] }): IrExpr => {
+      const armLength = (tag: number): IrExpr =>
+        lengthOf({
+          kind: "unionNarrow",
+          unionId: union.unionId,
+          tag,
+          value: varRef(source.id, sourceT, loc),
+          type: union.arms[tag]!,
+          loc,
+        });
+      let result = armLength(union.arms.length - 1);
+      for (let tag = union.arms.length - 2; tag >= 0; tag--) {
+        result = {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId: union.unionId,
+            tag,
+            negated: false,
+            value: varRef(source.id, sourceT, loc),
+            type: BOOL,
+            loc,
+          },
+          then: armLength(tag),
+          else_: result,
+          type: F64,
+          loc,
+        };
+      }
+      return result;
+    };
     const length = (): IrExpr =>
       tupleSource !== null
         ? numLit(tupleSource.fields.length, loc)
-        : {
-            kind: "arrIntrinsic",
-            method: "length",
-            receiver: varRef(source.id, sourceT, loc),
-            args: [],
-            type: F64,
-            loc,
-          };
+        : arrayUnionSource !== null
+          ? unionLength(arrayUnionSource)
+          : lengthOf(varRef(source.id, sourceT, loc));
     const loop: IrStmt = {
       kind: "for",
       init: { kind: "varDecl", localId: cursor.id, init: numLit(0, loc), loc },

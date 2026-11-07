@@ -303,6 +303,36 @@ describe("the order deferred loads are probed in", () => {
     ]);
   });
 
+  test("a load inside an expression is reached where the expression is", () => {
+    // main.js: `const isA = require("a").name === "a";`, then `require("./dep")`
+    // (which requires "b"). The first load sits inside a member read inside
+    // a comparison inside a sequence expression.
+    const a = defer("a");
+    const b = defer("b");
+    const nested = {
+      kind: "bin",
+      op: "===",
+      left: {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: "m", init: a }],
+        result: { kind: "libCall", fn: "nodeIsland.get", args: [{ kind: "varRef", localId: "m" }] },
+      },
+      right: { kind: "strLit", value: "a" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.3", body: [load(b)] },
+        {
+          name: "%init.0",
+          body: [{ kind: "assign", localId: "%g.isA", value: nested }, init("%init.3")],
+        },
+        { name: "%main", body: [init("%init.0")] },
+      ],
+    };
+    expect(paths(mod, [b, a])).toEqual(["a", "b"]);
+  });
+
   test("loads the walk does not reach keep the IR's order, after the others", () => {
     const reachedLoad = defer("reached");
     const inFunction = defer("in-function");

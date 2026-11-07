@@ -114,12 +114,13 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * another module's initializer where it is called (`%init.<n>`, once, as
  * the run-once guard has it), and through a sequence (`seqExpr`): an inline
  * require() lowers to the required module's %init ahead of its export read,
- * both at the require's position. A string comparison evaluates both of its
- * operands, so the walk follows them too. An initializer that awaits is left
- * there and taken up again after the code that called it, in the order of
- * the awaits, as module evaluation continues with later siblings while one is
- * suspended. Loads the walk does not reach (inside functions, dynamic
- * imports, conditions other than the ones below) keep IR order after it. */
+ * both at the require's position. Any other expression is followed through
+ * what it holds, in the order it is written, so a load is reached where its
+ * expression is (`typeof require("pkg").name === "function"`). An
+ * initializer that awaits is left there and taken up again after the code
+ * that called it, in the order of the awaits, as module evaluation continues
+ * with later siblings while one is suspended. Loads the walk does not reach
+ * (inside functions, dynamic imports, loops) keep IR order after it. */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
   const functions = new Map<string, IrModule["functions"][number]>();
   for (const fn of mod.functions) if (typeof fn.name === "string") functions.set(fn.name, fn);
@@ -146,13 +147,6 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
       for (const s of e.stmts) if (statement(s)) return true;
       return evaluate(e.result);
     }
-    if (e.kind === "strEq" || e.kind === "strCmp") {
-      // A string comparison evaluates both operands, left to right, so a
-      // require() written as either side keeps its initializer there.
-      const awaitingLeft = evaluate(e.left);
-      const awaitingRight = evaluate(e.right);
-      return awaitingLeft || awaitingRight;
-    }
     if (e.kind === "awaitExpr") {
       evaluate(e.value);
       return true;
@@ -161,7 +155,26 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
       for (const arg of e.args) evaluate(arg);
       return true;
     }
-    return false;
+    // Any other expression: what it holds, in the order it is written. A
+    // comparison, a member read, a `typeof`, a call's arguments: an inline
+    // require() inside any of them keeps its initializer there.
+    return within(e);
+  }
+  /** Follows the expressions `node` holds (a sequence is the only
+   * expression that holds statements); true when one of them awaits. */
+  function within(node: object): boolean {
+    let awaits = false;
+    const fields = node as Record<string, unknown>;
+    for (const key in fields) {
+      if (key === "loc" || key === "type") continue;
+      const value = fields[key];
+      for (const part of Array.isArray(value) ? value : [value]) {
+        if (part === null || typeof part !== "object") continue;
+        if (typeof (part as { kind?: unknown }).kind === "string") awaits = evaluate(part as IrExpr) || awaits;
+        else awaits = within(part) || awaits;
+      }
+    }
+    return awaits;
   }
   /** Evaluates what the walk follows of `s`; true when it awaits. */
   function statement(s: IrStmt): boolean {

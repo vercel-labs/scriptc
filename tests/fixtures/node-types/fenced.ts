@@ -28,7 +28,6 @@ async function inspectResponse(url: string): Promise<void> {
   response.formData();
 }
 void inspectResponse;
-ReadableStream.from(new Set([1, 2]));
 /* Members of SUPPORTED builtin modules beyond the lowered tables: they
  * typecheck under @types/node and fence with the module-qualified name —
  * calls and value reads alike. */

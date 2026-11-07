@@ -33,6 +33,7 @@ import {
 } from "./lower-builtin-values.js";
 import { lowerArrayFromValue } from "./containers/array-construction.js";
 import { numberPredicateValue } from "./builtins/numbers.js";
+import { reflectMemberValue } from "./builtins/reflection.js";
 
 const LOOKUP_FN = "%builtin.staticValue";
 
@@ -159,6 +160,10 @@ export function constructorStaticValue(
       return key === "captureStackTrace"
         ? { kind: "libCall", fn: "dyn.errorCaptureStackTraceFunction", args: [], type: DYN, loc }
         : null;
+    // The Reflect namespace reads as its member values: the same closures
+    // its JavaScript namespace object answers, with Node's name and length.
+    case "Reflect":
+      return reflectMemberValue(lowerer, key, loc);
     default:
       return null;
   }
@@ -199,7 +204,7 @@ function symbolStaticValue(lowerer: Lowerer, key: string, loc: SrcLoc): IrExpr |
           loc,
         }
       : { kind: "libCall", fn: "sym.keyForDyn", args: [argument], type: DYN, loc };
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "value", name: "value", type: DYN }],
@@ -216,7 +221,7 @@ function symbolStaticValue(lowerer: Lowerer, key: string, loc: SrcLoc): IrExpr |
 export function objectFreezeValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   lowerer.untypedIntegrity = true;
   const name = "%builtin.Object.freeze";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "value", name: "value", type: DYN }],
@@ -354,7 +359,7 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
     }
   const loc: SrcLoc = { ...entry.loc, end: entry.loc.start };
   const lifted = lowerer.liftedFns.length;
-  if (!lowerer.liftedFns.some((fn) => fn.name === LOOKUP_FN)) {
+  if (lowerer.liftedFnNamed(LOOKUP_FN) === undefined) {
     const value: IrExpr = { kind: "varRef", localId: "value.0", type: DYN, loc };
     const key: IrExpr = { kind: "varRef", localId: "key.0", type: STRING, loc };
     const body: IrStmt[] = [];

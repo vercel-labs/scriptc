@@ -25,9 +25,11 @@
  */
 import * as ts from "../../ts7/adapter.js";
 import { type IrExpr, type IrType, type SrcLoc, isUnitType, typeEquals } from "../../../ir/ir.js";
+import { varRef } from "../../../ir/build.js";
 import type { Lowerer } from "../lowerer.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { locOf } from "../../program.js";
+import { checkedArmExtraction } from "../coercions/unions.js";
 import { assertedOptionalExtension, hostedStorageView } from "./hosted-narrowing.js";
 import { nsMemberIdentOf } from "../lower-namespaces.js";
 
@@ -405,5 +407,217 @@ export function assertedOnlyMemberWrite(
     "SC1090",
     blame,
     `writing '${member}' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type)`,
+  );
+}
+
+/* ── Mutations through an assertion ──────────────────────────────────────
+ * Node erases every type-level wrapper, so a member write, update or
+ * `delete` through `(value as View)` changes the object `value` names. A
+ * record assertion that changes layout lowers to a converted copy instead,
+ * and a mutation of that temporary is dropped without a diagnostic. Every
+ * mutation site therefore addresses the assertion's operand in place when
+ * its own layout holds the member, and refuses by name when it does not. */
+
+/** The operand a member mutation addresses through a chain of type
+ * assertions: `(o as View).k` names `o`, and `(o as unknown as View)["k"]`
+ * the same. Parentheses, `satisfies` and the non-null assertion are erased
+ * wrappers too, so an assertion under them is still found
+ * (`(o as View)!.k`, `((o as View) satisfies View).k`). The operand is the
+ * expression under the INNERMOST assertion of the chain: a wrapper below
+ * it belongs to the operand, whose own lowering keeps the value's identity
+ * (`(o! as View).k` addresses `o!`, the narrowed value). Null when no
+ * `as`/`<T>` wraps the receiver (a mutation there keeps the ordinary
+ * lowering). */
+export function assertionOperandOf(node: ts.Expression): ts.Expression | null {
+  let operand: ts.Expression | null = null;
+  let current: ts.Expression = node;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    if (ts.isAsExpression(current) || ts.isTypeAssertion(current)) {
+      current = current.expression;
+      operand = current;
+      continue;
+    }
+    break;
+  }
+  return operand;
+}
+
+/** The record a value of `type` is when it is present: the type itself, or
+ * the one record arm of a union whose other arms are all `undefined` or
+ * `null`. Null for every other type. */
+export function presentRecordLayout(
+  lowerer: Lowerer,
+  type: IrType | null | undefined,
+): (IrType & { kind: "record" }) | null {
+  if (!type) return null;
+  if (type.kind === "record") return type;
+  if (type.kind !== "union") return null;
+  let record: (IrType & { kind: "record" }) | null = null;
+  for (const arm of lowerer.unions.get(type.unionId)?.arms ?? []) {
+    if (isUnitType(arm)) continue;
+    if (arm.kind !== "record" || record !== null) return null;
+    record = arm;
+  }
+  return record;
+}
+
+/** The value a mutation through an assertion addresses: the unasserted
+ * `operand`, and the record `layout` it has when it is present (its own
+ * type, or its one record arm when it may also be `undefined` or `null`). */
+export interface ErasedRecordOperand {
+  operand: ts.Expression;
+  layout: IrType & { kind: "record" };
+}
+
+/** The record operand a mutation through `receiver` addresses, decided from
+ * static types alone so the operand is lowered exactly once. Null when no
+ * assertion wraps the receiver, or when the operand is not a record: a
+ * dyn/unknown cast is an identity-preserving view, and class instances,
+ * arrays and handles never convert into a copy. */
+export function erasedRecordOperand(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+): ErasedRecordOperand | null {
+  const operand = assertionOperandOf(receiver);
+  if (operand === null) return null;
+  const layout = presentRecordLayout(lowerer, lowerer.mapTypeOf(lowerer.typeOf(operand)));
+  return layout === null ? null : { operand, layout };
+}
+
+/** The operand of `erased`, lowered once. A value that may be `undefined`
+ * or `null` is narrowed to its record arm with a check: the assertion
+ * claimed the value is there, and when it is not, the mutation throws the
+ * TypeError Node gives it (`message` names it for the unit found). Null
+ * when the nullable value has no checked extraction; a value that lowers
+ * to anything but such a union (a generic body, an aliased layout) is
+ * returned as it is, and the caller's own receiver rules decide. */
+export function lowerErasedRecordOperand(
+  lowerer: Lowerer,
+  erased: ErasedRecordOperand,
+  message: (unit: "undefined" | "null") => string,
+): IrExpr | null {
+  return narrowErasedRecordValue(
+    lowerer,
+    lowerer.lowerExpr(erased.operand),
+    locOf(erased.operand),
+    message,
+  );
+}
+
+/** lowerErasedRecordOperand's narrowing, over an operand already lowered:
+ * a caller that must evaluate something between the operand and the check
+ * (a plain assignment's right-hand side) holds the operand first and
+ * narrows the held value. */
+export function narrowErasedRecordValue(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+  message: (unit: "undefined" | "null") => string,
+): IrExpr | null {
+  if (value.type.kind !== "union") return value;
+  const stored = presentRecordLayout(lowerer, value.type);
+  if (stored === null) return value;
+  const unionId = value.type.unionId;
+  const unitOf = (arm: IrType): "undefined" | "null" =>
+    arm.kind === "nullT" ? "null" : "undefined";
+  const messages = new Set<string>();
+  for (const arm of lowerer.unions.get(unionId)?.arms ?? [])
+    if (isUnitType(arm)) messages.add(message(unitOf(arm)));
+  if (messages.size <= 1) {
+    const helper = lowerer.narrowedArmHelper(unionId, stored, loc, [...messages][0]);
+    return helper === null ? null : lowerer.checkedNarrowCall(helper, value, stored, loc);
+  }
+  // `undefined` and `null` name different errors: test each arm in place.
+  const local = lowerer.declareHiddenLocal("%asserted", value.type);
+  const extracted = checkedArmExtraction(
+    lowerer,
+    varRef(local.id, value.type, loc),
+    lowerer.armTag(unionId, stored),
+    stored,
+    (found) => (isUnitType(found) ? message(unitOf(found)) : null),
+  );
+  if (extracted === null) return null;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+    result: extracted,
+    type: stored,
+    loc,
+  };
+}
+
+/** Whether `access` is the target of a plain assignment (`x.k = v`), as
+ * opposed to an update that reads the member first. */
+export function plainAssignmentTarget(
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): boolean {
+  let use: ts.Node = access;
+  while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+  const parent = use.parent;
+  return (
+    parent !== undefined &&
+    ts.isBinaryExpression(parent) &&
+    parent.left === use &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  );
+}
+
+/** Node's TypeError for a member write or update whose receiver is
+ * `undefined` or `null`: a plain assignment never reads the member, every
+ * other update reads it first. */
+export function nullishMutationMessage(
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  member: string,
+): (unit: "undefined" | "null") => string {
+  const set = plainAssignmentTarget(access);
+  return (unit) =>
+    set
+      ? `Cannot set properties of ${unit} (setting '${member}')`
+      : `Cannot read properties of ${unit} (reading '${member}')`;
+}
+
+/** A mutation whose receiver goes through a record assertion that changes
+ * layout (`(o as View).k = v`, `(o as View)[k] += 1`): the asserted
+ * expression lowers to a converted copy, so a mutation of it would be
+ * dropped. Null for every other receiver, which the ordinary lowering
+ * mutates in place (no assertion, a dyn operand, an assertion to the
+ * operand's own layout). */
+export function convertingAssertion(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+): (ErasedRecordOperand & { asserted: IrType & { kind: "record" } }) | null {
+  const erased = erasedRecordOperand(lowerer, receiver);
+  if (erased === null) return null;
+  const asserted = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+  if (asserted?.kind !== "record" || asserted.shapeId === erased.layout.shapeId) return null;
+  return { ...erased, asserted };
+}
+
+/** A keyed write or update through a converting assertion
+ * (`(o as View)[k] = v`, `(o as View)[k] += 1`, `(o as View)[k]++`). */
+export function copiedKeyedWrite(
+  lowerer: Lowerer,
+  target: ts.ElementAccessExpression,
+): ReturnType<typeof convertingAssertion> {
+  return convertingAssertion(lowerer, target.expression);
+}
+
+/** Refuses the keyed mutations copiedKeyedWrite names. A caller that can
+ * mutate the operand in place does so first. */
+export function fenceCopiedKeyedWrite(lowerer: Lowerer, target: ts.ElementAccessExpression): void {
+  const copied = copiedKeyedWrite(lowerer, target);
+  if (copied === null) return;
+  lowerer.unsupported(
+    "SC1090",
+    target,
+    `a keyed write through a type assertion that converts '${lowerer.fmt(copied.layout)}' into '${lowerer.fmt(copied.asserted)}' (Node erases the assertion and writes to the value itself; the conversion builds a copy, so the write would land on the temporary and disappear — assign a declared member by its literal name, or write through the value's own type)`,
   );
 }

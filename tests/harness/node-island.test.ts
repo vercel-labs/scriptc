@@ -1386,6 +1386,19 @@ test("a host-global fence inside a function body keeps its package native", asyn
       (islanded.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message),
     ).toEqual([expect.stringContaining("'fenced-module@1.0.0' runs in a Node island")]);
   else expect(islanded.diagnostics.map((d) => d.code)).toContain("SC8005");
+
+  // A second build of the same input is served by the executable cache, whose
+  // hit skips lowering: it reports the same warnings the cold build did, so a
+  // cache hit never hides a diagnostic.
+  const warm = await compile(entry("fenced-module"), {
+    outPath: join(dir, "fenced-module"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(warm.ok).toBe(islanded.ok);
+  if (warm.ok && islanded.ok) expect(warm.warnings).toEqual(islanded.warnings);
+  else if (!warm.ok && !islanded.ok)
+    expect(warm.diagnostics.map((d) => d.code)).toEqual(islanded.diagnostics.map((d) => d.code));
 }, 300_000);
 
 // Compiling a package natively leaves every other package typed as it is
@@ -1524,6 +1537,44 @@ test("recursive JSON types cross into Node", async () => {
     throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
   const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
   expect(ir).toContain("nodeIsland.callSync");
+}, 300_000);
+
+// A view member declared with an instantiation that grows at every level
+// (`next: Chain<T[]>`) has no type that repeats, so only the depth bound ends
+// the walk over its members. IR output needs no libnode pack.
+test("a view that names itself with a growing instantiation crosses into Node", async () => {
+  const dir = join(outDir, "growing-view");
+  rmSync(dir, { recursive: true, force: true });
+  cpSync(
+    join(repoRoot, "tests/diagnostics/node-island-view-member/node_modules"),
+    join(dir, "node_modules"),
+    { recursive: true },
+  );
+  cpSync(
+    join(repoRoot, "tests/diagnostics/node-island-view-member/package.json"),
+    join(dir, "package.json"),
+  );
+  writeFileSync(
+    join(dir, "main.ts"),
+    [
+      'import { make } from "view-pkg";',
+      "",
+      "interface Chain<T> {",
+      "  label: string;",
+      "  next: Chain<T[]>;",
+      "}",
+      "",
+      "const head = make<Chain<number>>();",
+      "console.log(head.label);",
+      "",
+    ].join("\n"),
+  );
+  const outPath = join(dir, "main.ir.json");
+  const result = await compile(join(dir, "main.ts"), { outPath, outDir: dir, outputKind: "ir" });
+  if (!result.ok)
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
+  expect(ir).toContain("nodeIsland.apply");
 }, 300_000);
 
 // When a build fails and the packages it compiled with runtime fences then

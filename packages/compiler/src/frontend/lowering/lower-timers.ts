@@ -1,6 +1,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
@@ -16,6 +17,7 @@ import {
   type SrcLoc,
   typeKey,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
 import { lowerOptionalNumber } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
@@ -186,6 +188,19 @@ function retainedTimerCallback(
   let callback: IrExpr = value;
   for (const cast of casts.reverse()) callback = { ...cast, value: callback };
   return { value, callback, hold: [{ kind: "varDecl", localId: held.id, init: source, loc }] };
+}
+
+/** A timer's callback argument, lowered. One that is statically not a
+ * function (`setTimeout("x")`, a number, undefined) crosses untyped, so
+ * the gate below throws Node's ERR_INVALID_ARG_TYPE where the call runs,
+ * exactly as it does for an untyped value that turns out not to be a
+ * function. A function, an untyped value and a checked cast are returned
+ * as lowered. */
+function timerCallbackArgument(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  const cb = lowerer.lowerExpr(node);
+  if (cb.type.kind === "func" || cb.type.kind === "dyn") return cb;
+  if (cb.kind !== "unitLit" && !lowerer.dynConvertible(cb.type)) return cb;
+  return { kind: "dynFrom", value: cb, type: DYN, loc };
 }
 
 /** The gate over a retained callback: a non-function throws Node's
@@ -382,7 +397,7 @@ function optionalTimerHandle(lowerer: Lowerer, handle: IrExpr, loc: SrcLoc): IrE
   return { kind: "nullish", left: handle, right: numLit(0, loc), type: F64, loc };
 }
 
-const MOCKABLE_TIMER_FNS: ReadonlySet<string> = new Set([
+const MOCKABLE_TIMER_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "timers.setTimeout",
   "timers.setTimeoutHandle",
   "timers.setInterval",
@@ -451,7 +466,7 @@ function lowerTimerCall(
     }
     const cbNode = expr.arguments.nodes[0]!;
     const trailing = expr.arguments.nodes.slice(2);
-    const cbLowered = lowerer.lowerExpr(cbNode);
+    const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
     const retained = retainedTimerCallback(lowerer, cbLowered, loc);
     // With trailing arguments the interned thunk boxes the callback and
     // dynCalls it when the timer fires, so the gate's dynamic value is
@@ -678,7 +693,7 @@ function lowerTimerCall(
     }
     const cbNode = expr.arguments.nodes[0]!;
     const trailing = expr.arguments.nodes.slice(1);
-    const cbLowered = lowerer.lowerExpr(cbNode);
+    const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
     const retained = retainedTimerCallback(lowerer, cbLowered, loc);
     // As with setTimeout's trailing form: the thunk captures the gate's
     // dynamic value and calls it at fire time.
@@ -777,7 +792,7 @@ function withTimerThis(lowerer: Lowerer, node: ts.Expression, cb: IrExpr, loc: S
 }
 
 function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
-  let callback = unparenthesized(node);
+  let callback = withoutParentheses(node);
   const seen = new Set<ts.Node>();
   for (;;) {
     if (ts.isArrowFunction(callback)) return false;
@@ -798,14 +813,8 @@ function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
     )
       return true;
     seen.add(declaration);
-    callback = unparenthesized(declaration.initializer);
+    callback = withoutParentheses(declaration.initializer);
   }
-}
-
-function unparenthesized(node: ts.Expression): ts.Expression {
-  let expression = node;
-  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-  return expression;
 }
 
 /** Whether a function reads its own `this`: in its body, or in the

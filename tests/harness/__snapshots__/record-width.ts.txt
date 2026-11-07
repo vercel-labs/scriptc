@@ -20,3 +20,30 @@ record-width.ts:32:13 - error SC1090: console.log of '{ a: boolean | undefined; 
   32 | console.log(odd);
      |             ^~~
   33 | 
+
+record-width.ts:39:22 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isTTY: boolean; write: (string) => boolean }', got 'WriteStream'
+
+  38 | type TtySink = { write(text: string): boolean; isTTY: boolean };
+  39 | const tty: TtySink = process.stdout;
+     |                      ^~~~~~~~~~~~~~
+  40 | console.log(tty.isTTY);
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+record-width.ts:46:13 - error SC2020: 'WritableStream.write' is part of the standard library types but has no scriptc lowering yet
+
+  45 | const restSink: RestSink = process.stdout;
+  46 | console.log(restSink.write("one", "two"));
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  47 | 
+
+  hint: write(data) with one string and getWindowSize() are the supported stream-value methods
+
+record-width.ts:53:25 - error SC2002: record shapes must match exactly or width-coerce: expected '{ write: (string) => boolean }', got 'Writable'
+
+  52 | type LineSink = { write(line: string): boolean };
+  53 | const lines: LineSink = new Writable({
+     |                         ^~~~~~~~~~~~~~
+  54 |   write(_chunk, _encoding, callback) {
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

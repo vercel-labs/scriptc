@@ -34,6 +34,7 @@
  *   ScrJsIc      entries of 40 bytes {layout, target, holder,
  *                holder_layout, slot}; 168 bytes in all */
 import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
+import { CLASS_NORMALIZER } from "../../ir/function-references.js";
 import { inertValue } from "../../ir/js-groups.js";
 import { jsIcMethodSites, DYN_INDEX_FASTPATH, type JsIcSite } from "../../ir/js-ic.js";
 import { jsObjectModelFact } from "../../ir/runtime-features.js";
@@ -497,7 +498,7 @@ function capsuleRead(
  * may rebox to; null when the normalization has another form. */
 function normalizationTargets(host: Host): Map<string, string[]> | null {
   const targets = new Map<string, string[]>();
-  const normalize = host.fnByName.get("%dyn.class.normalize");
+  const normalize = host.fnByName.get(CLASS_NORMALIZER);
   if (normalize === undefined) return targets;
   const value = normalize.params[0]?.localId;
   if (value === undefined) return null;

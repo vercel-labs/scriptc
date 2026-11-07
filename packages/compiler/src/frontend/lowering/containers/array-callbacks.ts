@@ -2917,6 +2917,16 @@ export function lowerArraySortCall(
   }
   let fnArg =
     undefinedArg ?? lowerOptionalElementComparator(lowerer, argNode, unwrappedArg, elem, arrT);
+  // A Node island's function as the comparator: its typed view, taken at
+  // the two elements the sort passes.
+  if (fnArg.type.kind === "func" && fnArg.type.ret.kind !== "void") {
+    const view = lowerer.islandFunctionViewAt(
+      fnArg,
+      unwrappedArg,
+      funcOf([elem, elem], fnArg.type.ret),
+    );
+    if (view !== null) fnArg = view;
+  }
   // A comparator whose result may be `undefined` — the shape TS infers for a
   // JavaScript function that falls off its end for equal elements (semver's
   // `rcompare`) — still orders: JavaScript reads a comparator's result with
@@ -3012,7 +3022,7 @@ function recognizedSortKeys(
   fnArg: IrExpr,
   elem: IrType,
 ): readonly SortKeyOrder[] | null {
-  const keyed = closureKeyOrder(lowerer.liftedFns, fnArg);
+  const keyed = closureKeyOrder(lowerer, fnArg);
   if (!keyed) return null;
   if (keyed[0]!.read === null) return elem.kind === "f64" ? keyed : null;
   return elem.kind === "record" || elem.kind === "object" ? keyed : null;
@@ -3699,11 +3709,19 @@ export function boundedArrayHofHelper(lowerer: Lowerer, name: string): string | 
     return { ...stmt, init: varRef("bound.0", F64, stmt.loc) };
   });
   if (!replaced) return null;
+  // The copy owns its parameter and local records: the jsval promotion
+  // retypes a function's locals in place.
   lowerer.liftedFns.push({
     ...fn,
     name: bounded,
-    params: [...fn.params, { localId: "bound.0", name: "bound", type: F64 }],
-    locals: [...fn.locals, { id: "bound.0", name: "bound", type: F64, mutable: false }],
+    params: [
+      ...fn.params.map((param) => ({ ...param })),
+      { localId: "bound.0", name: "bound", type: F64 },
+    ],
+    locals: [
+      ...fn.locals.map((local) => ({ ...local })),
+      { id: "bound.0", name: "bound", type: F64, mutable: false },
+    ],
     body,
   });
   return bounded;

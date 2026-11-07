@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../src/index.js";
+import { exprFunctionReference } from "../src/ir/function-references.js";
 import type { IrFunction, IrModule } from "../src/ir/ir.js";
 import { everyStmtList } from "../src/ir/traverse.js";
 
@@ -84,6 +85,35 @@ ${postlude}`);
     expect(count(fn, "recordLit")).toBe(0);
     expect(count(fn, "arrayLit")).toBe(0);
   }
+});
+
+test("the stage loops and callbacks a fused chain replaced leave the module", async () => {
+  const mod = await lowerSource(`${prelude}
+const total = rows
+  .filter((r) => r.group === "a")
+  .map((r) => ({ id: r.id, score: r.value * 2 }))
+  .filter((s) => s.score > 4)
+  .reduce((sum, s) => sum + s.score, 0);
+const kept = rows.filter((r) => { console.log(r.id); return r.value > 6; });
+console.log(total, kept.length);
+${postlude}`);
+  const named = new Set<string>();
+  for (const fn of mod.functions)
+    everyStmtList(fn.body, {
+      expr: (e) => {
+        const name = e.kind === "call" ? e.callee : exprFunctionReference(e);
+        if (name !== undefined) named.add(name);
+        return true;
+      },
+      stmt: () => true,
+    });
+  // Every stage loop and lifted callback left is one some function uses:
+  // the fused chain's are gone, the unfused filter's remain.
+  const lifted = mod.functions.filter((f) => /^%(arr|fn)\./.test(f.name));
+  expect(lifted.filter((f) => !named.has(f.name)).map((f) => f.name)).toEqual([]);
+  expect(helperCalls(init(mod))).toEqual(["%arr.filter", "%arr.fused"]);
+  expect(lifted.filter((f) => f.name.startsWith("%arr.filter."))).toHaveLength(1);
+  expect(lifted.filter((f) => f.name.startsWith("%fn."))).toHaveLength(1);
 });
 
 test("observable callback order keeps the stage-by-stage helpers", async () => {

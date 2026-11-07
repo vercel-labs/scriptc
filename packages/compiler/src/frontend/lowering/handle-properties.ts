@@ -134,7 +134,10 @@ interface ChildAdditions {
  * child, in any JavaScript file, and a definition whose target the checker
  * does not resolve: an untyped parameter (`module.exports = (child) => {
  * Reflect.defineProperty(child, ...) }`) holds a child at runtime and
- * nothing types it. */
+ * nothing types it, and a defineProperty reached through a function value
+ * (`const define = Object.defineProperty`) can hold any target. Every one of
+ * those definitions names its member in the second argument, so a typed call
+ * of that name through the child's box reaches the member it installs. */
 function childAdditions(lowerer: Lowerer): ChildAdditions {
   let known = lowerer.childAdditions;
   if (known) return known;
@@ -150,18 +153,77 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
   // JavaScript file's writes onto children count.
   // A key that is not a literal may name any member, so every member then
   // goes through the child's box.
-  const spawns = files.some((sf) => sf.text.includes("child_process"));
+  const spawns = files.some((sf) => ts.sourceTextIncludes(sf, "child_process"));
   let everyName = false;
-  /** A definition whose target the checker does not resolve. An untyped
-   * parameter is the common case; a child reaches a helper through one, and
-   * a definition routed without the child's table is refused at runtime. */
-  let unresolvedDefine = false;
   const isChild = (e: ts.Expression): boolean =>
     lowerer.mapTypeOf(lowerer.typeOf(e))?.kind === "child";
-  const key = (k: ts.Expression | ts.PropertyName): void => {
-    if (ts.isIdentifier(k) || ts.isStringLiteralLike(k) || ts.isNumericLiteral(k))
-      written.add(k.text);
+  /** Which definition `callee` names, or null: `Object.defineProperty`,
+   * `Reflect.defineProperty`, or either defineProperties, possibly through a
+   * const alias (`const define = Object.defineProperty`) and chains of
+   * them. */
+  const definesThrough = (callee: ts.Expression): "defineProperty" | "defineProperties" | null => {
+    let node: ts.Expression = callee;
+    for (let hops = 0; hops < 8; hops++) {
+      if (ts.isPropertyAccessExpression(node)) {
+        const owner = node.expression;
+        const name = node.name.text;
+        if (
+          ts.isIdentifier(owner) &&
+          (owner.text === "Object" || owner.text === "Reflect") &&
+          (name === "defineProperty" || name === "defineProperties")
+        )
+          return name;
+        return null;
+      }
+      if (!ts.isIdentifier(node)) return null;
+      let declaration: ts.Node | undefined;
+      try {
+        declaration = lowerer.checker.getSymbolAtLocation(node)?.valueDeclaration;
+      } catch {
+        return null;
+      }
+      if (
+        declaration === undefined ||
+        !ts.isVariableDeclaration(declaration) ||
+        declaration.initializer === undefined
+      )
+        return null;
+      node = declaration.initializer;
+    }
+    return null;
+  };
+  /** The member a key expression names, when the program fixes it as a
+   * literal. A key expression that is anything else, a variable in
+   * `child[k] = value` or `defineProperty(child, k, ...)`, may name any
+   * member, so every member then goes through the child's box; the
+   * variable's own name is not a member name. */
+  const key = (k: ts.Expression): void => {
+    if (ts.isStringLiteralLike(k) || ts.isNumericLiteral(k)) written.add(k.text);
     else everyName = true;
+  };
+  /** The members a definition's second argument names: `defineProperty`
+   * names one, `defineProperties` the keys of its descriptor object. */
+  const definedNames = (
+    method: "defineProperty" | "defineProperties",
+    second: ts.Expression,
+  ): void => {
+    if (method === "defineProperty") {
+      key(second);
+      return;
+    }
+    if (!ts.isObjectLiteralExpression(second)) {
+      everyName = true;
+      return;
+    }
+    for (const prop of second.properties.nodes) {
+      const name = prop.name;
+      if (
+        name !== undefined &&
+        (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name))
+      )
+        written.add(name.text);
+      else everyName = true;
+    }
   };
   for (const sf of spawns ? files : []) {
     // Iterative: a whole-file walk must not recurse (a 7000-level
@@ -177,47 +239,46 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
         else key(node.left.argumentExpression);
       }
       // `Object.defineProperty(child, "kill", { value })`, its Reflect
-      // twin, and `Object.defineProperties(child, { kill: ... })`.
-      if (
-        ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        ts.isIdentifier(node.expression.expression) &&
-        (node.expression.expression.text === "Object" ||
-          node.expression.expression.text === "Reflect")
-      ) {
-        const method = node.expression.name.text;
+      // twin, `Object.defineProperties(child, { kill: ... })`, and the same
+      // through a function value.
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression;
         const [target, second] = node.arguments.nodes;
-        // The target is mapped for every Object/Reflect call that passes two
-        // arguments, as before: the memo state the walk leaves behind is part
-        // of the lowering it produces. Only a definition adds a member, though.
+        const objectCall =
+          ts.isPropertyAccessExpression(callee) &&
+          ts.isIdentifier(callee.expression) &&
+          (callee.expression.text === "Object" || callee.expression.text === "Reflect");
         const mapped = target !== undefined && second !== undefined;
-        const targetType = mapped ? lowerer.mapTypeOf(lowerer.typeOf(target)) : null;
-        const defines = method === "defineProperty" || method === "defineProperties";
-        if (mapped && targetType?.kind === "child") {
-          if (defines) {
-            if (method === "defineProperty") key(second);
-            else if (!ts.isObjectLiteralExpression(second)) everyName = true;
-            else
-              for (const prop of second.properties.nodes) {
-                const name = prop.name;
-                if (
-                  name !== undefined &&
-                  (ts.isIdentifier(name) ||
-                    ts.isStringLiteralLike(name) ||
-                    ts.isNumericLiteral(name))
-                )
-                  written.add(name.text);
-                else everyName = true;
-              }
+        if (objectCall) {
+          const method = callee.name.text;
+          // The target is mapped for every Object/Reflect call that passes two
+          // arguments, as before: the memo state the walk leaves behind is part
+          // of the lowering it produces. Only a definition adds a member.
+          const targetType = mapped ? lowerer.mapTypeOf(lowerer.typeOf(target)) : null;
+          const defines = method === "defineProperty" || method === "defineProperties";
+          if (mapped && targetType?.kind === "child") {
+            if (defines) definedNames(method, second);
+          } else if (defines && mapped) {
+            // A target the checker does not type as a child may still hold
+            // one. The name is read the same way, so a typed member call of
+            // that name goes through the child's box and reaches whatever the
+            // definition installed.
+            definedNames(method, second);
           }
-        } else if (defines && mapped && targetType === null) {
-          unresolvedDefine = true;
+        } else if (mapped) {
+          // The call reaches the checker through a function value, so the
+          // target's type is not read here and may hold a child. The name is
+          // read the same way, so a typed member call of that name goes
+          // through the child's box and reaches whatever the definition
+          // installed.
+          const via = definesThrough(callee);
+          if (via !== null) definedNames(via, second);
         }
       }
       return true;
     });
   }
-  known = { written, everyName, any: written.size > 0 || everyName || unresolvedDefine };
+  known = { written, everyName, any: written.size > 0 || everyName };
   lowerer.childAdditions = known;
   return known;
 }

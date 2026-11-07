@@ -15,6 +15,7 @@ import {
   hostGlobalPrototypeOf,
 } from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
+import { fenceConsoleMemberValue } from "../coercions/console-records.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
   arrayClassMemberOwner,
@@ -135,9 +136,14 @@ import {
   lowerRuntimeConstructorName,
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
-import { findGenericMethodOn, lowerStaticFieldRead } from "../lower-classes.js";
+import { lowerInstanceConstructorRead } from "../class-instance-constructor.js";
+import {
+  findGenericMethodOn,
+  lowerStaticFieldRead,
+  lowerStaticSuperRead,
+} from "../lower-classes.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
-import { lowerEnumAccess } from "../lower-enums.js";
+import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
   isOptionalChainTail,
@@ -415,6 +421,11 @@ export function lowerPropertyAccessExpr(
     lowerer.buffersMutable = true;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
+  // `x.constructor`, `x.constructor.name` and a static read through
+  // `(x.constructor as typeof K)` on an instance of a program class: the
+  // instance's own class answers (class-instance-constructor.ts).
+  const instanceConstructor = lowerInstanceConstructorRead(lowerer, expr, loc);
+  if (instanceConstructor !== null) return instanceConstructor;
   // `Set.prototype`, `Map.prototype`, `WeakMap.prototype` and
   // `WeakSet.prototype` as values in a JavaScript source: the runtime's
   // %<Class>.prototype% object, whose methods brand-check their receiver and
@@ -612,6 +623,10 @@ export function lowerPropertyAccessExpr(
   // super.method() calls are routed at the call site; a bare super
   // property read lands here.
   if (expr.expression.kind === ts.SyntaxKind.SuperKeyword) {
+    // In a static member: the base class's static, read with the current
+    // receiver class as `this`.
+    const viaStatic = lowerStaticSuperRead(lowerer, expr, loc);
+    if (viaStatic) return viaStatic;
     return lowerer.lowerSuperAccessorRead(expr);
   }
   // Enum member reads (`E.A`) fold to their compile-time constants —
@@ -696,7 +711,9 @@ export function lowerPropertyAccessExpr(
     const webStream = lowerWebStreamClassRead(lowerer, expr);
     if (webStream) return webStream;
   }
-  if (lowerer.stdlibGlobalMember(expr, "console") !== null) {
+  const consoleMember = lowerer.stdlibGlobalMember(expr, "console");
+  if (consoleMember !== null) {
+    fenceConsoleMemberValue(lowerer, consoleMember, expr);
     return {
       kind: "dynKeyGet",
       value: { kind: "libCall", fn: "console.native", args: [], type: DYN, loc },
@@ -1724,6 +1741,23 @@ export function lowerPropertyAccessExpr(
         expr,
       );
     }
+    // A GENERIC instantiation keeps every OPTIONAL member the CONSTRAINT
+    // declares even when the instantiated type has no such key
+    // (`f<TO extends { headers?: H }>(o: TO)`, called with `{ apiKey }`):
+    // the read resolves through the constraint and the value was never
+    // stored, so it is undefined. The field is declared, not undeclared —
+    // nothing here is a failed type assertion.
+    if (recvShape && !recvShape.tuple && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const declared = lowerer.checker.getPropertyOfType(
+        lowerer.typeOf(expr.expression),
+        expr.name.text,
+      );
+      if (declared && (declared.flags & ts.SymbolFlags.Optional) !== 0) {
+        const readT = lowerer.mapTypeOf(lowerer.typeOf(expr));
+        const missing = readT ? lowerer.wrappedUndefined(readT, loc) : null;
+        if (missing) return afterReceiver(recvLowered, missing, loc);
+      }
+    }
     // An inferred package-JS call specializes a parameter to the
     // caller's own record shape. Optional option names omitted by that
     // caller read undefined; the missing field is not a failed type
@@ -2389,8 +2423,16 @@ export function lowerIntrinsicProperty(
       );
     }
   }
-  if (lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys")
-    return reflectMemberValue(lowerer, "ownKeys", locOf(expr));
+  // A Reflect member read as a value (a callback table's `Reflect.has`): the
+  // same closure a JavaScript namespace read answers, with Node's name and
+  // length. Members without a faithful value keep the standard-library fence
+  // below.
+  {
+    const reflectMember = lowerer.stdlibGlobalMember(expr, "Reflect");
+    const value =
+      reflectMember === null ? null : reflectMemberValue(lowerer, reflectMember, locOf(expr));
+    if (value !== null) return value;
+  }
   // A write, `delete` or defineProperty through `Date.prototype` keeps its
   // fence: the value below is a read surface, and a typed Date never observes
   // a dynamic write to it. This runs before the chainBlocked early return
@@ -2583,7 +2625,7 @@ export function lowerIntrinsicProperty(
   if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype") {
     const loc = locOf(expr);
     const name = "%dyn.functionPrototype";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name))
+    if (lowerer.liftedFnNamed(name) === undefined)
       lowerer.liftedFns.push({
         name,
         params: [],
@@ -2841,16 +2883,26 @@ export function lowerIntrinsicProperty(
       return lowerer.maybeNarrow(read, expr);
     }
     if (name === "stdout" || name === "stderr") {
-      if (lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind !== "string") {
-        lowerer.noLowering(
-          `spawnSync's ${name} without the "utf8" encoding`,
-          expr,
-          'Buffer captures are not representable — call spawnSync(cmd, args, { encoding: "utf8" }) so the outputs are strings',
-        );
-      }
+      // With { encoding: "utf8" } the checker types the capture string and
+      // the runtime hands over the captured utf8; without it (@types/node
+      // types SpawnSyncReturns<Buffer>) the capture is a Buffer, lowered as
+      // the bytes value fs's Buffer reads use — the runtime accessor
+      // carries the Buffer brand under the fsBufferBrand feature.
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
       const receiver = lowerer.lowerExpr(expr.expression);
-      const fn = name === "stdout" ? "spawnRes.stdout" : "spawnRes.stderr";
-      return { kind: "libCall", fn, args: [receiver], type: STRING, loc };
+      if (mapped?.kind === "string") {
+        const fn = name === "stdout" ? "spawnRes.stdout" : "spawnRes.stderr";
+        return { kind: "libCall", fn, args: [receiver], type: STRING, loc };
+      }
+      if (mapped?.kind === "bytes" && mapped.elem === "u8") {
+        const fn = name === "stdout" ? "spawnRes.stdoutBytes" : "spawnRes.stderrBytes";
+        return { kind: "libCall", fn, args: [receiver], type: BYTES_U8, loc };
+      }
+      lowerer.noLowering(
+        `spawnSync's ${name} with this type`,
+        expr,
+        'the capture is string (with { encoding: "utf8" }) or Buffer (without it)',
+      );
     }
     if (name === "error") {
       // Node's spawn-failure carrier: `Error | undefined` — a fresh
@@ -4487,6 +4539,27 @@ function unionValueRead(
     }
   }
   const nonUnitArms = def.arms.filter((arm) => !isUnitType(arm));
+  // `name` and `message` of an arm rooted at Error are read as on a single
+  // class value, through the error reader: an accessor a subclass declares or
+  // a prototype defines answers, where the slot alone would not.
+  const errorMember =
+    (field === "name" || field === "message") &&
+    nonUnitArms.length > 0 &&
+    nonUnitArms.every(
+      (arm) =>
+        arm.kind === "object" &&
+        (arm.className === "%Error" || lowerer.isSubclassOf(arm.className, "%Error")),
+    );
+  if (errorMember && nonUnitArms.length === def.arms.length && def.arms.length > 1)
+    return perArmUnionRead(
+      lowerer,
+      expr,
+      unionId,
+      value,
+      STRING,
+      "%unionError",
+      (_arm, _tag, arm) => errorPropertyRead(lowerer, arm, field),
+    );
   if (nonUnitArms.length === 1 && nonUnitArms[0]?.kind === "object") {
     const objectType = nonUnitArms[0];
     const fieldType = lowerer.classes.get(objectType.className)?.fields.get(field);
@@ -4503,6 +4576,7 @@ function unionValueRead(
           receiver = lowerer.checkedNarrowCall(helper, value, objectType, locOf(expr.expression));
       }
       if (receiver !== null) {
+        if (errorMember) return errorPropertyRead(lowerer, receiver, field);
         return {
           kind: "fieldGet",
           obj: receiver,
@@ -5208,6 +5282,8 @@ export function fieldTarget(
   access: ts.PropertyAccessExpression,
 ): FieldTarget | null {
   if (lowerer.cjsLocalModuleBindingOf(access.expression)) return null;
+  // `E.A` of an enum whose object is built: the member's constant.
+  if (isEnumMemberRead(lowerer, access)) return null;
   // `module.exports` / `module.id`: CommonJS module surface, never a field.
   if (isCjsModuleGlobal(lowerer, access.expression)) return null;
   if (isCjsExportsIdentifier(lowerer, access.expression)) return null;
@@ -5833,6 +5909,15 @@ export function fieldGetExpr(
           type: inner,
           loc,
         };
+      }
+      // A field declared with a union type reads as that union: the
+      // unassigned arm traps like the checked extraction of a single arm.
+      if (inner.kind === "union" && undefTag >= 0) {
+        const retag = lowerer.unionRetagHelper(unionId, inner.unionId, loc, new Set([undefTag]));
+        if (retag) {
+          lowerer.coercions.deferredRetags.add(retag);
+          return { kind: "call", callee: retag, args: [read], type: inner, loc };
+        }
       }
       const helper = lowerer.deferredReadHelper(target.fieldType.unionId, inner, loc);
       if (helper) return { kind: "call", callee: helper, args: [read], type: inner, loc };
@@ -6487,7 +6572,7 @@ function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<stri
   const names = new Set<string>();
   lowerer.globalThisWrittenNames = names;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || !sf.text.includes("globalThis")) continue;
+    if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "globalThis")) continue;
     ts.walkPreorder(sf, (node) => {
       if (
         ts.isBinaryExpression(node) &&

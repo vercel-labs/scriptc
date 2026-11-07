@@ -3,6 +3,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { constructedValue } from "../constructor-returns.js";
 import { countedFor, dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import type { FieldLift } from "./structural-plans.js";
+import { liftableBesideArm, widthNarrowHelper } from "./unions.js";
 import { buildArrayConversion } from "./builders.js";
 import { arrayValueRead, arrayValueStore, primitiveElement } from "../array-values.js";
 import type { WidthLift } from "../width-lift.js";
@@ -12,6 +13,7 @@ import { BOOL, DYN, F64, STRING, UNDEFINED_T, isUnitType, typeEquals } from "../
 import { typeKey } from "../../type-mapper.js";
 import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
+import { builtinMethodRecord } from "./builtin-method-records.js";
 import type { Lowerer } from "../lowerer.js";
 import { recordLinkPair, registerLinkSite } from "../record-links.js";
 
@@ -37,6 +39,13 @@ export function widthCoerce(lowerer: Lowerer, expr: IrExpr, expected: IrType): I
     const helper = lowerer.objRecordWidthHelper(expr.type.className, expected.shapeId, expr.loc);
     if (!helper) return null;
     return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
+  }
+  // A builtin handle (process.stdout, process.stderr) flowing into a
+  // record of methods: each method calls the handle's member through its
+  // checked-dynamic view (builtin-method-records.ts).
+  if (expected.kind === "record") {
+    const projected = builtinMethodRecord(lowerer, expr, expected.shapeId, expr.loc);
+    if (projected) return projected;
   }
   // A RECORD flowing into a class-instance slot (`{x: 0, y: 0}` into
   // `A.Point` — the parameter-property data-class pattern): construction
@@ -328,7 +337,16 @@ export function applyWidthLift(
     case "narrow": {
       if (value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: narrow lift on a non-union");
-      const helper = lowerer.narrowedArmHelper(value.type.unionId, dst, loc);
+      // A member or element typed by a union that holds the destination
+      // record beside arms that convert into it (`{ v: S | T }` into
+      // `{ v: T }`, S assignable to T): a declared member type is not
+      // narrowed, so those arms are values of the slot's type and convert
+      // on their own tag instead of throwing.
+      const converts = liftableBesideArm(lowerer, value.type.unionId, dst);
+      const helper =
+        converts.length > 0
+          ? widthNarrowHelper(lowerer, value.type.unionId, dst, loc, converts)
+          : lowerer.narrowedArmHelper(value.type.unionId, dst, loc);
       if (!helper)
         throw new InternalCompilerError("lowerer bug: planned narrow lift failed to intern");
       return { kind: "call", callee: helper, args: [value], type: dst, loc };

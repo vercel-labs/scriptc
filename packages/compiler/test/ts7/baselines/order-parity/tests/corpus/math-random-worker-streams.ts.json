@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/math-random-worker-streams.ts"
+ ],
+ "diags": []
+}

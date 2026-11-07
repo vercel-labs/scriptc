@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9761-promise-executor-resolves-promise.ts"
+ ],
+ "diags": []
+}

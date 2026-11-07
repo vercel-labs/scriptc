@@ -25,7 +25,7 @@ export function errorPropertyRead(
   const name = `%error.${property}.read`,
     loc = receiver.loc;
   lowerer.shareHelper(name);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "error.0", name: "error", type: errorType }],
@@ -52,7 +52,7 @@ export function errorPropertyWrite(
   const name = `%error.${property}.write`,
     loc = receiver.loc;
   lowerer.shareHelper(name);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [
@@ -99,7 +99,7 @@ export function refreshErrorPropertyDispatch(
   for (const property of properties) {
     if (
       (overrides.length || accessors) &&
-      !lowerer.liftedFns.some((fn) => fn.name === `%error.${property}.read`)
+      lowerer.liftedFnNamed(`%error.${property}.read`) === undefined
     ) {
       const loc = overrides[0]?.def.loc ?? lowerer.errorAccessorReflection!;
       errorPropertyRead(lowerer, varRef("error.0", errorType, loc), property);
@@ -443,7 +443,7 @@ export function errorToStringMethod(
 ): Extract<IrExpr, { kind: "call" }> {
   const loc = receiver.loc;
   lowerer.shareHelper(helperName);
-  if (!lowerer.liftedFns.some((fn) => fn.name === helperName)) {
+  if (lowerer.liftedFnNamed(helperName) === undefined) {
     lowerer.liftedFns.push({
       name: helperName,
       params: [{ localId: "error.0", name: "error", type: errorType }],
@@ -467,7 +467,7 @@ export function errorToStringCall(lowerer: Lowerer, receiver: IrExpr): IrExpr {
   const method = errorToStringMethod(lowerer, receiver);
   const name = "%error.toString.virtual";
   lowerer.shareHelper(name);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value = varRef("error.0", errorType, loc);
     lowerer.liftedFns.push({
       name,

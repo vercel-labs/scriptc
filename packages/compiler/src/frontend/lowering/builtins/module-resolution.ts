@@ -1,6 +1,7 @@
 import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import { canonicalBuiltinModule, isJsSourceFile, isNodeEsmFile, locOf } from "../../program.js";
 import { isRelativeSpecifier } from "../../workspace-registry.js";
@@ -45,7 +46,6 @@ import {
   createRequireLoaderAnchorOf,
   createRequireRuntimeBaseOf,
 } from "./module-bindings.js";
-import { stripTypeCasts } from "./arguments.js";
 import { keyedHelperName } from "../stable-names.js";
 import { checkedIterableSpread } from "../checked-iterable-spread.js";
 
@@ -245,7 +245,7 @@ export function createRequireResolveValue(
     "%createRequire.resolve",
     createRequireLoaderAnchorOf(lowerer, access.expression),
   );
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const call = computedResolveCall(
       lowerer,
       access,
@@ -309,7 +309,7 @@ export function createRequireResolveFenceValue(
     "%createRequire.fence",
     `${createRequireLoaderAnchorOf(lowerer, access.expression)}:${paths ? "paths" : "resolve"}`,
   );
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     lowerer.liftedFns.push({
       name,
       params: [],
@@ -369,7 +369,7 @@ export function createRequireLoaderValue(
     "%createRequire.loader",
     createRequireLoaderAnchorOf(lowerer, ident),
   );
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const call: IrExpr = {
       kind: "libCall",
       fn: "module.requireComputed",
@@ -416,7 +416,7 @@ function createRequireFenceFunctionValue(
     "%createRequire.fenceLoader",
     createRequireLoaderAnchorOf(lowerer, node),
   );
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "request", name: "request", type: DYN }],
@@ -441,7 +441,7 @@ function createRequireFenceFunctionValue(
  * so side effects and throws happen there. A spread argument consumes its
  * iterator, which throws for an operand that is not iterable. */
 function createRequireBaseEffectStmts(lowerer: Lowerer, creator: ts.Expression): IrStmt[] {
-  const e = stripTypeCasts(creator);
+  const e = withoutParenthesesAssertionsNonNull(creator);
   if (!ts.isCallExpression(e) || e.questionDotToken) return [];
   // An optional chain that hoisted this call into a local already ran the
   // base: the guarded read re-lowers the receiver, and must not repeat it.
@@ -512,7 +512,7 @@ export function lowerCreateRequireCall(
     // A createRequire-made require with no build-time base: its use is a
     // run-time require over a base the compiled graph cannot anchor.
     if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
-    const callee = stripTypeCasts(call.expression);
+    const callee = withoutParenthesesAssertionsNonNull(call.expression);
     // The factory call itself over a run-time base — `createRequire(base)`
     // or a destructured `cr(base)`: Node evaluates the base arguments,
     // then the factory returns the loader. The compiled loader is the
@@ -612,9 +612,9 @@ export function lowerCreateRequireCall(
       // Only refine the existing refusal path: Node resolution detects
       // extensionless addons and directory entries without executing
       // them, and avoids mistaking a .node-named JS directory for one.
-      // This probe marks frontend inputs unstable, but every branch
-      // here refuses compilation, so successful-build caches keep their
-      // existing dependency proofs.
+      // Under a host resolver this probe marks frontend inputs unstable,
+      // but every branch here refuses compilation, so successful-build
+      // caches keep their existing dependency proofs.
       const resolved = resolveRequireRuntime(
         cr.baseFile.fileName,
         spec,
@@ -693,7 +693,7 @@ export function staticString(
   depth = 0,
 ): string | null {
   if (node === undefined || depth > 8) return null;
-  const value = stripTypeCasts(node);
+  const value = withoutParenthesesAssertionsNonNull(node);
   if (ts.isStringLiteralLike(value)) return value.text;
   if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const left = staticString(lowerer, value.left, depth + 1);
@@ -786,7 +786,7 @@ function staticResolveOptionPaths(
   node: ts.Expression | undefined,
 ): readonly string[] | undefined | null {
   if (node === undefined) return undefined;
-  const value = stripTypeCasts(node);
+  const value = withoutParenthesesAssertionsNonNull(node);
   if (ts.isIdentifier(value) && value.text === "undefined") return undefined;
   if (!ts.isObjectLiteralExpression(value)) return null;
   let paths: readonly string[] | undefined;
@@ -795,7 +795,7 @@ function staticResolveOptionPaths(
     const name =
       ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : null;
     if (name !== "paths" || paths !== undefined) return null;
-    const init = stripTypeCasts(prop.initializer);
+    const init = withoutParenthesesAssertionsNonNull(prop.initializer);
     if (!ts.isArrayLiteralExpression(init)) return null;
     const entries: string[] = [];
     for (const item of init.elements.nodes) {
@@ -807,11 +807,41 @@ function staticResolveOptionPaths(
   return paths;
 }
 
+/** A createRequire loader's `resolve` (or `resolve.paths`) named where
+ * TypeScript source has no value for it: the function exists there only as
+ * the callee of a direct call, which resolves at build time. Node's
+ * function closes over its module and never reads `this`, so a call that
+ * reaches it through a choice of callees (lowerDirectOnlyChoiceCall) is its
+ * direct call. JavaScript source reads the function as a value instead
+ * (createRequireResolveValue). */
+export function isDirectOnlyResolveCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
+  if (isJsSourceFile(ts.getSourceFileOfNode(callee))) return false;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return false;
+  let resolve: ts.PropertyAccessExpression = callee;
+  if (callee.name.text === "paths") {
+    if (
+      !ts.isPropertyAccessExpression(callee.expression) ||
+      callee.expression.questionDotToken !== undefined
+    )
+      return false;
+    resolve = callee.expression;
+  }
+  return (
+    resolve.name.text === "resolve" &&
+    createRequireCalleeFileOf(lowerer, resolve.expression) !== null
+  );
+}
+
 /** CommonJS require.resolve and require.resolve.paths for the ambient
  * wrapper or a supported createRequire binding. Results are build-time
- * constants; failures lower to Node's catchable error object. */
-export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
-  const callee = call.expression;
+ * constants; failures lower to Node's catchable error object. `callee` is
+ * the function the call reaches when its own callee expression only chooses
+ * it (lowerDirectOnlyChoiceCall). */
+export function lowerRequireResolveCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  callee: ts.Expression = call.expression,
+): IrExpr | null {
   if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return null;
   let receiver: ts.Expression;
   let pathsCall = false;

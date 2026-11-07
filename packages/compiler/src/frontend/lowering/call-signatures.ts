@@ -58,13 +58,17 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * declareParams). `callDefault` is the compile-time default value for a
  * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
  * inherited from a JavaScript base method whose TypeScript override declares
- * a typed parameter: the prologue narrows the checked value to that type. */
+ * a typed parameter: the prologue narrows the checked value to that type.
+ * `slotType` is the ABI type of a function literal's parameter that the slot
+ * the literal is written into passes at another type (slotSignatureAdoption):
+ * the body binds `type`, converted from it at entry. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
   entryNarrow?: IrType;
+  slotType?: IrType;
   /** One flattened position of a fixed-tuple rest parameter
    * (restTupleShapes): the declaration's last parameter owns every shape
    * from its index on, and the body binds the tuple (declareParams). */

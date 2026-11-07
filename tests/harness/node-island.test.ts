@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, test, vi } from "vitest";
-import { compile, deserializeModule } from "@scriptc/compiler";
+import { analyze, compile, deserializeModule } from "@scriptc/compiler";
 import { definedFunctionNames, nodeIslandSymbols } from "../../scripts/zero-cost-compare.mjs";
 import { libnodePack } from "./libnode.js";
 
@@ -1239,6 +1239,49 @@ test("a reached runtime fence islands its package or is reported", async () => {
     ),
   ]);
 }, 300_000);
+
+// A coverage analysis makes the build's island decision with the build's
+// functions (node-islands/decide.ts, growth.ts), round by round, so it names
+// the islands the build runs and fails exactly when the build fails. One
+// program per way a set is decided: a package refused before lowering, a
+// fence in module code, a require() of an island from a CommonJS entry
+// (bound only by the island reload), a nested require, a module that runs
+// in Node, a refusal no island can place, and an island build that fails.
+// IR output needs no libnode pack.
+test("coverage names the islands a build runs", async () => {
+  const entries = [
+    "tests/corpus/6819-node-island-fenced/main.ts",
+    "tests/corpus/6825-node-island-init-fence/main.ts",
+    "tests/corpus/6880-node-island-cjs-entry/main.js",
+    "tests/corpus/6882-node-island-nested-require/main.js",
+    "tests/corpus/8731-node-island-implicit-global/main.cjs",
+    "tests/fixtures/npm/cases/self-name/main.ts",
+    "tests/fixtures/npm/cases/create-require/main.ts",
+  ];
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-island-agree-"));
+  try {
+    for (const relative of entries) {
+      const entry = join(repoRoot, relative);
+      const { coverage } = analyze(entry, {});
+      const built = await compile(entry, {
+        outputKind: "ir",
+        outPath: join(dir, "main.ir.json"),
+        outDir: dir,
+      });
+      const blockers = coverage.diagnostics.filter((d) => !d.code.startsWith("SC6"));
+      expect(!coverage.preflightFailed && blockers.length === 0, relative).toBe(built.ok);
+      if (!built.ok) continue;
+      expect((coverage.nodeIslands?.islands ?? []).map((i) => i.package).sort(), relative).toEqual(
+        [...(built.islands?.packages ?? [])].sort(),
+      );
+      expect((coverage.nodeIslands?.userModules ?? []).map((m) => m.file).sort(), relative).toEqual(
+        [...(built.islands?.modules ?? [])].sort(),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 600_000);
 
 // Lowering checks every argument and result type for JSON data; IR output
 // needs no libnode pack.

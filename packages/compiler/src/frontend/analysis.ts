@@ -109,19 +109,18 @@ export function analyzeWithFrontend(
     // at preflight (no trustworthy program to lower). Builds are unchanged:
     // compile() fails on every preflight diagnostic exactly as before.
     const IMPORT_FENCES = new Set(["SC1010", "SC1012", "SC1013", "SC1014", "SC1015", "SC2013"]);
-    // The frontend a round lowers on. A package the first load compiled but
-    // the round islands is not part of the compiled program, and neither is
-    // an island module: the reload keeps their implementations out of the
-    // graph and types their values as island handles, exactly as the build's
-    // island reload does (executable/prepare.ts). A refused package was never
-    // in the program, so a set of those alone needs no reload.
+    // The frontend a round lowers on. A package the round islands is not
+    // part of the compiled program, and neither is an island module: the
+    // reload keeps their implementations out of the graph, types their
+    // values as island handles and checks the program's imports of them as
+    // island imports, exactly as the build's island reload does
+    // (executable/prepare.ts). That holds for a package the first load
+    // refused too: its preflight still reports a require() of it (SC1010)
+    // that the reload binds to the island.
     const roundFrontend = (islands: NodeIslandSet | null): Frontend => {
       const packages = islands === null ? [] : [...islands.packages.keys()].sort();
       const modules = islands === null ? [] : [...islands.modules.keys()].sort();
-      const compiled = packages.filter((name) =>
-        fe.npmStatic.some((e) => e.package === name && e.status === "static"),
-      );
-      if (compiled.length === 0 && modules.length === 0) return fe;
+      if (packages.length === 0 && modules.length === 0) return fe;
       const key = `${packages.join("\n")}\n\n${modules.join("\n")}`;
       if (lowerLoad.fe === null || key !== lowerLoad.key) {
         lowerLoad.fe?.dispose();
@@ -231,6 +230,10 @@ export function analyzeWithFrontend(
         front.npmImportSites,
         lowered.runtimeFences,
       );
+      // A build with preflight refusals stops before it lowers, so it never
+      // grows its set from this lowering: the analysis lowers for the
+      // statement counts and keeps the set the build failed with.
+      if (preflight.length > 0) break;
       const failed = lowered.diagnostics.length > 0;
       const grownModules = failed
         ? loweringModules(entryPath, opts, lowered.diagnostics, lowerModules)

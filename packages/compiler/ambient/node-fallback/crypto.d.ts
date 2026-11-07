@@ -277,14 +277,20 @@ declare module "crypto" {
     copy(options?: HashOptions): Hash;
     update(data: string | ArrayBufferView): Hash;
     update(data: string, inputEncoding: Encoding): Hash;
+    /* A digest is Buffer.toString(encoding): Node answers every Buffer
+     * encoding, the character and legacy ones included (a hash's bytes are
+     * arbitrary, so utf8 spells the undecodable sequences U+FFFD).
+     * @types/node narrows this parameter to BinaryToTextEncoding (a cast
+     * there); the runtime decodes each spelling listed in Encoding and no
+     * other, so the parameter admits exactly that set. */
     digest(): Buffer;
-    digest(encoding: BinaryToTextEncoding): string;
+    digest(encoding: Encoding): string;
   }
   export interface Hmac extends Transform {
     update(data: string | ArrayBufferView): Hmac;
     update(data: string, inputEncoding: Encoding): Hmac;
     digest(): Buffer;
-    digest(encoding: BinaryToTextEncoding): string;
+    digest(encoding: Encoding): string;
   }
   export function createHash(algorithm: string, options?: HashOptions): Hash;
   export function createHmac(
@@ -292,12 +298,14 @@ declare module "crypto" {
     key: BinaryLike | KeyObject,
     options?: { encoding?: BufferEncoding | undefined },
   ): Hmac;
+  /* crypto.hash's output encoding is the same Buffer conversion digest()
+   * makes, so it takes the same Encoding set. */
   export interface OneShotDigestOptions {
-    outputEncoding?: BinaryToTextEncoding | "buffer" | undefined;
+    outputEncoding?: Encoding | "buffer" | undefined;
     outputLength?: number | undefined;
   }
   export interface OneShotDigestOptionsWithStringEncoding extends OneShotDigestOptions {
-    outputEncoding?: BinaryToTextEncoding | undefined;
+    outputEncoding?: Encoding | undefined;
   }
   export interface OneShotDigestOptionsWithBufferEncoding extends OneShotDigestOptions {
     outputEncoding: "buffer";
@@ -305,7 +313,7 @@ declare module "crypto" {
   export function hash(
     algorithm: string,
     data: string | ArrayBufferView,
-    options?: OneShotDigestOptionsWithStringEncoding | BinaryToTextEncoding,
+    options?: OneShotDigestOptionsWithStringEncoding | Encoding,
   ): string;
   export function hash(
     algorithm: string,
@@ -315,7 +323,7 @@ declare module "crypto" {
   export function hash(
     algorithm: string,
     data: string | ArrayBufferView,
-    options: OneShotDigestOptions | BinaryToTextEncoding | "buffer",
+    options: OneShotDigestOptions | Encoding | "buffer",
   ): string | Buffer;
   export function timingSafeEqual(
     a: ArrayBufferView | ArrayBufferLike,
@@ -771,7 +779,7 @@ declare module "crypto" {
    * stance). Every ACCESS bakes as its literal at lowering; the object
    * itself never materializes (bare crypto.constants value uses fence). */
   export interface CryptoConstants {
-    readonly OPENSSL_VERSION_NUMBER: 810549376;
+    readonly OPENSSL_VERSION_NUMBER: 810549392;
     readonly SSL_OP_ALL: 2147485776;
     readonly SSL_OP_ALLOW_NO_DHE_KEX: 1024;
     readonly SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144;

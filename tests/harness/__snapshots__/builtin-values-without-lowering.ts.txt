@@ -3,7 +3,7 @@ builtin-values-without-lowering.ts:7:7 - error SC2009: values of type '{ json: J
   6 | 
   7 | const inferred = { json: JSON };
     |       ^~~~~~~~
-  8 | const loose: any = { atomics: Atomics };
+  8 | const loose: any = { escape: escape };
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
@@ -12,22 +12,22 @@ builtin-values-without-lowering.ts:7:18 - error SC2009: values of type '{ json: 
   6 | 
   7 | const inferred = { json: JSON };
     |                  ^~~~~~~~~~~~~~
-  8 | const loose: any = { atomics: Atomics };
+  8 | const loose: any = { escape: escape };
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-builtin-values-without-lowering.ts:8:31 - error SC2020: 'Atomics' is part of the standard library types but has no scriptc lowering yet
+builtin-values-without-lowering.ts:8:30 - error SC2020: 'escape' is part of the standard library types but has no scriptc lowering yet
 
   7 | const inferred = { json: JSON };
-  8 | const loose: any = { atomics: Atomics };
-    |                               ^~~~~~~
+  8 | const loose: any = { escape: escape };
+    |                              ^~~~~~
   9 | const timers: Record<string, unknown> = { setTimeout };
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 builtin-values-without-lowering.ts:9:43 - error SC2020: 'setTimeout' is part of the standard library types but has no scriptc lowering yet
 
-   8 | const loose: any = { atomics: Atomics };
+   8 | const loose: any = { escape: escape };
    9 | const timers: Record<string, unknown> = { setTimeout };
      |                                           ^~~~~~~~~~
   10 | const list: any[] = [Array, parseInt];

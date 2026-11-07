@@ -357,8 +357,11 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_call",
   "scr_dyn_apply",
   "scr_dyn_invoke",
+  "scr_dyn_stdlib_prototype",
+  "scr_data_view_prototype",
   "scr_dyn_array_like",
   "scr_dyn_builtin_prototype",
+  "scr_dyn_builtin_method_value",
   "scr_dyn_construct",
   "scr_dyn_function_apply",
   "scr_dyn_fn_get",
@@ -369,6 +372,10 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_to_numeric",
   "scr_dyn_number_coerce",
   "scr_dyn_string_coerce",
+  // Own properties JavaScript adds to runtime handles (handle-expandos H1).
+  "scr_dyn_handle_props",
+  // Object.isExtensible/Object.isSealed of a value typed dynamically.
+  "scr_dyn_integrity",
 ];
 
 /** Symbols under those prefixes that typed binaries reach today through a
@@ -473,6 +480,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/channel-messages",
   "bench/dynamic-methods",
   "bench/dynamic-properties",
+  "bench/dynamic-properties-json",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",
@@ -484,6 +492,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/record-untyped-writes",
   "bench/layered-errors",
   "bench/stream-buffered-drain",
+  "bench/untyped-validate",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O
@@ -549,7 +558,8 @@ export function compareCounts(baseline, candidate) {
 /* ── runtime packs ─────────────────────────────────────────────────────── */
 
 /** Every file a runtime-pack.json lists (each flavor's runtime unit
- * variants, their bitcode, and the vendor archives), as path → sha256. */
+ * variants and the vendor archives, and the bitcode packs built before
+ * 0.4.7 listed), as path → sha256. */
 export function runtimePackFiles(manifest) {
   const files = new Map();
   const visit = (value) => {
@@ -586,20 +596,36 @@ export function linkedRuntimeFiles(diff) {
   );
 }
 
-/** Defined functions of textual LLVM IR (llvm-dis output) as name → hash of
- * the body. Attribute group and metadata numbers are dropped first, since
- * an unrelated change elsewhere in the unit renumbers them. */
-export function llvmFunctionHashes(text) {
+/** Functions of an object's disassembly (llvm-objdump -d -r
+ * --no-show-raw-insn --no-leading-addr) as name → hash of the body. Branch
+ * targets and relocations keep their symbol and offset but drop addresses,
+ * so a function that only moved within its section is not a change. */
+export function objectFunctionHashes(text) {
   const functions = new Map();
-  const lines = text.split("\n");
-  for (let index = 0; index < lines.length; index++) {
-    const head = /^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$-]+)\(/.exec(lines[index]);
-    if (head === null) continue;
-    const body = [];
-    for (; index < lines.length && lines[index] !== "}"; index++) body.push(lines[index]);
-    const normalized = body.join("\n").replace(/ #\d+/g, "").replace(/!\d+/g, "!");
-    functions.set(head[1].replace(/^"|"$/g, ""), hash(normalized));
+  let name = null;
+  let body = [];
+  const flush = () => {
+    if (name !== null) functions.set(name, hash(body.join("\n")));
+    name = null;
+    body = [];
+  };
+  for (const line of text.split("\n")) {
+    const head = /^(?:[0-9a-f]+ )?<(.+)>:$/.exec(line.trim());
+    if (head !== null) {
+      flush();
+      name = head[1];
+    } else if (line.trim() === "" || line.startsWith("Disassembly of section")) {
+      flush();
+    } else if (name !== null) {
+      body.push(
+        line
+          .trim()
+          .replace(/^[0-9a-f]+:\s+/, "")
+          .replace(/\b(?:0x)?[0-9a-f]+ <([^>]+)>/g, "<$1>"),
+      );
+    }
   }
+  flush();
   return functions;
 }
 
@@ -793,6 +819,7 @@ export function timingGroups(rows) {
   return {
     bench: rows.filter((r) => r.id.startsWith("bench/")),
     self: rows.filter((r) => r.id === "self/cli"),
+    fixtures: rows.filter((r) => r.id.startsWith("fixture/")),
   };
 }
 

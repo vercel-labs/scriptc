@@ -12,6 +12,7 @@
  * always after scr_init registered the RC audit, so atexit's LIFO order
  * runs it before the audit and the audited string counts stay exact. */
 #include "scr_runtime.h"
+#include "scr_dir_private.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,6 +138,8 @@ static void scr_sym_registry_cleanup(void) {
     s = next;
   }
 }
+
+void scr_sym_for_install(void) { scr_sym_for_fn = scr_sym_for; }
 
 ScrSym *scr_sym_for(ScrStr *key) {
   for (ScrSym *s = g_sym_registry; s; s = s->reg_next) {
@@ -361,6 +364,47 @@ void scr_dyn_dirent_finish(ScrDyn *obj) {
   }
 }
 
+#ifndef SCR_LIB
+/* The Dirent a callback read receives for an entry, in Node's shape.
+ * `name` is +1 and is consumed. */
+ScrDyn *scr_dir_dirent_dyn(ScrDir *d, ScrStr *name, double kind) {
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(name));
+  ScrStr *path = scr_dir_path(d);
+  scr_dyn_obj_set(object, "parentPath", 10, scr_dyn_new_str(path));
+  scr_str_release(path);
+  scr_dyn_obj_set(object, "%dtype", 6, scr_dyn_new_num(kind));
+  scr_dyn_dirent_finish(object);
+  scr_str_release(name);
+  return object;
+}
+
+/* dir.read(callback): the entry (or null at the end) arrives in a later
+ * turn of the loop; a closed Dir throws ERR_DIR_CLOSED now. */
+void scr_dir_read_callback(ScrDir *d, ScrDyn *callback) {
+  if (d->closed) {
+    scr_dir_closed();
+    return;
+  }
+  ScrDirOp *op = scr_dir_op_new(d, false);
+  op->callback = scr_dyn_retain(callback);
+  /* The entry is assigned when the call is made, not when its turn comes:
+   * every read takes its entry in call order, so a read that waits cannot
+   * be overtaken by a later one. */
+  ScrStr *name = NULL;
+  double kind = 0;
+  if (d->batch_pos < d->batch_len) {
+    op->buffered = true;
+    if (scr_dir_take(d, &name, &kind)) op->argument = scr_dir_dirent_dyn(d, name, kind);
+  } else if (!scr_dir_fill_batch(d) || scr_exc_pending()) {
+    op->error = scr_dir_error_dyn();
+  } else if (scr_dir_take(d, &name, &kind)) {
+    op->argument = scr_dir_dirent_dyn(d, name, kind);
+  }
+  scr_dir_push(op);
+}
+#endif /* SCR_LIB */
+
 /* The well-known symbol `Symbol.<name>` as a dyn key (+1). */
 static ScrDyn *scr_using_key(const char *name, size_t len) {
   ScrStr *text = scr_str_new(name, len);
@@ -579,6 +623,25 @@ static void scr_ds_put_value(ScrJsonBuf *b, const ScrDyn *value) {
     return;
   default: scr_jb_puts(b, "#<Object>"); return;
   }
+}
+
+/* Symbol.keyFor called through a function value (+1): the registry key of
+ * a symbol from Symbol.for, undefined for another symbol, or NULL with
+ * V8's TypeError ("1 is not a symbol") pending for any other value. */
+ScrDyn *scr_dyn_symbol_key_for(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_SYMBOL || value->v.symbol.render != scr_sym_to_string) {
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_ds_put_value(&message, value);
+    scr_jb_puts(&message, " is not a symbol");
+    scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+    return NULL;
+  }
+  ScrStr *key = scr_sym_key_for((ScrSym *)value->v.symbol.value);
+  if (!key) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *out = scr_dyn_new_str(key);
+  scr_str_release(key);
+  return out;
 }
 
 static ScrDisposableStack *scr_ds_of(const ScrDyn *value) {

@@ -30,8 +30,19 @@ function scriptcSharedModules(nativeHost) {
   const table = JSON.parse(nativeHost.sharedTable());
   const none = { entry: (path, load) => load(null), push() {} };
   if (table.length === 0) return none;
+  const { realpathSync } = require("node:fs");
+  // Node resolves an import to the module's real path, so a module of a
+  // tree reached through a symbolic link (a cache directory under macOS's
+  // /var, which is /private/var) is keyed by its real path as well.
   const byUrl = new Map();
-  table.forEach((m, id) => byUrl.set(pathToFileURL(m.path).href, id));
+  table.forEach((m, id) => {
+    byUrl.set(pathToFileURL(m.path).href, id);
+    try {
+      byUrl.set(pathToFileURL(realpathSync(m.path)).href, id);
+    } catch {
+      // A module that is not on disk keeps only its own path.
+    }
+  });
   const TDZ = Symbol("scriptc.tdz");
   const setters = new Map(); // `${mod}:${slot}` -> [(value) => void]
   const entries = new Map(); // entry URL -> { target, late: [[mod, slot]] }

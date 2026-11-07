@@ -209,7 +209,8 @@ export function emitInlineArrayGet(
   const raw = B.tmp();
   B.line(`${p} = getelementptr inbounds i32, ptr ${at}, i64 ${slot}`);
   B.line(`${ref} = load i32, ptr ${p}`);
-  for (const line of compactRefLoadLines(ref, raw, `${raw}.r`)) B.line(line.trimStart());
+  for (const line of compactRefLoadLines(host.compactRefBase, ref, raw, `${raw}.r`))
+    B.line(line.trimStart());
   const value = retain && isRefCounted(element) ? host.retainFrame(raw, element) : raw;
   const hitEnd = B.currentLabel();
   B.br(join);

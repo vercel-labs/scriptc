@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "paths": {
+      "entry-kit": ["./node_modules/entry-kit"]
+    }
+  }
+}

@@ -1,6 +1,8 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
+import { overloadValueResult } from "../lower-calls.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { DYN, STRING, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../../ir/ir.js";
@@ -173,6 +175,21 @@ function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boole
   );
 }
 
+/** `f?.()` where the checker types the callee never-nullish: the guard can
+ * never short-circuit, so the step IS `f()`. `any`/`unknown` stay out — a
+ * type that could hold anything could hold nullish. */
+function neverNullishCallee(lowerer: Lowerer, node: ts.Expression): boolean {
+  const nullable =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  const parts = (type: ts.Type): readonly ts.Type[] =>
+    type.flags & ts.TypeFlags.Union ? constituentTypes(type) : [type];
+  return parts(lowerer.typeOf(node)).every((part) => !(part.flags & nullable));
+}
+
 /** `proc?.env` for `const proc = (globalThis as { process?: P }).process`,
  * and `globalThis.process?.env`: the receiver is a global Node always
  * defines (a snapshot alias is plumbing for the global itself), so the
@@ -252,7 +269,45 @@ export function lowerOptionalChain(
       lowerer.chainHandled.delete(dotNode);
     }
   }
+  // `d?.getTime()` on a handle whose JavaScript shadows `getTime`: the
+  // guard cannot short-circuit a receiver the checker types never nullish,
+  // so the step is the plain call, which reads the own property
+  // (handle-properties.ts) instead of the native member.
+  if (
+    dotNode === expr.expression &&
+    ts.isCallExpression(expr) &&
+    neverNullishCallee(lowerer, recvNode) &&
+    (ts.isPropertyAccessExpression(expr.expression) ||
+      ts.isElementAccessExpression(expr.expression)) &&
+    shadowedHandleMember(lowerer, expr.expression)
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
   let loweredReceiver: IrExpr | null;
+  // `rmSync?.(…)`: a callee the checker types never-nullish whose value has
+  // NO lowering at all — a module function exists only as a call (its value
+  // form is fenced). The guard cannot short-circuit, so the step is the
+  // plain call; re-dispatch it and let it report its own diagnostics when
+  // it has no lowering either.
+  if (
+    dotNode === expr &&
+    ts.isCallExpression(expr) &&
+    !alwaysPresentStdlibMethod(lowerer, recvNode) &&
+    neverNullishCallee(lowerer, recvNode) &&
+    tryLowerExpression(lowerer, recvNode) === null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
   if (dotNode === expr && alwaysPresentStdlibMethod(lowerer, recvNode)) {
     loweredReceiver = tryLowerExpression(lowerer, recvNode);
     if (loweredReceiver === null) {
@@ -481,7 +536,16 @@ export function lowerOptionalChain(
       type: narrowed.ret,
       loc,
     };
-    return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
+    // A callee VALUE of an overloaded type holds the set's erased function:
+    // the call's result converts to the resolved overload's type inside the
+    // guard, exactly as the same call without `?.` does (lower-calls.ts).
+    return lowerer.finishOptionalChain(
+      expr,
+      id,
+      receiver,
+      overloadValueResult(lowerer, expr, recvRef, body),
+      loc,
+    );
   }
 
   // Member forms: re-dispatch the normal lowering with the receiver node

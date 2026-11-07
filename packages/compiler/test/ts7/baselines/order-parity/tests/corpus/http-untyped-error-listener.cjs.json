@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-untyped-error-listener.cjs"
+ ],
+ "diags": []
+}

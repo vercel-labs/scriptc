@@ -28,10 +28,19 @@ export interface UnionRetagRoute {
   values: Literal[];
 }
 
+/** A destination arm reached by checking the stored class: the source arm
+ * holds the destination arm's class as a strict subclass, so the payload is
+ * tested with `instanceof` and viewed through the checked downcast. */
+export interface UnionClassRoute {
+  tag: number;
+  arm: IrType & { kind: "object" };
+}
+
 export type UnionRetagArm =
   | { kind: "trap" }
   | { kind: "direct"; route: UnionRetagRoute }
-  | { kind: "discriminant"; field: string; fieldType: IrType; routes: UnionRetagRoute[] };
+  | { kind: "discriminant"; field: string; fieldType: IrType; routes: UnionRetagRoute[] }
+  | { kind: "classRoute"; routes: readonly UnionClassRoute[] };
 
 export interface RecordUnionWrapPlan {
   field: string;
@@ -127,6 +136,8 @@ export function planUnionRetag(
   shapeOf: (id: string) => IrRecordShape | undefined,
   widthLift: (src: IrType, dst: IrType) => WidthLift | null,
   trappable?: ReadonlySet<number>,
+  classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
+  checkedLift?: (src: IrType, dst: IrType) => WidthLift | null,
 ): UnionRetagArm[] | null {
   const result: UnionRetagArm[] = [];
   const target: IrType = { kind: "union", unionId: to.id };
@@ -166,6 +177,22 @@ export function planUnionRetag(
       );
       continue;
     }
+    // A site narrowed to a subclass of this arm's class: the arm's payload
+    // carries the subclass value, and the class test selects its destination
+    // arm. The stored layout is the arm's, so the payload is narrowed before
+    // it is checked, not the destination's.
+    if (identity < 0 && classRoutes !== undefined) {
+      const routes = classRoutes.get(tag);
+      if (routes !== undefined && routes.length > 0) {
+        if (source.kind !== "object") return null;
+        for (const route of routes) {
+          const destination = to.arms[route.tag];
+          if (destination === undefined || !typeEquals(destination, route.arm)) return null;
+        }
+        result.push({ kind: "classRoute", routes });
+        continue;
+      }
+    }
     // A checker-proven absent arm retains any exact representation, as
     // before. Otherwise the narrowing path needs no structural conversion.
     if (identity < 0 && trappable?.has(tag)) {
@@ -204,12 +231,49 @@ export function planUnionRetag(
     // Unannotated unions retain the unique-width-arm rule. A discriminant
     // present on just one side cannot establish correspondence.
     const lift = widthLift(source, target);
-    if (!lift || lift.how !== "liftWrap") return null;
+    if (!lift || lift.how !== "liftWrap") {
+      // The CHECKED widening, for a conversion that would otherwise refuse
+      // (a narrowed `{ role: string }` arm into the wider record arm its
+      // predicate claimed): exactly one destination arm may accept it, and
+      // reaching that arm validates the payload before the value enters the
+      // union. It answers only when no destination arm accepts the source by
+      // ordinary width. A source that reaches an arm that way is not refused
+      // for want of a destination: the ordinary plan declined because several
+      // arms fit or another selection rule did, and resolving that with a
+      // route that throws would reject a value the arm it fits would hold.
+      const ordinaryArm = to.arms.some(
+        (arm) => !isUnitType(arm) && widthLift(source, arm) !== null,
+      );
+      const checked =
+        checkedLift === undefined || ordinaryArm ? null : uniqueCheckedArm(to, source, checkedLift);
+      if (checked === null) return null;
+      result.push({ kind: "direct", route: checked });
+      continue;
+    }
     const inner = widthLift(source, lift.arm);
     if (!inner) return null;
     result.push({ kind: "direct", route: { tag: lift.tag, lift: inner, values: [] } });
   }
   return result;
+}
+
+/** The one destination arm the source can enter by the checked widening, or
+ * null when none or more than one can. Ambiguity is refused, like the
+ * unique-width-arm rule it stands beside: the value's layout alone cannot
+ * say which variant it is. */
+function uniqueCheckedArm(
+  to: IrUnionDef,
+  source: IrType,
+  checkedLift: (src: IrType, dst: IrType) => WidthLift | null,
+): UnionRetagRoute | null {
+  let found: UnionRetagRoute | null = null;
+  for (let tag = 0; tag < to.arms.length; tag++) {
+    const lift = checkedLift(source, to.arms[tag]!);
+    if (lift === null) continue;
+    if (found !== null) return null;
+    found = { tag, lift, values: [] };
+  }
+  return found;
 }
 
 function typeError(message: string, loc: SrcLoc): IrStmt {
@@ -450,6 +514,46 @@ export function buildUnionRetag(
           },
           loc,
         });
+      } else if (armPlan.kind === "classRoute") {
+        if (arm.kind !== "object")
+          throw new InternalCompilerError("lowerer bug: class route on non-object arm");
+        // The class test proves the payload's view: the downcast reinterprets
+        // the pointer and its vtable-range guard traps a value that is not
+        // the destination class, as it does on an asserted downcast.
+        for (const route of armPlan.routes) {
+          statements.push({
+            kind: "if",
+            cond: {
+              kind: "instanceOf",
+              value: payload,
+              className: route.arm.className,
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "return",
+                value: {
+                  kind: "unionWrap",
+                  unionId: to.id,
+                  tag: route.tag,
+                  value: { kind: "downcast", value: payload, type: route.arm, loc },
+                  type: toType,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          });
+        }
+        statements.push(
+          typeError(
+            `a '${formatType(arm)}' value is not representable in the target union (a value narrowed or asserted past it still held it)`,
+            loc,
+          ),
+        );
       } else {
         if (arm.kind !== "record")
           throw new InternalCompilerError("lowerer bug: discriminant on non-record arm");

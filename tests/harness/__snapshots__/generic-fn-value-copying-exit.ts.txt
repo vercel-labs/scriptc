@@ -1,0 +1,20 @@
+generic-fn-value-copying-exit.ts:25:23 - error SC1090: passing this argument across the erased generic boundary (a '{ extra: boolean; id: number; tag: string }' becomes the narrower '{ id: number }' by copying it; JavaScript hands the same object over) is not supported yet
+
+  24 | const wide = { id: 2, tag: "b", extra: true };
+  25 | console.log(erased(1, wide), wide.id);
+     |                       ^~~~
+  26 | 
+
+generic-fn-value-copying-exit.ts:39:25 - error SC1090: passing this argument across the erased generic boundary (a '{ id: number; tag: string }' result is re-materialized when the boxed function returns it; JavaScript hands the same object over) is not supported yet
+
+  38 | const map = store.map;
+  39 | console.log(map(shared, (input) => input));
+     |                         ^~~~~~~~~~~~~~~~
+  40 | 
+
+generic-fn-value-copying-exit.ts:45:32 - error SC1090: passing this argument across the erased generic boundary (a '{ id: number; tag: string }' result is re-materialized when the boxed function returns it; JavaScript hands the same object over) is not supported yet
+
+  44 | const holder = { map: store.map };
+  45 | console.log(holder.map(shared, (input) => input));
+     |                                ^~~~~~~~~~~~~~~~
+  46 | 

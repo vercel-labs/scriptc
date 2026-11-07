@@ -14,6 +14,7 @@ import {
   UNDEFINED_T,
 } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
+import { buildUnionNarrow } from "../union-narrow.js";
 import { newFnCtx } from "../function-context.js";
 import type { Lowerer } from "../lowerer.js";
 import { omittedArgFor } from "../call-arguments.js";
@@ -224,6 +225,16 @@ export function funcSlotAdaptable(
   }
   if (dst.ret.kind === "void") return true;
   if (lowerer.coercibleValue(src.ret, dst.ret)) return true;
+  // The result conversions funcCoerceAdapter performs without stranding: a
+  // Promise whose payload widens (`Promise<string>` into `Promise<string |
+  // undefined>`) and a record the slot's result is a structural width of.
+  if (
+    src.ret.kind === "promise" &&
+    dst.ret.kind === "promise" &&
+    lowerer.promisePayloadWidens(src.ret, dst.ret)
+  )
+    return true;
+  if (lowerer.widthLiftPlan(src.ret, dst.ret)) return true;
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
 }
 
@@ -345,6 +356,70 @@ function funcIntoDynRestAdapter(
       throw new InternalCompilerError("lowerer bug: probed fn-adapter return stopped coercing");
     body = [{ kind: "return", value: result, loc }];
   }
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
+/** The sort comparator's result adapter: JavaScript reads a comparator's
+ * result with ToNumber, so a comparator whose result may be `undefined`
+ * still orders — the unit arm completes as NaN, which makes every `< 0`
+ * and `> 0` comparison false and leaves the pair in place, exactly as Node
+ * does. TS infers that union for a JavaScript function that falls off its
+ * end (`if (a < b) return -1; if (a > b) return 1`), the shape semver's
+ * `rcompare` has. The adapter calls the source and narrows the result to
+ * its number arm with the NaN default; null unless the result is exactly
+ * the number arm plus `undefined`. */
+export function sortComparatorResultAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string | null {
+  if (fromT.rest === true || fromT.ret.kind !== "union") return null;
+  const from = lowerer.unions.get(fromT.ret.unionId);
+  if (from === undefined) return null;
+  // Any other arm is not a number the sort could compare, and keeps its
+  // existing (refused) treatment.
+  if (
+    !from.arms.some((arm) => typeEquals(arm, F64)) ||
+    !from.arms.every((arm) => typeEquals(arm, F64) || arm.kind === "undefinedT")
+  )
+    return null;
+  const key = `sortnum:${typeKey(fromT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%fn.sortnum", key);
+  const narrowName = keyedHelperName(lowerer, "%sort.num", key);
+  const narrow = buildUnionNarrow(narrowName, from, F64, loc, (type) => lowerer.fmt(type), {
+    kind: "numLit",
+    value: NaN,
+    type: F64,
+    loc,
+  });
+  if (narrow === null) return null;
+  lowerer.liftedFns.push(narrow);
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = fromT.params.map((type, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type,
+  }));
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: params.map((p): IrExpr => ({ kind: "varRef", localId: p.localId, type: p.type, loc })),
+    type: fromT.ret,
+    loc,
+  };
+  const body: IrStmt[] = [
+    {
+      kind: "return",
+      value: { kind: "call", callee: narrowName, args: [call], type: F64, loc },
+      loc,
+    },
+  ];
+  const toT: IrType & { kind: "func" } = { kind: "func", params: fromT.params, ret: F64 };
   lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
   return name;
 }

@@ -186,3 +186,67 @@ console.log(sum);
   expect(body).not.toContain("@scr_dyn_call");
   expect(body).not.toContain("@sc_gres_");
 });
+
+test("a generator binds destructured parameters at the call", async () => {
+  // FunctionDeclarationInstantiation runs before GeneratorStart, so the spawn
+  // wrapper steps the suspended body once, to the bind barrier: a nullish
+  // argument throws from the call and defaults run before it returns.
+  const llvm = await emit(`
+function* pick({ a }: { a: number }): Generator<number, void, undefined> {
+  yield a;
+}
+function* plain(a: number): Generator<number, void, undefined> {
+  yield a;
+}
+const STEP = 2;
+function* constantDefault(a = STEP + 1): Generator<number, void, undefined> {
+  yield a;
+}
+function* evaluatedDefault(a = pick({ a: 3 }).next().value ?? 0): Generator<number, void, undefined> {
+  yield a;
+}
+console.log(
+  pick({ a: 1 }).next().value,
+  plain(2).next().value,
+  constantDefault().next().value,
+  evaluatedDefault().next().value,
+);
+`);
+  expect(definition(llvm, "sc_gs_pick")).toContain("call void @scr_gen_bind(ptr %gg)");
+  expect(definition(llvm, "sc_gs_pick")).toMatch(
+    /call void @scr_gen_bind\(ptr %gg\)\n\s*ret ptr %gg/,
+  );
+  // The barrier is an invisible suspension: no OUT store, and the body
+  // resumes after it.
+  expect(definition(llvm, "sc_f_pick")).toContain("@llvm.coro.suspend(");
+  // Identifier-only parameters run nothing before the first resume, so the
+  // wrapper stays the allocation it always was — and so does a default that
+  // is a constant expression, which only selects a value.
+  expect(definition(llvm, "sc_gs_plain")).not.toContain("@scr_gen_bind(");
+  expect(definition(llvm, "sc_gs_constantDefault")).not.toContain("@scr_gen_bind(");
+  // A default that evaluates anything binds at the call.
+  expect(definition(llvm, "sc_gs_evaluatedDefault")).toContain("call void @scr_gen_bind(ptr %gg)");
+  // The two bindAtCall wrappers are the only callers, and the module
+  // declares the runtime entry once.
+  expect(llvm.match(/call void @scr_gen_bind\(/g)?.length).toBe(2);
+  expect(llvm.match(/declare void @scr_gen_bind\(/g)?.length).toBe(1);
+});
+
+test("a fiber generator runs its bind barrier through the runtime hop", async () => {
+  // Dev builds (and worker executables) keep generators on fibers: the
+  // barrier is the runtime's valueless yield (no OUT store, no IN read)
+  // instead of a coroutine suspend.
+  const llvm = await emit(
+    `
+function* pick({ a }: { a: number }): Generator<number, void, undefined> {
+  yield a;
+}
+console.log(pick({ a: 1 }).next().value);
+`,
+    "dev",
+  );
+  expect(definition(llvm, "sc_f_pick")).toContain(
+    "call void @scr_gen_yield_ref(ptr null, ptr null)",
+  );
+  expect(definition(llvm, "sc_gs_pick")).toContain("call void @scr_gen_bind(ptr %gg)");
+});

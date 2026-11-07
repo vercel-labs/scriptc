@@ -46,7 +46,7 @@ import {
 
 const run = promisify(execFile);
 
-/** Node v24.22.0 bundles ICU 78.3 (`process.versions.icu`), whose data
+/** Node v24.22.1 bundles ICU 78.3 (`process.versions.icu`), whose data
  * release is this file. */
 export { ICU_DATA_FILE };
 export const ICU_DATA_VERSION = ICU_VERSION;

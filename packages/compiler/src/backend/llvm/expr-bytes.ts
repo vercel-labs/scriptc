@@ -786,12 +786,17 @@ export function emitBytesIntrinsic(
     sig: string,
     argText: string,
     owned: boolean,
-    fallible: boolean,
+    mayThrow: boolean,
   ): LlValue => {
     const m = /^(.+?) \((.*)\)$/.exec(sig);
     if (!m) throw new InternalCompilerError(`llvm emitter bug: bad bytesIntrinsic sig ${sig}`);
     host.declare(`declare ${m[1]} @${sym}(${m[2]})`);
     const retTy = m[1] === "zeroext i1" ? "i1" : m[1]!;
+    // A mutable-buffers program (IrModule.bytesHeadersMutable) routes every
+    // view operation through the registry's detached/out-of-bounds guard,
+    // which reports Node's TypeError, so even an otherwise infallible
+    // entry may leave an exception pending.
+    const fallible = mayThrow || host.mod.bytesHeadersMutable === true;
     if (retTy === "void") {
       B.line(`call void @${sym}(${argText})`);
       if (fallible) host.emitPendingCheck();
@@ -897,6 +902,13 @@ export function emitBytesIntrinsic(
       if (e.receiver.type.kind !== "bytes") {
         throw new InternalCompilerError("llvm emitter bug: bytesIntrinsic byteLength on non-bytes");
       }
+      // A mutable-buffers program (IrModule.bytesHeadersMutable) can detach
+      // or shrink the view's buffer behind this getter, and Node's DataView
+      // getter throws on a detached or out-of-bounds view while a typed
+      // array answers 0; the registry answers both. Every other program
+      // keeps the inline header load.
+      if (host.mod.bytesHeadersMutable === true)
+        return call("scr_js_bytes_byte_length", "double (ptr)", `ptr ${r.name}`, false, true);
       return host.emitBytesLength(e.receiver.type.elem, r.name, true);
     case "get":
       // Any invalid index traps (the array runtime's discipline).
@@ -1164,6 +1176,9 @@ export function emitBytesIntrinsic(
     case "buffer":
       return call("scr_array_buffer_from_bytes", "ptr (ptr)", `ptr ${r.name}`, true, false);
     case "byteOffset":
+      // As byteLength: a DataView's getter throws on a detached buffer.
+      if (host.mod.bytesHeadersMutable === true)
+        return call("scr_js_bytes_byte_offset", "double (ptr)", `ptr ${r.name}`, false, true);
       return call("scr_bytes_byte_offset", "double (ptr)", `ptr ${r.name}`, false, false);
     case "dataViewNew":
       // new DataView(x.buffer, byteOffset?, byteLength?) — the has_len

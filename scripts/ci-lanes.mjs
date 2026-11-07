@@ -17,6 +17,10 @@
 // - effects: the Effect suites. On when the change touches their harness or fixtures.
 // - bootstrap: the native bootstrap seed and self-rebuild contracts. On when the change touches the bootstrap scripts,
 //   the native CLI build, the cli-* packages or the self-hosting tests.
+// - profile: the native compiler profile check. On when the change touches the compiler's sources or its committed
+//   layout and profile, the native code generation it is compiled with, the LLVM helper package, or the native CLI
+//   build, any of which can leave the committed profile describing functions that no longer match. Compiler tests are
+//   not part of the compiler it builds, so they do not turn it on.
 // Every lane is on when the change touches CI configuration, the workspace manifests or lockfile, vitest
 // configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pushes to main,
 // the nightly sweep and manual runs do not use this script: pushes to main run every lane except macos, and the others
@@ -24,7 +28,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
-const lanes = ["linux", "macos", "effects", "bootstrap"];
+const lanes = ["linux", "macos", "effects", "bootstrap", "profile"];
 
 const everything = [
   /^\.github\//,
@@ -73,6 +77,10 @@ const darwinLine =
 const effectPath = /^tests\/(harness\/effect|fixtures\/effect)/;
 const bootstrapPath =
   /^scripts\/(bootstrap-seed|ci-native-bootstrap|build-native-cli)|^packages\/cli-[^/]+\/|^tests\/harness\/(self-hosting|bootstrap-seed|ci-native-bootstrap|native-cli-packaging)/;
+// The native compiler's own functions: its sources, the code generation they
+// are compiled with, and the build that compiles them.
+const profilePath =
+  /^packages\/compiler\/(src|native)\/|^native\/|^packages\/llvm-[^/]+\/|^scripts\/build-native-cli/;
 
 function git(...args) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 28 });
@@ -104,6 +112,10 @@ export function select(files, changedLines) {
     if (bootstrapPath.test(file)) {
       if (!on.bootstrap) reasons.push(`${file}: bootstrap`);
       on.bootstrap = true;
+    }
+    if (profilePath.test(file)) {
+      if (!on.profile) reasons.push(`${file}: profile`);
+      on.profile = true;
     }
   }
   const line = changedLines.find((l) => darwinLine.test(l.text));

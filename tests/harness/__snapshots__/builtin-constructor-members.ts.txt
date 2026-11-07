@@ -1,18 +1,9 @@
 builtin-constructor-members.ts:5:22 - error SC2020: 'Map.prototype' is part of the standard library types but has no scriptc lowering yet
 
-  4 | // through globalThis or through an alias; it never reads undefined.
+  4 | // through globalThis or through an alias; Date.prototype is the exception.
   5 | const mapPrototype = Map.prototype;
     |                      ^~~~~~~~~~~~~
   6 | const datePrototype = Date.prototype;
-
-  hint: prototype objects are not values here (method lookup is static) — call the method on an instance instead
-
-builtin-constructor-members.ts:6:23 - error SC2020: 'Date.prototype' is part of the standard library types but has no scriptc lowering yet
-
-  5 | const mapPrototype = Map.prototype;
-  6 | const datePrototype = Date.prototype;
-    |                       ^~~~~~~~~~~~~~
-  7 | const regExpPrototype = RegExp.prototype;
 
   hint: prototype objects are not values here (method lookup is static) — call the method on an instance instead
 

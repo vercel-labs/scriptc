@@ -1,12 +1,24 @@
 import { analyzeInt32Slots } from "./int32-slots.js";
 import { BOOL, F64, type IrExpr, type IrFunction, type IrModule, type IrStmt } from "./ir.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "./node-index.js";
 import { reparseStmt } from "./serialize.js";
 import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
 
 const MAX_FUNCTION_NODES = 2048;
 const MAX_VERSIONS = 16;
+const CALL_SITE_KINDS: readonly IrNodeKind[] = ["call", "new"];
+const LOOP_KINDS: readonly IrNodeKind[] = ["for", "while", "doWhile"];
 
-function size(fn: IrFunction): number {
+/** The suffix of the function that holds a versioned function's original
+ * body (`<name>.int32Fallback`). It runs only for a loop-bound parameter that
+ * is not an int32, so the backend compiles it cold and out of line
+ * (emit-function.ts). */
+export const INT32_FALLBACK_SUFFIX = ".int32Fallback";
+
+/** The number of nodes of `fn`, counted up to one past MAX_FUNCTION_NODES. */
+function size(fn: IrFunction, index: IrNodeIndex | undefined): number {
+  const recorded = index?.nodeCount(fn);
+  if (recorded !== undefined) return Math.min(recorded, MAX_FUNCTION_NODES + 1);
   let nodes = 0;
   everyStmtList(fn.body, {
     stmt: () => ++nodes <= MAX_FUNCTION_NODES,
@@ -23,16 +35,13 @@ function callee(e: IrExpr): string | null {
 }
 
 /** Direct call and construction sites of each function in the module. */
-function callSites(mod: IrModule): Map<string, number> {
+function callSites(mod: IrModule, index: IrNodeIndex | undefined): Map<string, number> {
   const sites = new Map<string, number>();
+  const scan = index?.scan(CALL_SITE_KINDS);
   for (const fn of mod.functions)
-    everyStmtList(fn.body, {
-      stmt: () => true,
-      expr: (e) => {
-        const name = callee(e);
-        if (name !== null) sites.set(name, (sites.get(name) ?? 0) + 1);
-        return true;
-      },
+    eachNodeOfKinds(fn, scan, (node, statement) => {
+      const name = statement ? null : callee(node as IrExpr);
+      if (name !== null) sites.set(name, (sites.get(name) ?? 0) + 1);
     });
   return sites;
 }
@@ -132,7 +141,11 @@ function numericLoop(loop: IrStmt, functions: ReadonlyMap<string, IrFunction>): 
 
 /** Number parameters of `fn` that bound one of its numeric loops: read in
  * the loop's condition or in its `for` initializer. */
-function loopBounds(fn: IrFunction, functions: ReadonlyMap<string, IrFunction>): Set<string> {
+function loopBounds(
+  fn: IrFunction,
+  functions: ReadonlyMap<string, IrFunction>,
+  index: IrNodeIndex | undefined,
+): Set<string> {
   const params = new Set(
     fn.params.filter((param) => param.type.kind === "f64").map((param) => param.localId),
   );
@@ -143,15 +156,11 @@ function loopBounds(fn: IrFunction, functions: ReadonlyMap<string, IrFunction>):
     return everyExprChild(e, reads, readsStmt);
   };
   const readsStmt = (s: IrStmt): boolean => everyStmtChild(s, reads, readsStmt);
-  everyStmtList(fn.body, {
-    stmt: (s) => {
-      if (s.kind !== "for" && s.kind !== "while" && s.kind !== "doWhile") return true;
-      if (!numericLoop(s, functions)) return true;
-      if (s.cond) reads(s.cond);
-      if (s.kind === "for" && s.init) readsStmt(s.init);
-      return true;
-    },
-    expr: () => true,
+  eachNodeOfKinds(fn, index?.scan(LOOP_KINDS), (node) => {
+    if (node.kind !== "for" && node.kind !== "while" && node.kind !== "doWhile") return;
+    if (!numericLoop(node, functions)) return;
+    if (node.cond) reads(node.cond);
+    if (node.kind === "for" && node.init) readsStmt(node.init);
   });
   return result;
 }
@@ -171,18 +180,22 @@ function loopBounds(fn: IrFunction, functions: ReadonlyMap<string, IrFunction>):
  * -0 (`1 / p` is not -Infinity). The copy then receives `p | 0`, which is
  * the same double, so it computes what the body would; its only caller
  * proves the parameter an int32, so it gets the i32 entry. Other values
- * run the body as before, whose loops the backend then emits once
- * (`plainLoops`).
+ * run the body as before, moved to a function of its own
+ * (INT32_FALLBACK_SUFFIX) that the backend compiles cold: the function
+ * itself keeps only the test and the two calls. That fallback body emits
+ * each loop once (`plainLoops`), like the copy a failed guard runs.
  *
  * Only plain synchronous functions qualify: not class members, no
  * captures, not the module entry, not dynamic-tier, at most
  * MAX_FUNCTION_NODES nodes, not calling themselves, and not holding the
  * only call site of another function (`keepsSingleBody`). The caller
  * skips modules that observe call stacks, where the copy's frame could be
- * seen. */
+ * seen. `nodes`, an index of `mod`, gives the loops, node counts and call
+ * sites without walking the bodies it records. */
 export function versionLoopBoundParameters(
   mod: IrModule,
   symbolName: (name: string) => string = (name) => name,
+  nodes?: IrNodeIndex,
 ): IrModule {
   const candidates: { fn: IrFunction; params: Set<string> }[] = [];
   // Call sites are read only for functions with loop-bound parameters.
@@ -203,7 +216,7 @@ export function versionLoopBoundParameters(
       fn.name === mod.entry
     )
       continue;
-    const params = loopBounds(fn, functions);
+    const params = loopBounds(fn, functions, nodes);
     const locals = new Map(fn.locals.map((local) => [local.id, local]));
     for (const id of params) {
       const local = locals.get(id);
@@ -211,19 +224,20 @@ export function versionLoopBoundParameters(
     }
     if (
       params.size === 0 ||
-      size(fn) > MAX_FUNCTION_NODES ||
-      keepsSingleBody(fn, (sites ??= callSites(mod)), functions)
+      size(fn, nodes) > MAX_FUNCTION_NODES ||
+      keepsSingleBody(fn, (sites ??= callSites(mod, nodes)), functions)
     )
       continue;
     candidates.push({ fn, params });
   }
   if (candidates.length === 0) return mod;
-  const slots = analyzeInt32Slots(mod);
+  const slots = analyzeInt32Slots(mod, nodes === undefined ? {} : { nodes });
   const names = new Set(mod.functions.map((fn) => symbolName(fn.name)));
   const replaced = new Map<IrFunction, IrFunction>();
   const added: IrFunction[] = [];
+  let versions = 0;
   for (const { fn, params } of candidates) {
-    if (added.length >= MAX_VERSIONS) break;
+    if (versions >= MAX_VERSIONS) break;
     const unproven = fn.params.filter(
       (param) => params.has(param.localId) && !slots.hasParam(fn.name, param.localId),
     );
@@ -231,8 +245,15 @@ export function versionLoopBoundParameters(
     let name = `${fn.name}.int32Params`;
     while (names.has(symbolName(name))) name += "_";
     names.add(symbolName(name));
+    let fallbackName = `${fn.name}${INT32_FALLBACK_SUFFIX}`;
+    while (names.has(symbolName(fallbackName))) fallbackName += "_";
+    names.add(symbolName(fallbackName));
+    versions++;
     const { ownsPrototype: _ownsPrototype, ...implementation } = fn;
     added.push({ ...implementation, name, body: fn.body.map(reparseStmt) });
+    // The fallback runs only for a bound that is not an int32, so its loops
+    // take the copy without the integer form (plainLoops).
+    added.push({ ...implementation, name: fallbackName, body: fn.body, plainLoops: true });
     const loc = fn.body[0]?.loc ?? { file: mod.sourceFile, start: 0, end: 0 };
     const read = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, loc });
     const int32 = (localId: string): IrExpr => ({
@@ -282,28 +303,32 @@ export function versionLoopBoundParameters(
           : { kind: "logical", op: "&&", left: test, right: both, type: BOOL, loc };
     }
     const versioned = new Set(unproven.map((param) => param.localId));
-    const call: IrExpr = {
+    const call = (callee: string, int32Args: boolean): IrExpr => ({
       kind: "call",
-      callee: name,
+      callee,
       args: fn.params.map((param) =>
-        versioned.has(param.localId)
+        int32Args && versioned.has(param.localId)
           ? int32(param.localId)
           : { kind: "varRef", localId: param.localId, type: param.type, loc },
       ),
       type: fn.returnType,
       loc,
-    };
-    const run: IrStmt[] =
+    });
+    const run = (value: IrExpr): IrStmt[] =>
       fn.returnType.kind === "void"
         ? [
-            { kind: "exprStmt", expr: call, loc },
+            { kind: "exprStmt", expr: value, loc },
             { kind: "return", value: null, loc },
           ]
-        : [{ kind: "return", value: call, loc }];
+        : [{ kind: "return", value, loc }];
+    const paramIds = new Set(fn.params.map((param) => param.localId));
     replaced.set(fn, {
       ...fn,
-      plainLoops: true,
-      body: [{ kind: "if", cond: test!, then: run, else_: null, loc }, ...fn.body],
+      locals: fn.locals.filter((local) => paramIds.has(local.id)),
+      body: [
+        { kind: "if", cond: test!, then: run(call(name, true)), else_: null, loc },
+        ...run(call(fallbackName, false)),
+      ],
     });
   }
   if (added.length === 0) return mod;

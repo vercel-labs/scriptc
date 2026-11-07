@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8623-union-asserted-literal-retag.ts"
+ ],
+ "diags": []
+}

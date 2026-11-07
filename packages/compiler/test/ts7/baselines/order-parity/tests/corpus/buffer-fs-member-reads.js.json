@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/buffer-fs-member-reads.js"
+ ],
+ "diags": []
+}

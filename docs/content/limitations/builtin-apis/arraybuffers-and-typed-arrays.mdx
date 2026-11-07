@@ -1,5 +1,6 @@
 - **ArrayBuffers and typed arrays:** Fixed-length ArrayBuffers support shared typed-array and DataView storage.
-  Resizing, transferring, and BigInt arrays are unsupported.
+  Resizing and transferring are unsupported.
+  Typed code cannot construct `BigInt64Array` or `BigUint64Array`; JavaScript that names either one gets the checked-dynamic element kinds, where elements are BigInts.
   `Float16Array` stores IEEE 754 half-precision values, rounding each stored number to nearest-even as Node does; `Math.f16round`, `DataView.prototype.getFloat16` and `setFloat16`, and `util.types.isFloat16Array` compile.
   The typed-array callback methods (`forEach`, `map`, `filter`, `some`, `every`, `find`, `findIndex`, `findLast`, `findLastIndex`, `reduce`, `reduceRight`) compile; `map` and `filter` return the receiver's kind, a Buffer for a Buffer, and a `thisArg` argument is unsupported.
   Numeric typed arrays and Buffers preserve their kind and shared storage through `unknown`, including when nested in records and arrays.

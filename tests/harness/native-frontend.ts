@@ -1,8 +1,9 @@
 /* The native frontend checks: the complete compiler frontend built to a native
  * executable, which lowers programs without Node and must produce the IR and
  * reports of the Node pipeline it was built from. The checks are split across
- * the self-hosting-native-frontend*.test.ts files so that CI runs them on
- * different shards; each file builds the executable once (useNativeFrontend). */
+ * the self-hosting-native-frontend*.test.ts files so that CI runs them in
+ * separate processes; each file builds the executable once (useNativeFrontend).
+ * The sanitized Linux suite builds them in the native_frontend_san jobs. */
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

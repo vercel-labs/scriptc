@@ -17,7 +17,7 @@ import {
   UNDEFINED_T,
   arrayOf,
 } from "../../../ir/ir.js";
-import { optionMember } from "./arguments.js";
+import { isPureReadShape, optionMember } from "./arguments.js";
 
 /** `execFileSync(file, args?, options?)` / `execSync(command, options?)`
  * → the ONE cp.execSync libCall. execSync wraps the command in
@@ -32,17 +32,6 @@ import { optionMember } from "./arguments.js";
  * SIGTERM default), `windowsHide`/`shell:false` on execFileSync (Node
  * no-ops here). Every other member (a non-default killSignal, shell:true
  * on execFileSync, ...) fences by name. */
-/** Side-effect-free read shapes — identifiers and (optional) property
- * access chains over them (`options?.input`) — the shapes a lowering may
- * evaluate more than once (the readOpt re-read discipline). */
-function isPureReadShape(e: ts.Expression): boolean {
-  if (ts.isIdentifier(e) || e.kind === ts.SyntaxKind.ThisKeyword) return true;
-  if (ts.isPropertyAccessExpression(e)) return isPureReadShape(e.expression);
-  if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e))
-    return isPureReadShape(e.expression);
-  return false;
-}
-
 export function lowerExecSyncCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,

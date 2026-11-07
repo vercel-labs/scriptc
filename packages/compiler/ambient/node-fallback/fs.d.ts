@@ -191,16 +191,19 @@ declare module "node:fs" {
     },
   ): string[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
-   * probes — the honest subset of Node's Dirent surface). The type is
-   * interned explicitly in type-mapper.ts (the record's hidden %dtype field
-   * carries the entry kind; isFile/isDirectory/isSymbolicLink lower as
-   * reads of it in builtins/process.ts). */
+   * probes). The type is interned explicitly in type-mapper.ts (the
+   * record's hidden %dtype field carries the entry kind; the probes lower
+   * as reads of it in builtins/filesystem.ts). */
   export interface Dirent {
     name: string;
     parentPath: string;
     isFile(): boolean;
     isDirectory(): boolean;
     isSymbolicLink(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
+    isCharacterDevice(): boolean;
+    isBlockDevice(): boolean;
   }
   export function readdirSync(
     path: string | URL,
@@ -244,14 +247,27 @@ declare module "node:fs" {
     readonly path: string;
     readSync(): Dirent | null;
     read(): Promise<Dirent | null>;
+    read(callback: (err: NodeJS.ErrnoException | null, dirent: Dirent | null) => void): void;
     closeSync(): void;
     close(): Promise<void>;
+    close(callback: (err: NodeJS.ErrnoException | null) => void): void;
     [Symbol.asyncIterator](): AsyncIterableIterator<Dirent>;
+    [Symbol.dispose](): void;
+    [Symbol.asyncDispose](): Promise<void>;
   }
   export interface OpenDirOptions {
     encoding?: "utf8" | "utf-8";
     bufferSize?: number;
   }
+  export function opendir(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, dir: Dir) => void,
+  ): void;
+  export function opendir(
+    path: string | URL,
+    options: OpenDirOptions,
+    callback: (err: NodeJS.ErrnoException | null, dir: Dir) => void,
+  ): void;
   export function opendirSync(path: string | URL, options?: OpenDirOptions): Dir;
   /* fs.ReadStream / fs.WriteStream: runtime Readable and Writable streams
    * over a file (scr_fs_stream.c). The options are checked at runtime
@@ -471,8 +487,9 @@ declare module "node:fs" {
   ): BigIntStats;
   export function lstatSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
-   * the raw fd. Numeric flags use an inline OR of the O_* constants. */
-  export function openSync(path: string | URL, flags: string): number;
+   * the raw fd. Numeric flags use an inline OR of the O_* constants. The
+   * mode is open(2)'s creation mode and applies to both flag forms. */
+  export function openSync(path: string | URL, flags: string, mode?: number): number;
   export function openSync(path: string | URL, flags: number, mode?: number): number;
   export function closeSync(fd: number): void;
   export function fdatasyncSync(fd: number): void;

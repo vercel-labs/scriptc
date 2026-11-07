@@ -425,7 +425,7 @@ function tablePropertyWritten(
   };
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
     if (written) break;
-    if (!sf.text.includes(name)) continue;
+    if (!ts.sourceTextIncludes(sf, name)) continue;
     ts.walkPreorder(sf, (node) => {
       if (written) return "stop";
       let target: ts.Node | undefined;

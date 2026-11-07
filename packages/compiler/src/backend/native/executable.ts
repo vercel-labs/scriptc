@@ -8,6 +8,7 @@ import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  executableHardeningLinkerArgs,
   executableOptimizationLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
@@ -164,6 +165,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // A generator that binds its parameters at the call (scr_gen_bind.c).
   unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
+  // A generator function that reads `this` (scr_gen_receiver.c).
+  unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
@@ -223,6 +226,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   // Builtin functions read as values in JavaScript dependencies.
   unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
+  // An untyped path of a synchronous fs function (dyn.validateFsPath).
+  unit((u) => u.opts.fsPathValue === true, "scr_fs_path_value.c"),
   // A standard library prototype object read as a value in a JavaScript
   // source: the dynamic tier's gated unit, whose work is JavaScript-only.
   unit(
@@ -399,6 +404,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
   // Reflect.getPrototypeOf's primitive-target check.
   unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
+  // `delete` of a key a record's type does not declare.
+  unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
+  // Record views of types whose values may also be frozen.
+  unit((u) => u.opts.recordViewFrozen === true, "scr_record_view_frozen.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
@@ -477,6 +486,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+  ),
+  // A native AbortSignal or AbortController crossing into an island: the
+  // signal's twin there follows it through the signal unit's watcher list.
+  unit(
+    (u) => u.opts.nodeIsland === true && (u.nativeFetch || u.opts.abortSignal === true),
+    "scr_node_island_abort.c",
   ),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
@@ -615,7 +630,8 @@ export async function compileCInternal(
   );
   const executableLinkFlags = [
     ...executableSectionFlags.link,
-    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization),
+    ...executableHardeningLinkerArgs(targetPlatform(driver), isMuslTarget(driver)),
+    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization, isMuslTarget(driver)),
     ...executableStripLinkerArgs(targetPlatform(driver), opts.strip ?? false),
     ...windowsSubsystemArgs,
   ];

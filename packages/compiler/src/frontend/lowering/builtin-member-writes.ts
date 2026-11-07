@@ -579,28 +579,41 @@ function typeofComparison(lowerer: Lowerer, operand: ts.Expression, text: string
  * any part of it needs evaluation: `X.m`, `typeof X.m === "function"`,
  * `X.m === undefined`, `X.m == null`, `"m" in X`, `X.hasOwnProperty("m")`,
  * and `!`, `&&`, `||` over them. Existing members cannot be replaced or
- * deleted, so the answer at startup is the answer everywhere. */
+ * deleted, so the answer at startup is the answer everywhere. Without
+ * `skipped` the answer is one that needs no evaluation at all: every operand
+ * that would run is such a test. With it, the answer may also be one that an
+ * operand with effects cannot change, and `skipped.operand` says so: the
+ * caller then has to keep the test's evaluation. */
 export function builtinPresenceTest(
   lowerer: Lowerer,
   expr: ts.Expression,
   depth = 0,
+  skipped?: { operand: boolean },
 ): boolean | null {
   // A feature test is a handful of operands; a chain of thousands is not
   // one, and must not cost a frame per operand.
   if (depth > 16) return null;
   const e = unparenthesized(expr);
   if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
-    const inner = builtinPresenceTest(lowerer, e.operand, depth + 1);
+    const inner = builtinPresenceTest(lowerer, e.operand, depth + 1, skipped);
     return inner === null ? null : !inner;
   }
   if (ts.isBinaryExpression(e)) {
     const op = e.operatorToken.kind;
     if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {
       const isAnd = op === ts.SyntaxKind.AmpersandAmpersandToken;
-      const left = builtinPresenceTest(lowerer, e.left, depth + 1);
+      const left = builtinPresenceTest(lowerer, e.left, depth + 1, skipped);
       if (left !== null && left !== isAnd) return left;
-      const right = builtinPresenceTest(lowerer, e.right, depth + 1);
-      if (right !== null && right !== isAnd) return right;
+      const right = builtinPresenceTest(lowerer, e.right, depth + 1, skipped);
+      // The right operand decides whatever the left one answers
+      // (`effect() && !Array.prototype.at`), but the left one still runs:
+      // only a caller that keeps the test's evaluation may use this answer.
+      if (right !== null && right !== isAnd) {
+        if (left !== null) return right;
+        if (skipped === undefined) return null;
+        skipped.operand = true;
+        return right;
+      }
       return left === null || right === null ? null : isAnd;
     }
     if (op === ts.SyntaxKind.InKeyword) {
@@ -654,19 +667,22 @@ export function builtinPresenceTest(
  * the fence refuses. Null otherwise, so a feature test that guards anything
  * else keeps its ordinary lowering; null too when that arm `mustLower` (it
  * declares a binding the rest of the scope sees), where the write in it is
- * refused like any other. */
+ * refused like any other. `pure` is false when the test has an operand that
+ * runs for its effects (`effect() && !Array.prototype.at`): the arm is
+ * still dead, and the test still has to be evaluated. */
 export function builtinPolyfillGuard(
   lowerer: Lowerer,
   test: ts.Expression,
   whenTrue: ts.Statement | undefined,
   whenFalse: ts.Statement | undefined,
   mustLower: (arm: ts.Statement) => boolean,
-): boolean | null {
-  const decided = builtinPresenceTest(lowerer, test);
-  if (decided === null) return null;
-  const dead = decided ? whenFalse : whenTrue;
+): { value: boolean; pure: boolean } | null {
+  const skipped = { operand: false };
+  const value = builtinPresenceTest(lowerer, test, 0, skipped);
+  if (value === null) return null;
+  const dead = value ? whenFalse : whenTrue;
   if (dead === undefined || mustLower(dead)) return null;
-  return containsBuiltinMemberWrite(lowerer, dead) ? decided : null;
+  return containsBuiltinMemberWrite(lowerer, dead) ? { value, pure: !skipped.operand } : null;
 }
 
 /** Whether an expression statement is a polyfill that never runs: a logical

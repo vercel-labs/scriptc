@@ -3856,6 +3856,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
+  // The fallback declarations give the global `console` an object type of
+  // its own (not the Console interface): the same native handle, so a slot
+  // of that type (`{ target: console }`, `[console]`, a parameter typed
+  // `typeof console`) holds the console value in both type worlds.
+  if (psym !== undefined && psym.declarations.some((d) => isFallbackConsoleType(d, ctx))) {
+    return DYN;
+  }
   // node:crypto Cipheriv/Decipheriv values (and @types/node's per-mode
   // interfaces over them) are native handles carried by the checked-dynamic
   // representation; lowerCipherMethodCall dispatches their methods.
@@ -5646,6 +5653,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // stream's replaceable method slot, so it is the checked-dynamic function
   // the stream object hands out (scr_events.c ProcessStream).
   if (callSigs.length > 1 && isStdlibStreamWriteOverloads(callSigs, ctx)) return DYN;
+  // A console method taken as a value (`const { log } = console`, a saved
+  // `console.error`, `typeof console.warn` as a slot's type): the value is
+  // the one function the console object hands out (scr_console_native.c),
+  // which formats whatever arguments its caller passes as Node's own
+  // method does. No compiled signature says that, so the value stays the
+  // checked-dynamic function, and a typed slot it flows into adapts it at
+  // the slot's own signature.
+  if (callSigs.length === 1 && isStdlibConsoleMethod(callSigs[0]!, ctx)) return DYN;
   // An overload set held as a VALUE (a callback parameter, an alias, a
   // variable, a member read): JavaScript stores ONE function, so the value
   // is that function's erased type, the same slot a record member of this
@@ -6221,6 +6236,36 @@ function isStdlibStreamWriteOverloads(
       ctx.isStdlibFile(ts.getSourceFileOfNode(decl))
     );
   });
+}
+
+/** `node` is the object type the fallback declarations give the global
+ * `console` (`declare const console: { log(...): void; ... }`). */
+function isFallbackConsoleType(node: ts.Node, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  if (!ts.isTypeLiteralNode(node)) return false;
+  const holder = node.parent;
+  return (
+    holder !== undefined &&
+    ts.isVariableDeclaration(holder) &&
+    ts.isIdentifier(holder.name) &&
+    holder.name.text === "console" &&
+    ctx.isStdlibFile(ts.getSourceFileOfNode(node))
+  );
+}
+
+/** `sig` is a method of the standard library's console object: a member of
+ * @types/node's global `interface Console`, or of the object type the
+ * fallback declarations give `console`. */
+function isStdlibConsoleMethod(
+  sig: ts.Signature,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): boolean {
+  const decl = sig.declaration;
+  if (decl === undefined || !ts.isMethodSignatureDeclaration(decl)) return false;
+  const owner = decl.parent;
+  if (owner === undefined) return false;
+  if (ts.isInterfaceDeclaration(owner))
+    return owner.name.text === "Console" && ctx.isStdlibFile(ts.getSourceFileOfNode(decl));
+  return isFallbackConsoleType(owner, ctx);
 }
 
 /** An overloaded set's identity for the expansion guard. A generic set
@@ -9240,6 +9285,19 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
 }
 
+/** The fields a checked-identity view's type declares: the layout the type
+ * has when no live object stands behind it. A value of the type is a live
+ * dynamic object, so the type itself maps to the checked-dynamic value; an
+ * object literal built for the view stores its members at these field types
+ * (view-literals.ts). Member types map as everywhere else, so a member that
+ * is a view itself stays one. Null when the type declares no fixed layout
+ * (an index signature, a symbol key, a member with no representation). */
+export function declaredViewFields(type: ts.Type, ctx: TypeMapperCtx): IrRecordField[] | null {
+  const parts = mapRecordTypeInner(ctx.checker.getBaseTypeOfLiteralType(type), ctx, true);
+  if (parts === null || !("fields" in parts) || parts.indexValue !== undefined) return null;
+  return parts.fields;
+}
+
 /** An index signature already describes every OPTIONAL declared member
  * whose type is its slot type: @types/node's `ProcessEnv extends
  * Dict<string> { TZ?: string }` and every spread of it, or a declared
@@ -9599,6 +9657,9 @@ function interfaceExtendsAny(type: ts.Type, checker: ts.TypeChecker): boolean {
 function mapRecordTypeInner(
   widened: ts.Type,
   ctx: TypeMapperCtx,
+  /** Answer the fields the type declares even when the type is a
+   * checked-identity view (declaredViewFields). */
+  declaredLayout = false,
 ): IrType | RecordShapeParts | null {
   const { checker, shapes } = ctx;
   if (checker.getConstructSignatures(widened).length > 0) return null;
@@ -9751,7 +9812,7 @@ function mapRecordTypeInner(
   const computed = widened.isIntersectionType() || isMappedShape(widened);
   {
     const props = checker.getPropertiesOfType(widened);
-    if (ctx.classImplementedProtocol?.(widened)) return DYN;
+    if (!declaredLayout && ctx.classImplementedProtocol?.(widened)) return DYN;
     // Symbol-keyed records use the checked object's descriptor table. A
     // checker-internal __@ name is not a string field in a native struct.
     if (props.some((property) => ts.symbolName(property).startsWith("__@"))) return DYN;

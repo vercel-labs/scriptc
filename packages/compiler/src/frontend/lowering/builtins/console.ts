@@ -95,6 +95,13 @@ function consoleMemberOf(
     : null;
 }
 
+/** Whether a direct `console.<name>(...)` call has a lowering: the output
+ * members and the rest of the lowered surface. `trace` and the keys that
+ * are not methods do not. */
+export function isLoweredConsoleMember(name: string): boolean {
+  return isConsoleOutputMember(name) || CONSOLE_METHOD_MEMBERS.has(name);
+}
+
 function isConsoleOutputMember(name: string): name is ConsoleOutputMember {
   return (
     name === "log" || name === "info" || name === "debug" || name === "error" || name === "warn"

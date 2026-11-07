@@ -2449,7 +2449,7 @@
       "kind": "node-builtin",
       "name": "process.getBuiltinModule",
       "status": "static",
-      "note": "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020"
+      "note": "a literal id of a supported module answers its namespace; a computed id serves the path families, os, util/types, node:sea and current-thread worker_threads metadata, answers undefined for an id Node does not have, and throws SC2020 for Node's other modules"
     },
     {
       "id": "node-builtin.process.getegid",
@@ -2704,6 +2704,43 @@
       "id": "node-builtin.readline.promises.createInterface",
       "kind": "node-builtin",
       "name": "readline/promises.createInterface",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea",
+      "kind": "node-builtin",
+      "name": "node:sea",
+      "status": "static",
+      "note": "recognized module (node:-prefixed specifier only, matching Node)"
+    },
+    {
+      "id": "node-builtin.sea.getAsset",
+      "kind": "node-builtin",
+      "name": "sea.getAsset",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getAssetAsBlob",
+      "kind": "node-builtin",
+      "name": "sea.getAssetAsBlob",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getAssetKeys",
+      "kind": "node-builtin",
+      "name": "sea.getAssetKeys",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getRawAsset",
+      "kind": "node-builtin",
+      "name": "sea.getRawAsset",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.isSea",
+      "kind": "node-builtin",
+      "name": "sea.isSea",
       "status": "static"
     },
     {

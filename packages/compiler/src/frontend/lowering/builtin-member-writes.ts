@@ -204,7 +204,7 @@ function prototypeOperand(lowerer: Lowerer, e: ts.Expression): ts.Expression | n
 function literalPrototype(lowerer: Lowerer, value: ts.Expression): string | null {
   const v = withoutParenthesesTypeWrappers(value);
   if (ts.isArrayLiteralExpression(v)) return "Array.prototype";
-  if (ts.isObjectLiteralExpression(v)) return "Object.prototype";
+  if (ts.isObjectLiteralExpression(v)) return setsOwnPrototype(v) ? null : "Object.prototype";
   if (ts.isRegularExpressionLiteral(v)) return "RegExp.prototype";
   if (ts.isFunctionExpression(v) || ts.isArrowFunction(v)) return "Function.prototype";
   if (ts.isNewExpression(v) && ts.isIdentifier(v.expression)) {
@@ -212,6 +212,117 @@ function literalPrototype(lowerer: Lowerer, value: ts.Expression): string | null
     return name !== null && table().has(`${name}.prototype`) ? `${name}.prototype` : null;
   }
   return null;
+}
+
+/** Whether an object literal names its prototype (`{ __proto__: null }`):
+ * the one member that sets the prototype instead of defining a property. */
+function setsOwnPrototype(literal: ts.ObjectLiteralExpression): boolean {
+  for (const member of literal.properties.nodes) {
+    if (!ts.isPropertyAssignment(member)) continue;
+    const name = member.name;
+    if ((ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === "__proto__")
+      return true;
+  }
+  return false;
+}
+
+/** A literal that is a value and nothing else: a number, a string, a
+ * boolean or null. */
+function isPlainLiteral(e: ts.Expression): boolean {
+  return (
+    ts.isNumericLiteral(e) ||
+    ts.isStringLiteral(e) ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    e.kind === ts.SyntaxKind.NullKeyword
+  );
+}
+
+/** Whether making a value the source spells out runs none of the program's
+ * code and cannot throw: a literal, a function, or an array or object
+ * literal of such values under plain names. Anything else in it (a call, a
+ * read of a binding, a spread, a computed key, `new X(…)`) is evaluated for
+ * what it does. */
+function spellsInertValue(value: ts.Expression, depth = 0): boolean {
+  const v = withoutParenthesesTypeWrappers(value);
+  if (
+    isPlainLiteral(v) ||
+    ts.isNoSubstitutionTemplateLiteral(v) ||
+    ts.isBigIntLiteral(v) ||
+    ts.isRegularExpressionLiteral(v) ||
+    ts.isFunctionExpression(v) ||
+    ts.isArrowFunction(v)
+  )
+    return true;
+  if (depth > 8) return false;
+  if (ts.isArrayLiteralExpression(v)) {
+    for (const element of v.elements.nodes)
+      if (!ts.isOmittedExpression(element) && !spellsInertValue(element, depth + 1)) return false;
+    return true;
+  }
+  if (!ts.isObjectLiteralExpression(v)) return false;
+  for (const member of v.properties.nodes) {
+    // A method or an accessor is defined, not run.
+    if (ts.isSpreadAssignment(member) || ts.isShorthandPropertyAssignment(member)) return false;
+    if (member.name === undefined || ts.isComputedPropertyName(member.name)) return false;
+    if (ts.isPropertyAssignment(member) && !spellsInertValue(member.initializer, depth + 1))
+      return false;
+  }
+  return true;
+}
+
+/** Whether a read of `id` can come before the binding it names is
+ * initialized, where Node throws (`const`) or reads undefined (`var`): the
+ * name of a variable this file declares with an initializer, read anywhere
+ * but after the declaring statement in that statement's own list. The
+ * earlier statement of a list has run when a later one does, and a function
+ * a later statement creates cannot be called before it; a function
+ * declaration is hoisted, so one in the list can be. A global has no such
+ * declaration. */
+function mayReadBeforeInitializer(lowerer: Lowerer, id: ts.Identifier): boolean {
+  const decl = lowerer.checker.getSymbolAtLocation(id)?.declarations[0];
+  if (decl === undefined || ts.getSourceFileOfNode(decl) !== ts.getSourceFileOfNode(id))
+    return false;
+  if (ts.isVariableDeclaration(decl)) {
+    if (decl.initializer === undefined) return false;
+  } else if (!ts.isBindingElement(decl)) return false;
+  let statement: ts.Node | undefined = decl;
+  while (statement !== undefined && !ts.isVariableStatement(statement)) {
+    if (ts.isFunctionLike(statement) || ts.isStatement(statement)) return true;
+    statement = statement.parent;
+  }
+  const list = statement?.parent;
+  if (statement === undefined || list === undefined) return true;
+  if (!ts.isBlock(list) && !ts.isSourceFile(list) && !ts.isModuleBlock(list)) return true;
+  // The outermost function between the read and the list decides: one the
+  // list declares can run before the list's statements do.
+  let hoisted = false;
+  let child: ts.Node = id;
+  for (let at = id.parent; at !== undefined; child = at, at = at.parent) {
+    if (at === list) return hoisted || child === statement || child.pos < statement.end;
+    if (ts.isFunctionLike(at)) hoisted = ts.isFunctionDeclaration(at);
+  }
+  return true;
+}
+
+/** Whether evaluating a member access or a built-in object expression
+ * (builtinMemberOf, builtinObjectOf) can do anything but answer: it reads
+ * the prototype of a value the source spells out, and making that value runs
+ * code (`Object.getPrototypeOf([effect()]).at`, `new Map(entries())
+ * .__proto__`), or it starts at an alias that may not be initialized yet
+ * (`probe(); const proto = Array.prototype`, where `probe` reads `proto`).
+ * A global, an alias declared by an earlier statement and the prototype of
+ * an inert literal (`Object.getPrototypeOf([])`) only answer. Every other
+ * part of such an expression is a name or a literal key. */
+function readRuns(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let e = withoutParenthesesTypeWrappers(expr);
+  for (;;) {
+    const instance = prototypeOperand(lowerer, e);
+    if (instance !== null) return !spellsInertValue(instance);
+    if (ts.isIdentifier(e)) return mayReadBeforeInitializer(lowerer, e);
+    if (!ts.isPropertyAccessExpression(e) && !ts.isElementAccessExpression(e)) return false;
+    e = withoutParenthesesTypeWrappers(e.expression);
+  }
 }
 
 /** The key a member access names without evaluating anything: a property
@@ -694,14 +805,21 @@ function isUndefinedOrNull(e: ts.Expression): boolean {
 function unitOperandRuns(e: ts.Expression): boolean {
   const x = withoutParentheses(e);
   if (!ts.isVoidExpression(x)) return false;
-  const operand = withoutParentheses(x.expression);
-  return !(
-    ts.isNumericLiteral(operand) ||
-    ts.isStringLiteral(operand) ||
-    operand.kind === ts.SyntaxKind.TrueKeyword ||
-    operand.kind === ts.SyntaxKind.FalseKeyword ||
-    operand.kind === ts.SyntaxKind.NullKeyword
-  );
+  return !isPlainLiteral(withoutParentheses(x.expression));
+}
+
+/** Whether a test that reads `read` (readRuns) may be decided: yes when the
+ * read runs nothing; when it does, only for a caller that keeps the test's
+ * evaluation, which `skipped.operand` then asks for. */
+function mayDecide(
+  lowerer: Lowerer,
+  read: ts.Expression,
+  skipped: { operand: boolean } | undefined,
+): boolean {
+  if (!readRuns(lowerer, read)) return true;
+  if (skipped === undefined) return false;
+  skipped.operand = true;
+  return true;
 }
 
 /** `typeof X.m` for a member whose answer is fixed: "function" for a
@@ -732,8 +850,8 @@ function typeofComparison(lowerer: Lowerer, operand: ts.Expression, text: string
  * `skipped` the answer is one that needs no evaluation at all: every operand
  * that would run is such a test. With it, the answer may also be one that an
  * operand with effects cannot change (`effect() && !X.m`, `X.m === void
- * effect()`), and `skipped.operand` says so: the caller then has to keep the
- * test's evaluation. */
+ * effect()`, `Object.getPrototypeOf([effect()]).m`), and `skipped.operand`
+ * says so: the caller then has to keep the test's evaluation. */
 export function builtinPresenceTest(
   lowerer: Lowerer,
   expr: ts.Expression,
@@ -770,7 +888,8 @@ export function builtinPresenceTest(
       const key = withoutParentheses(e.left);
       if (!ts.isStringLiteral(key) || !mayNameBuiltin(lowerer, e.right)) return null;
       const owner = builtinObjectOf(lowerer, e.right);
-      return owner !== null && builtinMemberKind(owner, key.text) !== null ? true : null;
+      if (owner === null || builtinMemberKind(owner, key.text) === null) return null;
+      return mayDecide(lowerer, e.right, skipped) ? true : null;
     }
     const equal =
       op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken;
@@ -781,13 +900,18 @@ export function builtinPresenceTest(
     const left = withoutParentheses(e.left);
     const right = withoutParentheses(e.right);
     let answer: boolean | null = null;
-    if (ts.isTypeOfExpression(left) && ts.isStringLiteral(right))
-      answer = typeofComparison(lowerer, left.expression, right.text);
-    else if (ts.isTypeOfExpression(right) && ts.isStringLiteral(left))
-      answer = typeofComparison(lowerer, right.expression, left.text);
-    else {
+    // The member access the comparison reads, which runs where it reads the
+    // prototype of a value that is made for it.
+    let read: ts.Expression | null = null;
+    if (ts.isTypeOfExpression(left) && ts.isStringLiteral(right)) {
+      read = left.expression;
+      answer = typeofComparison(lowerer, read, right.text);
+    } else if (ts.isTypeOfExpression(right) && ts.isStringLiteral(left)) {
+      read = right.expression;
+      answer = typeofComparison(lowerer, read, left.text);
+    } else {
       const unit = isUndefinedOrNull(right) ? right : isUndefinedOrNull(left) ? left : null;
-      const read = unit === null ? null : unit === right ? left : right;
+      read = unit === null ? null : unit === right ? left : right;
       const member = read === null ? null : testedMemberOf(lowerer, read);
       if (unit !== null && member !== null && alwaysTruthy(member)) {
         // `X.m === void effect()`: the operand does not change the answer
@@ -800,7 +924,8 @@ export function builtinPresenceTest(
         answer = false;
       }
     }
-    return answer === null ? null : equal ? answer : !answer;
+    if (answer === null || read === null || !mayDecide(lowerer, read, skipped)) return null;
+    return equal ? answer : !answer;
   }
   if (ts.isCallExpression(e)) {
     const callee = withoutParentheses(e.expression);
@@ -815,10 +940,11 @@ export function builtinPresenceTest(
     )
       return null;
     const owner = builtinObjectOf(lowerer, callee.expression);
-    return owner !== null && builtinOwnMemberKind(owner, key.text) !== null ? true : null;
+    if (owner === null || builtinOwnMemberKind(owner, key.text) === null) return null;
+    return mayDecide(lowerer, callee.expression, skipped) ? true : null;
   }
   const member = testedMemberOf(lowerer, e);
-  if (member === null || member.kind === "a") return null;
+  if (member === null || member.kind === "a" || !mayDecide(lowerer, e, skipped)) return null;
   return member.kind !== "z";
 }
 
@@ -828,8 +954,9 @@ export function builtinPresenceTest(
  * else keeps its ordinary lowering; null too when that arm `mustLower` (it
  * declares a binding the rest of the scope sees), where the write in it is
  * refused like any other. `pure` is false when the test has an operand that
- * runs for its effects (`effect() && !Array.prototype.at`): the arm is
- * still dead, and the test still has to be evaluated. */
+ * runs for its effects (`effect() && !Array.prototype.at`,
+ * `!Object.getPrototypeOf([effect()]).at`): the arm is still dead, and the
+ * test still has to be evaluated. */
 export function builtinPolyfillGuard(
   lowerer: Lowerer,
   test: ts.Expression,
@@ -860,7 +987,8 @@ function noteBuiltinFeatureTest(lowerer: Lowerer, test: ts.Expression): void {
  * (`Array.prototype.at || (Array.prototype.at = f)`), or an assignment that
  * keeps the member's own value (`X.m = X.m || f`, `X.m ??= f`). Its operands
  * that run are reads of built-in members and have no effects, so the
- * statement lowers to nothing. */
+ * statement lowers to nothing; one whose read makes a value first
+ * (`Object.getPrototypeOf([effect()]).at || …`) is not such a statement. */
 export function isDeadBuiltinPolyfill(lowerer: Lowerer, expr: ts.Expression): boolean {
   const e = withoutParentheses(expr);
   if (!ts.isBinaryExpression(e)) return false;
@@ -869,13 +997,17 @@ export function isDeadBuiltinPolyfill(lowerer: Lowerer, expr: ts.Expression): bo
     const target = builtinMemberOf(lowerer, e.left);
     if (target === null || isAssignableState(target) || !keepsOwnValue(lowerer, e, target))
       return false;
+    // The target runs, and so does the read of `X.m = X.m || f`.
+    const kept = op === ts.SyntaxKind.EqualsToken ? withoutParenthesesTypeWrappers(e.right) : null;
+    if (readRuns(lowerer, e.left)) return false;
+    if (kept !== null && ts.isBinaryExpression(kept) && readRuns(lowerer, kept.left)) return false;
     noteBuiltinFeatureTest(lowerer, e.left);
     return true;
   }
   let skipsRight: boolean;
   if (op === ts.SyntaxKind.QuestionQuestionToken) {
     const member = testedMemberOf(lowerer, e.left);
-    skipsRight = member !== null && alwaysTruthy(member);
+    skipsRight = member !== null && alwaysTruthy(member) && !readRuns(lowerer, e.left);
   } else if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {
     const left = builtinPresenceTest(lowerer, e.left);
     skipsRight = left !== null && left === (op === ts.SyntaxKind.BarBarToken);

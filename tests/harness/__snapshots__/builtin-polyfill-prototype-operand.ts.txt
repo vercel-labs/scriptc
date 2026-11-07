@@ -1,0 +1,35 @@
+builtin-polyfill-prototype-operand.ts:15:4 - error SC1092: replacing the built-in 'Array.prototype.at' here is not supported: the program calls it at builtin-polyfill-prototype-operand.ts:38:20, and compiled code does not read a built-in member from its object, so the call would not see the change
+
+  14 | Object.getPrototypeOf([note("or")]).at ||
+  15 |   (Array.prototype.at = function () {
+     |    ^~~~~~~~~~~~~~~~~~
+  16 |     return undefined;
+
+  hint: a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+
+builtin-polyfill-prototype-operand.ts:20:4 - error SC1092: replacing the built-in 'Array.prototype.includes' here is not supported: the program calls it at builtin-polyfill-prototype-operand.ts:38:38, and compiled code does not read a built-in member from its object, so the call would not see the change
+
+  19 | Object.getPrototypeOf([note("nullish")]).includes ??
+  20 |   (Array.prototype.includes = function () {
+     |    ^~~~~~~~~~~~~~~~~~~~~~~~
+  21 |     return false;
+
+  hint: a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+
+builtin-polyfill-prototype-operand.ts:26:3 - error SC1092: replacing the built-in 'Array.prototype.indexOf' here is not supported: the program calls it at builtin-polyfill-prototype-operand.ts:38:55, and compiled code does not read a built-in member from its object, so the call would not see the change
+
+  25 |   if (Object.getPrototypeOf([note("early")]).indexOf) return;
+  26 |   Array.prototype.indexOf = function () {
+     |   ^~~~~~~~~~~~~~~~~~~~~~~
+  27 |     return -1;
+
+  hint: a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead
+
+builtin-polyfill-prototype-operand.ts:33:3 - error SC1092: replacing the built-in 'Object.prototype.toString' here is not supported: the program calls 'String' at builtin-polyfill-prototype-operand.ts:38:71, which reads it, and compiled code does not read a built-in member from its object, so the call would not see the change
+
+  32 | if (!Object.getPrototypeOf({ __proto__: null }).toString) {
+  33 |   Object.prototype.toString = function () {
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~
+  34 |     return "replaced";
+
+  hint: a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead

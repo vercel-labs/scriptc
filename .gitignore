@@ -69,4 +69,4 @@ tmp-*/
 !tests/corpus/fs-extra-package/node_modules/jsonfile/node_modules/
 
 # the island start-up benchmark's fixture packages are committed on purpose
-!benchmarks/runtime/workloads/island-start/node_modules/
+!benchmarks/startup/islands/node_modules/

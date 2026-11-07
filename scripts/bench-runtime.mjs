@@ -125,11 +125,13 @@ function missingRequirement(w) {
   }
   return null;
 }
+const skipped = [];
 const workloads = allWorkloads.filter((w) => {
   if (selected !== null && !selected.has(w.name)) return false;
   const missing = missingRequirement(w);
   if (missing === null) return true;
   console.error(`skipping ${w.name}: needs ${missing}`);
+  skipped.push({ name: w.name, reason: `needs ${missing}` });
   return false;
 });
 
@@ -138,9 +140,21 @@ const work = mkdtempSync(
 );
 // Programs with Node islands install their island modules below the cache
 // directory on their first launch: this run's own, so every contender starts
-// from an empty cache and the timed launches find the modules installed.
+// from an empty cache and the timed launches find the modules installed. A
+// workload with `"cache": "cold"` measures that first launch instead: each
+// of its timed launches gets an empty cache directory.
 if (workloads.some((w) => (w.requires ?? []).includes("libnode")))
   process.env.XDG_CACHE_HOME = join(work, "cache");
+let coldCaches = 0;
+function launchEnv(w) {
+  if (w.cache !== "cold") return { env: process.env, done: () => {} };
+  const cache = join(work, `cold-cache-${coldCaches++}`);
+  mkdirSync(cache, { recursive: true });
+  return {
+    env: { ...process.env, XDG_CACHE_HOME: cache },
+    done: () => rmSync(cache, { recursive: true, force: true }),
+  };
+}
 
 /* ── code-layout perturbation ──────────────────────────────────────────── */
 // Layout k > 0 links a retained k*16-byte padding object before every other
@@ -562,6 +576,8 @@ const report = {
   layouts,
   contenders: contenders.map((c) => ({ ...c, revision: revision(c.root) })),
   workloads: [],
+  // Workloads left out because the host lacks what they need.
+  skipped,
 };
 
 /* Workload kinds: "process" (default) times whole launches; `launches` > 1
@@ -572,6 +588,10 @@ for (const w of workloads) {
   if (w.kind === "server") assert.ok(w.client?.script, `${w.name}: server workloads need a client`);
   const launches = w.launches ?? 1;
   assert.ok(Number.isInteger(launches) && launches >= 1, `${w.name}: launches must be >= 1`);
+  assert.ok(
+    w.cache === undefined || w.cache === "warm" || w.cache === "cold",
+    `${w.name}: cache must be "warm" or "cold"`,
+  );
 }
 
 /** One timing sample: { ms } on success, { failed } otherwise. */
@@ -586,7 +606,9 @@ async function sample(w, command, args) {
   // per launch is easily disturbed by unrelated activity on the host.
   const times = [];
   for (let i = 0; i < (w.launches ?? 1); i++) {
-    const result = run(command, args);
+    const launch = launchEnv(w);
+    const result = run(command, args, { env: launch.env });
+    launch.done();
     if (result.timedOut || result.status !== 0)
       return { failed: result.timedOut ? "timeout" : "unstable-exit" };
     times.push(result.ms);

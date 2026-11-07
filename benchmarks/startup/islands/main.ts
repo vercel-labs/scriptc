@@ -11,7 +11,7 @@ import { inventory } from "sparekit";
 
 const mode = process.argv[2] ?? "report";
 if (mode === "version") {
-  console.log("island-start 1.0.0");
+  console.log("startup-islands 1.0.0");
 } else if (mode === "report") {
   const seed = Number(process.argv[3] ?? 7);
   console.log(mark(describe(total(seed))));

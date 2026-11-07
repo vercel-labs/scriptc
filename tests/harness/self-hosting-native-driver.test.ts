@@ -55,6 +55,18 @@ function absoluteCommand(command: string): string {
   throw new Error(`native tool is not on PATH: ${command}`);
 }
 
+// The seed build is the compiler compiling itself, so it grows with main: on
+// 32-vCPU Sandboxes its fastest plain build went from 471 s (base of
+// 2026-10-27) to 712 s (2026-11-07), about 145 s a week, and the same tree
+// takes up to 1.66 times as long on one machine as on another. Of 244 plain
+// builds on 2026-11-07 the median took 1009 s and the slowest tenth 1447 s
+// or more, and eight were stopped at the 1800 s every step is allowed. Its
+// own limit is twice that, which the fastest build reaches after about ten
+// more weeks of the same growth on the slowest machine; the limit is the
+// place to look when it does. CI builds the seed in a job of its own
+// (bootstrap_seed) and never runs this step.
+const seedBuildTimeoutMs = sanitize ? 5_400_000 : 3_600_000;
+
 test(
   `the production CLI passes ${phase} bootstrap contracts with Node unavailable`,
   async () => {
@@ -90,6 +102,7 @@ test(
               // seed avoids optimizing the huge compiler module before ASan can
               // exercise its complete traversal, serialization and LLVM emission.
               ...options,
+              timeout: seedBuildTimeoutMs,
               env: { ...process.env, ...seedBuildEnvironment(sanitize) },
             },
           ),
@@ -721,5 +734,6 @@ test(
       rmSync(directory, { recursive: true, force: true });
     }
   },
-  sanitize ? 10_800_000 : 5_400_000,
+  // The plain rebuild phase took up to 3892 s with a seed built in 1800 s or less.
+  sanitize ? 10_800_000 : 7_200_000,
 );

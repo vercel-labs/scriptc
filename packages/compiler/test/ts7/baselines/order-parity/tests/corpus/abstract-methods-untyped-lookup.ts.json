@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/abstract-methods-untyped-lookup.ts"
+ ],
+ "diags": []
+}

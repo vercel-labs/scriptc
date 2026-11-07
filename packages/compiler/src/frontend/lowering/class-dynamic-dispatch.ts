@@ -6600,8 +6600,12 @@ export class ClassDynamicDispatch {
             genericOverrideBelow(info, name))
         )
           return fence();
-        const method = classMethodValue(lowerer, info.decl, info, name, loc);
-        if (method && canConvertToDyn(method.type, getRecord, getUnion)) {
+        // An abstract declaration has no value at run time, as in JavaScript:
+        // the lookup selects a constructible subclass's implementation, and
+        // an object none of them matches has no such method (undefined).
+        const abstractHere = declared?.sig.abstract === true;
+        const method = abstractHere ? null : classMethodValue(lowerer, info.decl, info, name, loc);
+        if (abstractHere || (method && canConvertToDyn(method.type, getRecord, getUnion))) {
           // A capsule may have the base ABI even when its native object is
           // a subclass (for example an inherited iterator returning this).
           // Select the method declaration at extraction, before detaching it.
@@ -6684,7 +6688,9 @@ export class ClassDynamicDispatch {
           }
           body.push({
             kind: "return",
-            value: { kind: "dynFrom", value: method, type: DYN, loc },
+            value: method
+              ? { kind: "dynFrom", value: method, type: DYN, loc }
+              : dynUndefinedExpr(loc),
             loc,
           });
           return body;

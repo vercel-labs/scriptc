@@ -12347,16 +12347,39 @@ export function lowerObjectMethodCall(
   }
   // An ABSTRACT nearest declaration with no concrete override below the
   // static class: no implementation exists for a direct call to target.
-  // Unreachable in a program that constructs anything of this type (tsc
-  // makes instantiable subclasses implement, and their declarations flip
-  // overrideBelow) — reaching here means the receiver can only be a
-  // non-value (`null!`); the fence is the honest answer.
+  // tsc makes instantiable subclasses implement, and their declarations flip
+  // overrideBelow, so no instance of this type exists in the program and the
+  // call never runs with a receiver that has the method. An abstract
+  // declaration has no value at run time: as in JavaScript, the call
+  // evaluates its receiver and its arguments, then throws Node's TypeError,
+  // so a class whose concrete methods call an abstract one compiles in a
+  // program that never subclasses it. Spread arguments keep the fence.
   if (found.sig.abstract === true && !lowerer.overrideBelow(info, method)) {
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      `calls of the abstract method '${method}' with no concrete implementation below the receiver's static class`,
-    );
+    if (call.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `calls of the abstract method '${method}' with no concrete implementation below the receiver's static class`,
+      );
+    } else {
+      const loc = locOf(call);
+      const stmts: IrStmt[] = [{ kind: "exprStmt", expr: lowerReceiver(), loc }];
+      for (const arg of call.arguments.nodes)
+        stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc: locOf(arg) });
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: nodeThrowExpr(
+          1,
+          "",
+          `${ts.getTextOfNode(access)} is not a function`,
+          found.sig.ret,
+          loc,
+        ),
+        type: found.sig.ret,
+        loc,
+      };
+    }
   }
   // The static receiver's nearest declaration is an override adapted to
   // the inherited ABI, and nothing below overrides it: call its body

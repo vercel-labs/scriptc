@@ -4831,6 +4831,7 @@ function validateFunction(
     if (
       e.fn === "http.serverOnUpgrade" ||
       e.fn === "http.clientOnUpgrade" ||
+      e.fn === "http.clientOnConnect" ||
       e.fn === "http.serverOnConnect"
     ) {
       // (req, socket, head) or any shorter prefix, void return. The

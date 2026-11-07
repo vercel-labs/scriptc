@@ -2184,6 +2184,8 @@ function buildLibFnSignatures() {
     "http.createServerEmpty": { argTypes: [], result: NETSERVER_T },
     "http.validateHeaderName": { argTypes: [STRING, STRING], result: VOID },
     "http.validateHeaderValue": { argTypes: [STRING, DYN], result: VOID },
+    /** http.setMaxIdleHTTPParsers(max): Node's argument validation. */
+    "http.setMaxIdleParsers": { argTypes: [DYN], result: VOID },
     "http.serverJoinDupHeaders": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverAllowMissingHostHeader": { argTypes: [NETSERVER_T], result: VOID },
     /** The five writable numeric http.Server timeout fields use one
@@ -2289,6 +2291,14 @@ function buildLibFnSignatures() {
     "http.resCork": { argTypes: [HTTPRES_T], result: VOID },
     "http.resUncork": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWritableCorked": { argTypes: [HTTPRES_T], result: F64 },
+    "http.resWritableHighWaterMark": { argTypes: [HTTPRES_T], result: F64 },
+    "http.resWritableObjectMode": { argTypes: [HTTPRES_T], result: BOOL },
+    /** res.on("prefinish", cb): fires inside end(). Throws for the HTTP/2
+     * compatibility response. */
+    "http.resOnPrefinish": {
+      argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }, BOOL],
+      result: VOID,
+    },
     // The member follow-ups: reqStatusCode's `number | undefined` and
     // sockRemoteAddress's `string | undefined` results are shape-checked in
     // the special cases in validate.ts (like reqHeader/columns).
@@ -2352,6 +2362,9 @@ function buildLibFnSignatures() {
      * per-shape adapter — the tags are program data). */
     "http.serverOnConnect": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.clientOnUpgrade": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
+    /** The response to a CONNECT request: the same (res, socket, head)
+     * handover, whatever the status. */
+    "http.clientOnConnect": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
     /** server.on("clientError", (err, socket) => ...): a request the parser
      * rejects, or a connection error, goes to the listeners instead of the
      * default 400/413/431 answer, as in Node. (err, socket) and shorter

@@ -2274,7 +2274,10 @@ function lowerNetServerMethodCall(
     if (event === "clientError") {
       // (err, socket): a request the parser rejects, or a connection error,
       // goes to the listeners instead of the default answer.
-      const cb = lowerer.lowerExpr(args[1]!);
+      const cb = adaptUntypedListener(lowerer, lowerer.lowerExpr(args[1]!), args[1]!, [
+        ERROR_T,
+        NETSOCKET_T,
+      ]);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
         lowerer.unsupported(
           "SC1090",
@@ -4441,6 +4444,26 @@ export function lowerServerProperty(
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
       return { kind: "libCall", fn: "http.resWritableFinished", args: [receiver], type: BOOL, loc };
     }
+    if (name === "writableHighWaterMark") {
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+      return {
+        kind: "libCall",
+        fn: "http.resWritableHighWaterMark",
+        args: [receiver],
+        type: F64,
+        loc,
+      };
+    }
+    if (name === "writableObjectMode") {
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+      return {
+        kind: "libCall",
+        fn: "http.resWritableObjectMode",
+        args: [receiver],
+        type: BOOL,
+        loc,
+      };
+    }
     if (name === "destroyed") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
       return { kind: "libCall", fn: "http.resDestroyed", args: [receiver], type: BOOL, loc };
@@ -5228,6 +5251,17 @@ function lowerHttpModuleCall(
       loc,
     };
   }
+  if (bi.member === "setMaxIdleHTTPParsers") {
+    // Node sizes a pool of idle parser objects; the compiled parser is
+    // per-connection state, so the call validates its argument like
+    // Node's and has nothing else to do.
+    requireStatementPosition(lowerer, expr, "http.setMaxIdleHTTPParsers(...)");
+    if (expr.arguments.nodes.length !== 1 || expr.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.noLowering("http.setMaxIdleHTTPParsers arguments", expr, "pass the pool size");
+    }
+    const max = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, DYN);
+    return { kind: "libCall", fn: "http.setMaxIdleParsers", args: [max], type: VOID, loc };
+  }
   if (bi.member === "createServer" || bi.member === "Server") {
     return lowerHttpCreateServerForms(lowerer, expr, `http.${bi.member}`, loc);
   }
@@ -5237,7 +5271,7 @@ function lowerHttpModuleCall(
   lowerer.noLowering(
     `http.${bi.member}`,
     expr,
-    "createServer, Server, request, get, validateHeaderName, and validateHeaderValue are the lowered http module functions",
+    "createServer, Server, request, get, setMaxIdleHTTPParsers, validateHeaderName, and validateHeaderValue are the lowered http module functions",
     lowerer.resolveValueSymbol(expr.expression as ts.Identifier),
   );
 }
@@ -7169,7 +7203,8 @@ function lowerHttpClientCall(
   let reject: IrExpr | null = null;
   let ca: IrExpr | null = null;
   let connCb: IrExpr | null = null;
-  /** agent: false — inject Connection: close into the request head. */
+  /** agent: false — the throwaway agent: `false` in the agent slot, or
+   * (dialer and binding forms) Connection: close in the request head. */
   let agentClose: ts.Node | null = null;
   /** agent: <Agent value> — the requestAgent rows thread the handle. */
   let agentVal: IrExpr | null = null;
@@ -7436,9 +7471,9 @@ function lowerHttpClientCall(
         break;
       }
       case "agent": {
-        // Node's agent option. `false` asks for a one-shot dial with
-        // Connection: close — exactly the compiled client's connection
-        // model, so it LOWERS (the header injects below). null/undefined
+        // Node's agent option. `false` asks for a one-shot dial through a
+        // throwaway Agent — exactly the compiled client's connection
+        // model, so it LOWERS (as the `false` agent value below). null/undefined
         // pick the default agent, whose keep-alive request header the
         // compiled client already sends (socket REUSE stays the
         // documented divergence either way). An Agent VALUE (the lowered
@@ -7485,6 +7520,17 @@ function lowerHttpClientCall(
         );
     }
   }
+  if (agentClose !== null && connCb === null && binding === null) {
+    // agent: false is Node's throwaway Agent: the request does not go
+    // through the global agent, its head asks the server to close AFTER
+    // Host (where _storeHeader writes the field), and its own headers do
+    // not list a Connection field. The runtime's agent slot takes `false`
+    // for exactly that, so the literal passes it; the headers option may
+    // be any record. The dialer and function-binding forms have no agent
+    // slot and keep the header below.
+    agentVal = { kind: "dynFrom", value: boolLit(false, loc), type: DYN, loc };
+    agentClose = null;
+  }
   /** A literal request carrying both a protocol option and an Agent VALUE
    * evaluates the agent expression once, into a hidden local: the protocol
    * check and the request then read the same object, as Node's options
@@ -7498,12 +7544,12 @@ function lowerHttpClientCall(
     agentVal = varRef(agentLocal.id, DYN, loc);
   }
   if (agentClose !== null) {
-    // agent: false → Node sends `Connection: close` (its one-shot Agent
-    // sets the header) and tears the socket down with the response — the
-    // compiled client already closes, so the header is the whole
-    // lowering. A user-set connection header wins, Node's rule; a
-    // non-literal headers record cannot be checked for one, so the combo
-    // fences instead of double-sending.
+    // agent: false with a dialer or through a function binding, which
+    // have no agent slot: Node sends `Connection: close` and tears the
+    // socket down with the response — the compiled client already closes,
+    // so the header is the whole lowering. A user-set connection header
+    // wins, Node's rule; a non-literal headers record cannot be checked
+    // for one, so the combo fences instead of double-sending.
 
     if (headers === null) {
       headers = {
@@ -7840,6 +7886,37 @@ function lowerHttpTrailersOption(lowerer: Lowerer, node: ts.Expression): IrExpr 
     flat.push(lowerer.lowerExprExpecting(name, STRING), lowerer.lowerExprExpecting(value, STRING));
   }
   return { kind: "arrayLit", elems: flat, type: arrayOf(STRING), loc };
+}
+
+/** A listener whose event hands over several values, written without
+ * types: a checked-dynamic callback, or a function whose parameters are
+ * all checked-dynamic (a JavaScript source), adapts to the event's tuple
+ * through the dynCheck function boundary, as lowerCallbackArg does for the
+ * single-payload events. A typed listener passes through to the caller's
+ * own shape checks. */
+function adaptUntypedListener(
+  lowerer: Lowerer,
+  cb: IrExpr,
+  node: ts.Expression,
+  tuple: readonly IrType[],
+): IrExpr {
+  const loc = locOf(node);
+  const toT = funcOf([...tuple], VOID);
+  if (cb.type.kind === "dyn") return { kind: "dynCheck", value: cb, type: toT, loc };
+  if (
+    cb.type.kind === "func" &&
+    cb.type.params.length > 0 &&
+    cb.type.params.every((param) => param.kind === "dyn") &&
+    canBoxFuncIntoDyn(
+      cb.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    const boxed: IrExpr = { kind: "dynFrom", value: cb, type: DYN, loc };
+    return { kind: "dynCheck", value: boxed, type: toT, loc };
+  }
+  return cb;
 }
 
 /** Method calls on ClientRequest receivers: write/end/destroy and
@@ -8186,23 +8263,28 @@ function lowerHttpClientMethodCall(
           loc,
         };
       }
-      if (event === "upgrade") {
+      if (event === "upgrade" || event === "connect") {
         // The client half of the WebSocket handover: a 101 response fires
         // (res, socket, head) INSTEAD of 'response'; no listener destroys
-        // the connection, Node's default.
-        const cb = lowerer.lowerExpr(args[1]!);
+        // the connection, Node's default. 'connect' is the same handover
+        // for the response to a CONNECT request, whatever its status.
+        const cb = adaptUntypedListener(lowerer, lowerer.lowerExpr(args[1]!), args[1]!, [
+          HTTPREQ_T,
+          NETSOCKET_T,
+          BYTES_U8,
+        ]);
         if (cb.type.kind !== "func" || cb.type.params.length > 3) {
           lowerer.unsupported(
             "SC1090",
             args[1]!,
-            "upgrade listeners with more than three parameters (use (res, socket, head))",
+            `${event} listeners with more than three parameters (use (res, socket, head))`,
           );
         }
         if (cb.type.ret.kind !== "void") {
           lowerer.unsupported(
             "SC1090",
             args[1]!,
-            "upgrade listeners returning a value (make the callback body a block)",
+            `${event} listeners returning a value (make the callback body a block)`,
           );
         }
         const [p0, p1, p2] = cb.type.params;
@@ -8214,12 +8296,12 @@ function lowerHttpClientMethodCall(
           lowerer.unsupported(
             "SC1090",
             args[1]!,
-            "upgrade listeners whose parameters are not (res: IncomingMessage, socket: Socket, head: Buffer)",
+            `${event} listeners whose parameters are not (res: IncomingMessage, socket: Socket, head: Buffer)`,
           );
         }
         return {
           kind: "libCall",
-          fn: "http.clientOnUpgrade",
+          fn: event === "upgrade" ? "http.clientOnUpgrade" : "http.clientOnConnect",
           args: [receiver, cb, once],
           type: VOID,
           loc,
@@ -8228,7 +8310,7 @@ function lowerHttpClientMethodCall(
       lowerer.noLowering(
         `request.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         args[0]!,
-        '"response", "socket", "upgrade", "continue", "information", "error", "timeout", "finish", "abort", and "close" are the supported request events (as literals)',
+        '"response", "socket", "upgrade", "connect", "continue", "information", "error", "timeout", "finish", "abort", and "close" are the supported request events (as literals)',
       );
     };
     const registration = register();
@@ -9217,10 +9299,30 @@ function lowerHttpResMethodCall(
       );
       return { kind: "libCall", fn: "http.resOnFinish", args: [receiver, cb], type: VOID, loc };
     }
+    if (event === "prefinish") {
+      // Emitted inside end(), once the last bytes are handed to the
+      // socket and before 'finish'.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "prefinish listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http.resOnPrefinish",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `res.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"close" and "finish" are the supported response events (as literals)',
+      '"close", "finish", and "prefinish" are the supported response events (as literals)',
     );
   }
   lowerer.noLowering(

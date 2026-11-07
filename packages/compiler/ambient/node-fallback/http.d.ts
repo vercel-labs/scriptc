@@ -111,6 +111,8 @@ declare module "http" {
     readonly finished: boolean;
     readonly writableFinished: boolean;
     readonly writableCorked: number;
+    readonly writableHighWaterMark: number;
+    readonly writableObjectMode: boolean;
     readonly destroyed: boolean;
     readonly req: IncomingMessage;
     readonly socket: Socket | null;
@@ -152,10 +154,11 @@ declare module "http" {
     end(data?: string | Uint8Array, callback?: () => void): void;
     end(callback: () => void): void;
     destroy(): void;
-    on(event: "close" | "finish", listener: () => void): void;
+    /* 'prefinish' fires inside end(), before 'finish'. */
+    on(event: "close" | "finish" | "prefinish", listener: () => void): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
-    addListener(event: "close" | "finish", listener: () => void): void;
-    once(event: "close" | "finish", listener: () => void): void;
+    addListener(event: "close" | "finish" | "prefinish", listener: () => void): void;
+    once(event: "close" | "finish" | "prefinish", listener: () => void): void;
   }
   /* The CLIENT slice (http.request/http.get): the options-object form
    * with hostname/host, port, path, method, timeout, and headers; the
@@ -173,8 +176,9 @@ declare module "http" {
     /* The caller's own dialer (the proxy's loopback dial): invoked once,
      * synchronously; its socket carries the exchange. */
     createConnection?: () => Socket;
-    /* agent: false is a one-shot dial with Connection: close — exactly
-     * the compiled client's model; null/undefined are the default; an
+    /* agent: false is a one-shot dial through a throwaway agent (the
+     * head asks the server to close) — exactly the compiled client's
+     * model; null/undefined are the default; an
      * Agent VALUE threads through (getName-keyed maxSockets accounting
      * over one-dial-per-request connections). */
     agent?: Agent | boolean | null;
@@ -278,8 +282,9 @@ declare module "http" {
     abort(): void;
     on(event: "response", listener: (res: IncomingMessage) => void): this;
     on(event: "socket", listener: (socket: Socket) => void): this;
+    /* 'connect' is the response to a CONNECT request: the tunnel's socket. */
     on(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
     on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
@@ -290,7 +295,7 @@ declare module "http" {
     addListener(event: "response", listener: (res: IncomingMessage) => void): this;
     addListener(event: "socket", listener: (socket: Socket) => void): this;
     addListener(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
     addListener(
@@ -302,7 +307,7 @@ declare module "http" {
     once(event: "response", listener: (res: IncomingMessage) => void): this;
     once(event: "socket", listener: (socket: Socket) => void): this;
     once(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
     once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
@@ -342,6 +347,8 @@ declare module "http" {
     optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
+  /* Node's argument validation; the compiled parser has no pool to size. */
+  export function setMaxIdleHTTPParsers(max: number): void;
   export function validateHeaderName(name: string, label?: string): void;
   export function validateHeaderValue(name: string, value: unknown): void;
 }

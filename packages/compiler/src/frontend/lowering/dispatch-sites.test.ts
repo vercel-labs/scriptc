@@ -58,3 +58,22 @@ test("scans a body again once a change inside an unchanged list is reported", ()
   sites.forget(f);
   expect(sites.of(f)).toMatchObject({ dispatches: true, runtimeSteps: true });
 });
+
+test("finds the operations on Node island values, not the calls that copy JSON", () => {
+  const sites = new DispatchSites();
+  const call = (name: "nodeIsland.callSync" | "nodeIsland.isHandle"): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: name,
+      args: [{ kind: "varRef", localId: "value", type: DYN, loc }],
+      type: DYN,
+      loc,
+    },
+    loc,
+  });
+  expect(sites.of(fn([value(1)])).islandValues).toBe(false);
+  // callSync copies its arguments and its result: no value crosses by reference.
+  expect(sites.of(fn([call("nodeIsland.callSync")])).islandValues).toBe(false);
+  expect(sites.of(fn([call("nodeIsland.isHandle")])).islandValues).toBe(true);
+});

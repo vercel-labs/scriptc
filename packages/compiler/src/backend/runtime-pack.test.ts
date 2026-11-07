@@ -360,6 +360,27 @@ describe("runtime pack manifests", () => {
     expect(staticPlan.staticLink).toBe(true);
   });
 
+  test("a link plan carries the start-up symbols it is given, in order", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    const startupSymbols = ["sc_f_third", "sc_f_first", "sc_f_second"];
+    expect((await createNativeLinkPlan(options)).startupSymbols).toBeUndefined();
+    expect(
+      (await createNativeLinkPlan({ ...options, startupSymbols: [] })).startupSymbols,
+    ).toBeUndefined();
+    expect((await createNativeLinkPlan({ ...options, startupSymbols })).startupSymbols).toEqual(
+      startupSymbols,
+    );
+  });
+
   test("Linux links of large program code use huge text unless it is turned off", async () => {
     const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
     // An ELF64 relocatable object's headers with one executable section of

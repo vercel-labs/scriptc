@@ -12506,8 +12506,26 @@ export function lowerObjectMethodCall(
     const receiver = lowerReceiver();
     const local = lowerer.declareHiddenLocal("%callbackReceiver", receiver.type);
     const value: IrExpr = { kind: "varRef", localId: local.id, type: receiver.type, loc };
-    const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, loc, call);
     const virtual = lowerer.overrideBelow(info, method);
+    // The nearest declaration is a TypeScript override declaring parameters
+    // past the inherited slot arity, with nothing below it: the unchanged
+    // method is that override, so its native call enters the override's own
+    // body under its declared parameter list, as the ordinary call below
+    // does. A replaced slot still takes the dynamic call with every argument.
+    const widened = found.declarer.returnAdapters?.get(method);
+    const own =
+      widened !== undefined &&
+      !virtual &&
+      widened.params.length > found.sig.params.length &&
+      !(found.declarer.decl && isJsSourceFile(ts.getSourceFileOfNode(found.declarer.decl)))
+        ? widened
+        : null;
+    const args = lowerer.completeArgs(
+      call.arguments.nodes,
+      own?.params ?? found.sig.params,
+      loc,
+      call,
+    );
     if (virtual) lowerer.noteVirtualEdge(info, method);
     else lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
     const fallback: IrExpr = virtual
@@ -12521,9 +12539,9 @@ export function lowerObjectMethodCall(
         }
       : {
           kind: "call",
-          callee: `%${found.declarer.def.name}.${method}`,
+          callee: `%${found.declarer.def.name}.${method}${own ? "$own" : ""}`,
           args: [lowerer.upcastTo(value, found.declarer.def.name), ...args],
-          type: found.sig.ret,
+          type: own?.ret ?? found.sig.ret,
           loc,
         };
     // The declaring class's original value, built with the observed slot.

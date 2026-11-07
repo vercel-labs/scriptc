@@ -20,7 +20,8 @@ function annotate(target: Noted): void {
 }
 annotate(tagged);
 
-// The empty record type keeps no property, and no identity either.
+// The empty record type has no field to copy into: the binding holds the
+// object itself.
 const anything: {} = tagged;
 console.log(anything === tagged);
 

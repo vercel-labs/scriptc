@@ -2,18 +2,20 @@ import type { IrExpr, IrFunction, IrModule } from "./ir.js";
 import { everyStmtList } from "./traverse.js";
 
 /** The function an expression names as a value rather than as a direct
- * call's callee: a closure's code, or the union→union retag helper an
- * `orDefault` hands its left box to. These are the only expression fields
+ * call's callee: a closure's code, the union→union retag helper an
+ * `orDefault` hands its left box to, or the adapter body a `viewOf` or
+ * `viewSource` recognizes a view by. These are the only expression fields
  * that hold a module function's name besides `call.callee`
  * (function-references.test.ts classifies every string field of the IR). */
 export function exprFunctionReference(expr: IrExpr): string | undefined {
   if (expr.kind === "closure") return expr.fnName;
   if (expr.kind === "orDefault") return expr.retag;
+  if (expr.kind === "viewOf" || expr.kind === "viewSource") return expr.adapter ?? undefined;
   return undefined;
 }
 
 /** The expression kinds exprFunctionReference answers for. */
-export const FUNCTION_REFERENCE_KINDS = ["closure", "orDefault"] as const;
+export const FUNCTION_REFERENCE_KINDS = ["closure", "orDefault", "viewOf", "viewSource"] as const;
 
 /** Functions the module's metadata names: the entry, library exports,
  * closures' jsval entries, the class prototype helpers the runtime calls

@@ -36,6 +36,8 @@ import {
   resolveInferredReturn,
   appendImplicitUndefinedReturn,
   blockBodyOf,
+  checkedUndefinedResult,
+  returnsDeclaredUndefined,
 } from "./function-returns.js";
 import {
   generatorMeta,
@@ -591,7 +593,33 @@ export function lowerLambda(
           // A body whose value the checker typed `undefined` from a
           // narrowing a call may have undone would be dropped here.
           lowerer.refuseDroppedStaleReturn(bodyExpr);
-          if (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped)) {
+          // An untyped body value where the result is declared `undefined`
+          // is checked, as `return` checks it (lowerReturnOf). The body
+          // keeps its statement lowering, so a conditional's arms stay lazy
+          // branches (a `void e` arm among them) and each untyped arm is
+          // checked where it is the result.
+          const checksUndefined =
+            !isAsync &&
+            !ts.isVoidExpression(stripped) &&
+            (lowerer.typeOf(stripped).flags & ts.TypeFlags.Any) !== 0 &&
+            returnsDeclaredUndefined(lowerer, bodyExpr);
+          if (checksUndefined) {
+            body = [
+              lowerer.lowerExprStatement(stripped, (arm) => {
+                if (ts.isVoidExpression(arm)) return null;
+                if ((lowerer.typeOf(arm).flags & ts.TypeFlags.Any) === 0) return null;
+                const value = lowerer.lowerExpr(arm);
+                const loc = locOf(arm);
+                const check = checkedUndefinedResult(lowerer, value, loc);
+                if (check !== null) return { kind: "block", body: check, loc };
+                // As an unchecked body lowers: a bare unit literal is a
+                // no-op, anything else runs for its effect.
+                return value.kind === "unitLit"
+                  ? { kind: "block", body: [], loc }
+                  : { kind: "exprStmt", expr: value, loc };
+              }),
+            ];
+          } else if (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped)) {
             body = [lowerer.lowerExprStatement(stripped)];
           } else {
             const value = lowerer.lowerExpr(bodyExpr);

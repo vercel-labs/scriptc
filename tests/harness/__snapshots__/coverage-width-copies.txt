@@ -6,16 +6,10 @@ scriptc coverage tests/coverage-fixtures/width-copies.ts
 
   fully static — all analyzed statements compile to native code.
 
-  differs from Node   4 sites (compiles; the native program can behave differently)
-      ×1  SC6001  passing a 'Tagged' where 'Noted' is expected copies the object (converting to a record type with other properties compiles as a field copy): the write to 'target.label' updates only the copy, while u…
+  differs from Node   3 sites (compiles; the native program can behave differently)
+      ×2  SC6001  converting this '{ label: string; tag: string }' to '{ label: string }' copies it (a conversion to another layout builds a new object), while under Node both names refer to one object: the program wr…
+          at tests/coverage-fixtures/width-copies.ts:36:9, tests/coverage-fixtures/width-copies.ts:40:26
+          hint: keep the value at its own type ('{ label: string; tag: string }') where it is passed or stored, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too
+      ×1  SC6001  converting this '{ label: string; tag: string }' to '{ label: string; note: string | undefined }' copies it (a conversion to another layout builds a new object), while under Node both names refer to …
           at tests/coverage-fixtures/width-copies.ts:21:10
-          hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
-      ×1  SC6001  storing a 'Tagged' in a '{}' binding copies the object (converting to a record type with other properties compiles as a field copy): 'anything === tagged' compares the copy, which is never the origin…
-          at tests/coverage-fixtures/width-copies.ts:24:22
-          hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
-      ×1  SC6001  storing a 'Tagged' in a 'Labeled' binding copies the object (converting to a record type with other properties compiles as a field copy): the write to 'later.label' updates only the copy, while under…
-          at tests/coverage-fixtures/width-copies.ts:35:9
-          hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
-      ×1  SC6001  storing a 'Tagged' as an element of 'Labeled[]' copies the object (converting to a record type with other properties compiles as a field copy): the write to 'item.label' updates only the copy, while …
-          at tests/coverage-fixtures/width-copies.ts:39:26
-          hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
+          hint: keep the value at its own type ('{ label: string; tag: string }') where it is passed or stored, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too

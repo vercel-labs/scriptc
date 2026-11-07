@@ -1,6 +1,11 @@
 import { expect, test } from "vitest";
 import type { ScrDiagnostic } from "./diagnostic.js";
-import { renderDiagnostic, renderDiagnostics } from "./render.js";
+import {
+  renderDiagnostic,
+  renderDiagnostics,
+  renderWarnings,
+  WARNINGS_RENDERED,
+} from "./render.js";
 
 function diag(file: string, start: number, end: number): ScrDiagnostic {
   return { code: "SC2020", message: "not supported", loc: { file, start, end } };
@@ -53,4 +58,28 @@ test("thousands of diagnostics on a minified line render without exhausting stri
   const out = renderDiagnostics(diags, new Map([["bundle.js", text]]));
   expect(out.split(" - error SC2020: ").length - 1).toBe(20_000);
   expect(out.length).toBeLessThan(20_000 * 1_000);
+});
+
+test("a build renders a bounded number of warnings and counts the rest by code", () => {
+  const text = "const n = w;\n";
+  const warning = (code: ScrDiagnostic["code"], i: number): ScrDiagnostic => ({
+    code,
+    message: `site ${i}`,
+    loc: { file: "a.ts", start: 0, end: 5 },
+  });
+  const few = Array.from({ length: 3 }, (_, i) => warning("SC6001", i));
+  const fewText = renderWarnings(few, new Map([["a.ts", text]]));
+  expect(fewText).not.toContain("not shown");
+  expect(fewText).toContain("3 warnings: the program compiled");
+
+  const many = [
+    ...Array.from({ length: WARNINGS_RENDERED + 7 }, (_, i) => warning("SC6001", i)),
+    warning("SC6002", 99),
+  ];
+  const manyText = renderWarnings(many, new Map([["a.ts", text]]));
+  expect(manyText.match(/warning SC6001/g)?.length).toBe(WARNINGS_RENDERED);
+  expect(manyText).toContain(
+    "8 more warnings not shown (SC6001 ×7, SC6002 ×1); 'scriptc coverage --print=diagnostics' lists every site.",
+  );
+  expect(manyText).toContain(`${WARNINGS_RENDERED + 8} warnings: the program compiled`);
 });

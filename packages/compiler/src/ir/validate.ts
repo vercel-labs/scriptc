@@ -1408,6 +1408,8 @@ function validateFunction(
       case "call":
       case "ffiCall":
       case "closure":
+      case "viewOf":
+      case "viewSource":
       case "callValue":
         return checkCallExpr(e);
       case "selfRef":
@@ -2810,7 +2812,9 @@ function validateFunction(
     }
   }
 
-  function checkCallExpr(e: IrExpr & { kind: "call" | "ffiCall" | "closure" | "callValue" }): void {
+  function checkCallExpr(
+    e: IrExpr & { kind: "call" | "ffiCall" | "closure" | "viewOf" | "viewSource" | "callValue" },
+  ): void {
     switch (e.kind) {
       case "call": {
         for (const a of e.args) checkExpr(a);
@@ -2855,6 +2859,32 @@ function validateFunction(
         const expected = ffiClassType(entry.returns);
         if (!typeEquals(e.type, expected)) {
           err(`FFI call ${e.import} type ${e.type.kind} != return class ${entry.returns}`, e.loc);
+        }
+        break;
+      }
+      case "viewOf":
+      case "viewSource": {
+        checkExpr(e.value);
+        if (e.value.type.kind !== "func") {
+          err(`${e.kind} of a non-function ${e.value.type.kind}`, e.loc);
+          break;
+        }
+        if (e.kind === "viewOf" && e.type.kind !== "bool") err("viewOf must be bool-typed", e.loc);
+        if (e.adapter === null) {
+          // The checked-dynamic boundary's view holds the callable itself.
+          if (e.kind === "viewSource" && e.type.kind !== "dyn")
+            err("viewSource of a checked-dynamic view must be dyn-typed", e.loc);
+          break;
+        }
+        // The adapter's body: its first capture is the function the view
+        // forwards to, which is what viewSource reads.
+        const source = functions.get(e.adapter)?.captures?.[0]?.type;
+        if (source?.kind !== "func") {
+          err(`${e.kind}: "${e.adapter}" is not a signature adapter's body`, e.loc);
+          break;
+        }
+        if (e.kind === "viewSource" && !typeEquals(e.type, source)) {
+          err(`viewSource type ${e.type.kind} is not the type "${e.adapter}" forwards to`, e.loc);
         }
         break;
       }
@@ -6750,11 +6780,8 @@ function validateFunction(
           err("newPromise executor must be (resolve?, reject?) => void", e.loc);
           break;
         }
-        if (e.resolves === true && (inner.kind !== "dyn" || exec.params.length === 0)) {
-          err(
-            "newPromise resolves only a checked-dynamic value, through a resolve function",
-            e.loc,
-          );
+        if (e.resolves === true && exec.params.length === 0) {
+          err("newPromise resolves only through a resolve function", e.loc);
         }
         if (exec.params.length === 2) {
           // The reject closure's shapes: (reason: %Error) => void, and the

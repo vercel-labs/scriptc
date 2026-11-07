@@ -160,6 +160,11 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
 ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject);
 void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve,
                                   ScrClosure *reject);
+/* The same for a typed promise: its resolve closure given a promise where
+ * the static type of the value has a promise arm, and the reject closure
+ * that ends with it (scr_async_dyn.c). */
+void scr_resolve_join(ScrClosure *resolve, ScrClosure *reject);
+void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);

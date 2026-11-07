@@ -18,6 +18,42 @@ function diagnostics(library: string, main: string, extension = "js") {
   }
 }
 
+test.for(["!effect();", "((!effect()));", "!!effect();", "!function () { effect(); }();"])(
+  "a discarded JavaScript negation may evaluate a void call: %s",
+  (statement) => {
+    const library = `function effect() { console.log("effect"); }\n${statement}`;
+    expect(diagnostics(library, 'import "./library.js";')).toEqual([]);
+    expect(
+      diagnostics(library, 'import "./library.js";', "ts").some((d) =>
+        d.message.includes("cannot be tested for truthiness"),
+      ),
+    ).toBe(true);
+  },
+);
+
+test.for([
+  "const value = !effect(); console.log(value);",
+  "if (effect()) console.log(1);",
+  "effect() && console.log(1);",
+  "!effect() || console.log(1);",
+])("a consumed JavaScript void test keeps its diagnostic: %s", (statement) => {
+  expect(
+    diagnostics(
+      `function effect() { console.log("effect"); }\n${statement}`,
+      'import "./library.js";',
+    ).some((d) => d.message.includes("cannot be tested for truthiness")),
+  ).toBe(true);
+});
+
+test("checked JavaScript retains a discarded void-negation diagnostic", () => {
+  expect(
+    diagnostics(
+      '// @ts-check\nfunction effect() { console.log("effect"); }\n!effect();',
+      'import "./library.js";',
+    ).some((d) => d.message.includes("cannot be tested for truthiness")),
+  ).toBe(true);
+});
+
 test("TypeScript callers can pass arguments to inferred JavaScript functions that read arguments", () => {
   expect(
     diagnostics(

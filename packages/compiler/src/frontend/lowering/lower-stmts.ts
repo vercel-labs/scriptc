@@ -9391,6 +9391,12 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   fenceConsoleMutation(lowerer, expr);
+  if (
+    ts.isPrefixUnaryExpression(expr) &&
+    expr.operator === ts.SyntaxKind.ExclamationToken &&
+    lowerer.opinionAt(expr, 1345)
+  )
+    return lowerExprStatement(lowerer, expr.operand);
   // Node islands (scope-B NI-4): writes and calls on island values.
   if (lowerer.nodeIslands !== null) {
     const island = lowerIslandExpr(lowerer, expr);

@@ -95,6 +95,11 @@ for (const which of ["absent", "null", "zero", "present"]) {
     show("?. text", u.label?.length);
     show("?. method", u.label?.toUpperCase());
     show("?. then ??", u.label?.length ?? -1);
+    // The steps after the guard use the value at its type, as before.
+    show("?. chain", u.label?.toUpperCase().length);
+    show("?. chain of calls", u.label?.split("a").join("-"));
+    show("?. index", u.label?.[0]);
+    show("?. number", u.input?.toFixed(1));
     show("template", `<${u.input}> <${u.label}> <${u.flag}>`);
     show("element", u["input"] ?? "none");
     show("default of a default", (u.input ?? u.output) || 9);
@@ -166,6 +171,8 @@ for (const which of ["absent", "null", "zero", "present"]) {
     show("=== number", u.input === 11);
     show("?. object", u.inner?.n);
     show("?. text", u.label?.length);
+    show("?. chain", u.label?.toUpperCase().length);
+    show("?. number", u.input?.toFixed(1));
     show("template", `<${u.input}> <${u.label}> <${u.flag}>`);
     show("default of a default", (u.input ?? u.output) || 9);
     show("non-null", u.input! || 0);

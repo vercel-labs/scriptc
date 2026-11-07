@@ -27,7 +27,8 @@
  *   - `==`, `!=`, `===`, `!==` against `null` or `undefined`, and `===`,
  *     `!==` against a string, number or boolean literal;
  *   - the operand of `typeof`;
- *   - the receiver of `?.`;
+ *   - the receiver of `?.` (its guarded steps use the value, non-nullish,
+ *     at its type: optionalReceiver);
  *   - a template literal's substitution;
  *   - a value nobody reads (an expression statement, `void`, the left of a
  *     comma).
@@ -103,6 +104,34 @@ export function totalUse(lowerer: Lowerer, node: ts.Expression): boolean {
       default:
         return false;
     }
+  }
+}
+
+/** Whether `node` is the receiver of a `?.` (through parentheses and
+ * type-only wrappers): the one total use whose guarded steps go on to use
+ * the value, non-nullish, at its type (`label?.split(",").length`). */
+export function optionalReceiver(node: ts.Expression): boolean {
+  let n: ts.Node = node;
+  for (;;) {
+    const p = n.parent;
+    if (p === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(p) ||
+      ts.isAsExpression(p) ||
+      ts.isTypeAssertion(p) ||
+      ts.isSatisfiesExpression(p) ||
+      ts.isNonNullExpression(p)
+    ) {
+      n = p;
+      continue;
+    }
+    return (
+      (ts.isPropertyAccessExpression(p) ||
+        ts.isElementAccessExpression(p) ||
+        ts.isCallExpression(p)) &&
+      p.expression === n &&
+      p.questionDotToken !== undefined
+    );
   }
 }
 

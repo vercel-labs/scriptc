@@ -31,6 +31,7 @@ import {
   NULL_T,
   STRING,
   VOID,
+  typeEquals,
   type IrExpr,
   type IrGlobal,
   type IrLocal,
@@ -59,7 +60,7 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
-import { comparedLiteral, defaultedOnward, totalUse } from "./total-uses.js";
+import { comparedLiteral, defaultedOnward, optionalReceiver, totalUse } from "./total-uses.js";
 import { hasOptionalChainGuard } from "./expressions/optional-chains.js";
 import { thenReader } from "./checked-promise-all.js";
 import { dynCompoundValue } from "./lower-exprs.js";
@@ -878,13 +879,32 @@ function unconvertedViewRead(lowerer: Lowerer, expr: ts.Expression, loc: SrcLoc)
   if (defaultedOnward(lowerer, expr) && !deferredRead(lowerer, expr)) return null;
   const receiver = lowerer.lowerExpr(expr.expression);
   if (receiver.type.kind !== "dyn") return null;
-  return {
+  const raw: IrExpr = {
     kind: "dynKeyGet",
     value: receiver,
     key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
     type: DYN,
     loc,
   };
+  return guardedReceiver(lowerer, raw, expr, lowerer.mapTypeOf(lowerer.typeOf(expr))) ?? raw;
+}
+
+/** The receiver of a `?.` whose type is a copied value (`label?.length`,
+ * `count?.toFixed(1)`): the guarded steps go on to use it at its type, so
+ * it converts here, to its declared type with `undefined` admitted. An
+ * absent member then takes the guard's short way out, as in Node, and the
+ * steps after the guard are the typed ones they were. Null for any other
+ * receiver: an island object, array or function answers its own members. */
+function guardedReceiver(
+  lowerer: Lowerer,
+  raw: IrExpr,
+  node: ts.Expression,
+  mapped: IrType | null,
+): IrExpr | null {
+  if (mapped === null || !copiedType(lowerer, mapped) || !optionalReceiver(node)) return null;
+  const admitted = lowerer.runtimeOptionalType(mapped);
+  const converted = lowerer.coerceToExpected(raw, admitted);
+  return typeEquals(converted.type, admitted) ? converted : null;
 }
 
 /** Whether `node` lowers to the island's own value where its use is total
@@ -1012,7 +1032,7 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     totalUse(lowerer, node) &&
     (!defaultedOnward(lowerer, node) || (mapped !== null && deferredConversion(lowerer, mapped)))
   )
-    return raw;
+    return guardedReceiver(lowerer, raw, node, mapped) ?? raw;
   if (mapped === null) {
     // An intersection of containers (`Choice[] & GenChoice[]`: the
     // island's array extended by the caller's own type) has no native

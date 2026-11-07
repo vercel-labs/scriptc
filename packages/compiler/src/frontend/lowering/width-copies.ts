@@ -449,8 +449,18 @@ class CopyScan {
         return this.fresh(e.then) && this.fresh(e.else_);
       case "seqExpr":
         return this.fresh(e.result);
-      case "call":
-        return copyKindOf(e.callee) !== null || this.returnsFresh(e.callee);
+      case "call": {
+        // A copy is a new object, but it stands for the value it copied: a
+        // conversion of a copy of an aliasable value (`w` to N to M in one
+        // expression, or through a function that returns its converted
+        // parameter) is still a second object where Node has `w`, and a
+        // write to its layout is as lost as one to the first copy's.
+        if (copyKindOf(e.callee) !== null) {
+          const arg = e.args[0];
+          return arg === undefined || this.fresh(arg);
+        }
+        return this.returnsFresh(e.callee);
+      }
       default:
         return isValueType(e.type);
     }
@@ -480,7 +490,8 @@ class CopyScan {
   }
 
   /** Whether every value the function `name` returns is fresh: each
-   * `return` answers a literal, a copy, or a call of such a function. */
+   * `return` answers a literal, a copy of a fresh value, or a call of such
+   * a function. */
   private returnsFresh(name: string): boolean {
     const known = this.freshReturns.get(name);
     if (known !== undefined) return known;
@@ -719,7 +730,7 @@ class Observations {
   }
 
   private fmt(type: IrType): string {
-    return this.lowerer.fmt(type);
+    return typeText(this.lowerer, type);
   }
 
   /** Records that values of `type`, and of every type reachable inside
@@ -1099,7 +1110,7 @@ export function refuseObservedClassCopies(lowerer: Lowerer, functions: IrFunctio
       unsupportedDiag(
         "SC1090",
         fact.loc,
-        `converting a '${lowerer.fmt(fact.from)}' to the class '${lowerer.fmt(fact.to)}' in a program that ${
+        `converting a '${typeText(lowerer, fact.from)}' to the class '${typeText(lowerer, fact.to)}' in a program that ${
           observed.how === "write"
             ? `writes ${observed.what}`
             : observed.how === "identity"
@@ -1111,6 +1122,16 @@ export function refuseObservedClassCopies(lowerer: Lowerer, functions: IrFunctio
     );
   }
 }
+
+/** A type as a message names it: its structural text, cut where a large
+ * record or union would otherwise fill the line. A program can carry
+ * thousands of these warnings, and each names up to three types. */
+function typeText(lowerer: Lowerer, type: IrType): string {
+  const text = lowerer.fmt(type);
+  return text.length <= TYPE_TEXT ? text : `${text.slice(0, TYPE_TEXT - 4)} ...`;
+}
+
+const TYPE_TEXT = 120;
 
 /** The SC6001 warnings of a program's width copies: one per copy the
  * program can tell from its object. */
@@ -1124,7 +1145,11 @@ export function widthCopyDivergences(
     if (observed === null || fact.kind === "checked") continue;
     out.push(
       widthCopyDivergenceDiag(
-        { from: lowerer.fmt(fact.from), to: lowerer.fmt(fact.to), member: fact.depth === "member" },
+        {
+          from: typeText(lowerer, fact.from),
+          to: typeText(lowerer, fact.to),
+          member: fact.depth === "member",
+        },
         { how: observed.how, what: observed.what, where: whereOf(lowerer, observed.loc) },
         fact.loc,
       ),

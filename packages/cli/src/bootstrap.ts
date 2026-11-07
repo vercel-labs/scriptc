@@ -253,6 +253,9 @@ async function coverageFastPath(
     positionalCount !== 2 ||
     (print !== undefined && print !== "diagnostics") ||
     (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
+    // --fail-on=divergences checks the warning --no-copy-warning leaves out:
+    // the full CLI refuses the pair, and a replayed verdict must not pass it.
+    (failOn === "divergences" && values["copy-warning"] === false) ||
     values.emit !== undefined ||
     values.strip ||
     values.static ||

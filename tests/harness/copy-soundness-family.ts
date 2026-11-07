@@ -324,6 +324,15 @@ const ARRAY_CASES: {
     body: (k, tag) =>
       `const e${k}: [] = []; const xs: T${k}[] = e${k}; xs.push({ a${k}: 1 }); console.log("${tag}", JSON.stringify(e${k}));`,
   },
+  // Two conversions in a row: the second copies the first copy, and Node
+  // still has the one object.
+  {
+    id: "chain/field/write-copy",
+    top: (k) =>
+      `interface W${k} { a${k}: number; b${k}: string; c${k}: boolean }\nfunction narrow${k}(x: W${k}): S${k} { return x; }`,
+    body: (k, tag) =>
+      `const w: W${k} = { a${k}: 1, b${k}: "x", c${k}: true }; const hold: { m: T${k} } = { m: narrow${k}(w) }; hold.m.a${k} = 7; console.log("${tag}", w.a${k});`,
+  },
   // A record with more declared fields into a record with an index
   // signature: the overflow capture.
   {

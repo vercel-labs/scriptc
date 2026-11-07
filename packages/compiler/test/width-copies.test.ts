@@ -144,6 +144,19 @@ test("a record built into a class instance is refused where the program can tell
   ]);
 });
 
+test("a conversion of a copy is a copy of the first value", () => {
+  // `w` reaches M through N. Node has one object, so the write through M
+  // is lost exactly as a write through N would be: the second conversion
+  // is not excused by the first.
+  const TYPES3 = `interface M { a: number }\ninterface N { a: number; b: string }\ninterface W { a: number; b: string; c: boolean }\n`;
+  const seen = facts(
+    `${TYPES3}function narrow(x: W): N { return x; }\nconst w: W = { a: 1, b: "x", c: true }; const hold: { m: M } = { m: narrow(w) }; hold.m.a = 7; console.log(w.a);`,
+  );
+  expect(seen.facts.filter((f) => f.observed === "write")).toHaveLength(1);
+  expect(seen.warnings).toHaveLength(1);
+  expect(seen.warnings[0]).toContain("to '{ a: number }'");
+});
+
 test("a conversion routed through a union reports at its own site", () => {
   const seen = facts(
     `${TYPES}function flag(): boolean { return process.argv.length < 100; }\nconst w: W = { a: 1, b: "x" }; const x: W | null = flag() ? w : null; const y: N | null = x; y!.a = 2; console.log(w.a);`,

@@ -195,6 +195,15 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 /* Runtime options use the same spawn core; validation and explicit
  * unsupported-option refusals throw before starting a child. Borrows. */
 ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options);
+/* cp.checkArgs: Node's argument checks for the launch that follows it
+ * (normalizeSpawnArguments, normalizeExecArgs). A NUL in the file or
+ * command, an argument, cwd ("" = absent) or an environment key or value
+ * ([k,v,...] pairs, empty = inherit), or an empty file, throws
+ * ERR_INVALID_ARG_VALUE. form: 0 = cmd is the file and args its arguments;
+ * 1 = exec's shell launch, args[1] is the command; 2 = execFile's shell
+ * launch, args[1] is the file; 3 = fork, no file, args follow the module
+ * path. Borrows. */
+void scr_child_check_args(double form, ScrStr *cmd, ScrArr *args, ScrArr *env_pairs, ScrStr *cwd);
 void scr_child_on_spawn(ScrChild *child, ScrClosure *cb); /* moves zero-argument callback */
 /* The callback slice: file + args, default options. The returned child has
  * all three stdio slots piped; stdout/stderr are captured internally and
@@ -317,6 +326,13 @@ void scr_child_ref(ScrChild *c);
 void scr_child_dyn_install(void);
 /* The child as a dynamic value (+1; borrows the child). */
 ScrDyn *scr_child_to_dyn(ScrChild *child);
+/* Installs the builder of a failed spawn's 'error' object (errno, code,
+ * syscall, path, spawnargs; one object for every listener). Called once at
+ * start by a program that can register an 'error' listener on a child. */
+void scr_child_error_event_install(void);
+/* The installed builder (+1 error), NULL in a program that cannot register
+ * an 'error' listener on a child. Read by the settle path. */
+extern ScrError *(*scr_child_spawn_error_hook)(ScrChild *c);
 void scr_child_on_dyn(ScrChild *child, ScrStr *event, ScrDyn *listener); /* borrowed */
 /* Own properties JavaScript adds to a child (scr_dyn_handle_props.c,
  * linked only by programs that add them). scr_dyn_handle_props_install is

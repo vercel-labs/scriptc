@@ -145,6 +145,29 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     // selection that resolves today resolves the same way.
     if (selected.some((c) => c.checked) && selected.some((c) => !c.checked))
       selected = selected.filter((c) => !c.checked);
+    // The arms of a discriminated union are told apart by the value of
+    // their discriminant, in JavaScript and here. A record that carries the
+    // member and converts into several arms (a loosely typed `{ type:
+    // string; text?: string; data?: string }` into `{ type: "text"; text:
+    // string; signature?: string } | { type: "image"; data: string }`) takes
+    // the arm its value names, each element of an array on its own, and a
+    // value no arm names throws. No preference between layouts below may
+    // pick an arm for it: the one that chose the arm without an optional
+    // member the record lacks tagged every value as that arm.
+    if (selected.length > 1 && src.kind === "record") {
+      const source = lowerer.shapes.get(src.shapeId);
+      if (
+        source &&
+        planRecordUnionLift(
+          source,
+          def,
+          (id) => lowerer.shapes.get(id),
+          (from, to) => lowerer.widthLiftPlan(from, to),
+        )
+      ) {
+        return { how: "discriminantRoute" };
+      }
+    }
     if (selected.length > 1 && src.kind === "record") {
       const source = lowerer.shapes.get(src.shapeId);
       // An inferred JS union may widen its tag while retaining variants

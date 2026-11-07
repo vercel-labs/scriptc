@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-loose-record-by-discriminant.ts"
+ ],
+ "diags": []
+}

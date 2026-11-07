@@ -31,6 +31,7 @@ mkdirSync(out, { recursive: true });
 const kinds = [
   {
     id: "k1-distinct-literal",
+    loose: "{ kind: string; x?: number; y?: string; z?: boolean }",
     keys: ["kind", "x", "y", "z"],
     other: null,
     arms: ['{ kind: "a"; x: number }', '{ kind: "b"; y: string }', '{ kind: "c"; z: boolean }'],
@@ -96,6 +97,7 @@ const kinds = [
   },
   {
     id: "k3-no-discriminant",
+    loose: "{ a?: number; b?: string; c?: boolean }",
     keys: ["a", "b", "c"],
     other: { key: "a", read: "v.a" },
     arms: ["{ a: number }", "{ b: string }", "{ c: boolean }"],
@@ -154,6 +156,7 @@ const kinds = [
   },
   {
     id: "k6-catch-all-literal",
+    loose: "{ op: string; h?: number; t?: string; c?: number }",
     keys: ["op", "h", "t", "c"],
     other: { key: "t", read: "v.t" },
     arms: ['{ op: "open"; h: number }', "{ op: string; t: string }", '{ op: "close"; c: number }'],
@@ -258,9 +261,67 @@ const kinds = [
       },
     ],
   },
+  {
+    // A value held at a loose type (the discriminant a plain string, every other member optional)
+    // that reaches the union through `any`: pi's content parts. One arm has an optional member.
+    id: "k10-loose-source",
+    loose: "{ type: string; text?: string; data?: string; mime?: string; level?: number }",
+    keys: ["type", "text", "sig", "data", "mime", "level"],
+    other: null,
+    arms: [
+      '{ type: "text"; text: string; sig?: string }',
+      '{ type: "image"; data: string; mime: string }',
+      '{ type: "note"; text: string; level: number }',
+    ],
+    T: 0,
+    inKey: "sig",
+    disc: 'v.type === "text"',
+    read: (v) => `${v}.text`,
+    write: (v) => `${v}.text = "W"`,
+    vals: [
+      {
+        id: "one",
+        lit: '{ type: "text", text: "s" }',
+        vt: "A",
+        isT: true,
+        srcWrite: 'src.text = "Z"',
+      },
+      {
+        id: "other",
+        lit: '{ type: "image", data: "d", mime: "m" }',
+        vt: "B",
+        isT: false,
+        srcWrite: 'src.data = "Z"',
+      },
+      {
+        // No arm: the program lies to the union through `any`.
+        id: "none",
+        lit: '{ type: "zzz", text: "s" }',
+        vt: null,
+        isT: false,
+        lying: true,
+        srcWrite: 'src.text = "Z"',
+      },
+    ],
+  },
 ];
 
-const sources = ["lit", "widen", "fewer", "more", "unknown", "json", "rearm", "rearm-as"];
+const sources = [
+  "lit",
+  "widen",
+  "fewer",
+  "more",
+  "unknown",
+  "json",
+  "rearm",
+  "rearm-as",
+  // The value is held at the kind's loose type and reaches the union through `any`: alone, as an
+  // argument, as an element of a list, and as a list in a member of an argument.
+  "loose-any",
+  "loose-arg",
+  "loose-list",
+  "loose-member",
+];
 const ops = [
   "print",
   "in-read",
@@ -293,7 +354,45 @@ function program(kind, size, val, source, op) {
   }
   let hasSrc = false;
   let open = 0;
+  if (source.startsWith("loose")) {
+    if (!kind.loose) return null;
+    L.push(`type Loose = ${kind.loose};`);
+  } else if (val.vt === null) return null;
   switch (source) {
+    case "loose-any":
+      L.push(`const src: Loose = ${val.lit};`, `const v: U = src as any;`);
+      hasSrc = true;
+      break;
+    case "loose-arg":
+      L.push(
+        `function take(p: U): U {`,
+        `  return p;`,
+        `}`,
+        `const src: Loose = ${val.lit};`,
+        `const v = take(src as any);`,
+      );
+      hasSrc = true;
+      break;
+    case "loose-list":
+      L.push(
+        `const list: Loose[] = [${val.lit}];`,
+        `const src = list[0]!;`,
+        `const us: U[] = list as any;`,
+        `const v = us[0]!;`,
+      );
+      hasSrc = true;
+      break;
+    case "loose-member":
+      L.push(
+        `function first(r: { parts: U[]; n?: unknown }): U {`,
+        `  return r.parts[0]!;`,
+        `}`,
+        `const held: { parts: Loose[]; n?: any } = { parts: [${val.lit}] };`,
+        `const src = held.parts[0]!;`,
+        `const v = first({ parts: held.parts as any, n: held.n });`,
+      );
+      hasSrc = true;
+      break;
     case "lit":
       L.push(`const v: U = ${val.lit};`);
       break;
@@ -432,7 +531,8 @@ for (const kind of kinds)
           if (filter && !filter.test(name)) continue;
           const text = program(kind, size, val, source, op);
           if (text === null) continue;
-          const lying = (op.startsWith("as") || op.startsWith("guard")) && !val.isT;
+          const lying =
+            val.lying === true || ((op.startsWith("as") || op.startsWith("guard")) && !val.isT);
           cells.push({ name, kind: kind.id, size, val: val.id, source, op, text, lying });
         }
 

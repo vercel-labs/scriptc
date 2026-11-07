@@ -15436,17 +15436,16 @@ export class Lowerer {
       const projected = consoleInto(this, expr, expected, expr.loc);
       if (projected) return projected;
     }
-    // A union into one of its record arms extracts that arm, trusting the
-    // checker to have excluded the others. A built-in object arm the checker
-    // still types the site with (`c ?? new Map()` into an interface the
-    // untyped Map satisfies only through `any`) holds a value at run time,
-    // and no conversion makes a record of it, so the flow is refused like
-    // the arm's value would be.
-    // The checker's type of a union value flowing into one of its record
-    // arms: the arms it still holds there convert into the slot instead of
-    // throwing (coerceToExpected). A site the checker narrowed to the arm
-    // itself holds no other, and the checked extraction stays as it is.
+    // A union into one of its record arms: the checker's type of the value
+    // at this site says which other arms it still holds. Those convert into
+    // the slot instead of throwing (coerceToExpected); a site the checker
+    // narrowed to the arm itself holds none, and the checked extraction
+    // stays as it is, trusting the checker to have excluded the others.
     let ownArmSite: IrType | undefined = payloadSite;
+    // A built-in object arm the checker still types the site with
+    // (`c ?? new Map()` into an interface the untyped Map satisfies only
+    // through `any`) holds a value at run time, and no conversion makes a
+    // record of it, so the flow is refused like the arm's value would be.
     if (
       expr.type.kind === "union" &&
       expected.kind === "record" &&

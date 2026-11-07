@@ -264,6 +264,11 @@ export interface CcOptions {
   /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
    * (the write method as a value, its replacement, run-time-typed chunks). */
   stdioWriteSlot?: boolean;
+  /** The program holds a process output stream as a value. With
+   * `nodeIsland` it compiles scr_node_island_stdio.c and defines
+   * SCR_NODE_ISLAND_STDIO: the island's process.stdout.write and
+   * process.stderr.write are the program's write slots. */
+  stdioObject?: boolean;
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;

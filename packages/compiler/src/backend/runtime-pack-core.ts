@@ -150,6 +150,10 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The program reaches the process output streams' write slot: the
    * SCR_STDIO_WRITE_SLOT build of the events unit. */
   stdioWriteSlot: boolean;
+  /** The program holds a process output stream as a value: with Node
+   * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c. */
+  stdioObject: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -397,6 +401,7 @@ export function effectiveRuntimeFeatures(
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioWriteSlot: features.stdioWriteSlot === true,
+    stdioObject: features.stdioObject === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,

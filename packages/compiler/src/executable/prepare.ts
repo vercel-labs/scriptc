@@ -20,7 +20,6 @@ import {
   nativePackageDiag,
   iceDiag,
   isCheckerPanic,
-  stdioPatchAcrossIslandsDiag,
   type ScrDiagnostic,
 } from "../diagnostics/diagnostic.js";
 import type { IrModule, SrcLoc } from "../ir/ir.js";
@@ -299,14 +298,6 @@ export function prepareExecutableModule(
         );
       }
       return fail(lowered.diagnostics);
-    }
-
-    // A program that replaces a process output stream's write method has
-    // nowhere to route an island's writes: the island's process.stdout is
-    // its own object. Until islands share the native stream object (H2),
-    // refuse the combination instead of silently missing the patch.
-    if (islandDecision !== null && lowered.stdioPatches !== undefined) {
-      return fail(lowered.stdioPatches.map((p) => stdioPatchAcrossIslandsDiag(p.stream, p.loc)));
     }
 
     const validation = validateModule(lowered.module);

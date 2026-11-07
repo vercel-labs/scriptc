@@ -30,6 +30,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
     ...(features.stdioWriteSlot ? { stdioWriteSlot: true } : {}),
+    ...(features.stdioObject ? { stdioObject: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),

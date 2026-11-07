@@ -56,7 +56,10 @@ import {
   icuSymbols,
   nodeIslandSymbols,
   nmOutput,
+  pairPrograms,
   parseNm,
+  changedProgram,
+  programChange,
   programInputsHash,
   programLines,
   programVerdict,
@@ -304,18 +307,19 @@ function programSet(root) {
 }
 
 /** The programs the gate builds. A program the other checkout alone has is
- * added, so a change that adds a corpus program compares it too. */
+ * added, so a change that adds a corpus program compares it too. Each
+ * program carries what either compared checkout holds under its id
+ * (`sides`), which changeOf reads. */
 function goodCodeSet() {
-  const programs = programSet(programsRoot);
-  if (counterpartRoot !== null) {
-    const present = new Set(programs.map((p) => relative(programsRoot, p.entry)));
-    for (const program of programSet(counterpartRoot)) {
-      const rel = relative(counterpartRoot, program.entry);
-      if (present.has(rel)) continue;
-      present.add(rel);
-      programs.push({ ...program, relativeEntry: rel });
-    }
-  }
+  let programs = programSet(programsRoot);
+  if (counterpartRoot !== null)
+    programs = pairPrograms(programs, programSet(counterpartRoot)).map(({ own, counterpart }) => ({
+      ...(own ?? counterpart),
+      sides:
+        programsRoot === trees.baseline
+          ? { baseline: own, candidate: counterpart }
+          : { baseline: counterpart, candidate: own },
+    }));
   const selected = programs.filter((p) => only === null || only.test(p.id));
   if (!values.shard) return selected;
   const [index, count] = values.shard.split("/").map(Number);
@@ -726,46 +730,36 @@ const counterpartRoot =
         ? trees.baseline
         : null;
 
-/** The files a program reads in the checkout `root`, keyed by their path
- * relative to `root` and hashed, or null when the entry is absent. */
-function sourceSet(root, relativeEntry) {
-  const entry = join(root, relativeEntry);
-  if (!existsSync(entry)) return null;
+/** The files the checkout `root`'s `program` reads, keyed by their path
+ * relative to `root` and hashed, or null when the checkout has no such
+ * program or its entry is absent. */
+function sourceSet(root, program) {
+  if (program === null || !existsSync(program.entry)) return null;
   const files = new Map();
-  for (const file of programInputs(entry))
+  for (const file of programInputs(program.entry))
     files.set(relative(root, file), createHash("sha1").update(readFileSync(file)).digest("hex"));
-  return files;
+  return { entry: relative(root, program.entry), files };
 }
 
-const sameSources = (a, b) =>
-  a.size === b.size && [...a].every(([file, hash]) => b.get(file) === hash);
-
-/** What the change does to the program at `relativeEntry`: "removed" (only
- * the baseline has it), "added" (only the candidate has it), or "changed"
- * (both have it, with different files or contents). Undefined when the two
- * checkouts' copies match. Only executable programs take part: the self
+/** What the change does to a program, from what each checkout holds under
+ * its id (programChange). Only executable programs take part: the self
  * program and the emitter fixtures ARE the baseline compiler's own source,
  * which every compiler change edits by design. */
-function changeOf(relativeEntry) {
-  if (counterpartRoot === null) return undefined;
-  const before = sourceSet(trees.baseline, relativeEntry);
-  const after = sourceSet(trees.candidate, relativeEntry);
-  if (after === null) return before === null ? undefined : "removed";
-  if (before === null) return "added";
-  return sameSources(before, after) ? undefined : "changed";
+function changeOf({ baseline, candidate }) {
+  return programChange(sourceSet(trees.baseline, baseline), sourceSet(trees.candidate, candidate));
 }
 
 const programs = goodCodeSet().filter((p) => recordPath === undefined || p.kind === "exe");
 assert.ok(programs.length > 0, "the selected good-code set is empty");
 if (recordPath === undefined)
   for (const program of programs) {
-    if (program.kind !== "exe") continue;
-    const relativeEntry = program.relativeEntry ?? relative(programsRoot, program.entry);
-    const change = changeOf(relativeEntry);
+    if (program.kind !== "exe" || program.sides === undefined) continue;
+    const change = changeOf(program.sides);
     if (change === undefined) continue;
     program.pr = change;
-    // Both compilers build the source the change provides.
-    if (change !== "removed") program.entry = join(trees.candidate, relativeEntry);
+    // Both compilers build the program the change provides: its source, at
+    // the optimization level that source names, run with its arguments.
+    if (change !== "removed") Object.assign(program, changedProgram(program.sides.candidate));
   }
 const runtime = recordPath === undefined ? runtimeChanges() : null;
 const report = {

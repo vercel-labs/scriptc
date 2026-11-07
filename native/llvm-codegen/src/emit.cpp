@@ -25,6 +25,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DiagnosticHandler.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
@@ -1010,6 +1011,39 @@ public:
       : CachedFileStream(std::make_unique<raw_svector_ostream>(Buffer)) {}
 };
 
+// Names the module's compilation units after the object that holds them.
+//
+// A Darwin link's debug map ties an object's symbols to the source its
+// compilation units name. Objects compiled from partitions of one program
+// otherwise carry units that all name the program's source path, so a
+// debugger cannot tell the entries apart and the later objects' symbols are
+// attributed to the first. Functions, variables and locations keep the
+// original file, so line information still names the source.
+void identifyDebugUnits(Module &M, StringRef Identity) {
+  NamedMDNode *Units = M.getNamedMetadata("llvm.dbg.cu");
+  if (Units == nullptr)
+    return;
+  for (unsigned I = 0; I < Units->getNumOperands(); ++I) {
+    auto *Unit = dyn_cast_or_null<DICompileUnit>(Units->getOperand(I));
+    if (Unit == nullptr)
+      continue;
+    DIFile *File = Unit->getFile();
+    if (File == nullptr)
+      continue;
+    SmallString<256> Name(File->getFilename());
+    Name += Identity;
+    Unit->replaceOperandWith(0, DIFile::get(M.getContext(), Name,
+                                            File->getDirectory(),
+                                            File->getChecksum(),
+                                            File->getSource()));
+  }
+}
+
+// What one partition's object appends to its compilation units' file names.
+std::string partitionDebugIdentity(size_t I) {
+  return ".scriptc-partition-" + std::to_string(I);
+}
+
 // Unoptimized partitions are independent: each compiles, or comes from the
 // cache keyed by its exact source, on its own thread.
 std::optional<EmitFailure>
@@ -1019,7 +1053,10 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
                              std::vector<SmallVector<char, 0>> &Objects) {
   SharedFailure Failures;
   forEachPartition(Plan.Modules.size(), [&](size_t I) {
-    std::string Key = hashParts({Salt, "object", Plan.Modules[I]});
+    // The object names its own partition, so its identity is part of what
+    // the cache entry holds.
+    std::string Identity = partitionDebugIdentity(I);
+    std::string Key = hashParts({Salt, "object", Identity, Plan.Modules[I]});
     if (std::unique_ptr<MemoryBuffer> Hit = Cache.lookup(Key, "o")) {
       Objects[I].assign(Hit->getBufferStart(), Hit->getBufferEnd());
       return;
@@ -1036,6 +1073,7 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
         loadPartition(Options, Plan.Modules[I], I, Context, *Machine);
     if (!Mod)
       return Failures.set({"partition_failed", toString(Mod.takeError())});
+    identifyDebugUnits(**Mod, Identity);
     // The O0 pipeline still lowers coroutines and always-inline calls.
     Pipeline P(*Machine, OptimizationLevel::O0, profileOptions(Options));
     P.PB.buildPerModuleDefaultPipeline(OptimizationLevel::O0)
@@ -1187,10 +1225,15 @@ compileOptimizedPartitions(const EmitOptions &Options,
     Failures.set({"partition_failed", Stream.str()});
   };
   std::vector<std::string> ObjectKeys(Count);
-  Config.PostImportModuleHook = [&](unsigned Task, const Module &Mod) {
+  Config.PostImportModuleHook = [&](unsigned Task, const Module &Imported) {
     size_t I = Task - 1;
     if (I >= Count)
       return true;
+    // The units an import brings in keep the name of the partition they came
+    // from, so the object names every unit it holds after itself. The object
+    // key below then covers the names too.
+    Module &Mod = const_cast<Module &>(Imported);
+    identifyDebugUnits(Mod, partitionDebugIdentity(I));
     SHA256 Hash;
     {
       HashingStream Stream(Hash);
@@ -1712,6 +1755,10 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
       Part->setTargetTriple(TargetTriple);
       Part->setDataLayout(Layout);
     }
+    // Output 0 is the object a single-output build of this module produces and
+    // keeps the module's own unit names; every further output names its units
+    // after itself (see identifyDebugUnits).
+    identifyDebugUnits(*Part, partitionDebugIdentity(I));
     if (std::optional<EmitFailure> Failure =
             generateCode(*Part, *PartMachine, CodeGenFileType::ObjectFile,
                          Options.Outputs[I], Temporaries[I]))

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   analyzeCached,
+  checkIslandDecision,
   collectGarbageUnderHeapPressure,
   compile,
   compileLibrary,
@@ -35,6 +36,7 @@ process.exitCode = await runCli(process.argv.slice(2), {
   version,
   analyze: analyzeCached,
   compile,
+  checkIslandDecision,
   compileLibrary,
   resolveProvenanceSources,
   sourceTargetPlatform,

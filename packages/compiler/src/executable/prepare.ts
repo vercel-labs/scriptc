@@ -4,14 +4,18 @@ import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
   checkerPanicDiag,
+  nodeIslandEntryMarkDiag,
   nodeIslandEntryPatchDiag,
   nodeIslandEntryReadDiag,
   nodeIslandImplicitGlobalReadDiag,
+  nodeIslandMarkStripDiag,
   nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
   nodeIslandReaderStripDiag,
   nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
+  nodeIslandUnmatchedMarkDiag,
+  nodeIslandUnmatchedPackageDiag,
   npmStaticRefusalDiag,
   nativePackageDiag,
   iceDiag,
@@ -35,6 +39,7 @@ import type { UnitStore } from "../frontend/lowering/unit-reuse.js";
 import type { CompilationTiming } from "../timing.js";
 import { readProjectConfig } from "../project-config.js";
 import {
+  globMatch,
   isMarkedUserModule,
   nodeIslandPolicy,
   type NodeIslandPolicy,
@@ -50,7 +55,7 @@ import {
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
-import type { NodeIslandScan } from "../node-islands/scan.js";
+import type { NodeIslandScan, ProgramImports } from "../node-islands/scan.js";
 import {
   foldFenceGrowth,
   growIslandSet,
@@ -58,12 +63,18 @@ import {
 } from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
 import {
+  admitRecorded,
+  compareIslandDecision,
+  describeIslandDecisionChange,
   islandDecisionKey,
   readIslandDecision,
+  staleByOutcome,
+  withoutPackages,
   writeIslandDecision,
   type IslandRoundState,
 } from "../node-islands/decision-file.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
+import { builtinPackageAliasFor, packageShimFor } from "../frontend/package-shims.js";
 
 export interface PreparedExecutableModule {
   ok: true;
@@ -107,6 +118,9 @@ interface RoundState {
   foldFenceGrowth: boolean;
   /** The round this compile is in, for the round trace (1-based). */
   round: number;
+  /** A replayed build's question to its first load, asked once: which of
+   * the recorded islands the program still has a use for (IslandRounds). */
+  admit: ((imports: ProgramImports) => IslandRoundState | null) | null;
 }
 
 /** SCRIPTC_ISLAND_ROUNDS_TRACE=1 at build time prints each island round's
@@ -241,6 +255,8 @@ interface FenceRetry {
   islands: ReadonlyMap<string, IslandPackage>;
   modules: ReadonlyMap<string, IslandModule>;
   unitStore: UnitStore | null;
+  /** Every island the asking build ran (RoundOutcome's `islands`). */
+  ran: IslandRoundState | null;
 }
 
 /** One island round's result: a finished build (with the fence retry it
@@ -248,19 +264,111 @@ interface FenceRetry {
  * instead of recursing, so its frontend, lowering result and growth inputs
  * are unreachable before the next round loads. */
 type RoundOutcome =
-  | { kind: "prepared"; prepared: PreparedExecutableModule; fence: FenceRetry | null }
-  | { kind: "failed"; failure: CompileFailure }
+  /** `islands`: every island the round ran, the ones its first decision
+   * made from the load included; null when it ran none. */
+  | {
+      kind: "prepared";
+      prepared: PreparedExecutableModule;
+      fence: FenceRetry | null;
+      islands: IslandRoundState | null;
+    }
+  /** `lowered`: whether the round reached its lowering before it failed. */
+  | { kind: "failed"; failure: CompileFailure; lowered: boolean; islands: IslandRoundState | null }
   | { kind: "retry"; request: RoundRequest };
 
-/** `prepareExecutableModule` for a build: with `--node-island-decision` the
- * first island round starts from the islands the file records, and the
- * islands the build's last round started from are written back for the next
- * build (node-islands/decision-file.ts). The replayed round runs with the
- * fence rules on, as a first round does: they judge the program as it is
- * now, so a dependency added since the record is not left to a rule that
- * ran before it existed. A failed build records its decision too, so the
- * next one reports the same failure from one round. Without the option this
- * is `prepareExecutableModule` from scratch. */
+/** What the island rounds ask and tell a recorded decision
+ * (node-islands/decision-file.ts). */
+export interface IslandRounds {
+  /** Asked once, by the first round, with what the first load says about
+   * the packages the round starts from (Frontend.islandImports): the islands
+   * among them that the program still has a use for, or null when all of
+   * them stand. Null for a build that replays nothing. */
+  admit: ((imports: ProgramImports) => IslandRoundState | null) | null;
+  /** Told the islands the round whose result the call returns started
+   * from, whether that round reached its lowering (a round that stopped
+   * before it, at a type error or a refused package, decided nothing about
+   * them), and every island that round ran: the ones it started from and
+   * the ones its first decision made from the load. */
+  decided: (state: IslandRoundState, lowered: boolean, all: IslandRoundState | null) => void;
+}
+
+/** The outcome of one run of the island rounds for a recorded decision. */
+interface DecidedBuild {
+  result: PreparedExecutableModule | CompileFailure;
+  /** The islands the returned round started from; null when no round
+   * reported (the rounds threw). */
+  state: IslandRoundState | null;
+  lowered: boolean;
+  /** Every island that round ran. */
+  all: IslandRoundState | null;
+}
+
+/** Runs the island rounds from `start` and keeps what the returned round
+ * reports. */
+function decideBuild(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  buildPlatform: string,
+  createFrontend: FrontendFactory,
+  timing: CompilationTiming,
+  unitStore: UnitStore | null,
+  start: IslandRoundState,
+  admit: IslandRounds["admit"],
+): DecidedBuild {
+  const decided: {
+    state: IslandRoundState | null;
+    lowered: boolean;
+    all: IslandRoundState | null;
+  } = { state: null, lowered: false, all: null };
+  const result = prepareExecutableModule(
+    entryPath,
+    opts,
+    ffi,
+    buildPlatform,
+    createFrontend,
+    timing,
+    start.packages,
+    true,
+    unitStore,
+    start.modules,
+    {},
+    {
+      admit,
+      decided: (state, lowered, all) => {
+        decided.state = state;
+        decided.lowered = lowered;
+        decided.all = all;
+      },
+    },
+  );
+  return { result, state: decided.state, lowered: decided.lowered, all: decided.all };
+}
+
+/** `prepareExecutableModule` for a build. With a decision file
+ * (`--node-island-decision`, or the project's `scriptc.nodeIslands.decision`)
+ * the first island round starts from the islands the file records for this
+ * entry and these options, and the islands the build's last round started
+ * from are written back for the next build (node-islands/decision-file.ts
+ * states what a record depends on and what a replay checks). Without one
+ * this is `prepareExecutableModule` from scratch.
+ *
+ * The replayed round runs with the fence rules on, as a first round does:
+ * they judge the program as it is now, so a dependency added since the
+ * record is not left to a rule that ran before it existed. Two things a
+ * record cannot know are settled here:
+ *
+ *  - which recorded islands the program still imports: the first round asks
+ *    its load (`admitRecorded`);
+ *  - whether the islands a fence rule added for the recorded build's outcome
+ *    still stand when this build ends the other way (`staleByOutcome`): they
+ *    do not, so the build is decided once more from the rest, which is the
+ *    round a build from scratch would be in, and that build is the result.
+ *
+ * A build that reached its lowering records its decision, failing or not, so
+ * a failing program reports the same failure from one round next time. A
+ * build that stopped before its lowering decided nothing and leaves the
+ * file as it is. */
 export function prepareExecutableBuild(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -284,32 +392,163 @@ export function prepareExecutableBuild(
       unitStore,
     );
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
-  const key = islandDecisionKey(opts.nodeIslands, opts.npmStatic, buildPlatform);
-  const replayed = readIslandDecision(file, entryPath, key, policy);
-  if (replayed !== null)
+  const key = islandDecisionKey(
+    entryPath,
+    opts.nodeIslands,
+    opts.npmStatic,
+    opts.tier,
+    buildPlatform,
+  );
+  const recorded = readIslandDecision(file, key, policy);
+  // Why each recorded island that is not in the written decision left it.
+  const gone = new Map<string, string>(recorded?.gone ?? []);
+  let started: IslandRoundState = {
+    packages: recorded?.packages ?? new Map(),
+    modules: recorded?.modules ?? new Map(),
+  };
+  if (recorded !== null)
     timing("island-decision-replay", {
-      packages: replayed.packages.size,
-      modules: replayed.modules.size,
+      packages: recorded.packages.size,
+      modules: recorded.modules.size,
     });
-  const last: { state: IslandRoundState | null } = { state: null };
-  const prepared = prepareExecutableModule(
+  let build = decideBuild(
     entryPath,
     opts,
     ffi,
     buildPlatform,
     createFrontend,
     timing,
-    replayed === null ? new Map() : replayed.packages,
-    true,
     unitStore,
-    replayed === null ? new Map() : replayed.modules,
-    {},
-    (state) => {
-      last.state = state;
-    },
+    started,
+    started.packages.size === 0 && started.modules.size === 0
+      ? null
+      : (imports) => {
+          const admitted = admitRecorded(started, imports, gone);
+          if (
+            admitted.packages.size === started.packages.size &&
+            admitted.modules.size === started.modules.size
+          )
+            return null;
+          started = admitted;
+          return admitted;
+        },
   );
-  if (last.state !== null) writeIslandDecision(file, entryPath, key, policy, last.state);
-  return prepared;
+  const stale =
+    recorded === null
+      ? new Map<string, string>()
+      : staleByOutcome(recorded.outcome, started.packages, build.result.ok);
+  if (stale.size > 0) {
+    timing("island-decision-redecide", { packages: [...stale.keys()].sort() });
+    const rest: IslandRoundState = {
+      packages: withoutPackages(started.packages, stale, gone),
+      modules: started.modules,
+    };
+    build = decideBuild(
+      entryPath,
+      opts,
+      ffi,
+      buildPlatform,
+      createFrontend,
+      timing,
+      unitStore,
+      rest,
+      null,
+    );
+  }
+  if (build.state !== null && build.lowered) {
+    const change = writeIslandDecision(
+      file,
+      key,
+      policy,
+      build.state,
+      build.result.ok ? "compiles" : "fails",
+      build.all,
+      gone,
+    );
+    if (change !== null) process.stderr.write(describeIslandDecisionChange(change, process.cwd()));
+  }
+  return build.result;
+}
+
+/** What `checkIslandDecision` found. */
+export interface IslandDecisionCheck {
+  /** The decision file, or null when neither the options nor the project
+   * name one. */
+  file: string | null;
+  /** How a decision made from scratch differs from the file's section for
+   * this build, one line per island (decision-file.ts's
+   * compareIslandDecision); empty when a build would leave the file as it
+   * is. */
+  differences: string[];
+  /** The islands a build from scratch decides. */
+  packages: number;
+  modules: number;
+  /** Set when the program fails before its lowering: nothing was decided,
+   * so there is nothing to compare. */
+  undecided: CompileFailure | null;
+}
+
+/** Decides the program's islands from scratch, without the file and without
+ * generating code, and compares the result with the section a build of the
+ * same entry and options would write: the check for islands a replay cannot
+ * notice it no longer needs, and the oracle for a change to the island
+ * rules. */
+export function checkIslandDecision(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  buildPlatform: string,
+  createFrontend: FrontendFactory,
+  timing: CompilationTiming,
+): IslandDecisionCheck {
+  const file = opts.nodeIslands?.decision;
+  if (file === undefined)
+    return { file: null, differences: [], packages: 0, modules: 0, undecided: null };
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const key = islandDecisionKey(
+    entryPath,
+    opts.nodeIslands,
+    opts.npmStatic,
+    opts.tier,
+    buildPlatform,
+  );
+  const build = decideBuild(
+    entryPath,
+    opts,
+    ffi,
+    buildPlatform,
+    createFrontend,
+    timing,
+    null,
+    { packages: new Map(), modules: new Map() },
+    null,
+  );
+  if (build.state === null || !build.lowered)
+    return {
+      file,
+      differences: [],
+      packages: 0,
+      modules: 0,
+      undecided: build.result.ok ? null : build.result,
+    };
+  return {
+    file,
+    // Only the automatic policy records a decision; under another one a
+    // build leaves the file alone, and so there is nothing to differ from.
+    differences:
+      policy.mode !== "auto"
+        ? []
+        : compareIslandDecision(
+            file,
+            key,
+            build.state,
+            build.result.ok ? "compiles" : "fails",
+            build.all,
+          ),
+    packages: (build.all ?? build.state).packages.size,
+    modules: (build.all ?? build.state).modules.size,
+    undecided: null,
+  };
 }
 
 /** Release the parser/checker before native object generation begins.
@@ -319,9 +558,8 @@ export function prepareExecutableBuild(
  * `lowerIslands` and `lowerModules` are the islands an island round starts
  * from: empty for a build that decides from scratch, the grown set for a
  * retry, and a recorded decision for a build that replays one
- * (node-islands/decision-file.ts). `onDecided` receives the islands of the
- * round whose result this call returns, which is what such a recording
- * keeps. */
+ * (node-islands/decision-file.ts). `rounds` is that record's side of the
+ * rounds (IslandRounds). */
 export function prepareExecutableModule(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -334,7 +572,7 @@ export function prepareExecutableModule(
   unitStore: UnitStore | null = null,
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
   roundOptions: PrepareRoundOptions = {},
-  onDecided: ((state: IslandRoundState) => void) | null = null,
+  rounds: IslandRounds | null = null,
 ): PreparedExecutableModule | CompileFailure {
   // The islands of the round whose result this call returns: the request
   // that round ran, or, for a build that keeps its own result after its
@@ -342,14 +580,17 @@ export function prepareExecutableModule(
   const decided = (
     packages: ReadonlyMap<string, IslandPackage>,
     modules: ReadonlyMap<string, IslandModule>,
+    lowered: boolean,
+    all: IslandRoundState | null,
   ): void => {
-    if (onDecided !== null) onDecided({ packages, modules });
+    if (rounds !== null) rounds.decided({ packages, modules }, lowered, all);
   };
   const state: RoundState = {
     firstLoad: null,
     reuseFirstLoad: roundOptions.reuseFirstLoad !== false,
     foldFenceGrowth: roundOptions.foldFenceGrowth !== false,
     round: 1,
+    admit: rounds === null ? null : rounds.admit,
   };
   const inputs: PrepareInputs = {
     entryPath,
@@ -403,7 +644,7 @@ export function prepareExecutableModule(
       // Only a fence retry consumes a failure; otherwise it is the build's.
       const retry = fence;
       if (retry === null) {
-        decided(request.islands, request.modules);
+        decided(request.islands, request.modules, outcome.lowered, outcome.islands);
         return outcome.failure;
       }
       retry.firstError ??= outcome.failure.diagnostics[0] ?? null;
@@ -422,13 +663,13 @@ export function prepareExecutableModule(
           nodeIslandRetryFailedDiag(added, retry.firstError, { file: entryPath, start: 0, end: 0 }),
         );
       }
-      decided(retry.retry.islands, retry.retry.modules);
+      decided(retry.retry.islands, retry.retry.modules, true, retry.retry.ran);
       return retry.retry.prepared;
     }
     // An attempt that compiles replaces the build that asked for it; the
     // outermost build is the result.
     if (fence !== null || outcome.fence === null) {
-      decided(request.islands, request.modules);
+      decided(request.islands, request.modules, true, outcome.islands);
       return outcome.prepared;
     }
     fence = { retry: outcome.fence, next: 1, firstError: null };
@@ -475,6 +716,36 @@ function prepareRound(
     first = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
     timing("frontend-load");
     const captured = captureIslandInputs(first);
+    if (state.admit !== null) {
+      // The first round of a build that replays a recorded decision: the
+      // load shows which recorded islands the program still imports. When
+      // some are gone the round ends here and the next one starts from the
+      // rest; it decides from this load's capture, so nothing loads twice.
+      // The question goes to every file the program holds, not to the
+      // island scan: the lowering compiles modules the scan does not follow.
+      const admit = state.admit;
+      state.admit = null;
+      const imports = first.islandImports?.(new Set(lowerIslands.keys()));
+      const admitted = imports === undefined ? null : admit(imports);
+      if (admitted !== null) {
+        // The next round decides from this load's capture: it must hold the
+        // scan that decision asks for before the load is released.
+        captured.inputs.nodeIslandScan?.(
+          decisionScan(nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands)),
+        );
+        captured.seal();
+        if (firstLoadReusable(state)) state.firstLoad = captured.inputs;
+        first.dispose();
+        frontendDisposed();
+        traceIslandRound(
+          `round ${round} admit islands=${traceSet(admitted.packages)} modules=${traceSet(admitted.modules)}`,
+        );
+        return {
+          kind: "retry",
+          request: { ...request, islands: admitted.packages, modules: admitted.modules },
+        };
+      }
+    }
     // Node islands (scope-B NI-4): packages refused natively run in Node,
     // unless the policy says otherwise. The frontend reloads without them,
     // so their declarations type the program.
@@ -495,8 +766,18 @@ function prepareRound(
     const diagnostics = islandDecision.errors;
     const sourceTexts = first!.sourceTexts();
     first!.dispose();
-    return { kind: "failed", failure: { ok: false, diagnostics, sourceTexts } };
+    return {
+      kind: "failed",
+      failure: { ok: false, diagnostics, sourceTexts },
+      lowered: false,
+      islands: null,
+    };
   }
+  // Every island this round runs, for a recorded decision.
+  const ran: IslandRoundState | null =
+    islandDecision === null
+      ? null
+      : { packages: islandDecision.packages, modules: islandDecision.modules };
   let fe: Frontend;
   if (islandDecision !== null) {
     first?.dispose();
@@ -516,6 +797,9 @@ function prepareRound(
   let sourceTexts: Map<string, string>;
   let contractWarnings: ScrDiagnostic[] = [];
   let disposed = false;
+  // Whether this round's lowering has run: a failure before it says nothing
+  // about which packages compile.
+  let loweredRan = false;
   let fenceGrown: Map<string, IslandPackage> | null = null;
   const fenceSure = new Set<string>();
   // The growth inputs this build's frontend offers (node-islands/growth.ts).
@@ -594,6 +878,8 @@ function prepareRound(
         diagnostics,
         sourceTexts: fe.sourceTexts(),
       },
+      lowered: loweredRan,
+      islands: ran,
     });
 
     // A package already bound to a Node island is never compiled statically,
@@ -687,6 +973,7 @@ function prepareRound(
         (module) => validateModule(module).length === 0,
       );
       timing("lower");
+      loweredRan = true;
     } catch (e) {
       // The last-resort panic fence: an upstream tsgo panic that crossed a
       // checker call no statement/collection fence wrapped still becomes a
@@ -842,7 +1129,7 @@ function prepareRound(
   // build carries an SC8023 warning with the island build's first error,
   // never a silent fallback. The attempts run in the round driver, after
   // this round's state is released (see prepareExecutableModule).
-  if (fenceGrown === null) return { kind: "prepared", prepared, fence: null };
+  if (fenceGrown === null) return { kind: "prepared", prepared, fence: null, islands: ran };
   const attempts = [fenceGrown];
   const sure = new Map(
     [...fenceGrown].filter(([name]) => lowerIslands.has(name) || fenceSure.has(name)),
@@ -858,7 +1145,9 @@ function prepareRound(
       islands: lowerIslands,
       modules: lowerModules,
       unitStore,
+      ran,
     },
+    islands: ran,
   };
 }
 
@@ -902,6 +1191,11 @@ const PATCH_REASONS: ReadonlySet<string> = new Set(["builtin-patch"]);
  * is an island runs the whole file in Node, which is a different feature. */
 interface ModuleIslandDecision {
   modules: Map<string, IslandModule>;
+  /** A mark the build cannot honor (SC8006): one that names the entry
+   * module, a TypeScript module Node cannot run by stripping its types, or
+   * (from the command line) no module of the program. An ignored mark would
+   * leave the module native without a word. */
+  markProblems: ScrDiagnostic[];
   /** The entry module's own `builtin-patch` marker: the entry stays native
    * (a whole-file island is a different feature), so the build refuses it
    * with SC8006. */
@@ -919,21 +1213,36 @@ function moduleIslands(
   const modules = new Map<string, IslandModule>();
   let entryPatch: ModuleIslandDecision["entryPatch"] = null;
   const stripProblems: ModuleIslandDecision["stripProblems"] = [];
+  const markProblems: ScrDiagnostic[] = [];
+  const start = (file: string): SrcLoc => ({ file, start: 0, end: 0 });
+  // The command-line marks no user module of the program matches.
+  const unmatched = new Set(
+    policy.userModules.filter((entry) => entry.source === "cli").map((entry) => entry.pattern),
+  );
   for (const m of scan.modules) {
     if (m.origin !== "user") continue;
+    const path = m.file.replaceAll("\\", "/");
+    for (const pattern of unmatched)
+      if (globMatch(pattern.replaceAll("\\", "/"), path)) unmatched.delete(pattern);
+    const marked = isMarkedUserModule(policy, m.file);
     const patches = m.markers.filter((marker) => PATCH_REASONS.has(marker.reason));
-    // A TypeScript module islands only for a builtin patch (H3.2).
-    if (!isJsSourceFileName(m.file) && patches.length === 0) continue;
+    // A TypeScript module islands for a builtin patch (H3.2) or a mark.
+    if (!isJsSourceFileName(m.file) && patches.length === 0 && marked === null) continue;
     if (sameFile(m.file, entryPath)) {
       if (patches.length > 0 && entryPatch === null)
         entryPatch = { file: m.file, marker: patches[0]! };
+      if (marked !== null)
+        markProblems.push(nodeIslandEntryMarkDiag(m.file, marked, start(m.file)));
       continue;
     }
     if (m.stripProblem !== null) {
-      stripProblems.push({ file: m.file, ...m.stripProblem });
+      if (patches.length > 0) stripProblems.push({ file: m.file, ...m.stripProblem });
+      else
+        markProblems.push(
+          nodeIslandMarkStripDiag(m.file, marked!, m.stripProblem.construct, m.stripProblem.loc),
+        );
       continue;
     }
-    const marked = isMarkedUserModule(policy, m.file);
     const sloppy = m.markers.filter((marker) => SLOPPY_REASONS.has(marker.reason));
     if (
       marked === null &&
@@ -954,7 +1263,23 @@ function moduleIslands(
       decision: marked === null ? "auto" : "marked",
     });
   }
-  return { modules, entryPatch, stripProblems };
+  for (const pattern of unmatched)
+    markProblems.push(nodeIslandUnmatchedMarkDiag(pattern, start(entryPath)));
+  return { modules, markProblems, entryPatch, stripProblems };
+}
+
+/** The scan the island decision asks a load for. The pre-scan's
+ * user-JavaScript markers exist only where a build may act on them. */
+function decisionScan(policy: NodeIslandPolicy): {
+  userJs: boolean;
+  marked?: (file: string) => boolean;
+} {
+  return {
+    userJs: policy.mode === "auto",
+    ...(policy.userModules.length > 0
+      ? { marked: (file: string) => isMarkedUserModule(policy, file) !== null }
+      : {}),
+  };
 }
 
 /** The packages and modules a build runs in Node islands, or null for none:
@@ -982,9 +1307,7 @@ function decideNodeIslands(
       : [],
   );
   for (const name of lowerIslands.keys()) refused.add(name);
-  // The pre-scan's user-JavaScript markers exist only where a build may act
-  // on them.
-  const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
+  const scan = fe.nodeIslandScan(decisionScan(policy));
   const moduleDecision = moduleIslands(entryPath, policy, scan);
   const modules = moduleDecision.modules;
   // A sloppy write to an undeclared name creates a global — a sloppy-only
@@ -1013,7 +1336,7 @@ function decideNodeIslands(
   // Modules the lowering refused keep their first reason (the reload no
   // longer compiles them).
   for (const [file, island] of lowerModules) if (!modules.has(file)) modules.set(file, island);
-  const errors: ScrDiagnostic[] = [];
+  const errors: ScrDiagnostic[] = [...moduleDecision.markProblems];
   if (moduleDecision.entryPatch !== null) {
     const { file, marker } = moduleDecision.entryPatch;
     errors.push(
@@ -1298,6 +1621,32 @@ function decideNodeIslands(
         end: 0,
       }),
     );
+  // A package named with --node-island that is not in the island set has
+  // nothing the build runs in Node: scriptc compiles it from its own
+  // implementation, it is a Node builtin under another name, or the program
+  // loads no module of it from node_modules. The build names why instead of
+  // compiling as if the flag were not there.
+  const unhonored = [...policy.forcedNode]
+    .filter(([name, source]) => source === "cli" && !packages.has(name))
+    .map(([name]) => name)
+    .sort();
+  if (unhonored.length > 0) {
+    return {
+      ...nodeIslandSet(new Map(), new Map()),
+      notes: [],
+      errors: unhonored.map((name) =>
+        nodeIslandUnmatchedPackageDiag(
+          name,
+          packageShimFor(entryPath, name) !== null
+            ? "shim"
+            : builtinPackageAliasFor(entryPath, name) !== null
+              ? "builtin"
+              : "absent",
+          fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 },
+        ),
+      ),
+    };
+  }
   return packages.size === 0 && modules.size === 0
     ? null
     : { ...nodeIslandSet(packages, modules), notes, errors };
@@ -1362,6 +1711,7 @@ function refusalIslands(
       dir,
       class: "packaging",
       reason: entry.detail ?? "its static compilation was refused",
+      rule: "refusal",
     });
   }
   return grown.size === known.size ? null : grown;

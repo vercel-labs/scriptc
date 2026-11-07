@@ -38,7 +38,7 @@ import {
 import { type IslandPackage, nodeIslandSet, type NodeIslandSet } from "./boundary.js";
 import { packageDirOf, packageVersionOf } from "./origin.js";
 import { isMarkedUserModule, type NodeIslandPolicy } from "./policy.js";
-import { classRank, reportRank, ruleInfo } from "./rules.js";
+import { classRank, reportRank, ruleInfo, type NodeIslandClass } from "./rules.js";
 import type { NodeIslandScan, RefusalRecord } from "./scan.js";
 
 /** One dependency's native compilation outcome (coverage/report.ts's
@@ -58,6 +58,19 @@ export interface NodeIslandReportInput {
   diagnostics: readonly ScrDiagnostic[];
   fences: readonly ScrDiagnostic[];
   policy: NodeIslandPolicy;
+  /** The islands the analysis lowered with because a decision file records
+   * them (node-islands/decision-file.ts). The analysis never lowers them
+   * natively, so it has no refusal of its own to show for them: the report
+   * lists each with the class and reason the build recorded. */
+  recorded?: ReadonlyMap<string, IslandPackage>;
+}
+
+/** The island class a recorded decision names, or null for a word that is
+ * not one. */
+function islandClassOf(text: string): NodeIslandClass | null {
+  const classes: NodeIslandClass[] = ["runtime", "object-model", "gap", "packaging", "marked"];
+  for (const cls of classes) if (cls === text) return cls;
+  return null;
 }
 
 /** Reasons kept per package (the report renders the first per module). */
@@ -228,7 +241,10 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
       s.decision = forcedNode;
       continue;
     }
-    if (!outside) continue;
+    // A recorded island is one whatever this analysis saw of it: the build
+    // decided it, under the automatic policy (only that one records).
+    const recorded = policy.mode === "auto" && input.recorded?.has(s.name) === true;
+    if (!outside && !recorded) continue;
     if (policy.mode === "explicit") {
       s.violation = true;
       violations.push(nodeIslandsOffDiag(s.name, describe(s.reasons[0]!), loc));
@@ -304,6 +320,8 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     const version = s.dir === null ? null : packageVersionOf(s.dir);
     if (s.island) {
       const first = s.reasons[0];
+      // The build's own class and reason for an island it recorded.
+      const recorded = s.decision === "auto" ? input.recorded?.get(s.name) : undefined;
       const modules = new Set<string>();
       for (const r of s.reasons) if (r.loc !== null) modules.add(r.loc.file);
       const carries: string[] = [];
@@ -315,8 +333,15 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
         package: s.name,
         version,
         path: s.dir,
-        class: first === undefined ? "marked" : first.class,
-        reason: first === undefined ? markedReason(s.decision) : describe(first),
+        class:
+          (recorded === undefined ? null : islandClassOf(recorded.class)) ??
+          (first === undefined ? "marked" : first.class),
+        reason:
+          recorded !== undefined
+            ? recorded.reason
+            : first === undefined
+              ? markedReason(s.decision)
+              : describe(first),
         diagnostic: first === undefined ? null : first.code,
         decision: s.decision,
         reasons: s.reasons,

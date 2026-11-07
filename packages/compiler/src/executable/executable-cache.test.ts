@@ -2,6 +2,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
+import { CLI_COMMANDS, CLI_OPTIONS } from "../cli/usage.js";
 import {
   FrontendInputTracker,
   trackedFileExists,
@@ -19,6 +20,7 @@ import {
   readEarlyExecutableCache,
   readRoutedExecutableCache,
   recordEarlyExecutableNativeBuild,
+  earlyExecutableCacheKeys,
   type EarlyExecutableCacheOptions,
   type EarlyExecutableNativeFeatures,
 } from "./executable-cache.js";
@@ -370,6 +372,37 @@ test("early executable cache rejects corruption and refreshes payload LRU times"
 
   await writeFile(join(directory, "program.tu"), "; poisoned\n");
   expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
+});
+
+test("an entry whose feature record misspells a key every record carries is a miss", async () => {
+  // The record spells each required link feature and mutableBuffers as a
+  // boolean. A stamp without one of them, or with another type there, was
+  // not written by this compiler, whatever its digest says.
+  const without = (key: string): unknown =>
+    Object.fromEntries(Object.entries(native).filter(([name]) => name !== key));
+  const records: [unknown, boolean][] = [
+    [native, true],
+    [without("fetch"), false],
+    [without("perfLoop"), false],
+    [without("mutableBuffers"), false],
+    [{ ...native, webcrypto: "yes" }, false],
+  ];
+  for (const [record, hit] of records) {
+    const f = await fixture();
+    const tracker = new FrontendInputTracker();
+    tracker.run(() => trackedReadFile(f.source));
+    await publishEarlyExecutableCache(f.root, f.options, {
+      llvmPath: f.llvmPath,
+      irPath: f.irPath,
+      native: record as EarlyExecutableNativeFeatures,
+      executableRestored: false,
+      frontend: tracker.snapshot(),
+    });
+    expect(
+      (await readEarlyExecutableCache(f.root, f.options)) !== null,
+      JSON.stringify(record),
+    ).toBe(hit);
+  }
 });
 
 test("early executable cache restores a validated final binary", async () => {
@@ -781,4 +814,115 @@ test("a recorded native build is found by its invocation", async () => {
     frontend: tracker.snapshot(),
   });
   expect(await hasEarlyExecutableNativeBuild(f.root, other)).toBe(false);
+});
+
+/* What the keys cover. Every option `scriptc build` and `scriptc run` take
+ * can change what the build produces or whether it succeeds, so each one
+ * either changes both cache keys or is listed with the reason an entry
+ * built without it still answers a build with it. A new option fails this
+ * test until it is given one or the other. */
+type KeyRule =
+  /** The option reaches the key through this change of the cache options. */
+  | { keyed: (options: EarlyExecutableCacheOptions) => EarlyExecutableCacheOptions }
+  /** Why the key need not hold the option. */
+  | { unkeyed: string };
+
+const OPTION_KEY_RULES: Record<string, KeyRule> = {
+  out: { keyed: (o) => ({ ...o, outPath: `${o.outPath}-elsewhere` }) },
+  emit: {
+    unkeyed:
+      "only executables are cached: a build of another kind neither reads nor writes an entry (compileTracked's cacheRoot)",
+  },
+  print: {
+    unkeyed:
+      "--print selects what the command prints (diagnostics as JSON, or the link info of an object build, which is not cached); the build is the same",
+  },
+  backend: {
+    unkeyed: "llvm is the only backend, and the key holds its name: another value is refused",
+  },
+  optimization: { keyed: (o) => ({ ...o, optimization: "dev" }) },
+  strip: { keyed: (o) => ({ ...o, strip: true }) },
+  static: { keyed: (o) => ({ ...o, staticLink: true }) },
+  "windows-subsystem": { keyed: (o) => ({ ...o, windowsSubsystem: "gui" }) },
+  "detached-exit": { keyed: (o) => ({ ...o, detachedExit: true }) },
+  "stdout-buffering": { keyed: (o) => ({ ...o, stdoutBuffering: true }) },
+  libnode: {
+    unkeyed:
+      "an entry of a program that calls into Node records the pack's identity, and a hit requires it unchanged (libnodeIdentity); other programs do not depend on it",
+  },
+  "large-pages": { keyed: (o) => ({ ...o, largePages: true }) },
+  exceptions: { keyed: (o) => ({ ...o, exceptions: "rare" }) },
+  "target-cpu": { keyed: (o) => ({ ...o, targetCpu: "x86-64-v3" }) },
+  "cpu-dispatch": { keyed: (o) => ({ ...o, cpuDispatch: true }) },
+  "profile-generate": { keyed: (o) => ({ ...o, profile: "generate:/tmp/profile-%p" }) },
+  "profile-use": { keyed: (o) => ({ ...o, profile: "use:0123abcd" }) },
+  "keep-llvm": {
+    unkeyed:
+      "the command removes the kept LLVM text after the build, cached or not; the build is the same",
+  },
+  "emit-ir": { keyed: (o) => ({ ...o, emitIr: !o.emitIr }) },
+  sanitize: { keyed: (o) => ({ ...o, sanitize: !o.sanitize }) },
+  ffi: {
+    keyed: (o) => ({
+      ...o,
+      ffiProfile: { path: join(o.outDir, "ffi.json"), bytes: new Uint8Array([1]) },
+    }),
+  },
+  "npm-static": { keyed: (o) => ({ ...o, npmStatic: ["a-package"] }) },
+  "shape-overlay": { keyed: (o) => ({ ...o, shapeOverlay: true }) },
+  "provenance-sources": {
+    unkeyed: "a build that rewrites its sources for provenance uses no cache (cacheRoot is null)",
+  },
+  tier: { keyed: (o) => ({ ...o, tier: "static-only" }) },
+  "dynamic-tier-warning": {
+    unkeyed:
+      "the command leaves SC6101 out when it prints; the build, and the warnings its entry stores, are the same",
+  },
+  "node-islands": { keyed: (o) => ({ ...o, nodeIslands: "auto" }) },
+  "node-island": { keyed: (o) => ({ ...o, nodeIslands: "node:a-package" }) },
+  native: { keyed: (o) => ({ ...o, nodeIslands: "native:a-package" }) },
+  node: { keyed: (o) => ({ ...o, nodeIslands: "node:another-package" }) },
+  // The island key holds the decision file's path and the digest of its
+  // bytes (compileTracked): a recorded decision changes what a build compiles.
+  "node-island-decision": {
+    keyed: (o) => ({ ...o, nodeIslands: "|||||decision=/project/scriptc-islands.json#0123abcd" }),
+  },
+  "ignore-node-island-decision": { keyed: (o) => ({ ...o, nodeIslands: "|||||ignore-decision" }) },
+  "node-island-decision-check": {
+    unkeyed:
+      "the check decides the islands from scratch with the frontend only and compares them with the file: it builds no executable, so it neither reads nor writes an entry",
+  },
+};
+
+test("every build and run option is in the cache keys or says why it need not be", async () => {
+  const f = await fixture();
+  const taken = new Set<string>(
+    CLI_COMMANDS.filter((command) => command.name === "build" || command.name === "run").flatMap(
+      (command) => [...command.options],
+    ),
+  );
+  expect(taken.size).toBeGreaterThan(20);
+  for (const option of taken) expect(Object.keys(CLI_OPTIONS)).toContain(option);
+  const unruled = [...taken].filter((option) => OPTION_KEY_RULES[option] === undefined);
+  expect(
+    unruled,
+    "options without a rule: add each to OPTION_KEY_RULES, keyed (and to cacheKey and routeKey) or unkeyed with the reason",
+  ).toEqual([]);
+  // A rule for an option the commands no longer take is stale.
+  expect(Object.keys(OPTION_KEY_RULES).filter((option) => !taken.has(option))).toEqual([]);
+  const base = earlyExecutableCacheKeys(f.options);
+  const keys = new Map<string, string>();
+  for (const [option, rule] of Object.entries(OPTION_KEY_RULES)) {
+    if ("unkeyed" in rule) {
+      expect(rule.unkeyed.length, option).toBeGreaterThan(20);
+      continue;
+    }
+    const changed = earlyExecutableCacheKeys(rule.keyed(f.options));
+    expect(changed.entry, `--${option} must change the entry key`).not.toBe(base.entry);
+    expect(changed.route, `--${option} must change the route key`).not.toBe(base.route);
+    keys.set(option, changed.entry);
+  }
+  // The tier's own key: `static-only` refuses programs `auto` compiles.
+  expect(keys.get("tier")).not.toBe(keys.get("strip"));
+  expect(earlyExecutableCacheKeys({ ...f.options }).entry).toBe(base.entry);
 });

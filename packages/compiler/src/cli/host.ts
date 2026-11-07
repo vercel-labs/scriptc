@@ -11,6 +11,7 @@ import type {
   CompileRequestResult,
 } from "../compile-types.js";
 import type { NativeOptimization } from "../backend/optimization.js";
+import type { IslandDecisionCheck } from "../executable/prepare.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
 
 export type NativeCacheWarmProfile = "runtime" | "tls";
@@ -21,6 +22,12 @@ export interface CliHost {
   sourceTargetPlatform: () => string;
   analyze: (entry: string, options: AnalyzeOptions) => Promise<AnalyzeResult>;
   compile: (entry: string, options: CompileRequestOptions) => Promise<CompileRequestResult>;
+  /** `build --node-island-decision-check`: the islands a build decides from
+   * scratch against the decision file, with no code generated. */
+  checkIslandDecision: (
+    entry: string,
+    options: CompileRequestOptions,
+  ) => Promise<IslandDecisionCheck>;
   compileLibrary: (options: CompileLibraryOptions) => Promise<CompileLibraryResult>;
   resolveProvenanceSources: (entry: string) => Promise<ProvenanceSources>;
   warmNativeCaches: (options: {

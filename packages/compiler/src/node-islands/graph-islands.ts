@@ -79,6 +79,7 @@ export function outsideGraphIslands(
       dir,
       class: "packaging",
       reason: outsideGraphReason(name),
+      rule: "lowering",
     });
   }
   if (grown.size === 0) return null;
@@ -135,6 +136,8 @@ export function growEsmImporters(
         dir: at.dir,
         class: "packaging",
         reason: `an ES module of the package imports the CommonJS island package '${name}'`,
+        rule: "esm-importer",
+        follows: name,
       });
       // It goes wherever that island goes, the sure-fence retry included.
       if (sureOf !== undefined && sureOf.sure !== undefined) {

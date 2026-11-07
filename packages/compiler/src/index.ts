@@ -16,10 +16,24 @@ import {
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
-import { prepareExecutableBuild, type PreparedExecutableModule } from "./executable/prepare.js";
+import {
+  checkIslandDecision as checkPreparedIslandDecision,
+  prepareExecutableBuild,
+  type IslandDecisionCheck,
+  type PreparedExecutableModule,
+} from "./executable/prepare.js";
+import {
+  loweringOptions,
+  prepareLoweredProgram,
+  usesLoweredProgram,
+} from "./executable/lowered.js";
 import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
-import { islandDecisionDigest } from "./node-islands/decision-file.js";
+import {
+  analyzeOptionsWithDecision,
+  compileOptionsWithDecision,
+  islandDecisionDigest,
+} from "./node-islands/decision-file.js";
 import { setIslandResolver } from "./node-islands/resolve.js";
 import {
   prepareLibrary,
@@ -455,6 +469,7 @@ export function sourceTargetPlatform(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 export function analyze(entryPath: string, opts: AnalyzeOptions = {}): AnalyzeResult {
+  opts = analyzeOptionsWithDecision(entryPath, opts);
   // One scope for the whole analysis: its island reload and retry lowerings
   // load the program again, and they reuse the checker that answered the
   // first load instead of starting a cold one.
@@ -474,6 +489,8 @@ export async function analyzeCached(
   opts: AnalyzeOptions = {},
 ): Promise<AnalyzeResult> {
   entryPath = resolve(entryPath);
+  // The verdict is keyed by the decision file the analysis replays.
+  opts = analyzeOptionsWithDecision(entryPath, opts);
   const root = await prepareBuildCacheRoot(buildCacheRoot());
   if (root === null || provenanceSources() !== null) return analyze(entryPath, opts);
   const directory = join(root, "coverage-v1");
@@ -569,6 +586,9 @@ export async function compile(
   opts: CompileRequestOptions,
 ): Promise<CompileRequestResult> {
   clearCompileSessionCaches();
+  // The project's decision file, unless the options name one or turn it
+  // off: every cache key and the build itself read it from the options.
+  opts = compileOptionsWithDecision(entryPath, opts);
   // `shapeOverlay` reaches the frontend (and its child process) through
   // the environment the overlay reads.
   const overlayEnv = process.env["SCRIPTC_SHAPE_OVERLAY"];
@@ -586,6 +606,54 @@ export async function compile(
   } finally {
     setLibDiagnosticsStore(null);
     frontendProcess?.release();
+    if (opts.shapeOverlay !== undefined) {
+      if (overlayEnv === undefined) delete process.env["SCRIPTC_SHAPE_OVERLAY"];
+      else process.env["SCRIPTC_SHAPE_OVERLAY"] = overlayEnv;
+    }
+  }
+}
+
+export type { IslandDecisionCheck } from "./executable/prepare.js";
+
+/** `scriptc build --node-island-decision-check`: decides the program's Node
+ * islands from scratch, without generating code, and compares them with
+ * what the decision file records for this entry and these options
+ * (executable/prepare.ts's checkIslandDecision). */
+export async function checkIslandDecision(
+  entryPath: string,
+  opts: CompileRequestOptions,
+): Promise<IslandDecisionCheck> {
+  clearCompileSessionCaches();
+  entryPath = resolve(entryPath);
+  opts = compileOptionsWithDecision(entryPath, opts);
+  let ffi: FfiProfile | null = null;
+  if (opts.ffiProfilePath !== undefined) {
+    const loaded = loadFfiProfile(resolve(opts.ffiProfilePath));
+    if (!loaded.ok)
+      return {
+        file: opts.nodeIslands?.decision ?? null,
+        differences: [],
+        packages: 0,
+        modules: 0,
+        undecided: { ok: false, diagnostics: loaded.diagnostics, sourceTexts: new Map() },
+      };
+    ffi = loaded.profile;
+  }
+  const overlayEnv = process.env["SCRIPTC_SHAPE_OVERLAY"];
+  if (opts.shapeOverlay !== undefined)
+    process.env["SCRIPTC_SHAPE_OVERLAY"] = opts.shapeOverlay ? "1" : "0";
+  const services = beginCompileServices();
+  try {
+    return checkPreparedIslandDecision(
+      entryPath,
+      opts,
+      ffi,
+      buildTargetPlatform(),
+      nodeFrontend,
+      compilationTiming(),
+    );
+  } finally {
+    endCompileServices(services);
     if (opts.shapeOverlay !== undefined) {
       if (overlayEnv === undefined) delete process.env["SCRIPTC_SHAPE_OVERLAY"];
       else process.env["SCRIPTC_SHAPE_OVERLAY"] = overlayEnv;
@@ -888,7 +956,9 @@ async function compileExecutableNative(
     ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
+    ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
+    ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
@@ -899,6 +969,7 @@ async function compileExecutableNative(
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
+    ...(features.fsPathValue ? { fsPathValue: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
     ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
@@ -1144,13 +1215,12 @@ async function nodeUnitStore(
   const directory = join(root, "units-v1");
   const implementation = await coverageCompilerIdentity(directory);
   if (implementation === null) return null;
-  const { outPath: _outPath, outDir: _outDir, ...lowering } = opts;
   const key = createHash("sha256")
     .update(
       JSON.stringify({
         schema: 1,
         entry: resolve(entryPath),
-        options: lowering,
+        options: loweringOptions(opts),
         ffi,
         platform: buildPlatform,
         compiler: implementation.digest,
@@ -1158,6 +1228,18 @@ async function nodeUnitStore(
     )
     .digest("hex");
   return directoryUnitStore(directory, key);
+}
+
+/** The paths an executable build writes, which the frontend's probes do not
+ * observe (as the executable cache's exclusions name them). */
+function loweredBuildOutputs(entryPath: string, opts: CompileRequestOptions): string[] {
+  const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
+  return [
+    opts.outPath,
+    `${opts.outPath}.dSYM`,
+    join(opts.outDir, `${stem}.ll`),
+    join(opts.outDir, `${stem}.ir.json`),
+  ];
 }
 
 interface PreparedExecutable {
@@ -1195,21 +1277,52 @@ async function prepareExecutableInput(
   // starting a cold one. The scope ends with the last load: LLVM emission and
   // native code generation run after it, and no idle checker process holds
   // its heap through them.
-  const services = beginCompileServices();
-  let prepared: PreparedExecutableModule | CompileFailure;
-  try {
-    prepared = prepareExecutableBuild(
-      entryPath,
-      opts,
-      ffi,
-      buildPlatform,
-      nodeFrontend,
-      timing,
-      await nodeUnitStore(entryPath, opts, ffi, buildPlatform),
-    );
-  } finally {
-    endCompileServices(services);
-  }
+  const unitStore =
+    opts.fromLowered === undefined
+      ? await nodeUnitStore(entryPath, opts, ffi, buildPlatform)
+      : null;
+  const frontend = (): PreparedExecutableModule | CompileFailure => {
+    const services = beginCompileServices();
+    try {
+      return prepareExecutableBuild(
+        entryPath,
+        opts,
+        ffi,
+        buildPlatform,
+        nodeFrontend,
+        timing,
+        unitStore,
+      );
+    } finally {
+      endCompileServices(services);
+    }
+  };
+  // A lowered program (executable/lowered.ts) is written from, or read in
+  // place of, what the frontend prepares. Its compiler is what the
+  // executable cache keys a build of the compiler by: the package's content,
+  // the checker and the Node release that runs them.
+  const compilerIdentity = usesLoweredProgram(opts)
+    ? createHash("sha256")
+        .update(
+          JSON.stringify({
+            implementation: (await compilerImplementationIdentity(false)).digest,
+            node: process.version,
+            ...checkerField(),
+          }),
+        )
+        .digest("hex")
+    : "";
+  const prepared = prepareLoweredProgram(
+    entryPath,
+    opts,
+    buildPlatform,
+    timing,
+    {
+      compiler: () => compilerIdentity,
+      outputs: loweredBuildOutputs(entryPath, opts),
+    },
+    frontend,
+  );
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
   // Calls into Node record the libnode pack an executable loads at run
@@ -1676,7 +1789,7 @@ async function prepareExecutableInputInChild(
     return prepareExecutableInput(entryPath, opts, ffi, buildPlatform, timing, warningSink);
   timing("frontend-process");
   for (const probe of result.frontend.probes) frontendInputs.record(probe);
-  if (!result.frontend.stable) frontendInputs.markUnstable();
+  if (!result.frontend.stable) frontendInputs.markUnstable(result.frontend.unstable);
   const sourceTexts = new Map(result.sourceTexts);
   if (warningSink !== undefined && result.warnings.length > 0) {
     warningSink.warnings = result.warnings;
@@ -2136,6 +2249,7 @@ async function compileTracked(
       ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
+      ...(opts.tier === "static-only" ? { tier: "static-only" as const } : {}),
       // A recorded island decision changes what the build compiles, so its
       // bytes are part of the island key (the option names only its path).
       ...(nodeIslandOptionsKey(opts.nodeIslands) !== ""
@@ -2196,9 +2310,10 @@ async function compileTracked(
     shapeOverlayMemo = shapeOverlayMemoDir(cacheRoot, implementation.digest);
     setShapeOverlayMemoDir(shapeOverlayMemo);
   }
-  // A cache hit emits no module, so it would write no representation report.
+  // A cache hit emits no module, so it would write no representation report,
+  // and it runs no frontend, so it would write or read no lowered program.
   const cachedHit =
-    earlyCacheOptions === null || representationReportPath() !== null
+    earlyCacheOptions === null || representationReportPath() !== null || usesLoweredProgram(opts)
       ? null
       : await readEarlyExecutableCache(cacheRoot, earlyCacheOptions);
   // A --libnode=beside build that calls into Node places its island modules

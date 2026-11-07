@@ -13,7 +13,11 @@
  *       "proper-lockfile": { "run": "node", "evaluate": "lazy" },
  *       "zod": { "shapes": false }       // no shape-inference overlay
  *     },
- *     "nodeIslands": { "auto": true, "modules": ["src/plugins/*.ts"] },
+ *     "nodeIslands": {
+ *       "auto": true,
+ *       "modules": ["src/plugins/*.ts"],
+ *       "decision": true                 // keep the island decision in scriptc-islands.json
+ *     },
  *     "wasm": ["build/module.wasm"],
  *     "typePatches": {                   // frontend/type-patches/layer.ts
  *       "commander@^15.0.0": {
@@ -70,7 +74,14 @@ export interface NodeIslandsSetting {
    * module's boot guards may record in the executable (snapshot.ts). A
    * deferred load that reads any other variable stays eager. */
   publicEnv: string[];
+  /** `decision`: the file builds keep the island decision in and start from
+   * (node-islands/decision-file.ts), absolute; `true` names
+   * `scriptc-islands.json` beside the package.json. Null without the key. */
+  decision: string | null;
 }
+
+/** The decision file `"decision": true` names, beside the package.json. */
+export const DEFAULT_DECISION_FILE = "scriptc-islands.json";
 
 /** One declaration patch: a selector and the type text it maps to. */
 export interface TypePatchDeclaration {
@@ -136,6 +147,7 @@ const NODE_ISLANDS_KEYS = [
   "packaging",
   "speculativeStart",
   "publicEnv",
+  "decision",
 ];
 
 function defaultPackageSetting(): PackageSetting {
@@ -159,6 +171,7 @@ function defaultNodeIslands(): NodeIslandsSetting {
     packaging: "embedded",
     speculativeStart: false,
     publicEnv: [],
+    decision: null,
   };
 }
 
@@ -360,6 +373,17 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
               `write "publicEnv": ["NODE_ENV"]`,
             );
           } else setting.publicEnv = list;
+        } else if (key === "decision") {
+          if (v === true) setting.decision = join(dirname(manifest), DEFAULT_DECISION_FILE);
+          else if (v === false) setting.decision = null;
+          else if (typeof v === "string" && v !== "")
+            setting.decision = resolve(dirname(manifest), v);
+          else
+            problem(
+              ["nodeIslands", key],
+              `must be true or the path of a file, not ${shown(v)}`,
+              `write "decision": true to keep it in ${DEFAULT_DECISION_FILE} beside this package.json`,
+            );
         } else if (key === "packaging") {
           if (v !== "embedded" && v !== "beside") {
             problem(

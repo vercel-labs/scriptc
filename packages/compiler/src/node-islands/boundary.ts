@@ -17,6 +17,21 @@ import * as ts from "../frontend/ts7/adapter.js";
 import { trackedRealpath } from "../frontend/input-tracker.js";
 import { packageDirOf } from "./origin.js";
 
+/** The rule of the island decision that grew a package into the set after
+ * the first decision (node-islands/growth.ts states them): a load that
+ * refused it late, a preflight refusal at its import, the lowering's own
+ * refusals, an ES module of it importing a CommonJS island, the fence report
+ * of a failing build, or a fence that surely fires in a compiling one. A
+ * recorded decision keeps it, because how long an island may be trusted
+ * depends on the rule that asked for it (node-islands/decision-file.ts). */
+export type IslandRule =
+  | "refusal"
+  | "preflight"
+  | "lowering"
+  | "esm-importer"
+  | "fence-report"
+  | "fence-sure";
+
 /** One package the build runs in a Node island. */
 export interface IslandPackage {
   name: string;
@@ -27,6 +42,12 @@ export interface IslandPackage {
    * reason, for the SC8001 note. */
   class: string;
   reason: string;
+  /** The rule that grew it into the set; absent for a package the first
+   * decision islands from the load alone. */
+  rule?: IslandRule;
+  /** For the `esm-importer` rule: the CommonJS island this package imports,
+   * and so the island it leaves the set with. */
+  follows?: string;
 }
 
 /** One program module the build runs in a Node island (DESIGN.md
@@ -281,6 +302,13 @@ const COPIED =
   ts.TypeFlags.Undefined |
   ts.TypeFlags.Void;
 
+/** Whether a checker type is a primitive the boundary copies: a number,
+ * string, boolean or bigint (literal types included), null, undefined or
+ * void. */
+export function isCopiedTsType(type: ts.Type): boolean {
+  return (type.flags & COPIED) !== 0;
+}
+
 export function crossingOf(
   islands: NodeIslandSet,
   type: ts.Type,
@@ -288,11 +316,11 @@ export function crossingOf(
 ): BoundaryCrossing {
   if (type.isUnionType()) {
     const arms = ts.constituentTypes(type);
-    if (arms.every((t) => (t.flags & COPIED) !== 0)) return "copy";
+    if (arms.every(isCopiedTsType)) return "copy";
     if (isForeignType(islands, type, checker)) return "handle";
     return "refused";
   }
-  if ((type.flags & COPIED) !== 0) return "copy";
+  if (isCopiedTsType(type)) return "copy";
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return "dyn";
   // Checker flow can narrow a live value to never (a failed type
   // predicate whose type is `unknown` subtracts every member). The value

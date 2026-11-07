@@ -22,6 +22,7 @@ test("a package.json without a scriptc key has the default configuration", () =>
     packaging: "embedded",
     speculativeStart: false,
     publicEnv: [],
+    decision: null,
   });
   expect(parseProjectConfig(manifest, "{ not json").diagnostics).toEqual([]);
 });
@@ -120,6 +121,7 @@ test("nodeIslands settings", () => {
     packaging: "beside",
     speculativeStart: true,
     publicEnv: ["NODE_ENV", "DEBUG"],
+    decision: null,
   });
   // scriptc.wasm keeps its lenient reading.
   expect(c.wasm).toEqual(["/project/build/a.wasm"]);

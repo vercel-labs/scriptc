@@ -26,6 +26,9 @@ export const CLI_OPTIONS = {
   "dry-run": { type: "boolean", default: false },
   "keep-llvm": { type: "boolean", default: true },
   "emit-ir": { type: "boolean", default: false },
+  "emit-lowered": { type: "string" },
+  "from-lowered": { type: "string" },
+  "from-lowered-accept": { type: "string", multiple: true },
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
@@ -39,6 +42,8 @@ export const CLI_OPTIONS = {
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
   "node-island-decision": { type: "string" },
+  "node-island-decision-check": { type: "boolean", default: false },
+  "ignore-node-island-decision": { type: "boolean", default: false },
   native: { type: "string", multiple: true },
   node: { type: "string" },
   "explain-island": { type: "string" },
@@ -317,6 +322,44 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "emit-lowered": {
+    entries: [
+      {
+        term: "--emit-lowered <file>",
+        help: [
+          "compiler development: also write the lowered program",
+          "(the IR the frontend hands the backend, with its",
+          "sources, warnings and the inputs it was lowered from)",
+          "to the file (build only)",
+        ],
+      },
+    ],
+  },
+  "from-lowered": {
+    entries: [
+      {
+        term: "--from-lowered <file>",
+        help: [
+          "compiler development: build from a file --emit-lowered",
+          "wrote instead of running the frontend. The build is",
+          "refused when the compiler, the options or an input",
+          "differ from the ones the file records (build only)",
+        ],
+      },
+    ],
+  },
+  "from-lowered-accept": {
+    entries: [
+      {
+        term: "--from-lowered-accept <kind[,kind…]>",
+        help: [
+          "build from the file although the named kinds differ",
+          "(compiler, options, inputs); each difference is",
+          "reported on stderr (repeatable)",
+        ],
+      },
+    ],
+  },
   sanitize: { entries: [{ term: "--sanitize", help: ["build with ASan + runtime RC audit"] }] },
   ffi: {
     entries: [
@@ -389,8 +432,8 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "tier policy (default: auto). static-only keeps every",
           "construct without a static lowering a compile error, so",
-          "the program has no dynamic-tier demotions. Both modes",
-          "currently compile identically",
+          "the program has no dynamic-tier demotions; auto compiles",
+          "such a construct in the dynamic tier where it can",
         ],
       },
     ],
@@ -450,13 +493,37 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--node-island-decision <file>",
         help: [
-          "keep the Node island decision this build reaches in the",
-          "file, and start from it when the file exists: a large",
+          "keep the Node island decision of this entry in the file",
+          "and start from it when it is recorded there: a large",
           "program then decides its islands in one round instead of",
           "several. A package that newly needs an island still gets",
-          "one and the file is updated; one that no longer needs its",
-          "island keeps it until the file is deleted",
+          "one, and one the program no longer imports loses it; a",
+          "package that would now compile keeps its island until",
+          "the check below reports it. coverage reads the file and",
+          "never writes it. A project sets the file once with",
+          '"nodeIslands": { "decision": true } under "scriptc" in',
+          "package.json (scriptc-islands.json beside it)",
         ],
+      },
+    ],
+  },
+  "node-island-decision-check": {
+    entries: [
+      {
+        term: "--node-island-decision-check",
+        help: [
+          "build only: decide the islands from scratch, generate no",
+          "code, and compare with the decision file; print what",
+          "differs and exit 1 when anything does",
+        ],
+      },
+    ],
+  },
+  "ignore-node-island-decision": {
+    entries: [
+      {
+        term: "--ignore-node-island-decision",
+        help: ["neither read nor write the project's decision file for", "this command"],
       },
     ],
   },
@@ -566,6 +633,8 @@ const ENTRY: CliPositional = {
 const NODE_ISLAND_OPTIONS: readonly CliOptionName[] = [
   "node-islands",
   "node-island",
+  "node-island-decision",
+  "ignore-node-island-decision",
   "native",
   "node",
 ];
@@ -597,7 +666,6 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "tier",
   "dynamic-tier-warning",
   ...NODE_ISLAND_OPTIONS,
-  "node-island-decision",
 ];
 
 /** Every command, in the order the help lists them. */
@@ -612,7 +680,14 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       },
     ],
     positionals: [ENTRY],
-    options: [...EXECUTABLE_OPTIONS, "print"],
+    options: [
+      ...EXECUTABLE_OPTIONS,
+      "print",
+      "emit-lowered",
+      "from-lowered",
+      "from-lowered-accept",
+      "node-island-decision-check",
+    ],
     requiredOptions: [],
     diagnostics: true,
     effect: "write",

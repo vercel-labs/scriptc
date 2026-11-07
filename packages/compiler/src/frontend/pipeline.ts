@@ -53,6 +53,9 @@ import {
   isStringLiteral,
   isStringLiteralLike,
   SyntaxKind,
+  carriedSourceText,
+  sourceTextIncludes,
+  sourceTextMatches,
   type SourceFile,
 } from "./ts7/adapter.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
@@ -66,8 +69,10 @@ import { recordFrontendIslandReads, setFrontendIslands } from "../node-islands/b
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import {
+  importsOfPackages,
   scanFiles,
   type NodeIslandScan,
+  type ProgramImports,
   type RefusalKind,
   type RefusalRecord,
 } from "../node-islands/scan.js";
@@ -135,7 +140,16 @@ export interface Frontend {
   /** The Node island detector's input (report-only): the program's
    * modules with their pre-scan markers, package import edges, and how
    * each refused package was refused. Call before dispose. */
-  nodeIslandScan?: ((opts: { userJs: boolean }) => NodeIslandScan) | undefined;
+  nodeIslandScan?:
+    | ((opts: { userJs: boolean; marked?: (file: string) => boolean }) => NodeIslandScan)
+    | undefined;
+  /** What a build that replays a recorded island decision asks of its first
+   * load (node-islands/decision-file.ts's `admitRecorded`): every import of
+   * one of `packages` in any implementation file the program holds, and
+   * those files. The scan above is not that list: it follows the startup
+   * module order and literal import() calls, and the lowering compiles more.
+   * Call before dispose. */
+  islandImports?: ((packages: ReadonlySet<string>) => ProgramImports) | undefined;
   /** Diagnostics that do not fail a build: unknown settings in the
    * project's scriptc configuration (SC8004), which builds do not use. */
   warnings?: ScrDiagnostic[];
@@ -193,7 +207,9 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
     // the keyword has none. Package JavaScript loads its literal require()
     // calls the same way, nested ones included.
     const calls =
-      packageJs || sf.text.includes("import") ? moduleSourceCandidates(load.program, sf).calls : [];
+      packageJs || sourceTextIncludes(sf, "import")
+        ? moduleSourceCandidates(load.program, sf).calls
+        : [];
     for (const call of calls) {
       const arg = call.arguments.nodes[0];
       if (arg === undefined || !isStringLiteralLike(arg)) continue;
@@ -371,7 +387,7 @@ function detectAutoPackages(
       !sf.fileName.includes("/node_modules/") &&
       // Any spelling of a call (`require (`, a comment before the paren):
       // the syntax scan below decides.
-      /\brequire\b/.test(sf.text)
+      sourceTextMatches(sf, /\brequire\b/)
     ) {
       const topLevel = new Set(edges.map((e) => `${e.spec}@${e.loc.start}`));
       for (const call of moduleSourceCandidates(load.program, sf).calls) {
@@ -1175,7 +1191,7 @@ function loadFrontend(
           finalLoad.entry,
           ...finalLoad.moduleOrder,
           ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
-        ].map((sf) => [sf.fileName, sf.text]),
+        ].map((sf) => [sf.fileName, carriedSourceText(sf)]),
       );
       // SC8004 and type patch diagnostics point into the project's
       // package.json.
@@ -1392,7 +1408,7 @@ function loadFrontend(
     npmImportSites: npmSites,
     nodeIslandScan: !scanIslands
       ? undefined
-      : ({ userJs }) => {
+      : ({ userJs, marked }) => {
           const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
           addDynamicImportGraph(finalLoad, files);
           // Package edges matter only when the program has npm packages: one
@@ -1405,12 +1421,26 @@ function loadFrontend(
             userJs,
             dropped: false,
             edges: npm,
+            ...(marked === undefined ? {} : { marked }),
           });
           return {
             modules: [...droppedScan.modules, ...scanned.modules],
             edges: [...droppedScan.edges, ...scanned.edges],
             refusals,
           };
+        },
+    islandImports: !scanIslands
+      ? undefined
+      : (packages) => {
+          const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
+          for (const sf of finalLoad.program.getImplementationSourceFiles())
+            if (!sf.isDeclarationFile) files.add(sf);
+          const found = importsOfPackages(finalLoad.program, [...files], packages);
+          // A package the drop-and-reload loop removed left the program;
+          // its modules and their imports were scanned while it held them.
+          for (const edge of droppedScan.edges) if (packages.has(edge.to)) found.edges.push(edge);
+          for (const module of droppedScan.modules) found.files.push(module.file);
+          return found;
         },
     dispose: () => finalLoad.dispose(),
   };

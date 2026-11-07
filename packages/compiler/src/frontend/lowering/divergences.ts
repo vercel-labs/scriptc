@@ -426,6 +426,14 @@ export function bindingIdentityUse(
   return identityUse(scope, decl.name.text, decl.end, symbolMatcher(decl, checker)) !== null;
 }
 
+/** Whether the body of `fn` writes through its parameter `name` or compares
+ * it by identity: the uses the width-copy report names for an argument. A
+ * call that passes an existing record keeps that record's layout for such a
+ * parameter instead of copying it (structural-instances.ts). */
+export function parameterIdentityUse(fn: ts.FunctionLikeDeclaration, name: string): boolean {
+  return fn.body !== undefined && identityUse(fn.body, name) !== null;
+}
+
 /** Matches references that resolve to the binding `decl` declares, so a
  * shadowing declaration of the same name elsewhere is not mistaken for a
  * use of the binding. Undefined when the checker is unavailable or cannot
@@ -653,7 +661,7 @@ function identityUse(
   // not reused after a source edit, so the read is not recorded as a source
   // text dependency (ts.getTextOfNode would record it).
   const textOf = (node: ts.Node): string => {
-    const text = ts.getSourceFileOfNode(node).text.slice(ts.tokenStartOfNode(node), node.end);
+    const text = ts.getTextOfNode(node);
     return text.length > 60 ? `${text.slice(0, 57)}...` : text;
   };
   /** Records a write at `target`, or remembers it and keeps scanning when

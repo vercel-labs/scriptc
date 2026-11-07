@@ -39,6 +39,7 @@ import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
  * Signature collection, argument completion and function bodies have their
  * own owners; this module selects the applicable call path. */
 import { dynUndefinedExpr, nodeThrowExpr, countedFor, numLit, varRef } from "../../ir/build.js";
+import { noLoweringDiag } from "../../diagnostics/diagnostic.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { threadsImportOf } from "../threads-import.js";
 import { nodeApiCalleeOf } from "../node-api-import.js";
@@ -3682,6 +3683,101 @@ function lowerObjectOwnCall(
       type: BOOL,
       loc,
     };
+  } else if (
+    type.kind === "func" &&
+    !enumerable &&
+    isJsSourceFile(ts.getSourceFileOfNode(receiverNode ?? call)) &&
+    canBoxFuncIntoDyn(
+      type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    // A FUNCTION-typed JavaScript value answers hasOwnProperty from its
+    // dynamic view: the closure's own-property table first, then `name` and
+    // `length`, and nothing else. Compiled functions are strict-mode
+    // function objects, whose `caller` and `arguments` own properties the
+    // spec forbids, so those two answer false rather than the sloppy-mode
+    // reflection V8 extends to non-strict functions. The function value is
+    // boxed exactly like the `f.name`/`f.length` read in property-access.
+    // propertyIsEnumerable keeps its refusal: the dynamic read does not
+    // carry a function's own-property enumerable bits yet.
+    const fnName = jsFuncNameOf(receiverNode ?? call, lowerer);
+    const fnLength = lowerer.builtinFunctionIdentity(receiver).fnLength;
+    const boxed: IrExpr = {
+      kind: "dynFrom",
+      value: receiverRef,
+      type: DYN,
+      ...(fnName !== null ? { fnName } : {}),
+      ...(fnLength !== undefined ? { fnLength } : {}),
+      loc,
+    };
+    // `prototype` is an own property of a function declaration, a function
+    // expression, a generator and a class, and of no arrow, method or async
+    // function. The dynamic probe answers it from the closure's property
+    // table, which exists only once something created it and never holds a
+    // generator's, so it would report the key absent where Node reports it
+    // present. That one key keeps the refusal, at the probe that asks for
+    // it; every other key has the answer described above.
+    const surface = `Object.prototype.${method}("prototype") over a ${lowerer.fmt(type)} receiver`;
+    const hint = "this probe does not answer a function value's own `prototype` yet";
+    // A key known only at run time defers the refusal to the probe that
+    // turns out to ask for `prototype`.
+    const refusal = (): IrExpr => {
+      const diag = noLoweringDiag(surface, locOf(receiverNode ?? call), hint);
+      lowerer.runtimeFences.push(diag);
+      const sf = ts.getSourceFileOfNode(call);
+      const line = ts.getLineAndCharacterOfPosition(sf, diag.loc.start).line + 1;
+      const slot = lowerer.declareHiddenLocal("%never", BOOL);
+      slot.mutable = true;
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: slot.id, init: null, loc },
+          {
+            kind: "runtimeFence",
+            code: diag.code,
+            message: `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`,
+            loc,
+          },
+        ],
+        result: varRef(slot.id, BOOL, loc),
+        diverges: true,
+        type: BOOL,
+        loc,
+      };
+    };
+    const probe = (name: IrExpr): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.hasOwn",
+      args: [boxed, name],
+      type: BOOL,
+      loc,
+    });
+    if (key.kind === "strLit") {
+      if (key.value === "prototype") lowerer.noLowering(surface, receiverNode ?? call, hint);
+      result = probe(key);
+    } else {
+      // The key is read twice (the test and the probe): hold its text.
+      const text = lowerer.declareHiddenLocal("%ownKeyText", STRING);
+      stmts.push({ kind: "varDecl", localId: text.id, init: key, loc });
+      const held = varRef(text.id, STRING, loc);
+      result = {
+        kind: "ternary",
+        cond: {
+          kind: "strEq",
+          negated: false,
+          left: held,
+          right: { kind: "strLit", value: "prototype", type: STRING, loc },
+          type: BOOL,
+          loc,
+        },
+        then: refusal(),
+        else_: probe(held),
+        type: BOOL,
+        loc,
+      };
+    }
   } else if (type.kind === "string" || type.kind === "array") {
     const needleLocal = lowerer.declareHiddenLocal("%ownIndex", F64);
     stmts.push({

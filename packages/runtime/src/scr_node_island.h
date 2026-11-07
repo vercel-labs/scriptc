@@ -172,9 +172,10 @@ uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
 /* The operations the units every program can link route to the island
  * units: what scr_json.c's dynamic paths do with an island handle (typeof,
- * calls, ToPrimitive, `in`, delete, Object.keys and the rest), util.inspect
- * of one (scr_inspect.c), instanceof against one (scr_dyn_builtin_class.c)
- * and the uncaught report of an island error (scr_exception.c).
+ * calls, ToPrimitive, `in`, delete, Object.keys, weak-collection keys and
+ * the rest), util.inspect of one (scr_inspect.c), instanceof against one
+ * (scr_dyn_builtin_class.c) and the uncaught report of an island error
+ * (scr_exception.c).
  * scr_node_island_handle.c installs them from a constructor, so they are
  * set in every program that can hold an island handle and NULL in every
  * other, and each of those units builds one object whether or not a program
@@ -221,6 +222,13 @@ typedef struct ScrNiDynOps {
   /* Node's uncaught-exception report for an error island code threw
    * (scr_ni_report_uncaught): true when it printed one. */
   bool (*report_uncaught)(struct ScrError *error);
+  /* Weak collections keyed by island objects (scr_ni_weak_get,
+   * scr_ni_weak_test, scr_ni_weak_set): the entries of a native WeakMap,
+   * WeakSet or FinalizationRegistry whose key is an island object live in a
+   * collection inside the island. */
+  ScrDyn *(*weak_get)(ScrDyn *collection, ScrDyn *key);
+  int (*weak_test)(ScrDyn *collection, bool set, ScrDyn *key, bool remove);
+  bool (*weak_set)(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
   /* The `in` operator on an error island code threw, for what its native
    * view does not hold (error_get reads the same): 1, 0, or -1 for an error
    * the runtime made itself. */
@@ -378,7 +386,8 @@ void scr_ni_gc_cleanup(void); /* at exit */
 /* Weak collections keyed by island objects (scr_node_island_gc.c): the
  * entries of a native WeakMap, WeakSet or FinalizationRegistry whose key
  * is an island object live in a WeakMap or WeakSet inside the island,
- * `collection` (NULL until the first such entry; `set`: a WeakSet). */
+ * `collection` (NULL until the first such entry; `set`: a WeakSet).
+ * scr_json.c calls them through ScrNiDynOps. */
 ScrDyn *scr_ni_weak_get(ScrDyn *collection, ScrDyn *key); /* +1; undefined: no entry */
 int scr_ni_weak_test(ScrDyn *collection, bool set, ScrDyn *key, bool remove); /* 1, 0; -1: threw */
 bool scr_ni_weak_set(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);

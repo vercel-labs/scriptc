@@ -512,6 +512,21 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
       );
       return { name: out, type: e.type };
     }
+    case "js.negate": {
+      const a = operand(host, e.args[0]!);
+      const out = withSlowPath(
+        host,
+        "ptr",
+        (slow) => {
+          const negated = B.tmp();
+          B.line(`${negated} = fneg double ${a.number(slow)}`);
+          return boxDouble(host, negated);
+        },
+        () => call(host, "ptr", "scr_js_negate", [["ptr", a.word()]]),
+        true,
+      );
+      return jsval(out);
+    }
     case "js.bitwise": {
       const op = literalOp(e.args[2]!);
       const inst = op !== null ? BITWISE_OPS[op] : undefined;
@@ -662,6 +677,8 @@ function emitBoxedJsLibCall(host: Host, e: LibCallExpr): LlValue {
         name: call(host, "double", "scr_js_to_number", [["ptr", args()[0]!.name]]),
         type: e.type,
       });
+    case "js.negate":
+      return throwing(owned(call(host, "ptr", "scr_js_negate", [["ptr", args()[0]!.name]])));
     default:
       throw new InternalCompilerError(`llvm emitter bug: unknown jsval builtin ${e.fn}`);
   }

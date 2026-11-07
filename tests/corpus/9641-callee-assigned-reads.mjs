@@ -183,6 +183,52 @@ function copies() {
 }
 console.log("copies:", copies());
 
+// An assignment of the copy's own ends what its initializer left in it:
+// `undefined`, `null`, a value of another type; a reset on one path only
+// does not, and neither does a reset followed by the read again.
+function resets() {
+  var value, size;
+  function fill() {
+    value = "filled";
+    size = 2;
+  }
+  fill();
+  var a = value;
+  a = undefined;
+  var b = value;
+  b = null;
+  var c = size;
+  c = "text";
+  var d = size;
+  if (size > 5) d = undefined;
+  var e = value;
+  e = undefined;
+  e = value;
+  return [holder.show(a), "abcd".slice(a), holder.show(b), holder.show(c), "abcd".slice(d), holder.show(d), holder.show(e)].join(" | ");
+}
+function resetReturned() {
+  var value;
+  function fill() {
+    value = "filled";
+  }
+  fill();
+  var copy = value;
+  copy = undefined;
+  return copy;
+}
+function nullReturned() {
+  var value;
+  function fill() {
+    value = "filled";
+  }
+  fill();
+  var copy = value;
+  copy = null;
+  return copy;
+}
+console.log("resets:", resets());
+console.log("reset and returned:", show(resetReturned()), show(nullReturned()));
+
 // A function called where it stands is part of the enclosing flow: its
 // assignment types the read, and stays the value.
 function inPlace() {

@@ -237,6 +237,32 @@ console.log(stale());
   expect(readsLocal(module, "stale", "copy")).toBe(true);
 });
 
+test("an assignment of the copy's own ends what its initializer left in it", async () => {
+  const source = (reset: string): string => `
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+function copied(clear: boolean) {
+  start = undefined;
+  set();
+  let copy = start;
+  ${reset}
+  return copy;
+}
+copied(true);
+`;
+  // Every path to the return runs the reset: the copy is undefined there,
+  // and the function returns nothing, as the checker infers.
+  await lower(source("copy = undefined;"));
+  // One path keeps the initializer's value, and so does a reset followed
+  // by the read again.
+  const refusal = /SC1090: returning 'copy' from a function whose return type TypeScript infers/;
+  await expect(lower(source("if (clear) copy = undefined;"))).rejects.toThrow(refusal);
+  await expect(lower(source("copy = undefined; copy = start;"))).rejects.toThrow(refusal);
+  await expect(lower(source(""))).rejects.toThrow(refusal);
+});
+
 test("a function inferred to return undefined from a stale narrowing is refused", async () => {
   const source = (returnType: string): string => `
 let found: string | undefined = undefined;

@@ -141,6 +141,35 @@ function kept(): string {
 console.log("returned:", show(found(["apple", "banana"], "b")), "/", show(found(["apple"], "b")));
 console.log("kept:", kept());
 
+// An untyped copy that is assigned `undefined` afterwards holds that: the
+// assignment ends what the initializer left in it, and a function that
+// returns the reset copy returns nothing, as TypeScript infers.
+function resetCopy(): string {
+  let from: number | undefined = undefined;
+  const set = (): void => {
+    from = 2;
+  };
+  set();
+  let copy = from;
+  const kept = "abcd".slice(copy);
+  copy = undefined;
+  return kept + " " + "abcd".slice(copy) + " " + show(copy);
+}
+function resetAndReturn() {
+  let found;
+  const search = (): void => {
+    found = "hit";
+  };
+  search();
+  let copy = found;
+  const kept = show(copy);
+  copy = undefined;
+  console.log("before the reset:", kept);
+  return copy;
+}
+resetAndReturn();
+console.log("reset copy:", resetCopy());
+
 // A function expression called where it stands is part of the flow.
 function inPlace(): string {
   let size: number | undefined = undefined;

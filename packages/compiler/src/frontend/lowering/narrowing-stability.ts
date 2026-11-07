@@ -51,6 +51,7 @@ export class NarrowingStability {
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
   private readonly staleBindings = new Map<ts.Symbol, boolean>();
   private readonly inherited = new Map<ts.Symbol, ts.Type | null>();
+  private readonly sources = new Map<ts.Symbol, BindingSource[]>();
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -160,12 +161,14 @@ export class NarrowingStability {
       // `let y = x` with `x` such a read: the checker inferred the binding's
       // own type from the narrowing, so `y` is nothing to it as well, and it
       // holds what `x` held.
-      if (
-        symbol &&
-        isNothing(checker.getTypeAtLocation(node)) &&
-        isNothing(checker.getTypeOfSymbol(symbol))
-      )
-        return this.inheritedType(symbol);
+      if (symbol && isNothing(checker.getTypeAtLocation(node))) {
+        // An assignment of the binding's own that every path to this read
+        // runs last (`y = undefined; return y`) ends what an earlier
+        // initializer or assignment left in it: the checker's "nothing" is
+        // that assignment's.
+        if (this.resetBefore(node, symbol)) return null;
+        if (isNothing(checker.getTypeOfSymbol(symbol))) return this.inheritedType(symbol);
+      }
       declared =
         symbol && this.mayHoldStaleNarrowing(symbol) ? checker.getTypeOfSymbol(symbol) : null;
     }
@@ -255,22 +258,8 @@ export class NarrowingStability {
     try {
       const decl = symbol.valueDeclaration;
       if (decl !== undefined && ts.isVariableDeclaration(decl) && decl.type === undefined) {
-        const sources: ts.Expression[] = [];
-        if (decl.initializer !== undefined) sources.push(decl.initializer);
-        for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(
-          ts.symbolName(symbol),
-        ) ?? []) {
-          const assignment = write.parent;
-          if (
-            ts.isBinaryExpression(assignment) &&
-            assignment.left === write &&
-            assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            this.lowerer.resolveValueSymbol(write) === symbol
-          )
-            sources.push(assignment.right);
-        }
-        for (const source of sources) {
-          const read = this.restoredNothingRead(source);
+        for (const source of this.sourcesOf(symbol)) {
+          const read = this.restoredNothingRead(source.value);
           const restored = read === null ? null : this.widenedType(read);
           if (restored === null) continue;
           result =
@@ -281,6 +270,68 @@ export class NarrowingStability {
       this.inherited.set(symbol, result);
     }
     return result;
+  }
+
+  /** The initializer and the `=` assignments of a variable, each with
+   * whether its value can be a read whose narrowing may be stale. */
+  private sourcesOf(symbol: ts.Symbol): BindingSource[] {
+    const cached = this.sources.get(symbol);
+    if (cached !== undefined) return cached;
+    // A cycle of bindings assigned from each other sees the sources found
+    // so far.
+    const found: BindingSource[] = [];
+    this.sources.set(symbol, found);
+    const decl = symbol.valueDeclaration;
+    if (decl === undefined || !ts.isVariableDeclaration(decl)) return found;
+    const add = (at: ts.Node, value: ts.Expression): void => {
+      found.push({
+        at,
+        value,
+        stale: this.mayBeStale(value) || this.restoredNothingRead(value) !== null,
+      });
+    };
+    if (decl.initializer !== undefined) add(decl, decl.initializer);
+    for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(ts.symbolName(symbol)) ??
+      []) {
+      const assignment = write.parent;
+      if (
+        ts.isBinaryExpression(assignment) &&
+        assignment.left === write &&
+        assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        this.lowerer.resolveValueSymbol(write) === symbol
+      )
+        add(assignment, assignment.right);
+    }
+    return found;
+  }
+
+  /** The last initializer or assignment of the binding that completes
+   * before `read` stores the nothing the checker types the read as, from a
+   * value that is not stale; every path to the read runs it (it is a
+   * statement of a block around the read); and no stale one can run after
+   * it: none follows it in the text, and no other function assigns the
+   * binding. The read then holds what that assignment stored. */
+  private resetBefore(read: ts.Identifier, symbol: ts.Symbol): boolean {
+    if (this.isCapturedMutable(symbol)) return false;
+    const sources = this.sourcesOf(symbol);
+    const start = ts.tokenStartOfNode(read);
+    let last: BindingSource | null = null;
+    for (const source of sources) {
+      if (source.at.end > start) continue;
+      if (last === null || source.at.pos > last.at.pos) last = source;
+    }
+    if (last === null || last.stale) return false;
+    // The checker's type at the read is that assignment's only when the
+    // assignment stored the same nothing. A JavaScript binding whose
+    // inferred type is `undefined` keeps that type after `y = null` or
+    // `y = "text"`, which the checker does not report there.
+    const checker = this.lowerer.checker;
+    const stored = checker.getTypeAtLocation(last.value);
+    if (!isNothing(stored) || nothingFlags(stored) !== nothingFlags(checker.getTypeAtLocation(read)))
+      return false;
+    if (flowBoundary(last.at) !== flowBoundary(read)) return false;
+    if (!runsBefore(last.at, read)) return false;
+    return !sources.some((source) => source.stale && source.at.pos > last.at.pos);
   }
 
   /** A read in a call or construction argument (directly or inside a literal
@@ -1025,6 +1076,41 @@ const INERT_CONSTRUCTORS = new Set([
   "BigInt64Array",
   "BigUint64Array",
 ]);
+
+/** An initializer (`at` is the declaration) or an `=` assignment (`at` is
+ * the assignment) of a variable. */
+interface BindingSource {
+  at: ts.Node;
+  value: ts.Expression;
+  stale: boolean;
+}
+
+/** Whether a declaration or assignment is a statement of a block that
+ * contains `node`, so every path to `node` through that block has run it.
+ * (A `case` clause is not such a block: another clause can fall into it.) */
+function runsBefore(at: ts.Node, node: ts.Node): boolean {
+  let statement: ts.Node | undefined = at.parent;
+  if (ts.isVariableDeclaration(at)) {
+    if (statement === undefined || !ts.isVariableDeclarationList(statement)) return false;
+    statement = statement.parent;
+    if (statement === undefined || !ts.isVariableStatement(statement)) return false;
+  } else if (statement === undefined || !ts.isExpressionStatement(statement)) return false;
+  const block = statement.parent;
+  if (block === undefined || !(ts.isBlock(block) || ts.isSourceFile(block))) return false;
+  for (let n: ts.Node | undefined = node.parent; n !== undefined; n = n.parent) {
+    if (n === block) return true;
+  }
+  return false;
+}
+
+/** Which of `undefined`, `null` and `void` a type includes. */
+function nothingFlags(type: ts.Type): number {
+  const nothing = ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void;
+  if (!type.isUnionType()) return type.flags & nothing;
+  let flags = 0;
+  for (const part of ts.constituentTypes(type)) flags |= part.flags & nothing;
+  return flags;
+}
 
 /** `undefined`, `null`, `void`, or a union of only those. */
 function isNothing(type: ts.Type): boolean {

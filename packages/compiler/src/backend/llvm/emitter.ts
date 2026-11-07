@@ -610,6 +610,12 @@ export interface LlvmTargetOptions {
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
+  /** The output is linked with the report of failed checked conversions
+   * (scr_conversion_trace.c, runtime feature conversionTrace), so each
+   * conversion's failure path calls it with the conversion's position. Set
+   * together with that link feature, by the builds that decide both; it
+   * needs `debugSources` for the positions. */
+  conversionTrace?: boolean;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
   pointerBits?: 32 | 64;
   /** Unions emitted as tagged boxes whatever their arms, for tests of the
@@ -2442,11 +2448,15 @@ export class LlEmitter {
       options.debugSources !== undefined && options.sanitizeAttributes === false;
     this.stackTraces = this.positionedFrames || observesStacks(mod, this.nodeIndex);
     // A build that carries debug sources can say where a checked conversion
-    // is, so its conversions report their failures (scr_conversion_trace.c,
-    // which executables of such builds link). A sanitized build does too:
-    // the report is one call on a path that runs only when a conversion
-    // fails. Library archives link a fixed runtime set without the unit.
-    this.conversionTrace = options.debugSources !== undefined && mod.lib === undefined;
+    // is, so its conversions report their failures (scr_conversion_trace.c).
+    // The build asks for it where it also links that unit: an emitter whose
+    // output is linked some other way must not call what the link lacks. A
+    // sanitized build reports too: it is one call on a path that runs only
+    // when a conversion fails. Library archives link a fixed runtime set.
+    this.conversionTrace =
+      options.conversionTrace === true &&
+      options.debugSources !== undefined &&
+      mod.lib === undefined;
     this.nullableUnions = new NullableUnions(
       mod,
       options.debugSources === undefined,

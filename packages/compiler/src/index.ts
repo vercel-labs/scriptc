@@ -1328,6 +1328,15 @@ async function prepareExecutableInput(
   const debugOptions = carriesDebugSources(opts.optimization, opts.strip)
     ? { debugSources: sourceTexts }
     : {};
+  // An executable, and a program object that carries its link information,
+  // link what their features name (executableNativeFeatures sets
+  // conversionTrace for the same builds). LLVM text, assembly and a bare
+  // object are linked by whoever takes them.
+  const traceOptions =
+    "debugSources" in debugOptions &&
+    (outputKind === "exe" || (outputKind === "obj" && opts.nativeLinkInfo === true))
+      ? { conversionTrace: true }
+      : {};
 
   if (outputKind === "ir") {
     await mkdir(dirname(opts.outPath), { recursive: true });
@@ -1341,6 +1350,7 @@ async function prepareExecutableInput(
       llvm = emitLlvmModuleSource(mod, {
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
         ...debugOptions,
+        ...traceOptions,
         ...(await readFunctionLayout(opts)),
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
@@ -1428,6 +1438,7 @@ async function prepareExecutableInput(
     llvmSource = emitLlvmModuleSource(mod, {
       targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
       ...debugOptions,
+      ...traceOptions,
       ...(await readFunctionLayout(opts)),
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",

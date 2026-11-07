@@ -157,16 +157,16 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
-    name: "names-temporal",
+    name: "refers-to-temporal",
     file: `${SRC}/frontend/program.ts`,
-    symbol: "programNamesTemporal7",
-    source: "text",
+    symbol: "programRefersToTemporal7",
+    source: "symbols",
     scope: "program",
-    setBy: "the word `Temporal` anywhere in an implementation file's text, comments included",
+    setBy:
+      "an identifier `Temporal` that looks a binding up where nothing binds it, or a member of that name read from the global object",
     gates:
       "the ESNext temporal lib slice in the checker's library set, and one more program creation",
-    narrower:
-      "a library set is program-wide; the fact can be a reference to the global, decided from syntax and scopes",
+    narrower: "none: a checker's library set belongs to the whole program",
     tracked: null,
     lowererFields: [],
   },
@@ -675,7 +675,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "program roots of the entry package",
   ),
-  decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
+  decides("frontend/program.ts#programRefersToTemporal7", 2, "refers-to-temporal"),
   scan(
     "frontend/program.ts#lowerProgramJsx7",
     1,

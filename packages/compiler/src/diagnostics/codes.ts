@@ -30,6 +30,7 @@ export const DIAGNOSTIC_CODES = {
   SC0013: "'using' declaration at the top level of a script",
   SC0014: "assignment to 'eval' or 'arguments' in strict mode code",
   SC0015: "catch parameter colliding with a declaration in the catch block",
+  SC0016: "tsconfig setting that scriptc does not follow",
   SC1010: "package imports outside the supported set",
   SC1012: "default exports/imports (residual edges)",
   SC1013: "namespace imports (residual edges)",

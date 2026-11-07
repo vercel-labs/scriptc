@@ -846,12 +846,15 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   if (isDiscarded(node)) return raw;
   const mapped = lowerer.mapTypeOf(tsType);
   if (mapped === null) {
-    // An intersection of containers (`Choice[] & GenChoice[]`: the
-    // island's array extended by the caller's own type) has no native
-    // representation of its own. Where the program only uses it through
-    // island operations it stays a handle, like an array the island does
-    // not declare.
-    if (containerType(lowerer, tsType) && handleUseOk(lowerer, node)) return raw;
+    // An object whose type has no native representation and that the island
+    // does not declare: an intersection of containers (`Choice[] &
+    // GenChoice[]`: the island's array extended by the caller's own type),
+    // or an interface with methods that the project declares for the
+    // island's module and its own code alike (a global interface in the
+    // project's .d.ts, named by its `declare module` block). Where the
+    // program only uses it through island operations it stays a handle,
+    // like an array the island does not declare.
+    if (unrepresentedObjectType(lowerer, tsType) && handleUseOk(lowerer, node)) return raw;
     // A function the island declares through a types-only package
     // (`express.json(): NextHandleFunction`): the value is a function object
     // the island made, with no native representation, and the program
@@ -1068,9 +1071,33 @@ function undeclaredHandleType(lowerer: Lowerer, type: ts.Type): boolean {
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
   if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return false;
   const mapped = lowerer.mapTypeOf(type);
-  if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return false;
+  // No native representation at all: the island's object is the only one
+  // there is. A function object keeps its own rule (fromIsland).
+  if (mapped === null)
+    return unrepresentedObjectType(lowerer, type) && !callableType(lowerer, type);
+  if (mapped.kind === "dyn" || mapped.kind === "void") return false;
   if (mapped.kind === "promise" || copiedType(lowerer, mapped)) return false;
   return containerType(lowerer, type);
+}
+
+/** Whether `type`, which has no native representation (its mapping is
+ * null), is the type of objects: every part of a union or an intersection
+ * that is not null or undefined is an object type. A type parameter, or a
+ * type the mapper refuses for another reason, is not. */
+function unrepresentedObjectType(lowerer: Lowerer, type: ts.Type): boolean {
+  if (containerType(lowerer, type)) return true;
+  const parts =
+    type.isUnionType() || (type.flags & ts.TypeFlags.Intersection) !== 0
+      ? ts.constituentTypes(type)
+      : [type];
+  let any = false;
+  for (const part of parts) {
+    if ((part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
+      continue;
+    if ((part.flags & ts.TypeFlags.Object) === 0) return false;
+    any = true;
+  }
+  return any;
 }
 
 /** Builtin classes whose native representation is not a JavaScript object

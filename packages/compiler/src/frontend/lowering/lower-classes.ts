@@ -8515,8 +8515,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         // of construction, the parameter-property assignments open the
         // constructor body (probed — a field initializer reading a
         // parameter property sees undefined).
-        body.push(...lowerer.fieldInitStmts(info, thisLocal));
-        body.push(...paramPropInitStmts(lowerer, info, thisLocal));
+        body.push(...ownFieldAndParamPropInitStmts(lowerer, info, thisLocal));
         if (info.ctor.body) body.push(...lowerer.lowerStmts(info.ctor.body.statements.nodes));
       } else if (info.ctor.body) {
         body.push(...lowerer.lowerDerivedCtorBody(info, thisLocal));
@@ -9505,6 +9504,37 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
   return out;
 }
 
+/** A class's own field initializers and parameter-property assignments, in
+ * the order its file is compiled for. ES2022 class fields run the
+ * initializers first, so one that reads a parameter property sees
+ * undefined. A project that compiles class fields in the constructor
+ * (`target` below ES2022, or `useDefineForClassFields: false`) assigns the
+ * parameter properties first, as tsc's output does. */
+function ownFieldAndParamPropInitStmts(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  thisLocal: IrLocal,
+): IrStmt[] {
+  if (parameterPropertiesFirst(lowerer, info)) {
+    const assigned = paramPropInitStmts(lowerer, info, thisLocal);
+    return [...assigned, ...lowerer.fieldInitStmts(info, thisLocal)];
+  }
+  const initialized = lowerer.fieldInitStmts(info, thisLocal);
+  return [...initialized, ...paramPropInitStmts(lowerer, info, thisLocal)];
+}
+
+/** Whether the class's file is compiled with class fields initialized in
+ * the constructor, after its parameter properties
+ * (LoadResult.parameterPropertiesFirst). */
+export function parameterPropertiesFirst(lowerer: Lowerer, info: ClassInfo): boolean {
+  const declaration = info.ctor ?? info.decl;
+  return (
+    lowerer.parameterPropertiesFirst !== null &&
+    declaration !== null &&
+    lowerer.parameterPropertiesFirst.has(ts.getSourceFileOfNode(declaration).fileName)
+  );
+}
+
 /** PARAMETER-PROPERTY assignments (`this.x = x`, synthesized): run AFTER
  * the field initializers — Node's transform defines the fields at the
  * top of the class body (undefined until assigned) and injects the
@@ -9726,10 +9756,7 @@ export function lowerDerivedCtorBody(
     });
     delete context.superInitialized;
     try {
-      statements.push(
-        ...lowerer.fieldInitStmts(info, thisLocal),
-        ...paramPropInitStmts(lowerer, info, thisLocal),
-      );
+      statements.push(...ownFieldAndParamPropInitStmts(lowerer, info, thisLocal));
     } finally {
       context.superInitialized = initialized;
     }

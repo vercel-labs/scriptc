@@ -1228,6 +1228,7 @@ function loadFrontend(
           moduleEdges: l.moduleEdges,
           dynamicImportRejections: l.dynamicImportRejections,
           projectCheckJs: l.typeWorld?.projectCheckJs ?? false,
+          parameterPropertiesFirst: l.parameterPropertiesFirst,
           externalTypes: l.externalTypes,
           externalTypeSpecifiersByFile: l.externalTypeSpecifiersByFile,
         });

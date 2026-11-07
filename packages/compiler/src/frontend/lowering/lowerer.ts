@@ -1123,6 +1123,23 @@ export interface LowerOptions {
    * the program, and then nothing is asked.
    * Absent for every other build, which keeps the full pipeline. */
   stopAfterPushDown?: ((result: LowerResult) => boolean) | undefined;
+  /** Prepared island rounds: asked once, in the round's first pass, when
+   * every declaration is collected and every module's top-level code is
+   * lowered, before the first function unit. `prefix` holds the
+   * diagnostics and runtime fences reported so far (module null, fences
+   * marked as lowerToIr marks them). When the predicate already decides a
+   * retry with more islands from them, the lowering ends there and returns
+   * `prefix`: the function bodies are then lowered once, by the round that
+   * runs with those islands, instead of once here and once there. Not asked
+   * when a unit store or coverage reads the whole pass. */
+  stopAfterDeclarations?: ((prefix: LowerResult) => boolean) | undefined;
+  /** Told, in place of asking stopAfterDeclarations, that the first pass
+   * has given a pass that replaces it a reason to run (Lowerer.replacingPass):
+   * what the pass has reported is then not what the round reports, and the
+   * round is decided from its whole lowering. */
+  declarationsNotAsked?:
+    | ((replacing: "stream" | "async-protocol" | "whole-slot") => void)
+    | undefined;
 }
 
 interface RuntimeFenceFallback {
@@ -1326,6 +1343,13 @@ function emitSpecRoot(spec: EmitSpecRequest): string {
  * its reachable set, result, diagnostics and Lowerer outright, so
  * lowerToIrWithIslands keeps only the request (requestedStreamMode). */
 class StreamFlagsAbort {}
+
+/** A round's first pass ended after its declarations and module-level code
+ * because the caller decided a retry from them
+ * (LowerOptions.stopAfterDeclarations). Carries what the pass reported. */
+class DeclarationsStop {
+  constructor(readonly prefix: LowerResult) {}
+}
 
 /** SCRIPTC_CHECK_STREAM_MODE=1 lowers the push-down pass of every program
  * to its end and fails the build when that pass met an untyped stream flow
@@ -1554,11 +1578,53 @@ function lowerToIrWithIslands(
   let pushDownAborted = false;
   let reachable: Set<string>;
   let result: LowerResult;
+  // LowerOptions.stopAfterDeclarations, for the first pass only: the passes
+  // that replace it start over, and a round that reaches them has already
+  // declined to stop here.
+  //
+  // The question is asked only of a pass whose result this round can still
+  // keep. A stream pass, the protocol pass and the whole-slot pass each lower
+  // the program again in a mode that clears refusals this pass reports, and
+  // the round reports from the pass that stands (see stopAfterPushDown
+  // below). A prefix that has already given one of them a reason to run
+  // (Lowerer.replacingPass) is therefore not yet what the round reports: a
+  // package it names may compile, and a failure of the program's own may
+  // disappear. Such a round is decided from its whole lowering, as before.
+  const stopAfterDeclarations = options.stopAfterDeclarations;
+  const firstPass = pushDownEmit;
+  const afterDeclarations =
+    stopAfterDeclarations === undefined ||
+    (options.unitStore ?? null) !== null ||
+    options.coverage === true
+      ? null
+      : (): void => {
+          const replacing = firstPass.replacingPass();
+          if (replacing !== null) {
+            options.declarationsNotAsked?.(replacing);
+            return;
+          }
+          const prefix: LowerResult = {
+            module: null,
+            diagnostics: [...firstPass.diags],
+            runtimeFences: [...firstPass.runtimeFences],
+            stats: firstPass.stats,
+          };
+          markModuleInitFences(program, prefix.runtimeFences);
+          if (stopAfterDeclarations(prefix)) throw new DeclarationsStop(prefix);
+        };
   try {
-    const emitted = pushDownEmit.emitReachable(options.libRoots, options.unitStore ?? null);
+    const emitted = pushDownEmit.emitReachable(
+      options.libRoots,
+      options.unitStore ?? null,
+      afterDeclarations,
+    );
     reachable = emitted.reachable;
     result = emitted.result;
   } catch (e) {
+    if (e instanceof DeclarationsStop) {
+      timing("stop-after-declarations", { diagnostics: e.prefix.diagnostics.length });
+      return e.prefix;
+    }
     if (!(e instanceof StreamFlagsAbort)) throw e;
     // The pass asked for a stream mode, so the stream pass below replaces
     // its reachable set, result and Lowerer before any of them is read.
@@ -4077,6 +4143,31 @@ export class Lowerer {
     if (this.dynNodeStreams) return null;
     if (this.generalNodeStreams) return this.requiresDynNodeStreams ? { dyn: true } : null;
     return this.requiresGeneralNodeStreams ? { dyn: this.requiresDynNodeStreams } : null;
+  }
+  /** The pass of this round that may still replace this one's result, as far
+   * as this pass has seen, or null: a stream pass (this pass asked for a
+   * stream mode), the protocol pass (it met an async-iteration protocol
+   * spelling) or the whole-slot pass (it degraded a type that the whole-slot
+   * mode holds differently). Each lowers the program again in a mode that
+   * can clear what this pass reported.
+   *
+   * The protocol mode and the whole-slot mode change a lowering only where
+   * this pass raises the flag read here (the mapper's protocol spellings and
+   * the protocol slots in convert; the non-canonical degraded type at a
+   * commit point), so a pass that has raised neither has lowered exactly as
+   * those modes would have so far. */
+  replacingPass(): "stream" | "async-protocol" | "whole-slot" | null {
+    if (
+      this.requiresGeneralNodeStreams ||
+      this.requiresDynNodeStreams ||
+      this.requestedStreamMode() !== null
+    )
+      return "stream";
+    if (this.requiresDynAsyncProtocol) return "async-protocol";
+    if (this.partialDegradedTypesMapped) return "whole-slot";
+    for (const degraded of this.degradedTypes.values())
+      if (degraded.canonical !== true) return "whole-slot";
+    return null;
   }
   /** Between units, and before the fixpoint: the pass settles the stream
    * mode it asks for, and a pass whose result that mode's pass replaces
@@ -11397,11 +11488,12 @@ export class Lowerer {
   emitReachable(
     extraRoots?: readonly string[],
     unitStore: UnitStore | null = null,
+    afterDeclarations: (() => void) | null = null,
   ): { reachable: Set<string>; result: LowerResult } {
     try {
-      return this.emitReachablePass(extraRoots, unitStore);
+      return this.emitReachablePass(extraRoots, unitStore, afterDeclarations);
     } catch (e) {
-      if (!(e instanceof StreamFlagsAbort)) throw e;
+      if (!(e instanceof StreamFlagsAbort) && !(e instanceof DeclarationsStop)) throw e;
       // The pass unwound before it cleared the hooks it installed for the
       // pass; the next pass must not observe this one's record literals or
       // feed its edge sink.
@@ -11414,6 +11506,7 @@ export class Lowerer {
   private emitReachablePass(
     extraRoots?: readonly string[],
     unitStore: UnitStore | null = null,
+    afterDeclarations: (() => void) | null = null,
   ): { reachable: Set<string>; result: LowerResult } {
     // Frontend passes below rewrite function bodies through the IR mapper
     // (caught-value and class dispatch); key-order notes follow the record
@@ -11943,6 +12036,10 @@ export class Lowerer {
       const unit = this.libExportUnit(root);
       if (unit !== null) rootEdge?.(unit);
     }
+    // Every declaration is collected and every module's top-level code is
+    // lowered; no function unit has been. The caller may end the pass here
+    // (LowerOptions.stopAfterDeclarations).
+    if (afterDeclarations !== null) afterDeclarations();
     const shuffle = lowerShuffle();
     const lowerUnitBody = (name: string): IrFunction | null => {
       const unit = units.get(name)!;

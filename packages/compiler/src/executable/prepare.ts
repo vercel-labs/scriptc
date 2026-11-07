@@ -41,14 +41,14 @@ import {
   type NodeIslandPolicy,
 } from "../node-islands/policy.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
-import { nodeIslandSet } from "../node-islands/boundary.js";
+import { islandOwnerOfFile, nodeIslandSet } from "../node-islands/boundary.js";
 import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
 import {
   classifyDiagnostic,
   classifyMarker,
   isIslandReasonCode,
 } from "../node-islands/classify.js";
-import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
+import { packageDirOf, packageKeyOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import { containedIslands } from "../node-islands/graph-islands.js";
@@ -109,6 +109,13 @@ interface RoundState {
    * growth from the same pass (foldFenceGrowth, node-islands/growth.ts). Off
    * only through the internal round options, for the fold's own test. */
   foldFenceGrowth: boolean;
+  /** Whether a round asks its retry decision once the declarations and the
+   * module-level code are lowered, and ends there when they already decide
+   * one (LowerOptions.stopAfterDeclarations). Off through the internal
+   * round options and through SCRIPTC_ISLAND_DECIDE=after-lowering, which
+   * decides every round from its whole lowering: the check that the early
+   * decision ends in the same build. */
+  decideFromDeclarations: boolean;
   /** The round this compile is in, for the round trace (1-based). */
   round: number;
 }
@@ -209,6 +216,7 @@ interface RoundRetry {
 export interface PrepareRoundOptions {
   reuseFirstLoad?: boolean;
   foldFenceGrowth?: boolean;
+  decideFromDeclarations?: boolean;
 }
 
 /** What every island round of one compile shares. */
@@ -357,6 +365,9 @@ export function prepareExecutableModule(
     firstLoad: null,
     reuseFirstLoad: roundOptions.reuseFirstLoad !== false,
     foldFenceGrowth: roundOptions.foldFenceGrowth !== false,
+    decideFromDeclarations:
+      roundOptions.decideFromDeclarations !== false &&
+      process.env["SCRIPTC_ISLAND_DECIDE"] !== "after-lowering",
     round: 1,
   };
   const inputs: PrepareInputs = {
@@ -599,6 +610,90 @@ function prepareRound(
     );
     return { result, islands, modules, fences, nextRetryFences, fenceFallback };
   };
+  // The same question asked early: once every declaration is collected and
+  // every module's top-level code is lowered, before any function unit
+  // (LowerOptions.stopAfterDeclarations). What that prefix reports is a
+  // subset of what the whole pass reports, and the rules only ever add
+  // islands for what they are shown, so a retry the prefix decides names
+  // islands the whole pass would name too; the round that runs with them
+  // asks every rule again, of its whole lowering. The function bodies are
+  // then lowered once, with those islands, instead of once here and once
+  // there.
+  //
+  // The prefix is asked only while it is what the round can still report:
+  // a pass that has given a stream pass, the protocol pass or the
+  // whole-slot pass a reason to run is replaced by a pass that can clear
+  // its refusals, so the lowering does not ask (LowerOptions.
+  // declarationsNotAsked) and the round is decided from the pass that
+  // stands, as before.
+  //
+  // The fence rule joins when the program's own code already fails in the
+  // prefix. Then the build fails with or without the fenced packages
+  // native, so their islands are final, exactly as a whole failing pass
+  // decides. Without such an error the prefix cannot know whether the
+  // build compiles, which is what makes a fenced package's island
+  // tentative: when the prefix holds such a fence, the question is declined
+  // and the whole pass decides.
+  const declared: { retry: RoundRetry | null } = { retry: null };
+  const decideDeclared = (prefix: LowerResult): RoundRetry | null => {
+    // Every rule asked here reads a diagnostic: a prefix without one decides
+    // nothing, and a program that compiles pays nothing for the question.
+    if (prefix.diagnostics.length === 0) return null;
+    const growth = growthOf();
+    if (growth === null) return null;
+    const modules = loweringModules(entryPath, opts, prefix.diagnostics, lowerModules);
+    let islands = growIslandSet(growth, lowerIslands, {
+      diagnostics: prefix.diagnostics,
+      ownFences: prefix.runtimeFences,
+    });
+    const ownCodeFails = prefix.diagnostics.some((d) => {
+      const file = d.loc.file;
+      if (packageKeyOf(file) !== null || file.includes("/node_modules/")) return false;
+      if ((modules ?? lowerModules).has(file)) return false;
+      if (islandDecision !== null && islandOwnerOfFile(islandDecision, file) !== null) return false;
+      // A refusal about a package this decision islands is not a failure
+      // the next round still has.
+      return d.exportOf === undefined || !(islands ?? lowerIslands).has(d.exportOf.package);
+    });
+    if (state.foldFenceGrowth && retryFences) {
+      // What the fence rule adds to the prefix's islands, from the prefix's
+      // own fences.
+      const fenced =
+        islands === null
+          ? growIslandSet(growth, lowerIslands, {
+              diagnostics: prefix.diagnostics,
+              fences: prefix.runtimeFences,
+            })
+          : (foldFenceGrowth(growth, islands, modules ?? lowerModules, {
+              diagnostics: prefix.diagnostics,
+              fences: prefix.runtimeFences,
+            })?.islands ?? null);
+      if (fenced !== null) {
+        // A program that may still compile keeps its fenced packages'
+        // islands tentative, with the build that has them native to fall
+        // back to: only the whole pass can set that up, so the round runs on
+        // and decides there, in one retry, as it does without this question.
+        if (!ownCodeFails) {
+          traceIslandRound(`round ${round} declared: fenced packages, decided by the whole pass`);
+          return null;
+        }
+        islands = fenced;
+      }
+    }
+    traceIslandRound(
+      `round ${round} declared islands=${traceSet(islands)} modules=${traceSet(modules)} ownCodeFails=${ownCodeFails}`,
+    );
+    if (islands === null && modules === null) return null;
+    // The prefix saw only part of the pass: the next round keeps every rule.
+    return {
+      result: prefix,
+      islands,
+      modules,
+      fences: null,
+      nextRetryFences: retryFences,
+      fenceFallback: null,
+    };
+  };
   // The frontend (and its tsgo server) is released as soon as lowering
   // ends — clang and the link never hold it open.
   try {
@@ -686,6 +781,19 @@ function prepareRound(
           // (decideRetry above). A round that would not retry runs the full
           // pipeline, so a failing build still reports from the pass that
           // wins.
+          ...(state.decideFromDeclarations
+            ? {
+                stopAfterDeclarations: (prefix: LowerResult) => {
+                  declared.retry = decideDeclared(prefix);
+                  return declared.retry !== null;
+                },
+                declarationsNotAsked: (replacing: string) => {
+                  traceIslandRound(
+                    `round ${round} declarations not asked: the round's ${replacing} pass may replace this one`,
+                  );
+                },
+              }
+            : {}),
           stopAfterPushDown: (result: LowerResult) => {
             pushDown.retry = decideRetry(result);
             return (
@@ -722,9 +830,11 @@ function prepareRound(
       // declaration-boundary notes), so the decision is matched on the
       // result's arrays, not on object identity.
       const decided =
-        pushDown.retry !== null && sameLowering(pushDown.retry.result, lowered)
-          ? pushDown.retry
-          : decideRetry(lowered);
+        declared.retry !== null && sameLowering(declared.retry.result, lowered)
+          ? declared.retry
+          : pushDown.retry !== null && sameLowering(pushDown.retry.result, lowered)
+            ? pushDown.retry
+            : decideRetry(lowered);
       // Packages whose own modules refused to lower run in Node islands
       // too (the authoritative lowering, DESIGN.md §1.4): build again with
       // them as islands. Sloppy user modules the lowering refused join the

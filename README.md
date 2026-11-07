@@ -7,7 +7,7 @@
   <a href="https://www.npmjs.com/package/scriptc"><img alt="npm downloads per month: scriptc" src="https://img.shields.io/npm/dm/scriptc.svg?style=for-the-badge&amp;labelColor=000000&amp;label=npm%20downloads" height="28"></a>
 </p>
 
-scriptc compiles TypeScript and JavaScript to native executables and WebAssembly. It uses the types checked by the TypeScript compiler to generate machine code, and a program that compiles entirely to native code runs without Node.js installed. npm packages your program imports compile along with it; a package that can't compile natively runs in a [Node island](https://scriptc.dev/docs/node-islands), inside Node.js that the executable loads on first use. Code of your own that scriptc can't compile is reported at build time with a diagnostic and, where available, a rewrite hint.
+scriptc compiles TypeScript and JavaScript to native executables and WebAssembly. It uses the types checked by the TypeScript compiler to generate machine code, and a program that compiles entirely to native code runs without Node.js installed. npm packages your program imports compile along with it; a package that can't compile natively runs in a [Node island](https://scriptc.dev/docs/node-islands), inside Node.js that the executable loads when it first needs it. Code of your own that scriptc can't compile is reported at build time with a diagnostic and, where available, a rewrite hint.
 
 scriptc is experimental and supports a subset of JavaScript, TypeScript, and Node.js APIs. Run `scriptc coverage` on an existing program to see how much of it compiles, and see the [limitations](https://scriptc.dev/docs/limitations) and [Node.js compatibility reference](https://scriptc.dev/compatibility) for details.
 

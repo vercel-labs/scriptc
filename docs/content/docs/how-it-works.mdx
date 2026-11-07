@@ -151,7 +151,7 @@ Program objects define `main` and leave selected `scr_*` runtime functions undef
 - **Networking:** Supported `net`, `http`, `https`, `tls`, `dgram`, and `dns` APIs use native implementations. TLS uses vendored mbedTLS.
 - **Numbers:** Values use JavaScript's double-precision representation. Number-to-string formatting uses shortest-roundtrip output and is tested against Node.js.
 - **Regular expressions and Unicode:** The runtime uses QuickJS's regular-expression and Unicode libraries, linked into programs that use them.
-- **Node islands:** A program with a [Node island](/docs/node-islands) loads Node.js as a shared library on the island's first use. Once Node.js is loaded, the runtime's event loop runs on Node.js's libuv loop. The order of callbacks between native code and an island can still differ from Node.js; see [Limitations](/docs/limitations#runtime-differences-from-nodejs).
+- **Node islands:** A program with a [Node island](/docs/node-islands) loads Node.js as a shared library on the island's first use, or when the program starts if a package in the island has to be evaluated at its import. Once Node.js is loaded, the runtime's event loop runs on Node.js's libuv loop. The order of callbacks between native code and an island can still differ from Node.js; see [Limitations](/docs/limitations#runtime-differences-from-nodejs).
 
 See [Limitations](/docs/limitations) for runtime differences and the [Node.js compatibility reference](/compatibility) for API support.
 

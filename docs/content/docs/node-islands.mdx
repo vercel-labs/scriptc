@@ -445,7 +445,7 @@ Send the worker's result to the main thread and call the package there. A `@scri
 
 ## Cost
 
-An island costs nothing until the program uses it. The package isn't loaded when the program starts, and a run that never reaches it never loads Node.js. `lazy.ts` uses `ejs` only when it gets an argument:
+An island that the build can defer costs nothing until the program uses it. The package isn't loaded when the program starts, and a run that never reaches it never loads Node.js. `lazy.ts` uses `ejs` only when it gets an argument:
 
 ```ts:lazy.ts
 import ejs from "ejs";
@@ -471,7 +471,32 @@ $ SCRIPTC_NODE_ISLANDS_TRACE=boot ./lazy Ada
 Hello, Ada!
 ```
 
-The first use loads Node.js and evaluates the package. This run compares, on one machine, `duration.ts` from above with `ms` compiled natively (`duration`) and with `ms` in an island (`duration-node`), `lazy` without and with its argument, and Node.js running the same file:
+The first use loads Node.js and evaluates the package.
+
+Not every island can be deferred. In Node.js a package's top-level code runs at the import, and deferring the package moves that code to the first use. The build defers a package only when the move can't change what the program does: it loads the package once at build time and records what its top-level code does. A package whose top-level code has an effect outside the package, such as writing output, or reads something that differs from run to run, such as an environment variable or the command line, is evaluated at its import instead. A program with such an island starts Node.js when it starts, on every run, and pays the start-up time and memory measured below whether or not it reaches the package. `debug` reads the environment when it loads, so `log.ts` starts Node.js even to print its usage line:
+
+```ts:log.ts
+import createDebug from "debug";
+
+const debug = createDebug("app");
+const name = process.argv[2];
+if (name === undefined) {
+  console.log("usage: log <name>");
+} else {
+  debug("greeting %s", name);
+  console.log(`Hello, ${name}!`);
+}
+```
+
+```console
+$ SCRIPTC_NODE_ISLANDS_TRACE=boot ./log
+[node-islands] starting Node
+usage: log <name>
+```
+
+The trace tells the two cases apart: a deferred package is reported as `deferred` when the program starts, and a program with an island that isn't deferred reports `starting Node` before its own first line. The `SC8001` note is the same in both cases, and its hint says "on first use" for either.
+
+This run compares, on one machine, `duration.ts` from above with `ms` compiled natively (`duration`) and with `ms` in an island (`duration-node`), `lazy` without and with its argument, and Node.js running the same file:
 
 ```console
 $ hyperfine -N --warmup 5 --runs 50 ./duration ./duration-node ./lazy './lazy Ada' 'node duration.ts'
@@ -502,7 +527,7 @@ Benchmark 5: node duration.ts
 
 These numbers are from Linux x64 (Intel Xeon at 2.50 GHz, 8 virtual CPUs) with scriptc 0.4.9 and a pack of Node.js 24.22.1 built as shown above. Peak memory is the maximum resident set size that `/usr/bin/time -f '%M KB'` reports for one run.
 
-- **Start-up.** The first use of an island took about 50 ms here. A program that doesn't reach its island starts as fast as one without.
+- **Start-up.** The first use of an island took about 50 ms here. A program that doesn't reach a deferred island starts as fast as one without. A program with an island that isn't deferred pays this at every start.
 - **Memory.** Once Node.js is loaded, the process holds what a Node.js process holds: 85 MB here, against 2.3 MB for the native program.
 - **Calls.** Every call into an island crosses the boundary. A loop of 100,000 calls to `ms("2h")` took 43 ms natively and 161 ms with `ms` in an island, of which about 50 ms is the start-up, so each call cost roughly one microsecond more:
 
@@ -611,6 +636,6 @@ The module is named by a string literal, so the build can store it in the execut
 - `--native` and `--node-islands=off` don't fail a build; coverage reports `SC8002` and `SC8003`.
 - A value that can't cross the boundary can leave a native build with an `SC8023` warning instead of an error.
 - The order of timers and other callbacks between native code and an island can differ from Node.js.
-- An executable with an island needs its libnode pack at run time, starts Node.js on first use, and uses the memory of a Node.js process from then on.
+- An executable with an island needs its libnode pack at run time, starts Node.js on first use, or at its own start when a package can't be deferred, and uses the memory of a Node.js process from then on.
 
 [Limitations](/docs/limitations#node-islands) lists these with the other differences from Node.js.

@@ -66,3 +66,48 @@ test.each([
     await rm(scratch, { recursive: true, force: true });
   }
 });
+
+// The window's start is drawn per process, a whole number of 4 MiB chunks
+// past its lowest address: runs differ, and a process started with
+// address-space randomization off (`setarch -R`, as gdb starts programs)
+// keeps the lowest start.
+test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
+  "the window starts at a different address from run to run",
+  async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "scriptc-alloc-"));
+    try {
+      const binary = join(scratch, "alloc");
+      await exec("clang", [
+        "-std=c11",
+        "-O1",
+        ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
+        join(import.meta.dirname, "scr_alloc.test.c"),
+        join(import.meta.dirname, "scr_alloc.c"),
+        "-o",
+        binary,
+      ]);
+      const start = async (command: string, args: string[]): Promise<bigint> =>
+        BigInt(`0x${(await exec(command, [...args, "window-start"])).stdout.trim()}`);
+      const chunk = 4n << 20n;
+      const low = process.platform === "linux" ? 4n << 30n : (1n << 40n) + chunk;
+      const starts: bigint[] = [];
+      for (let run = 0; run < 8; run++) starts.push(await start(binary, []));
+      for (const at of starts) {
+        expect(at >= low && at < low + 1024n * chunk, at.toString(16)).toBe(true);
+        expect((at - low) % chunk).toBe(0n);
+      }
+      // Eight equal draws of 1024 happen once in 10^21 runs.
+      expect(new Set(starts).size).toBeGreaterThan(1);
+      if (process.platform !== "linux") return;
+      // A seccomp filter may refuse the personality (Docker's default does).
+      const fixed = await exec("setarch", ["-R", "true"]).then(
+        () => true,
+        () => false,
+      );
+      if (!fixed) return;
+      for (let run = 0; run < 3; run++) expect(await start("setarch", ["-R", binary])).toBe(low);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  },
+);

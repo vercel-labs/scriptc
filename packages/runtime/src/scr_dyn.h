@@ -2240,6 +2240,9 @@ struct ScrStream *scr_dyn_builtin_stream_unbox_stage(const ScrDyn *value, const 
  * also taking constructor-function streams that keep the runtime's write
  * and end (+1 or NULL). */
 struct ScrStream *scr_dyn_builtin_stream_dyn_native(const ScrDyn *value, double side);
+/* stream.isDyn in those programs: scr_stream_util_is_dyn's contract, also
+ * taking constructor-function streams (+1 or NULL with the error). */
+ScrDyn *scr_dyn_builtin_stream_util_is(const ScrDyn *value, double which);
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key);
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key);
 /* Calls a dyn value: a non-function kind throws the catchable TypeError

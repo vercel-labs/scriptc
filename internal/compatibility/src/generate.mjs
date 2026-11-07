@@ -203,6 +203,11 @@ function featureEntries(compat) {
     if (requiresEvidence(entry.status)) {
       validateEvidence(entry.evidence, `${entry.chapter} compatibility features`);
     }
+    // A not-implemented entry that names a test claims a verified absence:
+    // the test must exist, like the evidence of a positive claim.
+    if (entry.status === "not-implemented" && (entry.evidence?.length ?? 0) > 0) {
+      validateEvidence(entry.evidence, `${entry.chapter} compatibility features`);
+    }
   }
   return compat.features ?? [];
 }
@@ -507,6 +512,44 @@ function verifyAnchors(snapshot, htmlByChapter) {
   snapshot.anchors = { verified, ancestorFallback, chapterFallback };
 }
 
+/** Node documents its globals twice: in the globals chapter and in the
+ * chapter of the module that owns them (`URLSearchParams` in url,
+ * `__dirname` in modules). The two rows describe one API, so a snapshot in
+ * which one is claimed and the other fell through unmatched is a mapping
+ * defect, not a fact. A deliberate difference stays expressible: classify
+ * both rows explicitly (a `features` entry can declare or verify a gap). */
+function assertGlobalTwinsAgree(snapshot) {
+  const unmatched = (row) => (row.static.evidence ?? "").startsWith("compiler-unmatched:");
+  const claimed = (row) => row.static.status === "supported" || row.static.status === "partial";
+  const direct = (row) => row.depth === 1 && row.scope === "api" && row.apiSymbol !== "";
+  // The owning chapter may nest the class under a heading (webstreams lists
+  // its classes under "API"), so a class row owns its global at any depth.
+  const owner = (row) => direct(row) || (row.kind === "class" && row.scope === "api");
+  const owners = new Map();
+  for (const row of snapshot.rows) {
+    if (!owner(row) || row.apiSymbol === "" || row.chapter === "globals") continue;
+    const rows = owners.get(row.apiSymbol) ?? [];
+    rows.push(row);
+    owners.set(row.apiSymbol, rows);
+  }
+  const disagreements = [];
+  for (const row of snapshot.rows) {
+    if (!direct(row) || row.chapter !== "globals") continue;
+    for (const owner of owners.get(row.apiSymbol) ?? []) {
+      if ((unmatched(row) && claimed(owner)) || (claimed(row) && unmatched(owner))) {
+        disagreements.push(
+          `globals '${row.apiSymbol}' is ${row.static.status}, ${owner.chapter} '${owner.apiSymbol}' is ${owner.static.status}`,
+        );
+      }
+    }
+  }
+  if (disagreements.length > 0) {
+    throw new Error(
+      `a global and the chapter that owns it disagree; map both rows in static-support.json, or classify the difference explicitly:\n  ${disagreements.join("\n  ")}`,
+    );
+  }
+}
+
 function buildSnapshot({ allJson, indexMarkdown, allSha256, indexSha256 }) {
   const chapterLinks = apiChapterLinks(indexMarkdown);
   const top = topLevelNodes(allJson);
@@ -544,6 +587,7 @@ function buildSnapshot({ allJson, indexMarkdown, allSha256, indexSha256 }) {
     if (ids.has(row.id)) throw new Error(`duplicate generated row id ${row.id}`);
     ids.add(row.id);
   }
+  assertGlobalTwinsAgree({ rows });
   return {
     schemaVersion: 5,
     nodeVersion: pin.version,
@@ -723,6 +767,9 @@ function publicDetail(tier) {
     ) {
       return "Native codec values support UTF-8 encoding and whole-buffer decoding with recognized literal labels and default options.";
     }
+    if (/^compiler-feature:(?:globals|webstreams)\.Text(?:Encoder|Decoder)Stream$/.test(source)) {
+      return "Implemented in JavaScript sources, where the class is a checked-dynamic constructor value; a typed TypeScript use is refused by name.";
+    }
     if (source === "compiler-feature:globals.Headers") {
       return "Constructs from records, header pairs and copies, and supports append/delete/get/getSetCookie/has/set/forEach with Node's coercion and error shapes, including Response and Request headers; typed iteration and method extraction remain refused.";
     }
@@ -746,6 +793,26 @@ function publicDetail(tier) {
     }
     if (tier.status === "not-applicable")
       return "Node configuration or documentation that does not map to a compiled program API.";
+    // The compat-*.mjs programs exercise a member from a JavaScript source. A TypeScript source
+    // reaches only the members the declarations in use list, so the claim says which source proved it.
+    if (
+      (tier.status === "supported" || tier.status === "partial") &&
+      (tier.tests?.length ?? 0) > 0 &&
+      tier.tests.every((path) => /^tests\/corpus\/compat-[a-z0-9-]+\.mjs$/.test(path))
+    )
+      return "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.";
+    // A row that names a compat-*.mjs program and its compat-*.ts twin was exercised from both
+    // source languages; the claim is the call shapes the two programs use.
+    if (
+      (tier.status === "supported" || tier.status === "partial") &&
+      (tier.tests?.length ?? 0) > 1 &&
+      tier.tests.every((path) => /^tests\/corpus\/compat-[a-z0-9-]+\.(?:mjs|ts)$/.test(path)) &&
+      tier.tests.some((path) => path.endsWith(".mjs")) &&
+      tier.tests.some((path) => path.endsWith(".ts"))
+    )
+      return "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.";
+    if (tier.status === "not-implemented" && (tier.tests?.length ?? 0) > 0)
+      return "Not implemented: a test pins the refusal a program using this API gets.";
     if (tier.status === "not-implemented")
       return "Not implemented in scriptc's static module-loader subset yet.";
     if (
@@ -832,7 +899,7 @@ const PUBLIC_VERIFICATION = {
   },
   "verified-absence": {
     label: "Verified absence",
-    detail: "A runtime presence test confirms that this API is absent.",
+    detail: "A test confirms that this API is absent: a program using it is refused by name.",
   },
   "declared-gap": {
     label: "Declared gap",
@@ -874,6 +941,15 @@ function verificationBasis(tier) {
   else if (tier.status === "by-design") basis = "architectural-policy";
   else if (tier.status === "not-applicable") basis = "not-applicable";
   else if (tier.status === "unreviewed") basis = "unreviewed";
+  // An implementation-owned entry that names the test pinning the absence
+  // (the refusal a use of the API gets) is a verified gap; one without a
+  // test only declares it.
+  else if (
+    tier.status === "not-implemented" &&
+    source.startsWith("compiler-feature:") &&
+    (tier.tests?.length ?? 0) > 0
+  )
+    basis = "verified-absence";
   else if (
     tier.status === "not-implemented" &&
     (source.startsWith("compiler-chapter-policy:") || source.startsWith("compiler-feature:"))
@@ -1097,6 +1173,7 @@ function reclassify(snapshot) {
       ctx.compilerCompat.chapterPolicies[chapter.slug],
     );
   }
+  assertGlobalTwinsAgree(snapshot);
   return snapshot;
 }
 
@@ -1176,6 +1253,7 @@ function checkLocal() {
       verificationBasis(row[key]);
     }
   }
+  assertGlobalTwinsAgree(snapshot);
   const matrix = projectPublicMatrix(snapshot);
   console.log(
     `Node compatibility snapshot is locally current (${snapshot.rows.length} source rows, ${matrix.rows.length} public matrix rows, Node ${snapshot.nodeVersion})`,

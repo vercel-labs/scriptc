@@ -46,6 +46,10 @@ struct SfReadRequest {
   ScrPromise *promise;            /* or NULL for a sink request */
   const ScrFetchReadSink *sink;   /* readableStreamDefaultReaderRead's read request */
   void *sink_ctx;
+  /* A chunk was queued when read() was called: Node answers it on its
+   * fast path, whose result is { done, value }; a read request's is
+   * { value, done }. */
+  bool buffered;
   SfReadRequest *next;
 };
 
@@ -1017,12 +1021,13 @@ static ScrBytes *sf_chunk_bytes(const ScrDyn *chunk) {
   return NULL;
 }
 
-static ScrDyn *sf_read_result(bool done, ScrDyn *value) {
+static ScrDyn *sf_read_result(bool done, ScrDyn *value, bool done_first) {
   ScrDyn *result = scr_dyn_new_obj();
+  if (done_first) scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
   scr_dyn_obj_set(result, "value", 5,
                   value ? scr_dyn_retain(value)
                         : scr_dyn_retain(scr_dyn_undefined()));
-  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
+  if (!done_first) scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
   return result;
 }
 
@@ -1036,7 +1041,7 @@ static void sf_reader_fulfill_one(SfReader *r, bool done, ScrDyn *value) {
     free(request);
     return;
   }
-  scr_promise_fulfill_ref(request->promise, sf_read_result(done, value),
+  scr_promise_fulfill_ref(request->promise, sf_read_result(done, value, !done && request->buffered),
                           &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
   scr_promise_release(request->promise);
   free(request);
@@ -1974,6 +1979,7 @@ static bool sf_reader_read_request(SfReader *r, ScrPromise *p, const ScrFetchRea
   request->promise = p ? scr_promise_retain(p) : NULL;
   request->sink = sink;
   request->sink_ctx = sink_ctx;
+  request->buffered = s->head != NULL && !s->closed && !s->error;
   if (r->pending_tail) r->pending_tail->next = request;
   else r->pending_head = request;
   r->pending_tail = request;

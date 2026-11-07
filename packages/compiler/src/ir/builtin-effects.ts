@@ -126,6 +126,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "procStream.write",
   "child.stdioStream",
   "stream.unboxDyn",
+  // The stream predicates and state getters refuse by name (SC2020): a
+  // value that is neither a native stream nor a primitive, and a child or
+  // process stdio stream asked about the side it does not have here.
+  "stream.is",
+  "stream.isDyn",
+  "stream.stateDyn",
   "stream.dynIterableSource",
   "stream.dynSourceValue",
   "stream.unboxDynStage",
@@ -466,6 +472,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sc.text",
   "sc.json",
   "sc.buffer",
+  "sc.bytes",
   "sc.arrayBuffer",
   "readable.newDyn",
   "writable.newDyn",

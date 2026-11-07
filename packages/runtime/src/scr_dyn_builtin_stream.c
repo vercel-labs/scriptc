@@ -193,6 +193,13 @@ ScrStream *scr_dyn_builtin_stream_of(const ScrDyn *value) {
   return bcs_native_of(value);
 }
 
+/* stream.isDestroyed and the other four predicates (scr_stream_util_is_dyn's
+ * contract) in programs that link this unit: a constructor-function stream
+ * answers through its runtime stream. */
+ScrDyn *scr_dyn_builtin_stream_util_is(const ScrDyn *value, double which) {
+  return scr_stream_util_is_value(value, which, scr_dyn_builtin_stream_of);
+}
+
 /* The JavaScript value of a runtime stream: the constructor-function
  * object it belongs to (+1), or NULL for other streams. */
 ScrDyn *scr_dyn_builtin_stream_object(ScrStream *s) {

@@ -201,6 +201,17 @@ declare module "node:fs" {
     path: string | URL,
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): void;
+  /* The callback forms of rmSync: the removal runs when called and the
+   * callback receives the error, or null. */
+  export function rm(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function rm(
+    path: string | URL,
+    options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
   /* The recursive form: every entry below the path, relative to it. */

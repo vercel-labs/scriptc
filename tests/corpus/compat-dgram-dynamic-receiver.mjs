@@ -33,7 +33,7 @@ function broadcast(socket) {
 
 await new Promise((resolve) => {
   const socket = dgram.createSocket("udp4");
-  socket.on("close", () => resolve());
+  socket.on("close", () => resolve(undefined));
   socket.bind(0, "127.0.0.1", () => {
     tune(socket);
     socket.close();
@@ -42,7 +42,7 @@ await new Promise((resolve) => {
 
 await new Promise((resolve) => {
   const socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
-  socket.on("close", () => resolve());
+  socket.on("close", () => resolve(undefined));
   socket.bind(0, "0.0.0.0", () => {
     membership(socket);
     socket.close();
@@ -52,7 +52,7 @@ await new Promise((resolve) => {
 await new Promise((resolve) => {
   const peer = dgram.createSocket("udp4");
   const socket = dgram.createSocket("udp4");
-  socket.on("close", () => peer.close(() => resolve()));
+  socket.on("close", () => peer.close(() => resolve(undefined)));
   peer.bind(0, "127.0.0.1", () => {
     socket.connect(peer.address().port, "127.0.0.1", () => {
       disconnect(socket);

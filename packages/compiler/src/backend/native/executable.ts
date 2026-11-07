@@ -396,6 +396,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // The keyed collections' prototype objects, member values, their
+  // constructors' adder lookup and the ES2025 Set compositions.
+  unit((u) => u.opts.dynCollections === true, "scr_dyn_collections.c"),
   // for await over checked-dynamic values that may hold native streams.
   unit(
     (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
@@ -525,6 +528,9 @@ const RUNTIME_DEFINES: readonly {
   // bodies of its streams.
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
+  // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
+  // as Content-Type when the request sets none.
+  { define: "SCR_WEB_BODIES", when: (opts) => opts.webBodies },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
   // scr_child.c's spawnSync result keeps the spawn errno and argv so
   // `.error` answers Node's errnoException fields (errno, syscall, path,

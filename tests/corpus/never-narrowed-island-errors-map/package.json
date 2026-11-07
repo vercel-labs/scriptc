@@ -1,0 +1,1 @@
+{ "name": "never-narrowed-island-errors-map", "private": true, "type": "module", "scriptc": { "packages": { "fakebox": "node" } } }

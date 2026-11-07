@@ -64,6 +64,7 @@ import {
   erasedDeletePlan,
   lowerDeleteComputedKey,
   lowerDeleteKey,
+  lowerErasedDeleteOperand,
   lowerRecordMemberDelete,
 } from "./expressions/erased-delete.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
@@ -8629,14 +8630,16 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   // conversion may build a copying width record, and the delete would land
   // on that temporary. Delete in place from the operand when its own stored
   // layout holds the member as a deletable slot; a view that names a member
-  // the layout does not hold has nothing to delete, so refuse by name.
+  // the layout does not hold has nothing to delete, so refuse by name. An
+  // operand that may be nullish is narrowed to its record first.
   const erased = erasedDeletePlan(lowerer, target);
   if (erased !== null && "refuse" in erased) {
     lowerer.unsupported("SC1090", target, erased.refuse);
   }
-  let obj = lowerer.lowerExpr(
-    erased !== null && "operand" in erased ? erased.operand : target.expression,
-  );
+  let obj =
+    erased !== null && "operand" in erased
+      ? lowerErasedDeleteOperand(lowerer, erased, target)
+      : lowerer.lowerExpr(target.expression);
   // A PRIMITIVE receiver: `delete` runs ToObject on the base AFTER the key,
   // and the base's type decides the answer — null and undefined throw
   // Node's TypeError, `?.` on a nullish base short-circuits to `true`

@@ -1,0 +1,34 @@
+delete-erased-wrappers.ts:13:10 - error SC1090: 'delete' of 'max_tokens' through a type assertion to a member the value's own layout does not hold (Node erases the assertion and deletes from the operand; the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear — declare the member on the value's type instead) is not supported yet
+
+  12 | function dropUnderNonNull(params: Params): void {
+  13 |   delete (params as Wide)!.max_tokens;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  14 | }
+
+delete-erased-wrappers.ts:17:10 - error SC1090: 'delete' of 'max_tokens' through a type assertion to a member the value's own layout does not hold (Node erases the assertion and deletes from the operand; the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear — declare the member on the value's type instead) is not supported yet
+
+  16 | function dropUnderSatisfies(params: Params): boolean {
+  17 |   return delete ((params as Wide) satisfies Wide).max_tokens;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  18 | }
+
+delete-erased-wrappers.ts:21:10 - error SC1090: 'delete' of 'max_tokens' through a type assertion to a member the value's own layout does not hold (Node erases the assertion and deletes from the operand; the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear — declare the member on the value's type instead) is not supported yet
+
+  20 | function dropThroughAny(params: Params): void {
+  21 |   delete (params as any).max_tokens;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  22 | }
+
+delete-erased-wrappers.ts:26:10 - error SC1090: 'delete' of 'max_tokens' through a type assertion to a member the value's own layout does not hold (Node erases the assertion and deletes from the operand; the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear — declare the member on the value's type instead) is not supported yet
+
+  25 | function dropFromOptional(params: Params | undefined): void {
+  26 |   delete (params as Wide).max_tokens;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  27 | }
+
+delete-erased-wrappers.ts:31:3 - error SC1090: 'delete' of required record fields (the shape's slot cannot be removed — only an optional field (`f?: T`) has an absent state, which Object.keys, 'in', and JSON.stringify follow; make the field optional if the program must remove it) are not supported yet
+
+  30 | function dropRequired(params: Params | undefined): void {
+  31 |   delete (params as { model?: string })!.model;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  32 | }

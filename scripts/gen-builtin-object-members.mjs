@@ -247,7 +247,7 @@ const lab = vm.runInNewContext(`(() => {
     const callees = [];
     if (typeof object === "function") {
       callees.push({ id: name, run: (args) => apply(object, undefined, args) });
-      callees.push({ id: "new " + name, run: (args) => construct(object, args) });
+      callees.push({ id: "new:" + name, run: (args) => construct(object, args) });
     }
     for (const { owner, text, d } of originals) {
       if (owner !== name || !("value" in d) || typeof d.value !== "function") continue;
@@ -510,7 +510,8 @@ const lines = [
   "",
   "/** What calling a built-in function reads from its first argument, by what",
   " * is read: the value is the callees that read it, comma-separated, each as",
-  " * a program spells it (`Array.from`, `String`, `new Map`). */",
+  " * a program spells it (`Array.from`, `String`), a construction as",
+  " * `new:Map`. */",
   "export const BUILTIN_CALLEE_READS: Readonly<Record<string, string>> = {",
   ...grouped(calleeReads, "  "),
   "};",

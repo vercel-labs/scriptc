@@ -341,19 +341,20 @@ export const BUILTIN_MEMBER_READS: Readonly<Record<string, string>> = {
 
 /** What calling a built-in function reads from its first argument, by what
  * is read: the value is the callees that read it, comma-separated, each as
- * a program spells it (`Array.from`, `String`, `new Map`). */
+ * a program spells it (`Array.from`, `String`), a construction as
+ * `new:Map`. */
 export const BUILTIN_CALLEE_READS: Readonly<Record<string, string>> = {
   "@@asyncIterator @@iterator constructor then": "Array.fromAsync",
-  "@@iterator": "%TypedArray%.from, AggregateError, Array.from, Iterator.from, Object.fromEntries, new AggregateError",
-  "@@iterator @@toPrimitive @@toStringTag toString valueOf": "new BigInt64Array, new BigUint64Array, new Float16Array, new Float32Array, new Float64Array, new Int16Array, new Int32Array, new Int8Array, new Uint16Array, new Uint32Array, new Uint8Array, new Uint8ClampedArray",
+  "@@iterator": "%TypedArray%.from, AggregateError, Array.from, Iterator.from, Object.fromEntries, new:AggregateError",
+  "@@iterator @@toPrimitive @@toStringTag toString valueOf": "new:BigInt64Array, new:BigUint64Array, new:Float16Array, new:Float32Array, new:Float64Array, new:Int16Array, new:Int32Array, new:Int8Array, new:Uint16Array, new:Uint32Array, new:Uint8Array, new:Uint8ClampedArray",
   "@@iterator constructor then | Promise @@species, Promise resolve": "Promise.all, Promise.allSettled, Promise.any, Promise.race",
-  "@@iterator | Map.prototype set": "new Map",
-  "@@iterator | Set.prototype add": "new Set",
-  "@@iterator | WeakMap.prototype set": "new WeakMap",
-  "@@iterator | WeakSet.prototype add": "new WeakSet",
-  "@@match @@toPrimitive @@toStringTag join toString": "RegExp, new RegExp",
-  "@@toPrimitive @@toStringTag join toString": "Date.parse, Error, EvalError, Function, Intl.supportedValuesOf, JSON.parse, JSON.rawJSON, Number.parseFloat, Number.parseInt, RangeError, ReferenceError, String, Symbol, Symbol.for, SyntaxError, TypeError, URIError, WebAssembly.CompileError, WebAssembly.LinkError, WebAssembly.RuntimeError, WebAssembly.SuspendError, decodeURI, decodeURIComponent, encodeURI, encodeURIComponent, escape, new Error, new EvalError, new Function, new RangeError, new ReferenceError, new String, new SyntaxError, new TypeError, new URIError, parseFloat, parseInt, unescape",
-  "@@toPrimitive @@toStringTag join toString valueOf": "Atomics.isLockFree, BigInt, BigInt.asIntN, BigInt.asUintN, Date.UTC, Math.abs, Math.acos, Math.acosh, Math.asin, Math.asinh, Math.atan, Math.atan2, Math.atanh, Math.cbrt, Math.ceil, Math.clz32, Math.cos, Math.cosh, Math.exp, Math.expm1, Math.f16round, Math.floor, Math.fround, Math.hypot, Math.imul, Math.log, Math.log10, Math.log1p, Math.log2, Math.max, Math.min, Math.pow, Math.round, Math.sign, Math.sin, Math.sinh, Math.sqrt, Math.tan, Math.tanh, Math.trunc, Number, String.fromCharCode, String.fromCodePoint, isFinite, isNaN, new ArrayBuffer, new Date, new Number, new SharedArrayBuffer",
+  "@@iterator | Map.prototype set": "new:Map",
+  "@@iterator | Set.prototype add": "new:Set",
+  "@@iterator | WeakMap.prototype set": "new:WeakMap",
+  "@@iterator | WeakSet.prototype add": "new:WeakSet",
+  "@@match @@toPrimitive @@toStringTag join toString": "RegExp, new:RegExp",
+  "@@toPrimitive @@toStringTag join toString": "Date.parse, Error, EvalError, Function, Intl.supportedValuesOf, JSON.parse, JSON.rawJSON, Number.parseFloat, Number.parseInt, RangeError, ReferenceError, String, Symbol, Symbol.for, SyntaxError, TypeError, URIError, WebAssembly.CompileError, WebAssembly.LinkError, WebAssembly.RuntimeError, WebAssembly.SuspendError, decodeURI, decodeURIComponent, encodeURI, encodeURIComponent, escape, new:Error, new:EvalError, new:Function, new:RangeError, new:ReferenceError, new:String, new:SyntaxError, new:TypeError, new:URIError, parseFloat, parseInt, unescape",
+  "@@toPrimitive @@toStringTag join toString valueOf": "Atomics.isLockFree, BigInt, BigInt.asIntN, BigInt.asUintN, Date.UTC, Math.abs, Math.acos, Math.acosh, Math.asin, Math.asinh, Math.atan, Math.atan2, Math.atanh, Math.cbrt, Math.ceil, Math.clz32, Math.cos, Math.cosh, Math.exp, Math.expm1, Math.f16round, Math.floor, Math.fround, Math.hypot, Math.imul, Math.log, Math.log10, Math.log1p, Math.log2, Math.max, Math.min, Math.pow, Math.round, Math.sign, Math.sin, Math.sinh, Math.sqrt, Math.tan, Math.tanh, Math.trunc, Number, String.fromCharCode, String.fromCodePoint, isFinite, isNaN, new:ArrayBuffer, new:Date, new:Number, new:SharedArrayBuffer",
   "@@toPrimitive @@toStringTag toString": "Intl.Collator, Intl.DateTimeFormat, Intl.NumberFormat, Intl.getCanonicalLocales",
   "constructor then": "Promise.resolve",
   "constructor then | Array name, Object name, Promise @@species, Promise.prototype constructor": "WebAssembly.compileStreaming, WebAssembly.instantiateStreaming",

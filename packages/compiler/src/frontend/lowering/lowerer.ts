@@ -3164,14 +3164,17 @@ export class Lowerer {
    * planner refuses it beside Node islands (SC8006). */
   readonly stdioPatchSites: StdioPatchSite[] = [];
   /** The writes to members of built-in objects that lowering met, by the
-   * assignment, update, `delete` or call: the end of lowering refuses the
-   * ones whose member the program also uses natively
-   * (builtin-member-readers.ts). */
+   * node each is reported at: the end of lowering refuses the ones whose
+   * member the program also uses natively (builtin-member-readers.ts). */
   readonly builtinMemberWrites = new Map<ts.Node, BuiltinMemberWrite>();
   /** The feature tests of built-in members that lowering decided from the
    * census (builtin-member-writes.ts): each reads its members at build
    * time. */
   readonly builtinFeatureTests = new Set<ts.Expression>();
+  /** Per file, the `const` names that may denote a built-in object, for
+   * the syntactic test in front of the write detection
+   * (builtin-member-writes.ts): a function of the file alone. */
+  readonly builtinAliasNames = new Map<ts.SourceFile, Set<string>>();
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
   emitterComputedPatterns: ComputedEventPattern[] = [];
@@ -5249,6 +5252,7 @@ export class Lowerer {
     "readsExitCode",
     "patchesStdio",
     "stdioPatchSites",
+    "builtinAliasNames",
     "requestInitPropMutatedSyms",
     // familyFieldLayoutFixed and familyAnswersFromInstance answer from the
     // class declarations and the module order, which do not change while a

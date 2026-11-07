@@ -78,7 +78,7 @@ describe("built-in member readers", () => {
   test("every callee is a built-in function a program can spell", () => {
     for (const [text, callees] of Object.entries(BUILTIN_CALLEE_READS)) {
       for (const callee of callees.split(", ")) {
-        const name = callee.startsWith("new ") ? callee.slice(4) : callee;
+        const name = callee.startsWith("new:") ? callee.slice(4) : callee;
         const dot = name.lastIndexOf(".");
         if (dot < 0 || BUILTIN_OBJECT_MEMBERS[name] !== undefined)
           expect(BUILTIN_OBJECT_MEMBERS[name], callee).toBeDefined();

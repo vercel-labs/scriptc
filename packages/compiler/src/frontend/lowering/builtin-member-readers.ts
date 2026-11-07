@@ -72,7 +72,8 @@ interface Reads {
 
 function parseReads(text: string): Reads {
   const bar = text.indexOf(" | ");
-  const keys = (bar < 0 ? text : text.slice(0, bar)).split(" ").filter((key) => key !== "");
+  const through = bar < 0 ? text : text.slice(0, bar);
+  const keys = through.split(" ").filter((key) => key !== "");
   const others = bar < 0 ? [] : text.slice(bar + 3).split(", ");
   return { keys: new Set(keys), others: new Set(others) };
 }
@@ -94,7 +95,7 @@ interface ReaderTables {
   members: Map<string, Reads>;
   /** member name → the prototypes whose member of that name reads something. */
   memberOwners: Map<string, string[]>;
-  /** callee ("Array.from", "new Map") → what it reads from its argument. */
+  /** callee ("Array.from", "new:Map") → what it reads from its argument. */
   callees: Map<string, Reads>;
   /** prototype → the members its instances hold themselves. */
   instanceOwn: Map<string, ReadonlySet<string>>;
@@ -251,12 +252,19 @@ function classesOfType(lowerer: Lowerer, type: ts.Type, depth: number): Classes 
   return ["Object.prototype"];
 }
 
+/** Whether a checker query failed without an answer: a panic inside the
+ * checker, which a query about a node that never lowered can still meet. The
+ * caller then takes the answer that assumes least. */
+function unanswered(e: unknown): boolean {
+  return isCheckerPanic(e) || ts.isUnreadableConstituentsPanic(e);
+}
+
 /** The classes the value of `expr` may be, as lowering saw its type. */
 function classesOf(lowerer: Lowerer, expr: ts.Expression): Classes {
   try {
     return classesOfType(lowerer, lowerer.typeOf(expr), 0);
   } catch (e) {
-    if (!isCheckerPanic(e)) throw e;
+    if (!unanswered(e)) throw e;
     return null;
   }
 }
@@ -300,7 +308,7 @@ function operandImplements(lowerer: Lowerer, operand: ts.Expression | null, key:
     if ((type.flags & (ts.TypeFlags.Union | ts.TypeFlags.AnyOrUnknown)) !== 0) return false;
     return memberOrigin(lowerer, lowerer.checker.getPropertyOfType(type, key)) === "user";
   } catch (e) {
-    if (!isCheckerPanic(e)) throw e;
+    if (!unanswered(e)) throw e;
     return false;
   }
 }
@@ -354,10 +362,10 @@ const DEEP_KEYS: ReadonlySet<string> = new Set(["then", "constructor", "toJSON"]
 /** The adder a collection constructor reads from the new collection: the
  * runtime's constructors read it from the prototype object. */
 export const SERVED_ADDERS: Readonly<Record<string, string>> = {
-  "new Map": "Map.prototype set",
-  "new Set": "Set.prototype add",
-  "new WeakMap": "WeakMap.prototype set",
-  "new WeakSet": "WeakSet.prototype add",
+  "new:Map": "Map.prototype set",
+  "new:Set": "Set.prototype add",
+  "new:WeakMap": "WeakMap.prototype set",
+  "new:WeakSet": "WeakSet.prototype add",
 };
 
 /** The constructs the walk collects, with the words a refusal uses for
@@ -437,7 +445,7 @@ function siteReads(lowerer: Lowerer, site: Site, write: BuiltinMemberWrite): str
         !operandImplements(lowerer, site.operand, key);
     }
     return reads
-      ? `the program calls '${site.callee}' at ${where}, which reads it${NO_OBJECT}the call would not see the change`
+      ? `the program calls '${site.callee.replace("new:", "new ")}' at ${where}, which reads it${NO_OBJECT}the call would not see the change`
       : null;
   }
   // A reference to a member: the written member itself, or one that reads it.
@@ -534,7 +542,7 @@ function interestOf(writes: readonly BuiltinMemberWrite[]): Interest {
     if (!touches(row)) continue;
     interest.callees.add(callee);
     interest.calleeNames.add(
-      callee.slice(Math.max(callee.lastIndexOf("."), callee.lastIndexOf(" ")) + 1),
+      callee.slice(Math.max(callee.lastIndexOf("."), callee.lastIndexOf(":")) + 1),
     );
   }
   for (const [construct, byClass] of t.constructs)
@@ -647,7 +655,7 @@ function collectSites(
       if (key === null || !interest.members.has(key)) return undefined;
       const use = accessUse(n);
       if (use.how === "write") return undefined;
-      const object = mayNameBuiltinObject(n.expression)
+      const object = mayNameBuiltinObject(lowerer, n.expression)
         ? builtinObjectOf(lowerer, n.expression)
         : null;
       let classes: Classes = null;
@@ -689,6 +697,36 @@ function collectSites(
         });
       return undefined;
     }
+    if (ts.isObjectBindingPattern(n)) {
+      // `const { random } = Math` reads each named member through its source.
+      const holder = n.parent;
+      if (holder === undefined || !ts.isVariableDeclaration(holder)) return undefined;
+      const source = holder.initializer;
+      if (source === undefined) return undefined;
+      let resolved = false;
+      let object: string | null = null;
+      let classes: Classes = null;
+      for (const element of n.elements.nodes) {
+        const name = element.propertyName ?? element.name;
+        if (!ts.isIdentifier(name) || !interest.members.has(name.text)) continue;
+        if (!resolved) {
+          resolved = true;
+          object = mayNameBuiltinObject(lowerer, source) ? builtinObjectOf(lowerer, source) : null;
+          if (object === null) classes = classesOf(lowerer, source);
+        }
+        sites.push({
+          kind: "member",
+          node: element,
+          key: name.text,
+          object,
+          classes,
+          called: false,
+          through: false,
+          throughClasses: null,
+        });
+      }
+      return undefined;
+    }
     if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
       if (interest.callees.size === 0) return undefined;
       const callee = calleeOf(lowerer, n, interest);
@@ -699,7 +737,7 @@ function collectSites(
         first === undefined ? [] : operand === null ? null : classesOf(lowerer, operand);
       sites.push({ kind: "callee", node: n, callee, classes, operand });
       if (callee === "JSON.stringify") construct("json", n, null);
-      if (callee === "new Promise") construct("resolve", n, null);
+      if (callee === "new:Promise") construct("resolve", n, null);
       return undefined;
     }
     if (interest.globals.size > 0 && ts.isIdentifier(n)) {
@@ -796,7 +834,7 @@ function safeSymbol(lowerer: Lowerer, node: ts.Node): ts.Symbol | undefined {
   try {
     return lowerer.checker.getSymbolAtLocation(node);
   } catch (e) {
-    if (!isCheckerPanic(e)) throw e;
+    if (!unanswered(e)) throw e;
     return undefined;
   }
 }
@@ -809,13 +847,13 @@ function elementClasses(lowerer: Lowerer, expr: ts.Expression): Classes {
     const element = lowerer.checker.getTypeArguments(type as ts.TypeReference)[0];
     return element === undefined ? null : classesOfType(lowerer, element, 0);
   } catch (e) {
-    if (!isCheckerPanic(e)) throw e;
+    if (!unanswered(e)) throw e;
     return null;
   }
 }
 
 /** The built-in function a call or a `new` calls, as the reader table names
- * it ("Array.from", "String", "new Map"), when the writes make it worth
+ * it ("Array.from", "String", "new:Map"), when the writes make it worth
  * knowing. */
 function calleeOf(
   lowerer: Lowerer,
@@ -825,13 +863,13 @@ function calleeOf(
   const callee = withoutTypeCasts(call.expression);
   if (ts.isIdentifier(callee)) {
     if (!interest.calleeNames.has(callee.text)) return null;
-    const name = ts.isNewExpression(call) ? `new ${callee.text}` : callee.text;
+    const name = ts.isNewExpression(call) ? `new:${callee.text}` : callee.text;
     if (!interest.callees.has(name)) return null;
     return stdlibGlobalNameOf(lowerer, callee) === callee.text ? name : null;
   }
   if (!ts.isPropertyAccessExpression(callee) || !interest.calleeNames.has(callee.name.text))
     return null;
-  if (!mayNameBuiltinObject(callee.expression)) return null;
+  if (!mayNameBuiltinObject(lowerer, callee.expression)) return null;
   const object = builtinObjectOf(lowerer, callee.expression);
   if (object === null) return null;
   const name = object === "globalThis" ? callee.name.text : `${object}.${callee.name.text}`;
@@ -850,7 +888,7 @@ function readsGlobal(lowerer: Lowerer, id: ts.Identifier): boolean {
   try {
     return stdlibGlobalNameOf(lowerer, id) === id.text;
   } catch (e) {
-    if (!isCheckerPanic(e)) throw e;
+    if (!unanswered(e)) throw e;
     return false;
   }
 }
@@ -969,13 +1007,17 @@ export function refuseUnseenBuiltinMemberWrites(lowerer: Lowerer): void {
   for (const d of refused) lowerer.pushDiag(d);
 }
 
-/** The refusals lowering raised inside the write's own expression say the
- * write has no lowering; the refusal by name replaces them. */
+/** A refusal lowering raised for the write itself (at the write, or at the
+ * member it names) says the write has no lowering; the refusal by name
+ * replaces it. A refusal inside the value the write assigns stays. */
 function dropSupersededDiags(lowerer: Lowerer, write: BuiltinMemberWrite): void {
-  const loc = locOf(write.node);
+  const whole = locOf(write.node);
+  const target = locOf(write.at);
   for (let i = lowerer.diags.length - 1; i >= 0; i--) {
     const d = lowerer.diags[i]!;
-    if (d.code === "SC9001" || d.loc.file !== loc.file) continue;
-    if (d.loc.start >= loc.start && d.loc.end <= loc.end) lowerer.diags.splice(i, 1);
+    if (d.code === "SC9001" || d.loc.file !== whole.file) continue;
+    const atWrite = d.loc.start === whole.start && d.loc.end <= whole.end;
+    const atTarget = d.loc.start >= target.start && d.loc.end <= target.end;
+    if (atWrite || atTarget) lowerer.diags.splice(i, 1);
   }
 }

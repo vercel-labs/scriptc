@@ -258,21 +258,18 @@ function initializerMayNameBuiltin(init: ts.Expression, aliases: ReadonlySet<str
   return ts.isPropertyAccessExpression(callee) && callee.name.text === "getPrototypeOf";
 }
 
-/** The file `aliasNames` answered last, and its answer. Lowering works
- * through one file at a time, and the answer is a function of the file
- * alone, so one remembered file is the whole cache. */
-let aliasFile: ts.SourceFile | null = null;
-let aliasFileNames: Set<string> = new Set();
 const VARIABLE_DECLARATIONS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.VariableDeclaration,
 ]);
 
 /** The `const` names of a file whose initializer can denote a built-in
  * object (`const proto = Array.prototype`), found once per file by syntax
- * alone. Nearly every member write in a program starts at some other name,
- * and this set is what lets it skip the checker. */
-function aliasNames(sf: ts.SourceFile): Set<string> {
-  if (aliasFile === sf) return aliasFileNames;
+ * alone and kept on the lowering pass (lowering moves between files as it
+ * follows what is reached). Nearly every member write in a program starts
+ * at some other name, and this set is what lets it skip the checker. */
+function aliasNames(lowerer: Lowerer, sf: ts.SourceFile): Set<string> {
+  const known = lowerer.builtinAliasNames.get(sf);
+  if (known !== undefined) return known;
   const found = new Set<string>();
   ts.walkPreorder(
     sf,
@@ -289,8 +286,7 @@ function aliasNames(sf: ts.SourceFile): Set<string> {
     },
     VARIABLE_DECLARATIONS,
   );
-  aliasFile = sf;
-  aliasFileNames = found;
+  lowerer.builtinAliasNames.set(sf, found);
   return found;
 }
 
@@ -298,7 +294,7 @@ function aliasNames(sf: ts.SourceFile): Set<string> {
  * alone: it starts at a built-in global, at a `const` alias of one, or reads
  * a value's prototype (`Object.getPrototypeOf([])`, `[].__proto__`). The
  * cheap test in front of every checker query here. */
-function mayNameBuiltin(expr: ts.Expression): boolean {
+function mayNameBuiltin(lowerer: Lowerer, expr: ts.Expression): boolean {
   let e = withoutTypeCasts(expr);
   for (;;) {
     if (ts.isPropertyAccessExpression(e)) {
@@ -308,7 +304,9 @@ function mayNameBuiltin(expr: ts.Expression): boolean {
     else break;
   }
   if (ts.isIdentifier(e))
-    return ownerRootNames().has(e.text) || aliasNames(ts.getSourceFileOfNode(e)).has(e.text);
+    return (
+      ownerRootNames().has(e.text) || aliasNames(lowerer, ts.getSourceFileOfNode(e)).has(e.text)
+    );
   if (!ts.isCallExpression(e)) return false;
   const callee = withoutTypeCasts(e.expression);
   return ts.isPropertyAccessExpression(callee) && callee.name.text === "getPrototypeOf";
@@ -329,7 +327,8 @@ export function builtinMemberOf(lowerer: Lowerer, expr: ts.Expression): BuiltinM
   if (!ts.isPropertyAccessExpression(e) && !ts.isElementAccessExpression(e)) return null;
   if (e.questionDotToken !== undefined) return null;
   const member = staticMemberKey(lowerer, e);
-  if (member === null || !memberNames!.has(member) || !mayNameBuiltin(e.expression)) return null;
+  if (member === null || !memberNames!.has(member) || !mayNameBuiltin(lowerer, e.expression))
+    return null;
   const owner = builtinObjectOf(lowerer, e.expression);
   if (owner === null) return null;
   const kind = builtinMemberKind(owner, member);
@@ -338,8 +337,8 @@ export function builtinMemberOf(lowerer: Lowerer, expr: ts.Expression): BuiltinM
 
 /** Whether `expr` may name a built-in object by its syntax alone
  * (mayNameBuiltin), for callers that resolve it with builtinObjectOf. */
-export function mayNameBuiltinObject(expr: ts.Expression): boolean {
-  return mayNameBuiltin(expr);
+export function mayNameBuiltinObject(lowerer: Lowerer, expr: ts.Expression): boolean {
+  return mayNameBuiltin(lowerer, expr);
 }
 
 /** A member a write would give a built-in object: an existing member it
@@ -371,7 +370,8 @@ function writeTargetOf(lowerer: Lowerer, expr: ts.Expression): WriteTarget | nul
   table();
   // Every protocol member is some built-in's member, so one name test
   // serves both kinds of write.
-  if (member === null || !memberNames!.has(member) || !mayNameBuiltin(e.expression)) return null;
+  if (member === null || !memberNames!.has(member) || !mayNameBuiltin(lowerer, e.expression))
+    return null;
   const owner = builtinObjectOf(lowerer, e.expression);
   return owner === null ? null : writeTargetIn(owner, member);
 }
@@ -474,11 +474,22 @@ export function builtinMemberWriteOf(lowerer: Lowerer, node: ts.Node): BuiltinMe
 }
 
 /** The static name of an object literal member, for the keys an
- * `Object.assign` or `Object.defineProperties` source spells. */
-function literalMemberName(member: ts.ObjectLiteralElementLike): string | null {
+ * `Object.assign` or `Object.defineProperties` source spells: a name, a
+ * string, or a well-known symbol (`[Symbol.iterator]`). */
+function literalMemberName(lowerer: Lowerer, member: ts.ObjectLiteralElementLike): string | null {
   const name = member.name;
   if (name === undefined) return null;
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  if (ts.isComputedPropertyName(name)) {
+    const key = withoutTypeCasts(name.expression);
+    if (
+      ts.isPropertyAccessExpression(key) &&
+      ts.isIdentifier(key.expression) &&
+      key.expression.text === "Symbol" &&
+      stdlibGlobalNameOf(lowerer, key.expression) === "Symbol"
+    )
+      return `@@${key.name.text}`;
+  }
   return null;
 }
 
@@ -491,9 +502,14 @@ function isWriteCall(holder: string, method: string): boolean {
   return false;
 }
 
+/** The write a call makes, as builtinMemberWriteOf answers it. A call that
+ * copies or defines several members (`Object.assign`,
+ * `Object.defineProperties`) makes one write per member: the first is the
+ * answer, and with `all` every one is collected. */
 function builtinMemberWriteCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
+  all: BuiltinMemberWrite[] | null = null,
 ): BuiltinMemberWrite | null {
   const callee = withoutTypeCasts(call.expression);
   if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression)) return null;
@@ -502,7 +518,7 @@ function builtinMemberWriteCall(
   if (!isWriteCall(holder, method)) return null;
   const args = call.arguments.nodes;
   const first = args[0];
-  if (first === undefined || !mayNameBuiltin(first)) return null;
+  if (first === undefined || !mayNameBuiltin(lowerer, first)) return null;
   if (stdlibGlobalNameOf(lowerer, callee.expression) !== holder) return null;
   const owner = builtinObjectOf(lowerer, first);
   if (owner === null) return null;
@@ -512,17 +528,21 @@ function builtinMemberWriteCall(
     return target === null || isAssignableState(target) ? null : target;
   };
   if (method === "defineProperties" || method === "assign") {
+    let found: BuiltinMemberWrite | null = null;
     for (const source of args.slice(1)) {
       const literal = withoutTypeCasts(source);
       if (!ts.isObjectLiteralExpression(literal)) continue;
       for (const member of literal.properties.nodes) {
-        const target = hit(literalMemberName(member));
+        const target = hit(literalMemberName(lowerer, member));
         if (target === null) continue;
         const write = writeOf(target, method === "assign" ? "assign" : "define", call, member);
-        if (write !== null) return write;
+        if (write === null) continue;
+        if (all === null) return write;
+        all.push(write);
+        found ??= write;
       }
     }
-    return null;
+    return found;
   }
   const key = args[1] === undefined ? null : withoutTypeCasts(args[1]);
   if (key === null) return null;
@@ -556,7 +576,7 @@ function keepsMemberValue(
   const literal = descriptor === undefined ? undefined : withoutTypeCasts(descriptor);
   if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return false;
   for (const member of literal.properties.nodes) {
-    const name = literalMemberName(member);
+    const name = literalMemberName(lowerer, member);
     if (name === null || name === "get" || name === "set") return false;
     if (name !== "value") continue;
     if (!ts.isPropertyAssignment(member)) return false;
@@ -570,8 +590,25 @@ function keepsMemberValue(
  * the check at the end of lowering (builtin-member-readers.ts). The write
  * itself lowers as it always did. */
 export function noteBuiltinMemberWrite(lowerer: Lowerer, node: ts.Node): void {
+  // Lowering asks this of every expression: nearly all are of no kind a
+  // write can be, and leave on one read of the kind.
+  const kind = node.kind;
+  if (
+    kind !== ts.SyntaxKind.BinaryExpression &&
+    kind !== ts.SyntaxKind.CallExpression &&
+    kind !== ts.SyntaxKind.PrefixUnaryExpression &&
+    kind !== ts.SyntaxKind.PostfixUnaryExpression &&
+    kind !== ts.SyntaxKind.DeleteExpression
+  )
+    return;
   const write = builtinMemberWriteOf(lowerer, node);
-  if (write !== null) lowerer.builtinMemberWrites.set(node, write);
+  if (write === null) return;
+  lowerer.builtinMemberWrites.set(write.at, write);
+  // A call reported at a member of its source may write more members.
+  if (write.at === node || !ts.isCallExpression(node)) return;
+  const all: BuiltinMemberWrite[] = [];
+  builtinMemberWriteCall(lowerer, node, all);
+  for (const each of all) lowerer.builtinMemberWrites.set(each.at, each);
 }
 
 /** The built-in members a feature test reads: each member access, `"m" in
@@ -597,7 +634,7 @@ export function builtinMembersTested(lowerer: Lowerer, test: ts.Expression): Bui
       }
     }
     if (owner === undefined || key === undefined || !ts.isStringLiteral(key)) return undefined;
-    if (!mayNameBuiltin(owner)) return undefined;
+    if (!mayNameBuiltin(lowerer, owner)) return undefined;
     const object = builtinObjectOf(lowerer, owner);
     const kind = object === null ? null : builtinMemberKind(object, key.text);
     if (object !== null && kind !== null) found.push({ owner: object, member: key.text, kind });
@@ -699,7 +736,7 @@ export function builtinPresenceTest(
     }
     if (op === ts.SyntaxKind.InKeyword) {
       const key = unparenthesized(e.left);
-      if (!ts.isStringLiteral(key) || !mayNameBuiltin(e.right)) return null;
+      if (!ts.isStringLiteral(key) || !mayNameBuiltin(lowerer, e.right)) return null;
       const owner = builtinObjectOf(lowerer, e.right);
       return owner !== null && builtinMemberKind(owner, key.text) !== null ? true : null;
     }
@@ -732,7 +769,7 @@ export function builtinPresenceTest(
       e.arguments.nodes.length !== 1 ||
       key === undefined ||
       !ts.isStringLiteral(key) ||
-      !mayNameBuiltin(callee.expression)
+      !mayNameBuiltin(lowerer, callee.expression)
     )
       return null;
     const owner = builtinObjectOf(lowerer, callee.expression);

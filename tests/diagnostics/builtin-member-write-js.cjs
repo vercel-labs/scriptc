@@ -22,6 +22,11 @@ delete Array.prototype.pop;
 [1].pop();
 Object.assign(Array.prototype, { shift() {} });
 [1].shift();
+// A copy of several members is one write for each: the first has no native
+// use here, the others do.
+Object.assign(String.prototype, { anchor() {}, padEnd() {}, [Symbol.iterator]() {} });
+"a".padEnd(2);
+for (const character of "ab") console.log(character);
 // Every writer of a prototype object the dynamic tier holds as a value.
 Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } });
 Object.defineProperty(Date.prototype, "getTime", { value: () => 42 });

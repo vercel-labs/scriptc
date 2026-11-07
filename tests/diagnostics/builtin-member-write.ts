@@ -67,6 +67,9 @@ Reflect.defineProperty(Math, "min", { value: (): number => 0 });
 const least = Math.min;
 Number.isInteger = ((): boolean => true) as typeof Number.isInteger;
 Number.isInteger(1.5);
+// A member taken from its object by a destructuring declaration.
+Math.hypot = (): number => 0;
+const { hypot } = Math;
 // A global, replaced through the global object.
 (globalThis as Record<string, unknown>).parseInt = (): number => 7;
 parseInt("1");
@@ -132,5 +135,5 @@ if (!Array.prototype.at) {
   };
 }
 
-console.log(calls, least, kept, joined, shown, stamp, serialized, settle);
+console.log(calls, least, hypot, kept, joined, shown, stamp, serialized, settle);
 export {};

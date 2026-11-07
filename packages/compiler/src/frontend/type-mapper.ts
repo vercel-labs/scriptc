@@ -1506,12 +1506,6 @@ export interface TypeMapperCtx {
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
    * primitive. Absent or false: every mapping is unchanged. */
   primitiveWrappers?: () => boolean;
-  /** Whether a compiled source names the lib `ArrayBufferView` interface
-   * (programNamesArrayBufferView): then a value of that type maps to the
-   * checked-dynamic one, whose three view reads stay dynamic. Absent or
-   * false: every mapping is unchanged, so a program that never names the
-   * type keeps the standard library's own paths. */
-  arrayBufferViewReads?: () => boolean;
   /** Node islands (scope-B NI-4): whether a type's values are island
    * handles, which map to the `foreign` type (a dyn value). Absent in
    * programs without islands. */
@@ -1648,6 +1642,21 @@ export interface TypeMapperCtx {
    * a slot holds a native stream (a boxed runtime stream, identity kept) or
    * a JavaScript stream object. Members dispatch per value at run time. */
   dynNodeStreams?: boolean;
+  /** The program's checked-dynamic async-iteration protocol slots
+   * (lowerToIr decides it per program): AsyncIterable<T>,
+   * AsyncIterableIterator<T> and AsyncIterator<T> map to the checked-dynamic
+   * value any implementor fits and `for await` runs the runtime's
+   * source-agnostic protocol, instead of the generator representation those
+   * spellings name. Off (the default), they keep the generator
+   * representation, so a program that only passes compiled async generators
+   * compiles exactly as it did before the dynamic form existed. */
+  dynAsyncProtocol?: boolean;
+  /** Called when one of those protocol spellings maps on a pass WITHOUT
+   * dynAsyncProtocol: the program has a slot the checked-dynamic form may
+   * answer, so lowerToIr tries a pass with the flag when this one fails to
+   * lower the program (Lowerer.requiresDynAsyncProtocol). A program that
+   * lowers on the first pass never consults it. */
+  noteAsyncProtocolSlot?: () => void;
   /** Successful context-free mappings, keyed by the
    * TypeScript server's stable type id. A generated facade can reference the
    * same large record/function type thousands of times; remapping its full
@@ -3972,14 +3981,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // dynamically (narrowing.ts). @types/node's `NodeJS.ArrayBufferView` is its
   // own interface with its own mapping and keeps it.
   //
-  // Only a program that names the type takes this mapping. The name is also
-  // the third arm of the builtin declarations' `BinaryLike`
-  // (packages/compiler/ambient/node-fallback), so mapping it unconditionally
-  // makes whole ambient signature types statically representable and
-  // reshapes calls the program never wrote — the standard library keeps
-  // those paths. A program that never mentions `ArrayBufferView` lowers
-  // exactly as before.
-  if (ctx.arrayBufferViewReads?.() === true && isLibInterface("ArrayBufferView")) return DYN;
+  // The mapping belongs to the type, so it applies wherever a value of the
+  // type flows, whether or not the program spells the name. The builtin
+  // declarations (packages/compiler/ambient) type their view parameters with
+  // their own `ScriptcBufferView`, so the Node signatures a program never
+  // wrote do not change shape with it.
+  if (isLibInterface("ArrayBufferView")) return DYN;
   if (isStdlibInterface("Uint8Array")) return bytesOf("u8");
   if (isStdlibInterface("Uint32Array")) return bytesOf("u32");
   if (isStdlibInterface("Uint8ClampedArray")) return bytesOf("u8c");
@@ -4653,6 +4660,36 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   // Native collection iterators use checked runtime iterator objects.
   if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
+  // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
+  // types name a protocol any object can implement. Under checked-dynamic
+  // protocol slots (TypeMapperCtx.dynAsyncProtocol) the value is the
+  // checked-dynamic one (like the Map/Set iterators above) and `for await`
+  // over it takes the runtime's source-agnostic async-iteration protocol
+  // (lowerForOfDyn): a compiled async generator steps natively, any other
+  // object through its Symbol.asyncIterator, and a synchronous iterable
+  // through its values awaited one by one.
+  //
+  // The flag is off for the program's first pass, where these spellings take
+  // the generator answer below (the iterators a program builds and `for
+  // await` consumes) so that a program passing only compiled async
+  // generators keeps the typed stepping path and compiles exactly as before.
+  // That pass notes the spelling (TypeMapperCtx.noteAsyncProtocolSlot) and
+  // lowerToIr lowers the program again with the flag when the first pass
+  // failed to resolve it — a value no compiled generator can hold (a class or
+  // object literal implementing the protocol) reaching one of these slots,
+  // or any other fence — and keeps that pass when it resolves the program.
+  // Answered BEFORE the generator spellings below because that pass must not
+  // type an implementor as a generator. An `async *` declaration whose return
+  // annotation is one of these spells the generator it builds, so
+  // function-returns.ts asks mapAsyncGeneratorAnnotation first.
+  if (
+    isStdlibInterface("AsyncIterable") ||
+    isStdlibInterface("AsyncIterableIterator") ||
+    isStdlibInterface("AsyncIterator")
+  ) {
+    if (ctx.dynAsyncProtocol === true) return DYN;
+    ctx.noteAsyncProtocolSlot?.();
+  }
   // Array iterators (`list.values()` and friends) are generators over the
   // live array: each step reads the current length and element. String
   // iterators (`s[Symbol.iterator]()`) are generators over the code points.

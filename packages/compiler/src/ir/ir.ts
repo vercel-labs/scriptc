@@ -3180,6 +3180,22 @@ export type IrExpr =
   | { kind: "arrayHas"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
   /** Array slot state as f64: HOLE=0, VALUE=1, UNDEFINED=2. */
   | { kind: "arrayState"; arr: IrExpr; index: IrExpr; type: IrType; loc: SrcLoc }
+  /** Row `index` of a column of constants the program image holds. The
+   * literal-table pass (ir/literal-tables.ts) builds the rows of a large
+   * literal in a counted loop and reads each constant that differs between
+   * rows with one of these. The column is `numbers` for an f64 cell and
+   * `strings` for a string cell; exactly one is present. `index` is an
+   * integer in [0, column length), which only that pass's loop counter
+   * guarantees, so nothing else may create the node. Reads only: allocates
+   * nothing and never throws, and a string is an immortal literal. */
+  | {
+      kind: "constCell";
+      numbers?: number[];
+      strings?: string[];
+      index: IrExpr;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** Array method/property on an array receiver: `length` (f64), `push`
    * (VARIADIC like JS — zero or more elem-typed args; every argument
    * evaluates before any appends, then each appends in order; returns the

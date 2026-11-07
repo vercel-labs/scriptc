@@ -1168,14 +1168,18 @@ function moduleWritesSparseIndex(mod: IrModule): boolean {
   return sparse;
 }
 
-/** The typed file reads that answer a ScrBytes: Node answers a Buffer, and
- * scr_lib.c's read entries brand it, so a typed read makes a Buffer value. */
+/** The typed reads that answer a ScrBytes: Node answers a Buffer, and
+ * scr_lib.c's read entries brand it, so a typed read makes a Buffer value.
+ * A spawnSync capture (spawnRes.stdoutBytes/stderrBytes) arrives from
+ * scr_child_capture.c, whose accessors stamp the same brand. */
 const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "fs.readFileSyncBuf",
   "fs.readFileSyncBytes",
   "fs.readFdSyncBytes",
   "fsp.readFileBytes",
   "fileHandle.readFileBytes",
+  "spawnRes.stdoutBytes",
+  "spawnRes.stderrBytes",
 ]);
 
 /** The entries that need the JavaScript object model build (t262-da §J):
@@ -1278,6 +1282,14 @@ const RUNTIME_FEATURE_RULES = {
    * object, byte for byte. */
   childOptionExt: rule({
     fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+  }),
+  /** A spawnSync capture read as a Buffer (spawnSync without an encoding
+   * option): scr_child_capture.c, a unit of its own so a program that never
+   * reads a capture keeps scr_child.c's layout — the memo's thread-local
+   * state and its functions would otherwise move every symbol the linker
+   * lays out after them. */
+  spawnCaptureBytes: rule({
+    fns: ["spawnRes.stdoutBytes", "spawnRes.stderrBytes"],
   }),
   /** The spawnSync result's `.error` property answers Node's
    * errnoException fields (errno, syscall, path, spawnargs). The fields
@@ -1461,6 +1473,9 @@ const RUNTIME_FEATURE_RULES = {
   /** Object.isExtensible and Object.isSealed of a value typed dynamically
    * (scr_dyn_integrity.c, a unit of its own so scr_json.c keeps its layout). */
   dynIntegrityQueries: rule({ fns: ["dyn.isExtensibleQuery", "dyn.isSealedQuery"] }),
+  /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
+   * a unit of its own so scr_json.c keeps its layout). */
+  reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
   /** A generator that binds its parameters at the call (scr_gen_bind.c):
    * the spawn wrapper's eager step imports the bind helper, and every other
    * program links the default runtime objects. */
@@ -1894,6 +1909,14 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.writeFileFlags",
     ],
   }),
+  /** The BYTE-data spellings of the options write and of
+   * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
+   * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
+   * for byte. The unit carries its own static copy of scr_fs_flags.c's
+   * mode validation, so it links alone. */
+  fsBytesWrites: rule({
+    fns: ["fs.writeFileSyncBytesFlags", "fsp.writeFileBytes", "fsp.writeFileBytesFlags"],
+  }),
   /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
    * scr_bytes_strdec_dyn.c. */
   strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
@@ -1962,6 +1985,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsFlags: false,
+    fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
     genBind: false,
@@ -2006,12 +2030,14 @@ function noRuntimeFeatures(): RuntimeFeatures {
     handleProps: false,
     childLifecycle: false,
     childOptionExt: false,
+    spawnCaptureBytes: false,
     childErrorFields: false,
     declAdopt: false,
     typeOrigins: false,
     dynForAwait: false,
     dynCollections: false,
     dynIntegrityQueries: false,
+    reflectProtoTarget: false,
     dynBuffer: false,
     dynBufferMembers: false,
     bufferPrototypeObject: false,

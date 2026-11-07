@@ -38,6 +38,15 @@ if (picked) {
   const again: Item = picked;
   console.log(describe(again), (again as unknown) === (mark as unknown));
 }
+// Compared with a value of the union, under an assertion on both sides.
+function widest(n: number): Item | number {
+  return n > 0 ? mark : n;
+}
+const wide = widest(process.argv.length);
+if (typeof wide !== "number") {
+  const held: Item = wide;
+  console.log((held as unknown) === (mark as unknown), describe(held));
+}
 const holder: { item: Item; count: number } = { item: mark, count: 1 };
 holder.item.id = "m3";
 console.log(mark.id, holder.count);

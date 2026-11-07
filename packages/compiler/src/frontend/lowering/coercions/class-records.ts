@@ -41,8 +41,6 @@ export function refuseClassRecordCopy(
       classes.get(arm.shapeId)?.has(source.shapeId) === true,
   );
   if (target === undefined) return;
-  if (expected.kind === "union" && discriminantNamesOwnArm(lowerer, node, source, expected.unionId))
-    return;
   let value: ts.Node = node;
   while (
     ts.isParenthesizedExpression(value) ||
@@ -53,6 +51,14 @@ export function refuseClassRecordCopy(
   )
     value = value.expression;
   if (ts.isObjectLiteralExpression(value)) return;
+  // The type the expression is written at, or under its assertions (`mark
+  // as unknown` compared with a value of the union is still `mark`).
+  if (
+    expected.kind === "union" &&
+    (discriminantNamesOwnArm(lowerer, node, source, expected.unionId) ||
+      (value !== node && discriminantNamesOwnArm(lowerer, value, source, expected.unionId)))
+  )
+    return;
   lowerer.unsupported(
     "SC1090",
     node,

@@ -1521,6 +1521,15 @@ export interface TypeMapperCtx {
    * only the literal's objects, so it maps to the empty record (see the
    * empty object type rule in the object mapping). */
   emptyLiteralArm?: boolean;
+  /** The array type of a property the checker types `never[]` or the
+   * empty tuple: for an untyped empty array (`name: []`) its context's
+   * type, or the one the typed slots its value reaches agree on; for an
+   * alias of one (`list: o.files`) that array's type
+   * (empty-array-places.ts). Null when nothing decides it. The Lowerer
+   * supplies it. */
+  untypedArrayPropertyType?: (
+    decl: ts.PropertyAssignment | ts.ShorthandPropertyAssignment,
+  ) => IrType | null;
   /** The class value a generic factory's result type names when the factory
    * returns one of its own local classes through a constructor type
    * (`function struct<S>(v: S): Struct<S> { class Base {}; return Base as
@@ -7232,6 +7241,14 @@ function constAssertedEmptyArrayProp(p: ts.Symbol): boolean {
   return underConstAssertion(d);
 }
 
+/** `never[]`: the checker's type for an array that names no element. */
+function isNeverArrayType(type: ts.Type, checker: ts.TypeChecker): boolean {
+  return (
+    checker.isArrayType(type) &&
+    (checker.getTypeArguments(type as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
+}
+
 /** A TypeScript property assignment `name: []` whose type is `never[]`. */
 function emptyNeverArrayProp(p: ts.Symbol, fieldTs: ts.Type, checker: ts.TypeChecker): boolean {
   const d = p.valueDeclaration;
@@ -10108,12 +10125,25 @@ function mapRecordTypeInner(
       }
       // A TypeScript property initialized with an empty literal and typed
       // `never[]` (`const out = { files: [] }`) holds no element, so it maps
-      // like the empty tuple: the unit-only element array, which a
-      // destination's typed array field (`files: string[]`) receives through
-      // the checked empty-array lift. never's f64 element would make it a
-      // `number[]` field.
+      // like the empty tuple: the unit-only element array. never's f64
+      // element would make it a `number[]` field.
       if (pt?.kind === "array" && emptyNeverArrayProp(p, fieldTs, checker))
         pt = arrayOf(unitOnlyUnion(ctx.unions));
+      // That array of nothing is the same array under every name that
+      // reaches it, so where a declared type names its elements it is an
+      // array of those from the start (empty-array-places.ts); no typed
+      // slot then has to convert it.
+      if (
+        pt?.kind === "array" &&
+        ctx.untypedArrayPropertyType !== undefined &&
+        p.valueDeclaration !== undefined &&
+        (ts.isPropertyAssignment(p.valueDeclaration) ||
+          ts.isShorthandPropertyAssignment(p.valueDeclaration)) &&
+        (isUnitOnlyIr(pt.elem, ctx) || isNeverArrayType(fieldTs, checker))
+      ) {
+        const decided = ctx.untypedArrayPropertyType(p.valueDeclaration);
+        if (decided !== null) pt = decided;
+      }
       if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) pt = DYN;
       // An `any[]` field (`list: any[]` in an SDK's message type, also
       // optional or nullable) is the checked-dynamic array, exactly as

@@ -48,7 +48,6 @@ export type WidthLift =
   | { how: "unionArr" }
   | { how: "arr" }
   | { how: "tupleArr" }
-  | { how: "emptyArr" }
   | { how: "objWidth" }
   | { how: "clsWidth" }
   | { how: "narrow" }

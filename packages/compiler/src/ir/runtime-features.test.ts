@@ -79,6 +79,18 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(blob)).toMatchObject({ fetch: true, webBodies: true });
   });
 
+  test("a program with FormData always has web bodies", () => {
+    // The runtime pack builds scr_fetch.c for FormData only together with
+    // web bodies (RUNTIME_FEATURE_IMPLIES in runtime-pack-matrix.mjs): a
+    // FormData call alone has to set both features.
+    const form = module();
+    form.functions[0]!.body.push(call("formdata.new"));
+    expect(moduleRuntimeFeatures(form)).toMatchObject({ formData: true, webBodies: true });
+    const blob = module();
+    blob.functions[0]!.body.push(call("blob.new"));
+    expect(moduleRuntimeFeatures(blob)).toMatchObject({ formData: false, webBodies: true });
+  });
+
   test("gates the call-time parameter bind unit on a barriered generator", () => {
     const mod = module();
     const generator = (bindAtCall: boolean): IrModule["functions"][number] => ({

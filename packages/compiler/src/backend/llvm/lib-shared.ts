@@ -1165,6 +1165,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "blob.bytes": "scr_blob_bytes",
   "blob.arrayBuffer": "scr_blob_array_buffer",
   "blob.is": "scr_blob_is",
+  "formdata.new": "scr_formdata_new",
+  "formdata.is": "scr_formdata_is",
   "events.addAbortListener": "scr_events_add_abort_listener",
   "abort.timeout": "scr_fetch_abort_timeout",
   "abort.now": "scr_fetch_abort_now",

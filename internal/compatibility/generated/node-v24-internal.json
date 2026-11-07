@@ -52710,6 +52710,8 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/8836-formdata-entry-list.ts",
+          "tests/corpus/8837-formdata-multipart-wire.ts",
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
@@ -53432,8 +53434,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.FormData",
+        "tests": [
+          "tests/corpus/8836-formdata-entry-list.ts",
+          "tests/corpus/8837-formdata-multipart-wire.ts"
+        ]
       },
       "anchorSource": "exact"
     },

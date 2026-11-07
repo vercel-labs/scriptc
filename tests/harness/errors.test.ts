@@ -2850,30 +2850,30 @@ console.log(JSON.stringify(rows));
 // calling the value refuses with the same SC2020 fence the direct use
 // reports. A JavaScript source defers that refusal to the operation that
 // reaches it, which is what lets a module load — effect's Schema reads
-// `globalThis.FormData` at module init — and only throws if the class is
+// `globalThis.WebSocket` at module init — and only throws if the class is
 // ever actually constructed.
 describe("host-global constructor values", () => {
   test("an eager JavaScript read answers the constructor without throwing", async () => {
     const r = await compileAndRun(
       "host-global-eager-read",
-      `const Eager = globalThis.FormData;
+      `const Eager = globalThis.WebSocket;
 console.log(typeof Eager, Eager.name, Eager.length);
-console.log({} instanceof globalThis.FormData);
+console.log({} instanceof globalThis.WebSocket);
 console.log(Eager.prototype.constructor === Eager);
 `,
       "cjs",
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe("function FormData 0\nfalse\ntrue\n");
+    expect(r.stdout).toBe("function WebSocket 1\nfalse\ntrue\n");
     expect(r.stderr).toBe("");
   });
 
   test("the value refuses construction wherever it is constructed", async () => {
     const r = await compileAndRun(
       "host-global-construction",
-      `const Ctor = globalThis.FormData;
+      `const Ctor = globalThis.WebSocket;
 try {
-  new Ctor();
+  new Ctor("ws://localhost:8080");
   console.log("constructed");
 } catch (error) {
   console.log(String(error));
@@ -2886,7 +2886,7 @@ console.log("still running");
     // through the binding throws the same fence, blamed at the construction.
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toMatch(
-      /^Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:3\]\nstill running\n$/,
+      /^Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:3\]\nstill running\n$/,
     );
     expect(r.stderr).toBe("");
   });
@@ -2913,19 +2913,19 @@ console.log("after");
   test("a method on the value's prototype refuses the read", async () => {
     const r = await compileAndRun(
       "host-global-prototype-member",
-      `console.log(typeof globalThis.FormData.prototype.constructor);
+      `console.log(typeof globalThis.WebSocket.prototype.constructor);
 console.log("before");
-console.log(globalThis.FormData.prototype.append);
+console.log(globalThis.WebSocket.prototype.send);
 console.log("after");
 `,
       "cjs",
     );
-    // The prototype carries `constructor`; `append` is one of the class's
+    // The prototype carries `constructor`; `send` is one of the class's
     // instance methods, which native code does not have.
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("function\nbefore\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-member\.cjs:3\]\n$/,
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-member\.cjs:3\]\n$/,
     );
   });
 
@@ -2952,10 +2952,10 @@ console.log("after");
   test("a method read through a constant holding the prototype refuses", async () => {
     const r = await compileAndRun(
       "host-global-prototype-alias",
-      `const body = globalThis.FormData.prototype;
+      `const body = globalThis.WebSocket.prototype;
 console.log(typeof body.constructor);
 console.log("before");
-console.log(body.append);
+console.log(body.send);
 console.log("after");
 `,
       "cjs",
@@ -2963,7 +2963,7 @@ console.log("after");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("function\nbefore\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-alias\.cjs:4\]\n$/,
+      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-alias\.cjs:4\]\n$/,
     );
   });
 

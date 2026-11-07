@@ -188,9 +188,12 @@ export interface CcOptions {
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
-  /** A program that builds a Blob or File: the SCR_WEB_BODIES build of
-   * scr_fetch.c, which sends the blob's bytes and its type as Content-Type. */
+  /** A Blob, File or FormData request body: the SCR_WEB_BODIES build of
+   * scr_fetch.c, which sends the blob's bytes and its type as Content-Type,
+   * and a FormData's multipart encoding. */
   webBodies?: boolean;
+  /** WHATWG FormData: compiles scr_formdata.c. */
+  formData?: boolean;
   /** AbortController and AbortSignal: compiles scr_abort.c, unless the
    * program compiles the fetch unit, which has them. */
   abortSignal?: boolean;

@@ -64,6 +64,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.mime ? { mime: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.webBodies ? { webBodies: true } : {}),
+    ...(features.formData ? { formData: true } : {}),
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),

@@ -1,7 +1,7 @@
 /** The value a read of a Node 24 global native code does not provide
  * answers (host-globals.ts). Node has the constructor, so a read must answer
- * a constructor: the eager read at module init (`export const FormData =
- * instanceOf(globalThis.FormData, …)` in effect's Schema) is a value read,
+ * a constructor: the eager read at module init (`export const WebSocket =
+ * instanceOf(globalThis.WebSocket, …)` in effect's Schema) is a value read,
  * not a use, and refusing it rejects the module before its capability probe
  * ever runs.
  *
@@ -11,14 +11,14 @@
  * object no value's prototype chain reaches), and constructing or calling it
  * throws the SC2020 fence its direct use reports — native code can never
  * produce an instance. Reads that ARE a use (`new WebSocket(url)`,
- * `FormData()`) keep the compile fence, which a JavaScript source defers to
+ * `WebSocket()`) keep the compile fence, which a JavaScript source defers to
  * exactly that throw.
  *
  * The constructor is a zero-parameter closure whose function is marked
  * `ownsPrototype`: the runtime gives every such function its own
  * `prototype` object with `constructor` on it (scr_dyn_fn_table), the same
- * shape a program's function declaration has, so `FormData.prototype`,
- * `FormData.prototype.constructor === FormData` and `x instanceof FormData`
+ * shape a program's function declaration has, so `WebSocket.prototype`,
+ * `WebSocket.prototype.constructor === WebSocket` and `x instanceof WebSocket`
  * all answer what Node answers without any property definition here. */
 import * as ts from "../ts7/adapter.js";
 import { BOOL, DYN, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
@@ -102,7 +102,7 @@ function defineHostGlobalBuilder(
     // prototype walk over a FUNCTION value ends at null instead of throwing
     // the runtime's unsupported-getPrototypeOf refusal (the walk starts at the
     // value's [[Prototype]]). Nothing native code produces reaches it, so
-    // `x instanceof FormData` answers false for every value native code can
+    // `x instanceof WebSocket` answers false for every value native code can
     // produce, functions included.
     {
       kind: "exprStmt",

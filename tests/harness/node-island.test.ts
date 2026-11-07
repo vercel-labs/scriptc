@@ -1156,7 +1156,7 @@ test("a host-global fence inside a function body keeps its package native", asyn
     "fenced-body",
     [
       "function probe() {",
-      "  return new FormData();",
+      "  return new WebSocket('ws://localhost:8080');",
       "}",
       "function answer() {",
       '  return "native";',
@@ -1168,7 +1168,7 @@ test("a host-global fence inside a function body keeps its package native", asyn
   writePackage(
     "fenced-module",
     [
-      "const eager = new FormData();",
+      "const eager = new WebSocket('ws://localhost:8080');",
       "function probe() {",
       "  return typeof eager;",
       "}",

@@ -217,6 +217,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.targetSetMax",
   "event.call",
   "blob.new",
+  "formdata.new",
   "blob.fileNew",
   "blob.slice",
   "wasm.compile",

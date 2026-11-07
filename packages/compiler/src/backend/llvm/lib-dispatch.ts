@@ -1448,6 +1448,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "event":
     case "events":
     case "blob":
+    case "formdata":
     case "wasm":
     case "array":
       if (e.fn === "array.foreignThrow") return emitArrayForeignThrow(host, e);

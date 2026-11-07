@@ -272,7 +272,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.nodeIsland === true ||
       // t.waitFor polls a dyn condition and returns a dyn promise
       // (scr_test.c's waitFor entry).
-      u.opts.nodeTest,
+      u.opts.nodeTest ||
+      // Blob and File box their reads as dyn promises; a FormData program
+      // links them for its entry values.
+      u.opts.formData === true,
     "scr_async_dyn.c",
   ),
   // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
@@ -286,8 +289,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // perf_hooks event-loop metrics, only for programs that read them.
   unit((u) => u.opts.perfLoop, "scr_perf_loop.c"),
   // Blob and File (every blob.* call selects dynAsync, whose unit boxes
-  // their reads as dyn promises).
-  unit((u) => u.opts.dynAsync, "scr_blob.c"),
+  // their reads as dyn promises; a FormData program links them for its
+  // entry values). FormData itself is scr_formdata.c.
+  unit((u) => u.opts.dynAsync || u.opts.formData === true, "scr_blob.c"),
+  unit((u) => u.opts.formData === true, "scr_formdata.c"),
   // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the vendored zlib
   // objects also serve the native fetch's gzip decoder — spread exactly once.
   unitArgs((u) =>
@@ -540,9 +545,13 @@ const RUNTIME_DEFINES: readonly {
   // bodies of its streams.
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
-  // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
-  // as Content-Type when the request sets none.
+  // scr_fetch.c's Blob/File and FormData request bodies (the builds
+  // runtime-pack-matrix.mjs selects).
   { define: "SCR_WEB_BODIES", when: (opts) => opts.webBodies },
+  {
+    define: "SCR_FORMDATA_BODY",
+    when: (opts) => opts.webBodies && opts.formData === true,
+  },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
   // scr_child.c's spawnSync result keeps the spawn errno and argv so
   // `.error` answers Node's errnoException fields (errno, syscall, path,

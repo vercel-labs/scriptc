@@ -1,9 +1,9 @@
 // A method read through a constant holding the value's prototype object: the
 // alias is the same prototype, so the class's instance method refuses there
-// too (SC2020, host-global), where Node's FormData.prototype carries append.
-interface HostBody {
-  append(value: string): void;
+// too (SC2020, host-global), where Node's WebSocket.prototype carries send.
+interface HostSocket {
+  send(data: string): void;
 }
-declare var FormData: { new (): HostBody; readonly prototype: HostBody };
-const body = FormData.prototype;
-body.append("value");
+declare var WebSocket: { new (url: string): HostSocket; readonly prototype: HostSocket };
+const body = WebSocket.prototype;
+body.send("value");

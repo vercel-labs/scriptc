@@ -7,7 +7,7 @@ import { stdlibGlobalNameOf, withoutTypeCasts } from "./surfaces.js";
  * a feature probe for an absent capability: Node has the value, so answering
  * `undefined` would silently diverge (pi's Codex transport stops running its
  * WebSocket path). A read answers the constructor Node has
- * (host-global-values.ts), so a module-init `instanceOf(globalThis.FormData,
+ * (host-global-values.ts), so a module-init `instanceOf(globalThis.WebSocket,
  * …)` keeps loading; constructing it, calling it, or reading a member the
  * value does not carry refuses (SC2020, reason "host-global"), and a module
  * that does one can run in a Node island.
@@ -44,7 +44,6 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
   "CloseEvent",
   "CompressionStream",
   "DecompressionStream",
-  "FormData",
   "Navigator",
   "Performance",
   "PerformanceEntry",
@@ -61,16 +60,15 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
 ]);
 
 /** Node 24's `length` for each listed global's constructor — the `Function`
- * length of the class (`WebSocket.length` is 1, `FormData.length` 0). A read
- * answers a constructor carrying it, so a program reading `name`, `length` or
- * `typeof` off the value sees what Node shows. Values are pinned against the
- * running Node in packages/compiler/test/host-globals.test.ts. */
+ * length of the class (`WebSocket.length` and `BroadcastChannel.length` are
+ * 1). A read answers a constructor carrying it, so a program reading `name`,
+ * `length` or `typeof` off the value sees what Node shows. Values are pinned
+ * against the running Node in packages/compiler/test/host-globals.test.ts. */
 const HOST_GLOBAL_LENGTHS: ReadonlyMap<string, number> = new Map([
   ["BroadcastChannel", 1],
   ["CloseEvent", 1],
   ["CompressionStream", 1],
   ["DecompressionStream", 1],
-  ["FormData", 0],
   ["Navigator", 0],
   ["Performance", 0],
   ["PerformanceEntry", 0],
@@ -214,7 +212,7 @@ export function hostGlobalNameOfElement(
 
 /** The members a read of a listed global's value answers: the function
  * intrinsics every constructor carries. Node also has the class's own
- * static members (`WebSocket.OPEN`, `FormData.prototype.append`) and its
+ * static members (`WebSocket.OPEN`, `WebSocket.prototype.send`) and its
  * instances' methods, which native code does not provide; reading one is a
  * use of that surface and refuses (SC2020, host-global) rather than
  * answering undefined. */
@@ -226,13 +224,13 @@ export const HOST_GLOBAL_VALUE_MEMBERS: ReadonlySet<string> = new Set([
 
 /** The members the value's `prototype` object answers: `constructor`, the
  * link back to the value, which is the same in Node. Node's prototype also
- * carries the class's instance methods (`FormData.prototype.append`), which
+ * carries the class's instance methods (`WebSocket.prototype.send`), which
  * native code does not have; reading one refuses (SC2020, host-global). */
 export const HOST_GLOBAL_PROTOTYPE_MEMBERS: ReadonlySet<string> = new Set(["constructor"]);
 
 /** The listed global whose `prototype` object `node` reads — a member read's
- * receiver (`FormData.prototype.append`), a `const` holding that object
- * (`const proto = FormData.prototype; proto.append`), or the
+ * receiver (`WebSocket.prototype.send`), a `const` holding that object
+ * (`const proto = WebSocket.prototype; proto.send`), or the
  * `Object.setPrototypeOf` target shape. Null for every other expression. */
 export function hostGlobalPrototypeOf(lowerer: Lowerer, node: ts.Expression): string | null {
   return hostGlobalPrototypeOfSeen(lowerer, node, new Set());
@@ -262,7 +260,7 @@ function hostGlobalPrototypeOfSeen(
 }
 
 /** The listed global whose constructor value `node` holds through the
- * prototype object (`FormData.prototype.constructor`), which is the same
+ * prototype object (`WebSocket.prototype.constructor`), which is the same
  * value the read answers. Null for every other expression. */
 export function hostGlobalConstructorOfPrototype(
   lowerer: Lowerer,
@@ -281,7 +279,7 @@ export function hostGlobalConstructorOfPrototype(
 }
 
 /** The listed global whose prototype member a call reads —
- * `FormData.prototype.append(...)`, `globalThis.WebSocket["send"](...)`.
+ * `WebSocket.prototype.send(...)`, `globalThis.WebSocket["send"](...)`.
  * A call reaches lowering without the member-read hook seeing the callee,
  * so the call site asks the same question. Null for `constructor` and for
  * every other expression. */

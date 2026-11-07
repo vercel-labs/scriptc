@@ -16,7 +16,8 @@ console.log(typeof URL, typeof URLSearchParams, typeof fetch, typeof performance
 const runtime = typeof Deno === "object" ? "deno" : typeof Bun === "object" ? "bun" : "node";
 console.log(runtime);
 if (typeof Deno === "undefined") console.log("no deno");
-class FormData {
+class WebSocket {
   kind = "local";
+  constructor(_url: string) {}
 }
-console.log(typeof FormData, new FormData().kind);
+console.log(typeof WebSocket, new WebSocket("ws://localhost").kind);

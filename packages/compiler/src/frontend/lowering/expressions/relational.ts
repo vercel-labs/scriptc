@@ -46,6 +46,7 @@ import {
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
+import { lowerFormDataInstanceof } from "../builtins/formdata.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
@@ -331,6 +332,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   {
     const blob = lowerBlobInstanceof(lowerer, expr);
     if (blob) return blob;
+    const formData = lowerFormDataInstanceof(lowerer, expr);
+    if (formData) return formData;
     const keyObject = lowerKeyObjectInstanceof(lowerer, expr);
     if (keyObject) return keyObject;
     const cryptoKey = lowerCryptoKeyInstanceof(lowerer, expr);

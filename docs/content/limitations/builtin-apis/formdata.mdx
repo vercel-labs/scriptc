@@ -1,0 +1,3 @@
+- **FormData:** `new FormData()` and its `append()`, `set()`, `get()`, `getAll()`, `has()`, and `delete()` methods, the `entries()`, `keys()`, and `values()` iterators, `Symbol.iterator`, `forEach()`, and the inspector view match Node.js 24's `FormData`.
+  `fetch()` sends a `FormData` request body as undici's `multipart/form-data`: a random boundary, the entry list's parts in order, string values with normalized linefeeds, and Blob or File values as their bytes with the part's content type.
+  `Response.formData()` and `Request.formData()`, which parse a multipart body, are unsupported and raise `SC2020`.

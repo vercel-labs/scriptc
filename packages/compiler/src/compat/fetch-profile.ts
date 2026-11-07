@@ -185,7 +185,7 @@ function buildFetchCompatProfile() {
         id: "stdlib.fetch.request-init.body",
         name: "RequestInit.body",
         conversion:
-          "string, Uint8Array, ReadableStream, Blob, File, or null; a FormData body is refused by name",
+          "string, Uint8Array, ReadableStream, Blob, File, FormData (undici's multipart/form-data encoding), or null",
         evidence: [
           fixture("static"),
           fixture("static-stream"),
@@ -262,7 +262,7 @@ function buildFetchCompatProfile() {
         kind: "constructor",
         facets: ["webidl-conversion", "body-consumption", "error-shape"],
         scope:
-          "Absolute URLs with method, headers, body, duplex, redirect, and signal; other RequestInit members retain explicit fences",
+          "Absolute URLs with method, headers, body, duplex, redirect, and signal; a Blob, File or FormData body sends its extracted bytes and implied content type; other RequestInit members retain explicit fences",
         evidence: [fixture("static-request")],
       },
       ...[
@@ -312,7 +312,7 @@ function buildFetchCompatProfile() {
         kind: "constructor",
         facets: ["webidl-conversion", "body-consumption", "state-machine", "error-shape"],
         scope:
-          "BodyInit is string, Uint8Array/Buffer, ReadableStream<Uint8Array>, null/undefined, or a checked-dynamic value that follows the supported WebIDL string conversion; ResponseInit is headers/status/statusText",
+          "BodyInit is string, Uint8Array/Buffer, Blob/File, FormData, ReadableStream<Uint8Array>, null/undefined, or a checked-dynamic value that follows the supported WebIDL string conversion; ResponseInit is headers/status/statusText",
         evidence: [fixture("static")],
       },
       {
@@ -923,9 +923,9 @@ function buildFetchCompatProfile() {
       ],
       excludedInterfaces: [
         {
-          name: "FormData bodies",
+          name: "Blob/File/FormData response bodies",
           reason:
-            "fetch request bodies do not accept FormData values; its multipart encoding is not implemented",
+            "request bodies accept Blob, File, and FormData values; reading a response as one (Response.blob(), Response.formData()) is unsupported",
         },
         {
           name: "WritableStream/TransformStream",

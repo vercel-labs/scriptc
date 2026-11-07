@@ -9,6 +9,7 @@
  * entries Node's queue slice keeps. Sources are copied when the Blob is
  * built, so later writes to a source buffer are not observed. */
 #include "scr_runtime.h"
+#include "scr_blob_internal.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -20,17 +21,6 @@ typedef struct ScrBlobStore {
   size_t len;
   uint8_t data[];
 } ScrBlobStore;
-
-typedef struct ScrBlob {
-  size_t rc;
-  ScrBlobStore *store;
-  size_t off, len; /* this Blob's window into store */
-  size_t nparts;
-  size_t *parts; /* byte length of each part, in order; they sum to len */
-  ScrStr *type;
-  ScrStr *name; /* File only; NULL for a Blob */
-  double last_modified;
-} ScrBlob;
 
 static void scr_blob_store_release(ScrBlobStore *s) {
   if (s && --s->rc == 0) free(s);

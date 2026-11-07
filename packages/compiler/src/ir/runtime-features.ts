@@ -1573,11 +1573,6 @@ const RUNTIME_FEATURE_RULES = {
   mime: rule({ prefixes: ["mime."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
-  /** A program that builds a Blob or File can hand one to fetch: selects
-   * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
-   * type as Node does. Every other program keeps the default fetch unit,
-   * byte for byte. */
-  webBodies: rule({ prefixes: ["blob."] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c). */
   abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
@@ -1586,6 +1581,11 @@ const RUNTIME_FEATURE_RULES = {
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
+  /** A Blob, File or FormData request body: scr_fetch.c's web-bodies build
+   * extracts its bytes and content type instead of stringifying it. */
+  webBodies: rule({ prefixes: ["blob.", "formdata."] }),
+  /** WHATWG FormData in checked-dynamic code (scr_formdata.c). */
+  formData: rule({ prefixes: ["formdata."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
@@ -1993,6 +1993,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventTarget: false,
     eventsOnceSignal: false,
     fetch: false,
+    webBodies: false,
+    formData: false,
     fileHandle: false,
     fsFlags: false,
     fsBytesWrites: false,
@@ -2007,7 +2009,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
-    webBodies: false,
     webStreams: false,
     abortSignal: false,
     utilTiming: false,

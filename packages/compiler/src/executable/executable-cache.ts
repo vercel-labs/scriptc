@@ -114,6 +114,7 @@ export interface EarlyExecutableNativeFeatures {
   mime?: boolean;
   webStreams?: boolean;
   webBodies?: boolean;
+  formData?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;

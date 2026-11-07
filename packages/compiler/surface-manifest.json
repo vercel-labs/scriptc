@@ -4810,7 +4810,7 @@
       "kind": "stdlib",
       "name": "RequestInit.body",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; conversion: string, Uint8Array, ReadableStream, Blob, File, or null; a FormData body is refused by name; differential evidence: fixture:static, fixture:static-stream, fixture:static-coercion, fixture:web-body"
+      "note": "Node 24.22.1 / Undici 7.30.1; conversion: string, Uint8Array, ReadableStream, Blob, File, FormData (undici's multipart/form-data encoding), or null; differential evidence: fixture:static, fixture:static-stream, fixture:static-coercion, fixture:web-body"
     },
     {
       "id": "stdlib.fetch.request-init.cache",
@@ -4933,6 +4933,13 @@
       "name": "File",
       "status": "static",
       "note": "a Blob with name and lastModified (Date.now() when absent)"
+    },
+    {
+      "id": "stdlib.formdata",
+      "kind": "stdlib",
+      "name": "FormData",
+      "status": "static",
+      "note": "an ordered entry list with append(), set(), get(), getAll(), has(), delete(), entries(), keys(), values(), forEach() and Symbol.iterator; request bodies send as multipart/form-data"
     },
     {
       "id": "stdlib.headers.append",
@@ -5615,7 +5622,7 @@
       "kind": "stdlib",
       "name": "Request constructor",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, body-consumption, error-shape; supported scope: Absolute URLs with method, headers, body, duplex, redirect, and signal; other RequestInit members retain explicit fences; differential evidence: fixture:static-request"
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, body-consumption, error-shape; supported scope: Absolute URLs with method, headers, body, duplex, redirect, and signal; a Blob, File or FormData body sends its extracted bytes and implied content type; other RequestInit members retain explicit fences; differential evidence: fixture:static-request"
     },
     {
       "id": "stdlib.request.credentials",
@@ -5813,7 +5820,7 @@
       "kind": "stdlib",
       "name": "Response constructor",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, body-consumption, state-machine, error-shape; supported scope: BodyInit is string, Uint8Array/Buffer, ReadableStream<Uint8Array>, null/undefined, or a checked-dynamic value that follows the supported WebIDL string conversion; ResponseInit is headers/status/statusText; differential evidence: fixture:static"
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, body-consumption, state-machine, error-shape; supported scope: BodyInit is string, Uint8Array/Buffer, Blob/File, FormData, ReadableStream<Uint8Array>, null/undefined, or a checked-dynamic value that follows the supported WebIDL string conversion; ResponseInit is headers/status/statusText; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.formData",

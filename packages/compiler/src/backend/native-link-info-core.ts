@@ -159,11 +159,14 @@ export interface NativeLinkFeatures {
   /** Web streams in checked-dynamic code: scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
-  /** A program that builds a Blob or File: selects scr_fetch.c's
+  /** A Blob, File or FormData request body: selects scr_fetch.c's
    * SCR_WEB_BODIES build, which sends the blob's bytes and its type as
-   * Content-Type, as Node does. Absent (false) for programs that build
-   * neither, which keep the default fetch unit byte for byte. */
+   * Content-Type, and a FormData's multipart encoding, as Node does.
+   * Absent (false) for programs that send neither, which keep the default
+   * fetch unit byte for byte. */
   webBodies?: boolean;
+  /** WHATWG FormData: scr_formdata.c. */
+  formData?: boolean;
   /** AbortController and AbortSignal: scr_abort.c, unless the program
    * links the fetch unit, which has them. */
   abortSignal?: boolean;

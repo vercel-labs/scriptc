@@ -2575,6 +2575,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "immutable bytes with size, type, slice(), text(), bytes(), arrayBuffer() and structured cloning",
     },
     {
+      id: "stdlib.formdata",
+      kind: "stdlib",
+      name: "FormData",
+      fns: ["formdata.new", "formdata.is"],
+      note: "an ordered entry list with append(), set(), get(), getAll(), has(), delete(), entries(), keys(), values(), forEach() and Symbol.iterator; request bodies send as multipart/form-data",
+    },
+    {
       id: "stdlib.file",
       kind: "stdlib",
       name: "File",

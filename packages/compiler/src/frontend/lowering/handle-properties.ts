@@ -150,7 +150,7 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
   // JavaScript file's writes onto children count.
   // A key that is not a literal may name any member, so every member then
   // goes through the child's box.
-  const spawns = files.some((sf) => sf.text.includes("child_process"));
+  const spawns = files.some((sf) => ts.sourceTextIncludes(sf, "child_process"));
   let everyName = false;
   /** A definition whose target the checker does not resolve. An untyped
    * parameter is the common case; a child reaches a helper through one, and

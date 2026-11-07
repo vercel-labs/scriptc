@@ -1040,12 +1040,15 @@ if (report.steady?.geomean_vs_node !== undefined)
     `geomean steady-state candidate/node: ${report.steady.geomean_vs_node.toFixed(3)}x over ${report.steady.workloads} workloads at ${steadyFactor}x scale (whole-process over the same workloads: ${report.steady.whole_process_geomean_vs_node.toFixed(3)}x)`,
   );
 console.log(lines.join("\n"));
-// A scaled run that diverges from Node is a wrong result, like any other; one
-// that is too slow or shows no growth only leaves its steady cell empty.
+// A scaled run that diverges from Node is a wrong result, like any other, and
+// so is a scaled launch that exits nonzero while it is timed after the same
+// launch passed the comparison; one that is too slow or shows no growth only
+// leaves its steady cell empty.
 const broken = report.workloads.some(
   (w) =>
     w.error ||
     Object.values(w.results).some((r) => r.status !== "ok") ||
-    w.steady?.status === "mismatch",
+    w.steady?.status === "mismatch" ||
+    w.steady?.status === "unstable-exit",
 );
 process.exitCode = broken ? 1 : 0;

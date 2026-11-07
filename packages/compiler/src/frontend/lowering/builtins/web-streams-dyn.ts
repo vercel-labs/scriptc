@@ -204,7 +204,7 @@ function typedWebStreamClassKindOf(lowerer: Lowerer, node: ts.Expression): numbe
  * (programUsesTypedWebStreams): the same brand test the JavaScript path
  * runs, since those values are checked-dynamic handles. */
 function typedStreamInstanceClassKindOf(lowerer: Lowerer, node: ts.Expression): number | null {
-  const expr = unparenthesized(node);
+  const expr = withoutParentheses(node);
   if (!ts.isIdentifier(expr)) return null;
   const name = stdlibGlobalNameOf(lowerer, expr);
   if (name === null || !TYPED_CLASSES.has(name) || !programUsesTypedWebStreams(lowerer))

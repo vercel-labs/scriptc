@@ -214,10 +214,6 @@
     "island:cjszoo": {
       "category": "build",
       "signature": "SC2004,SC2013"
-    },
-    "island:dual": {
-      "category": "build",
-      "signature": "SC2004,SC2013"
     }
   },
   "npm/dual-entry": {
@@ -482,6 +478,12 @@
     "island:date-fns": {
       "category": "exit",
       "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+    }
+  },
+  "packages/debug": {
+    "island:debug": {
+      "category": "build",
+      "signature": "SC1080"
     }
   },
   "packages/lodash": {

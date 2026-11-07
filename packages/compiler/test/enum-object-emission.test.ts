@@ -8,7 +8,13 @@ import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule, validateModule } from "../src/index.js";
 
-type IrModule = { functions: unknown[]; globals?: { id: string }[] };
+type IrType = { kind: string; unionId?: string };
+
+type IrModule = {
+  functions: { locals: { name: string; type: IrType; source?: unknown }[] }[];
+  globals?: { id: string; name: string; type: IrType }[];
+  unions?: { id: string; arms: IrType[] }[];
+};
 
 async function compileToIr(
   files: Record<string, string[]>,
@@ -36,6 +42,25 @@ async function compileToIr(
 
 function enumGlobals(module: IrModule | null): string[] {
   return (module?.globals ?? []).map((g) => g.id).filter((id) => id.includes("%enum."));
+}
+
+/** The storage of the source binding `name`: a top-level one lives as a
+ * global, any other as a local of the function that declares it. */
+function bindingType(module: IrModule | null, name: string): IrType | undefined {
+  const global = (module?.globals ?? []).find((g) => g.name === name);
+  if (global) return global.type;
+  for (const fn of module?.functions ?? [])
+    for (const local of fn.locals) if (local.name === name) return local.type;
+  return undefined;
+}
+
+/** Whether values of `type` can be undefined. */
+function admitsUndefined(module: IrModule | null, type: IrType | undefined): boolean {
+  if (type === undefined) return false;
+  if (type.kind === "undefinedT") return true;
+  if (type.kind !== "union") return false;
+  const union = (module?.unions ?? []).find((u) => u.id === type.unionId);
+  return union?.arms.some((arm) => arm.kind === "undefinedT") ?? false;
 }
 
 /** The field names of every record literal, in the order each writes them. */
@@ -69,6 +94,27 @@ test("member reads and numeric lookups build no object", async () => {
   expect(diagnostics).toBe("");
   expect(enumGlobals(module)).toEqual([]);
   expect(recordLiterals(module)).toEqual([]);
+});
+
+test("a numeric lookup into a member-only enum keeps the undefined case", async () => {
+  const { module, diagnostics } = await compileToIr({
+    "main.ts": [
+      ...LEVEL,
+      "const picked: number = process.argv.length;",
+      "const name = Level[picked];",
+      "console.log(name);",
+    ],
+  });
+  expect(diagnostics).toBe("");
+  // The enum has no value use, so it has no object and no record type here:
+  // the reverse lookup still reads undefined for a value no member has, and
+  // the binding has to keep it.
+  expect(enumGlobals(module)).toEqual([]);
+  expect(recordLiterals(module)).toEqual([]);
+  const binding = bindingType(module, "name");
+  expect(binding).toBeDefined();
+  expect(admitsUndefined(module, binding)).toBe(true);
+  expect(binding).toMatchObject({ kind: "union" });
 });
 
 test("a value use builds the record in the order tsc's emit writes it", async () => {

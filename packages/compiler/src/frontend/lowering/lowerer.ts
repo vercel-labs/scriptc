@@ -8333,17 +8333,17 @@ export class Lowerer {
     const isIndexedRead = (node: ts.Expression): boolean => {
       const e = peel(node);
       if (!ts.isElementAccessExpression(e)) return false;
+      // An enum's reverse lookup through a runtime number answers undefined
+      // for a value no member has. A member-only enum has no object and so
+      // no record type here, and the miss still has to reach the binding.
+      if (enumNumberReadMayMiss(this, e)) return true;
       const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
       if (kind === "string") return !this.stringIndexBounds.inBounds(e);
       // Typed-array reads answer undefined for an invalid index too, unless
       // every consumer treats undefined like NaN.
       if (kind === "bytes") return !nanCoded.isNumericRead(e);
       if (kind === "record")
-        return (
-          (this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e)) ||
-          // An enum's reverse lookup through a runtime number.
-          enumNumberReadMayMiss(this, e)
-        );
+        return this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e);
       return kind === "array";
     };
     /** `r.name` where the name resolves to the receiver's index signature. */

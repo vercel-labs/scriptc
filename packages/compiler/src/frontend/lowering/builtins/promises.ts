@@ -284,6 +284,119 @@ function lowerTuplePromiseAll(
     : { kind: "seqExpr", stmts: staged, result: all, type: resultT, loc };
 }
 
+/** Whether nothing reads the array a `Promise.all` call fulfills with: the
+ * call is a statement of its own, the operand of `void`, awaited as a
+ * statement, or the receiver of a `then` whose callback takes no value;
+ * `catch` and `finally` pass the array on, so they count when their own
+ * result is not read either. Promise<void> entries then keep the
+ * combinator that fulfills with nothing. */
+export function promiseAllValueUnread(node: ts.Expression): boolean {
+  let user: ts.Node = node;
+  while (ts.isParenthesizedExpression(user.parent)) user = user.parent;
+  const parent = user.parent;
+  if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
+  if (ts.isAwaitExpression(parent)) {
+    let awaited: ts.Node = parent;
+    while (ts.isParenthesizedExpression(awaited.parent)) awaited = awaited.parent;
+    return ts.isExpressionStatement(awaited.parent) || ts.isVoidExpression(awaited.parent);
+  }
+  if (
+    !ts.isPropertyAccessExpression(parent) ||
+    parent.expression !== user ||
+    parent.questionDotToken ||
+    !ts.isCallExpression(parent.parent) ||
+    parent.parent.expression !== parent
+  )
+    return false;
+  const reaction = parent.parent;
+  const member = parent.name.text;
+  if (member === "catch" || member === "finally") return promiseAllValueUnread(reaction);
+  if (member !== "then") return false;
+  const onFulfilled = reaction.arguments.nodes[0];
+  if (onFulfilled === undefined) return promiseAllValueUnread(reaction);
+  return (
+    (ts.isArrowFunction(onFulfilled) || ts.isFunctionExpression(onFulfilled)) &&
+    onFulfilled.parameters.nodes.length === 0
+  );
+}
+
+/** `Promise.all(ps)` over Promise<void> entries whose array is read: the
+ * checker's `Promise<void[]>`, an array with one undefined value per entry,
+ * as in Node. The combinator joins the entries (promise.allTuple) and its
+ * builder makes the array inside the combinator's settlement, so the result
+ * settles on Node's turn. Null when the array type has no undefined
+ * element to hold. */
+function voidPromiseAllValues(
+  lowerer: Lowerer,
+  entries: IrExpr,
+  resultT: IrType | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  const entriesT = entries.type;
+  if (
+    entriesT.kind !== "array" ||
+    entriesT.elem.kind !== "promise" ||
+    entriesT.elem.inner.kind !== "void" ||
+    resultT?.kind !== "promise" ||
+    resultT.inner.kind !== "array"
+  )
+    return null;
+  const outT = resultT.inner;
+  const elem = outT.elem;
+  if (
+    elem.kind !== "undefinedT" &&
+    !(elem.kind === "union" && lowerer.armTag(elem.unionId, UNDEFINED_T) >= 0)
+  )
+    return null;
+  const key = `promise.allVoid:${typeKey(outT)}`;
+  let builder = lowerer.arrHofHelpers.get(key);
+  if (!builder) {
+    builder = keyedHelperName(lowerer, "%promise.allVoidValues", key);
+    lowerer.arrHofHelpers.set(key, builder);
+    const joined = varRef("joined.0", entriesT, loc);
+    const out = varRef("out.0", outT, loc);
+    const undefinedValue = lowerer.coerceToExpected(
+      { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      elem,
+    );
+    lowerer.liftedFns.push({
+      name: builder,
+      params: [{ localId: "joined.0", name: "joined", type: entriesT }],
+      returnType: outT,
+      locals: [
+        { id: "joined.0", name: "joined", type: entriesT, mutable: false },
+        { id: "out.0", name: "out", type: outT, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "out.0",
+          init: { kind: "arrayLit", elems: [], type: outT, loc },
+          loc,
+        },
+        countedFor(
+          loc,
+          { kind: "arrIntrinsic", method: "length", receiver: joined, args: [], type: F64, loc },
+          (index) => [arrayValueStore(lowerer, out, index, undefinedValue, elem, loc)],
+        ),
+        { kind: "return", value: out, loc },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "libCall",
+    fn: "promise.allTuple",
+    args: [
+      entries,
+      { kind: "closure", fnName: builder, captures: [], type: funcOf([entriesT], outT), loc },
+    ],
+    type: resultT,
+    loc,
+  };
+}
+
 /** `Promise.race([...])` on THE Promise global: the entries lower
  * individually (the array never materializes — promise-element arrays
  * have no representation) into a promise.race intrinsic; the result
@@ -412,8 +525,9 @@ export function lowerPromiseStaticCall(
   // settlement order, the first rejection (in settlement order) wins and
   // later ones count as handled, the empty array resolves immediately,
   // and already-settled entries settle inline. Promise<void> entries
-  // collapse to a `Promise<void>` result (a void[] value has no
-  // representation; `await Promise.all(voids)` is the supported shape).
+  // fulfill with an array of undefined values, as in Node; where nothing
+  // reads the array (`await Promise.all(voids);`) the result is a
+  // `Promise<void>` that fulfills with nothing.
   // Heterogeneous ARRAY LITERALS land on the tuple overload
   // (Promise<[A, B]>) and fence here — one promise type is the bound.
   if (member === "all") {
@@ -444,11 +558,29 @@ export function lowerPromiseStaticCall(
         elems.every((e) => e.type.kind === "promise" && typeEquals(e.type, first))
       ) {
         const entriesArr: IrExpr = { kind: "arrayLit", elems, type: arrayOf(first), loc };
-        const resultT: IrType = {
-          kind: "promise",
-          inner: first.inner.kind === "void" ? VOID : arrayOf(first.inner),
-        };
-        return { kind: "intrinsic", name: "promise.all", args: [entriesArr], type: resultT, loc };
+        // Promise<void> entries whose values are read: the checker's
+        // `void[]` (an annotated binding), or its tuple of undefined values,
+        // which the tuple form below makes.
+        const readVoid =
+          first.inner.kind === "void" &&
+          !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+          !promiseAllValueUnread(call);
+        if (!readVoid) {
+          const resultT: IrType = {
+            kind: "promise",
+            inner: first.inner.kind === "void" ? VOID : arrayOf(first.inner),
+          };
+          return { kind: "intrinsic", name: "promise.all", args: [entriesArr], type: resultT, loc };
+        }
+        // An annotation names the array (`const p: Promise<void[]> = ...`)
+        // where the checker's own type for the literal is the tuple.
+        const contextual = lowerer.checker.getContextualType(call);
+        const values =
+          (contextual
+            ? voidPromiseAllValues(lowerer, entriesArr, lowerer.mapTypeOf(contextual), loc)
+            : null) ??
+          voidPromiseAllValues(lowerer, entriesArr, lowerer.mapTypeOf(lowerer.typeOf(call)), loc);
+        if (values) return values;
       }
 
       if (!isJsSourceFile(ts.getSourceFileOfNode(call))) {
@@ -527,6 +659,18 @@ export function lowerPromiseStaticCall(
       );
     }
     const inner = entries.type.elem.inner;
+    // Promise<void> entries fulfill with one undefined value each. Where
+    // nothing reads that array the combinator fulfills with nothing;
+    // everywhere else the result is the checker's Promise<void[]>.
+    if (inner.kind === "void" && !promiseAllValueUnread(call)) {
+      const values = voidPromiseAllValues(
+        lowerer,
+        entries,
+        lowerer.mapTypeOf(lowerer.typeOf(call)),
+        loc,
+      );
+      if (values) return values;
+    }
     const resultT: IrType | null =
       inner.kind === "void"
         ? { kind: "promise", inner: VOID }

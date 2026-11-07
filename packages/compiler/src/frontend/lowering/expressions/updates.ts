@@ -1183,6 +1183,36 @@ export function lowerFieldCompoundValue(
         });
         return { kind: "seqExpr", stmts: body, result: value, type: DYN, loc };
       }
+      // A member the checker types as a string (`detail.text += chunk`,
+      // where the program holds values of the record type as checked-dynamic
+      // values): the member validates as a string, as it validates as a
+      // number below, and the right side appends as it does to a string
+      // field.
+      if (
+        op === "+" &&
+        rhsNode !== null &&
+        lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "string"
+      ) {
+        const old: IrExpr = { kind: "dynCheck", value: read, type: STRING, loc };
+        const appended = concatOperand(lowerer, rhs, rhsNode);
+        const value = save(
+          { kind: "strConcat", left: old, right: appended, type: STRING, loc },
+          "%compoundResult",
+        );
+        const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
+        body.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [receiver, { ...key }, boxed],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+        return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
+      }
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }

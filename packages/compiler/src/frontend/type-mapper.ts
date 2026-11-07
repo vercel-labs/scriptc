@@ -1628,9 +1628,6 @@ export interface TypeMapperCtx {
   /** Live class protocols retain identity and receiver dispatch rather than
    * copying an instance into an unrelated record layout. */
   classImplementedProtocol?: (type: ts.Type) => boolean;
-  /** The instance types of the classes a closed protocol's values are all
-   * instances of (closed-protocols.ts), or null for any other type. */
-  closedProtocolClasses?: (type: ts.Type) => readonly ts.Type[] | null;
   /** MIXIN instance INTERSECTIONS (`Tagged.C & Derived` — values built
    * through a mixin result): resolved by chain structure to the unique
    * pinned instantiation they describe; null when ambiguous or when no
@@ -5954,8 +5951,6 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const recordParts: { source: ts.Type; mapped: IrType & { kind: "record" } }[] = [];
       const classParts: { source: ts.Type; mapped: IrType & { kind: "object" } }[] = [];
       const substitutedUnions: IrUnionDef[] = [];
-      /** The keys of the arms only closed protocols contributed. */
-      const closedArms: string[] = [];
       // The lib's `T extends readonly unknown[] | []` idiom (Promise.all,
       // allSettled) maps an array input to `X[] | []`: the empty tuple is
       // one of the array's own values.
@@ -6047,23 +6042,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           const substituted = unions.get(mapped.unionId);
           if (!substituted?.arms.length || substituted.arms.some((arm) => arm.kind === "union"))
             return null;
-          // A closed protocol's class union is one checker constituent.
-          // Its arms join the union like a hand-written union of classes,
-          // and it is not a substituted generic union.
-          if (ctx.closedProtocolClasses?.(part)) {
-            for (const arm of substituted.arms) {
-              if (!byKey.has(typeKey(arm))) closedArms.push(typeKey(arm));
-              byKey.set(typeKey(arm), arm);
-            }
-            continue;
-          }
           substitutedUnions.push(substituted);
           for (const arm of substituted.arms) byKey.set(typeKey(arm), arm);
-          continue;
-        }
-        if (mapped.kind === "object" && ctx.closedProtocolClasses?.(part)) {
-          if (!byKey.has(typeKey(mapped))) closedArms.push(typeKey(mapped));
-          byKey.set(typeKey(mapped), mapped);
           continue;
         }
         byKey.set(typeKey(mapped), mapped);
@@ -6081,12 +6061,6 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
             byKey.delete(typeKey(mapped));
         }
       }
-      // A closed protocol beside a checked-dynamic arm (an open protocol,
-      // `unknown`) is held as the checked-dynamic value the whole union is:
-      // an instance boxes by reference, so its identity is kept, as it was
-      // when every protocol was checked-dynamic.
-      if (closedArms.length > 0 && byKey.has(typeKey(DYN)))
-        for (const key of closedArms) byKey.delete(key);
       const arms = [...byKey.values()];
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
       // `Cond<T> | undefined` whose conditional selects never for the
@@ -6203,24 +6177,6 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   return null;
-}
-
-/** The representation of a closed protocol (closed-protocols.ts): the
- * class its values are instances of, or the union of its classes. Such a
- * value is the instance pointer it is under its class type, so entering the
- * interface type converts nothing and identity is the pointer's. Null for
- * every other type, and when a class has no instance representation. */
-function closedProtocolType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
-  const classes = ctx.closedProtocolClasses?.(type);
-  if (!classes || classes.length === 0) return null;
-  const arms: IrType[] = [];
-  for (const cls of classes) {
-    const mapped = mapType(cls, ctx);
-    if (mapped?.kind !== "object") return null;
-    arms.push(mapped);
-  }
-  if (arms.length === 1) return arms[0]!;
-  return { kind: "union", unionId: ctx.unions.intern(sortArms(arms)) };
 }
 
 /** The classes a non-generic program class extends, nearest first, as
@@ -10004,8 +9960,7 @@ function mapRecordTypeInner(
   const computed = widened.isIntersectionType() || isMappedShape(widened);
   {
     const props = checker.getPropertiesOfType(widened);
-    if (!declaredLayout && ctx.classImplementedProtocol?.(widened))
-      return closedProtocolType(widened, ctx) ?? DYN;
+    if (!declaredLayout && ctx.classImplementedProtocol?.(widened)) return DYN;
     // Symbol-keyed records use the checked object's descriptor table. A
     // checker-internal __@ name is not a string field in a native struct.
     if (props.some((property) => ts.symbolName(property).startsWith("__@"))) return DYN;

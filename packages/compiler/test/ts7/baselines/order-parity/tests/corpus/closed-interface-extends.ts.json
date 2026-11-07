@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/closed-interface-extends.ts"
- ],
- "diags": []
-}

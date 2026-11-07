@@ -2,12 +2,7 @@
  * corpus, 5165-5169): a call through an interface implemented by program
  * classes keeps its static argument and result types and reaches the
  * implementing methods directly, while a method that an instance can
- * replace keeps the checked dynamic call.
- *
- * An interface only its classes can inhabit is their own pointer and has
- * no dispatch helper at all (closed-protocols.ts; the last test). The other
- * programs here also give the interface an object literal, which keeps it
- * the checked-dynamic view whose dispatch they pin. */
+ * replace keeps the checked dynamic call. */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -47,10 +42,9 @@ function bodies(llvm: string, name: string): string {
     .join("\n");
 }
 
-const shapes = (extra: string, literal = true): string => `interface Shape {
+const shapes = (extra: string): string => `interface Shape {
   scale(k: number): number;
 }
-${literal ? "const literal: Shape = { scale: (k: number): number => k };" : ""}
 class Circle implements Shape {
   constructor(public r: number) {}
   scale(k: number): number {
@@ -107,7 +101,6 @@ console.log(sum([circle, new Rect(1)]));`),
       `interface Sized {
   size: number;
 }
-const literal: Sized = { size: 1 };
 class Box implements Sized {
   size = 3;
 }
@@ -177,20 +170,5 @@ console.log(sum(kept));`),
     const dispatch = llvm.slice(helper, llvm.indexOf("\n}\n", helper));
     expect(dispatch).not.toContain("@sc_bf__x25_Circle_scale(");
     expect(dispatch).not.toContain("@sc_bf__x25_Rect_scale(");
-  });
-
-  test("an interface only its classes inhabit dispatches on the class, with nothing dynamic", async () => {
-    const llvm = await emittedLlvm("closed", shapes("", false));
-    expect(llvm).not.toContain("dyn_class_protocol");
-    expect(llvm).not.toContain("@scr_dyn_");
-    expect(llvm).toMatch(/call double @sc_bf__x25_Circle_scale\(ptr [^,]+, double/);
-    expect(llvm).toMatch(/call double @sc_bf__x25_Rect_scale\(ptr [^,]+, double/);
-    // A method an instance replaces through an untyped view is still
-    // answered: the classes' own method-replacement rule applies.
-    const replaced = await emittedLlvm(
-      "closed-replaced",
-      shapes(`(circle as unknown as { scale: (k: number) => number }).scale = (k) => -k;`, false),
-    );
-    expect(replaced).toContain("dyn_class_protocol");
   });
 });

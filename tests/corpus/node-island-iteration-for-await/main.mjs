@@ -44,7 +44,7 @@ async function main() {
     log(`caught ${e.name}: ${e.message}`);
   }
   log("-- timers between steps");
-  setTimeout(() => log("native timer"), 5);
+  setTimeout(() => log("native timer"), 75);
   for await (const v of lib.slow()) log(`native got ${v}`);
   log("-- a custom async iterable");
   const custom = lib.custom(4);

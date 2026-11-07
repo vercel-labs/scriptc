@@ -25,7 +25,7 @@ exports.rejects = async function* rejects() {
 };
 exports.slow = async function* slow() {
   for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 3));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     yield `slow ${i}`;
   }
 };

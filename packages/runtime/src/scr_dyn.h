@@ -1302,6 +1302,20 @@ void scr_dyn_namespace_define(ScrDyn *object, const ScrStr *key, ScrDyn *value, 
 /* Marks the own property `key` of `object` as a fenced namespace member
  * (ScrDynEntry.fenced). */
 void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key);
+/* Fences every own string-keyed property a built-in prototype object holds
+ * when a program first takes the object as a value. Compiled code calls a
+ * built-in member's native entry point and never reads it from the object,
+ * so a program that replaced or deleted one would keep running the
+ * built-in: with the fence the write throws. Members the program adds
+ * afterwards are its own and stay writable. The first entry's bit says the
+ * object is done, so a later call costs one load and nothing is kept
+ * outside the object. */
+static inline void scr_dyn_fence_builtin_members(ScrDyn *object) {
+  if (!object || object->kind != SCR_DYN_OBJ || object->v.obj.len == 0) return;
+  ScrDynEntry *entries = scr_dyn_obj_dict_entries(object);
+  if (entries[0].fenced) return;
+  for (size_t i = 0; i < object->v.obj.len; i++) entries[i].fenced = true;
+}
 /* A constant-key read of an Object.prototype member name: takes the
  * ordinary read's +1 result and answers the inherited member in place of
  * an undefined one (scr_dyn_invoke.c). */
@@ -1854,6 +1868,7 @@ ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor);
  * "test" and "toString". +1, one function per (owner, member) and thread. */
 ScrDyn *scr_dyn_builtin_method_value(const ScrStr *owner, const ScrStr *member);
 ScrDyn *scr_dyn_array_prototype(void); /* +1, installs native method adapters */
+ScrDyn *scr_dyn_array_prototype_value(void); /* +1, the same object as a value a program holds: its methods are fenced */
 ScrDyn *scr_dyn_array_prototype_base(void); /* +1, shared native array identity */
 /* Names the prototype object of a compiled class `name` for util.inspect
  * (Node prints the constructor's name), unless it already has a name. */

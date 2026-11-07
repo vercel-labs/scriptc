@@ -320,6 +320,8 @@ ScrDyn *scr_data_view_prototype(ScrDyn *tag_key) {
   scr_str_release(constructor);
   scr_dyn_fn_seed_prototype(ctor, scr_dyn_retain(prototype));
   scr_dyn_release(ctor);
+  /* The program holds the object now: its built-in members are fenced. */
+  scr_dyn_fence_builtin_members(prototype);
   scr_atexit(scr_dv_proto_cleanup);
   return scr_dyn_retain(scr_dv_proto_object);
 }

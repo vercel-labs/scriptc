@@ -2735,6 +2735,18 @@ ScrDyn *scr_dyn_array_prototype(void) {
   return prototype;
 }
 
+/* Array.prototype as a value the program holds (dyn.arrayPrototypeValue):
+ * the methods the table installs are fenced, so replacing or deleting one
+ * throws instead of leaving the array methods compiled code calls with the
+ * original. Only a program that reads Array.prototype as a value can reach
+ * such a write, and only such a program calls this; the table's other
+ * users keep the plain entry point. */
+ScrDyn *scr_dyn_array_prototype_value(void) {
+  ScrDyn *prototype = scr_dyn_array_prototype();
+  scr_dyn_fence_builtin_members(prototype->v.arr.properties);
+  return prototype;
+}
+
 /* Object.defineProperties' read-and-convert half: every own enumerable
  * string-keyed descriptor of the Properties argument is read and converted
  * (ToPropertyDescriptor) before any property is defined, so a later invalid

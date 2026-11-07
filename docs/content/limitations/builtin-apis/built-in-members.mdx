@@ -1,0 +1,12 @@
+- **Built-in members:** Existing members of the language's built-in objects are read-only, a deliberate difference from Node.js.
+  Compiled code calls a built-in such as `Array.prototype.push` or `Math.random` directly and never reads it from its object, so a replacement would not run.
+  A write the build can see that replaces or deletes one is refused with `SC1092`: an assignment, `delete`, `Object.defineProperty`, `Object.defineProperties`, `Object.assign`, or a `Reflect` call whose target is a built-in constructor, its `prototype`, `Math`, `JSON`, `Reflect`, or the global object.
+  The refusal applies to TypeScript and JavaScript sources alike, and covers a member the object inherits from another built-in, and `toJSON`, `then`, and well-known symbol keys, which the language reads itself.
+  A write the build cannot see, through a function parameter or a computed key, throws an error at run time when it reaches `Math`, `JSON`, `Reflect`, or the prototype of `Array`, `Object`, `Error`, `Function`, `String`, `Number`, `Boolean`, `Date`, `Map`, `Set`, `WeakMap`, `WeakSet`, or `DataView`.
+  In a JavaScript source, such a write to a constructor's static members or to `Promise.prototype` is not detected yet, and compiled code keeps calling the built-in.
+  A polyfill guarded by a test of the member, such as `if (!Array.prototype.at) { ... }`, compiles: the member exists in Node 24, so the guarded code never runs.
+  Adding a member to `Array.prototype`, to a constructor, or to a namespace object such as `Math` is not refused, and neither is redefining a member with the same value to change its attributes or assigning `Error.stackTraceLimit`.
+  Adding a member to any other built-in prototype is refused with `SC1093`: only untyped arrays read members from their prototype object, so `Map.prototype.added = 7` would leave `new Map().added` undefined.
+  In a JavaScript source that refusal is a run-time error at the statement, like other refusals there.
+  To change what a built-in does, for a test mock for instance, call a function of your own and replace that.
+  A package that contains such a write runs in a Node island under the default `--node-islands=auto`.

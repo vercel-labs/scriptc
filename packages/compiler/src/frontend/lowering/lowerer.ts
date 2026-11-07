@@ -313,6 +313,7 @@ import {
   unsupportedDiag,
   unsupportedTypeDiag,
 } from "../../diagnostics/diagnostic.js";
+import { staysBuildError } from "../../diagnostics/diagnostic.js";
 import type {
   IrClassDef,
   IrExpr,
@@ -12652,7 +12653,7 @@ export class Lowerer {
       return null;
     }
     const captured = this.diags.splice(diagsBefore);
-    if (captured.some((d) => d.code === "SC9001")) {
+    if (captured.some((d) => staysBuildError(d))) {
       for (const d of captured) this.diags.push(d);
       return null;
     }

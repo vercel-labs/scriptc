@@ -398,8 +398,12 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
 ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor) {
   for (int k = 0; k < 3; k++) {
     size_t len = strlen(scr_js_wrapper_names[k]);
-    if (kind->len == len && memcmp(kind->data, scr_js_wrapper_names[k], len) == 0)
-      return scr_dyn_retain(scr_js_wrapper_prototype(k, constructor));
+    if (kind->len == len && memcmp(kind->data, scr_js_wrapper_names[k], len) == 0) {
+      /* The program holds the object now: its built-in members are fenced. */
+      ScrDyn *prototype = scr_js_wrapper_prototype(k, constructor);
+      scr_dyn_fence_builtin_members(prototype);
+      return scr_dyn_retain(prototype);
+    }
   }
   scr_trap("scriptc: unknown builtin prototype kind\n");
   return NULL;
@@ -410,7 +414,10 @@ ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor) {
  * from, so a method read from it is the interned member above and accepts
  * a primitive boolean or a Boolean wrapper receiver. */
 ScrDyn *scr_js_wrapper_boolean_prototype(ScrDyn *constructor) {
-  return scr_dyn_retain(scr_js_wrapper_prototype(SCR_JS_WRAPPER_BOOLEAN, constructor));
+  /* The program holds the object now: its built-in members are fenced. */
+  ScrDyn *prototype = scr_js_wrapper_prototype(SCR_JS_WRAPPER_BOOLEAN, constructor);
+  scr_dyn_fence_builtin_members(prototype);
+  return scr_dyn_retain(prototype);
 }
 
 /* The wrapper of kind `kind` over `primitive` (borrowed; already the

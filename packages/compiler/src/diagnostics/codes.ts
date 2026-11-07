@@ -52,6 +52,8 @@ export const DIAGNOSTIC_CODES = {
   SC1080: "'this' outside a class method",
   SC1090: "this syntax (generic construct fence)",
   SC1091: "write to an undeclared name in a JavaScript source",
+  SC1092: "write that replaces or deletes a member of a built-in object",
+  SC1093: "write that adds a member to a built-in prototype its values do not read",
   SC1100: "operations on 'unknown' values",
   SC1101: "converting typed values to 'unknown'",
   SC1110: "comptime evaluation failure",

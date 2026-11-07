@@ -9062,6 +9062,18 @@ function typeWorldHint(d: ts.Diagnostic, message: string, load: LoadResult): str
       }
     }
   }
+  // TS2503: Cannot find namespace. A CommonJS project reads a package's
+  // `require` entry, whose declarations (`export =` merged with a namespace)
+  // can differ from the `import` entry's that an ES module resolves.
+  if (
+    d.code === 2503 &&
+    world.projectModule === "commonjs" &&
+    quoted !== undefined &&
+    d.fileName !== undefined &&
+    importsPackageAs(load, d.fileName, quoted)
+  ) {
+    return `this project compiles to CommonJS ("module": "commonjs"), where a package resolves through its 'require' entry and that entry's declarations; scriptc compiles TypeScript files as ES modules, the format Node gives them, and resolved the package's 'import' entry, which declares no namespace '${quoted}'`;
+  }
   if (world.forcedStrictNullChecks && /\b(?:null|undefined)\b/.test(message)) {
     return `the project disables strictNullChecks, which scriptc always enables — this error appears only under strict null checks; narrow the value (or enable "strictNullChecks" in the project to see the same errors from its own tsc)`;
   }
@@ -9089,6 +9101,21 @@ function receiverRoot(text: string, pos: number): string | null {
     i--;
     if (text[i] === "?") i--;
   }
+}
+
+/** Whether `name` is the default or namespace binding of an import of a
+ * package (a bare specifier) in `fileName`. */
+function importsPackageAs(load: LoadResult, fileName: string, name: string): boolean {
+  const sf = load.program.getSourceFile(fileName);
+  for (const stmt of sf?.statements?.nodes ?? []) {
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+    if (isRelativeSpecifier(stmt.moduleSpecifier.text)) continue;
+    const clause = stmt.importClause;
+    if (clause?.name?.text === name) return true;
+    const bindings = clause?.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings) && bindings.name.text === name) return true;
+  }
+  return false;
 }
 
 /** Whether `name` is bound in `fileName` by an import of a Node builtin. */

@@ -83,7 +83,7 @@ test("a receiver-reading function that is only called directly marks no member",
   expect(calls).toEqual({ carried: 0, plain: 2 });
 });
 
-test("a receiver-reading function passed as an argument escapes, and every member carries", async () => {
+test("a receiver-reading function passed as an argument escapes: the member a parameter is stored under carries, the arrow member does not", async () => {
   const calls = await valueCalls([
     ...HANDLERS,
     "function count(this: unknown, x: number): number { return this === undefined ? 0 : x; }",
@@ -93,7 +93,7 @@ test("a receiver-reading function passed as an argument escapes, and every membe
     "console.log(run(make(count as (x: number) => number)));",
     "",
   ]);
-  expect(calls).toEqual({ carried: 2, plain: 0 });
+  expect(calls).toEqual({ carried: 1, plain: 1 });
 });
 
 test("a store under a computed key that folds to a name marks that member", async () => {
@@ -107,7 +107,7 @@ test("a store under a computed key that folds to a name marks that member", asyn
   expect(calls).toEqual({ carried: 1, plain: 1 });
 });
 
-test("a receiver-reading function returned from a function escapes, and every member carries", async () => {
+test("a receiver-reading function returned from a function escapes: the member a parameter is stored under carries, the arrow member does not", async () => {
   const calls = await valueCalls([
     ...HANDLERS,
     "function count(this: unknown, x: number): number { return this === undefined ? 0 : x; }",
@@ -118,7 +118,26 @@ test("a receiver-reading function returned from a function escapes, and every me
     "console.log(run(make(pick())));",
     "",
   ]);
-  expect(calls).toEqual({ carried: 2, plain: 0 });
+  expect(calls).toEqual({ carried: 1, plain: 1 });
+});
+
+test("a wrapper that forwards its receiver escapes, and members that only hold arrows stay as they were", async () => {
+  const program = (onDone: string): string[] => [
+    ...HANDLERS,
+    "function wrap<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {",
+    "  return function (this: unknown, ...args: A): R {",
+    "    return fn.apply(this, args);",
+    "  };",
+    "}",
+    `const handlers: Handlers = { onDone: ${onDone}, onError: (x) => x };`,
+    "const first = wrap((x: number) => x * 2);",
+    "console.log(run(handlers) + first(3));",
+    "",
+  ];
+  // The one receiver is the wrapper's own `fn.apply(this, args)`.
+  expect(await valueCalls(program("(x) => x + 1"))).toMatchObject({ carried: 1 });
+  // The wrapper's result stored in a member: that member carries too.
+  expect(await valueCalls(program("wrap((x: number) => x + 1)"))).toMatchObject({ carried: 2 });
 });
 
 // The census is sound when no way of making a receiver-reading function a
@@ -310,7 +329,8 @@ test("a member read into a variable escapes; read only to be called or tested, i
   const program = (use: string): string[] => [
     ...READER,
     'const host: Holder = { name: "h", f: label as F };',
-    'const other = { name: "o", g: (): string => "arrow" };',
+    'function hold(g: F): { name: string; g: F } { return { name: "o", g }; }',
+    'const other = hold(() => "arrow");',
     use,
     "console.log(host.f(), other.g());",
     "",
@@ -322,7 +342,8 @@ test("a member read into a variable escapes; read only to be called or tested, i
     ),
   ).toBe(1);
   // Read into a variable, a pattern or the standard library, it may be
-  // anywhere: `g` carries too.
+  // anywhere a store cannot rule it out: `g`, stored from a parameter,
+  // carries too.
   expect(await carried(program("const alias = host.f; alias();"))).toBe(2);
   expect(await carried(program("const { f } = host; f();"))).toBe(2);
   expect(await carried(program("console.log(Object.values(host).length);"))).toBe(2);

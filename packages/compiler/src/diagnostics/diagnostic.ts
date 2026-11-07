@@ -259,35 +259,33 @@ export function nodeIslandDataFileDiag(message: string, loc: SrcLoc): ScrDiagnos
 
 /* ── SC6xxx: divergences from Node (warnings) ─────────────────────────── */
 
-/** SC6001 — a value passed to (or declared as) a narrower record type is
- * copied field by field, and the program then writes through or compares
- * the copy: under Node it is the same object, so the write would be
- * visible to the original and `===` would be true. */
+/** SC6001 — a conversion copies an object something else can still reach
+ * (a record into a record type with other properties, an array into an
+ * array of another element layout, a tuple into an array, a record into a
+ * class instance), and the program observes one of the two layouts in a way
+ * that tells the copy from the object: under Node there is one object, so a
+ * write through either name is visible through the other and `===` is true.
+ * `what` names the copied object when it is a member of the converted value
+ * (a field, an element) rather than the value itself. */
 export function widthCopyDivergenceDiag(
-  sourceType: string,
-  targetType: string,
-  use: "write" | "compare",
-  useText: string,
-  site: "call" | "declaration" | "cast" | "element",
+  conversion: { from: string; to: string; member: boolean },
+  observed: { how: "write" | "identity" | "untyped"; what: string; where: string },
   loc: SrcLoc,
 ): ScrDiagnostic {
-  const how =
-    site === "call"
-      ? `passing a '${sourceType}' where '${targetType}' is expected`
-      : site === "cast"
-        ? `asserting a '${sourceType}' as '${targetType}'`
-        : site === "element"
-          ? `storing a '${sourceType}' as an element of '${targetType}[]'`
-          : `storing a '${sourceType}' in a '${targetType}' binding`;
+  const subject = conversion.member
+    ? `this conversion copies the '${conversion.from}' inside the value into a '${conversion.to}'`
+    : `converting this '${conversion.from}' to '${conversion.to}' copies it`;
   const effect =
-    use === "write"
-      ? `the write to '${useText}' updates only the copy, while under Node it updates the original object`
-      : `'${useText}' compares the copy, which is never the original object, while under Node it is the same object`;
+    observed.how === "write"
+      ? `the program writes ${observed.what} (${observed.where}), and such a write reaches only one of the two objects`
+      : observed.how === "identity"
+        ? `the program compares ${observed.what} by identity (${observed.where}), and the copy is never the object it was made from`
+        : `${observed.what} (${observed.where}), where a write or an identity comparison tells the copy from the object it was made from`;
   return {
     code: "SC6001",
-    message: `${how} copies the object (converting to a record type with other properties compiles as a field copy): ${effect}`,
+    message: `${subject} (a conversion to another layout builds a new object), while under Node both names refer to one object: ${effect}`,
     loc,
-    hint: `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
+    hint: `keep the value at its own type ('${conversion.from}') where it is passed or stored, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too`,
   };
 }
 
@@ -1064,6 +1062,10 @@ export const FENCE_CODES: Record<string, { name: string; status: "unsupported" }
     name: "writes through a value held from process.env (a snapshot, not the live table)",
     status: "unsupported",
   },
+  SC2015: {
+    name: "an empty array literal used at an element type that was not decided where it is written",
+    status: "unsupported",
+  },
   SC2020: {
     name: "standard-library or @types/node surface with no lowering",
     status: "unsupported",
@@ -1355,6 +1357,31 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
   };
 }
 
+/** A write to a member of a built-in object (`Array.prototype.push = f`,
+ * `delete Math.random`) in a program that also uses that member through
+ * code that does not read it from the object: a native call, a conversion
+ * or an iteration the compiler lowers directly, or a feature test it
+ * decided at build time. The program would keep running the built-in where
+ * Node runs the replacement. `member` is the member as the program names
+ * it; `use` is the rest of the sentence: what uses the member, where, and
+ * why that use would not see the change. */
+export function builtinMemberWriteDiag(
+  member: string,
+  action: "replace" | "delete" | "add",
+  use: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const verb = action === "delete" ? "deleting" : action === "add" ? "adding" : "replacing";
+  return {
+    code: "SC1092",
+    message: `${verb} the built-in '${member}' here is not supported: ${use}`,
+    loc,
+    milestone: "later",
+    hint: "a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead",
+    reason: "builtin-write",
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's
@@ -1440,6 +1467,26 @@ export function heldEnvWriteDiag(loc: SrcLoc): ScrDiagnostic {
     loc,
     milestone: "later",
     hint: "read and write the live variable directly (process.env.NAME or process.env[key]), or write into a fresh copy: const env = { ...process.env, NAME: value }",
+  };
+}
+
+/** An empty array literal the checker leaves untyped (`{ files: [] }` is
+ * `{ files: never[] }`) is one array under every name, so its element type
+ * is decided once, where it is written: by its contextual type, or by the
+ * typed slots its value reaches (empty-array-places.ts). A typed array slot
+ * that receives it where that did not decide the slot's type would need a
+ * copy of the array, and a write through either name would then be
+ * invisible through the other. Refused instead. */
+export function emptyArrayDiag(expectedText: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2015",
+    message:
+      `an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as '${expectedText}' here: ` +
+      "it is one array under every name, so its element type is decided where it is written, and this use did not decide it " +
+      "(the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)",
+    loc,
+    milestone: "later",
+    hint: `give the literal its type where it is written, for example \`[] as ${expectedText.includes(" ") ? "ElementType[]" : expectedText}\`, or annotate the object or binding that holds it`,
   };
 }
 

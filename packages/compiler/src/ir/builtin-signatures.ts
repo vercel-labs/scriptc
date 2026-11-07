@@ -5766,6 +5766,13 @@ function buildLibFnSignatures() {
      * NON-promise value — JS awaits non-thenables through exactly one
      * microtask turn and yields the value itself. Never throws. */
     "async.hop": { argTypes: [], result: VOID },
+    /** `promise.adopt(resolve, promise)`: the resolve function of a typed
+     * `new Promise` whose `resolves` is set, called with a promise
+     * (scr_resolve_adopt): the new promise settles as that one does, two
+     * turns after it, and is resolved from the call on. `resolve` is the
+     * closure the executor received; `promise` has the new promise's type.
+     * Borrows both. Never throws. */
+    "promise.adopt": { argTypes: [null, null], result: VOID },
     "als.new": { argTypes: [], result: F64 },
     "als.get": { argTypes: [F64], result: DYN },
     "als.run": { argTypes: [F64, DYN, DYN, DYN], result: DYN },

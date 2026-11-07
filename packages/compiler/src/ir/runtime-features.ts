@@ -88,6 +88,9 @@ export const DYN_BUFFER_METHODS: ReadonlyMap<string, string> = new Map([
 ]);
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // A typed promise's resolve function given a promise (scr_resolve_adopt,
+  // beside the checked-dynamic resolution it shares its target box with).
+  "promise.adopt",
   // DEP0040 rides the dyn-async unit's warning machinery.
   "async.awaitDyn",
   // So does SlowBuffer's DEP0030.
@@ -1409,8 +1412,9 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "intrinsic" &&
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())) ||
-      // The resolve function of a promise of a checked-dynamic value that
-      // may be given a promise adopts it (scr_make_resolve_dyn).
+      // The resolve function of a promise that may be given a promise
+      // adopts it (scr_make_resolve_dyn, and scr_resolve_adopt for a typed
+      // promise).
       (node.kind === "newPromise" && node.resolves === true) ||
       (node.kind === "promiseWithResolvers" && resolversOfDyn(node.type, tables())),
   }),

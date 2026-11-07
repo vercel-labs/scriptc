@@ -1,6 +1,6 @@
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAsSatisfiesNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
@@ -147,7 +147,7 @@ function reassignedBinding(
  * read, write and delete from the environment exactly as the bare form
  * does. */
 export function isAmbientProcessEnv(lowerer: Lowerer, node: ts.Expression): boolean {
-  return isProcessEnv(lowerer, withoutParenthesesAsSatisfiesNonNull(node));
+  return isProcessEnv(lowerer, withoutParenthesesTypeWrappers(node));
 }
 
 /** Whether an expression is the environment object to Node: the ambient

@@ -35,12 +35,13 @@ async function underTerminal(binary: string, env: NodeJS.ProcessEnv): Promise<st
 const repoRoot = join(import.meta.dirname, "../..");
 const cli = join(repoRoot, "packages/cli/dist/main.js");
 const fixtures = join(repoRoot, "tests/fixtures/node-island/deferral");
+const corpus = join(repoRoot, "tests/corpus");
 const outDir = join(repoRoot, "node_modules/.cache/scriptc-tests/node-island-deferral");
 const skip = libnodePack() === null;
 
-/** Builds a fixture with the deferral trace on; answers the binary and the
- * build's trace lines. */
-async function build(name: string): Promise<{ binary: string; trace: string[] }> {
+/** Builds a fixture (or a program of `root`) with the deferral trace on;
+ * answers the binary and the build's trace lines. */
+async function build(name: string, root = fixtures): Promise<{ binary: string; trace: string[] }> {
   const dir = join(outDir, name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
@@ -52,7 +53,7 @@ async function build(name: string): Promise<{ binary: string; trace: string[] }>
   };
   const { stderr } = await execFileAsync(
     process.execPath,
-    [cli, "build", join(fixtures, name, "main.ts"), "-o", binary],
+    [cli, "build", join(root, name, "main.ts"), "-o", binary],
     { env, encoding: "utf8" },
   );
   return { binary, trace: stderr.split("\n").filter((l) => l.startsWith("[node-islands] ")) };
@@ -62,6 +63,91 @@ async function run(binary: string): Promise<string> {
   const env = { ...process.env, XDG_CACHE_HOME: join(outDir, "cache") };
   return (await execFileAsync(binary, [], { env, encoding: "utf8" })).stdout;
 }
+
+/** The environment variables the absent-env corpus programs' packages read. */
+const ABSENT_ENV = [
+  "SCRIPTC_ABSENT_ENV_DEBUG",
+  "SCRIPTC_ABSENT_ENV_TRACE",
+  "SCRIPTC_ABSENT_ENV_LEVEL",
+  "SCRIPTC_ABSENT_ENV_STRICT",
+];
+
+/** stdout, and the run-time trace lines, of `binary` run with the boot
+ * trace on and `set` layered over an environment without ABSENT_ENV. */
+async function runTraced(
+  binary: string,
+  set: Record<string, string> = {},
+): Promise<{ stdout: string; trace: string[] }> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    XDG_CACHE_HOME: join(outDir, "cache"),
+    SCRIPTC_NODE_ISLANDS_TRACE: "boot",
+  };
+  for (const key of ABSENT_ENV) delete env[key];
+  const { stdout, stderr } = await execFileAsync(binary, [], {
+    env: { ...env, ...set },
+    encoding: "utf8",
+  });
+  return { stdout, trace: stderr.split("\n").filter((l) => l.startsWith("[node-islands] ")) };
+}
+
+/** stdout of the program under Node, in the same environment. */
+async function underNode(name: string, set: Record<string, string> = {}): Promise<string> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of ABSENT_ENV) delete env[key];
+  const main = join(corpus, name, "main.ts");
+  return (
+    await execFileAsync(process.execPath, [main], { env: { ...env, ...set }, encoding: "utf8" })
+  ).stdout;
+}
+
+describe.skipIf(skip)("island modules whose loads read unset environment variables", () => {
+  const unused = "8745-node-island-absent-env-unused";
+  const late = "8747-node-island-absent-env-late";
+
+  test("defer without a publicEnv listing, and Node never starts", async () => {
+    const { binary, trace } = await build(unused, corpus);
+    const decision = trace.find((l) => l.includes("quiet-pkg"));
+    expect(decision).toMatch(/^\[node-islands\] defer /);
+    expect(decision).toContain(
+      "env guards SCRIPTC_ABSENT_ENV_DEBUG (unset),SCRIPTC_ABSENT_ENV_TRACE (unset),SCRIPTC_ABSENT_ENV_LEVEL (unset)",
+    );
+    const ran = await runTraced(binary);
+    expect(ran.stdout).toBe(await underNode(unused));
+    expect(ran.trace.some((l) => /^\[node-islands\] deferred .*quiet-pkg/.test(l))).toBe(true);
+    expect(ran.trace).not.toContain("[node-islands] starting Node");
+    expect(ran.trace.some((l) => l.includes("evaluating"))).toBe(false);
+  }, 300_000);
+
+  test("load at their import in a run that sets one of the variables", async () => {
+    const { binary } = await build(late, corpus);
+    for (const set of [
+      { SCRIPTC_ABSENT_ENV_STRICT: "on" },
+      { SCRIPTC_ABSENT_ENV_TRACE: "" },
+      { SCRIPTC_ABSENT_ENV_LEVEL: "warn", SCRIPTC_ABSENT_ENV_STRICT: "off" },
+    ]) {
+      const ran = await runTraced(binary, set);
+      expect(ran.stdout).toBe(await underNode(late, set));
+      const [first] = Object.keys(set);
+      const failed = ran.trace.indexOf(`[node-islands] boot guard failed: env ${first}`);
+      expect(failed).toBeGreaterThanOrEqual(0);
+      expect(ran.trace[failed + 1]).toMatch(/evaluating .* eagerly: a boot guard failed$/);
+      expect(ran.trace[failed + 2]).toBe("[node-islands] starting Node");
+    }
+  }, 300_000);
+
+  test("evaluate late against the environment of their import", async () => {
+    const { binary, trace } = await build(late, corpus);
+    expect(trace.filter((l) => l.startsWith("[node-islands] defer "))).toHaveLength(2);
+    const ran = await runTraced(binary);
+    expect(ran.stdout).toBe(await underNode(late));
+    expect(ran.trace.filter((l) => l.startsWith("[node-islands] deferred "))).toHaveLength(2);
+    expect(ran.trace.some((l) => l.includes("boot guard failed"))).toBe(false);
+    // Node starts at the first call, after both imports.
+    const started = ran.trace.indexOf("[node-islands] starting Node");
+    expect(started).toBe(2);
+  }, 300_000);
+});
 
 describe.skipIf(skip)("deferred Node island modules", () => {
   test("a load that changes another island module's exports defers neither", async () => {

@@ -126,6 +126,53 @@ describe("environment boot guards", () => {
     expect(text).not.toContain(secret);
   });
 
+  test("a load that read only variables unset at build time defers, guarded as unset", () => {
+    const { decisions, call, text } = deferredProject(
+      {},
+      [
+        ["NODE_DEBUG", null],
+        ["FORCE_COLOR", null],
+      ],
+      "https://example.com",
+    );
+    expect(decisions[0]!.deferred).toBe(true);
+    expect(decisions[0]!.reason).toContain("env guards NODE_DEBUG (unset),FORCE_COLOR (unset)");
+    expect(call.fn).toBe("nodeIsland.defer");
+    expect(text).toContain("E 10:NODE_DEBUG 0 0:");
+    expect(text).toContain("E 11:FORCE_COLOR 0 0:");
+  });
+
+  test("an unset variable does not admit a set one outside publicEnv", () => {
+    const secret = "sk-live-0123456789";
+    const { decisions, call, text } = deferredProject(
+      {},
+      [
+        ["NODE_DEBUG", null],
+        ["API_KEY", secret],
+      ],
+      "https://api.example.com",
+    );
+    expect(decisions[0]!.deferred).toBe(false);
+    expect(decisions[0]!.reason).toContain("API_KEY");
+    expect(decisions[0]!.reason).not.toContain("NODE_DEBUG");
+    expect(call.fn).toBe("nodeIsland.require");
+    expect(text).not.toContain(secret);
+  });
+
+  test("unset and publicEnv variables guard one load together", () => {
+    const { decisions, text } = deferredProject(
+      { nodeIslands: { publicEnv: ["NODE_ENV"] } },
+      [
+        ["NODE_ENV", "production"],
+        ["NODE_DEBUG", null],
+      ],
+      "https://example.com",
+    );
+    expect(decisions[0]!.deferred).toBe(true);
+    expect(text).toContain("E 8:NODE_ENV 1 10:production");
+    expect(text).toContain("E 10:NODE_DEBUG 0 0:");
+  });
+
   test("a load that read only publicEnv variables defers, guarded by their values", () => {
     const { decisions, call, text } = deferredProject(
       { nodeIslands: { publicEnv: ["NODE_ENV"] } },

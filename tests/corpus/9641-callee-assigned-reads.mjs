@@ -53,6 +53,9 @@ console.log("strings:", "abcd".slice(count), "abab".indexOf("b", count), "x".pad
 console.log("split, join:", JSON.stringify("a-b".split(separator)), [1, 2].join(separator));
 console.log("radix:", parseInt("11", radix), (5).toString(radix), JSON.stringify({ a: 1 }, null, count));
 console.log("arithmetic:", count + 1, count * 2, count > 1, [5, 6, 7][count]);
+console.log("positions:", "abcdef".slice(1, count), "abcd".substring(count), "abcd".charAt(count), "abcd".at(count));
+console.log("searches:", "abab".startsWith("ab", count), "abab".lastIndexOf("ab", count), [1, 2, 1].indexOf(1, count));
+console.log("strings:", "ab".repeat(count), "x".concat(text), String.fromCharCode(count + 63), String(count).padEnd(3, text));
 
 // The shape of an old-style parser: `var`s of a function that a nested
 // function assigns, handed to methods of a constructor function's instance.
@@ -161,6 +164,24 @@ function assigners() {
   ].join("; ");
 }
 console.log("assigners:", assigners());
+
+// A copy of such a binding holds the value too: TypeScript infers the
+// copy's type from the same narrowing.
+function copies() {
+  var first, size;
+  function fill() {
+    first = "first";
+    size = 2;
+  }
+  fill();
+  var copy = size;
+  var again = copy;
+  var either = again ? copy : undefined;
+  var later;
+  later = first;
+  return ["abcd".slice(copy), "abcd".slice(again), "abcd".slice(either), holder.show(later), show(again)].join(" | ");
+}
+console.log("copies:", copies());
 
 // A function called where it stands is part of the enclosing flow: its
 // assignment types the read, and stays the value.

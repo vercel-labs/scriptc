@@ -50,6 +50,7 @@ export class NarrowingStability {
   private readonly effects = new Map<ts.Node, boolean>();
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
   private readonly staleBindings = new Map<ts.Symbol, boolean>();
+  private readonly inherited = new Map<ts.Symbol, ts.Type | null>();
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -156,6 +157,15 @@ export class NarrowingStability {
       declared = this.declaredPropertyType(node);
     } else {
       const symbol = this.bindingOf(node);
+      // `let y = x` with `x` such a read: the checker inferred the binding's
+      // own type from the narrowing, so `y` is nothing to it as well, and it
+      // holds what `x` held.
+      if (
+        symbol &&
+        isNothing(checker.getTypeAtLocation(node)) &&
+        isNothing(checker.getTypeOfSymbol(symbol))
+      )
+        return this.inheritedType(symbol);
       declared =
         symbol && this.mayHoldStaleNarrowing(symbol) ? checker.getTypeOfSymbol(symbol) : null;
     }
@@ -225,14 +235,52 @@ export class NarrowingStability {
 
   /** Whether the checker types this read as nothing but `undefined` or
    * `null`. Asked for every identifier and property read outside the wide
-   * positions, so the write census answers by name first: a binding no code
-   * in its file assigns keeps whatever narrowing it has. */
+   * positions; the type is the one `Lowerer.typeOf` asks for next, from
+   * the checker's per-node memo. */
   private mayReadNothing(node: ts.PropertyAccessExpression | ts.Identifier): boolean {
-    if (ts.isIdentifier(node)) {
-      if (!this.writesIn(ts.getSourceFileOfNode(node)).has(node.text)) return false;
-      if (!isValueIdentifier(node)) return false;
-    }
+    if (ts.isIdentifier(node) && !isValueIdentifier(node)) return false;
     return isNothing(this.lowerer.checker.getTypeAtLocation(node));
+  }
+
+  /** The type an untyped binding holds when the checker inferred "nothing"
+   * for it from reads widenedType restored: the declared type of those
+   * reads (`let y = x` after a call that may have assigned `x`), `any`
+   * when they disagree. Null when no such read initializes or assigns it. */
+  private inheritedType(symbol: ts.Symbol): ts.Type | null {
+    const cached = this.inherited.get(symbol);
+    if (cached !== undefined) return cached;
+    // A cycle of bindings assigned from each other contributes nothing.
+    this.inherited.set(symbol, null);
+    let result: ts.Type | null = null;
+    try {
+      const decl = symbol.valueDeclaration;
+      if (decl !== undefined && ts.isVariableDeclaration(decl) && decl.type === undefined) {
+        const sources: ts.Expression[] = [];
+        if (decl.initializer !== undefined) sources.push(decl.initializer);
+        for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(
+          ts.symbolName(symbol),
+        ) ?? []) {
+          const assignment = write.parent;
+          if (
+            ts.isBinaryExpression(assignment) &&
+            assignment.left === write &&
+            assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            this.lowerer.resolveValueSymbol(write) === symbol
+          )
+            sources.push(assignment.right);
+        }
+        for (const source of sources) {
+          const read = this.restoredNothingRead(source);
+          const restored = read === null ? null : this.widenedType(read);
+          if (restored === null) continue;
+          result =
+            result === null || result === restored ? restored : this.lowerer.checker.getAnyType();
+        }
+      }
+    } finally {
+      this.inherited.set(symbol, result);
+    }
+    return result;
   }
 
   /** A read in a call or construction argument (directly or inside a literal

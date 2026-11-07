@@ -154,17 +154,27 @@ formatted({}, []);
   expect(thrownMessages(module, "formatted")).toEqual([]);
 });
 
-/** Whether a function's body reads the module-level binding `name`. */
-function readsGlobal(module: IrModule, fn: string, name: string): boolean {
+/** Whether a function's body reads a binding whose id `matches`. */
+function reads(module: IrModule, fn: string, matches: (id: string) => boolean): boolean {
   const found = module.functions.find((f) => f.name === fn || f.name.endsWith(`.${fn}`));
   if (!found) throw new Error(`no function ${fn}`);
-  let reads = false;
+  let seen = false;
   JSON.stringify(found.body, (_key, value: unknown) => {
     const node = value as { kind?: string; localId?: string };
-    if (node?.kind === "varRef" && node.localId?.endsWith(`.${name}`)) reads = true;
+    if (node?.kind === "varRef" && node.localId !== undefined && matches(node.localId)) seen = true;
     return value;
   });
-  return reads;
+  return seen;
+}
+
+/** Whether a function's body reads the module-level binding `name`. */
+function readsGlobal(module: IrModule, fn: string, name: string): boolean {
+  return reads(module, fn, (id) => id.endsWith(`.${name}`));
+}
+
+/** Whether a function's body reads its local `name`. */
+function readsLocal(module: IrModule, fn: string, name: string): boolean {
+  return reads(module, fn, (id) => id.startsWith(`${name}.`));
 }
 
 test("a narrowing to undefined that a call may have undone reads the stored value", async () => {
@@ -207,6 +217,24 @@ console.log("x".padStart(3, text));
   const init = module.functions.find((f) => f.name.startsWith("%init"))!.name;
   expect(readsGlobal(module, init, "text")).toBe(true);
   expect(readsGlobal(module, init, "other")).toBe(false);
+});
+
+test("an untyped binding initialized from such a read holds the stored value", async () => {
+  // The checker infers `copy: undefined` from the narrowing of `start`.
+  const module = await lower(`
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+function stale(): string {
+  start = undefined;
+  set();
+  const copy = start;
+  return "abcd".slice(copy);
+}
+console.log(stale());
+`);
+  expect(readsLocal(module, "stale", "copy")).toBe(true);
 });
 
 test("a function inferred to return undefined from a stale narrowing is refused", async () => {

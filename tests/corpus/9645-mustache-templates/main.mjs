@@ -24,7 +24,7 @@ const view = {
   off: false,
 };
 
-console.log(JSON.stringify(Mustache.render("plain", {})));
+console.log("[" + Mustache.render("plain", {}) + "]");
 console.log(Mustache.render("hi {{who}}", { who: "ada" }));
 console.log(Mustache.render("{{title}} spends {{calc}}", view));
 console.log(Mustache.render("{{#items}}{{name}}={{price}};{{/items}}{{^empty}}none{{/empty}}", view));
@@ -35,9 +35,10 @@ console.log(Mustache.render("{{#items}}{{> row}}{{/items}}", view, { row: "[{{na
 console.log(Mustache.render("<% title %> {{title}}", view, {}, ["<%", "%>"]));
 console.log(Mustache.render("{{=<% %>=}}<% title %> {{title}}", view));
 console.log(Mustache.render("a\n  {{#items}}\n  - {{name}}\n  {{/items}}\nz", view));
-console.log(JSON.stringify(Mustache.parse("hi {{who}}{{#a}}x{{/a}}")));
+const tokens = Mustache.parse("hi {{who}}{{#a}}x{{/a}}");
+console.log(tokens.length, tokens[0][0], tokens[0][1], tokens[1][0], tokens[1][1], tokens[1][3], tokens[2][0], tokens[2][5]);
 console.log(Mustache.escape("<a href='x'>&\"`=/"));
-console.log(Mustache.name, Mustache.version, JSON.stringify(Mustache.tags));
+console.log(Mustache.name, Mustache.version, Mustache.tags.join(" "));
 try {
   Mustache.render("{{#open}}never closed", {});
 } catch (e) {

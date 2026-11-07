@@ -123,12 +123,6 @@
       "signature": "SC8006"
     }
   },
-  "corpus/9645-mustache-templates": {
-    "island:mustache": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
-    }
-  },
   "corpus/fs-extra-package": {
     "island:fs-extra": {
       "category": "build",

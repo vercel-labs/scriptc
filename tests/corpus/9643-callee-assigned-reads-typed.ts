@@ -25,6 +25,11 @@ console.log("json:", JSON.stringify({ a: 1 }, null, start), JSON.stringify({ a: 
 console.log("values:", show(start), show(filler), show(label), String(start), `${filler}${start}`);
 console.log("tests:", start === undefined, filler ?? "absent", label || "empty", start ? "set" : "unset", typeof label);
 console.log("parenthesized:", "abcdef".slice((start)), [1, 2].join((filler)));
+console.log("ends:", "abcdef".slice(1, start), [1, 2, 3, 4].slice(1, start).join(), [1, 2, 1].indexOf(1, start));
+console.log("more:", "abab".startsWith("ab", start), (1.5).toExponential(start), [1, 2, 3, 4].fill(0, start).join());
+const copy = start;
+const fillerCopy = filler;
+console.log("copies:", "abcdef".slice(copy), [1, 2].join(fillerCopy), show(copy), show(fillerCopy));
 
 // Locals of a function, assigned by the callback of a library function.
 function widest(words: string[]): string {

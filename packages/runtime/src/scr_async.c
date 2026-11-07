@@ -185,6 +185,10 @@ typedef struct ScrFiber ScrFiber;
 
 typedef struct { size_t rc; } ScrPromiseIdentity;
 
+#ifdef SCR_NODE_ISLANDS
+enum { SCR_LAZY_MIRROR = 1, SCR_LAZY_VIEW = 2 };
+#endif
+
 struct ScrPromise {
   size_t rc; /* The cycle collector reads the reference count at offset zero. */
   /* Shared identity cell for promises adopted across inner types (NULL
@@ -200,14 +204,38 @@ struct ScrPromise {
    * Node's 'rejectionHandled' moment (scr_prom_observe below). */
   bool reported_unhandled;
   bool b; /* the boolean payload */
+#ifdef SCR_NODE_ISLANDS
+  /* Node islands: SCR_LAZY_MIRROR for the mirror of an island promise that
+   * native code has not reacted to yet, SCR_LAZY_VIEW for a conversion of
+   * such a promise at another inner type; 0 otherwise (scr_promise_reacted
+   * below). The flag takes padding: the size is the same in every build. */
+  uint8_t island_lazy;
+  /* An executor resolved this promise with an island thenable, which has
+   * not settled it yet: the promise is resolved, so the executor's own
+   * resolve, reject and throw no longer change it (SCR_PROMISE_RESOLVED). */
+  bool island_resolved;
+#endif
   /* Payload (fulfillment value or rejection reason), ScrExcCell-style.
    * trace_fn is non-NULL iff the REF payload type carries a cycle header
    * (a promise settled with a cycle-capable value can be a cycle member —
    * e.g. a closure that captures a box holding this very promise). */
   ScrExcKind payload_kind; /* NONE = void fulfillment */
   double f64;
+#ifdef SCR_NODE_ISLANDS
+  /* A pending SCR_LAZY_VIEW has no payload yet: the two words hold the
+   * promise it converts (+1) and its adapter until the first reaction. */
+  union {
+    void *payload;
+    ScrPromise *lazy_src;
+  };
+  union {
+    void *(*retain_fn)(void *);
+    void (*lazy_adapt)(ScrPromise *dst, ScrPromise *src);
+  };
+#else
   void *payload;
   void *(*retain_fn)(void *);
+#endif
   void (*release_fn)(void *);
   ScrTraceFn trace_fn;
   /* Fibers parked on this promise. */
@@ -283,7 +311,38 @@ static void scr_oom(void) {
   abort();
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* A lazy promise that is freed or settled without a first reaction: a view
+ * drops the promise it converts (its two words are the payload's from here
+ * on). Every free and every settlement runs this before it touches the
+ * payload. */
+static void scr_promise_lazy_drop(ScrPromise *p) {
+  uint8_t lazy = p->island_lazy;
+  p->island_lazy = 0;
+  if (lazy != SCR_LAZY_VIEW) return;
+  ScrPromise *src = p->lazy_src;
+  p->lazy_src = NULL;
+  p->lazy_adapt = NULL;
+  scr_promise_release(src);
+}
+#define SCR_PROMISE_LAZY_DROP(p)                                           \
+  do {                                                                     \
+    if (__builtin_expect((p)->island_lazy != 0, 0)) scr_promise_lazy_drop(p); \
+  } while (0)
+#else
+#define SCR_PROMISE_LAZY_DROP(p) ((void)0)
+#endif
+
+/* Whether an executor's resolving functions and its throw still settle `p`:
+ * it is pending and no resolution of it is under way. */
+#ifdef SCR_NODE_ISLANDS
+#define SCR_PROMISE_UNRESOLVED(p) ((p)->state == SCR_PROM_PENDING && !(p)->island_resolved)
+#else
+#define SCR_PROMISE_UNRESOLVED(p) ((p)->state == SCR_PROM_PENDING)
+#endif
+
 static void scr_promise_free_side(ScrPromise *p) {
+  SCR_PROMISE_LAZY_DROP(p);
   if (p->identity && --p->identity->rc == 0) free(p->identity);
   /* Most promises never park a fiber or a second waiter: skip the calls. */
   if (p->waiters && p->waiters != &p->waiter_inline) free(p->waiters);
@@ -458,6 +517,56 @@ void scr_promise_mark_handled(ScrPromise *p) {
   scr_prom_observe(p);
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* ── mirrors of island promises (scr_node_island_handle.c) ────────────────
+ * An island promise the program holds is a native promise, its mirror. The
+ * mirror reacts to the V8 promise only once native code reacts to the
+ * mirror: until then the island promise has exactly the reactions island
+ * code gave it, so V8 decides whether its rejection is unhandled (a promise
+ * island code handles is not reported by the runtime, and one nobody
+ * handles is reported by Node), and no reaction of the runtime's stands
+ * between the promise and its island reactions. Every attach of a fiber or
+ * a callback ends in scr_promise_reacted, which fires once: a mirror
+ * subscribes to its V8 promise (scr_promise_subscribe_fn, the handle
+ * unit's), and a view (a conversion of a lazy promise at another inner
+ * type, which typed code makes when it reads an island promise) attaches to
+ * the promise it converts, so a chain of conversions waits as one. Neither
+ * is ever reported as unhandled by the runtime: a reaction observes it, and
+ * without one V8 reports the island promise. */
+void (*scr_promise_subscribe_fn)(ScrPromise *mirror) = NULL;
+
+void scr_promise_mark_island_mirror(ScrPromise *p) {
+  p->island_lazy = SCR_LAZY_MIRROR;
+  p->rejection_observed = true;
+}
+
+static void scr_promise_view_attach(ScrPromise *view, ScrPromise *in,
+                                    void (*adapt)(ScrPromise *dst, ScrPromise *src));
+
+static void scr_promise_first_reaction(ScrPromise *p) {
+  uint8_t lazy = p->island_lazy;
+  p->island_lazy = 0;
+  if (lazy == SCR_LAZY_VIEW) {
+    ScrPromise *src = p->lazy_src;
+    void (*adapt)(ScrPromise *dst, ScrPromise *src) = p->lazy_adapt;
+    p->lazy_src = NULL;
+    p->lazy_adapt = NULL;
+    scr_promise_view_attach(p, src, adapt);
+    scr_promise_release(src);
+  } else if (scr_promise_subscribe_fn != NULL) {
+    scr_promise_subscribe_fn(p);
+  }
+}
+
+/* After a fiber or a callback attached to `p`. */
+#define scr_promise_reacted(p)                                             \
+  do {                                                                     \
+    if (__builtin_expect((p)->island_lazy != 0, 0)) scr_promise_first_reaction(p); \
+  } while (0)
+#else
+#define scr_promise_reacted(p) ((void)0)
+#endif
+
 ScrPromise *scr_promise_retain(ScrPromise *p) {
   if (p && p->rc != SIZE_MAX) {
     p->rc++;
@@ -478,6 +587,7 @@ void scr_promise_release(ScrPromise *p) {
   if (!p || p->rc == SIZE_MAX) return;
   if (--p->rc == 0) {
     scr_cyc_dead(p);
+    SCR_PROMISE_LAZY_DROP(p);
     scr_promise_release_payload(p);
     scr_promise_free_side(p);
     for (size_t i = 0; i < p->ncbs; i++) {
@@ -1000,6 +1110,12 @@ static SCR_TL bool scr_hosted_microtasks_first = false;
 #define SCR_PASS_PHASE(phase) (scr_pass_phase = (phase))
 #define SCR_RESUME_JOB(f) (scr_in_microtask = true, scr_resume_fiber(f), scr_in_microtask = false)
 static void scr_hosted_microtask(ScrFiber *f);
+/* The jobs a settlement inside one of V8's reaction jobs queued: they run
+ * in that job (scr_loop_hosted_settle_begin/_run), not as microtasks of
+ * their own. */
+static SCR_TL ScrFiber **scr_settle_jobs = NULL;
+static SCR_TL size_t scr_settle_jobs_len = 0, scr_settle_jobs_cap = 0;
+static SCR_TL bool scr_settle_collect = false;
 /* A microtask turn may continue in place only while the runtime's own
  * queue is the whole queue: hosted, V8's queue may hold Node's jobs. */
 #define SCR_READY_IDLE() (scr_ready_len == 0 && scr_loop_hosted == NULL)
@@ -1012,6 +1128,15 @@ static void scr_hosted_microtask(ScrFiber *f);
 static void scr_ready_push(ScrFiber *f) {
 #ifdef SCR_NODE_ISLANDS
   if (scr_loop_hosted != NULL) {
+    if (scr_settle_collect) {
+      if (scr_settle_jobs_len == scr_settle_jobs_cap) {
+        scr_settle_jobs_cap = scr_settle_jobs_cap ? scr_settle_jobs_cap * 2 : 8;
+        scr_settle_jobs = realloc(scr_settle_jobs, scr_settle_jobs_cap * sizeof *scr_settle_jobs);
+        if (!scr_settle_jobs) scr_oom();
+      }
+      scr_settle_jobs[scr_settle_jobs_len++] = f;
+      return;
+    }
     scr_hosted_microtask(f);
     return;
   }
@@ -1968,6 +2093,7 @@ static void scr_promise_settle_wake(ScrPromise *p);
  * same-inner-type adapter and the rejection path both land here. */
 static void scr_promise_settle_from(ScrPromise *dst, ScrPromise *src) {
   if (dst->state == SCR_PROM_PENDING) {
+    SCR_PROMISE_LAZY_DROP(dst);
     dst->state = src->state;
     dst->payload_kind = src->payload_kind;
     dst->f64 = src->f64;
@@ -2111,6 +2237,7 @@ static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter c
   } else {
     cb.job_at = in->nwaiters;
     *scr_promise_cb_push(in) = cb;
+    scr_promise_reacted(in);
   }
 }
 
@@ -2180,6 +2307,7 @@ void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src)) {
   *scr_promise_cb_push(in) =
       (struct ScrPromiseCbWaiter){ cb, scr_promise_retain(in), NULL, SCR_CB_ANY, SCR_CB_SYNC };
+  scr_promise_reacted(in);
 }
 
 /* Node islands (NI-8): a settled promise's dyn payload when the promise
@@ -2201,9 +2329,40 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
     else scr_promise_settle_from(race, in);
     return;
   }
+#ifdef SCR_NODE_ISLANDS
+  /* A view of an island promise nobody reacted to waits with it: the view
+   * holds the promise and the adapter, and attaches at its own first
+   * reaction (scr_promise_reacted). A view something already reacted to
+   * (the destination of a promise being resolved) attaches now. */
+  if (in->island_lazy != 0 && race->state == SCR_PROM_PENDING && race->nwaiters == 0 &&
+      race->ncbs == 0 && race->island_lazy == 0) {
+    race->island_lazy = SCR_LAZY_VIEW;
+    race->rejection_observed = true;
+    race->lazy_src = scr_promise_retain(in);
+    race->lazy_adapt = adapt;
+    return;
+  }
+#endif
   *scr_promise_cb_push(in) =
       (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(race), .job_at = SCR_CB_SYNC };
+  scr_promise_reacted(in);
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* A lazy view's first reaction: the attach scr_promise_race_add put off.
+ * The promise it converts may have settled since through another view. */
+static void scr_promise_view_attach(ScrPromise *view, ScrPromise *in,
+                                    void (*adapt)(ScrPromise *dst, ScrPromise *src)) {
+  if (in->state != SCR_PROM_PENDING) {
+    if (in->state == SCR_PROM_FULFILLED) adapt(view, in);
+    else scr_promise_settle_from(view, in);
+    return;
+  }
+  *scr_promise_cb_push(in) =
+      (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(view), .job_at = SCR_CB_SYNC };
+  scr_promise_reacted(in);
+}
+#endif
 
 /* ── Promise.all / allSettled / any ───────────────────────────────────
  * The builder takes the entries in input order. Every entry subscribes a
@@ -2248,11 +2407,21 @@ __attribute__((always_inline)) static inline void scr_combine_begin(ScrCombine *
   c->open = false;
 }
 
+#ifdef SCR_NODE_ISLANDS
+static inline void scr_combine_flush(ScrCombine *c);
+#endif
+
 __attribute__((always_inline)) static inline void scr_combine_add(ScrCombine *c,
                                                                   ScrPromise *in) {
   ScrAllState *st = c->st;
   size_t i = c->next++;
   if (in->state == SCR_PROM_PENDING) {
+#ifdef SCR_NODE_ISLANDS
+    /* Subscribing to an island promise that already settled queues its
+     * reaction job in V8 now: the jobs of the settled entries before it
+     * come first, as in Node's iteration. */
+    if (in->island_lazy != 0) scr_combine_flush(c);
+#endif
     st->rc++;
     scr_promise_cb_subscribe(
         in, (struct ScrPromiseCbWaiter){ .dst = scr_promise_retain(c->result), .all = st, .all_idx = i });
@@ -2383,6 +2552,7 @@ void *scr_promise_payload_ref(ScrPromise *p) {
  * (the cell resets to NONE). Shared by fiber completion and the new-Promise
  * executor runners; callers wake waiters themselves. */
 static void scr_promise_reject_from_cell(ScrPromise *p, ScrExcCell *cell) {
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_REJECTED;
   p->payload_kind = cell->kind;
   p->f64 = cell->f64;
@@ -2922,6 +3092,7 @@ ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
 
   if (dependency->state == SCR_PROM_PENDING) {
     scr_promise_add_waiter(dependency, f);
+    scr_promise_reacted(dependency);
   } else {
     scr_ready_push(f);
   }
@@ -2968,6 +3139,7 @@ static void scr_await_park(ScrPromise *p) {
 #ifdef SCR_WORKERS
   self->waiting = p;
 #endif
+  scr_promise_reacted(p);
   scr_switch(&self->ctx, scr_fiber_park_awaiters(self), NULL);
 #ifdef SCR_WORKERS
   /* Shutdown resumes suspended stacks without settling their dependencies.
@@ -2991,6 +3163,7 @@ static void scr_await_park(ScrPromise *p) {
 void scr_wasi_await_prepare(ScrFiber *self, ScrPromise *p) {
   if (p->state == SCR_PROM_PENDING) {
     scr_promise_add_waiter(p, self);
+    scr_promise_reacted(p);
   } else {
     scr_ready_push(self);
   }
@@ -3039,6 +3212,7 @@ static bool scr_coro_hop_needed(ScrFiber *self) {
 bool scr_coro_await_prepare(ScrFiber *self, ScrPromise *p) {
   if (p->state == SCR_PROM_PENDING) {
     scr_promise_add_waiter(p, self);
+    scr_promise_reacted(p);
     return true;
   }
   return scr_coro_hop_needed(self);
@@ -3323,6 +3497,7 @@ void scr_promise_rethrow_top_level(ScrPromise *p) {
 /* Fulfillment storers, called by the compiled trampolines / resolve thunks. */
 void scr_promise_fulfill_f64(ScrPromise *p, double v) {
   if (p->state != SCR_PROM_PENDING) return; /* first settle wins */
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_F64;
   p->f64 = v;
@@ -3330,6 +3505,7 @@ void scr_promise_fulfill_f64(ScrPromise *p, double v) {
 }
 void scr_promise_fulfill_bool(ScrPromise *p, bool v) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_BOOL;
   p->b = v;
@@ -3340,6 +3516,7 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
     if (release) release(v); /* value was +1 for us; drop it */
     return;
   }
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = v ? SCR_EXC_REF : SCR_EXC_NONE;
   p->payload = v;
@@ -3350,6 +3527,7 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
 }
 void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = src->payload_kind;
   p->f64 = src->f64;
@@ -3362,6 +3540,7 @@ void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
 }
 void scr_promise_fulfill_void(ScrPromise *p) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_NONE;
   scr_promise_settle_wake(p);
@@ -3373,6 +3552,7 @@ void scr_promise_fulfill_str(ScrPromise *p, ScrStr *v) {
     scr_str_release(v);
     return;
   }
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_STR;
   p->payload = v; /* ownership moves in */
@@ -5749,6 +5929,37 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
   scr_hosted_settle_exception();
 }
 
+/* A promise settled from inside one of V8's reaction jobs (the mirror of an
+ * island promise, scr_node_island_handle.c): the reaction job is the turn
+ * its native reactions take in Node, so the jobs the settlement queues run
+ * in it, in order, instead of each waiting for a microtask of its own.
+ * Between _begin and _run the caller only settles promises; a job that
+ * queues further jobs queues them on V8 as usual. */
+void scr_loop_hosted_settle_begin(void) {
+  if (scr_loop_hosted != NULL) scr_settle_collect = true;
+}
+
+void scr_loop_hosted_settle_run(void) {
+  scr_settle_collect = false;
+  size_t n = scr_settle_jobs_len;
+  if (n == 0) return;
+  /* A job may settle another mirror from a nested reaction job: the list
+   * is this call's from here on. */
+  ScrFiber **jobs = scr_settle_jobs;
+  scr_settle_jobs = NULL;
+  scr_settle_jobs_len = scr_settle_jobs_cap = 0;
+  for (size_t i = 0; i < n; i++) {
+    scr_resume_fiber(jobs[i]);
+    scr_hosted_settle_exception();
+  }
+  if (scr_settle_jobs == NULL) {
+    scr_settle_jobs = jobs;
+    scr_settle_jobs_cap = n;
+  } else {
+    free(jobs);
+  }
+}
+
 /* V8 finished a microtask checkpoint: the runtime's unhandled rejections
  * are decided here, where Node decides its own. An unhandled one ends the
  * process like main's reported-rejection path. */
@@ -6833,6 +7044,25 @@ ScrClosure *scr_make_resolve(ScrPromise *p, int kind /*0 f64,1 bool,2 str,3 void
 /* Emitted ref-kind resolve thunks call this. */
 void scr_resolve_ref_impl(ScrClosure *self, void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace) {
   ScrPromise *p = scr_resolve_target(self);
+#ifdef SCR_NODE_ISLANDS
+  /* An executor's resolve(v) with an island object: it may be a thenable,
+   * which the resolution adopts (scr_async_dyn.c reads its `then` in V8). */
+  if (p->island_resolved) {
+    /* Resolved with a thenable already: the first resolution stands. */
+    if (v != NULL) release(v);
+    scr_promise_release(p);
+    return;
+  }
+  if (retain == scr_dyn_retain_v && v != NULL && scr_ni_dyn_handle((const ScrDyn *)v) &&
+      p->state == SCR_PROM_PENDING) {
+    scr_dyn_promise_resolve_with(p, (ScrDyn *)v);
+    /* Still pending: `v` is a thenable whose job settles the promise. */
+    if (p->state == SCR_PROM_PENDING) p->island_resolved = true;
+    scr_dyn_release((ScrDyn *)v);
+    scr_promise_release(p);
+    return;
+  }
+#endif
   scr_promise_fulfill_ref(p, v, retain, release, trace);
   scr_promise_release(p);
 }
@@ -6865,9 +7095,10 @@ ScrClosure *scr_make_resolve_fn(ScrPromise *p, void *fn) {
  * own its param, like every compiled callee. */
 static void scr_reject_thunk(ScrClosure *self, ScrError *reason) {
   ScrPromise *p = scr_resolve_target(self);
-  if (p->state != SCR_PROM_PENDING) {
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
     scr_error_release(reason);
   } else {
+    SCR_PROMISE_LAZY_DROP(p);
     p->state = SCR_PROM_REJECTED;
     p->payload_kind = SCR_EXC_OBJ;
     p->payload = reason; /* ownership moves in */
@@ -6902,9 +7133,10 @@ ScrClosure *scr_make_reject(ScrPromise *p) {
  * byte for byte. */
 static void scr_reject_dyn_thunk(ScrClosure *self, ScrDyn *reason) {
   ScrPromise *p = scr_resolve_target(self);
-  if (p->state != SCR_PROM_PENDING) {
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
     scr_dyn_release(reason);
   } else {
+    SCR_PROMISE_LAZY_DROP(p);
     p->state = SCR_PROM_REJECTED;
     p->payload_kind = SCR_EXC_REF;
     p->payload = reason; /* ownership moves in */
@@ -6931,7 +7163,7 @@ ScrClosure *scr_make_reject_dyn(ScrPromise *p) {
  * the promise settled is swallowed, like resolve-then-throw in JS. */
 static void scr_executor_check_throw(ScrPromise *p) {
   if (!scr_exc_pending()) return;
-  if (p->state == SCR_PROM_PENDING) {
+  if (SCR_PROMISE_UNRESOLVED(p)) {
     scr_promise_reject_from_cell(p, scr_exc_current_cell());
     scr_promise_settle_wake(p);
   } else {

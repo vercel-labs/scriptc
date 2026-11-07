@@ -107,7 +107,9 @@ enum {
   SCR_NV_BIGINT = 5, /* str: decimal text with an optional leading '-' */
   SCR_NV_HANDLE = 6, /* handle: an import-table id; flags: SCR_NVF_* */
   SCR_NV_BYTES = 7,  /* bytes: a typed array / Buffer / DataView over shared memory */
-  SCR_NV_ERROR = 8,  /* into V8 only: a new Error of an intrinsic class */
+  SCR_NV_ERROR = 8,  /* into V8 only: a native Error, as a V8 Error of its intrinsic class. With
+                        an export id it crosses by reference: one V8 Error per id, which is
+                        SCR_NV_EXPORT when it crosses back */
   SCR_NV_JSON = 9,   /* into V8 only: str is JSON text, parsed there (a copy) */
   SCR_NV_EXPORT = 10, /* exp: a runtime value exported by reference (NI-5); flags: SCR_NVF_FUNCTION,
                          SCR_NVF_PROMISE, SCR_NVF_ARRAY, SCR_NVF_MAP, SCR_NVF_SET, SCR_NVF_TWIN
@@ -157,6 +159,7 @@ typedef struct ScrNodeValue {
     } bytes;
     struct {
       uint32_t kind; /* scr_error.h SCR_ERR_* (intrinsic class) */
+      uint32_t export_id; /* the runtime's export-table id of the error; 0: a copy */
       const char *name, *message, *stack, *code; /* code NULL: none */
       size_t name_len, message_len, stack_len, code_len;
     } error;

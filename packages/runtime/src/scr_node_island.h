@@ -126,6 +126,8 @@ ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 /* An island thenable as the promise V8 adopts it into; any other value as
  * itself (the operand of a dynamic await or PromiseResolve). +1. */
 ScrDyn *scr_node_island_adopt_thenable(ScrDyn *value);
+/* Promise.resolve of a dynamic value: PromiseResolve, thenables adopted. +1. */
+ScrPromise *scr_node_island_promise_resolve(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
 /* The operations scr_json.c's dynamic paths route to an island handle
@@ -166,6 +168,18 @@ typedef struct ScrNiDynOps {
    * NULL when `root` is not such a root. A signature adapter over a view of
    * an island function boxes as the function itself through this. */
   ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
+  /* A member of an island promise that a promise does not have itself (an
+   * island class that extends Promise adds its own), read from the V8
+   * promise (+1 in *out, NULL with the exception pending when the read
+   * threw). 1 for the mirror of an island promise, 0 for any other.
+   * promise_has is the `in` operator on the same promise: 1, 0, or -1 for
+   * a promise that is not an island promise's mirror. */
+  int (*promise_get)(const ScrDyn *promise, const char *key, size_t len, ScrDyn **out);
+  int (*promise_has)(const ScrDyn *promise, const char *key, size_t len);
+  /* A write to a member of an island promise: the island object takes it
+   * (a throw stays pending). 1 for the mirror of an island promise, 0 for
+   * any other. */
+  int (*promise_set)(const ScrDyn *promise, const char *key, size_t len, ScrDyn *value);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
@@ -206,6 +220,7 @@ ScrDyn *scr_ni_value_in(const struct ScrNodeValue *v);      /* +1 */
 ScrDyn *scr_ni_arg_in(const struct ScrNodeValue *v); /* +1; island Errors as their ScrError */
 bool scr_ni_exportable(const ScrDyn *v);
 void scr_ni_export_out(ScrDyn *v, struct ScrNodeValue *out);
+uint32_t scr_ni_export_id(ScrDyn *v); /* the export id of `v` (borrowed), minted on first crossing */
 ScrDyn *scr_ni_export_value(uint32_t id); /* borrowed, or NULL */
 uint32_t scr_ni_live_exports(void);
 /* nodeIsland.classMethods: registers the method table of a class capsule. */
@@ -284,6 +299,14 @@ ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle);
 size_t scr_ni_twin_exports(const void *object, uint32_t ids[2]); /* NI-8 */
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
+/* Mirrors of island promises (scr_async.c): a mirror reacts to its V8
+ * promise at the first native reaction to it (the subscriber runs then,
+ * once), and a promise settled inside V8's reaction job runs the jobs it
+ * queues there (scr_loop_hosted_settle_begin, the settlements, _run). */
+extern void (*scr_promise_subscribe_fn)(ScrPromise *mirror);
+void scr_promise_mark_island_mirror(ScrPromise *p);
+void scr_loop_hosted_settle_begin(void);
+void scr_loop_hosted_settle_run(void);
 void *scr_promise_untraced_dyn_payload(const ScrPromise *p);
 
 /* ── cross-heap cycle collection (scope-B NI-8, scr_node_island_gc.c) ──── */

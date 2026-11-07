@@ -56,6 +56,45 @@ test("the typed stdio write slot selects the events build that carries it", () =
   ).toEqual(["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"]);
 });
 
+test("Node islands select the dynamic promise build that adopts island thenables", () => {
+  const plain = { warningReplace: false, processExtras: false, nodeIsland: false, workers: false };
+  expect(selected("scr_async_dyn.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  // Beside the unit's other builds it keeps each one's defines.
+  expect(
+    selected("scr_async_dyn.c", { ...plain, processExtras: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_async_dyn.c", {
+      ...plain,
+      warningReplace: true,
+      processExtras: true,
+      nodeIsland: true,
+    }).defines,
+  ).toEqual(["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_async_dyn.c", plain).defines).toEqual([]);
+  expect(selected("scr_async_dyn.c", { ...plain, processExtras: true }).defines).toEqual([
+    "SCR_PROCESS_EXTRAS",
+  ]);
+});
+
+test("Node islands select the invoke build that reaches an island promise's own methods", () => {
+  const plain = { jsObjectModel: false, nodeIsland: false, workers: false };
+  expect(selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+});
+
 test("web streams and Node islands select an async build that defines both", () => {
   const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
   expect(variant.defines).toEqual(

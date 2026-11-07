@@ -10,6 +10,9 @@
  * registration), and the process-warning channel (emitWarning + the
  * 'warning' listeners + Node's stderr report). */
 #include "scr_runtime.h"
+#ifdef SCR_NODE_ISLANDS
+#include "scr_node_island.h"
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -800,6 +803,15 @@ static void scr_dyn_resolve_job(ScrClosure *closure) {
  * await, so its completion must use resolution rather than fulfillment. */
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
   if (value->kind != SCR_DYN_PROMISE) {
+#ifdef SCR_NODE_ISLANDS
+    /* An island object may be a thenable (scr_dyn_thenable_function): the
+     * resolution adopts it, as it adopts a promise. */
+    if (scr_ni_dyn_handle(value)) {
+      scr_dyn_promise_resolve_with(destination, value);
+      scr_dyn_release(value);
+      return;
+    }
+#endif
     scr_promise_fulfill_ref(destination, value, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     return;
   }
@@ -1639,6 +1651,23 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * instances read through `reader`, the compiled property dispatch (no
  * reader: their own fields only). */
 ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader) {
+#ifdef SCR_NODE_ISLANDS
+  /* An island object or function: V8 reads its `then`, and a callable one
+   * makes it a thenable like any other. The thenable job calls it in Node
+   * with the island value as `this` and the native resolving functions
+   * (scr_dyn_call calls an island function with the ambient receiver), so
+   * every resolution adopts it: Promise.resolve, a combinator's entry, an
+   * async function's return, an executor's resolve, and the operand of
+   * `await` (scr_node_island_adopt_thenable). Node runs on the main thread
+   * only. */
+  if (scr_ni_dyn_handle(value)) {
+    if (scr_ni_dyn_ops == NULL || !scr_context_is_main()) return NULL;
+    ScrDyn *island_then = scr_ni_dyn_ops->get_str((ScrDyn *)value, "then", 4);
+    if (island_then != NULL && scr_dyn_is_callable(island_then)) return island_then;
+    scr_dyn_release(island_then);
+    return NULL;
+  }
+#endif
   if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_FUNC && value->kind != SCR_DYN_PROXY &&
       value->kind != SCR_DYN_TYPED_REF)
     return NULL;

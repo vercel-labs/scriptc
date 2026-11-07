@@ -262,6 +262,9 @@ function buildLibFnSignatures() {
      * Node islands: an island thenable as the promise V8 adopts it into,
      * any other value as itself. */
     "nodeIsland.adoptThenable": { argTypes: [DYN], result: DYN },
+    /** `Promise.resolve(v)` over a dynamic value in a program with Node
+     * islands: PromiseResolve, so an island thenable is adopted. */
+    "nodeIsland.promiseResolve": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An

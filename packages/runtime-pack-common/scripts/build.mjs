@@ -15,7 +15,7 @@ import {
   runtimeForbiddenStrings,
 } from "./artifact-policy.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
-import { buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { buildRuntimeUnit, hostHelperPath, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
@@ -398,6 +398,28 @@ async function build() {
     // The executable `speed` flavor (--optimization=speed) exists only when
     // it differs from release: its static units are emitted through the host
     // LLVM helper.
+    // Without that helper no build of the pack can link the flavor, and every
+    // --optimization=speed build of the pack silently links its release
+    // runtime units instead, which is slower at run time. Say why it is
+    // missing here, where the pack is made.
+    if ("release" in matrix.flavors && unitHelper === null) {
+      // The reason mirrors resolveRuntimeUnitHelper's own refusals, in its
+      // order.
+      const helper = process.env.SCRIPTC_LLVM_CODEGEN ?? hostHelperPath(repoRoot);
+      const reason =
+        process.env.SCRIPTC_RUNTIME_BITCODE === "0"
+          ? "runtime bitcode output is disabled (SCRIPTC_RUNTIME_BITCODE=0)"
+          : config.bitcode === false
+            ? "the pack's build configuration disables runtime bitcode"
+            : helper === null
+              ? "this host has no LLVM codegen helper package"
+              : `the LLVM codegen helper at ${helper} is not usable for ${matrix.target.llvm_triple}`;
+      process.stdout.write(
+        `skipping the speed runtime flavor of ${packageManifest.name}: ${reason}; ` +
+          "build the helper with scripts/build-llvm-dist.mjs, then rebuild the pack to include it. " +
+          "--optimization=speed builds of this pack will link the release runtime units\n",
+      );
+    }
     const flavorPlan = [
       ...Object.entries(matrix.flavors),
       ...("release" in matrix.flavors && unitHelper !== null
@@ -784,9 +806,7 @@ async function build() {
         executable: [
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
-          "SCR_STDIO_EXTENDED",
           "SCR_STREAM_WRITE_ERRORS",
-          "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_WEB_BODIES",

@@ -1,0 +1,6 @@
+{
+  "name": "node-island-handle-export",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "take-pkg": "node" } }
+}

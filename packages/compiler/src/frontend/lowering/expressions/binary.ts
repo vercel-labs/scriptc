@@ -18,6 +18,7 @@ import {
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { checkedNarrowOperand } from "../coercions/unions.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
+import { refuseCopiedStore } from "../structural-instances.js";
 import { recordMayKeepSource } from "../record-sources.js";
 import { recordStringCall } from "../record-links.js";
 import {
@@ -69,6 +70,7 @@ import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
+import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
 import {
@@ -249,13 +251,21 @@ function narrowedUnion(lowerer: Lowerer, e: IrExpr): IrExpr | null {
 function decidedAfter(lowerer: Lowerer, other: IrExpr, value: boolean, loc: SrcLoc): IrExpr {
   const answer: IrExpr = { kind: "boolLit", value, type: BOOL, loc };
   if (isSafeToDiscard(narrowedUnion(lowerer, other) ?? other)) return answer;
-  return {
-    kind: "seqExpr",
-    stmts: [{ kind: "exprStmt", expr: other, loc }],
-    result: answer,
-    type: BOOL,
-    loc,
+  // A sequence keeps its own statements and the answer takes the result
+  // position. Its result runs only when that is observable: a unit result
+  // has no value to evaluate, so `(f(), undefined) === null` runs `f`, and
+  // `(first(), last()) !== null` runs both.
+  const stmts: IrStmt[] = [];
+  const run = (e: IrExpr): void => {
+    if (e.kind === "seqExpr") {
+      stmts.push(...e.stmts);
+      run(e.result);
+    } else if (!isSafeToDiscard(e)) {
+      stmts.push({ kind: "exprStmt", expr: e, loc });
+    }
   };
+  run(other);
+  return { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
 }
 
 /** The union-typed process.envGet read inside a checker-narrowed operand,
@@ -870,6 +880,12 @@ function lowerConstructorGlobalTypeofTest(
 }
 
 export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  // A primitive deferred-init field converts its slot, so an unassigned one
+  // reads "undefined" as in Node instead of failing the checked read.
+  if (e.type.kind === "string" || e.type.kind === "f64" || e.type.kind === "bool") {
+    const slot = lowerer.deferredFieldSlot(e);
+    if (slot) return ensureString(lowerer, slot, node);
+  }
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };
@@ -1389,6 +1405,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     if (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) {
       fenceNodeModuleMutation(lowerer, expr.left, "assignment");
     }
+    if (ts.isElementAccessExpression(expr.left)) fenceCopiedKeyedWrite(lowerer, expr.left);
     // The writable Event accessors on Event subclass instances, in value
     // position (`const r = (event.returnValue = false)`).
     if (op === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(expr.left)) {
@@ -1413,6 +1430,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         );
       }
       const value = lowerer.lowerExprExpecting(expr.right, target.type);
+      refuseCopiedStore(lowerer, expr.left, target.type, expr.right);
       const runtimeOptionalRoot = lowerer.runtimeOptionalRootOf(target);
       if (lowerer.runtimeOptionalStorageLocals.has(runtimeOptionalRoot))
         lowerer.runtimeOptionalLocals.add(runtimeOptionalRoot);
@@ -1515,6 +1533,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         : null;
       if (target) {
         const value = lowerer.lowerExprExpecting(expr.right, target.type);
+        refuseCopiedStore(lowerer, expr.left, target.type, expr.right);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
       }
       // Bundled numeric enums use e[e["name"] = value] = "name".
@@ -1563,6 +1582,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               expr.left.argumentExpression,
               "indexing with non-number keys",
             );
+          // An element of a kept array rebuilds an assigned existing array
+          // into its own element layout, so a later write through the
+          // assigned name would reach only the copy (SC2021): the same
+          // refusal the statement form of this store makes.
+          if (recv.type.kind === "array")
+            refuseCopiedStore(lowerer, expr.left, recv.type.elem, expr.right);
           const key = lowerer.declareHiddenLocal("%setIndex", F64);
           const raw = lowerer.lowerExpr(expr.right);
           const value = lowerer.declareHiddenLocal("%setValue", raw.type);
@@ -1649,6 +1674,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           const receiver = field.obj;
           field.obj = varRef(recvTmp.id, receiver.type, loc);
           const value = lowerer.lowerExprExpecting(expr.right, field.fieldType);
+          refuseCopiedStore(lowerer, expr.left, field.fieldType, expr.right);
           const valTmp = lowerer.declareHiddenLocal("%setValue", value.type);
           const result = varRef(valTmp.id, value.type, loc);
           return {

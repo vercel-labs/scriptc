@@ -7,6 +7,7 @@
 
 #include "scr_async.h"
 #include "scr_dyn.h"
+#include "scr_events.h"
 
 /* Records the build-time configuration: the libnode pack directory
  * (absolute, or `$ORIGIN/`-relative to the executable) and the Node version
@@ -65,11 +66,13 @@ void scr_loop_hosted_microtasks_done(void);
 void scr_node_island_leave_stack(uintptr_t sp);
 
 /* Process events island code listens to (SCR_NODE_EVENT_* of the bridge
- * ABI). Their listeners sit in the runtime's registries (the
- * SCR_NODE_ISLANDS build of scr_events.c) at their registration position,
- * and a delivery calls them through scr_node_island_emit: a signal with
- * its number, exit with the code. */
-enum { SCR_NODE_ISLAND_EVENT_SIGNAL = 1, SCR_NODE_ISLAND_EVENT_EXIT = 2 };
+ * ABI). Their listeners sit in scr_events.c's registries at their
+ * registration position, and a delivery calls them through
+ * scr_node_island_emit: a signal with its number, exit with the code. */
+enum {
+  SCR_NODE_ISLAND_EVENT_SIGNAL = SCR_EVENTS_ISLAND_SIGNAL,
+  SCR_NODE_ISLAND_EVENT_EXIT = SCR_EVENTS_ISLAND_EXIT,
+};
 void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg);
 void scr_signal_on_island(ScrStr *name, uint32_t listener);
 void scr_signal_off_island(uint32_t listener);
@@ -140,6 +143,9 @@ typedef struct ScrNiDynOps {
   int (*has)(ScrDyn *obj, ScrDyn *key);
   int (*delete_key)(ScrDyn *obj, ScrDyn *key);
   ScrDyn *(*own_keys)(ScrDyn *obj, int mode);
+  /* Array.isArray of the node: the JSON serializer and a checked array
+   * conversion take the array shape from it. */
+  bool (*is_array)(const ScrDyn *value);
   ScrDyn *(*call)(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);
   ScrDyn *(*construct)(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
   ScrStr *(*type_of)(ScrDyn *value);
@@ -298,6 +304,13 @@ struct ScrNodeGcResult;
 int scr_ni_host_gc_analyze(const uint32_t *exports, size_t nexports,
                            struct ScrNodeGcResult *out);
 void scr_ni_gc_cleanup(void); /* at exit */
+/* Weak collections keyed by island objects (scr_node_island_gc.c): the
+ * entries of a native WeakMap, WeakSet or FinalizationRegistry whose key
+ * is an island object live in a WeakMap or WeakSet inside the island,
+ * `collection` (NULL until the first such entry; `set`: a WeakSet). */
+ScrDyn *scr_ni_weak_get(ScrDyn *collection, ScrDyn *key); /* +1; undefined: no entry */
+int scr_ni_weak_test(ScrDyn *collection, bool set, ScrDyn *key, bool remove); /* 1, 0; -1: threw */
+bool scr_ni_weak_set(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
 
 /* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
  * nodeIsland.defer(path, snapshot): a statically imported island module the

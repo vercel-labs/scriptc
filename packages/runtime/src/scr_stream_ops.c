@@ -201,6 +201,7 @@ static ScrError *op_unsupported(const char *what) {
   ScrStr *m = scr_str_new(msg, (size_t)n);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, m);
   scr_str_release(m);
+  scr_error_set_code(e, "SC2020");
   return e;
 }
 

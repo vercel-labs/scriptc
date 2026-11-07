@@ -1224,7 +1224,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         fn: "fs.existsSync",
         params: [STRING],
         result: BOOL,
-        valueParams: exactValueParams(STRING),
+        // A Buffer or `any` path answers through the value form, so a stored
+        // function value passes its argument as given.
+        valueParams: exactValueParams(DYN),
+        valueFn: "fs.existsSyncValue",
       },
       mkdirSync: { fn: "fs.mkdirSync", params: [STRING], result: VOID },
       rmSync: { fn: "fs.rmSync", params: [STRING], result: VOID },
@@ -2384,6 +2387,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   fs: {
     // Inline numeric O_* flags use a target-neutral runtime entry point.
     openSync: ["fs.openNumericSync"],
+    // The Buffer path: the typed entry point for a statically typed one
+    // (fs.existsSyncBytes), and the value form when only the runtime knows
+    // the arm (fs.existsSyncValue, which reports DEP0187 for other values).
+    existsSync: ["fs.existsSyncValue", "fs.existsSyncBytes"],
     // The Buffer form (no encoding), the fd forms (readFileSync(fd[,
     // "utf8"])), and the checked-dynamic encoding form.
     readFileSync: [
@@ -2405,17 +2412,25 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
-    // The bytes-data form and the { mode } options form.
-    // The bytes-data form, the { mode } options form, and the
-    // file-descriptor data form.
+    // The bytes-data form, the { mode } options form, the file-descriptor
+    // data form, and the { encoding, mode, flag } option-record forms over
+    // string and bytes data.
     writeFileSync: [
       "fs.writeFileSyncBytes",
       "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
+      "fs.writeFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
     ],
-    appendFileSync: ["fs.appendFileSyncBytes"],
+    // The bytes-data form and the { encoding, mode, flag } option-record
+    // forms over string and bytes data.
+    appendFileSync: [
+      "fs.appendFileSyncBytes",
+      "fs.appendFileOptionsSync",
+      "fs.appendFileBytesOptionsSync",
+    ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
       "fs.fsStreamBytes",

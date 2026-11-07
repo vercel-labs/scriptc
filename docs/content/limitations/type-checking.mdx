@@ -12,3 +12,6 @@ The other settings keep one meaning.
 TypeScript files are ES modules or CommonJS by Node.js's rules (the file extension and the nearest `package.json`), whatever `module` and `moduleResolution` say, so `import x = require()` and `export =` are refused with `SC0016` in a project that sets `module` to `commonjs`.
 Legacy decorators (`experimentalDecorators`) are refused with `SC0016`, except a class decorator of one parameter, which behaves the same under both decorator semantics.
 A project that does not enable `strict` or `strictNullChecks` is refused with `SC0002`.
+TypeScript keeps the type of an assignment across a call, so after `x = undefined` a read of `x` is typed `undefined` even when a function called in between assigns `x` again.
+scriptc reads the stored value there.
+A function without a declared return type that returns such a read is inferred to return `undefined`; scriptc refuses that return with `SC1090`, and a declared return type compiles.

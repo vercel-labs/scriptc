@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
@@ -16,6 +16,7 @@ import {
   RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
+import { speedFlavorFallbackWarning } from "./runtime-pack-core.js";
 import { HUGE_TEXT_MIN_CODE_BYTES } from "./huge-text.js";
 import { createNativeLinkPlan } from "./link-plan.js";
 import {
@@ -357,6 +358,27 @@ describe("runtime pack manifests", () => {
     expect(defaultPlan.staticLink).toBeUndefined();
     expect(staticPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-static-pie"]);
     expect(staticPlan.staticLink).toBe(true);
+  });
+
+  test("a link plan carries the start-up symbols it is given, in order", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    const startupSymbols = ["sc_f_third", "sc_f_first", "sc_f_second"];
+    expect((await createNativeLinkPlan(options)).startupSymbols).toBeUndefined();
+    expect(
+      (await createNativeLinkPlan({ ...options, startupSymbols: [] })).startupSymbols,
+    ).toBeUndefined();
+    expect((await createNativeLinkPlan({ ...options, startupSymbols })).startupSymbols).toEqual(
+      startupSymbols,
+    );
   });
 
   test("Linux links of large program code use huge text unless it is turned off", async () => {
@@ -953,6 +975,41 @@ test("library runtime selection requires dedicated packs and never substitutes e
     runtimeObjects: threaded.runtimeObjects,
   });
   await expect(loadRuntimePack(options)).rejects.toThrow("no release flavor");
+});
+
+test("a speed build of a pack without a speed flavor says so, once per pack", async () => {
+  const f = await fixture();
+  const options = {
+    target: MACOS_ARM64_TARGET,
+    features: BASE,
+    resolver: () => f.packagePath,
+    optimization: "speed" as const,
+  };
+  const reported: string[] = [];
+  const write = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    reported.push(String(chunk));
+    return true;
+  });
+  try {
+    await loadRuntimePack(options);
+    await loadRuntimePack(options);
+  } finally {
+    write.mockRestore();
+  }
+  const warnings = reported.filter((text) => text.includes('has no "speed" flavor'));
+  // A build selects a pack more than once; the warning names the flavor, the
+  // reason and how to get it, and is printed once.
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("--optimization=speed");
+  expect(warnings[0]).toContain("release runtime objects");
+  expect(warnings[0]).toContain("SCRIPTC_LLVM_CODEGEN");
+  // Only an executable speed build falls back; release and library builds
+  // have no speed posture to report.
+  expect(speedFlavorFallbackWarning(f.manifest, "speed", "executable")).toContain(
+    'has no "speed" flavor',
+  );
+  expect(speedFlavorFallbackWarning(f.manifest, "release", "executable")).toBeNull();
+  expect(speedFlavorFallbackWarning(f.manifest, "speed", "library")).toBeNull();
 });
 
 test("speed selects the pack's speed flavor and falls back to release objects without one", async () => {

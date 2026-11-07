@@ -10,7 +10,7 @@ import {
   arrayClassReceiver,
   lowerArrayClassStaticCall,
 } from "./builtins/array-classes.js";
-import { structuralCallInstance } from "./structural-instances.js";
+import { refuseWrittenParamCopy, structuralCallInstance } from "./structural-instances.js";
 import { classViewOf } from "./class-views.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { lowerStaticPrivateCall } from "./private-statics.js";
@@ -314,7 +314,7 @@ import {
   isCjsRequireGlobal,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
-import { pathModuleValue } from "./lower-builtin-values.js";
+import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
 import {
   defaultAfterUndefined,
   lowerOptionalArgument,
@@ -435,6 +435,45 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
   let right = e.right;
   while (ts.isParenthesizedExpression(right)) right = right.expression;
   return right;
+}
+
+/** The `c.m` of a call whose callee is `c.m` under parentheses, non-null
+ * assertions or type assertions, or null. JavaScript keeps the reference
+ * through parentheses, and the assertions are erased, so such a call passes
+ * `c` as the receiver. `m` is a method the program declares, or a member of
+ * an `any` receiver: a function-typed field of a class or a record and a
+ * member an index signature answers keep their call through the value, and
+ * the standard library's methods keep their own refusals as values. */
+function assertedMethodCallee(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): ts.PropertyAccessExpression | null {
+  if (call.questionDotToken) return null;
+  let callee = call.expression;
+  if (ts.isPropertyAccessExpression(callee)) return null;
+  while (
+    ts.isParenthesizedExpression(callee) ||
+    ts.isNonNullExpression(callee) ||
+    ts.isAsExpression(callee) ||
+    ts.isSatisfiesExpression(callee) ||
+    ts.isTypeAssertion(callee)
+  )
+    callee = callee.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(callee.name);
+  // No member symbol: an untyped receiver, whose member call passes it. A
+  // member an index signature answers is a value of the signature's type.
+  if (symbol === undefined)
+    return (lowerer.typeOf(callee.expression).flags & ts.TypeFlags.Any) !== 0 ? callee : null;
+  // A member of a union of classes is a property symbol over each arm's
+  // method, so the declarations decide, not the symbol's flags.
+  return symbol.declarations.length > 0 &&
+    symbol.declarations.every(
+      (d) => ts.isMethodDeclaration(d) || ts.isMethodSignatureDeclaration(d),
+    ) &&
+    !lowerer.isStdlibSymbol(symbol)
+    ? callee
+    : null;
 }
 
 /** `fn.member(args)` where `member` is a key of the callable's own-property
@@ -631,7 +670,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // The platform namespaces are the path module objects.
     if (module === "path/posix" || module === "path/win32")
       return pathModuleValue(lowerer, module, loc);
-    if (module !== null && module !== "constants") {
+    // node:constants is one checked-dynamic object (its members are the
+    // platform's C tables, merged by the runtime), so an inline require of
+    // it answers that object, the same value a namespace binding reads.
+    if (module === "constants") return builtinConstantsObject(lowerer, loc);
+    if (module !== null) {
       const moduleId = `builtin:${module}`;
       return { kind: "moduleNsRef", moduleId, type: { kind: "moduleNs", moduleId }, loc };
     }
@@ -1570,9 +1613,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           });
         }
         lowerer.noteEdge(sig.name);
+        const calleeSymbol = lowerer.resolveValueSymbol(expr.expression);
+        const calleeDecl = calleeSymbol?.valueDeclaration;
+        if (calleeDecl && ts.isFunctionDeclaration(calleeDecl))
+          refuseWrittenParamCopy(lowerer, expr, calleeDecl, sig);
         const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
-        const symbol = lowerer.resolveValueSymbol(expr.expression);
-        const declaration = symbol ? symbol.valueDeclaration : undefined;
+        const declaration = calleeDecl;
         // A bare call supplies undefined as this, even inside a callback
         // currently carrying a receiver. The value-call ABI saves and
         // restores that ambient receiver around the function invocation.
@@ -2269,6 +2315,21 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       memberSym,
     );
     if (prim) return prim;
+  }
+  // `(c.m)()`, `c.m!()` and `(c.m as F)()`: parentheses, a non-null
+  // assertion and a type assertion around a member callee leave the
+  // reference to the member intact, so the method is called on `c`. Read as
+  // a value it would run without its receiver.
+  {
+    const member = assertedMethodCallee(lowerer, expr);
+    const methodCall =
+      member === null
+        ? null
+        : (lowerDynReceiverMethodCall(lowerer, expr, member) ??
+          lowerer.lowerObjectMethodCall(expr, member) ??
+          lowerDynReceiverMethodCall(lowerer, expr, member, true) ??
+          lowerUnionReceiverMethodCall(lowerer, expr, member));
+    if (methodCall) return methodCall;
   }
   // A member of a record, a tuple or an array called through its value
   // (`x["f"]()`, `x[i]()`, `x.f!()`, `(x.f)()`): JavaScript passes `x` as
@@ -8752,6 +8813,50 @@ function recordAssignHelper(
   return helper;
 }
 
+/** `Object.create(...)` written where a record type is expected (a declared
+ * binding, parameter or return type, or an `as` assertion). The created
+ * object inherits its prototype's members and can hold non-enumerable and
+ * accessor properties; a record holds its declared members as its own
+ * enumerable fields, so the conversion would answer own-key tests,
+ * `Object.keys`, JSON, `Object.getPrototypeOf` and later writes to the
+ * prototype differently from Node. The created object stays exact as an
+ * untyped value. `Object.create(null)` with no descriptors is an empty
+ * object, which an index-signature record holds as it is. */
+function refuseObjectCreateAsRecord(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  nullProto: boolean,
+): void {
+  let node: ts.Node = call;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  const asserted =
+    (ts.isAsExpression(parent) || ts.isTypeAssertion(parent)) && parent.expression === node
+      ? lowerer.checker.getTypeFromTypeNode(parent.type)
+      : undefined;
+  const destination = asserted ?? lowerer.checker.getContextualType(call);
+  if (destination === undefined || (destination.flags & ts.TypeFlags.Any) !== 0) return;
+  let mapped: IrType | null;
+  try {
+    mapped = lowerer.mapTypeOf(destination);
+  } catch {
+    return;
+  }
+  const records = (
+    mapped?.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped]
+  ).filter((arm): arm is IrType & { kind: "record" } => arm?.kind === "record");
+  if (records.length === 0) return;
+  const empty = nullProto && call.arguments.nodes.length === 1;
+  if (empty && records.every((arm) => lowerer.shapes.get(arm.shapeId)?.indexValue !== undefined))
+    return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    `an Object.create result as a '${lowerer.fmt(mapped!)}' value (a typed object holds its declared members as its own properties: it has no prototype to inherit from and no property attributes)`,
+    "keep the result untyped ('unknown', or 'Record<string, unknown>' for keyed access), or build the object with a literal or a spread",
+  );
+}
+
 /** The `Iterator` global's statics (ES2025): `Iterator.from` over a typed
  * built-in iterable lowers (lowerIteratorFromCall); every other member,
  * and other arguments, fence with the working spelling named instead of
@@ -9381,6 +9486,7 @@ function lowerObjectStaticCall(
     let protoNode: ts.Expression = call.arguments.nodes[0]!;
     while (ts.isParenthesizedExpression(protoNode)) protoNode = protoNode.expression;
     const nullProto = protoNode.kind === ts.SyntaxKind.NullKeyword;
+    refuseObjectCreateAsRecord(lowerer, call, nullProto);
 
     if (nullProto && call.arguments.nodes.length === 1) {
       return { kind: "libCall", fn: "dyn.objCreateNullProto", args: [], type: DYN, loc };
@@ -10332,13 +10438,6 @@ function lowerObjectStaticCall(
   // whose shape the type system does not fix (a parameter, an untraced
   // call result) has no answer here.
   if (namespaceShape !== null) {
-    if (member !== "keys") {
-      lowerer.noLowering(
-        `Object.${member} over a builtin module namespace`,
-        call,
-        "access the builtin's named exports directly",
-      );
-    }
     if (namespaceShape.flavor === "unknown") {
       lowerer.noLowering(
         "Object.keys over a builtin module namespace whose runtime shape is not known statically",
@@ -10347,25 +10446,30 @@ function lowerObjectStaticCall(
       );
     }
     const names = builtinModuleKeys(namespaceShape.module, namespaceShape.flavor);
-    if (names === null) {
-      lowerer.noLowering(
-        "Object.keys over a builtin module namespace",
-        call,
-        "access the builtin's named exports directly",
+    // A namespace the census does not answer for (its members come from the
+    // platform) has no static key list, so the arms below answer from the
+    // namespace value's own keyed surface.
+    if (names !== null) {
+      if (member !== "keys") {
+        lowerer.noLowering(
+          `Object.${member} over a builtin module namespace`,
+          call,
+          "access the builtin's named exports directly",
+        );
+      }
+      const loc = locOf(call);
+      return reflectOverNamespaceExpr(
+        lowerer,
+        argNode,
+        {
+          kind: "arrayLit",
+          elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+          type: arrayOf(STRING),
+          loc,
+        },
+        loc,
       );
     }
-    const loc = locOf(call);
-    return reflectOverNamespaceExpr(
-      lowerer,
-      argNode,
-      {
-        kind: "arrayLit",
-        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
-        type: arrayOf(STRING),
-        loc,
-      },
-      loc,
-    );
   }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node
@@ -10574,6 +10678,19 @@ function lowerObjectStaticCall(
     if (receiver.type.kind !== "dyn") lowerer.badType(argNode, lowerer.typeOf(argNode));
     if (receiver.kind === "dynFrom" && receiver.value.type.kind === "record")
       receiver = { ...receiver, liveRef: true };
+    // The same native list as over a checked-dynamic operand above.
+    if (
+      member === "values" &&
+      !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      consumesValueList(call)
+    )
+      return {
+        kind: "libCall",
+        fn: "dyn.objValueList",
+        args: [receiver],
+        type: arrayOf(DYN),
+        loc: locOf(call),
+      };
     return {
       kind: "libCall",
       fn: member === "values" ? "dyn.objValues" : "dyn.objEntries",
@@ -11147,8 +11264,9 @@ function consumesEntryPairs(call: ts.CallExpression): boolean {
   );
 }
 
-/** Whether an Object.values result is only iterated, indexed or passed to
- * a read-only array method, so no code observes or changes its array
+/** Whether an Object.values result is only iterated, indexed, passed to an
+ * array method that reads it, or handed to the flatten of a `.flatMap`
+ * over such a list, so no code observes or changes its array
  * representation. A bare `.length` read keeps the checked-dynamic array,
  * which measures as fast. */
 function consumesValueList(call: ts.CallExpression): boolean {
@@ -11158,12 +11276,77 @@ function consumesValueList(call: ts.CallExpression): boolean {
   if (ts.isForOfStatement(parent)) return parent.expression === node && !parent.awaitModifier;
   if (ts.isElementAccessExpression(parent))
     return parent.expression === node && !isWriteTarget(parent);
+  if (ts.isArrowFunction(parent)) return parent.body === node && flattensIntoValueList(parent);
   if (!ts.isPropertyAccessExpression(parent) || parent.expression !== node) return false;
   return (
     VALUE_LIST_METHODS.has(parent.name.text) &&
     ts.isCallExpression(parent.parent) &&
     parent.parent.expression === parent
   );
+}
+
+/** Whether `callback` is the inline callback of a `.flatMap` over a value
+ * list: the flatten reads the elements of the array it returns and keeps
+ * nothing else of it. */
+function flattensIntoValueList(callback: ts.ArrowFunction): boolean {
+  let node: ts.Node = callback;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const call = node.parent;
+  return (
+    ts.isCallExpression(call) &&
+    call.arguments.nodes[0] === node &&
+    ts.isPropertyAccessExpression(call.expression) &&
+    call.expression.name.text === "flatMap" &&
+    isValueListChain(call.expression.expression)
+  );
+}
+
+/** Whether an expression is spelled as a value list: an `Object.values`
+ * call that hands its result to a consumer above, or a list one of the
+ * array methods below builds from one. Only a prediction of how the
+ * expression lowers (a link can still fall back to the checked-dynamic
+ * array); its callers stay correct either way. */
+export function isValueListChain(expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isCallExpression(expr) || !ts.isPropertyAccessExpression(expr.expression)) return false;
+  const access = expr.expression;
+  if (access.name.text === "values")
+    return (
+      ts.isIdentifier(access.expression) &&
+      access.expression.text === "Object" &&
+      consumesValueList(expr)
+    );
+  return VALUE_LIST_RESULT_METHODS.has(access.name.text) && isValueListChain(access.expression);
+}
+
+/** The return type of a `.flatMap` callback that returns a value list: the
+ * native list, where the checker's `object[]` maps to the checked-dynamic
+ * array. Undefined for every other callback, which keeps its own type. */
+export function valueListCallbackReturn(
+  lowerer: Lowerer,
+  callback: ts.Expression,
+): IrType | undefined {
+  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+  if (!ts.isArrowFunction(callback) || isJsSourceFile(ts.getSourceFileOfNode(callback)))
+    return undefined;
+  let body: ts.Node = callback.body;
+  while (ts.isParenthesizedExpression(body)) body = body.expression;
+  if (
+    !ts.isCallExpression(body) ||
+    body.questionDotToken ||
+    !ts.isPropertyAccessExpression(body.expression) ||
+    body.expression.questionDotToken ||
+    body.expression.name.text !== "values" ||
+    !lowerer.isStdlibGlobal(body.expression.expression, "Object") ||
+    body.arguments.nodes.length !== 1 ||
+    ts.isSpreadElement(body.arguments.nodes[0]!) ||
+    !consumesValueList(body)
+  )
+    return undefined;
+  const type = lowerer.typeOf(body);
+  return lowerer.checker.isArrayType(type) && lowerer.mapTypeOf(type)?.kind === "dyn"
+    ? arrayOf(DYN)
+    : undefined;
 }
 
 /** Whether an access is assigned, updated or deleted. */
@@ -11185,7 +11368,24 @@ function isWriteTarget(access: ts.Expression): boolean {
   return ts.isDeleteExpression(parent);
 }
 
-const VALUE_LIST_METHODS = new Set(["every", "findIndex", "forEach", "join", "reduce", "some"]);
+/** The array methods with native lowerings over a list of checked-dynamic
+ * values (array-methods.ts DYN_ELEMENT_METHODS) that only read it. */
+const VALUE_LIST_METHODS = new Set([
+  "every",
+  "filter",
+  "findIndex",
+  "findLastIndex",
+  "flatMap",
+  "forEach",
+  "join",
+  "map",
+  "reduce",
+  "reduceRight",
+  "some",
+]);
+
+/** Those that answer a new list. */
+const VALUE_LIST_RESULT_METHODS = new Set(["filter", "flatMap", "map"]);
 
 const ENTRY_PAIR_CALLBACK_METHODS = new Set([
   "every",
@@ -12398,8 +12598,26 @@ export function lowerObjectMethodCall(
     const receiver = lowerReceiver();
     const local = lowerer.declareHiddenLocal("%callbackReceiver", receiver.type);
     const value: IrExpr = { kind: "varRef", localId: local.id, type: receiver.type, loc };
-    const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, loc, call);
     const virtual = lowerer.overrideBelow(info, method);
+    // The nearest declaration is a TypeScript override declaring parameters
+    // past the inherited slot arity, with nothing below it: the unchanged
+    // method is that override, so its native call enters the override's own
+    // body under its declared parameter list, as the ordinary call below
+    // does. A replaced slot still takes the dynamic call with every argument.
+    const widened = found.declarer.returnAdapters?.get(method);
+    const own =
+      widened !== undefined &&
+      !virtual &&
+      widened.params.length > found.sig.params.length &&
+      !(found.declarer.decl && isJsSourceFile(ts.getSourceFileOfNode(found.declarer.decl)))
+        ? widened
+        : null;
+    const args = lowerer.completeArgs(
+      call.arguments.nodes,
+      own?.params ?? found.sig.params,
+      loc,
+      call,
+    );
     if (virtual) lowerer.noteVirtualEdge(info, method);
     else lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
     const fallback: IrExpr = virtual
@@ -12413,9 +12631,9 @@ export function lowerObjectMethodCall(
         }
       : {
           kind: "call",
-          callee: `%${found.declarer.def.name}.${method}`,
+          callee: `%${found.declarer.def.name}.${method}${own ? "$own" : ""}`,
           args: [lowerer.upcastTo(value, found.declarer.def.name), ...args],
-          type: found.sig.ret,
+          type: own?.ret ?? found.sig.ret,
           loc,
         };
     // The declaring class's original value, built with the observed slot.

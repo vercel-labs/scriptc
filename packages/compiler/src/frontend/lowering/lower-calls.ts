@@ -10255,13 +10255,6 @@ function lowerObjectStaticCall(
   // whose shape the type system does not fix (a parameter, an untraced
   // call result) has no answer here.
   if (namespaceShape !== null) {
-    if (member !== "keys") {
-      lowerer.noLowering(
-        `Object.${member} over a builtin module namespace`,
-        call,
-        "access the builtin's named exports directly",
-      );
-    }
     if (namespaceShape.flavor === "unknown") {
       lowerer.noLowering(
         "Object.keys over a builtin module namespace whose runtime shape is not known statically",
@@ -10270,25 +10263,30 @@ function lowerObjectStaticCall(
       );
     }
     const names = builtinModuleKeys(namespaceShape.module, namespaceShape.flavor);
-    if (names === null) {
-      lowerer.noLowering(
-        "Object.keys over a builtin module namespace",
-        call,
-        "access the builtin's named exports directly",
+    // A namespace the census does not answer for (its members come from the
+    // platform) has no static key list, so the arms below answer from the
+    // namespace value's own keyed surface.
+    if (names !== null) {
+      if (member !== "keys") {
+        lowerer.noLowering(
+          `Object.${member} over a builtin module namespace`,
+          call,
+          "access the builtin's named exports directly",
+        );
+      }
+      const loc = locOf(call);
+      return reflectOverNamespaceExpr(
+        lowerer,
+        argNode,
+        {
+          kind: "arrayLit",
+          elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
+          type: arrayOf(STRING),
+          loc,
+        },
+        loc,
       );
     }
-    const loc = locOf(call);
-    return reflectOverNamespaceExpr(
-      lowerer,
-      argNode,
-      {
-        kind: "arrayLit",
-        elems: names.map((name) => ({ kind: "strLit", value: name, type: STRING, loc })),
-        type: arrayOf(STRING),
-        loc,
-      },
-      loc,
-    );
   }
   // A compiled PROGRAM module namespace is a nominal token whose members
   // remain live bindings, but its enumerable key set is static and Node

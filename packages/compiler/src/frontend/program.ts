@@ -448,8 +448,10 @@ export interface LoadResult {
    * errors are the program's, and its project world when it has errors. */
   tscWorld?: {
     program: ts.Program;
-    /** The program's pre-emit diagnostics, computed once. */
-    diagnostics: readonly ts.Diagnostic[];
+    /** The program's pre-emit diagnostics, computed once. The tsc gate is
+     * their one reader, so a load whose report nobody asks for (a rung of the
+     * npm-static fixpoint) never asks the checker for them. */
+    diagnostics: () => readonly ts.Diagnostic[];
     projectWorld: ts.Program | null;
     /** The declaration-typed boundary rewrote user files: errors fall
      * back to the declaration world (load.projectWorld()), as without it. */
@@ -965,7 +967,7 @@ function programRefersToTemporal7(program: ts.Program): boolean {
     );
   };
   for (const sf of program.getImplementationSourceFiles()) {
-    if (!sf.text.includes(TEMPORAL_GLOBAL)) continue;
+    if (!ts.sourceTextIncludes(sf, TEMPORAL_GLOBAL)) continue;
     let found = false;
     ts.walkPreorder(sf, (node) => {
       if (ts.isBindingElement(node)) {
@@ -1173,7 +1175,7 @@ function loadProgram7(
       const errors = diagnostics.some((d) => d.category === ts.DiagnosticCategory.Error);
       tscWorld = {
         program: original,
-        diagnostics,
+        diagnostics: () => diagnostics,
         projectWorld: errors ? host.createProgram(programRoots, options, false, lineage) : null,
       };
       for (const [file, lowered] of jsx.sources) host.addVirtualFile(file, lowered.text);
@@ -1227,9 +1229,11 @@ function loadProgram7(
           programRoots.pop();
           program = original;
         } else {
+          let diagnostics: readonly ts.Diagnostic[] | null = null;
           tscWorld = {
             program: original,
-            diagnostics: ts.getPreEmitDiagnostics(original, tscGateFileKept),
+            diagnostics: () =>
+              (diagnostics ??= ts.getPreEmitDiagnostics(original, tscGateFileKept)),
             projectWorld: null,
             declWorldFallback: true,
           };
@@ -1258,13 +1262,19 @@ function loadProgram7(
         // taken before the overlay's files replace them on the host, and
         // its project world (load.projectWorld()) is built over the files
         // as written.
-        if (tscWorld === undefined)
+        if (tscWorld === undefined) {
+          const diagnostics = ts.getPreEmitDiagnostics(before);
           tscWorld = {
             program: before,
-            diagnostics: ts.getPreEmitDiagnostics(before),
+            diagnostics: () => diagnostics,
             projectWorld: null,
             declWorldFallback: true,
           };
+        } else {
+          // The gate's diagnostics are taken before the overlay's files
+          // replace the files as written on the host.
+          tscWorld.diagnostics();
+        }
         for (const file of overlay.keys())
           if (!overlayOriginals.has(file))
             overlayOriginals.set(file, before.getSourceFile(file)?.text ?? null);
@@ -1635,14 +1645,13 @@ function declBoundaryUserFiles(program: ts.Program, packages: readonly string[])
     const name = sf.fileName.split("\\").join("/");
     if (name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name)) continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
-    const text = sf.text;
     if (
       packages.some(
         (pkg) =>
-          text.includes(`"${pkg}"`) ||
-          text.includes(`'${pkg}'`) ||
-          text.includes(`"${pkg}/`) ||
-          text.includes(`'${pkg}/`),
+          ts.sourceTextIncludes(sf, `"${pkg}"`) ||
+          ts.sourceTextIncludes(sf, `'${pkg}'`) ||
+          ts.sourceTextIncludes(sf, `"${pkg}/`) ||
+          ts.sourceTextIncludes(sf, `'${pkg}/`),
       )
     )
       out.push(sf.fileName);
@@ -1866,7 +1875,7 @@ function splitRequireBindings7(
   if (cached !== undefined) return cached;
   const out = new Map<ts.VariableDeclaration, ts.CallExpression>();
   memo.set(sf, out);
-  if (sf.isDeclarationFile || !isCjsJsFile7(sf, program) || !sf.text.includes("require"))
+  if (sf.isDeclarationFile || !isCjsJsFile7(sf, program) || !ts.sourceTextIncludes(sf, "require"))
     return out;
   const checker = program.getTypeChecker();
   const stmts = sf.statements.nodes;
@@ -7135,7 +7144,7 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
     reach(entry, startup);
     const covered = new Set<ts.SourceFile>();
     for (const sf of userFiles) {
-      if (!sf.text.includes("import")) continue;
+      if (!ts.sourceTextIncludes(sf, "import")) continue;
       for (const call of moduleSourceCandidates(program, sf).calls) {
         const arg = call.arguments.nodes[0];
         if (call.expression.kind !== ts.SyntaxKind.ImportKeyword || arg === undefined) continue;
@@ -7317,7 +7326,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
     }
     if (names.size === 0) return false;
     const sf = p.getSourceFile(d.fileName);
-    return sf !== undefined && names.has(sf.text.slice(d.pos, d.end));
+    return sf !== undefined && names.has(ts.sourceTextRange(sf, d.pos, d.end));
   };
 
   const npmStaticFileSuppressed = (d: ts.Diagnostic): boolean =>
@@ -7352,26 +7361,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
     if (insideBlockComment(sf.text, d.pos)) return true;
-    return d.code === 2300 && commentDup.has(`${d.fileName}:${sf.text.slice(d.pos, d.end)}`);
-  };
-
-  /* `typeof window` / `typeof self` in a JavaScript file: the operand of
-   * typeof may name a global nothing declares (Node answers "undefined"
-   * and never throws), the feature-detection idiom every isomorphic
-   * package uses, and the guarded uses of that name (`typeof window < "u"
-   * ? window : …`) are code Node never runs. A name the file feature-tests
-   * this way is therefore not a type error in JavaScript; a reached use
-   * still meets the lowering's located refusal. TypeScript files keep the
-   * error and its hint. */
-  const typeofTestedNameSuppressed = (p: ts.Program, d: ts.Diagnostic): boolean => {
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2584) return false;
-    if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.pos === undefined || d.end === undefined) return false;
-    const sf = p.getSourceFile(d.fileName);
-    if (!sf) return false;
-    const name = sf.text.slice(d.pos, d.end);
-    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
-    return new RegExp(`\\btypeof\\s*\\(?\\s*${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(sf.text);
+    return (
+      d.code === 2300 && commentDup.has(`${d.fileName}:${ts.sourceTextRange(sf, d.pos, d.end)}`)
+    );
   };
 
   // A `return` at the top level of a CommonJS module (TS1108): Node runs
@@ -7389,7 +7381,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
       return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
-    const spec = sf.text.slice(d.pos, d.end).replace(/^['"]|['"]$/g, "");
+    const spec = ts.sourceTextRange(sf, d.pos, d.end).replace(/^['"]|['"]$/g, "");
     const prefix = spec.startsWith("@")
       ? spec.split("/").slice(0, 2).join("/")
       : spec.split("/")[0]!;
@@ -7475,7 +7467,6 @@ function preflightGate7(load: LoadResult): PreflightGate {
       (d.fileName === undefined || !isPackageShimFile(d.fileName)) &&
       !namespaceCalleeSuppressed(p, d) &&
       !workspaceImplicitAnySuppressed(p, d) &&
-      !typeofTestedNameSuppressed(p, d) &&
       !cjsTopLevelReturnSuppressed(p, d) &&
       !jsdocTypeSuppressed(p, d, commentDup);
     // Every filter except the opinion admission, in its historical order.
@@ -7538,7 +7529,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
   // to (a factory whose signature does not accept them).
   const tscWorld = load.tscWorld;
   const tscErrors =
-    tscWorld === undefined ? errorsOf(program) : keptErrors(tscWorld.program, tscWorld.diagnostics);
+    tscWorld === undefined
+      ? errorsOf(program)
+      : keptErrors(tscWorld.program, tscWorld.diagnostics());
   if (tscErrors.length > 0) {
     const world =
       tscWorld === undefined || tscWorld.declWorldFallback === true

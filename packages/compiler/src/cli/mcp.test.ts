@@ -52,6 +52,7 @@ function stubHost(platform = "linux"): CliHost {
     sourceTargetPlatform: () => platform,
     analyze: reach("analyze"),
     compile: reach("compile"),
+    checkIslandDecision: reach("checkIslandDecision"),
     compileLibrary: reach("compileLibrary"),
     resolveProvenanceSources: reach("resolveProvenanceSources"),
     warmNativeCaches: reach("warmNativeCaches"),

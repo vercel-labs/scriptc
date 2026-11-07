@@ -50,6 +50,11 @@ import { llvmRefusalDiag } from "../backend/target-diagnostics.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
 import { analyzeWithFrontend } from "../frontend/analysis.js";
+import { checkIslandDecision, type IslandDecisionCheck } from "../executable/prepare.js";
+import {
+  analyzeOptionsWithDecision,
+  compileOptionsWithDecision,
+} from "../node-islands/decision-file.js";
 import { analyzeWithVerdictCache } from "../coverage/verdict-cache.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import { runNativeFrontend } from "../frontend/pipeline-native.js";
@@ -198,9 +203,37 @@ export class NativeCompiler {
   analyze(entry: string, options: AnalyzeOptions): AnalyzeResult {
     return analyzeWithFrontend(
       resolve(entry),
-      options,
+      analyzeOptionsWithDecision(entry, options),
       this.toolchain.target.platform,
       this.frontend,
+    );
+  }
+
+  /** `build --node-island-decision-check`: the islands a build decides from
+   * scratch against the decision file (executable/prepare.ts). */
+  checkIslandDecision(entry: string, options: CompileRequestOptions): IslandDecisionCheck {
+    entry = resolve(entry);
+    options = compileOptionsWithDecision(entry, options);
+    let ffi: FfiProfile | null = null;
+    if (options.ffiProfilePath !== undefined) {
+      const loaded = loadFfiProfile(resolve(options.ffiProfilePath));
+      if (!loaded.ok)
+        return {
+          file: options.nodeIslands?.decision ?? null,
+          differences: [],
+          packages: 0,
+          modules: 0,
+          undecided: { ok: false, diagnostics: loaded.diagnostics, sourceTexts: new Map() },
+        };
+      ffi = loaded.profile;
+    }
+    return checkIslandDecision(
+      entry,
+      options,
+      ffi,
+      this.toolchain.target.platform,
+      this.frontend,
+      compilationTiming(),
     );
   }
 
@@ -209,6 +242,8 @@ export class NativeCompiler {
    * relower here, since the token comparison is the Node frontend's). */
   analyzeCached(entry: string, options: AnalyzeOptions): AnalyzeResult {
     entry = resolve(entry);
+    // The verdict is keyed by the decision file the analysis replays.
+    options = analyzeOptionsWithDecision(entry, options);
     const cache = this.cache;
     if (cache === null) return this.analyze(entry, options);
     let identity: string;
@@ -465,7 +500,13 @@ export class NativeCompiler {
       warnings: [],
       sources: new Map(),
     };
-    const result = this.compileWithWarnings(entry, options, sink);
+    // The project's decision file, unless the options name one or turn it
+    // off: every cache key and the build itself read it from the options.
+    const result = this.compileWithWarnings(
+      entry,
+      compileOptionsWithDecision(entry, options),
+      sink,
+    );
     // Divergence warnings ride a successful result (never a failure).
     if (!result.ok || sink.warnings.length === 0) return result;
     return { ...result, warnings: sink.warnings, sourceTexts: sink.sources };

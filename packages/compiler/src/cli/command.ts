@@ -1,6 +1,6 @@
 import type { TypePatchCommandRequest } from "../frontend/type-patches/command.js";
 import { rmSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { isExactExternalTypeSpecifier } from "../frontend/program.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
@@ -439,16 +439,26 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (values.node === "") fail(`--node needs the path of a node executable\n\n${USAGE}`);
   const islandDecision = values["node-island-decision"];
-  if (islandDecision !== undefined && command === "coverage") {
-    fail(`--node-island-decision is a build/run option\n\n${USAGE}`);
-  }
   if (islandDecision === "") fail(`--node-island-decision needs a file path\n\n${USAGE}`);
+  const ignoreIslandDecision = values["ignore-node-island-decision"];
+  if (ignoreIslandDecision && islandDecision !== undefined)
+    fail(
+      `--ignore-node-island-decision and --node-island-decision contradict each other\n\n${USAGE}`,
+    );
+  const checkIslandDecision = values["node-island-decision-check"];
+  if (checkIslandDecision && command !== "build")
+    fail(`--node-island-decision-check is a build option\n\n${USAGE}`);
+  if (checkIslandDecision && ignoreIslandDecision)
+    fail(
+      `--node-island-decision-check needs the decision file --ignore-node-island-decision turns off\n\n${USAGE}`,
+    );
   const nodeIslands: NodeIslandOptions | undefined =
     islandMode === undefined &&
     islandArgs.length === 0 &&
     nativeArgs.length === 0 &&
     values.node === undefined &&
     islandDecision === undefined &&
+    !ignoreIslandDecision &&
     !values["strict-user-js"]
       ? undefined
       : {
@@ -458,6 +468,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
           ...(values.node !== undefined ? { node: resolve(values.node) } : {}),
           ...(values["strict-user-js"] ? { strictUserJs: true } : {}),
           ...(islandDecision !== undefined ? { decision: resolve(islandDecision) } : {}),
+          ...(ignoreIslandDecision ? { ignoreDecision: true } : {}),
         };
   if (printNativeLinkInfo && command !== "build") {
     fail(`--print=native-link-info is a build option\n\n${USAGE}`);
@@ -659,6 +670,57 @@ async function main(args: string[], host: CliHost): Promise<number> {
     output.cliOutputKind === "exe" ? host.sourceTargetPlatform() : undefined,
   );
 
+  if (checkIslandDecision) {
+    // The decision a build of this entry and these options makes from
+    // scratch, held against the decision file: no code is generated and
+    // nothing is written.
+    const check = await host.checkIslandDecision(input, {
+      outPath,
+      outDir,
+      ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(nodeIslands !== undefined ? { nodeIslands } : {}),
+      ...(values["shape-overlay"] === false ? { shapeOverlay: false } : {}),
+      ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
+      ...(tier !== undefined ? { tier } : {}),
+    });
+    if (check.file === null)
+      fail(
+        `--node-island-decision-check needs a decision file: pass --node-island-decision=<file> or set "nodeIslands": { "decision": true } under "scriptc" in package.json\n\n${USAGE}`,
+      );
+    // Paths as the user would type them: relative inside the working
+    // directory, whole outside it.
+    const shown = (path: string): string => {
+      const rel = relative(process.cwd(), path);
+      return rel === "" || rel.startsWith("..") ? path : rel;
+    };
+    const file = shown(check.file);
+    const entry = shown(input);
+    if (check.undecided !== null) {
+      const color = process.stderr.isTTY ?? false;
+      process.stderr.write(
+        renderDiagnostics(check.undecided.diagnostics, check.undecided.sourceTexts, { color }) +
+          "\n" +
+          `scriptc: ${entry} fails before its Node islands are decided, so there is nothing to compare with ${file}\n`,
+      );
+      return 1;
+    }
+    const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
+    const decided = `${count(check.packages, "package")}, ${count(check.modules, "module")}`;
+    if (check.differences.length === 0) {
+      process.stdout.write(
+        `the Node island decision of ${entry} matches ${file} (${decided})\n`,
+      );
+      return 0;
+    }
+    process.stdout.write(
+      `the Node island decision of ${entry} differs from ${file}\n` +
+        check.differences.map((line) => `  ${line}\n`).join("") +
+        `a build from scratch decides ${decided}; "+" is an island the file lacks, "-" one a build from scratch does not run in Node\n` +
+        `to record the decision again, delete this entry from ${file} (or the file) and build\n`,
+    );
+    return 1;
+  }
+
   let nativeLinkInfo: object | undefined;
   let diagnosticsEnvelope: object | undefined;
   const build = async (): Promise<string> => {
@@ -812,6 +874,8 @@ function hasNodeIslandFlags(values: ReturnType<typeof parseCli>["values"]): bool
     values["node-islands"] !== undefined ||
     (values["node-island"] ?? []).length > 0 ||
     values["node-island-decision"] !== undefined ||
+    values["node-island-decision-check"] ||
+    values["ignore-node-island-decision"] ||
     (values.native ?? []).length > 0 ||
     values.node !== undefined ||
     values["explain-island"] !== undefined ||

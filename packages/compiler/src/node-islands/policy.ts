@@ -27,10 +27,14 @@ export interface NodeIslandOptions {
   /** `--strict-user-js`: report R2 constructs in user JavaScript as
    * SC8101–SC8105. */
   strictUserJs?: boolean;
-  /** `--node-island-decision=<file>`: where a build keeps the island
-   * decision it reached and the next build starts from (absolute;
-   * decision-file.ts). */
+  /** `--node-island-decision=<file>`, or the project's
+   * `scriptc.nodeIslands.decision`: where a build keeps the island decision
+   * it reached and the next build starts from (absolute; decision-file.ts). */
   decision?: string;
+  /** `--ignore-node-island-decision`: this build neither reads nor writes
+   * the project's decision file (decision-file.ts's withRecordedDecision
+   * resolves both fields before anything else reads the options). */
+  ignoreDecision?: boolean;
 }
 
 export type DecisionSource = "config" | "cli";
@@ -167,7 +171,9 @@ export function nodeIslandOptionsKey(options: NodeIslandOptions | undefined): st
     options.node ?? "",
     options.strictUserJs === true ? "strict-user-js" : "",
   ].join("|");
-  // A build that replays a recorded decision is keyed by where it reads it;
-  // every other key stays as it was.
+  // A build that replays a recorded decision is keyed by where it reads it,
+  // and one that ignores the project's by that; every other key stays as it
+  // was.
+  if (options.ignoreDecision === true) return `${key}|ignore-decision`;
   return options.decision === undefined ? key : `${key}|decision=${options.decision}`;
 }

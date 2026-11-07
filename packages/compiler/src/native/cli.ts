@@ -134,6 +134,10 @@ async function main(): Promise<number> {
       withCheckerFallback(() => runCompilerTask(() => getCompiler().analyzeCached(entry, options))),
     compile: (entry, options) =>
       withCheckerFallback(() => runCompilerTask(() => getCompiler().compile(entry, options))),
+    checkIslandDecision: (entry, options) =>
+      withCheckerFallback(() =>
+        runCompilerTask(() => getCompiler().checkIslandDecision(entry, options)),
+      ),
     compileLibrary: (options) =>
       withCheckerFallback(() => runCompilerTask(() => getCompiler().compileLibrary(options))),
     resolveProvenanceSources: async (entry) => {

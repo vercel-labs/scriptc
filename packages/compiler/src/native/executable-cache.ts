@@ -405,8 +405,6 @@ export function openNativeExecutableCache(
     // The key names a profile by path, not by its bytes.
     options.profileGenerate !== undefined ||
     options.profileUse !== undefined ||
-    // Nor does it name a recorded island decision by its bytes.
-    options.nodeIslands?.decision !== undefined ||
     process.env["SCRIPTC_LINKER"] !== undefined ||
     process.env["SCRIPTC_LLVM_HELPER"] !== undefined ||
     toolchain.linkerArgs.length !== 0 ||

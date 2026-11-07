@@ -14,6 +14,14 @@ import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.j
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
 import { outsideGraphIslands } from "../node-islands/graph-islands.js";
 import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
+import type { IslandPackage } from "../node-islands/boundary.js";
+import {
+  admitRecorded,
+  islandDecisionKey,
+  readIslandDecision,
+  staleByOutcome,
+  withoutPackages,
+} from "../node-islands/decision-file.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
  * Unlike compile(), lowering diagnostics are data here, not failure. */
@@ -182,47 +190,6 @@ export function analyzeWithFrontend(
         ...(opts.wasm !== undefined && opts.wasm.length > 0 ? { wasmFiles: opts.wasm } : {}),
       });
     };
-    // A package the module graph proves runs in Node — a value import of an
-    // installed package whose implementation the first load did not put in
-    // the program — is exactly the SC2013 refusal the discovery lowering
-    // would report and the retry below would then answer with an island.
-    // Deciding it here makes the discovery lowering the retry lowering, so a
-    // program pays one lowering instead of two
-    // (node-islands/graph-islands.ts; executable/prepare.ts decides the same
-    // set for builds). The retry stays for what only a lowering can see.
-    let lowerIslandsLocal = lowerIslands;
-    const proven =
-      scan === undefined
-        ? null
-        : outsideGraphIslands(
-            policy,
-            fe.npmStatic,
-            scan,
-            lowerIslands?.modules ?? new Map(),
-            lowerIslands?.packages ?? new Map(),
-            // The analysis lowers every site, including the deferred require()
-            // a build leaves to its retry, so those packages are refusals it
-            // is about to report rather than decisions it may skip.
-            true,
-          );
-    if (proven !== null) {
-      const packages = new Map(lowerIslands?.packages ?? []);
-      for (const [name, island] of proven) packages.set(name, island);
-      lowerIslandsLocal = nodeIslandSet(packages, lowerIslands?.modules ?? new Map());
-    }
-    let lowered = lowerWith(lowerIslandsLocal);
-    // A package whose own module refused or fenced runs in a Node island in
-    // a build, which lowers again with it islanded (node-islands/growth.ts,
-    // the rules executable/prepare.ts retries with). Coverage makes the same
-    // retry, so the refusals those packages caused — a property write on an
-    // SDK's request object, a call of its constructor, a `for await` over
-    // its stream — are reported as what the build does with them. The first
-    // pass's diagnostics stay the island report's reasons: they named the
-    // packages, the retry cleared them.
-    // The fence rule is the sure one: a build islands a package whose
-    // module-init fence or runtime need means it can never compile
-    // natively, and keeps a deferred gap fence native (its refusal stands
-    // where it is reached).
     const growth: IslandGrowthContext | null =
       scan === undefined
         ? null
@@ -238,21 +205,109 @@ export function analyzeWithFrontend(
     // The pass that grew the set named the packages; the reload no longer
     // compiles them, so its diagnostics do not. Their first reasons stay the
     // island report's (the same reasons a build's SC8001 note keeps).
-    const growthReasons: ScrDiagnostic[] = [];
-    const growthFences: ScrDiagnostic[] = [];
-    for (;;) {
-      const known = lowerIslandsLocal;
-      if (growth === null || known === null) break;
-      const grown = growIslandSet(growth, known.packages, {
-        diagnostics: lowered.diagnostics,
-        fences: lowered.runtimeFences,
-        fenceMode: "sure",
-      });
-      if (grown === null) break;
-      growthReasons.push(...lowered.diagnostics);
-      growthFences.push(...lowered.runtimeFences);
-      lowerIslandsLocal = nodeIslandSet(grown, known.modules);
-      lowered = lowerWith(lowerIslandsLocal);
+    let growthReasons: ScrDiagnostic[] = [];
+    let growthFences: ScrDiagnostic[] = [];
+    // One lowering of the program from the islands in `start`, grown the way
+    // a build grows its own.
+    const lowerFrom = (start: NodeIslandSet | null): LowerResult => {
+      growthReasons = [];
+      growthFences = [];
+      // A package the module graph proves runs in Node — a value import of an
+      // installed package whose implementation the first load did not put in
+      // the program — is exactly the SC2013 refusal the discovery lowering
+      // would report and the retry below would then answer with an island.
+      // Deciding it here makes the discovery lowering the retry lowering, so a
+      // program pays one lowering instead of two
+      // (node-islands/graph-islands.ts; executable/prepare.ts decides the same
+      // set for builds). The retry stays for what only a lowering can see.
+      let islands = start;
+      const proven =
+        scan === undefined
+          ? null
+          : outsideGraphIslands(
+              policy,
+              fe.npmStatic,
+              scan,
+              start?.modules ?? new Map(),
+              start?.packages ?? new Map(),
+              // The analysis lowers every site, including the deferred require()
+              // a build leaves to its retry, so those packages are refusals it
+              // is about to report rather than decisions it may skip.
+              true,
+            );
+      if (proven !== null) {
+        const packages = new Map(start?.packages ?? []);
+        for (const [name, island] of proven) packages.set(name, island);
+        islands = nodeIslandSet(packages, start?.modules ?? new Map());
+      }
+      let result = lowerWith(islands);
+      // A package whose own module refused or fenced runs in a Node island in
+      // a build, which lowers again with it islanded (node-islands/growth.ts,
+      // the rules executable/prepare.ts retries with). Coverage makes the same
+      // retry, so the refusals those packages caused — a property write on an
+      // SDK's request object, a call of its constructor, a `for await` over
+      // its stream — are reported as what the build does with them. The first
+      // pass's diagnostics stay the island report's reasons: they named the
+      // packages, the retry cleared them.
+      // The fence rule is the sure one: a build islands a package whose
+      // module-init fence or runtime need means it can never compile
+      // natively, and keeps a deferred gap fence native (its refusal stands
+      // where it is reached).
+      for (;;) {
+        const known = islands;
+        if (growth === null || known === null) break;
+        const grown = growIslandSet(growth, known.packages, {
+          diagnostics: result.diagnostics,
+          fences: result.runtimeFences,
+          fenceMode: "sure",
+        });
+        if (grown === null) break;
+        growthReasons.push(...result.diagnostics);
+        growthFences.push(...result.runtimeFences);
+        islands = nodeIslandSet(grown, known.modules);
+        result = lowerWith(islands);
+      }
+      return result;
+    };
+    // The islands a decision file records for this entry and these options
+    // (node-islands/decision-file.ts): the analysis lowers with them from
+    // the start, as a build that replays the file does, so it reports the
+    // program that build compiles without rediscovering its islands. It asks
+    // the same two questions of them a build asks: does the program still
+    // import each (the first load's scan), and do the islands a fence rule
+    // added for the recorded build's outcome still stand when this program
+    // ends the other way? An analysis never writes the file: the build
+    // records.
+    const withRecorded = (packages: ReadonlyMap<string, IslandPackage>): NodeIslandSet | null => {
+      if (packages.size === 0) return lowerIslands;
+      const merged = new Map(packages);
+      for (const [name, island] of lowerIslands?.packages ?? []) merged.set(name, island);
+      return nodeIslandSet(merged, lowerIslands?.modules ?? new Map());
+    };
+    const decisionFile = opts.nodeIslands?.decision;
+    const recorded =
+      decisionFile === undefined || scan === undefined
+        ? null
+        : readIslandDecision(
+            decisionFile,
+            islandDecisionKey(entryPath, opts.nodeIslands, opts.npmStatic, opts.tier, buildPlatform),
+            policy,
+          );
+    let replayed: ReadonlyMap<string, IslandPackage> =
+      recorded === null || scan === undefined
+        ? new Map()
+        : admitRecorded(recorded, scan, new Map()).packages;
+    let lowered = lowerFrom(withRecorded(replayed));
+    if (recorded !== null) {
+      const stale = staleByOutcome(
+        recorded.outcome,
+        replayed,
+        preflight.length === 0 && lowered.diagnostics.length === 0,
+      );
+      if (stale.size > 0) {
+        replayed = withoutPackages(replayed, stale, new Map<string, string>());
+        lowered = lowerFrom(withRecorded(replayed));
+      }
     }
     const provenance = provenanceSources();
     const islandReport =
@@ -273,6 +328,7 @@ export function analyzeWithFrontend(
               lowered.unreached?.runtimeFences ?? [],
             ]),
             policy,
+            ...(replayed.size > 0 ? { recorded: replayed } : {}),
           });
     const nodeIslands =
       islandReport !== null && hasNodeIslandFindings(islandReport) ? islandReport : null;

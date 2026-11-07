@@ -17,6 +17,21 @@ import * as ts from "../frontend/ts7/adapter.js";
 import { trackedRealpath } from "../frontend/input-tracker.js";
 import { packageDirOf } from "./origin.js";
 
+/** The rule of the island decision that grew a package into the set after
+ * the first decision (node-islands/growth.ts states them): a load that
+ * refused it late, a preflight refusal at its import, the lowering's own
+ * refusals, an ES module of it importing a CommonJS island, the fence report
+ * of a failing build, or a fence that surely fires in a compiling one. A
+ * recorded decision keeps it, because how long an island may be trusted
+ * depends on the rule that asked for it (node-islands/decision-file.ts). */
+export type IslandRule =
+  | "refusal"
+  | "preflight"
+  | "lowering"
+  | "esm-importer"
+  | "fence-report"
+  | "fence-sure";
+
 /** One package the build runs in a Node island. */
 export interface IslandPackage {
   name: string;
@@ -27,6 +42,12 @@ export interface IslandPackage {
    * reason, for the SC8001 note. */
   class: string;
   reason: string;
+  /** The rule that grew it into the set; absent for a package the first
+   * decision islands from the load alone. */
+  rule?: IslandRule;
+  /** For the `esm-importer` rule: the CommonJS island this package imports,
+   * and so the island it leaves the set with. */
+  follows?: string;
 }
 
 /** One program module the build runs in a Node island (DESIGN.md

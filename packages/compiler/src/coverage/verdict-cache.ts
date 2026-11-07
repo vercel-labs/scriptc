@@ -17,7 +17,7 @@ import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { NpmStaticStatus } from "./report.js";
 import type { WasmModuleReport } from "../wasm/discover.js";
 import type { NodeIslandReport } from "../node-islands/summary.js";
-import { nodeIslandOptionsKey } from "../node-islands/policy.js";
+import { nodeIslandDecisionKey } from "../node-islands/decision-file.js";
 import {
   FrontendInputTracker,
   frontendInputsStillMatch,
@@ -135,9 +135,10 @@ export function verdictKey(
       ...(opts.tier === "static-only" ? ["tier=static-only"] : []),
       // The module files' contents are probes; their names are options.
       ...(opts.wasm !== undefined && opts.wasm.length > 0 ? [`wasm=${opts.wasm.join("\n")}`] : []),
-      // The Node island policy's command-line half shapes the report.
+      // The Node island policy's command-line half shapes the report, and
+      // so do the islands a decision file records (by its bytes).
       ...(opts.nodeIslands !== undefined
-        ? [`node-islands=${nodeIslandOptionsKey(opts.nodeIslands)}`]
+        ? [`node-islands=${nodeIslandDecisionKey(opts.nodeIslands)}`]
         : []),
     ].join("\0"),
   );

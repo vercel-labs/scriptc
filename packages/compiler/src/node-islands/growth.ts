@@ -167,6 +167,7 @@ function growFromPreflight(
       dir: at.dir,
       class: "gap",
       reason: `${d.code}: ${d.message}`,
+      rule: "preflight",
     });
   }
 }
@@ -199,6 +200,7 @@ function growFromLowering(
         dir: at.dir,
         class: "packaging",
         reason: `${d.code}: ${d.message}`,
+        rule: "lowering",
       });
       continue;
     }
@@ -213,6 +215,7 @@ function growFromLowering(
       dir: at.dir,
       class: reason.class,
       reason: describe(reason),
+      rule: "lowering",
     });
   }
   growEsmImporters(ctx.policy, compiled, ctx.scan.edges, grown);
@@ -289,6 +292,7 @@ function growFromFences(
       dir: island.path,
       class: island.class,
       reason: island.reason,
+      rule: mode === "sure" ? "fence-sure" : "fence-report",
     });
   }
   growEsmImporters(ctx.policy, compiled, ctx.scan.edges, grown, {

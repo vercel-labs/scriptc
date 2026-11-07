@@ -16,10 +16,19 @@ import {
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
-import { prepareExecutableBuild, type PreparedExecutableModule } from "./executable/prepare.js";
+import {
+  checkIslandDecision as checkPreparedIslandDecision,
+  prepareExecutableBuild,
+  type IslandDecisionCheck,
+  type PreparedExecutableModule,
+} from "./executable/prepare.js";
 import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
-import { islandDecisionDigest } from "./node-islands/decision-file.js";
+import {
+  analyzeOptionsWithDecision,
+  compileOptionsWithDecision,
+  islandDecisionDigest,
+} from "./node-islands/decision-file.js";
 import { setIslandResolver } from "./node-islands/resolve.js";
 import {
   prepareLibrary,
@@ -455,6 +464,7 @@ export function sourceTargetPlatform(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 export function analyze(entryPath: string, opts: AnalyzeOptions = {}): AnalyzeResult {
+  opts = analyzeOptionsWithDecision(entryPath, opts);
   // One scope for the whole analysis: its island reload and retry lowerings
   // load the program again, and they reuse the checker that answered the
   // first load instead of starting a cold one.
@@ -474,6 +484,8 @@ export async function analyzeCached(
   opts: AnalyzeOptions = {},
 ): Promise<AnalyzeResult> {
   entryPath = resolve(entryPath);
+  // The verdict is keyed by the decision file the analysis replays.
+  opts = analyzeOptionsWithDecision(entryPath, opts);
   const root = await prepareBuildCacheRoot(buildCacheRoot());
   if (root === null || provenanceSources() !== null) return analyze(entryPath, opts);
   const directory = join(root, "coverage-v1");
@@ -569,6 +581,9 @@ export async function compile(
   opts: CompileRequestOptions,
 ): Promise<CompileRequestResult> {
   clearCompileSessionCaches();
+  // The project's decision file, unless the options name one or turn it
+  // off: every cache key and the build itself read it from the options.
+  opts = compileOptionsWithDecision(entryPath, opts);
   // `shapeOverlay` reaches the frontend (and its child process) through
   // the environment the overlay reads.
   const overlayEnv = process.env["SCRIPTC_SHAPE_OVERLAY"];
@@ -586,6 +601,54 @@ export async function compile(
   } finally {
     setLibDiagnosticsStore(null);
     frontendProcess?.release();
+    if (opts.shapeOverlay !== undefined) {
+      if (overlayEnv === undefined) delete process.env["SCRIPTC_SHAPE_OVERLAY"];
+      else process.env["SCRIPTC_SHAPE_OVERLAY"] = overlayEnv;
+    }
+  }
+}
+
+export type { IslandDecisionCheck } from "./executable/prepare.js";
+
+/** `scriptc build --node-island-decision-check`: decides the program's Node
+ * islands from scratch, without generating code, and compares them with
+ * what the decision file records for this entry and these options
+ * (executable/prepare.ts's checkIslandDecision). */
+export async function checkIslandDecision(
+  entryPath: string,
+  opts: CompileRequestOptions,
+): Promise<IslandDecisionCheck> {
+  clearCompileSessionCaches();
+  entryPath = resolve(entryPath);
+  opts = compileOptionsWithDecision(entryPath, opts);
+  let ffi: FfiProfile | null = null;
+  if (opts.ffiProfilePath !== undefined) {
+    const loaded = loadFfiProfile(resolve(opts.ffiProfilePath));
+    if (!loaded.ok)
+      return {
+        file: opts.nodeIslands?.decision ?? null,
+        differences: [],
+        packages: 0,
+        modules: 0,
+        undecided: { ok: false, diagnostics: loaded.diagnostics, sourceTexts: new Map() },
+      };
+    ffi = loaded.profile;
+  }
+  const overlayEnv = process.env["SCRIPTC_SHAPE_OVERLAY"];
+  if (opts.shapeOverlay !== undefined)
+    process.env["SCRIPTC_SHAPE_OVERLAY"] = opts.shapeOverlay ? "1" : "0";
+  const services = beginCompileServices();
+  try {
+    return checkPreparedIslandDecision(
+      entryPath,
+      opts,
+      ffi,
+      buildTargetPlatform(),
+      nodeFrontend,
+      compilationTiming(),
+    );
+  } finally {
+    endCompileServices(services);
     if (opts.shapeOverlay !== undefined) {
       if (overlayEnv === undefined) delete process.env["SCRIPTC_SHAPE_OVERLAY"];
       else process.env["SCRIPTC_SHAPE_OVERLAY"] = overlayEnv;

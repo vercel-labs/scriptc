@@ -908,10 +908,13 @@ function mergeSlotNotes(into: ProbedSlotNotes, from: ProbedSlotNotes): void {
   }
 }
 
-/** The receiver of the call being dispatched (Lowerer.dispatchedReceiver)
- * and, once a lowering produced one that may be handed out again, its
- * value with what that lowering ran under. */
-interface DispatchedReceiver {
+/** An operand that may be asked for again while the expression that asked
+ * is still being lowered: the receiver of the call being dispatched
+ * (Lowerer.dispatchedReceiver) or another operand of the expression or
+ * statement on top (Lowerer.keptOperands). Once a lowering produced a value
+ * that may be handed out again, the value with what that lowering ran
+ * under. */
+interface KeptOperand {
   node: ts.Expression;
   value: IrExpr | null;
   ctx: FnCtx | null;
@@ -924,6 +927,19 @@ interface DispatchedReceiver {
   /** The declaration slots the lowering would have reported as dynamic had
    * it not run inside a probe (noteDegradedSlot), or null for none. */
   slotNotes: ProbedSlotNotes | null;
+}
+
+/** Operands that cost less to lower than to keep (Lowerer.keptOperands). */
+function isCheapOperand(node: ts.Expression): boolean {
+  return (
+    ts.isIdentifier(node) ||
+    ts.isNumericLiteral(node) ||
+    ts.isStringLiteralLike(node) ||
+    node.kind === ts.SyntaxKind.ThisKeyword ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword ||
+    node.kind === ts.SyntaxKind.NullKeyword
+  );
 }
 
 export class PoisonError extends Error {
@@ -5380,6 +5396,10 @@ export class Lowerer {
     // begins and ends with none.
     "dispatchedReceiver",
     "probedSlotNotes",
+    // Kept only while the expression or statement that lowered them is
+    // being lowered, so a unit begins and ends with none.
+    "keptOperands",
+    "operandFrames",
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
@@ -5768,7 +5788,7 @@ export class Lowerer {
    * power of the chain's length through classes and records, three for
    * array methods. The first lowering's value is kept here and handed to
    * every later request for the same node (lowerDispatchedReceiver). */
-  private dispatchedReceiver: DispatchedReceiver | null = null;
+  private dispatchedReceiver: KeptOperand | null = null;
 
   /** The lowering of the dispatched call's receiver: the value an earlier
    * form's lowering produced when a new lowering would produce it again,
@@ -5790,17 +5810,11 @@ export class Lowerer {
    * A lowering inside a probe does not report the declaration slots whose
    * type is degraded (noteDegradedSlot); the kept value carries them, and
    * the first request outside a probe reports them. */
-  private lowerDispatchedReceiver(receiver: DispatchedReceiver): IrExpr {
+  private lowerDispatchedReceiver(receiver: KeptOperand): IrExpr {
     const node = receiver.node;
     if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
     const surroundings = this.probeSurroundings();
-    if (
-      receiver.value !== null &&
-      receiver.ctx === this.ctx &&
-      receiver.bindings === this.typeParamBindings &&
-      receiver.surroundings === surroundings &&
-      this.expressionOverridesAre(receiver.overrides)
-    ) {
+    if (receiver.value !== null && this.keptOperandStands(receiver, surroundings)) {
       const notes = receiver.slotNotes;
       if (notes !== null) {
         if (this.diagSink === null) {
@@ -5850,6 +5864,18 @@ export class Lowerer {
    * dispatched receiver is being lowered (null otherwise): its kept value
    * reports them when it is used outside a probe. */
   private probedSlotNotes: ProbedSlotNotes | null = null;
+
+  /** Whether a new lowering here would run under what `kept` was lowered
+   * under: the function context, the type bindings, the surroundings
+   * (probeSurroundings, given) and the expression overrides in force. */
+  private keptOperandStands(kept: KeptOperand, surroundings: number): boolean {
+    return (
+      kept.ctx === this.ctx &&
+      kept.bindings === this.typeParamBindings &&
+      kept.surroundings === surroundings &&
+      this.expressionOverridesAre(kept.overrides)
+    );
+  }
 
   /** Whether the expression overrides in force are exactly `overrides`. */
   private expressionOverridesAre(overrides: IrExpr[] | null): boolean {
@@ -18020,11 +18046,13 @@ export class Lowerer {
   lowerStmt(stmt: ts.Statement): IrStmt | IrStmt[] | null {
     const outermost = openLoweringBudget(stmt);
     const frame = this.openRefusedProbeFrame();
+    const operands = this.openOperandFrame();
     try {
       const lowered = lowerStmt(this, stmt);
       if (outermost) refuseSpentLowering(this);
       return lowered;
     } finally {
+      this.closeOperandFrame(operands);
       this.closeRefusedProbeFrame(frame);
       closeLoweringBudget();
     }
@@ -18177,7 +18205,80 @@ export class Lowerer {
     const dispatched = this.dispatchedReceiver;
     if (dispatched !== null && dispatched.node === expr)
       return this.lowerDispatchedReceiver(dispatched);
+    if (this.operandFrames > 0 && !isCheapOperand(expr)) return this.lowerOperand(expr);
     return lowerExpr(this, expr);
+  }
+
+  /** The operands the expression or statement on top has lowered and may
+   * ask for again (null until the first), and how many expressions and
+   * statements are open.
+   *
+   * A call's receiver is not the only operand lowered more than once: the
+   * Object statics probe their argument to see what it lowered to and then
+   * lower it for the form they pick (`Object.keys(Object.keys(x))` cost four
+   * lowerings per level), and assignments, updates, `in`, `typeof` and the
+   * member reads of JavaScript sources probe a receiver the same way. Each
+   * expression and statement keeps what it lowered for as long as it is
+   * being lowered (lowerOperand). */
+  private keptOperands: KeptOperand[] | null = null;
+  private operandFrames = 0;
+
+  /** Starts the expression or statement that owns the operands kept until
+   * closeOperandFrame; returns the enclosing owner's. */
+  openOperandFrame(): KeptOperand[] | null {
+    const outer = this.keptOperands;
+    this.keptOperands = null;
+    this.operandFrames++;
+    return outer;
+  }
+
+  closeOperandFrame(outer: KeptOperand[] | null): void {
+    this.keptOperands = outer;
+    this.operandFrames--;
+  }
+
+  /** The lowering of an operand of the expression or statement on top: the
+   * value its earlier lowering produced for the same request, when a new
+   * lowering would produce it again (keptOperandStands), and a lowering
+   * that is kept for the next request otherwise.
+   *
+   * Only a lowering that left nothing behind is kept (probeEffects, and
+   * nothing in the capture buffer), so the output cannot depend on whether
+   * it ran once or twice. The receiver of a call is the one operand that is
+   * kept when it declares something (lowerDispatchedReceiver). */
+  private lowerOperand(node: ts.Expression): IrExpr {
+    if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
+    const surroundings = this.probeSurroundings();
+    const kept = this.keptOperands;
+    if (kept !== null) {
+      // The latest lowering of the node is the one a new lowering repeats.
+      for (let i = kept.length - 1; i >= 0; i--) {
+        const operand = kept[i]!;
+        if (operand.node !== node) continue;
+        if (operand.value !== null && this.keptOperandStands(operand, surroundings))
+          return operand.value;
+        break;
+      }
+    }
+    const effects = this.probeEffects();
+    const sinkMark = this.diagSinkMark();
+    const value = lowerExpr(this, node);
+    if (
+      this.probeEffects() === effects &&
+      this.diagSinkMark() === sinkMark &&
+      this.probeSurroundings() === surroundings
+    ) {
+      (this.keptOperands ??= []).push({
+        node,
+        value,
+        ctx: this.ctx,
+        bindings: this.typeParamBindings,
+        surroundings,
+        overrides: this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()],
+        slotNotes: null,
+      });
+    }
+    return value;
   }
 
   /** The value storedImplicitArgumentType lowered for `expr` in the active

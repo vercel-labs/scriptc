@@ -5,7 +5,9 @@
  * receiver for itself, so a chain cost two lowerings per link through
  * classes and records and three through array methods, multiplied at every
  * link (16 links through an interface took 7.6 s, 22 about five minutes).
- * The receiver is now lowered once per call (Lowerer.dispatchedReceiver).
+ * The receiver is now lowered once per call (Lowerer.dispatchedReceiver),
+ * and any other operand an expression asks for twice is lowered once when
+ * its lowering leaves nothing behind (Lowerer.keptOperands).
  *
  * The test counts lowerings, not seconds, so it does not depend on the
  * machine: for each shape, the lowerings added by links 17 to 24 must not
@@ -197,6 +199,13 @@ console.log(${text});
 }
 const base = new Vec(1);
 console.log(${text}.x);
+`;
+  },
+  "Object statics nested as arguments": (links) => {
+    let text = "seed";
+    for (let i = 0; i < links; i++) text = `Object.keys(${text})`;
+    return `const seed: string[] = ["a", "b"];
+console.log(${text}.length);
 `;
   },
   "pipe(seed, f, g, h)": (links) => {

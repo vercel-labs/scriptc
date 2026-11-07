@@ -23,6 +23,7 @@
  */
 #include "scr_runtime.h"
 #include "scr_key.h"
+#include "scr_record_source_private.h"
 
 /* The JavaScript object model build asks scr_dyn_handle_props.c about a
  * runtime handle's own properties (a Date, RegExp, Map, Set, buffer or
@@ -2228,7 +2229,8 @@ static bool dyn_bytes_element_set(ScrDyn *target, double index, const ScrDyn *va
 
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
  * checked-dynamic tier): JS's spread over the checked-dynamic tree's iterable kinds —
- * arrays element-by-element (retained), strings by code POINT (the string
+ * arrays element-by-element (retained; a hole reads through the prototype
+ * chain, as the array iterator does), strings by code POINT (the string
  * iterator; astral chars arrive unsplit), bytes by byte; every other kind
  * throws V8's exact SPREAD-CALL TypeError (catchable, pending — callers
  * check): nullish sources spell the spread expression (`what`) — "v is
@@ -2250,8 +2252,19 @@ void scr_dyn_arr_push_spread(ScrDyn *arr, const ScrDyn *src, const char *what) {
     return;
   }
   if (src->kind == SCR_DYN_ARR) {
+    if (!src->v.arr.presence) {
+      for (size_t i = 0; i < src->v.arr.len; i++) {
+        scr_dyn_arr_push(arr, scr_dyn_retain(src->v.arr.items[i]));
+      }
+      return;
+    }
+    /* A hole has no element of its own: JS reads it through the prototype
+     * chain, where an inherited indexed getter the program installed runs,
+     * exactly as the array iterator does (scr_dyn_arr_at). */
     for (size_t i = 0; i < src->v.arr.len; i++) {
-      scr_dyn_arr_push(arr, scr_dyn_retain(src->v.arr.items[i]));
+      ScrDyn *value = scr_dyn_arr_at(src, (double)i);
+      if (!value) return; /* an inherited getter threw: the exception is pending */
+      scr_dyn_arr_push(arr, value);
     }
     return;
   }
@@ -4154,29 +4167,6 @@ ScrDyn *scr_dyn_new_buffer(const ScrBytes *b) {
  * view: every capsule for the record adopts it, so properties written
  * through untyped references persist after the capsule is gone, and the
  * typed serializers of such a record go through its capsule. */
-typedef struct {
-  void *rec;
-  ScrDyn *view;
-  /* The shape's declared names in declaration order, as static strided
-   * tables: the compiler's name/length arrays, or a JSON schema's fields. */
-  const char *names;
-  const char *lens;
-  size_t name_stride, len_stride, count;
-  /* A record view (scr_dyn_record_view) has an entry with no view and
-   * this: the capsule of the record it views (+1). Boxing the view answers
-   * that capsule (scr_dyn_typed_ref_new), and the view type's reflective
-   * surfaces go through it (scr_record_source_has). NULL for an ordinary
-   * source. */
-  ScrDyn *capsule;
-  /* A view's record (borrowed: the capsule holds it) and its byte offsets
-   * for the view type's fields. */
-  void *viewed;
-  const size_t *offsets;
-  /* The view holds properties a partial view's writes added, in the order
-   * the writes happened; reflection and serialization answer them after the
-   * record's own keys. */
-  bool extras;
-} ScrRecordSource;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
 /* Deleted slots keep this marker so probe runs stay intact without moving
@@ -4228,6 +4218,12 @@ static ScrDyn *scr_record_view_capsule(const void *rec) {
   ScrRecordSource *entry = scr_record_source_slot(rec);
   return entry ? entry->capsule : NULL;
 }
+
+/* The table entry of `rec`, a record view's entry included, or NULL: the
+ * way in for the gated units that add table operations
+ * (scr_record_source_private.h). This file's own lookups keep the static
+ * one. */
+ScrRecordSource *scr_record_source_entry(const void *rec) { return scr_record_source_slot(rec); }
 
 static void scr_record_view_forget(ScrDyn *capsule, const void *view);
 
@@ -4318,25 +4314,6 @@ static void scr_record_source_reserve(void) {
   }
   scr_record_source_deleted = 0;
   free(old);
-}
-
-/* The key's position in the shape's declaration order, or count. */
-static size_t scr_record_source_index(const ScrRecordSource *source, const char *key,
-                                      size_t key_len) {
-  for (size_t i = 0; i < source->count; i++) {
-    size_t len;
-    memcpy(&len, source->lens + i * source->len_stride, sizeof len);
-    if (len != key_len) continue;
-    const char *name;
-    memcpy(&name, source->names + i * source->name_stride, sizeof name);
-    if (memcmp(name, key, key_len) == 0) return i;
-  }
-  return source->count;
-}
-
-static bool scr_record_source_declared(const ScrRecordSource *source, const char *key,
-                                       size_t key_len) {
-  return scr_record_source_index(source, key, key_len) < source->count;
 }
 
 /* The source an entry keeps its properties in: its own for a record, the
@@ -7701,6 +7678,19 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
     scr_closure_release(clo);
     return original;
   }
+#ifdef SCR_NODE_ISLANDS
+  /* A signature adapter over a view of a Node island's function is still
+   * that function: its box is the island's own handle, so it compares equal
+   * to the function and crosses back into the island as it. */
+  if (clo->identity != NULL && scr_ni_dyn_ops != NULL &&
+      scr_ni_dyn_ops->function_of_identity != NULL) {
+    ScrDyn *island = scr_ni_dyn_ops->function_of_identity(clo->identity);
+    if (island != NULL) {
+      scr_closure_release(clo);
+      return island;
+    }
+  }
+#endif
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_FUNC);
   d->v.fn.clo = clo;
   d->v.fn.thunk = thunk;
@@ -11437,6 +11427,13 @@ int scr_dyn_function_kind(const ScrDyn *value) {
 void scr_dyn_adopt_identity(ScrClosure *adapter, const ScrDyn *value) {
   if (value->kind == SCR_DYN_FUNC && value->v.fn.class_obj == NULL)
     scr_closure_adopt_identity(adapter, value->v.fn.clo, value->v.fn.arity);
+#ifdef SCR_NODE_ISLANDS
+  /* A Node island's function is one function however many typed views the
+   * program holds of it: each view adopts the handle's identity root. */
+  else if (scr_ni_dyn_handle(value) && scr_ni_dyn_ops != NULL &&
+           scr_ni_dyn_ops->function_identity != NULL)
+    scr_closure_adopt_identity(adapter, scr_ni_dyn_ops->function_identity(value), 0);
+#endif
 }
 
 bool scr_dyn_is_object(const ScrDyn *d) {
@@ -11531,6 +11528,12 @@ static ScrStr *scr_dyn_string_tag(const ScrDyn *d) {
 }
 
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
+#ifdef SCR_NODE_ISLANDS
+  /* An island object answers from Node, which reads its builtin tag and
+   * its @@toStringTag: an island array is "[object Array]". */
+  if (scr_ni_dyn_handle(d) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->object_tag != NULL)
+    return scr_ni_dyn_ops->object_tag(d);
+#endif
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
     return NULL;
@@ -14534,6 +14537,13 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
   scr_dyn_path_render(&b, path);
   scr_jb_puts(&b, ", got ");
   scr_jb_puts(&b, scr_dyn_kind_name(got));
+#ifdef SCR_NODE_ISLANDS
+  /* The value has no wrong shape: it is a Node island's object, which this
+   * type has no way to hold. Say so, and what does hold it. */
+  if (scr_ni_dyn_handle(got))
+    scr_jb_puts(&b, " from a Node island (an island object stays an island value: declare the island's "
+                    "type or 'unknown' for it, or copy it with structuredClone)");
+#endif
   /* A real TypeError instance: catch bindings narrow it with instanceof
    * and read the path off e.message; the uncaught line ("Uncaught
    * TypeError: expected ...") is byte-identical to the old string form. */
@@ -16650,7 +16660,14 @@ static ScrDyn *scr_json_revive(ScrDyn *holder, const ScrStr *key,
 ScrDyn *scr_json_parse_reviver(ScrStr *text, const ScrDyn *reviver) {
   ScrDyn *parsed = scr_json_parse(text);
   if (!parsed) return NULL; /* No callback runs on invalid input. */
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a reviver function. */
+  if (reviver->kind != SCR_DYN_FUNC &&
+      !(scr_ni_dyn_handle(reviver) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(reviver)))
+    return parsed;
+#else
   if (reviver->kind != SCR_DYN_FUNC) return parsed;
+#endif
   ScrDyn *holder = scr_dyn_new_obj();
   scr_dyn_obj_set(holder, "", 0, parsed);
   ScrStr *key = scr_str_new("", 0);
@@ -17098,6 +17115,14 @@ ScrDyn *scr_json_stringify_value(const ScrDyn *value, const ScrDyn *replacer, co
     size_t length = isnan(count) || count <= 0 ? 0 : count >= 10 ? 10 : (size_t)count;
     gap = scr_str_new("          ", length);
   } else gap = scr_str_new("", 0);
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a replacer function. */
+  if (scr_ni_dyn_handle(replacer) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(replacer)) {
+    ScrDyn *replaced = scr_json_stringify_replacer(value, replacer, gap);
+    scr_str_release(gap);
+    return replaced;
+  }
+#endif
   bool list = replacer->kind == SCR_DYN_ARR || (replacer->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(replacer));
   ScrDyn *result = scr_json_stringify_replacer(value, replacer->kind == SCR_DYN_FUNC || list ? replacer : scr_dyn_undefined(), gap);
   scr_str_release(gap);
@@ -18075,6 +18100,11 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
     return value;
   }
   return scr_dyn_obj_read_receiver(d, key, key_len, d);
+}
+
+ScrDyn *scr_dyn_obj_read_with_receiver(const ScrDyn *d, const char *key, size_t key_len,
+                                       const ScrDyn *receiver) {
+  return scr_dyn_obj_read_receiver(d, key, key_len, receiver);
 }
 
 /* Read-site caches (ScrDynReadIc). A hit is exactly the first step of
@@ -19401,6 +19431,25 @@ static void scr_dyn_assign_linked_from(ScrDyn *target, const ScrDyn *src, bool d
 }
 
 static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
+#ifdef SCR_NODE_ISLANDS
+  /* An island object's own enumerable string keys, read in Node as
+   * Object.keys of one reads them: `{ ...islandObject }` and Object.assign
+   * copy them where they copied nothing. */
+  if (scr_ni_dyn_handle(src) && scr_ni_dyn_ops != NULL) {
+    ScrDyn *keys = scr_ni_dyn_ops->own_keys((ScrDyn *)src, 0);
+    if (keys == NULL) return;
+    for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
+      ScrDyn *key = keys->v.arr.items[i];
+      if (key->kind != SCR_DYN_STR) continue;
+      ScrDyn *value = scr_ni_dyn_ops->get((ScrDyn *)src, key);
+      if (value == NULL) break;
+      scr_dyn_copy_property(target, key->v.str, value, define);
+      scr_dyn_release(value);
+    }
+    scr_dyn_release(keys);
+    return;
+  }
+#endif
   if (scr_typed_ref_linked_copy(src)) {
     scr_dyn_assign_linked_from(target, src, define);
     return;
@@ -21160,11 +21209,19 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
   ScrDyn *entries = scr_dyn_map_seed_entries(seed);
   if (!entries) { scr_weak_map_release(map); return NULL; }
   for (size_t i = 0; i < entries->v.arr.len; i++) {
+    /* An array seed answers a hole through the prototype chain, where an
+     * inherited indexed getter runs (scr_dyn_arr_at). */
+    ScrDyn *raw = entries->v.arr.presence ? scr_dyn_arr_at(entries, (double)i)
+                                          : scr_dyn_retain(entries->v.arr.items[i]);
+    if (!raw) break;
     if (is_set) {
-      if (!scr_weak_set(map, entries->v.arr.items[i], scr_dyn_undefined())) break;
+      bool added = scr_weak_set(map, raw, scr_dyn_undefined());
+      scr_dyn_release(raw);
+      if (!added) break;
       continue;
     }
-    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
+    ScrDyn *entry = scr_dyn_map_seed_entry(raw);
+    scr_dyn_release(raw);
     if (!entry) break;
     ScrDyn *key = scr_dyn_entry_read(entry, 0);
     ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
@@ -21591,18 +21648,69 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
 }
 
-ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
-  ScrDyn *items = NULL;
-  if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
-    items = scr_dyn_seed_values(seed);
-    if (!items) return NULL;
+/* Insert a constructor seed into a native Set or Map handle with the bulk
+ * insert, without running program code. The checked-dynamic collection
+ * constructor creates its collection before it reads the adder (an accessor
+ * getter runs with the collection as `this`), so an adder that turns out to
+ * be the builtin fills this already-created collection. False with the
+ * exception pending. */
+bool scr_dyn_native_collection_insert_seed(ScrDyn *collection, const ScrDyn *seed) {
+  if (scr_dyn_native_set_is(collection)) {
+    ScrDyn *items = NULL;
+    if (seed->kind != SCR_DYN_NULL && seed->kind != SCR_DYN_UNDEF) {
+      items = scr_dyn_seed_values(seed);
+      if (!items) return false;
+    }
+    ScrMap *set = scr_map_retain(collection->v.handle.ptr);
+    if (items)
+      for (size_t i = 0; i < items->v.arr.len; i++)
+        scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
+    scr_map_release(set);
+    scr_dyn_release(items);
+    return true;
   }
+  if (scr_dyn_native_map_is(collection)) {
+    ScrDyn *entries = scr_dyn_map_seed_entries(seed);
+    if (!entries) return false;
+    ScrMap *map = scr_map_retain(collection->v.handle.ptr);
+    bool ok = true;
+    for (size_t i = 0; i < entries->v.arr.len; i++) {
+      /* An array seed answers a hole through the prototype chain, where an
+       * inherited indexed getter runs (scr_dyn_arr_at). */
+      ScrDyn *raw = entries->v.arr.presence ? scr_dyn_arr_at(entries, (double)i)
+                                            : scr_dyn_retain(entries->v.arr.items[i]);
+      ScrDyn *entry = raw ? scr_dyn_map_seed_entry(raw) : NULL;
+      scr_dyn_release(raw);
+      if (!entry) {
+        ok = false;
+        break;
+      }
+      ScrDyn *key = scr_dyn_entry_read(entry, 0);
+      ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
+      scr_dyn_release(entry);
+      if (value) scr_map_dyn_set(map, key, value, false);
+      scr_dyn_release(key);
+      scr_dyn_release(value);
+      if (scr_exc_pending()) {
+        ok = false;
+        break;
+      }
+    }
+    scr_map_release(map);
+    scr_dyn_release(entries);
+    return ok;
+  }
+  return false;
+}
+
+ScrDyn *scr_dyn_native_set_new(const ScrDyn *seed) {
   ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
-  if (items) for (size_t i = 0; i < items->v.arr.len; i++) scr_map_set_ref_f64(set, items->v.arr.items[i], 0);
   ScrDyn *result = scr_dyn_native_set(set);
   scr_map_release(set);
-  scr_dyn_release(items);
-  return result;
+  if (!result) return NULL;
+  if (scr_dyn_native_collection_insert_seed(result, seed)) return result;
+  scr_dyn_release(result);
+  return NULL;
 }
 
 bool scr_dyn_native_set_is(const ScrDyn *value) {
@@ -21710,24 +21818,13 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
 }
 
 ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed) {
-  ScrDyn *entries = scr_dyn_map_seed_entries(seed);
-  if (!entries) return NULL;
   ScrMap *map = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
-  for (size_t i = 0; i < entries->v.arr.len; i++) {
-    ScrDyn *entry = scr_dyn_map_seed_entry(entries->v.arr.items[i]);
-    if (!entry) break;
-    ScrDyn *key = scr_dyn_entry_read(entry, 0);
-    ScrDyn *value = scr_exc_pending() ? NULL : scr_dyn_entry_read(entry, 1);
-    scr_dyn_release(entry);
-    if (value) scr_map_dyn_set(map, key, value, false);
-    scr_dyn_release(key);
-    scr_dyn_release(value);
-    if (scr_exc_pending()) break;
-  }
-  scr_dyn_release(entries);
-  ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_native_map(map);
+  ScrDyn *result = scr_dyn_native_map(map);
   scr_map_release(map);
-  return result;
+  if (!result) return NULL;
+  if (scr_dyn_native_collection_insert_seed(result, seed)) return result;
+  scr_dyn_release(result);
+  return NULL;
 }
 
 bool scr_dyn_native_map_is(const ScrDyn *value) {
@@ -22196,6 +22293,55 @@ ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
 
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value) {
   return scr_dyn_sync_generator(value);
+}
+
+/* Whether a native iterator seed reads its values from internal slots. A
+ * string, Map, Set or stepping-handle iterator (any kind but the array one)
+ * answers from its source's own records. An array iterator answers its
+ * source's own elements too, but a hole reads through the prototype chain,
+ * where an inherited indexed getter the program installed runs: the
+ * collection constructor has to step such a seed so each read sees the
+ * entries the earlier steps inserted. An array-like iterator reads
+ * properties of an arbitrary object, which also runs program code. A keys()
+ * iterator only forms index numbers. */
+static bool scr_native_iterator_packs(const ScrDyn *seed) {
+  const ScrNativeIterator *iterator = seed->v.handle.ptr;
+  if (iterator->kind != 0) return true;
+  const ScrDyn *source = iterator->source;
+  if (!source) return true;
+  if (iterator->array_like) return false;
+  if (iterator->selection == 1) return true;
+  if (source->kind == SCR_DYN_ARR) return !source->v.arr.presence;
+  /* A live compiled array answers its own elements; a hole sends the read
+   * to the materialized view's prototype chain. */
+  if (source->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(source))
+    return !scr_arr_has_states(source->v.typed_ref.ptr);
+  return false;
+}
+
+/* Whether a collection constructor's seed gives its values without running
+ * program code: dense arrays, strings, bytes and collections pack, a native
+ * iterator over internal slots drains (scr_native_iterator_packs). Any other
+ * iterable walks the iterator protocol, whose steps run the program. An
+ * array seed answers its holes through the prototype chain, where an
+ * inherited indexed getter the program installed runs, so only a dense array
+ * packs — the same rule scr_native_iterator_packs applies to an array
+ * iterator's source. */
+bool scr_dyn_seed_packs_natively(const ScrDyn *seed) {
+  if (seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES) return true;
+  if (seed->kind == SCR_DYN_ARR) return !seed->v.arr.presence;
+  if (seed->kind == SCR_DYN_TYPED_REF) {
+    if (scr_dyn_iterates_by_protocol(seed)) return false;
+    /* A live compiled array reads a hole through the materialized view's
+     * prototype chain, as an array iterator over it does. */
+    if (scr_dyn_typed_ref_array_ops(seed)) return !scr_arr_has_states(seed->v.typed_ref.ptr);
+    return true;
+  }
+  if (seed->kind != SCR_DYN_HANDLE) return false;
+  if (seed->v.handle.tag == SCR_DYNH_ITERATOR) return scr_native_iterator_packs(seed);
+  if (seed->v.handle.tag == SCR_DYNH_MAP) return true;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(seed);
+  return ops->iter_step || ops->iter_pack;
 }
 
 /* ── dynamic-tier primitives (scr_dyn.h) ─────────────────── */

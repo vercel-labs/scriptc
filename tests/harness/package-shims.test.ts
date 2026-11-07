@@ -11,8 +11,9 @@
  *   stays unloaded: its require throws MODULE_NOT_FOUND;
  * - a shimmed package that is not installed, or whose major version has no
  *   shim, resolves exactly as before (here: refused like any missing or
- *   uncompiled package), and `--npm-static` does not compile a version the
- *   registry entry does not list in `sourceVersions`;
+ *   uncompiled package), `--npm-static` does not compile a version the
+ *   registry entry does not list in `sourceVersions`, and a listed version
+ *   compiles the package's own source rather than a shim;
  * - the undici shims keep memory bounded against a peer that sends endless
  *   chunk-size lines and large or compressed bodies, and the 5.x profile
  *   rejects a Host value with CR or LF as undici 5.29 does (the vendored
@@ -344,6 +345,37 @@ describe("package shims", () => {
     expect(result.diagnostics.map((d) => d.message).join("\n")).toContain(
       "Could not find a declaration file for module 'undici'",
     );
+  }, 180_000);
+
+  test("--npm-static compiles the source of a listed version of an implemented package", async () => {
+    const dir = join(scratch, "chalk-v4-npm-static");
+    const pkg = join(dir, "node_modules/chalk");
+    mkdirSync(join(pkg, "source"), { recursive: true });
+    writeFileSync(
+      join(pkg, "package.json"),
+      '{ "name": "chalk", "version": "4.1.2", "main": "source/index.js", "types": "source/index.d.ts" }\n',
+    );
+    writeFileSync(
+      join(pkg, "source/index.js"),
+      "'use strict';\nexports.paint = (text) => '<' + text + '>';\n",
+    );
+    writeFileSync(
+      join(pkg, "source/index.d.ts"),
+      "export declare function paint(text: string): string;\n",
+    );
+    writeFileSync(
+      join(dir, "main.ts"),
+      'import { paint } from "chalk";\nconsole.log(paint("x"));\n',
+    );
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(dir, ".scriptc/program"),
+      outDir: join(dir, ".scriptc"),
+      npmStatic: ["chalk"],
+      sanitize,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    expect(await run(result.binaryPath, [], dir)).toBe("<x>\n");
   }, 180_000);
 
   for (const name of ["undici7", "undici5"]) {

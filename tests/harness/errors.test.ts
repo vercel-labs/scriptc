@@ -6,7 +6,9 @@
  * lives here is the uncaught STDERR contract: Node prints a source excerpt
  * and a stack trace (and its display shows the CONSTRUCTOR's name where it
  * differs from .name); scriptc prints one `Uncaught <toString>` line —
- * SEMANTICS.md divergence 11. These pins keep that line's shape exact.
+ * SEMANTICS.md divergence 11 — and under it the frames the Error captured,
+ * which only programs that read a stack trace keep. These pins keep that
+ * report's shape exact.
  *
  * SCRIPTC_SAN=1 builds these with ASan + the RC audit like every harness lane.
  */
@@ -27,7 +29,9 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 interface RunResult {
   stdout: string;
   stderr: string;
+  /** -1 when a signal ended the process (`signal` names it). */
   exitCode: number;
+  signal?: string;
 }
 
 /** Compiles an inline program and runs the binary, tolerating nonzero exit.
@@ -40,11 +44,13 @@ async function compileAndRun(
   source: string,
   ext = "ts",
   extraFiles: Record<string, string> = {},
+  optimization: "release" | "dev" = "release",
 ): Promise<RunResult> {
   const key = createHash("sha256")
     .update(source)
     .update(JSON.stringify(extraFiles))
     .update(sanitize ? "san" : "plain")
+    .update(optimization === "dev" ? "dev" : "")
     .digest("hex")
     .slice(0, 16);
   // Multi-module programs live OUTSIDE node_modules: the cache dir sits
@@ -66,6 +72,7 @@ async function compileAndRun(
     outDir,
     sanitize,
     backend: "llvm",
+    ...(optimization === "dev" ? { optimization } : {}),
   });
   if (!result.ok) {
     throw new Error(
@@ -77,12 +84,13 @@ async function compileAndRun(
     const { stdout, stderr } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
     return { stdout, stderr: stripAsanFiberWarning(stderr), exitCode: 0 };
   } catch (err) {
-    const e = err as { code?: unknown; stdout?: string; stderr?: string };
-    if (typeof e.code !== "number") throw err;
+    const e = err as { code?: unknown; signal?: unknown; stdout?: string; stderr?: string };
+    if (typeof e.code !== "number" && typeof e.signal !== "string") throw err;
     return {
       stdout: e.stdout ?? "",
       stderr: stripAsanFiberWarning(e.stderr ?? ""),
-      exitCode: e.code,
+      exitCode: typeof e.code === "number" ? e.code : -1,
+      ...(typeof e.signal === "string" ? { signal: e.signal } : {}),
     };
   }
 }
@@ -123,6 +131,34 @@ throw new PlainSub("unnamed sub");
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toBe("Uncaught Error: unnamed sub\n");
+  });
+
+  test("a subclass thrown from a union value prints like one thrown directly", async () => {
+    // The thrown value is boxed from the union; it is still the error, so
+    // the line is its name and message, not a placeholder for an object.
+    const thrown = await compileAndRun(
+      "uncaught-subclass-union",
+      `class Plain extends Error {}
+class Fixed extends TypeError {}
+const list = [new Plain("p"), new Fixed("from a union")];
+throw list[1]!;
+`,
+    );
+    expect(thrown.exitCode).toBe(1);
+    expect(thrown.stderr).toBe("Uncaught TypeError: from a union\n");
+
+    const rejected = await compileAndRun(
+      "unhandled-subclass-union",
+      `class Plain extends Error {}
+class Fixed extends RangeError {}
+const list = [new Plain("p"), new Fixed("rejected from a union")];
+Promise.reject(list[1]!);
+`,
+    );
+    expect(rejected.exitCode).toBe(1);
+    expect(rejected.stderr).toBe(
+      "Unhandled promise rejection: RangeError: rejected from a union\n",
+    );
   });
 
   test("toString's empty-half rules shape the line", async () => {
@@ -225,6 +261,721 @@ console.log("sync done");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("sync done\n");
     expect(r.stderr).toBe("Unhandled promise rejection: TypeError: from resolvers\n");
+  });
+
+  // A program that reads a stack trace keeps source frames in every
+  // function that can throw (the compiler's observesStacks), and each Error
+  // captures them when it is created. The reports print them under the
+  // heading, as Node prints its stack trace; the programs above read no
+  // stack, capture nothing and print the heading alone.
+  test("an uncaught error prints the frames it captured", async () => {
+    const r = await compileAndRun(
+      "uncaught-frames",
+      `function helper(n: number): number {
+  if (n < 0) throw new RangeError("negative input: " + n);
+  return n;
+}
+function level2(n: number): number {
+  return helper(n) + 1;
+}
+try {
+  level2(-1);
+} catch (e) {
+  console.log((e as Error).stack?.split("\\n").length);
+}
+level2(-2);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("3\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts\)\n    at level2 \(.*uncaught-frames\.ts\)\n$/,
+    );
+  });
+
+  test("an error escaping a timer callback prints the frames it captured", async () => {
+    const r = await compileAndRun(
+      "uncaught-timer-frames",
+      `function fail(where: string): never {
+  throw new Error("callback failed in " + where);
+}
+console.log((new Error("probe").stack ?? "").split("\\n").length);
+setTimeout(() => {
+  fail("timer");
+}, 1);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("1\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts\)\n/,
+    );
+  });
+
+  test("an unhandled rejection prints the frames its Error captured", async () => {
+    const r = await compileAndRun(
+      "unhandled-rejection-frames",
+      `function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function load(n: number): Promise<number> {
+  await sleep(1);
+  if (n > 1) throw new TypeError("bad n " + n);
+  return n;
+}
+async function main(): Promise<void> {
+  try {
+    await load(2);
+  } catch (e) {
+    console.log((e as Error).stack?.split("\\n").length);
+  }
+  await load(5);
+}
+main();
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts\)\n$/,
+    );
+  });
+
+  test("an unhandled checked-dynamic rejection prints the frames its Error captured", async () => {
+    const r = await compileAndRun(
+      "unhandled-dyn-rejection-frames",
+      `function make(): Error {
+  return new Error("boom");
+}
+console.log(make().stack?.split("\\n").length);
+new Promise((resolve, reject) => reject(make()));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toMatch(
+      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts\)\n$/,
+    );
+  });
+});
+
+// A dev build (`--optimization dev` without `--strip`) keeps a source frame
+// in every function, whether or not the program reads a stack, and each
+// statement stores its position in the frame before it runs
+// (frame-positions.ts). An Error created anywhere, in the program or inside
+// the runtime, then names the statement that raised it and, for each
+// caller, the statement whose call was running. The position is the
+// statement's start, where Node reports the call or `new` expression.
+// A sanitized build keeps the frames of a release build, so these run in
+// the plain lane only.
+describe.skipIf(sanitize)("source positions in dev builds", () => {
+  /** `text` with the directory removed from every path. */
+  const located = (text: string): string => text.replace(/(?:[A-Za-z]:)?[\\/][^\s()]*[\\/]/g, "");
+  const dev = (name: string, source: string, extraFiles: Record<string, string> = {}) =>
+    compileAndRun(name, source, "ts", extraFiles, "dev");
+
+  const threeDeep = `function inner(n: number): number {
+  if (n < 0) throw new RangeError("negative input: " + n);
+  return Math.sqrt(n);
+}
+function middle(n: number): number {
+  const doubled = n * 2;
+  return inner(doubled) + 1;
+}
+function outer(n: number): number {
+  return middle(n) + 1;
+}
+console.log(outer(0));
+console.log(outer(-2));
+`;
+
+  test("an uncaught error names the statement of every frame", async () => {
+    const r = await dev("located-uncaught", threeDeep);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught RangeError: negative input: -4",
+        "    at inner (located-uncaught.ts:2:14)",
+        "    at middle (located-uncaught.ts:7:3)",
+        "    at outer (located-uncaught.ts:10:3)",
+        "    at located-uncaught.ts:13:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a release build of the same program keeps no frames", async () => {
+    const r = await compileAndRun("located-uncaught", threeDeep);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(r.stderr).toBe("Uncaught RangeError: negative input: -4\n");
+  });
+
+  test("an unhandled rejection names where its Error was created", async () => {
+    const r = await dev(
+      "located-rejection",
+      `function start(): Promise<number> {
+  return Promise.reject(new Error("rejected first"));
+}
+start();
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(located(r.stderr)).toBe(
+      [
+        "Unhandled promise rejection: Error: rejected first",
+        "    at start (located-rejection.ts:2:3)",
+        "    at located-rejection.ts:4:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // The Error is created inside the runtime's conversion; the frames are
+  // the program's all the same.
+  test("a failed checked conversion names the conversion's statement", async () => {
+    const r = await dev(
+      "located-conversion",
+      `interface User {
+  name: string;
+  age: number;
+}
+function decode(text: string): User {
+  return JSON.parse(text) as User;
+}
+function show(text: string): void {
+  const user = decode(text);
+  console.log(user.name, user.age + 1);
+}
+show('{"name":"ada","age":36}');
+show('{"name":"ada","age":"36"}');
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("ada 37\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught TypeError: expected number at $.age, got string",
+        "    at decode (located-conversion.ts:6:3)",
+        "    at show (located-conversion.ts:9:9)",
+        "    at located-conversion.ts:13:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a failed conversion at the top level of a module has a position", async () => {
+    const r = await dev(
+      "located-top-level",
+      `interface Config {
+  port: number;
+}
+const text = '{"port":"80"}';
+const config = JSON.parse(text) as Config;
+console.log(config.port + 1);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught TypeError: expected number at $.port, got string",
+        "    at located-top-level.ts:5:7",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // The callback's frame sits between the function that threw and the
+  // statement that called the array method; a statement lowered through
+  // generated helpers (the conversion, the method chain) keeps the position
+  // it has in the source.
+  test("an error inside an array callback names the callback's statement", async () => {
+    const r = await dev(
+      "located-callback",
+      `interface User {
+  name: string;
+  age: number;
+}
+function parseAll(rows: string[]): User[] {
+  return rows
+    .map((row) => JSON.parse(row) as User)
+    .filter((user) => user.age > 1);
+}
+function ages(rows: string[]): number {
+  let total = 0;
+  for (const user of parseAll(rows)) {
+    total += user.age;
+  }
+  return total;
+}
+console.log(ages(['{"name":"a","age":2}']));
+console.log(ages(['{"name":"a","age":2}', '{"name":"b","age":"x"}']));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught TypeError: expected number at $.age, got string",
+        "    at <anonymous> (located-callback.ts:7:19)",
+        "    at parseAll (located-callback.ts:6:3)",
+        "    at ages (located-callback.ts:12:3)",
+        "    at located-callback.ts:18:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("an error inside a timer callback starts at the callback", async () => {
+    const r = await dev(
+      "located-timer",
+      `function fail(where: string): never {
+  throw new Error("callback failed in " + where);
+}
+setTimeout(() => {
+  fail("timer");
+}, 1);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught Error: callback failed in timer",
+        "    at fail (located-timer.ts:2:3)",
+        "    at <anonymous> (located-timer.ts:5:3)",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // An async body runs on its own frame chain, so the functions awaiting
+  // it are not listed (Node prints them as `at async step`).
+  test("an error after an await names the statement in the async function", async () => {
+    const r = await dev(
+      "located-async",
+      `function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function load(n: number): Promise<number> {
+  await sleep(1);
+  if (n > 1) throw new TypeError("bad n " + n);
+  return n;
+}
+async function step(n: number): Promise<number> {
+  const v = await load(n);
+  return v + 1;
+}
+async function main(): Promise<void> {
+  console.log(await step(1));
+  console.log(await step(2));
+}
+main();
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("2\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Unhandled promise rejection: TypeError: bad n 2",
+        "    at load (located-async.ts:6:14)",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("every instantiation of a generic function reports the source statement", async () => {
+    const r = await dev(
+      "located-generic",
+      `function first<T>(items: T[], label: string): T {
+  const item = items[0];
+  if (item === undefined) throw new Error("no " + label);
+  return item;
+}
+function run(): void {
+  console.log(first([1, 2], "numbers"));
+  console.log(first(["a"], "strings"));
+  try {
+    first<number>([], "numbers");
+  } catch (e) {
+    console.log((e as Error).stack);
+  }
+  console.log(first<string>([], "names"));
+}
+run();
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(located(r.stdout)).toBe(
+      [
+        "1",
+        "a",
+        "Error: no numbers",
+        "    at first (located-generic.ts:3:27)",
+        "    at run (located-generic.ts:10:5)",
+        "    at located-generic.ts:16:1",
+        "",
+      ].join("\n"),
+    );
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught Error: no names",
+        "    at first (located-generic.ts:3:27)",
+        "    at run (located-generic.ts:14:3)",
+        "    at located-generic.ts:16:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // A loop's condition runs again after its body, and after a `continue`:
+  // the frame then holds the loop's position again, not the last body
+  // statement's or that of a `finally` block the `continue` crossed.
+  test.each([
+    ["the body ends", "body"],
+    ["a continue", "continue"],
+    ["a continue through a finally block", "finally"],
+  ])("a loop condition that throws after %s is reported at the loop", async (_, mode) => {
+    const r = await dev(
+      `located-loop-${mode}`,
+      `let calls = 0;
+function more(): boolean {
+  calls++;
+  if (calls === 4) throw new Error("condition failed on call " + calls);
+  return true;
+}
+function drain(mode: string): number {
+  let seen = 0;
+  while (more()) {
+    seen++;
+    if (mode === "continue") continue;
+    try {
+      if (mode === "finally") continue;
+    } finally {
+      seen += 100;
+    }
+    seen += 10;
+  }
+  return seen;
+}
+console.log(drain("${mode}"));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught Error: condition failed on call 4",
+        `    at more (located-loop-${mode}.ts:4:20)`,
+        `    at drain (located-loop-${mode}.ts:9:3)`,
+        `    at located-loop-${mode}.ts:21:1`,
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // Constructors, methods and accessors have no frame in a release build;
+  // a dev build names them as V8 does.
+  test.each([
+    [
+      "ctor",
+      "too few sides: 2",
+      ["new Shape (located-members-ctor.ts:6:7)", "Shape.make (located-members-ctor.ts:12:5)"],
+    ],
+    [
+      "getter",
+      "too many sides: 200",
+      [
+        "Shape.get angle (located-members-getter.ts:15:27)",
+        "Shape.describe (located-members-getter.ts:19:5)",
+      ],
+    ],
+  ])("class members have frames (%s)", async (which, message, frames) => {
+    const r = await dev(
+      `located-members-${which}`,
+      `class Shape {
+  static count = 0;
+  readonly sides: number;
+  constructor(sides: number) {
+    if (sides < 3) {
+      throw new RangeError("too few sides: " + sides);
+    }
+    this.sides = sides;
+  }
+  static make(sides: number): Shape {
+    Shape.count++;
+    return new Shape(sides);
+  }
+  get angle(): number {
+    if (this.sides > 100) throw new RangeError("too many sides: " + this.sides);
+    return 180 - 360 / this.sides;
+  }
+  describe(): string {
+    return "angle " + this.angle;
+  }
+}
+const which: string = "${which}";
+if (which === "ctor") {
+  console.log(Shape.make(4).describe());
+  console.log(Shape.make(2).describe());
+} else {
+  console.log(Shape.make(200).describe());
+}
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(located(r.stderr)).toBe(
+      [
+        `Uncaught RangeError: ${message}`,
+        ...frames.map((frame) => `    at ${frame}`),
+        `    at located-members-${which}.ts:${which === "ctor" ? "25:3" : "27:3"}`,
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a frame names the module its statement is in", async () => {
+    const r = await dev(
+      "located-modules",
+      `import { check } from "./located-limit.ts";
+console.log(check(4));
+console.log(check(-3));
+`,
+      {
+        "located-limit.ts": `export const limit = Number("0");
+export function check(n: number): number {
+  if (n < limit) throw new RangeError("below limit: " + n);
+  return n;
+}
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("4\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught RangeError: below limit: -3",
+        "    at check (located-limit.ts:3:18)",
+        "    at located-modules.ts:3:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // Error.captureStackTrace(error, fn) drops the frames down to fn's, which
+  // the runtime finds by its text: fn keeps a frame without positions, and
+  // the frames below it keep theirs.
+  test("Error.captureStackTrace still drops the frames above its function", async () => {
+    const r = await dev(
+      "located-capture",
+      `function fail(message: string): never {
+  const error = new Error(message);
+  Error.captureStackTrace(error, fail);
+  throw error;
+}
+function check(n: number): number {
+  if (n > 1) fail("too large: " + n);
+  return n;
+}
+console.log(check(1));
+console.log(check(2));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("1\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught Error: too large: 2",
+        "    at check (located-capture.ts:7:14)",
+        "    at located-capture.ts:11:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // A function that can create no Error keeps no frame, in a dev build as
+  // in a release build that reads stacks: it could only fail by exhausting
+  // the stack, and a frame is 16 bytes of every call. The guard's
+  // RangeError is reported at the statement that called it, and its
+  // recursion is as deep as without frames (corpus
+  // stack-depth-async-bodies pins the depth).
+  test("a stack overflow in a function that cannot throw is reported at its caller", async () => {
+    const r = await dev(
+      "located-overflow",
+      `function depth(n: number): number {
+  return n === 0 ? 0 : depth(n - 1) + 1;
+}
+function start(label: string): number {
+  console.log(label, depth(100));
+  return depth(-1);
+}
+console.log(start("shallow"));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("shallow 100\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught RangeError: Maximum call stack size exceeded",
+        "    at start (located-overflow.ts:6:3)",
+        "    at located-overflow.ts:8:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // The runtime aborts, without creating an Error, when a fact the compiled
+  // code relies on is false: here an index a non-null assertion promised
+  // was in range. A dev executable on a POSIX target prints the frame chain
+  // under the runtime's message (frame-positions.ts, abortFramesDefinition).
+  // `pick` can create no Error and has no frame: the chain starts at the
+  // statement that called it.
+  test.skipIf(process.platform === "win32")(
+    "an abort prints the frames that were running",
+    async () => {
+      const source = `function pick(items: number[], index: number): number {
+  return items[index]!;
+}
+function run(): void {
+  const items: number[] = [1];
+  console.log(pick(items, 0));
+  console.log(pick(items, 5) + 1);
+}
+run();
+`;
+      const r = await dev("located-abort", source);
+      expect(r.signal).toBe("SIGABRT");
+      expect(r.stdout).toBe("1\n");
+      expect(located(r.stderr)).toContain(
+        [
+          "scriptc: RangeError: array index 5 out of bounds (length 1)",
+          "    at run (located-abort.ts:7:3)",
+          "    at located-abort.ts:9:1",
+          "",
+        ].join("\n"),
+      );
+      const release = await compileAndRun("located-abort", source);
+      expect(release.signal).toBe("SIGABRT");
+      expect(release.stderr).not.toContain("    at ");
+    },
+  );
+
+  // A constructor that captures onto itself (`this.constructor`,
+  // `new.target` or the class's own name) asks for the trace to start
+  // below the constructor. It keeps no frame, and neither do the
+  // constructors of the classes derived from its class, as in a release
+  // build: the first frame is the function that ran `new`, as under Node.
+  test("a constructor that captures its own stack trace is not in it", async () => {
+    const r = await dev(
+      "located-capture-constructor",
+      `class HttpError extends Error {
+  constructor(message: string) {
+    super(message);
+    Error.captureStackTrace(this, HttpError);
+  }
+}
+class BaseError extends Error {
+  constructor(message: string) {
+    super(message);
+    Error.captureStackTrace(this, new.target);
+  }
+}
+class NotFound extends BaseError {
+  constructor(what: string) {
+    super("not found: " + what);
+  }
+}
+function fetchUser(id: number): never {
+  throw new HttpError("no user " + id);
+}
+function findPage(name: string): never {
+  throw new NotFound(name);
+}
+try {
+  fetchUser(7);
+} catch (e) {
+  console.log((e as Error).stack);
+}
+findPage("home");
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(located(r.stdout)).toBe(
+      [
+        "Error: no user 7",
+        "    at fetchUser (located-capture-constructor.ts:19:3)",
+        "    at located-capture-constructor.ts:25:3",
+        "",
+      ].join("\n"),
+    );
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught Error: not found: home",
+        "    at findPage (located-capture-constructor.ts:22:3)",
+        "    at located-capture-constructor.ts:29:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // A statement embedded in the head of an `if` (the left operand of a
+  // comma) stores its own position; the rest of the condition runs at the
+  // position of the `if` again.
+  test("an if condition that throws after an embedded statement is reported at the if", async () => {
+    const r = await dev(
+      "located-if-head",
+      `function first(): number {
+  console.log("first");
+  return 1;
+}
+function second(): boolean {
+  throw new Error("second failed");
+}
+function run(): void {
+  if (
+    (first(),
+    second())
+  ) {
+    console.log("unreachable");
+  }
+}
+run();
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("first\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught Error: second failed",
+        "    at second (located-if-head.ts:6:3)",
+        "    at run (located-if-head.ts:9:3)",
+        "    at located-if-head.ts:16:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // The two differences from a release build that a program can observe:
+  // `.stack` holds positions (and the frames release builds do not keep),
+  // and an Error that captured frames is displayed with them, where a
+  // release build of a program that reads no stack displays `[Error: boom]`.
+  test("console.log of an Error shows its frames", async () => {
+    const source = `function make(): Error {
+  return new Error("boom");
+}
+console.log(make());
+`;
+    const display = await dev("located-display", source);
+    expect(display.exitCode).toBe(0);
+    expect(located(display.stdout)).toBe(
+      [
+        "Error: boom",
+        "    at make (located-display.ts:2:3)",
+        "    at located-display.ts:4:1",
+        "",
+      ].join("\n"),
+    );
+    const release = await compileAndRun("located-display", source);
+    expect(release.stdout).toBe("[Error: boom]\n");
   });
 });
 
@@ -914,6 +1665,43 @@ console.log(\`\${register(7)}\`);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("caught: Cannot read properties of undefined (reading 'registry')\n");
     expect(r.stderr).toBe("");
+  });
+
+  test("a tuple-typed receiver keeps the fence on an added property write (JS lane)", async () => {
+    // A tuple is a record layout whose checked view is an array rebuilt
+    // from the tuple's fields, so the view cannot hold a property the
+    // tuple does not declare: the write stays fenced instead of landing in
+    // a view whose next refresh drops it.
+    const r = await compileAndRun(
+      "tuple-added-property-write",
+      `/** @type {[number, number]} */
+const pair = [1, 2];
+pair.extra = "x";
+console.log(pair[0], pair[1]);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: assignment to non-variables are not supported yet \[SC1090 at .*tuple-added-property-write\.js:3\]\n$/,
+    );
+  });
+
+  test("a tuple-typed receiver keeps the fence on an undeclared member read (JS lane)", async () => {
+    const r = await compileAndRun(
+      "tuple-added-property-read",
+      `/** @type {[number, number]} */
+const pair = [1, 2];
+console.log(pair.extra);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: reading 'extra' from a value of type '\[number, number\]' is not supported yet \[SC1090 at .*tuple-added-property-read\.js:3\]\n$/,
+    );
   });
 });
 
@@ -2044,9 +2832,13 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
     // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // Date.prototype is the one value: it reads as the prototype object, so
-    // a direct read, a member read through it and reflection on it answer as
-    // Node does. `key in Ctor` answers from the constructor's fixed keys.
+    // Date.prototype and the four keyed collections' prototypes are the
+    // values: Date.prototype reads as the prototype object, so a direct read, a
+    // member read through it and reflection on it answer as Node does; the
+    // Set/Map/WeakMap/WeakSet prototypes read as the objects the JavaScript
+    // lane provides (%Set.prototype% and friends), with their `constructor`
+    // member answering the interned constructor. `key in Ctor` answers from the
+    // constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -2073,11 +2865,19 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
-    // The reads that answer from Date.prototype's object rather than refusing.
+    // The reads that answer from a prototype object rather than refusing.
     const readsAsValue = new Map<string, string>([
+      ["Map.prototype", "read object"],
       ["Date.prototype", "read object"],
       ["Date.prototype.getYear", "read function"],
+      ["Set.prototype", "read object"],
+      ["WeakMap.prototype", "read object"],
+      ["WeakSet.prototype", "read object"],
+      ["Map.prototype.constructor", "read function"],
+      ["getOwnPropertyDescriptor(Map.prototype)", "read object"],
       ["isExtensible(Date.prototype)", "read boolean"],
+      ["globalThis.Map.prototype", "read object"],
+      ["Map alias prototype", "read object"],
     ]);
     const source = `"use strict";
 const MapAlias = Map;
@@ -2110,8 +2910,8 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
           : `${label} ${read}`;
       }),
     );
-    // Promise.prototype reads as an object holding the runtime's methods,
-    // and `in` on a builtin constructor answers from its fixed keys.
+    // Promise.prototype reads as an object holding the runtime's methods, and
+    // `in` on a builtin constructor answers from its fixed keys.
     expect(lines.slice(reads.length)).toEqual([
       "7 2 1 1 0 0",
       "Date Map true true",

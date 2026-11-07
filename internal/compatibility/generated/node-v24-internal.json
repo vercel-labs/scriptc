@@ -44470,6 +44470,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2686-fs-file-handle.ts",
@@ -44507,7 +44508,10 @@
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-native-realpath.ts",
+          "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
@@ -47088,8 +47092,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.opendir",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-opendir-buffer-size-uncaught.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49413,8 +49421,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir.close",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49488,8 +49500,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir.read",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49563,8 +49579,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49586,8 +49606,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dir",
+        "tests": [
+          "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49658,8 +49682,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isBlockDevice",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49681,8 +49710,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isCharacterDevice",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49704,8 +49738,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isDirectory",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49727,8 +49766,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isFIFO",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49750,8 +49794,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isFile",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49773,8 +49822,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isSocket",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49796,8 +49850,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.dirent.isSymbolicLink",
+        "tests": [
+          "tests/corpus/1541-fs-readdir-dirent.ts",
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-opendir-callbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80259,6 +80318,7 @@
           "tests/corpus/6422-process-exitcode-read.ts",
           "tests/corpus/6423-process-exitcode-default.ts",
           "tests/corpus/6424-process-exit-keeps-exitcode.ts",
+          "tests/corpus/8830-process-report-island/main.ts",
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -82416,8 +82476,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.report",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82434,8 +82497,11 @@
       "anchor": "processreportgetreporterr",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.process.report.getReport",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82470,8 +82536,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.compact",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82488,8 +82557,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.directory",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82506,8 +82578,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.filename",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82524,8 +82599,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.reportOnFatalError",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82542,8 +82620,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.reportOnSignal",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82560,8 +82641,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.reportOnUncaughtException",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82596,8 +82680,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.signal",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85666,8 +85753,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85873,8 +85964,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.isSea",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -85988,8 +86083,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAsset",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86011,8 +86110,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAssetAsBlob",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86034,8 +86137,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getRawAsset",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -86057,8 +86164,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-chapter-policy:single-executable-applications"
+        "status": "partial",
+        "evidence": "compiler-feature:single-executable-applications.sea.getAssetKeys",
+        "tests": [
+          "tests/corpus/8894-node-sea-outside-application/main.ts",
+          "tests/corpus/8895-node-sea-untyped.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -9,6 +9,7 @@ import { emitTestLibCall } from "./lib-test.js";
 import { FN_ATTRS, arrNewCall, releaseSym, traceArg, vAdapters } from "./shapes.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
+import { nodeThrowExpr } from "../../ir/build.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
@@ -176,10 +177,11 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     );
     return { name: "", type: e.type };
   }
-  if (e.fn === "rl.on") {
+  if (e.fn === "rl.on" || e.fn === "rl.onFirst") {
     // The listener MOVES into the interface's registry; the adapter is
     // picked by event and parameter count ('line': the text, 'error': the
-    // error, 'history': the history array, the rest none).
+    // error, 'history': the history array, the rest none). onFirst is
+    // prependListener's registration, at the front of the same list.
     host.usesTimers = true;
     const cbT = e.args[2]!.type;
     const evArg = e.args[1]!;
@@ -205,9 +207,10 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
       host.declare(`declare void @${name}(ptr, ptr)`);
       adapter = `@${name}`;
     }
-    host.declare(`declare void @scr_rl_on(double, double, ptr, ptr, i1)`);
+    const target = e.fn === "rl.on" ? "scr_rl_on" : "scr_rl_on_first";
+    host.declare(`declare void @${target}(double, double, ptr, ptr, i1)`);
     B.line(
-      `call void @scr_rl_on(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
+      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
     );
     return { name: "", type: e.type };
   }
@@ -296,6 +299,29 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.startBlock(join);
     const t = B.tmp();
     B.line(`${t} = phi i1 [ false, %${from} ], [ ${has}, %${probed} ]`);
+    return { name: t, type: e.type };
+  }
+  if (e.fn === "record.sourceDelete") {
+    // `delete rec.key` of a key the declared layout does not hold: the key
+    // lives in the record's kept source, and the runtime removes it there
+    // (a frozen record refuses in strict code, hence the pending check).
+    const record = host.emitReadReceiver(e.args[0]!);
+    const key = e.args[1]!;
+    const strict = e.args[2]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceDelete key is not a literal");
+    if (strict.kind !== "boolLit")
+      throw new InternalCompilerError(
+        "llvm emitter bug: record.sourceDelete strictness is not a literal",
+      );
+    host.dyn.keepsRecordSources = true;
+    host.declare(`declare zeroext i1 @scr_record_source_delete(ptr, ptr, ${host.sizeType}, i1)`);
+    const keyLen = Buffer.byteLength(key.value, "utf8");
+    const t = B.tmp();
+    B.line(
+      `${t} = call zeroext i1 @scr_record_source_delete(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${keyLen}, i1 ${strict.value ? "true" : "false"})`,
+    );
+    host.emitPendingCheck();
     return { name: t, type: e.type };
   }
   if (e.fn === "record.sourceSpread") {
@@ -1427,6 +1453,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "array":
       if (e.fn === "array.foreignThrow") return emitArrayForeignThrow(host, e);
       return host.emitGenericLibCall(e);
+    case "sea":
+      return emitSeaLibCall(host, e);
     case "collection":
     case "record":
     case "disposable":
@@ -1469,6 +1497,24 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
 /** `array.foreignThrow`: the checked conversion's TypeError for a foreign
  * element read into a typed result. Always throws; the result is a dummy
  * of the replaced read's type (the error.argTypeThrow pattern). */
+/** node:sea outside a single-executable application, which is every
+ * compiled program: `isSea()` is the constant false, and an asset reader
+ * evaluates its arguments and throws Node's coded error (the same throw
+ * error.nodeThrow emits). */
+function emitSeaLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  if (e.fn === "sea.isSea") return { name: "false", type: e.type };
+  for (const arg of e.args) host.emitExpr(arg);
+  return host.emitExpr(
+    nodeThrowExpr(
+      0,
+      "ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION",
+      "Operation cannot be invoked when not in a single-executable application",
+      e.type,
+      e.loc,
+    ),
+  );
+}
+
 function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
   const arr = host.emitExpr(e.args[0]!);

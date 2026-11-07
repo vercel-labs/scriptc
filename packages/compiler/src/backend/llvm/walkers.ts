@@ -54,6 +54,9 @@ export interface WalkerHost extends ShapeHost {
   /** i1: a value loaded from an undefined-armed record field slot is the
    * slot's ABSENT state. */
   fieldAbsentTestIn(B: BlockBuilder, value: string, unionId: string): string;
+  /** `@`-ref of the optional checked-dynamic field slot's ABSENT marker
+   * (an immortal ScrDyn, address-compared). */
+  dynAbsentRef(): string;
 }
 
 const FN_ATTRS = "#0";
@@ -260,7 +263,11 @@ export class LlWalkers {
         this.emitUnionWriter(B, t.unionId);
         break;
       default:
-        throw new LlvmUnsupportedError(`jsonStringify:${t.kind}`);
+        throw new LlvmUnsupportedError(
+          `jsonStringify:${t.kind}`,
+          undefined,
+          `JSON.stringify reaching a value of type ${typeKey(t)}`,
+        );
     }
     B.terminate("ret void");
     this.defs.push(
@@ -371,8 +378,11 @@ export class LlWalkers {
         .filter((f) => f !== undefined)
         .filter((f) => f.type.kind !== "func");
       const droppable =
-        emitFields.some((f) => undefinedArmTag(f.type, this.host.unionsById) >= 0) ||
-        !!shape.indexValue;
+        emitFields.some(
+          (f) =>
+            undefinedArmTag(f.type, this.host.unionsById) >= 0 ||
+            (f.optional === true && f.type.kind === "dyn"),
+        ) || !!shape.indexValue;
       this.putc(B, "%b", "123"); // '{'
       if (!droppable) {
         emitFields.forEach((f, i) => {
@@ -409,6 +419,15 @@ export class LlWalkers {
             const lw = B.newLabel("jwf.w");
             skip = B.newLabel("jwf.s");
             B.condBr(isu, skip, lw);
+            B.startBlock(lw);
+          } else if (f.optional === true && f.type.kind === "dyn") {
+            // An ABSENT optional checked-dynamic field is dropped, like
+            // Node; a present undefined still serializes as null.
+            const isa = B.tmp();
+            B.line(`${isa} = icmp eq ptr ${v}, ${this.host.dynAbsentRef()}`);
+            const lw = B.newLabel("jwf.w");
+            skip = B.newLabel("jwf.s");
+            B.condBr(isa, skip, lw);
             B.startBlock(lw);
           }
           comma();
@@ -535,6 +554,13 @@ export class LlWalkers {
         B.line(`${isUndefined} = icmp eq i32 ${tag}, ${utag}`);
         const lWrite = B.newLabel("jwf.write");
         B.condBr(isUndefined, lSkip, lWrite);
+        B.startBlock(lWrite);
+      } else if (f.optional === true && f.type.kind === "dyn") {
+        // An ABSENT optional checked-dynamic field contributes no key.
+        const isAbsent = B.tmp();
+        B.line(`${isAbsent} = icmp eq ptr ${v}, ${this.host.dynAbsentRef()}`);
+        const lWrite = B.newLabel("jwf.write");
+        B.condBr(isAbsent, lSkip, lWrite);
         B.startBlock(lWrite);
       }
       const lComma = B.newLabel("jwf.comma");
@@ -1076,7 +1102,11 @@ export class LlWalkers {
             break;
           }
           default:
-            throw new LlvmUnsupportedError(`unionJoin:${arm.kind}`);
+            throw new LlvmUnsupportedError(
+              `unionJoin:${arm.kind}`,
+              undefined,
+              `Array.prototype.join over a union with an arm of type ${typeKey(arm)}`,
+            );
         }
         B.br(written);
       });

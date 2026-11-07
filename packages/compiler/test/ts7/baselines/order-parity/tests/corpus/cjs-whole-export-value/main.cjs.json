@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-whole-export-value/index.cjs",
+  "<repo>/tests/corpus/cjs-whole-export-value/descriptor.cjs",
+  "<repo>/tests/corpus/cjs-whole-export-value/snapshot.cjs",
+  "<repo>/tests/corpus/cjs-whole-export-value/reexport.cjs",
+  "<repo>/tests/corpus/cjs-whole-export-value/split.cjs",
+  "<repo>/tests/corpus/cjs-whole-export-value/main.cjs"
+ ],
+ "diags": []
+}

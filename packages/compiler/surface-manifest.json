@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.4.8",
+  "compilerVersion": "0.4.9",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -2442,7 +2442,7 @@
       "kind": "node-builtin",
       "name": "process.getBuiltinModule",
       "status": "static",
-      "note": "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020"
+      "note": "a literal id of a supported module answers its namespace; a computed id serves the path families, os, util/types, node:sea and current-thread worker_threads metadata, answers undefined for an id Node does not have, and throws SC2020 for Node's other modules"
     },
     {
       "id": "node-builtin.process.getegid",
@@ -2697,6 +2697,43 @@
       "id": "node-builtin.readline.promises.createInterface",
       "kind": "node-builtin",
       "name": "readline/promises.createInterface",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea",
+      "kind": "node-builtin",
+      "name": "node:sea",
+      "status": "static",
+      "note": "recognized module (node:-prefixed specifier only, matching Node)"
+    },
+    {
+      "id": "node-builtin.sea.getAsset",
+      "kind": "node-builtin",
+      "name": "sea.getAsset",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getAssetAsBlob",
+      "kind": "node-builtin",
+      "name": "sea.getAssetAsBlob",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getAssetKeys",
+      "kind": "node-builtin",
+      "name": "sea.getAssetKeys",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getRawAsset",
+      "kind": "node-builtin",
+      "name": "sea.getRawAsset",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.isSea",
+      "kind": "node-builtin",
+      "name": "sea.isSea",
       "status": "static"
     },
     {

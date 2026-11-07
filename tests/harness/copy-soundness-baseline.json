@@ -1,7 +1,6 @@
 {
   "aliasableCopies": {
     "arr": 9,
-    "emptyArr": 1,
     "objWidth": 5,
     "ovf": 2,
     "tupleArr": 4,
@@ -9,6 +8,7 @@
   },
   "warnedIdentical": 21,
   "refused": [
+    "empty/declaration/push",
     "instance/declaration/write"
   ],
   "silent": [

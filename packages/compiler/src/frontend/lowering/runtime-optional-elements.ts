@@ -265,10 +265,23 @@ export class ArrayElementStates {
         : undefined;
     }
     if (this.host.isGlobal(owner, "Promise")) {
-      // A settled value can be a runtime-absent result.
-      return method === "all" || method === "allSettled"
-        ? { undefined: true, holes: false }
-        : undefined;
+      if (method === "all") {
+        // Promise.all fulfills with each entry's settled value. A typed
+        // promise settles with a value of its own type, which the result's
+        // element ABI already records, so the result holds undefined only
+        // where an entry is a hole or an undefined value.
+        const source = args[0];
+        return {
+          undefined:
+            source !== undefined &&
+            (ts.isSpreadElement(source) ||
+              this.mayYieldUndefined(source) ||
+              (this.host.iterationMayYieldUndefined?.(source) ?? false)),
+          holes: false,
+        };
+      }
+      // An allSettled outcome can carry a runtime-absent result.
+      return method === "allSettled" ? { undefined: true, holes: false } : undefined;
     }
     if (method === "match" || method === "matchAll" || method === "exec" || method === "split") {
       const separator = args[0];

@@ -387,7 +387,10 @@ export function foldRecordSourceTests(
   for (const fn of functions) if (functionKeepsRecordSources(lowerer, fn, scan)) return null;
   if (scan.tests === 0) return null;
   const folded = new Set<string>();
-  const isFalse = (e: IrExpr): boolean => e.kind === "boolLit" && !e.value;
+  // The `false` each removed test became. Only these decide a branch: a
+  // constant condition the program wrote stays as it is.
+  const answers = new Set<IrExpr>();
+  const isFalse = (e: IrExpr): boolean => answers.has(e);
   // The empty blocks that stand for a removed `if` until its list is rebuilt.
   const removed = new Set<IrStmt>();
   const live = (list: IrStmt[]): IrStmt[] => list.filter((s) => !removed.has(s));
@@ -395,7 +398,9 @@ export function foldRecordSourceTests(
     if (isLocalSourceTest(e) && e.kind === "libCall") {
       const tested = e.args[0]!.type;
       if (tested.kind === "record") folded.add(tested.shapeId);
-      return boolLit(false, e.loc);
+      const answer = boolLit(false, e.loc);
+      answers.add(answer);
+      return answer;
     }
     const mapped = mapExprChildren(e, expr, stmt);
     switch (mapped.kind) {

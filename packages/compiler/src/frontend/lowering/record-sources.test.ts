@@ -319,6 +319,23 @@ test("the fold removes each test with the branch it guards", () => {
   ]);
 });
 
+test("the fold decides only the branches a removed test guarded", () => {
+  const f = fixture();
+  const r = ref("r", f.rec);
+  const never: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+  // A constant condition of the program's own, beside a test.
+  const written: IrStmt = {
+    kind: "if",
+    cond: never,
+    then: [run(ref("unreached", F64))],
+    else_: null,
+    loc,
+  };
+  const main = fn([written, run(surface(r, keysOf(box(r, true)), staticKeys))]);
+  expect(foldRecordSourceTests(f.lowerer, [main])).toEqual([f.rec.shapeId]);
+  expect(main.body).toEqual([written, run(staticKeys)]);
+});
+
 test("the fold leaves a program that keeps a source, or has no test, as it is", () => {
   const f = fixture();
   const r = ref("r", f.rec);

@@ -8993,12 +8993,18 @@ export function isPlainDescriptorMap(
  * holds the literal, so its own identity is unobservable); each member, a
  * descriptor, is boxed as any other typed value is, so the `value`, `get`
  * and `set` it carries stay the program's own objects. Null when the
- * expression is anything else, which the caller passes as it is. */
+ * expression is anything else, or a literal with an accessor member of its
+ * own, which the caller passes as it is. */
 function descriptorMapLiteral(lowerer: Lowerer, descriptors: IrExpr): IrExpr | null {
   if (descriptors.kind !== "dynFrom" || descriptors.liveRef !== true) return null;
   const literal = descriptors.value;
   if (literal.kind !== "recordLit") return null;
-  if (literal.fields.some((field) => field.value.kind === "fieldAbsent")) return null;
+  // An accessor on the map itself is stored in a reserved slot, not under
+  // its property name; such a map is passed as written.
+  if (
+    literal.fields.some((field) => field.name.startsWith("%") || field.value.kind === "fieldAbsent")
+  )
+    return null;
   const loc = descriptors.loc;
   const fields = literal.fields.map((field) => ({
     key: { kind: "strLit", value: field.name, type: STRING, loc } as IrExpr,

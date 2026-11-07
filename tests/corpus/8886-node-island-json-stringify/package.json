@@ -1,0 +1,6 @@
+{
+  "name": "island-json-stringify",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "json-pkg": "node" } }
+}

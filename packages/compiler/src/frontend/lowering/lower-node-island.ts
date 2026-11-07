@@ -57,6 +57,7 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
+import { v8CalleeText } from "./expressions/narrowing.js";
 import { thenReader } from "./checked-promise-all.js";
 import { dynCompoundValue } from "./lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS } from "./surfaces.js";
@@ -1599,6 +1600,98 @@ function lowerIslandChain(
   return stmts.length > 0 ? { kind: "seqExpr", stmts, result, type: result.type, loc } : result;
 }
 
+/** `recv.m(args)` where `recv` is typed by an island's declarations.
+ *
+ * The type does not say where the value lives: an island alias or
+ * interface may annotate a native array, Map, object or class instance,
+ * and an island object may hold a native function. So the call follows the
+ * value at run time, in two arms.
+ *
+ * - An island receiver takes the bridge: one method call when the
+ *   arguments are inert, and otherwise the member read first and applied
+ *   after the arguments ran, as JavaScript orders it (an argument that
+ *   runs code could replace the member).
+ * - A native receiver takes the ordinary checked-dynamic method call, the
+ *   one node the rest of the compiler lowers `value.m(args)` to. That
+ *   matters for more than the runtime's by-name call: a class method, a
+ *   generator step or an iterator helper has no function value and no
+ *   runtime table, and is dispatched by the passes that rewrite this node.
+ *   A member that is a function value (a closure on a native object) is
+ *   still called as read when the arguments run code.
+ *
+ * The arguments cross once, into hidden locals both arms read. A call that
+ * spreads an argument keeps the runtime's routing (it has no fixed
+ * argument list for the dynamic call node): scr_node_island_invoke and
+ * scr_node_island_apply_to send a native receiver to the runtime's by-name
+ * call there. */
+function islandMethodCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  callee: ts.PropertyAccessExpression,
+  target: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  const method = (callee.name as ts.Identifier).text;
+  const name = (): IrExpr => ({ kind: "strLit", value: method, type: STRING, loc });
+  const inert = args.every((a) => inertArgument(a));
+  const stmts: IrStmt[] = [];
+  // Each read of a held value is its own node: the arms share locals, not
+  // expression nodes.
+  const hold = (label: string, init: IrExpr): (() => IrExpr) => {
+    const local = lowerer.declareHiddenLocal(label, init.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init, loc });
+    return () => varRef(local.id, init.type, loc);
+  };
+  const recv = hold("%islandRecv", target);
+  // The member is read before the arguments only when they can run code.
+  const held = inert
+    ? null
+    : hold("%islandMethod", {
+        kind: "libCall",
+        fn: "nodeIsland.get",
+        args: [recv(), name()],
+        type: DYN,
+        loc,
+      });
+  const bridge = (pack: IrExpr): IrExpr =>
+    held === null
+      ? { kind: "libCall", fn: "nodeIsland.invoke", args: [recv(), name(), pack], type: DYN, loc }
+      : {
+          kind: "libCall",
+          fn: "nodeIsland.applyTo",
+          args: [held(), recv(), name(), pack],
+          type: DYN,
+          loc,
+        };
+  if (args.some((a) => ts.isSpreadElement(a))) {
+    const result = fromIsland(lowerer, bridge(argsOf(lowerer, args, loc)), expr);
+    return { kind: "seqExpr", stmts, result, type: result.type, loc };
+  }
+  const values = args.map((a) => hold("%islandArg", toIsland(lowerer, a)));
+  const call: IrExpr = {
+    kind: "ternary",
+    cond:
+      held === null
+        ? { kind: "libCall", fn: "nodeIsland.isHandle", args: [recv()], type: BOOL, loc }
+        : { kind: "libCall", fn: "nodeIsland.calls", args: [held(), recv()], type: BOOL, loc },
+    then: bridge({ kind: "dynArrLit", elems: values.map((value) => value()), type: DYN, loc }),
+    else_: {
+      kind: "dynInvoke",
+      recv: recv(),
+      method,
+      calleeName: v8CalleeText(callee),
+      args: values.map((value) => value()),
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+  const result = fromIsland(lowerer, call, expr);
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
 /** The local an island handle binding reads here: its own binding, retyped
  * checked-dynamic, or, inside a closure, the capture of an enclosing
  * function's binding, which resolveLocal registers. */
@@ -1727,42 +1820,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
           expr,
         );
       }
-      const name: IrExpr = { kind: "strLit", value: callee.name.text, type: STRING, loc };
-      if (args.every((a) => inertArgument(a))) {
-        return fromIsland(
-          lowerer,
-          {
-            kind: "libCall",
-            fn: "nodeIsland.invoke",
-            args: [target.value, name, argsOf(lowerer, args, loc)],
-            type: DYN,
-            loc,
-          },
-          expr,
-        );
-      }
-      // An argument that runs code could replace the method: JavaScript
-      // reads the method first, then evaluates the arguments.
-      const stmts: IrStmt[] = [];
-      const receiver = lowerer.declareHiddenLocal("%islandRecv", target.value.type);
-      stmts.push({ kind: "varDecl", localId: receiver.id, init: target.value, loc });
-      const recv = varRef(receiver.id, target.value.type, loc);
-      const method = lowerer.declareHiddenLocal("%islandMethod", DYN);
-      stmts.push({
-        kind: "varDecl",
-        localId: method.id,
-        init: { kind: "libCall", fn: "nodeIsland.get", args: [recv, name], type: DYN, loc },
-        loc,
-      });
-      const call: IrExpr = {
-        kind: "libCall",
-        fn: "nodeIsland.applyTo",
-        args: [varRef(method.id, DYN, loc), recv, argsOf(lowerer, args, loc)],
-        type: DYN,
-        loc,
-      };
-      const result = fromIsland(lowerer, call, expr);
-      return { kind: "seqExpr", stmts, result, type: result.type, loc };
+      return islandMethodCall(lowerer, expr, callee, target.value, loc);
     }
     if (!isForeignExpr(lowerer, callee)) return null;
     lowerer.usesNodeIsland = true;

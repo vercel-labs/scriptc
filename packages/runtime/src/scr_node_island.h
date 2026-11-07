@@ -148,7 +148,17 @@ typedef struct ScrNiDynOps {
    * `e.constructor === TypeError` holds with the island's TypeError. 1 for
    * an island error, 0 for any other. */
   int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+  /* JSON.stringify's questions about an island object (scr_json.c walks
+   * it member by member): IsArray, and what V8 alone can answer about it
+   * (SCR_NI_JSON_*; +1, NULL with the exception pending). */
+  bool (*is_array)(ScrDyn *value);
+  ScrDyn *(*json_query)(ScrDyn *value, int what);
 } ScrNiDynOps;
+/* The JSON text of an object whose value is in an internal slot (a boxed
+ * primitive or a raw JSON object), undefined for any other object. */
+#define SCR_NI_JSON_LEAF 0
+/* The constructor name V8's circular-structure TypeError prints. */
+#define SCR_NI_JSON_CONSTRUCTOR 1
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
 /* scr_ni_is_handle for units that also build into programs without the
@@ -256,8 +266,11 @@ extern void (*scr_ni_started_hook)(void);
 
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
-/* fn called with `this` (a method read before its arguments ran). */
-ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args);
+/* fn called with `this` (the member `key`, read before its arguments ran). */
+ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn *args);
+/* Whether scr_node_island_apply_to makes the call of the member `fn` read
+ * from `this_`; otherwise compiled code calls the native member by name. */
+bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value);
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);

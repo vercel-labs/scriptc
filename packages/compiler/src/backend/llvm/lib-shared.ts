@@ -1196,6 +1196,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.invoke": "scr_node_island_invoke",
   "nodeIsland.apply": "scr_node_island_apply",
   "nodeIsland.applyTo": "scr_node_island_apply_to",
+  "nodeIsland.calls": "scr_node_island_calls",
   "nodeIsland.construct": "scr_node_island_construct",
   "nodeIsland.instanceof": "scr_node_island_instanceof",
   "nodeIsland.isArray": "scr_ni_is_array",

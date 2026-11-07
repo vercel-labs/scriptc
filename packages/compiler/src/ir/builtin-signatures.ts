@@ -2834,6 +2834,12 @@ function buildLibFnSignatures() {
     "http2.sessionOnConnect": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
     "http2.sessionOnStream": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
     "http2.sessionOnGoaway": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+    // session.ping([payload, ]callback): the (err, duration, payload)
+    // callback crosses the checked-dynamic boundary.
+    "http2.sessionPing": { argTypes: [HTTP2SESSION_T, DYN], result: VOID },
+    "http2.sessionPingPayload": { argTypes: [HTTP2SESSION_T, BYTES_U8, DYN], result: VOID },
+    "http2.sessionOnPing": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+    "http2.sessionConnecting": { argTypes: [HTTP2SESSION_T], result: BOOL },
     "http2.sessionClosed": { argTypes: [HTTP2SESSION_T], result: BOOL },
     "http2.sessionDestroyed": { argTypes: [HTTP2SESSION_T], result: BOOL },
     "http2.sessionEncrypted": { argTypes: [HTTP2SESSION_T], result: BOOL },
@@ -2865,6 +2871,9 @@ function buildLibFnSignatures() {
     "http2.sessionSettingsGet": { argTypes: [HTTP2SESSION_T, BOOL], result: DYN },
     "http2.sessionPendingSettingsAck": { argTypes: [HTTP2SESSION_T], result: BOOL },
     "http2.getDefaultSettings": { argTypes: [], result: DYN },
+    "http2.getPackedSettings0": { argTypes: [], result: BYTES_U8 },
+    "http2.getPackedSettings": { argTypes: [DYN], result: BYTES_U8 },
+    "http2.getUnpackedSettings": { argTypes: [BYTES_U8], result: DYN },
     "http2.streamSetEncoding": { argTypes: [HTTP2STREAM_T, STRING], result: VOID },
     "http2.streamSetEncodingRet": { argTypes: [HTTP2STREAM_T, STRING], result: HTTP2STREAM_T },
     "http2.streamResume": { argTypes: [HTTP2STREAM_T], result: VOID },
@@ -2881,6 +2890,12 @@ function buildLibFnSignatures() {
     "http2.streamClosed": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamAborted": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamPending": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    // Http2ServerRequest.complete: true once aborted, ended or closed.
+    "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
+    // Every value a name has in a received [name, value, ...] pairs array:
+    // the string[] a headers object holds for set-cookie.
+    "http2.pairsValues": { argTypes: [arrayOf(STRING), STRING], result: arrayOf(STRING) },
     "http2.streamSession": { argTypes: [HTTP2STREAM_T], result: HTTP2SESSION_T },
     // The createConnection forms: arg 0 is the dialer closure (() =>
     // Socket — the libCall case checks), then path/method/timeout/headers/

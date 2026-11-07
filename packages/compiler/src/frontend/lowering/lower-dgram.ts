@@ -52,7 +52,6 @@ function lowerCallbackArg(
 ): { cb: IrExpr; nparams: number } {
   return lowerCallbackArgShared(lowerer, node, what, maxParams, paramOk, paramHint, {
     dynZero: true,
-    checkAllParams: true,
     rejectValueReturn: true,
   });
 }

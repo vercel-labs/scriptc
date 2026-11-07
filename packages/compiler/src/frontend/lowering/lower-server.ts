@@ -342,7 +342,7 @@ function lowerCallbackArg(
   node: ts.Expression,
   what: string,
   maxParams: number,
-  paramOk: (p: IrExpr["type"]) => boolean,
+  paramOk: (p: IrExpr["type"], index: number) => boolean,
   paramHint: string,
   dynTuple?: readonly IrType[],
 ): { cb: IrExpr; nparams: number } {
@@ -385,9 +385,11 @@ function coerceToHandle(lowerer: Lowerer, node: ts.Expression, want: IrType): Ir
  * local: every value wraps at the slot's string arm, and — when
  * `statusLocal` is given — the ":status" key is overwritten with the f64
  * arm (the response record's numeric :status, the byte-exact assert
- * target). Mirrors headersSnapshotHelper's loop, sourced from a pairs
- * array instead of reqHeaderPairs. Null when the shape is not a
- * string-armed pure-index record. */
+ * target). `set-cookie` takes the string[] arm with every value the pairs
+ * hold for it, as Node's headers object does. Mirrors
+ * headersSnapshotHelper's loop, sourced from a pairs array instead of
+ * reqHeaderPairs. Null when the shape is not a pure-index record whose
+ * slot has the string and string[] arms. */
 function h2HeaderRecordStmts(
   lowerer: Lowerer,
   shapeId: string,
@@ -402,6 +404,10 @@ function h2HeaderRecordStmts(
   if (iv.kind !== "union") return null;
   const strTag = lowerer.armTag(iv.unionId, STRING);
   if (strTag < 0) return null;
+  // set-cookie is an array of every field in Node, also when there is one;
+  // a record whose slot has no string[] arm cannot hold it.
+  const listTag = lowerer.armTag(iv.unionId, arrayOf(STRING));
+  if (listTag < 0) return null;
   const recT: IrType = { kind: "record", shapeId };
   const pairsT = arrayOf(STRING);
 
@@ -461,6 +467,43 @@ function h2HeaderRecordStmts(
         loc,
       },
       body: [
+        {
+          kind: "if",
+          cond: {
+            kind: "strEq",
+            negated: false,
+            left: pairAt(0),
+            right: { kind: "strLit", value: "set-cookie", type: STRING, loc },
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "recordKeySet",
+              obj: varRef(outLocal, recT, loc),
+              shapeId,
+              key: pairAt(0),
+              value: {
+                kind: "unionWrap",
+                unionId: iv.unionId,
+                tag: listTag,
+                value: {
+                  kind: "libCall",
+                  fn: "http2.pairsValues",
+                  args: [varRef(pairsLocal, pairsT, loc), pairAt(0)],
+                  type: arrayOf(STRING),
+                  loc,
+                },
+                type: iv,
+                loc,
+              },
+              loc,
+            },
+            { kind: "continue", loc },
+          ],
+          else_: null,
+          loc,
+        },
         {
           kind: "recordKeySet",
           obj: varRef(outLocal, recT, loc),
@@ -1997,7 +2040,6 @@ function lowerNetServerMethodCall(
         "use (err, tlsSocket), (err) or ()",
         {
           dynTuple: [ERROR_T, NETSOCKET_T],
-          checkAllParams: true,
           adapt: (c) => voidizedCallback(lowerer, c, locOf(listener)),
         },
       );
@@ -3440,6 +3482,27 @@ function h2EndStreamOption(lowerer: Lowerer, node: ts.Expression | undefined): b
   return end;
 }
 
+/** A settings listener or settings() callback as lowered. The runtime
+ * hands the settings record over as a dynamic value, so a function that
+ * declares the payload's parameters is boxed here and takes the entry
+ * point a dynamic listener takes: its arguments are checked into the
+ * declared types. A function with no parameters stays typed. */
+function h2SettingsListener(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const cb = lowerer.lowerExpr(node);
+  if (
+    cb.type.kind === "func" &&
+    cb.type.params.length > 0 &&
+    canBoxFuncIntoDyn(
+      cb.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value: cb, type: DYN, loc: locOf(node) };
+  }
+  return cb;
+}
+
 /** Method calls on ClientHttp2Session / ServerHttp2Session receivers.
  * Null for other receivers (the chain keeps trying). */
 function lowerH2SessionMethodCall(
@@ -3499,6 +3562,38 @@ function lowerH2SessionMethodCall(
     requireStatementPosition(lowerer, call, "session.destroy(...)");
     return { kind: "libCall", fn: "http2.sessionDestroy", args: [receiver()], type: VOID, loc };
   }
+  if (name === "ping") {
+    // session.ping([payload, ]callback): the (err, duration, payload)
+    // callback crosses the checked-dynamic boundary. Node answers a
+    // boolean; the call is a statement here.
+    requireStatementPosition(lowerer, call, "session.ping(...)");
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `session.ping with ${args.length} arguments`,
+        call,
+        "use ping(callback) or ping(payload, callback)",
+      );
+    }
+    const cb = lowerSocketDynListener(lowerer, args[args.length - 1]!, "ping callbacks");
+    if (args.length === 2) {
+      const payload = lowerer.lowerExpr(args[0]!);
+      if (payload.type.kind !== "bytes") {
+        lowerer.noLowering(
+          `session.ping with a '${lowerer.fmt(payload.type)}' payload`,
+          args[0]!,
+          "the payload is a Buffer or Uint8Array of eight bytes",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "http2.sessionPingPayload",
+        args: [receiver(), payload, cb],
+        type: VOID,
+        loc,
+      };
+    }
+    return { kind: "libCall", fn: "http2.sessionPing", args: [receiver(), cb], type: VOID, loc };
+  }
   if (name === "settings") {
     // session.settings(obj[, cb]): the settings record crosses as a dyn
     // value (the checked-dynamic boundary — object literals box); the
@@ -3512,7 +3607,7 @@ function lowerH2SessionMethodCall(
     const settingsArg: IrExpr =
       v.type.kind === "dyn" ? v : { kind: "dynFrom", value: v, type: DYN, loc };
     if (args.length >= 2) {
-      const cbV = lowerer.lowerExpr(args[1]!);
+      const cbV = h2SettingsListener(lowerer, args[1]!);
       if (cbV.type.kind === "dyn") {
         // The dyn callback keeps Node's exact (err, settings, duration)
         // shape — the runtime fires it through the checked-dynamic tree.
@@ -3559,7 +3654,7 @@ function lowerH2SessionMethodCall(
       // listeners fire with the settings record; zero-arg typed
       // listeners register plainly.
       const local = boolLit(event === "localSettings", loc);
-      const cbV = lowerer.lowerExpr(args[1]!);
+      const cbV = h2SettingsListener(lowerer, args[1]!);
       if (cbV.type.kind === "dyn") {
         return {
           kind: "libCall",
@@ -3628,7 +3723,7 @@ function lowerH2SessionMethodCall(
         args[1]!,
         "connect listeners",
         2,
-        (p) => p.kind === "http2Session" || p.kind === "netSocket",
+        (p, i) => p.kind === (i === 0 ? "http2Session" : "netSocket"),
         "use (session, socket) or ()",
         [HTTP2SESSION_T, NETSOCKET_T],
       );
@@ -3659,18 +3754,20 @@ function lowerH2SessionMethodCall(
     }
     if (event === "goaway") {
       const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 3) {
+      // The runtime hands a listener (errorCode, lastStreamID): a third
+      // parameter would read an argument nobody passed.
+      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "goaway listeners with more than three parameters or returning a value",
+          "goaway listeners with more than two parameters (the opaque data is not passed) or returning a value",
         );
       }
-      if (cb.type.params.some((p) => p.kind !== "f64" && p.kind !== "bytes")) {
+      if (cb.type.params.some((p) => p.kind !== "f64")) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "goaway listeners whose parameters are not (errorCode, lastStreamID, opaqueData?)",
+          "goaway listeners whose parameters are not (errorCode: number, lastStreamID: number)",
         );
       }
       return {
@@ -3681,16 +3778,34 @@ function lowerH2SessionMethodCall(
         loc,
       };
     }
+    if (event === "ping") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "ping listeners",
+        1,
+        (p) => (p.kind === "bytes" && p.elem === "u8") || p.kind === "dyn",
+        "use (payload) or ()",
+        [BYTES_U8],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionOnPing",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `session.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"close", "error", "connect", "stream", and "goaway" are the supported session events',
+      '"close", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events',
     );
   }
   lowerer.noLowering(
     `session.${name}`,
     call,
-    'close/destroy/request and on("close"|"error"|"connect"|"stream"|"goaway") are the lowered session members',
+    "close/destroy/request/settings/ping and on(...) are the lowered session members",
   );
 }
 
@@ -4048,11 +4163,18 @@ export function lowerServerProperty(
       // aborted: the connection (or the h2 stream) closed before the
       // response finished; complete: the whole message arrived.
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      // The compatibility request of node:http2 is complete once it was
+      // aborted or its stream closed, where an HTTP/1 message is complete
+      // only when all of it arrived.
+      const overStream =
+        ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "Http2ServerRequest";
       const fn: IrLibFn =
         name === "aborted"
           ? "http.reqAborted"
           : name === "complete"
-            ? "http.reqComplete"
+            ? overStream
+              ? "http2.reqComplete"
+              : "http.reqComplete"
             : "http.reqDestroyed";
       return { kind: "libCall", fn, args: [receiver], type: BOOL, loc };
     }
@@ -4460,6 +4582,8 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.sessionClosed", args: [recv()], type: BOOL, loc };
     if (m === "destroyed")
       return { kind: "libCall", fn: "http2.sessionDestroyed", args: [recv()], type: BOOL, loc };
+    if (m === "connecting")
+      return { kind: "libCall", fn: "http2.sessionConnecting", args: [recv()], type: BOOL, loc };
     if (m === "encrypted")
       return { kind: "libCall", fn: "http2.sessionEncrypted", args: [recv()], type: BOOL, loc };
     if (m === "type")
@@ -4503,6 +4627,8 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.streamAborted", args: [recv()], type: BOOL, loc };
     if (m === "pending")
       return { kind: "libCall", fn: "http2.streamPending", args: [recv()], type: BOOL, loc };
+    if (m === "headersSent")
+      return { kind: "libCall", fn: "http2.streamHeadersSent", args: [recv()], type: BOOL, loc };
     if (m === "session")
       return {
         kind: "libCall",
@@ -6452,7 +6578,7 @@ function lowerHttp2ModuleCall(
         listenerNode,
         "connect listeners",
         2,
-        (p) => p.kind === "http2Session" || p.kind === "netSocket",
+        (p, i) => p.kind === (i === 0 ? "http2Session" : "netSocket"),
         "use (session, socket), (session), or ()",
         [HTTP2SESSION_T, NETSOCKET_T],
       );
@@ -6476,6 +6602,41 @@ function lowerHttp2ModuleCall(
     // The constant defaults record, as a dyn value (the d.ts types it
     // `any` — reads ride the checked-dynamic keyed read).
     return { kind: "libCall", fn: "http2.getDefaultSettings", args: [], type: DYN, loc };
+  }
+  if (bi.member === "getPackedSettings") {
+    // The SETTINGS payload of a settings record, a Buffer; the record
+    // crosses as a dyn value, as it does for session.settings().
+    if (args.length === 0) {
+      return { kind: "libCall", fn: "http2.getPackedSettings0", args: [], type: BYTES_U8, loc };
+    }
+    const v = lowerer.lowerExpr(args[0]!);
+    const settings: IrExpr =
+      v.type.kind === "dyn" ? v : { kind: "dynFrom", value: v, type: DYN, loc };
+    return {
+      kind: "libCall",
+      fn: "http2.getPackedSettings",
+      args: [settings],
+      type: BYTES_U8,
+      loc,
+    };
+  }
+  if (bi.member === "getUnpackedSettings") {
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `http2.getUnpackedSettings with ${args.length} arguments`,
+        expr,
+        "pass the packed settings buffer (the validate option is not lowered)",
+      );
+    }
+    const buf = lowerer.lowerExpr(args[0]!);
+    if (buf.type.kind !== "bytes") {
+      lowerer.noLowering(
+        `http2.getUnpackedSettings with a '${lowerer.fmt(buf.type)}' argument`,
+        args[0]!,
+        "pass a Buffer or Uint8Array",
+      );
+    }
+    return { kind: "libCall", fn: "http2.getUnpackedSettings", args: [buf], type: DYN, loc };
   }
   if (bi.member === "createSecureServer") {
     if (args.length < 1 || args.length > 2) {

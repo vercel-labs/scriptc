@@ -26,6 +26,7 @@ import {
   lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
   lowerFsWriteOptionsCall,
+  lowerFsSyncWriteOptionsCall,
   lowerFsReadPathCall,
   lowerFsExistsValueCall,
 } from "./filesystem-calls.js";
@@ -420,6 +421,18 @@ export function lowerBuiltinModuleCall(
     expr.arguments.nodes.length === 2
   ) {
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
+    if (lowered) return lowered;
+  }
+  // writeFileSync/appendFileSync with options the plain forms do not cover:
+  // a non-utf8 encoding, a flag from Node's wider table, Buffer data, or
+  // any options on appendFileSync. The plain utf8 forms keep their existing
+  // lowerings (lowerFsWriteOptionsCall answers them).
+  if (
+    bi.module === "fs" &&
+    (bi.member === "writeFileSync" || bi.member === "appendFileSync") &&
+    expr.arguments.nodes.length === 3
+  ) {
+    const lowered = lowerFsSyncWriteOptionsCall(lowerer, expr, loc, bi.member);
     if (lowered) return lowered;
   }
   // writeFileSync(p, data, options) / fs.promises.writeFile(p, data,

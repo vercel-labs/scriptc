@@ -13,6 +13,12 @@ A promise used as a promise of another record type, such as a `Promise<Wide>` st
 A class stored in a record type, such as `const counter: { count: number } = Counter`, holds copies of the class's static fields.
 An `as` assertion that only adds optional members to the properties a record type declares is not such a copy: it is erased, so the value keeps its identity and reading an added member answers what the object carries, as in Node.js.
 `scriptc build` reports `SC1031` where such a member is assigned, because a record's layout has no storage for it.
+Declaring a record value with a record type that names the same properties, where every declared field fits the value's storage, keeps the value's own layout instead: both names are the same object, as in Node.js.
+When a declared field cannot store the values its type admits, such as a declared field that is a wider union type than the value's field, the declaration, a call that passes the value to a parameter the callee writes, or a literal that stores the value in that field is refused with `SC2021` if the program writes through the binding, because the copy would take the write instead of the original.
+Assigning an existing value to a binding that keeps its initializer's layout, to one of its fields, or to an element of one of its arrays, is refused with `SC2021`, because the kept layout rebuilds the assigned value, so a later write through it would reach only the copy.
+The refusal covers a short-circuit assignment that stores the value (`&&=`, or `??=` on a binding that can be nullish) like the plain assignment it stands for.
+A member of another binding that kept its initializer's layout carries that layout into the store, so no refusal is reported when the two layouts already match.
+Bracket writes such as `alias["k"] = v` write the field in the kept layout, like their dotted spelling.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.
 An empty array literal with no element type of its own, such as the `files` of `{ files: [] }` or `const NONE = [] as const`, takes its element type from the declared types its value reaches and is the same array under every name.

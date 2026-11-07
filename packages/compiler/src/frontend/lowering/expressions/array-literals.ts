@@ -461,6 +461,24 @@ export function lowerArrayLiteral(
       const fields = expr.elements.nodes.map((el, i) => {
         const fieldType = byName.get(String(i));
         if (!fieldType) lowerer.badType(el, lowerer.typeOf(el));
+        // A HOLE (`[x = 23] = [,]`, `f([,])` through a tuple parameter):
+        // the positional field reads as the undefined every read of a hole
+        // answers, and the property does not exist, so `in`, Object.keys
+        // and the own-key probes skip it — the field's absent state. A
+        // position typed without undefined keeps the element's own
+        // refusal, since a hole is not a value the field can hold.
+        if (ts.isOmittedExpression(el)) {
+          const absent = lowerer.absentFieldValue(fieldType, locOf(el));
+          if (absent !== null) return { name: String(i), value: absent };
+          return {
+            name: String(i),
+            value: lowerer.coerceInto(
+              el,
+              { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(el) },
+              fieldType,
+            ),
+          };
+        }
         return { name: String(i), value: lowerer.lowerExprExpecting(el, fieldType) };
       });
       return { kind: "recordLit", fields, type: mapped, loc };
@@ -900,6 +918,25 @@ function lowerTupleSpreadLiteral(
     if (!ts.isSpreadElement(element)) {
       const expected = byName.get(String(fields.length));
       if (!expected) lowerer.badType(element, lowerer.typeOf(element));
+      if (ts.isOmittedExpression(element)) {
+        // A HOLE beside a spread is still a hole: the field's absent state,
+        // as in a literal without a spread, so `in`, Object.keys and the
+        // own-key probes skip the index. The absent state is a constant
+        // and only legal as a direct field write, so it takes no temp. A
+        // position typed without undefined keeps the element's refusal.
+        const absent = lowerer.absentFieldValue(expected, locOf(element));
+        if (absent !== null) {
+          fields.push({ name: String(fields.length), value: absent });
+          continue;
+        }
+        append(element, {
+          kind: "unitLit",
+          unit: "undefined",
+          type: UNDEFINED_T,
+          loc: locOf(element),
+        });
+        continue;
+      }
       append(element, lowerer.lowerExprExpecting(element, expected));
       continue;
     }

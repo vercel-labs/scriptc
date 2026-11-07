@@ -130,7 +130,8 @@ ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 /* The SCR_NODE_ISLANDS build of scr_async_dyn.c: moves the native
  * listeners onto `process`, in their order, and installs the hooks below. */
 void scr_process_events_to_node(void);
-/* process.on (0), once (1), prependListener (2), removeListener (3). */
+/* process.on (0), once (1), prependListener (2), removeListener (3),
+ * prependOnceListener (4). */
 void scr_ni_process_listen(int mode, const char *event, ScrDyn *listener);
 int scr_ni_uncaught(bool from_promise);          /* scr_uncaught_exception_hook */
 void scr_ni_promise_unhandled(ScrPromise *p);    /* scr_urj_node_fn */

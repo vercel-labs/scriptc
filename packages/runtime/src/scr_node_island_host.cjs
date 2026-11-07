@@ -457,6 +457,7 @@ const islandHelpers = {
     if (mode === 0) process.on(event, listener);
     else if (mode === 1) process.once(event, listener);
     else if (mode === 2) process.prependListener(event, listener);
+    else if (mode === 4) process.prependOnceListener(event, listener);
     else process.removeListener(event, listener);
   },
   // An error native code let escape, as Node handles one of its own: the

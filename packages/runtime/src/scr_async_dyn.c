@@ -383,8 +383,9 @@ static SCR_TL bool scr_pe_wanted = false;
 static SCR_TL unsigned scr_pe_dispatching = 0;
 static void scr_pe_move_all(void);
 
-/* process.on (0), once (1), prependListener (2), removeListener (3) on
- * Node's `process`; false while this unit's registries are the list. */
+/* process.on (0), once (1), prependListener (2), removeListener (3),
+ * prependOnceListener (4) on Node's `process`; false while this unit's
+ * registries are the list. */
 static bool scr_pe_listen(int mode, const char *event, ScrDyn *fn) {
   if (!scr_pe_node) return false;
   scr_ni_process_listen(mode, event, fn);
@@ -1140,14 +1141,20 @@ listeners:
 }
 
 #ifdef SCR_NODE_ISLANDS
-/* One registry's listeners onto Node's `process`, in their order. */
-static void scr_pe_move(ScrRejListener **list, size_t *n, size_t *cap, const char *event) {
+/* One registry's listeners onto Node's `process`, in their order. `front`:
+ * the move was deferred, and island code may have registered listeners of
+ * its own meanwhile; the native ones are older, so they go ahead of those
+ * (prepended last to first). */
+static void scr_pe_move(ScrRejListener **list, size_t *n, size_t *cap, const char *event,
+                        bool front) {
   ScrRejListener *moved = *list;
   size_t count = *n;
   *list = NULL;
   *n = *cap = 0;
-  for (size_t i = 0; i < count; i++) {
-    scr_ni_process_listen(moved[i].once ? 1 : 0, event, moved[i].fn);
+  for (size_t k = 0; k < count; k++) {
+    size_t i = front ? count - 1 - k : k;
+    int mode = front ? (moved[i].once ? 4 : 2) : (moved[i].once ? 1 : 0);
+    scr_ni_process_listen(mode, event, moved[i].fn);
     if (scr_exc_pending()) scr_exc_clear();
     scr_rej_release(&moved[i]);
   }
@@ -1155,18 +1162,26 @@ static void scr_pe_move(ScrRejListener **list, size_t *n, size_t *cap, const cha
 }
 
 static void scr_pe_move_all(void) {
+  bool front = scr_pe_wanted;
   scr_pe_wanted = false;
   scr_pe_node = true;
-  scr_pe_move(&scr_uncaught_ls[1], &scr_uncaught_n[1], &scr_uncaught_cap[1], SCR_UNCAUGHT_EVENT(true));
-  scr_pe_move(&scr_uncaught_ls[0], &scr_uncaught_n[0], &scr_uncaught_cap[0], SCR_UNCAUGHT_EVENT(false));
-  scr_pe_move(&scr_urj_listeners, &scr_nurj, &scr_urj_cap, "unhandledRejection");
-  scr_pe_move(&scr_rjh_listeners, &scr_nrjh, &scr_rjh_cap, "rejectionHandled");
+  /* A deferred move runs as a dispatch ends, which may leave an exception
+   * pending (what a listener threw, or the error nobody handled): it is
+   * set aside for the registrations and pending again afterwards. */
+  ScrCaught *pending = scr_exc_pending() ? scr_exc_take() : NULL;
+  scr_pe_move(&scr_uncaught_ls[1], &scr_uncaught_n[1], &scr_uncaught_cap[1],
+              SCR_UNCAUGHT_EVENT(true), front);
+  scr_pe_move(&scr_uncaught_ls[0], &scr_uncaught_n[0], &scr_uncaught_cap[0],
+              SCR_UNCAUGHT_EVENT(false), front);
+  scr_pe_move(&scr_urj_listeners, &scr_nurj, &scr_urj_cap, "unhandledRejection", front);
+  scr_pe_move(&scr_rjh_listeners, &scr_nrjh, &scr_rjh_cap, "rejectionHandled", front);
   ScrDyn **warn = scr_warn_listeners;
   size_t nwarn = scr_nwarn;
   scr_warn_listeners = NULL;
   scr_nwarn = scr_warn_cap = 0;
-  for (size_t i = 0; i < nwarn; i++) {
-    scr_ni_process_listen(0, "warning", warn[i]);
+  for (size_t k = 0; k < nwarn; k++) {
+    size_t i = front ? nwarn - 1 - k : k;
+    scr_ni_process_listen(front ? 2 : 0, "warning", warn[i]);
     if (scr_exc_pending()) scr_exc_clear();
     scr_dyn_release(warn[i]);
   }
@@ -1179,6 +1194,10 @@ static void scr_pe_move_all(void) {
   scr_urj_node_fn = scr_ni_promise_unhandled;
   scr_rjh_notify_fn = scr_ni_promise_handled;
   scr_warning_emit_hook = scr_emit_warning;
+  if (pending != NULL) {
+    scr_rethrow(pending);
+    scr_caught_release(pending);
+  }
 }
 
 /* Node is loaded (scr_node_island.c, on the main thread). */

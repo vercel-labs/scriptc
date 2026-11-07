@@ -39,8 +39,8 @@
 
 #if !defined(_WIN32) && !defined(__wasi__)
 
-/* process.on (0), once (1), prependListener (2) or removeListener (3) of a
- * native listener. A JavaScript throw (a `newListener` listener's) is left
+/* process.on (0), once (1), prependListener (2), removeListener (3) or
+ * prependOnceListener (4) of a native listener. A JavaScript throw (a `newListener` listener's) is left
  * pending, as the registration throws in Node. */
 void scr_ni_process_listen(int mode, const char *event, ScrDyn *listener) {
   ScrStr *name = scr_str_new(event, strlen(event));

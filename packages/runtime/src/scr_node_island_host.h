@@ -464,6 +464,7 @@ static const char scr_node_island_host_js[] =
     "    if (mode === 0) process.on(event, listener);\012"
     "    else if (mode === 1) process.once(event, listener);\012"
     "    else if (mode === 2) process.prependListener(event, listener);\012"
+    "    else if (mode === 4) process.prependOnceListener(event, listener);\012"
     "    else process.removeListener(event, listener);\012"
     "  },\012"
     "  // An error native code let escape, as Node handles one of its own: the\012"

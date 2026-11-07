@@ -658,7 +658,12 @@ static const ScrDyn *scr_assert_loose_error_prop(const ScrDyn *d, const char *ke
  * (undefined without one). +1; NULL with the getter's exception pending. */
 static ScrDyn *scr_assert_own_value(const ScrDyn *owner, ScrDynProp ent) {
   if (!ent.accessor) return scr_dyn_retain(ent.value);
-  return scr_dyn_obj_read(owner, ent.key, ent.key_len);
+  if (!ent.getter) return scr_dyn_retain(scr_dyn_undefined());
+  /* The getter runs as a method of the object it is read from. */
+  scr_dyn_this_push_dyn(owner);
+  ScrDyn *value = scr_dyn_call(ent.getter, NULL, 0, "get");
+  scr_dyn_this_pop();
+  return value;
 }
 
 /* Compares own property `ea` of `a` with own property `eb` of `b` through
@@ -1348,7 +1353,7 @@ static void scr_assert_cf_entry(ScrAssertBuf *b, const ScrDyn *owner, ScrDynProp
   }
   const char *label = ent.setter ? "[Getter/Setter" : "[Getter";
   ab_cstr(b, label);
-  ScrDyn *value = scr_dyn_obj_read(owner, ent.key, ent.key_len);
+  ScrDyn *value = scr_assert_own_value(owner, ent);
   if (value == NULL || scr_exc_pending()) {
     scr_dyn_release(value);
     ScrCaught *caught = scr_exc_take();

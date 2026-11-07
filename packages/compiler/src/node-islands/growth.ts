@@ -20,11 +20,19 @@
  * No rule stops at a size: every retry adds packages that were never
  * islanded, so growth is monotone and bounded by the project's package
  * count, and the retry reaches a fixed point. A numeric cap only turned a
- * refusal the automatic policy promised to island into a fatal SC2013. */
+ * refusal the automatic policy promised to island into a fatal SC2013.
+ *
+ * A build that grows both ways retries once with the union (foldFenceGrowth):
+ * the fence rule's growth is decided from the same lowering pass, narrowed to
+ * the packages the reload still compiles. A package the new islands reach
+ * only through themselves is in a Node island by association: its modules
+ * leave the compiled graph, so the next round no longer sees its fences. The
+ * rule folded is the one that reload would apply: the fence report when it
+ * still fails, the sure rule when the islands make it compile. */
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { resolveBareModule } from "../frontend/resolve.js";
-import type { IslandPackage } from "./boundary.js";
+import type { IslandModule, IslandPackage } from "./boundary.js";
 import { classifyDiagnostic, isIslandReasonCode } from "./classify.js";
 import { growEsmImporters } from "./graph-islands.js";
 import { packageDirOf, packageVersionOf } from "./origin.js";
@@ -287,4 +295,114 @@ function growFromFences(
     known,
     ...(sure !== null ? { sure } : {}),
   });
+}
+
+/** The package name an island set keys a file's package by: `@types/<name>`
+ * declarations type the package `<name>` (boundary.ts's
+ * islandPackageOfFile). Null for a user module. */
+function packageKeyOf(file: string): string | null {
+  const at = packageDirOf(file);
+  if (at === null) return null;
+  if (!at.name.startsWith("@types/")) return at.name;
+  const bare = at.name.slice("@types/".length);
+  return bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+}
+
+/** Whether a file belongs to a package a reload with `islands` still
+ * compiles. A package that runs in a Node island is loaded for its
+ * declarations only: its modules, and the modules of every package that only
+ * its modules import, leave the compiled graph. A refusal or fence anchored
+ * in one of those is not a diagnostic that round's lowering can report. A
+ * user module is compiled, except an island module or one the
+ * drop-and-reload loop removed. */
+export function stillCompiled(
+  ctx: IslandGrowthContext,
+  islands: ReadonlyMap<string, IslandPackage>,
+  modules: ReadonlyMap<string, IslandModule>,
+): (file: string) => boolean {
+  const notCompiled = new Set<string>(modules.keys());
+  for (const m of ctx.scan.modules) if (m.dropped) notCompiled.add(m.file);
+  // The imports of each package, and of user code, so the walk visits every
+  // reachable package once. User code keeps its own list rather than a null
+  // key: a collection keyed by `string | null` would make that union a
+  // tagged box throughout the self-hosted compiler (nullable-unions.ts).
+  const imports = new Map<string, { to: string; fromFile: string }[]>();
+  const userImports: { to: string; fromFile: string }[] = [];
+  for (const edge of ctx.scan.edges) {
+    if (edge.shim || edge.toDir === null) continue;
+    const from = packageKeyOf(edge.fromFile);
+    const hop = { to: edge.to, fromFile: edge.fromFile };
+    if (from === null) {
+      userImports.push(hop);
+      continue;
+    }
+    const known = imports.get(from);
+    if (known === undefined) imports.set(from, [hop]);
+    else known.push(hop);
+  }
+  const compiled = new Set<string>();
+  const queue: string[] = [];
+  const visit = (name: string): void => {
+    if (islands.has(name) || compiled.has(name)) return;
+    compiled.add(name);
+    queue.push(name);
+  };
+  for (const hop of userImports) if (!notCompiled.has(hop.fromFile)) visit(hop.to);
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    for (const hop of imports.get(name) ?? []) if (!notCompiled.has(hop.fromFile)) visit(hop.to);
+  }
+  return (file: string): boolean => {
+    if (notCompiled.has(file)) return false;
+    const name = packageKeyOf(file);
+    return name === null || compiled.has(name);
+  };
+}
+
+/** The island set a prepared round retries with when both growth rules grew
+ * it: the lowering's growth plus the fence growth the *next* round would
+ * decide (D4, the pi build-speed plan's WP9). That round lowers with
+ * `islands` islanded, so it reads what its program still holds — the
+ * diagnostics and fences a reload can still report, and the scan modules and
+ * edges of the packages it still compiles. Null when the fence rule grows
+ * nothing further.
+ *
+ * Narrowing the scan matters as much as the diagnostics: the fence rule
+ * reads a package's island reasons from its markers, so a package the reload
+ * no longer compiles would be islanded on its markers alone — the plain
+ * union this filter exists to prevent.
+ *
+ * The rule the next round would apply depends on the failure it still has.
+ * Remaining diagnostics are a failed build, and the fence-report rule islands
+ * the package whose class accounts for that failure. No remaining diagnostic
+ * means the islands made the reload compile, and a compiling build keeps its
+ * conditional object-model dependencies native: only a fence that fires when
+ * the module evaluates turns a package into an island then (the sure rule the
+ * compiling build applies to itself). `sure` reports which rule was applied.
+ * The sure rule folds the fence retry a compiling build would ask for, and a
+ * build with that growth can fail where the compiling build without it does
+ * not, so a retry that carries it can still fall back to `islands`. */
+export function foldFenceGrowth(
+  ctx: IslandGrowthContext,
+  islands: ReadonlyMap<string, IslandPackage>,
+  modules: ReadonlyMap<string, IslandModule>,
+  growth: { diagnostics: readonly ScrDiagnostic[]; fences: readonly ScrDiagnostic[] },
+): { islands: Map<string, IslandPackage>; sure: boolean } | null {
+  const compiled = stillCompiled(ctx, islands, modules);
+  const narrowed: IslandGrowthContext = {
+    ...ctx,
+    scan: {
+      ...ctx.scan,
+      modules: ctx.scan.modules.filter((m) => compiled(m.file)),
+      edges: ctx.scan.edges.filter((e) => compiled(e.fromFile)),
+    },
+  };
+  const diagnostics = growth.diagnostics.filter((d) => compiled(d.loc.file));
+  const sure = diagnostics.length === 0;
+  const grown = growIslandSet(narrowed, islands, {
+    diagnostics,
+    fences: growth.fences.filter((d) => compiled(d.loc.file)),
+    fenceMode: sure ? "sure" : "report",
+  });
+  return grown === null ? null : { islands: grown, sure };
 }

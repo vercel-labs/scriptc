@@ -201,3 +201,46 @@ test("a build without a reload walks every rung once", () => {
   expect(only.loaded).toEqual([[], ["outerpkg"], ["outerpkg", "innerpkg"]]);
   only.frontend.dispose();
 });
+
+test("an island reload beside a static package loads the opted-in set once", () => {
+  // `hljs` is on the npm-static list and runs in a Node island: the island
+  // decision wins, the list the reload compiles is the list minus the
+  // island, and the program type-checks against the island's declarations.
+  // So the reload is the scout and ONE load of the remaining set. When the
+  // island's shipped JS reached the authored project world, the check there
+  // failed in user code, and the last-resort attribution reloaded the
+  // program once per remaining package and for the bare baseline (on pi,
+  // fourteen loads and a 14-minute reload) before refusing the innocent
+  // package.
+  const dir = join(import.meta.dirname, "../../../../tests/corpus/8826-island-typed-beside-static");
+  const shared = createNodeFrontendServices();
+  services.push(shared);
+  const loaded: string[][] = [];
+  const loader: ProgramLoader = (path, options) => {
+    loaded.push([...(options.npmStatic ?? [])]);
+    return loadProgramWithServices(path, shared, {
+      npmStatic: options.npmStatic ?? [],
+      externalTypes: options.externalTypes,
+    });
+  };
+  const frontend = runFrontend(
+    join(dir, "main.ts"),
+    loader,
+    "lib",
+    undefined,
+    ["hljs", "plainpkg"],
+    {
+      islandPackages: new Set(["hljs"]),
+      islandTypeRoots: [join(dir, "node_modules/hljs/types/index.d.ts")],
+    },
+  );
+  try {
+    expect(loaded).toEqual([[], ["plainpkg"]]);
+    expect(frontend.npmStatic.map((status) => `${status.package}:${status.status}`)).toEqual([
+      "plainpkg:static",
+    ]);
+    expect(frontend.preflight.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  } finally {
+    frontend.dispose();
+  }
+});

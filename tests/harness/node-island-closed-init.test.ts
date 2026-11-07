@@ -186,12 +186,36 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
     ]);
   }, 300_000);
 
+  test("a constant in a module that is also imported dynamically still waits", async () => {
+    const { binary, trace } = await build("8943-node-island-closed-const-shared-dynamic");
+    const modules = trace.filter(generated);
+    expect(modules).toHaveLength(1);
+    expect(modules[0]).toMatch(/^\[node-islands\] defer .*guarded by the loads before it/);
+    const { stdout, boot } = await run(binary);
+    expect(stdout).toBe("start object\nlibnode mapped: false\n");
+    expect(startsNode(boot)).toBe(false);
+  }, 300_000);
+
+  test("a run that loaded something else first evaluates the constant where it is declared", async () => {
+    const { binary, trace } = await build("8942-node-island-closed-const-load-order");
+    // The build defers it: in the order the probe evaluated, it is the
+    // second load.
+    expect(trace.filter(generated)).toHaveLength(1);
+    expect(trace.filter(generated)[0]).toMatch(/^\[node-islands\] defer /);
+    const { stdout, boot } = await run(binary);
+    // This run registered the plugin's package before it, so the guard
+    // fails and the constant sees what that package's load did.
+    expect(stdout).toBe("start\nplugin plugin\ncount 1 plugin\n");
+    expect(
+      boot.some((l) => l.includes("boot guard failed: the loads before ./.scriptc/closed/")),
+    ).toBe(true);
+  }, 300_000);
+
   test("a constant declared after Node started evaluates there, not from its snapshot", async () => {
     const { binary, trace } = await build("8939-node-island-closed-const-after-call");
-    // Every module is deferred by the build, and none in per-module mode: a
-    // load reached while Node runs evaluates at its position.
+    // Every module is deferred by the build; a load reached while Node runs
+    // evaluates at its position.
     expect(trace.every((l) => l.startsWith("[node-islands] defer "))).toBe(true);
-    expect(trace.every((l) => l.includes("evaluated when Node starts"))).toBe(true);
     const { stdout, boot } = await run(binary);
     expect(stdout).toBe("empty 0\n1 x,y 2\n");
     expect(

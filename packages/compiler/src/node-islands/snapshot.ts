@@ -91,11 +91,14 @@ function isModuleInit(name: string): boolean {
 }
 
 /** A statement list as the statements control passes through in order:
- * blocks nothing breaks out of opened up. */
+ * blocks and guarded bodies opened up. */
 function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] {
   for (const s of stmts) {
-    if (s.kind === "block" && s.labels === undefined) flatStatements(s.body, out);
-    else out.push(s);
+    if (s.kind === "block") flatStatements(s.body, out);
+    else if (s.kind === "tryCatch") {
+      flatStatements(s.tryBody, out);
+      if (s.finallyBody !== null) flatStatements(s.finallyBody, out);
+    } else out.push(s);
   }
   return out;
 }
@@ -137,71 +140,23 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * evaluates a file two loads share in the other load, so the decisions do
  * not rest on the order for that (sharedEffects). */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
-  const { ordered } = evaluationWalk(mod);
-  if (ordered.length === 0) return calls;
-  const reached = new Set(ordered);
-  return [...ordered, ...calls.filter((c) => !reached.has(c))];
-}
-
-/** Whether `node` awaits anywhere inside. */
-function awaitsWithin(node: unknown): boolean {
-  if (node === null || typeof node !== "object") return false;
-  if (Array.isArray(node)) return node.some(awaitsWithin);
-  const o = node as Record<string, unknown>;
-  if (o["kind"] === "awaitExpr" || o["kind"] === "awaitUnionExpr") return true;
-  if (o["kind"] === "intrinsic" && o["name"] === "module.await") return true;
-  for (const k in o) if (k !== "loc" && k !== "type" && awaitsWithin(o[k])) return true;
-  return false;
-}
-
-/** The walk of evaluationOrder: the loads it reaches, in order, and the
- * ones among them the program reaches at one fixed point of its start, the
- * same in every run (`fixed`): before anything awaited, outside every
- * condition, in a module initializer that only the walk's own calls run.
- * An initializer something else can call (a dynamic import, a `require`
- * inside a function), or that such an initializer calls, may run earlier
- * than the walk has it. */
-function evaluationWalk(mod: IrModule): {
-  ordered: DeferCall[];
-  fixed: Set<DeferCall>;
-  /** Why a load the walk reached is not in `fixed`. */
-  moving: Map<DeferCall, string>;
-} {
   const functions = new Map<string, IrModule["functions"][number]>();
   for (const fn of mod.functions) if (typeof fn.name === "string") functions.set(fn.name, fn);
   const entered = new Set<string>();
   const reached = new Set<DeferCall>();
   const ordered: DeferCall[] = [];
-  const suspended: { stmts: IrStmt[]; at: number; within: string; async: boolean }[] = [];
-  /** Per reached load: its initializer, and whether the walk came to it
-   * unconditionally and before any await. */
-  const sites = new Map<DeferCall, { within: string; conditional: boolean; late: boolean }>();
-  /** The initializer calls the walk evaluated, per initializer. */
-  const followed = new Map<string, number>();
-  let within = "";
-  /** Whether the function being walked is async: any of its statements
-   * may await, also where the walk does not look (awaitsWithin). */
-  let inAsync = false;
-  let conditions = 0;
-  let awaited = false;
-  /** The conditional parts of expressions, kept for after the loads the
-   * walk reaches, with the initializer each is in. */
-  const conditional: { part: IrExpr; within: string; async: boolean }[] = [];
-  const later = (part: IrExpr): void => {
-    conditional.push({ part, within, async: inAsync });
-  };
+  const suspended: { stmts: IrStmt[]; at: number }[] = [];
+  const conditional: IrExpr[] = [];
   /** Evaluates what the walk follows of `e`; true when it awaits. */
   function evaluate(e: IrExpr): boolean {
     if (e.kind === "libCall" && e.fn === "nodeIsland.defer") {
       if (!reached.has(e)) {
         reached.add(e);
         ordered.push(e);
-        sites.set(e, { within, conditional: conditions > 0, late: awaited });
       }
       return false;
     }
     if (e.kind === "call" && isModuleInit(e.callee)) {
-      followed.set(e.callee, (followed.get(e.callee) ?? 0) + 1);
       enter(e.callee);
       return false;
     }
@@ -223,31 +178,25 @@ function evaluationWalk(mod: IrModule): {
     // for after the loads the walk reaches: it may not run at all, and where
     // it does it cannot be placed ahead of a load that always does.
     if (e.kind === "logical" || e.kind === "nullish" || e.kind === "orDefault") {
-      later(e.right);
+      conditional.push(e.right);
       return evaluate(e.left);
     }
     if (e.kind === "ternary") {
-      later(e.then);
-      later(e.else_);
+      conditional.push(e.then, e.else_);
       return evaluate(e.cond);
     }
     if (e.kind === "optChain") {
-      later(e.body);
+      conditional.push(e.body);
       return evaluate(e.receiver);
     }
     // Any other expression: what it holds, in the order it is written. A
     // comparison, a member read, a `typeof`, a call's arguments: an inline
-    // require() inside any of them keeps its initializer there. An
-    // expression may evaluate only some of what it holds (`a ? b : c`,
-    // `a && b`), so a load inside one is not at a fixed point.
-    conditions++;
-    const awaits = inside(e);
-    conditions--;
-    return awaits;
+    // require() inside any of them keeps its initializer there.
+    return within(e);
   }
   /** Follows the expressions `node` holds (a sequence is the only
    * expression that holds statements); true when one of them awaits. */
-  function inside(node: object): boolean {
+  function within(node: object): boolean {
     let awaits = false;
     const fields = node as Record<string, unknown>;
     for (const key in fields) {
@@ -257,7 +206,7 @@ function evaluationWalk(mod: IrModule): {
         if (part === null || typeof part !== "object") continue;
         if (typeof (part as { kind?: unknown }).kind === "string")
           awaits = evaluate(part as IrExpr) || awaits;
-        else awaits = inside(part) || awaits;
+        else awaits = within(part) || awaits;
       }
     }
     return awaits;
@@ -270,23 +219,8 @@ function evaluationWalk(mod: IrModule): {
     if (s.kind === "if") {
       // The run-once guard returns on a revisit; a fork or worker root is
       // one branch of a selection.
-      conditions++;
       run(flatStatements(s.then), 0);
       if (s.else_ !== null) run(flatStatements(s.else_), 0);
-      conditions--;
-    } else if (s.kind === "tryCatch") {
-      // A guarded body whose handler throws again (a module's own
-      // evaluation record) is passed through like a block; under any
-      // other handler a statement may be skipped while later ones run.
-      const passes = s.catchBody === null || s.catchBody.at(-1)?.kind === "rethrow";
-      if (!passes) conditions++;
-      run(flatStatements(s.tryBody), 0);
-      if (!passes) conditions--;
-      if (s.finallyBody !== null) run(flatStatements(s.finallyBody), 0);
-    } else if (s.kind === "block") {
-      conditions++;
-      run(flatStatements(s.body), 0);
-      conditions--;
     }
     return false;
   }
@@ -294,11 +228,8 @@ function evaluationWalk(mod: IrModule): {
     for (let i = from; i < stmts.length; i++) {
       const s = stmts[i]!;
       if (s.kind === "return") return;
-      let awaits = statement(s);
-      if (!awaits && inAsync && awaitsWithin(s)) awaits = true;
-      if (awaits) {
-        suspended.push({ stmts, at: i + 1, within, async: inAsync });
-        awaited = true;
+      if (statement(s)) {
+        suspended.push({ stmts, at: i + 1 });
         return;
       }
     }
@@ -307,88 +238,15 @@ function evaluationWalk(mod: IrModule): {
     if (entered.has(name)) return;
     entered.add(name);
     const fn = functions.get(name);
-    if (fn === undefined) return;
-    const outer = within;
-    const outerAsync = inAsync;
-    within = name;
-    inAsync = fn.async === true;
-    run(flatStatements(fn.body), 0);
-    within = outer;
-    inAsync = outerAsync;
+    if (fn !== undefined) run(flatStatements(fn.body), 0);
   }
   if (typeof mod.entry === "string") enter(mod.entry);
-  const resume = (from: number): number => {
-    for (let i = from; i < suspended.length; i++) {
-      within = suspended[i]!.within;
-      inAsync = suspended[i]!.async;
-      run(suspended[i]!.stmts, suspended[i]!.at);
-    }
-    return suspended.length;
-  };
-  const resumed = resume(0);
-  // A conditional part is reached under a condition, wherever it stands.
-  conditions++;
-  for (let i = 0; i < conditional.length; i++) {
-    within = conditional[i]!.within;
-    inAsync = conditional[i]!.async;
-    evaluate(conditional[i]!.part);
-  }
-  conditions--;
-  resume(resumed);
-  const fixed = new Set<DeferCall>();
-  const moving = new Map<DeferCall, string>();
-  if (ordered.length === 0) return { ordered, fixed, moving };
-  // Every mention of an initializer in the program, per initializer, and
-  // the initializers each function mentions.
-  const mentions = new Map<string, number>();
-  const callees = new Map<string, Set<string>>();
-  const seen = new Set<object>();
-  let scanning = "";
-  const scan = (v: unknown): void => {
-    if (typeof v === "string") {
-      if (isModuleInit(v) && functions.has(v)) {
-        mentions.set(v, (mentions.get(v) ?? 0) + 1);
-        callees.get(scanning)?.add(v);
-      }
-      return;
-    }
-    if (v === null || typeof v !== "object" || seen.has(v)) return;
-    seen.add(v);
-    if (Array.isArray(v)) {
-      for (const x of v) scan(x);
-      return;
-    }
-    const o = v as Record<string, unknown>;
-    for (const k in o) if (k !== "loc" && k !== "type") scan(o[k]);
-  };
-  for (const fn of mod.functions) {
-    scanning = typeof fn.name === "string" ? fn.name : "";
-    callees.set(scanning, new Set());
-    const fields = fn as unknown as Record<string, unknown>;
-    for (const k in fields) if (k !== "name" && k !== "loc") scan(fields[k]);
-  }
-  // Initializers that can run where the walk does not have them, and the
-  // ones they call.
-  const early = new Set<string>();
-  const queue: string[] = [];
-  for (const [name, count] of mentions) if (count !== (followed.get(name) ?? 0)) queue.push(name);
-  while (queue.length > 0) {
-    const name = queue.pop()!;
-    if (early.has(name)) continue;
-    early.add(name);
-    for (const callee of callees.get(name) ?? []) queue.push(callee);
-  }
-  for (const [call, site] of sites) {
-    if (site.late) moving.set(call, "the program reaches it after an await");
-    else if (site.conditional) moving.set(call, "the program reaches it under a condition");
-    else if (early.has(site.within))
-      moving.set(
-        call,
-        "its module can also be loaded outside the static import graph (a dynamic import, or a require inside a function)",
-      );
-    else fixed.add(call);
-  }
-  return { ordered, fixed, moving };
+  for (let i = 0; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
+  const resumed = suspended.length;
+  for (let i = 0; i < conditional.length; i++) evaluate(conditional[i]!);
+  for (let i = resumed; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
+  if (ordered.length === 0) return calls;
+  return [...ordered, ...calls.filter((c) => !reached.has(c))];
 }
 
 function pathOf(call: DeferCall): string {
@@ -529,12 +387,8 @@ export function finalizeDeferredIslands(
     generated: string[],
   ) => ProbeOutput | string = runProbe,
 ): DeferralDecision[] {
-  const found = deferCalls(mod);
-  if (found.length === 0) return [];
-  const walk = evaluationWalk(mod);
-  const reached = new Set(walk.ordered);
-  const calls =
-    walk.ordered.length === 0 ? found : [...walk.ordered, ...found.filter((c) => !reached.has(c))];
+  const calls = evaluationOrder(mod, deferCalls(mod));
+  if (calls.length === 0) return [];
   const decisions: DeferralDecision[] = [];
   const decide = (call: DeferCall, deferred: boolean, reason: string): void => {
     const d = { path: fileOf(mod, pathOf(call)), deferred, reason };
@@ -559,18 +413,7 @@ export function finalizeDeferredIslands(
   for (const call of calls) {
     const path = fileOf(mod, pathOf(call));
     if (generated.has(path)) {
-      // A generated module computes from what earlier island code left
-      // behind, so its snapshot holds only where the program reaches it at
-      // the point of its start the probe evaluated it at (evaluationWalk).
-      // Anywhere else it evaluates at its position, and the probe leaves it
-      // out, so that no later module is probed after it.
-      if (walk.fixed.has(call)) candidates.push({ call, path, lazy: false, gate: "" });
-      else
-        decide(
-          call,
-          false,
-          `the program does not reach it at one fixed point of its start: ${walk.moving.get(call) ?? "no static import leads to it"}`,
-        );
+      candidates.push({ call, path, lazy: false, gate: "" });
       continue;
     }
     const pkg = packageDirOf(path);
@@ -591,6 +434,20 @@ export function finalizeDeferredIslands(
   // The probe loads a generated module from a copy (writeProbeCopies).
   const scratch = generated.size > 0 && tree !== undefined ? writeProbeCopies(tree) : null;
   const probed = (path: string): string => scratch?.copies.get(path) ?? path;
+  // The loads the probe evaluates before each one, as the runtime will
+  // count them: the distinct load paths, in the probe's order.
+  const before = new Map<string, string>();
+  {
+    let count = 0;
+    let hash = LOADS_HASH_START;
+    for (const c of candidates) {
+      const load = pathOf(c.call);
+      if (before.has(load)) continue;
+      before.set(load, `P ${count} ${hash}`);
+      count++;
+      hash = loadsHash(hash, load);
+    }
+  }
   let probe: ProbeOutput | string;
   try {
     probe = probeModules(
@@ -648,7 +505,7 @@ export function finalizeDeferredIslands(
     const how = c.lazy
       ? `"evaluate": "lazy"`
       : generated.has(c.path)
-        ? "recorded evaluation is deterministic"
+        ? "recorded evaluation is deterministic; guarded by the loads before it"
         : c.gate === ""
           ? "static gate"
           : `recorded load is deterministic (static gate: ${c.gate})`;
@@ -662,6 +519,12 @@ export function finalizeDeferredIslands(
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
       ...env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
       ...tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
+      // A generated module computes from what earlier island code left
+      // behind, so its snapshot holds only in a run that registered, before
+      // it, exactly the loads the probe evaluated before it. The runtime
+      // compares (scr_node_island_boot.c); otherwise the module evaluates
+      // where its constants are declared.
+      ...(generated.has(fileOf(mod, pathOf(d.call))) ? [before.get(pathOf(d.call))!] : []),
     ];
     const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
     const arg = d.call.args[1];
@@ -681,6 +544,18 @@ export function finalizeDeferredIslands(
 }
 
 /* ── the snapshot text (scr_node_island_boot.c) ───────────────────────── */
+
+/** The hash of the `P` record (FNV-1a, 32 bits) over the load paths
+ * registered so far, each followed by a line feed; the runtime keeps the
+ * same one (nb_loads_add). */
+const LOADS_HASH_START = 2166136261;
+
+function loadsHash(hash: number, load: string): number {
+  let h = hash;
+  const bytes = Buffer.from(`${load}\n`, "utf8");
+  for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i]!, 16777619) >>> 0;
+  return h;
+}
 
 function lstr(s: string): string {
   return `${Buffer.byteLength(s, "utf8")}:${s}`;

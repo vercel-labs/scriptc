@@ -587,8 +587,16 @@ describe("the order deferred loads are probed in", () => {
 });
 
 describe("generated island modules (closed-island-init.ts)", () => {
+  /** The `P` record's hash over `loads` (snapshot.ts loadsHash). */
+  function loadsHash(loads: string[]): number {
+    let h = 2166136261;
+    for (const load of loads)
+      for (const byte of Buffer.from(`${load}\n`, "utf8")) h = Math.imul(h ^ byte, 16777619) >>> 0;
+    return h;
+  }
+
   /** A project whose entry imports the package `dep` and then loads two
-   * generated modules: one at a fixed point of the program's start, one
+   * generated modules: one where the entry's own statements reach it, one
    * inside a function. The probe's stand-in records what it was given and
    * answers a deterministic load for every module. */
   function generatedProject() {
@@ -608,14 +616,19 @@ describe("generated island modules (closed-island-init.ts)", () => {
       ],
     });
     const load = (call: unknown) => ({ kind: "assign", localId: "%g.island.0", value: call });
-    const dep = defer("./node_modules/dep/index.js");
-    const fixed = defer("./.scriptc/closed/main.0000000000.0.mjs");
-    const late = defer("./.scriptc/closed/main.0000000000.1.mjs");
+    const loads = {
+      dep: "./node_modules/dep/index.js",
+      first: "./.scriptc/closed/main.0000000000.0.mjs",
+      second: "./.scriptc/closed/main.0000000000.1.mjs",
+    };
+    const dep = defer(loads.dep);
+    const first = defer(loads.first);
+    const second = defer(loads.second);
     const mod = {
       entry: "%main",
       functions: [
-        { name: "helper", body: [load(late)] },
-        { name: "%init.0", body: [load(dep), load(fixed)] },
+        { name: "helper", body: [load(second)] },
+        { name: "%init.0", body: [load(dep), load(first)] },
         {
           name: "%main",
           body: [{ kind: "exprStmt", expr: { kind: "call", callee: "%init.0", args: [] } }],
@@ -628,18 +641,8 @@ describe("generated island modules (closed-island-init.ts)", () => {
         modules: {
           root,
           files: [
-            {
-              path: ".scriptc/closed/main.0000000000.0.mjs",
-              size: 0,
-              sha256: "",
-              generated: text("a"),
-            },
-            {
-              path: ".scriptc/closed/main.0000000000.1.mjs",
-              size: 0,
-              sha256: "",
-              generated: text("b"),
-            },
+            { path: loads.first.slice(2), size: 0, sha256: "", generated: text("a") },
+            { path: loads.second.slice(2), size: 0, sha256: "", generated: text("b") },
             { path: "node_modules/dep/index.js", size: 0, sha256: "" },
           ],
           links: [],
@@ -674,19 +677,24 @@ describe("generated island modules (closed-island-init.ts)", () => {
           objects: {
             "1": { f: 0, p: false, m: [] },
             "2": { f: 0, p: false, m: [["a", { n: "7" }]] },
+            "3": { f: 0, p: false, m: [["b", { n: "8" }]] },
           },
         };
       },
     );
-    return { root, decisions, seen, dep, fixed, late };
+    const snapshot = (call: { args: unknown[] }): string =>
+      (call.args[1] as { value: string }).value;
+    return { root, decisions, seen, loads, dep, first, second, snapshot };
   }
 
   test("are probed from copies outside the tree, in the program's order", () => {
     const { root, seen } = generatedProject();
-    expect(seen.modules).toHaveLength(2);
+    expect(seen.modules).toHaveLength(3);
     expect(seen.modules[0]).toBe(join(root, "node_modules", "dep", "index.js"));
     expect(seen.modules[1]!.startsWith(root)).toBe(false);
-    expect(seen.generated).toContain(seen.modules[1]);
+    expect(seen.modules[1]!.endsWith("main.0000000000.0.mjs")).toBe(true);
+    expect(seen.modules[2]!.endsWith("main.0000000000.1.mjs")).toBe(true);
+    expect(seen.generated).toEqual([seen.modules[1], seen.modules[2]]);
     expect(seen.copy).toBe(
       `import dep from ${JSON.stringify(join(root, "node_modules", "dep", "index.js"))};\n` +
         "export const a = dep.make();\n",
@@ -694,29 +702,25 @@ describe("generated island modules (closed-island-init.ts)", () => {
     expect(existsSync(seen.modules[1]!)).toBe(false);
   });
 
-  test("defer at a fixed point of the program's start, with no guard for the copy", () => {
-    const { decisions, fixed, seen } = generatedProject();
+  test("defer with their constants, and with no guard for the probe's copy", () => {
+    const { decisions, first, seen, snapshot } = generatedProject();
     const decision = decisions.find((d) => d.path.endsWith("main.0000000000.0.mjs"))!;
     expect(decision.deferred).toBe(true);
     expect(decision.reason).toContain("recorded evaluation is deterministic");
-    const snapshot = (fixed.args[1] as { value: string }).value;
-    expect(snapshot).toContain("K 2 1:a n7");
-    expect(snapshot).not.toContain(seen.modules[1]!);
+    expect(snapshot(first)).toContain("K 2 1:a n7");
+    expect(snapshot(first)).not.toContain(seen.modules[1]!);
   });
 
-  test("load where they stand when the program can reach them at another point", () => {
-    const { decisions, late } = generatedProject();
-    const decision = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
-    expect(decision.deferred).toBe(false);
-    expect(decision.reason).toContain("one fixed point of its start: no static import leads to it");
-    expect(late.fn).toBe("nodeIsland.require");
-  });
-
-  test("keep the program out of per-module mode", () => {
-    const { decisions, dep } = generatedProject();
-    expect(decisions.find((d) => d.path.endsWith("index.js"))!.reason).toContain(
-      "evaluated when Node starts",
+  test("are guarded by the loads the probe evaluated before them", () => {
+    const { loads, dep, first, second, snapshot } = generatedProject();
+    // The runtime uses a generated module's snapshot only in a run that
+    // registered exactly these loads before it, in this order.
+    expect(snapshot(first)).toMatch(new RegExp(`^P 1 ${loadsHash([loads.dep])}$`, "m"));
+    expect(snapshot(second)).toMatch(
+      new RegExp(`^P 2 ${loadsHash([loads.dep, loads.first])}$`, "m"),
     );
-    expect((dep.args[1] as { value: string }).value).not.toMatch(/^M /m);
+    // A package's entry point is not: its load does not compute from what
+    // other modules left behind.
+    expect(snapshot(dep)).not.toMatch(/^P /m);
   });
 });

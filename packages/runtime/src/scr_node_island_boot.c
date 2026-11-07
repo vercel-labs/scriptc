@@ -35,6 +35,7 @@
  *   R <oid>                            the module's value
  *   E <len>:<key> <0|1> <len>:<value>  an env key the load read (absent: 0)
  *   T <fd> <0|1>                       the isTTY state the load read
+ *   P <count> <hash>                   the loads registered before it
  * where <value> is o<oid>, u, l, t, f, n<number> or s<len>:<bytes>. */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
@@ -102,6 +103,21 @@ static size_t nb_stubs_cap = 0;
 static NbModule **nb_modules = NULL;
 static size_t nb_nmodules = 0, nb_modules_cap = 0;
 static bool nb_installed = false;
+/* The deferred loads registered so far, as the build's probe lists them:
+ * the distinct paths in registration order, as a count and an FNV-1a hash
+ * of the paths, each followed by a line feed. A module the build wrote for
+ * the program's island-closed constants computes from what earlier island
+ * code left behind, so its snapshot is true only of a run that registered,
+ * before it, exactly the loads the probe evaluated before it (`P`). */
+static uint32_t nb_loads_count = 0;
+static uint32_t nb_loads_hash = 2166136261u;
+
+static void nb_loads_add(const char *path) {
+  uint32_t h = nb_loads_hash;
+  for (const char *p = path; *p != '\0'; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+  nb_loads_hash = (h ^ (uint8_t)'\n') * 16777619u;
+  nb_loads_count++;
+}
 static int nb_trace = -1;
 
 static bool nb_tracing(void) {
@@ -406,6 +422,8 @@ static void nb_cleanup(void) {
   free(nb_modules);
   nb_modules = NULL;
   nb_nmodules = 0;
+  nb_loads_count = 0;
+  nb_loads_hash = 2166136261u;
 }
 
 static void nb_install(void) {
@@ -477,6 +495,16 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       uint64_t mtime = nb_uint(&c);
       if (c.bad) break;
       if (!nb_guard(file, len, size, mtime)) return nb_eager(path, "a boot guard failed");
+    } else if (tag == 'P') {
+      uint32_t count = (uint32_t)nb_uint(&c);
+      uint32_t hash = (uint32_t)nb_uint(&c);
+      if (c.bad) break;
+      if (count != nb_loads_count || hash != nb_loads_hash) {
+        if (nb_tracing())
+          fprintf(stderr, "[node-islands] boot guard failed: the loads before %.*s\n",
+                  (int)path->len, path->data);
+        return nb_eager(path, "a boot guard failed");
+      }
     }
     nb_line_end(&c);
   }
@@ -589,6 +617,10 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
     nb_modules = grown;
     nb_modules_cap = mcap;
   }
+  bool registered = false;
+  for (size_t i = 0; i < nb_nmodules && !registered; i++)
+    registered = strcmp(nb_modules[i]->path, m->path) == 0;
+  if (!registered) nb_loads_add(m->path);
   nb_modules[nb_nmodules++] = m;
   if (nb_tracing()) fprintf(stderr, "[node-islands] deferred %s\n", m->path);
   return scr_dyn_retain(root->box);

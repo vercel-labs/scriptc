@@ -154,7 +154,22 @@ function stdioModeValue(
   )
     return null;
   const first = arms[0]!;
-  if (arms.length === 1 && first.isStringLiteralType()) return numLit(modeOf(first.value, fd), loc);
+  if (arms.length === 1 && first.isStringLiteralType()) {
+    // The type names the mode, but the expression still runs when its
+    // branch is taken: a call that returns "inherit" has its effects and
+    // its exceptions, as under Node. A literal and a plain read have none.
+    const mode = numLit(modeOf(first.value, fd), loc);
+    if (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner)) return mode;
+    const evaluated = lowerer.lowerExprExpecting(inner, STRING);
+    if (evaluated.kind === "strLit" || plainRead(evaluated)) return mode;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: evaluated, loc }],
+      result: mode,
+      type: F64,
+      loc,
+    };
+  }
   const lowered = lowerer.lowerExprExpecting(inner, STRING);
   // A local, or a field or record member read through one, is side-effect
   // free, so the chain may re-read it once per comparison; any other
@@ -1375,12 +1390,14 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
         case "windowsHide":
           lowerer.lowerExpr(m.value); // Node no-op on POSIX
           break;
-        case "shell":
-          if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
+        case "shell": {
+          // `(true)` and `true as boolean` are the literal too.
+          const spelled = stripTypeCasts(m.value);
+          if (spelled.kind === ts.SyntaxKind.TrueKeyword) {
             shell = boolLit(true, loc);
             shellEnabled = true;
             plain = false;
-          } else if (m.value.kind === ts.SyntaxKind.FalseKeyword) {
+          } else if (spelled.kind === ts.SyntaxKind.FalseKeyword) {
             shell = boolLit(false, loc);
           } else {
             // A RUNTIME boolean (the `shell: process.platform ===
@@ -1393,6 +1410,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             plain = false;
           }
           break;
+        }
         default:
           lowerer.noLowering(
             `spawn option '${m.name}'`,
@@ -1442,7 +1460,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     type: CHILD_T,
     loc,
   });
-  if (valuePrelude.length === 0) return spawnOpts(cmd, argv, shell);
+  // A runtime `shell` takes the tail below even when its value folded to a
+  // constant and bound nothing: `shell` here is still the default, and
+  // returning with it would run the command line as a file name.
+  if (valuePrelude.length === 0 && shellRuntime === null) return spawnOpts(cmd, argv, shell);
   // The bound member values were collected in source order; the command and
   // the arguments precede them, so an earlier value that changes a later
   // one's input is seen as in Node.

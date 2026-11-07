@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/weakref-target-held-by-typed-code.ts"
+ ],
+ "diags": []
+}

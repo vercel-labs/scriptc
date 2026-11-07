@@ -21,6 +21,11 @@ const STDOUT = [
   "ok deref rebuilds the capsule, not a snapshot",
   "ok the rebuilt capsule unboxes to the same record",
   "ok deref answers undefined once the record is freed",
+  "ok the capsule is gone and the record is not",
+  "ok deref builds a capsule over the living record",
+  "ok the new capsule has the target's class binding",
+  "ok and unboxes to the same record",
+  "ok deref answers undefined once that record is freed",
   "ok cleared cells leave the table",
   "ok a fresh object is not a WeakRef",
 ];

@@ -13,12 +13,16 @@
  * undefined from deref() from then on.
  *
  * Calling `new WeakRef(target)` and `deref()` also AddToKeptObjects: the
- * target joins this thread's kept list, which a microtask queued on the
- * first add of a turn releases. That ends the list at or after the end of
- * the current job, as ClearKeptObjects requires (keeping longer is always
- * allowed), so a target created only to be watched — `new WeakRef({})
- * .deref()` — is still there within its job. The exit teardown releases
- * whatever the last job kept, so the list never outlives the heap.
+ * target joins this thread's kept list, which the loop's next check phase
+ * releases (an immediate that does not keep the loop alive, queued on the
+ * first add). Node clears its kept objects once the job and every
+ * microtask and tick it queued have run, so a target created only to be
+ * watched — `new WeakRef({}).deref()` — is still there in a `then`
+ * callback or after an `await` of the same turn; a clear queued as a
+ * microtask would run before those and report the target as collected.
+ * The check phase comes after all of them (keeping longer is always
+ * allowed). The exit teardown releases whatever the last turn kept, so the
+ * list never outlives the heap.
  *
  * The differential corpus pins only the deterministic cases (a target
  * held elsewhere, identity, the TypeErrors, String/inspect/JSON), because
@@ -47,6 +51,12 @@ typedef struct ScrWeakRef {
   size_t type_key_len;
   ScrDyn *(*materialize)(void *);
   void (*commit)(void *, const ScrDyn *);
+  /* The capsule's view binding (scr_dyn_typed_ref_bind_*): the element,
+   * field or class operations the dynamic tier reads through, and which
+   * of the three it is. A capsule rebuilt without it is a different value
+   * to that tier: an instance of no class, a record without live fields. */
+  const ScrDynTypedArrayOps *view;
+  bool view_record, view_class, view_bag_class;
   bool box;
   bool traced;
   struct ScrWeakRef *next; /* the table bucket's chain */
@@ -172,8 +182,9 @@ static void scr_weakref_teardown(void) {
 }
 
 #ifndef SCR_LIB
-/* The clear runs as a microtask, so the targets stay alive to the end of
- * the job that added them. */
+/* The clear runs in the loop's check phase, so the targets stay alive
+ * through the job that added them and every microtask and tick of its
+ * turn. */
 static void scr_weakref_kept_clear(ScrClosure *job) {
   (void)job;
   scr_weakref_kept_queued = false;
@@ -210,7 +221,9 @@ static void scr_weakref_keep(ScrDyn *target) {
 #else
   if (!scr_weakref_kept_queued) {
     scr_weakref_kept_queued = true;
-    scr_queue_microtask(scr_closure_new((void *)&scr_weakref_kept_clear, 0));
+    /* Not reffed: a program with nothing else to do ends, and the exit
+     * teardown releases the list. */
+    scr_immediate_unref(scr_set_immediate(scr_closure_new((void *)&scr_weakref_kept_clear, 0)));
   }
 #endif
 }
@@ -246,6 +259,18 @@ static ScrDyn *scr_weakref_cell_deref(ScrWeakRef *ref) {
                                                ref->type_key_len, ref->materialize, ref->commit)
                 : scr_dyn_new_typed_ref_observed(ref->key, ref->retain, ref->release, ref->type_key,
                                                  ref->type_key_len, ref->materialize, ref->commit);
+    /* The referent outlived its capsule (typed code holds it, no dynamic
+     * value does), so this one is new and has no view binding yet. It gets
+     * the target's: the same class to `instanceof` and to console.log, the
+     * same live fields and elements. A capsule that was found alive keeps
+     * its own. */
+    if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.array == NULL &&
+        ref->view != NULL) {
+      value->v.typed_ref.array = ref->view;
+      value->v.typed_ref.record = ref->view_record;
+      value->v.typed_ref.klass = ref->view_class;
+      value->v.typed_ref.bag_class = ref->view_bag_class;
+    }
   }
   scr_weakref_keep(value);
   return value;
@@ -339,6 +364,10 @@ static bool scr_weakref_target_of(ScrWeakRef *ref, const ScrDyn *target) {
     ref->materialize = target->v.typed_ref.materialize;
     ref->commit = target->v.typed_ref.commit;
     ref->traced = target->v.typed_ref.traced;
+    ref->view = target->v.typed_ref.array;
+    ref->view_record = target->v.typed_ref.record;
+    ref->view_class = target->v.typed_ref.klass;
+    ref->view_bag_class = target->v.typed_ref.bag_class;
     return true;
   case SCR_DYN_UNDEF:
   case SCR_DYN_NULL:

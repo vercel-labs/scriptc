@@ -95,6 +95,38 @@ int main(void) {
   scr_dyn_release(got);
   scr_dyn_release(recordRef);
 
+  /* ── a capsule freed while its record lives ────────────────────────── */
+  /* Typed code holds the record and no dynamic value does: the capsule the
+   * WeakRef was made from goes at the end of the job, and deref builds
+   * another one over the same record. It carries the first one's view
+   * binding, so it is an instance of the same class to the dynamic tier. */
+  static const ScrDynTypedClassOps class_ops;
+  Node *held = node_new(7);
+  ScrDyn *first =
+      scr_dyn_new_typed_ref_observed(held, node_retain, node_release, "Node", 4, NULL, NULL);
+  scr_dyn_typed_ref_bind_class(first, &class_ops);
+  ScrDyn *heldRef = scr_weakref_new(first);
+  scr_weakref_test_end_job();
+  scr_dyn_release(first);
+  scr_collect_cycles();
+  check(held->refs == 1, "the capsule is gone and the record is not");
+  got = scr_weakref_deref(heldRef);
+  check(got->kind == SCR_DYN_TYPED_REF, "deref builds a capsule over the living record");
+  check(got->v.typed_ref.klass && !got->v.typed_ref.record && !got->v.typed_ref.bag_class &&
+            (const void *)got->v.typed_ref.array == (const void *)&class_ops,
+        "the new capsule has the target's class binding");
+  unboxed = scr_dyn_typed_ref_unbox(got);
+  check(unboxed == held, "and unboxes to the same record");
+  node_release(unboxed);
+  scr_dyn_release(got);
+  scr_weakref_test_end_job();
+  scr_collect_cycles();
+  node_release(held);
+  got = scr_weakref_deref(heldRef);
+  check(got->kind == SCR_DYN_UNDEF, "deref answers undefined once that record is freed");
+  scr_dyn_release(got);
+  scr_dyn_release(heldRef);
+
   /* No live cell is left in the table. */
   check(scr_weakref_live == 0, "cleared cells leave the table");
 

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/weakref-kept-through-turn.ts"
+ ],
+ "diags": []
+}

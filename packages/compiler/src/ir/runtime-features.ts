@@ -512,6 +512,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.prototypeMember",
   ...DYN_COLLECTION_LIB_FNS,
   "buffer.prototypeObject",
+  // A symbol event name's registry key (scr_str_symbol_key lives in the
+  // string unit, but the emitter registry holds the symbol itself).
+  "emitter.symName",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",

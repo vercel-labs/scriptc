@@ -2289,13 +2289,20 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   // "default", sorted, on a null-prototype object (builtinConstantsEsmNamespace).
   // Its names come from the platform, so a static census cannot list them.
   if (res.module === "constants")
-    return lowerStaticNamespaceImport(lowerer, call, DYN, null, () =>
+    return lowerStaticNamespaceImport(lowerer, call, DYN, null, undefined, () =>
       builtinConstantsEsmNamespace(lowerer, locOf(call)),
     );
-  return lowerStaticNamespaceImport(lowerer, call, {
-    kind: "moduleNs",
-    moduleId: `builtin:${res.module}`,
-  });
+  return lowerStaticNamespaceImport(
+    lowerer,
+    call,
+    { kind: "moduleNs", moduleId: `builtin:${res.module}` },
+    null,
+    // Node's punycode module reports DEP0040 when its body first runs,
+    // which a dynamic import does here rather than at link time; the
+    // import's own load reports even from a dependency, whose require()
+    // would not.
+    res.module === "punycode" ? [lowerer.punycodeDynamicImportWarning(call)] : undefined,
+  );
 }
 
 /** An import() Node rejects before any module of its graph evaluates
@@ -2430,6 +2437,9 @@ function lowerStaticNamespaceImport(
   call: ts.CallExpression,
   ns: IrType,
   dep: ts.SourceFile | null = null,
+  /** Statements the module's own load runs, after the import's hop. */
+  loaded?: readonly IrStmt[],
+  /** A checked-dynamic value to resolve instead of a namespace token. */
   resolveValue?: () => IrExpr,
 ): IrExpr {
   const loc = locOf(call);
@@ -2454,6 +2464,7 @@ function lowerStaticNamespaceImport(
     };
     const body: IrStmt[] = [{ kind: "exprStmt", expr: hop, loc }];
     if (dep !== null) appendStaticModuleInit(lowerer, dep, body, loc);
+    if (loaded !== undefined) body.push(...loaded);
     let resolved: IrExpr;
     if (resolveValue !== undefined) resolved = resolveValue();
     else if (ns.kind === "moduleNs")

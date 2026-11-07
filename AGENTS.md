@@ -19,6 +19,8 @@ pnpm test:sandbox              # full gate: ~4m custom image, ~9m cold managed f
 
 The ordinary workspace build does not rebuild packaged native artifacts. When changing native assembly/object emission or runtime-pack selection, install CMake, Ninja, the pinned LLVM 22 development package, and Zig 0.16.0, then run the matching `@scriptc/llvm-<platform>` and `@scriptc/runtime-<platform>` `build:native` scripts explicitly. The macOS full test suite also needs its generated artifacts.
 
+The Linux x64 runtime pack's speed flavor is optimized with the committed runtime profile `packages/runtime-pack-common/profiles/linux-x64-gnu.profdata.gz`. When `packages/runtime-pack-common/test/runtime-profile.test.ts` fails, the profile is stale: refresh it as the runtime profile paragraphs of [RELEASING.md](./RELEASING.md) describe (`node scripts/refresh-runtime-profile.mjs`, Linux x64) and commit the new profile on its own. A refresh changes every `--optimization=speed` executable on Linux x64 and no other.
+
 Use focused local tests while iterating, then use `pnpm test:sandbox` whenever a
 full validation gate is required. It loads Sandbox configuration from the
 shell and `.env.local`, runs portable coverage across disposable Linux

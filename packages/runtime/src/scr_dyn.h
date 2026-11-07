@@ -1285,6 +1285,8 @@ ScrStr *scr_dyn_string_constructor(const ScrDyn *value);
 ScrDyn *scr_dyn_property_key_value(const ScrDyn *value);
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value);
 ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment);
+/* Unary minus: ToNumeric, then the negation of that number or BigInt. */
+ScrDyn *scr_dyn_negate(const ScrDyn *value);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);

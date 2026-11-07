@@ -85,6 +85,7 @@ const PRODUCERS: Readonly<Record<string, string>> = {
   "dyn.bitwise": "js.bitwise",
   "dyn.toNumeric": "js.toNumeric",
   "dyn.increment": "js.increment",
+  "dyn.negate": "js.negate",
 };
 
 /** dyn operators with a static result, with their jsval twins. */

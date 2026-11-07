@@ -291,6 +291,15 @@ ScrJsVal scr_js_increment(ScrJsVal value, bool increment) {
   return scr_js_adopt(out);
 }
 
+ScrJsVal scr_js_negate(ScrJsVal value) {
+  double n;
+  if (scr_js_number(value, &n)) return scr_js_from_double(-n);
+  ScrDyn *d = scr_js_to_dyn_borrow(value);
+  ScrDyn *out = scr_dyn_negate(d);
+  scr_dyn_release(d);
+  return scr_js_adopt(out);
+}
+
 double scr_js_to_number(ScrJsVal value) {
   double n;
   if (scr_js_number(value, &n)) return n;

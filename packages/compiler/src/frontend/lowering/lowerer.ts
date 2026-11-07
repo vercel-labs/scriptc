@@ -622,11 +622,12 @@ import {
   type EventSig,
 } from "./lower-event-emitter.js";
 import {
+  awaitedBuiltinDynamicImportOf,
   builtinImportOf,
   createRequireProgramModuleOf,
   createRequireSpecOf,
   fencedBuiltinImportOf,
-  esmImportBindingKind,
+  isBuiltinEsmNamespaceOf,
   namespaceNonExportRead,
 } from "./builtins/module-bindings.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
@@ -8060,27 +8061,45 @@ export class Lowerer {
     for (const fp of parts) if (!indexOf.has(fp.sf)) visit(fp.sf);
   }
 
-  /** node:punycode's load at a require() call: the module body reports
-   * DEP0040 when it first runs, unless isInsideNodeModules() finds the
-   * requiring frame in a dependency, and process.emitWarning delivers the
-   * report on the next tick. Later loads are cache hits either way. */
-  punycodeRequireWarning(node: ts.Node): IrStmt {
-    const loc = locOf(node);
-    const fromDependency = /[\\/]node_modules[\\/]/.test(ts.getSourceFileOfNode(node).fileName);
+  /** One DEP0040 site's scr_punycode_warn call: the first load of the
+   * module latches it loaded and, when report is set and deprecation
+   * reporting is on, delivers the warning (immediately, or on the next
+   * tick like process.emitWarning). */
+  private punycodeWarn(immediate: boolean, report: boolean, loc: SrcLoc): IrStmt {
     return {
       kind: "exprStmt",
       expr: {
         kind: "libCall",
         fn: "punycode.warn",
         args: [
-          { kind: "boolLit", value: false, type: BOOL, loc },
-          { kind: "boolLit", value: !fromDependency, type: BOOL, loc },
+          { kind: "boolLit", value: immediate, type: BOOL, loc },
+          { kind: "boolLit", value: report, type: BOOL, loc },
         ],
         type: VOID,
         loc,
       },
       loc,
     };
+  }
+
+  /** node:punycode's load at a require() call: the module body reports
+   * DEP0040 when it first runs, unless isInsideNodeModules() finds the
+   * requiring frame in a dependency, and process.emitWarning delivers the
+   * report on the next tick. Later loads are cache hits either way. */
+  punycodeRequireWarning(node: ts.Node): IrStmt {
+    const fromDependency = /[\\/]node_modules[\\/]/.test(ts.getSourceFileOfNode(node).fileName);
+    return this.punycodeWarn(false, !fromDependency, locOf(node));
+  }
+
+  /** node:punycode's load at a dynamic import(): the import evaluates the
+   * module body where the call runs, so the report is deferred like a
+   * require()'s, but isInsideNodeModules() reads the stack of the builtin
+   * load, which runs inside the loader — no requiring frame of the
+   * importing file is on it — so a dependency's dynamic import reports
+   * where its require() is silent (punycodeRequireWarning). Only the first
+   * load reports; the program's own later import is a cache hit. */
+  punycodeDynamicImportWarning(node: ts.Node): IrStmt {
+    return this.punycodeWarn(false, true, locOf(node));
   }
 
   /** node:punycode's DEP0040 for a static ES import anywhere in the module
@@ -20211,6 +20230,14 @@ export class Lowerer {
     if (mapped?.kind === "moduleNs" && mapped.moduleId.startsWith("builtin:")) {
       return mapped.moduleId.slice("builtin:".length);
     }
+    // `(await import("node:crypto")).createHash(...)`: the awaited literal
+    // import's value IS the builtin namespace token, though the checker's
+    // type for the expression is the module's object type — the spelling
+    // names its module directly (parenthesized, through a cast, or not).
+    if (ts.isAwaitExpression(withoutParenthesesAssertionsNonNull(expr))) {
+      const awaited = awaitedBuiltinDynamicImportOf(this, expr);
+      if (awaited !== null) return awaited.module;
+    }
     // A nullable namespace binding (`const os: typeof NodeOs | null`, a
     // probed process.getBuiltinModule result) read where the checker
     // narrowed it present: its members key the same tables.
@@ -20478,6 +20505,47 @@ export class Lowerer {
     return ts.isIdentifier(access.name) ? builtinImportOf(this, access.name) : null;
   }
 
+  /** Run the receiver of a builtin member dispatch when it bottoms out in
+   * an awaited literal import: `(await import("node:path")).basename`,
+   * `(await import("node:fs")).promises.readFile`. The dispatch reads only
+   * the module tables, but the source evaluates the await — the import
+   * with it — where the member is used, ahead of the arguments and with
+   * its microtask hop. A module-member step above the await (`fs.promises`
+   * as a namespace, `path.win32`) reads an interned namespace and runs
+   * nothing. Null for every other receiver shape (a namespace binding,
+   * `require("node:path")`, a computed access), which evaluates nothing
+   * of its own. */
+  private awaitedReceiverLoad(receiver: ts.Expression, loc: SrcLoc): IrStmt | null {
+    let base = withoutParenthesesAssertionsNonNull(receiver);
+    while (ts.isPropertyAccessExpression(base) && !base.questionDotToken) {
+      base = withoutParenthesesAssertionsNonNull(base.expression);
+    }
+    const awaited = awaitedBuiltinDynamicImportOf(this, base);
+    return awaited === null
+      ? null
+      : { kind: "exprStmt", expr: this.lowerExpr(awaited.awaited), loc };
+  }
+
+  /** `value`, the member lowering that consumes a dispatched receiver's
+   * namespace, preceded by the receiver's own evaluation when it has one
+   * (awaitedReceiverLoad). */
+  private withReceiverLoad(receiver: ts.Expression, value: IrExpr, loc: SrcLoc): IrExpr {
+    const load = this.awaitedReceiverLoad(receiver, loc);
+    return load === null
+      ? value
+      : { kind: "seqExpr", stmts: [load], result: value, type: value.type, loc };
+  }
+
+  /** The receiver evaluation of a builtin dispatch over an awaited literal
+   * import as a statement of its own. A declaration that resolves through
+   * a baked constants object (`const { A } = (await import("node:crypto")).constants`)
+   * stores nothing, but its source still evaluates the await where the
+   * declaration sits. Null for every receiver that evaluates nothing of
+   * its own. */
+  builtinReceiverLoad(receiver: ts.Expression, loc: SrcLoc): IrStmt | null {
+    return this.awaitedReceiverLoad(receiver, loc);
+  }
+
   /** `ns.member(...)` on a builtin namespace import: exactly the named-
    * import dispatch — the module tables for lowered members, the module-
    * qualified per-member fence for the rest. Null for non-namespace
@@ -20487,7 +20555,10 @@ export class Lowerer {
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
     const builtin = this.builtinMemberOf(access);
-    return builtin ? lowerBuiltinCall(this, call, builtin, locOf(access), access.name) : null;
+    if (!builtin) return null;
+    const loc = locOf(access);
+    const value = lowerBuiltinCall(this, call, builtin, loc, access.name);
+    return value === null ? null : this.withReceiverLoad(access.expression, value, loc);
   }
 
   /** `ns.member` on a builtin namespace import as a VALUE: constants
@@ -20495,8 +20566,15 @@ export class Lowerer {
    * access-mode bits bake as numbers exactly like the named-import form;
    * functions have no closure representation (call sites only); members
    * with no lowering fence with the module-qualified name. Null for
-   * non-namespace receivers (the property chain keeps trying). */
+   * non-namespace receivers (the property chain keeps trying). The
+   * receiver is evaluated first when it is an awaited literal import
+   * (`(await import("node:path")).sep`). */
   lowerNamespaceBuiltinProperty(expr: ts.PropertyAccessExpression): IrExpr | null {
+    const value = this.lowerNamespaceBuiltinPropertyValue(expr);
+    return value === null ? null : this.withReceiverLoad(expr.expression, value, locOf(expr));
+  }
+
+  private lowerNamespaceBuiltinPropertyValue(expr: ts.PropertyAccessExpression): IrExpr | null {
     const loc = locOf(expr);
     // fs.constants.X_OK through the namespace: the same four POSIX
     // access-mode bits the named-import form bakes (lowerFsConstantsProperty).
@@ -20540,11 +20618,10 @@ export class Lowerer {
     if (bi.module === "url" && bi.member === "Url") return legacyUrlClassValue(loc);
     // events.defaultMaxListeners READS the process-wide default (its
     // write twin routes through emitter.setDefaultMaxChk). Through an ES
-    // module namespace it reads the namespace's copy instead.
+    // module namespace it reads the namespace's copy instead — the
+    // awaited literal import names one too, as does a `const` bound to it.
     if (bi.module === "events" && bi.member === "defaultMaxListeners") {
-      const esm =
-        ts.isIdentifier(expr.expression) &&
-        esmImportBindingKind(this, expr.expression) === "namespace";
+      const esm = isBuiltinEsmNamespaceOf(this, expr.expression);
       return {
         kind: "libCall",
         fn: esm ? "emitter.esmDefaultMax" : "emitter.getDefaultMax",
@@ -21157,7 +21234,8 @@ export class Lowerer {
   }
 
   lowerBuiltinConstantsProperty(expr: ts.PropertyAccessExpression): IrExpr | null {
-    return lowerBuiltinConstantsProperty(this, expr);
+    const value = lowerBuiltinConstantsProperty(this, expr);
+    return value === null ? null : this.withReceiverLoad(expr.expression, value, locOf(expr));
   }
 
   builtinConstantBindingOf(ident: ts.Identifier): IrExpr | null {

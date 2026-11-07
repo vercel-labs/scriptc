@@ -348,6 +348,7 @@ const NUMBER_HINT_CALLS = new Set<IrLibFn>([
   "dyn.numberConstructor",
   "dyn.toNumberCoerce",
   "dyn.toNumeric",
+  "dyn.negate",
 ]);
 const STRING_HINT_CALLS = new Set<IrLibFn>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
 /** Operations whose second operand is a property key, converted with the

@@ -16,4 +16,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
+  // scr_insp_numeric_separator stores one flag and answers its previous
+  // value.
+  "insp.numericSeparator",
 ]);

@@ -10,7 +10,7 @@ function unparenthesized(e: ts.Expression): ts.Expression {
 
 /** `e` without parentheses and type-only wrappers (as, satisfies, type
  * assertions, non-null assertions), which change no runtime value. */
-function withoutTypeCasts(e: ts.Expression): ts.Expression {
+export function withoutTypeCasts(e: ts.Expression): ts.Expression {
   while (
     ts.isParenthesizedExpression(e) ||
     ts.isAsExpression(e) ||
@@ -580,6 +580,12 @@ export const SET_COMBINE_METHODS = new Set([
   "isDisjointFrom",
 ]);
 
+/** The keyed-collection classes whose `prototype` reads, members and
+ * constructors have a checked-dynamic form (scr_dyn_collections.c). */
+export const DYN_COLLECTION_CLASSES = ["Set", "Map", "WeakMap", "WeakSet"] as const;
+
+export type DynCollectionClass = (typeof DYN_COLLECTION_CLASSES)[number];
+
 export type CompoundOp = "+" | "-" | "*" | "/" | "%" | "**" | "&" | "|" | "^" | "<<" | ">>" | ">>>";
 
 export const COMPOUND_ASSIGN_OPS: Partial<Record<ts.SyntaxKind, CompoundOp>> = {
@@ -842,6 +848,10 @@ export interface BuiltinModuleFn {
   /** The function value's `name` when it is not the member's
    * (`process.cwd` is Node's `wrappedCwd`). */
   valueName?: string;
+  /** The function value carries `valueName` on the main thread only, and
+   * the empty string inside a Worker, where Node hands out the unwrapped
+   * function (`process.cwd`). */
+  valueNameMainThreadOnly?: true;
 }
 
 /** `name` is the argument name Node's validator reports
@@ -1014,6 +1024,14 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     valueParams: [{ mode: "required", type: STRING, name: "path" }],
     checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
   },
+  // Node's deprecated alias of toNamespacedPath (the same function object).
+  _makeLong: {
+    fn: "path.toNamespacedPath",
+    params: [STRING],
+    result: STRING,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
+  },
   matchesGlob: {
     fn: "path.matchesGlob",
     params: [STRING, STRING],
@@ -1112,6 +1130,14 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     valueParams: [{ mode: "required", type: STRING, name: "path" }],
     checked: { fn: "path.toNamespacedValue", args: [true], result: DYN },
   },
+  // Node's deprecated alias of toNamespacedPath (the same function object).
+  _makeLong: {
+    fn: "path.win32ToNamespacedPath",
+    params: [STRING],
+    result: STRING,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [true], result: DYN },
+  },
   matchesGlob: {
     fn: "path.win32MatchesGlob",
     params: [STRING, STRING],
@@ -1140,7 +1166,7 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
   },
 };
 
-/** util.types's own keys in Node's order (Node 24.22.0). The table is the
+/** util.types's own keys in Node's order (Node 24.22.1). The table is the
  * key census for Object.keys over util.types and node:util/types, including
  * the members that do not compile yet; the corpus checks it against Node. */
 export const UTIL_TYPES_KEYS: readonly string[] = [
@@ -1372,10 +1398,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       "realpathSync.native": { fn: "fs.realpathNativeSync", params: [STRING], result: STRING },
       // The fd pair behind spawn's fd-stdio form (the daemon-log idiom:
       // openSync(logPath, "a") → spawn stdio ["ignore", fd, fd] →
-      // closeSync). String flags use the established two-argument path;
-      // inline numeric O_* expressions route through openNumericSync, with
-      // an optional creation mode as the third argument.
-      openSync: { fn: "fs.openSync", params: [STRING, STRING], result: F64 },
+      // closeSync). Both forms take an optional creation mode as the third
+      // argument; inline numeric O_* expressions route through
+      // openNumericSync.
+      openSync: { fn: "fs.openSync", params: [STRING, STRING, F64], result: F64 },
       // The buffer forms (fd, buffer, offset, length[, position]). The
       // lowering completes an omitted or literal-null position to -1 (the
       // runtime's current-offset sentinel); numeric positions read without
@@ -1728,6 +1754,12 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       brotliCompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
       brotliDecompress: { fn: "zlib.cbOpts", params: [], result: VOID },
       brotliDecompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
+      // zstd, the same shape with Node's ZSTD_COMPRESS or ZSTD_DECOMPRESS
+      // mode (special-cased in lowerZlibModuleCall).
+      zstdCompress: { fn: "zlib.cbOpts", params: [], result: VOID },
+      zstdCompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
+      zstdDecompress: { fn: "zlib.cbOpts", params: [], result: VOID },
+      zstdDecompressSync: { fn: "zlib.syncOpts", params: [], result: BYTES_U8 },
       // The stream factories (special-cased in lowerZlibModuleCall): each
       // answers a runtime Transform stream over the zlib engine.
       createDeflate: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
@@ -1739,6 +1771,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       createUnzip: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
       createBrotliCompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
       createBrotliDecompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+      createZstdCompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
+      createZstdDecompress: { fn: "zlib.streamNew", params: [], result: ZLIB_STREAM },
     },
     url: {
       fileURLToPath: {
@@ -2010,6 +2044,16 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       isExternal: { fn: "util.typeIs", params: [DYN], result: BOOL },
     },
     buffer: {
+      // Node 24's deprecate(SlowBuffer): DEP0030 on the first call, then
+      // allocUnsafeSlow's validation and an unpooled Buffer.
+      SlowBuffer: {
+        fn: "buffer.slowBuffer",
+        params: [DYN],
+        result: BYTES_U8,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+        valueName: "deprecated",
+      },
       isAscii: { fn: "buffer.isAscii", params: [DYN], result: BOOL },
       isUtf8: { fn: "buffer.isUtf8", params: [DYN], result: BOOL },
       transcode: { fn: "buffer.transcode", params: [DYN, DYN, DYN], result: BYTES_U8 },
@@ -2030,13 +2074,16 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     process: {
       loadEnvFile: { fn: "process.loadEnvFile", params: [DYN], result: VOID },
       // Every spelling of process.cwd as a value is this one function, which
-      // reads the directory when it is called.
+      // reads the directory when it is called. Node's main thread wraps it
+      // under the name "wrappedCwd"; a worker sees the unwrapped function,
+      // whose name is "".
       cwd: {
         fn: "process.cwd",
         params: [],
         result: STRING,
         valueParams: [],
         valueName: "wrappedCwd",
+        valueNameMainThreadOnly: true,
       },
     },
     // node:string_decoder's surface is the StringDecoder CLASS — new/write/
@@ -2208,6 +2255,51 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
   };
 }
 
+/** node:dns's DNS error-code constants: the `code` a resolver failure
+ * carries, exported by node:dns and node:dns/promises alike. */
+const DNS_ERROR_CODES: Record<string, string> = {
+  NODATA: "ENODATA",
+  FORMERR: "EFORMERR",
+  SERVFAIL: "ESERVFAIL",
+  NOTFOUND: "ENOTFOUND",
+  NOTIMP: "ENOTIMP",
+  REFUSED: "EREFUSED",
+  BADQUERY: "EBADQUERY",
+  BADNAME: "EBADNAME",
+  BADFAMILY: "EBADFAMILY",
+  BADRESP: "EBADRESP",
+  CONNREFUSED: "ECONNREFUSED",
+  TIMEOUT: "ETIMEOUT",
+  EOF: "EOF",
+  FILE: "EFILE",
+  NOMEM: "ENOMEM",
+  DESTRUCTION: "EDESTRUCTION",
+  BADSTR: "EBADSTR",
+  BADFLAGS: "EBADFLAGS",
+  NONAME: "ENONAME",
+  BADHINTS: "EBADHINTS",
+  NOTINITIALIZED: "ENOTINITIALIZED",
+  LOADIPHLPAPI: "ELOADIPHLPAPI",
+  ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS",
+  CANCELLED: "ECANCELLED",
+};
+
+/** node:dns's getaddrinfo hint flags per TARGET libc. Node re-exports the
+ * three values its c-ares binding compiled against (src/cares_wrap.cc's
+ * NODE_DEFINE_CONSTANT of AI_ADDRCONFIG/AI_ALL/AI_V4MAPPED), so they are
+ * the target's <netdb.h> macros, not a portable libuv normalization:
+ * glibc and musl number them 0x20/0x10/0x8, while the BSD headers (macOS)
+ * and Windows' ws2tcpip.h use 0x400/0x100/0x800. Node:dns's own values
+ * follow the platform the program runs on, which is why the differential
+ * corpus sees 32 16 8 on Linux and 1024 256 2048 on macOS. */
+const DNS_HINT_CONSTS: Record<string, Record<string, number> | undefined> = {
+  // AI_ADDRCONFIG, AI_ALL, AI_V4MAPPED (glibc netdb.h; musl matches).
+  linux: { ADDRCONFIG: 0x0020, ALL: 0x0010, V4MAPPED: 0x0008 },
+  // BSD netdb.h (macOS/iOS) and ws2tcpip.h (win32) agree.
+  darwin: { ADDRCONFIG: 0x0400, ALL: 0x0100, V4MAPPED: 0x0800 },
+  win32: { ADDRCONFIG: 0x0400, ALL: 0x0100, V4MAPPED: 0x0800 },
+};
+
 /** Builtin-module CONSTANTS (value reads of named imports): each lowers to
  * a literal of its value's kind. The bare-module values are the TARGET
  * platform's (builtinModuleConstOf swaps the win32 values in under a win32
@@ -2230,11 +2322,26 @@ export const BUILTIN_MODULE_CONSTS: Record<
   worker_threads: { isMainThread: true, threadId: 0 },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
+  // The largest Buffer length, the bound the allocation checks use; V8's
+  // string length limit (code units), and the inspect preview width.
+  buffer: {
+    kMaxLength: 9007199254740991,
+    kStringMaxLength: 536870888,
+    INSPECT_MAX_BYTES: 50,
+  },
   // zlib's module-level copies of its constants (every member outside
   // BROTLI_*, Node's own loop over zlib.constants).
   zlib: Object.fromEntries(
     Object.entries(ZLIB_CONSTANTS).filter(([name]) => !name.startsWith("BROTLI")),
   ),
+  // node:dns's getaddrinfo hints are the target libc's AI_* values
+  // (builtinModuleConstOf selects them from DNS_HINT_CONSTS); the names
+  // live here so the inventory, fence and manifest walks see them, and
+  // the glibc numbers are the fallback for a target with no entry. The
+  // error codes are the module's exported strings; node:dns/promises
+  // exports the same ones.
+  dns: { ADDRCONFIG: 32, ALL: 16, V4MAPPED: 8, ...DNS_ERROR_CODES },
+  "dns/promises": { ...DNS_ERROR_CODES },
 };
 
 /** ALTERNATE libCall spellings of tabled builtin members: lowerings the
@@ -2379,8 +2486,18 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     isatty: ["process.isTTYValue"],
   },
   os: {
-    // lowerOsUserInfoCall assembles the record from scalar libCalls.
-    userInfo: ["os.userHomedir", "os.userShell", "os.userUid", "os.userGid"],
+    // lowerOsUserInfoCall assembles the record from scalar libCalls: one
+    // snapshot call and the passwd fields, as text and as Buffers.
+    userInfo: [
+      "os.userInfoBegin",
+      "os.userHomedir",
+      "os.userHomedirBuf",
+      "os.userShell",
+      "os.userShellBuf",
+      "os.userNameBuf",
+      "os.userUid",
+      "os.userGid",
+    ],
     // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
     cpus: ["os.cpusModel", "os.cpusField"],
   },
@@ -2904,6 +3021,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["process.execPath"],
     },
     {
+      id: "node-builtin.process.allowedNodeEnvironmentFlags",
+      kind: "node-builtin",
+      name: "process.allowedNodeEnvironmentFlags",
+      fns: ["process.allowedEnvFlags"],
+      note: "one stable set of the option names the compatibility target accepts in NODE_OPTIONS",
+    },
+    {
       id: "node-builtin.process.uptime",
       kind: "node-builtin",
       name: "process.uptime",
@@ -3122,6 +3246,7 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "rmdir",
   "unlink",
   "open",
+  "opendir",
   "close",
   "fstat",
   "ftruncate",
@@ -3149,6 +3274,52 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "readdir",
 ]);
 
+/** The `length` Node's filesystem callback functions carry
+ * (`fs.readFile.length` is 3). The value adapter reports it through
+ * Function.length; the direct call accepts the arguments it always did. */
+export const FS_CALLBACK_VALUE_LENGTHS: Readonly<Record<string, number | undefined>> = {
+  access: 3,
+  cp: 4,
+  copyFile: 4,
+  chmod: 3,
+  chown: 4,
+  lchown: 4,
+  fchown: 4,
+  glob: 3,
+  link: 3,
+  mkdir: 3,
+  mkdtemp: 3,
+  rm: 3,
+  rmdir: 3,
+  unlink: 2,
+  open: 4,
+  close: 1,
+  fstat: 1,
+  ftruncate: 1,
+  fsync: 2,
+  fdatasync: 2,
+  fchmod: 3,
+  read: 6,
+  write: 6,
+  readv: 4,
+  writev: 4,
+  readlink: 3,
+  realpath: 3,
+  rename: 3,
+  stat: 1,
+  lstat: 1,
+  symlink: 4,
+  statfs: 1,
+  truncate: 3,
+  utimes: 4,
+  futimes: 4,
+  lutimes: 4,
+  readFile: 3,
+  writeFile: 4,
+  appendFile: 4,
+  readdir: 3,
+};
+
 /** One member's fence hint, own-property-safe (a collision would print an
  * inherited function into the diagnostic text). */
 export function builtinFenceHintOf(module: string, member: string): string | undefined {
@@ -3167,6 +3338,13 @@ export function builtinModuleConstOf(
   module: string,
   member: string,
 ): string | number | boolean | undefined {
+  // node:dns's hint flags are the TARGET's libc macros, so they are
+  // selected per platform rather than taken from the shared table.
+  if (module === "dns") {
+    const hints = ownEntry(DNS_HINT_CONSTS, lowerer.targetPlatform);
+    const hint = hints ? ownEntry(hints, member) : undefined;
+    if (hint !== undefined) return hint;
+  }
   if (lowerer.targetPlatform === "win32") {
     const mod = ownEntry(WIN32_TARGET_CONSTS, module);
     const w = mod ? ownEntry(mod, member) : undefined;
@@ -3448,7 +3626,8 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
       "for (const x of xs) for (const y of x) out.push(y)";
   } else if (container === "process.stdin" || (container === "process" && member === "stdin")) {
     hint =
-      "isTTY, destroy(), on/once of the data/end/error events, and " +
+      "isTTY, destroy(), on/once of the data/end/error/readable events, " +
+      "pause/resume/isPaused/read/readableLength, and " +
       "`for await (const chunk of process.stdin)` are the supported stdin surface " +
       '(or read everything at once: readFileSync(0, "utf8") from node:fs)';
   } else if (
@@ -3578,6 +3757,25 @@ export function isChildSurfaceMember(
   if (!decl || !iface || !ts.isInterfaceDeclaration(iface)) return false;
   if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return false;
   return lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(iface.name))?.kind === "child";
+}
+
+/** The writer half of isChildSurfaceMember: a stdlib member, OR a member
+ * the user's own writable-pipe interface declares (the hand-written
+ * `Pipe { write; end }` idiom naming child.stdin — mapType's writer duck
+ * rule admits an interface only when every member names the child writer
+ * surface and `write` takes a written chunk and answers the backpressure
+ * boolean, so accepting its members here cannot widen the surface). */
+export function isChildWriterSurfaceMember(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): boolean {
+  if (isStdlibMember(lowerer, access)) return true;
+  const sym = lowerer.checker.getSymbolAtLocation(access.name);
+  const decl = sym ? sym.declarations[0] : undefined;
+  const iface = decl?.parent;
+  if (!decl || !iface || !ts.isInterfaceDeclaration(iface)) return false;
+  if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return false;
+  return lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(iface.name))?.kind === "childWriter";
 }
 
 /** True iff some declaration of the symbol lives in the standard library

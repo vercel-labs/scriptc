@@ -58,6 +58,7 @@
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -187,16 +188,18 @@ std::optional<PGOOptions> profileOptions(const EmitOptions &Options) {
 }
 
 // Block placement by the extended TSP model, which needs the exact block
-// counts a context-sensitive profile gives. The option is process-wide; the
-// helper sets it once.
-void enableExtTspPlacement() {
-  static const bool Enabled = [] {
-    if (cl::Option *Option = cl::getRegisteredOptions().lookup(
-            "enable-ext-tsp-block-placement"))
-      Option->addOccurrence(0, "enable-ext-tsp-block-placement", "true");
-    return true;
-  }();
-  (void)Enabled;
+// counts a context-sensitive profile gives. The option is process-wide, and
+// a resident server answers many emits in one process, so each emit resets it
+// to its default, as a one-shot helper starts, and a profile emit turns it on.
+void setExtTspPlacement(bool Enabled) {
+  cl::Option *Option =
+      cl::getRegisteredOptions().lookup("enable-ext-tsp-block-placement");
+  if (Option == nullptr) return;
+  // A single-valued option rejects a second occurrence and keeps the value of
+  // the first, so the reset is what lets the next emit change it.
+  Option->reset();
+  if (!Enabled) return;
+  Option->addOccurrence(0, "enable-ext-tsp-block-placement", "true");
 }
 
 // With a profile, the thin link imports the callees of hot call edges up to
@@ -450,27 +453,50 @@ void reportProfileMatch(const ProfileMatch &Match) {
 }
 
 // The sum of each function's counters in the indexed profile at `Path`, by
-// profile name, read once per process. An unreadable profile has no counts
-// (the annotation reports it).
+// profile name. A one-shot helper reads one profile in its process; a resident
+// server answers many emits with whatever profile each one names, so the
+// totals belong to one emit: resetProfileCounts clears them, and the first
+// weight of the emit reads the profile that emit named. An unreadable profile
+// has no counts (the annotation reports it).
+StringMap<uint64_t> ProfileCounts;
+std::string ProfileCountsPath;
+bool ProfileCountsLoaded = false;
+// A multi-partition emit weighs its partitions on threads, so each of them
+// asks for the totals while the others may be filling them. The lock makes the
+// first asker read the profile and the others wait for a complete map, which
+// then stays unchanged until the next emit resets it on one thread.
+std::mutex ProfileCountsMutex;
+
+void resetProfileCounts() {
+  std::lock_guard<std::mutex> Lock(ProfileCountsMutex);
+  ProfileCounts.clear();
+  ProfileCountsPath.clear();
+  ProfileCountsLoaded = false;
+}
+
 const StringMap<uint64_t> &profileCounts(const std::string &Path) {
-  static std::once_flag Once;
-  static StringMap<uint64_t> Counts;
-  std::call_once(Once, [&Path] {
-    Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
-        IndexedInstrProfReader::create(Path, *vfs::getRealFileSystem());
-    if (!Reader) {
-      consumeError(Reader.takeError());
-      return;
-    }
-    for (const NamedInstrProfRecord &Record : **Reader) {
-      uint64_t Sum = 0;
-      for (uint64_t Count : Record.Counts)
-        Sum += Count;
-      Counts[Record.Name] += Sum;
-    }
-    consumeError((*Reader)->getError());
-  });
-  return Counts;
+  std::lock_guard<std::mutex> Lock(ProfileCountsMutex);
+  if (ProfileCountsLoaded && ProfileCountsPath == Path) return ProfileCounts;
+  ProfileCounts.clear();
+  ProfileCountsPath = Path;
+  Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
+      IndexedInstrProfReader::create(Path, *vfs::getRealFileSystem());
+  if (!Reader) {
+    consumeError(Reader.takeError());
+    ProfileCountsLoaded = true;
+    return ProfileCounts;
+  }
+  for (const NamedInstrProfRecord &Record : **Reader) {
+    uint64_t Sum = 0;
+    for (uint64_t Count : Record.Counts)
+      Sum += Count;
+    ProfileCounts[Record.Name] += Sum;
+  }
+  consumeError((*Reader)->getError());
+  // Published last, under the lock, so no thread can take the map as complete
+  // before it is.
+  ProfileCountsLoaded = true;
+  return ProfileCounts;
 }
 
 // Weighs one module's profile match by the profile's counters: collects the
@@ -517,6 +543,16 @@ private:
 // hold IR-level counts. Context-sensitive counts lay out the code by them;
 // a profile that has them cannot take a second set.
 std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
+  // A one-shot helper starts with empty profile state; a resident server
+  // answers many emits in one process, so each emit clears what the emits
+  // before it left: the recorder it collected blocks in, the counts it read,
+  // and the layout a context-sensitive profile turned on.
+  FallbackCounts.reset();
+  Recorder.reset();
+  resetProfileCounts();
+  ContextProfile = false;
+  setProfileLayout(false);
+  setExtTspPlacement(false);
   if (Options.ProfileUse.empty())
     return std::nullopt;
   Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
@@ -537,8 +573,8 @@ std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
                            ": already holds context-sensitive counts; "
                            "collect them on top of the IR-level profile"};
   if (ContextProfile && Triple(Options.Target).isOSBinFormatELF()) {
-    enableProfileLayout();
-    enableExtTspPlacement();
+    setProfileLayout(true);
+    setExtTspPlacement(true);
   }
   if (!Options.ProfileBlocks.empty()) {
     std::string Error;
@@ -875,14 +911,17 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
 
 // The level of an optimized partition's simplification before the thin
 // link. The backend optimizes every partition again at Level after
-// importing, so the pre-link runs the O1 simplification: it annotates the
-// profile, inlines and simplifies enough for the summaries the import
-// decisions read, and leaves the full simplification to the backend. The
-// O2 simplification before the link repeated most of the backend's work: on
-// a partition dominated by one large function it took about half as long as
-// the backend's optimization and code generation of that partition.
-OptimizationLevel preLinkLevel(OptimizationLevel Level) {
-  if (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3)
+// importing, so without a profile to use the pre-link runs the O1
+// simplification: it inlines and simplifies enough for the summaries the
+// import decisions read, and leaves the full simplification to the backend.
+// The O2 simplification before the link repeated most of the backend's
+// work: on a partition dominated by one large function it took about half
+// as long as the backend's optimization and code generation of that
+// partition. A build that uses a profile keeps the pre-link at Level: with
+// the O1 pre-link, profile-guided programs ran up to 3% slower.
+OptimizationLevel preLinkLevel(OptimizationLevel Level, bool UsingProfile) {
+  if (!UsingProfile &&
+      (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3))
     return OptimizationLevel::O1;
   return Level;
 }
@@ -986,11 +1025,13 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     Expected<std::unique_ptr<Module>> Mod =
         loadPartition(Options, Plan.Modules[I], I, Context, *Machine);
     if (!Mod)
@@ -1041,11 +1082,13 @@ compileOptimizedPartitions(const EmitOptions &Options,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     ProfileMatch PartitionMatch;
     std::vector<std::string> MismatchedNames;
     if (Annotating)
@@ -1081,10 +1124,17 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.collectAnnotated(Weigher.Annotated);
         P.afterProfileAnnotation(PartitionMatch);
       }
-      if (preLinkLevel(Level) != Level)
+      // Experiment only: one binary runs either pre-link level, chosen per
+      // build by SCRIPTC_PRELINK_LEVEL=o1, so a timing comparison between the
+      // two levels holds the helper binary fixed.
+      const char *PreLinkMode = std::getenv("SCRIPTC_PRELINK_LEVEL");
+      bool OldPreLink = PreLinkMode && std::string(PreLinkMode) == "o1";
+      OptimizationLevel PreLink =
+          OldPreLink ? preLinkLevel(Level, Annotating) : Level;
+      if (PreLink != Level)
         addPreLinkValuePropagation(P.PB);
       ModulePassManager MPM =
-          P.PB.buildThinLTOPreLinkDefaultPipeline(preLinkLevel(Level));
+          P.PB.buildThinLTOPreLinkDefaultPipeline(PreLink);
       MPM.addPass(UnnameStructTypes());
       // The module hash is set at the thin link instead (see Names).
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
@@ -1638,11 +1688,13 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
       return;
     }
     std::string LookupError;
+    // The context must outlive the target machine: the subtarget caches the
+    // GlobalISel selector, whose builder holds metadata handles into it.
+    LLVMContext Context;
     std::unique_ptr<TargetMachine> PartMachine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!PartMachine)
       return Failures.set({"target_machine_failed", LookupError});
-    LLVMContext Context;
     std::unique_ptr<Module> Part;
     if (Split) {
       Expected<std::unique_ptr<Module>> Parsed = parseBitcodeFile(

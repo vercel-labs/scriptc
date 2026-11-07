@@ -20,7 +20,7 @@ import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import { isRefCounted, typeKey } from "../../ir/ir.js";
 import { jsonObjectKeyLabel } from "../json-literal.js";
 import { llvmBytes, wtf8Bytes } from "../literals.js";
-import { mangleRecordStruct } from "../mangle.js";
+import { mangleFunction, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llvmCommentText } from "./common.js";
 import {
@@ -54,6 +54,9 @@ export interface WalkerHost extends ShapeHost {
   /** i1: a value loaded from an undefined-armed record field slot is the
    * slot's ABSENT state. */
   fieldAbsentTestIn(B: BlockBuilder, value: string, unionId: string): string;
+  /** `@`-ref of the optional checked-dynamic field slot's ABSENT marker
+   * (an immortal ScrDyn, address-compared). */
+  dynAbsentRef(): string;
 }
 
 const FN_ATTRS = "#0";
@@ -330,6 +333,7 @@ export class LlWalkers {
       );
     const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
     const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
+    this.emitLinkedRecordWriter(B, shapeId);
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -370,8 +374,11 @@ export class LlWalkers {
         .filter((f) => f !== undefined)
         .filter((f) => f.type.kind !== "func");
       const droppable =
-        emitFields.some((f) => undefinedArmTag(f.type, this.host.unionsById) >= 0) ||
-        !!shape.indexValue;
+        emitFields.some(
+          (f) =>
+            undefinedArmTag(f.type, this.host.unionsById) >= 0 ||
+            (f.optional === true && f.type.kind === "dyn"),
+        ) || !!shape.indexValue;
       this.putc(B, "%b", "123"); // '{'
       if (!droppable) {
         emitFields.forEach((f, i) => {
@@ -409,6 +416,15 @@ export class LlWalkers {
             skip = B.newLabel("jwf.s");
             B.condBr(isu, skip, lw);
             B.startBlock(lw);
+          } else if (f.optional === true && f.type.kind === "dyn") {
+            // An ABSENT optional checked-dynamic field is dropped, like
+            // Node; a present undefined still serializes as null.
+            const isa = B.tmp();
+            B.line(`${isa} = icmp eq ptr ${v}, ${this.host.dynAbsentRef()}`);
+            const lw = B.newLabel("jwf.w");
+            skip = B.newLabel("jwf.s");
+            B.condBr(isa, skip, lw);
+            B.startBlock(lw);
           }
           comma();
           this.puts(B, "%b", jsonObjectKeyLabel(f.name));
@@ -424,6 +440,16 @@ export class LlWalkers {
     });
     this.putc(B, "%b", "125"); // '}'
     if (cyclic) this.jbLeave(B);
+  }
+
+  /** A record copy linked to its source (IrModule.recordLinks) serializes
+   * as its composed record, a record of the source's type with the copy's
+   * values for the fields both declare. */
+  private emitLinkedRecordWriter(B: BlockBuilder, shapeId: string): void {
+    emitLinkedRecordBranches(this.host, B, shapeId, "%v", (sourceT, composed) => {
+      B.line(`call void @${this.jsonWriteHelper(sourceT)}(ptr %b, ptr ${composed})`);
+      return "ret void";
+    });
   }
 
   /** A record that kept the undeclared properties of its checked source
@@ -442,7 +468,7 @@ export class LlWalkers {
     // installs the dispose hook, so a NULL hook means the table is empty.
     const lHooked = B.newLabel("jw.hooked");
     const kept = B.tmp();
-    B.line(`${kept} = load i1, ptr ${RECORD_SOURCES_GATE}`);
+    B.line(`${kept} = load i1, ptr ${this.host.recordSourcesGate ?? RECORD_SOURCES_GATE}`);
     B.condBr(kept, lHooked, lNative);
     B.startBlock(lHooked);
     const hook = B.tmp();
@@ -524,6 +550,13 @@ export class LlWalkers {
         B.line(`${isUndefined} = icmp eq i32 ${tag}, ${utag}`);
         const lWrite = B.newLabel("jwf.write");
         B.condBr(isUndefined, lSkip, lWrite);
+        B.startBlock(lWrite);
+      } else if (f.optional === true && f.type.kind === "dyn") {
+        // An ABSENT optional checked-dynamic field contributes no key.
+        const isAbsent = B.tmp();
+        B.line(`${isAbsent} = icmp eq ptr ${v}, ${this.host.dynAbsentRef()}`);
+        const lWrite = B.newLabel("jwf.write");
+        B.condBr(isAbsent, lSkip, lWrite);
         B.startBlock(lWrite);
       }
       const lComma = B.newLabel("jwf.comma");
@@ -1086,5 +1119,48 @@ export class LlWalkers {
     );
     this.host.journalBuilt?.();
     return name;
+  }
+}
+
+/** Branches for a record copy linked to its source (IrModule.recordLinks):
+ * when the record `value` of shape `shapeId` links through one of the
+ * module's pairs into that shape, `answer` emits the code for its composed
+ * record (a +1 reference, released after `answer`) of the pair's source
+ * type and names the terminator. Unlinked records fall through. */
+export function emitLinkedRecordBranches(
+  host: ShapeHost,
+  B: BlockBuilder,
+  shapeId: string,
+  value: string,
+  answer: (sourceT: IrType & { kind: "record" }, composed: string) => string,
+): void {
+  const links = (host.recordLinks ?? []).filter((link) => link.to === shapeId);
+  if (links.length === 0) return;
+  host.declare(`declare i32 @scr_record_link_pair(ptr)`);
+  host.declare(`declare ptr @scr_record_link_source(ptr)`);
+  const pair = B.tmp();
+  B.line(`${pair} = call i32 @scr_record_link_pair(ptr ${value})`);
+  for (const link of links) {
+    const copyT: IrType = { kind: "record", shapeId };
+    const sourceT: IrType & { kind: "record" } = { kind: "record", shapeId: link.from };
+    const matches = B.tmp();
+    const lLinked = B.newLabel("link.linked");
+    const lNext = B.newLabel("link.unlinked");
+    B.line(`${matches} = icmp eq i32 ${pair}, ${link.pair}`);
+    B.condBr(matches, lLinked, lNext);
+    B.startBlock(lLinked);
+    const source = B.tmp(),
+      copy = B.tmp(),
+      owned = B.tmp(),
+      composed = B.tmp();
+    // The compose entry takes both references.
+    B.line(`${source} = call ptr @scr_record_link_source(ptr ${value})`);
+    B.line(`${owned} = call ptr ${retainSym(host, sourceT)}(ptr ${source})`);
+    B.line(`${copy} = call ptr ${retainSym(host, copyT)}(ptr ${value})`);
+    B.line(`${composed} = call ptr @${mangleFunction(link.compose)}(ptr ${copy}, ptr ${owned})`);
+    const terminator = answer(sourceT, composed);
+    B.line(`call void ${releaseSym(host, sourceT)}(ptr ${composed})`);
+    B.terminate(terminator);
+    B.startBlock(lNext);
   }
 }

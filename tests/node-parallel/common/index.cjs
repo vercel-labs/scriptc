@@ -80,6 +80,11 @@ function skip(msg) {
   process.exit(0);
 }
 
+function skipIf32Bits() {
+  if (process.arch !== "x64" && process.arch !== "arm64")
+    skip("The tested feature is not available in 32bit builds");
+}
+
 function expectWarning(name, expected, code) {
   if (typeof expected === "string") expected = [[expected, code]];
   else if (expected.length !== 0 && !Array.isArray(expected[0]))
@@ -108,6 +113,10 @@ function expectsError(validator, exact) {
     }, validator);
     return true;
   }, exact);
+}
+
+function printSkipMessage(msg) {
+  console.log(`1..0 # Skipped: ${msg}`);
 }
 
 function platformTimeout(ms) {
@@ -187,11 +196,13 @@ module.exports = {
   mustNotCall,
   mustSucceed,
   skip,
+  skipIf32Bits,
   expectWarning,
   getArrayBufferViews,
   expectsError,
   invalidArgTypeHelper,
   platformTimeout,
+  printSkipMessage,
   spawnPromisified,
   get hasIPv6() {
     const re = isWindows ? /Loopback Pseudo-Interface/ : isIBMi ? /\*LOOPBACK/ : /lo/;

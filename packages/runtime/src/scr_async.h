@@ -23,6 +23,7 @@ ScrPromise *scr_tp_set_immediate(void);
 ScrPromise *scr_promise_new(void);
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
+void *scr_promise_map_identity(void *promise);
 /* A key every promise sharing `p`'s identity answers (each adapter box of
  * a typed promise), creating the shared cell when `p` has none. */
 const void *scr_promise_identity_key(ScrPromise *p);
@@ -464,6 +465,16 @@ double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves 
  * array element, whose NaN may be the undefined of a read past the end,
  * which warns nothing. */
 double scr_timer_user_delay(double after, double kind);
+/* The handle of the timer or immediate whose callback is running: the id
+ * setTimeout's handle form, setInterval or setImmediate returned, or 0
+ * outside one and for a setTimeout called as a statement, which has no
+ * handle. */
+double scr_timer_running_handle(void);
+/* A timer callback that runs with `this` bound to its handle, as Node
+ * calls a timer callback with the Timeout or Immediate (scr_async_dyn.c):
+ * the ambient receiver a plain JavaScript function reads at entry, and
+ * that test/common's mustCall forwards. cb borrowed; +1. */
+ScrClosure *scr_timer_this_callback(ScrClosure *cb);
 /* The mocked global timer functions (scr_test.c): bit 0 setTimeout, bit 1
  * setInterval. */
 extern SCR_TL int scr_timer_mocked_apis;
@@ -505,6 +516,11 @@ double scr_set_immediate(ScrClosure *cb); /* cb ownership moves in */
 void scr_queue_microtask(ScrClosure *cb);
 void scr_queue_microtask_dyn(const ScrDyn *cb);
 void scr_queue_microtask_dyn_als(const ScrDyn *cb);
+/* Node's timer callback gate, raised where the callback is not statically
+ * a function: a non-function throws ERR_INVALID_ARG_TYPE synchronously,
+ * with the "Received ..." rendering, before anything schedules and before
+ * the delay converts. Borrowed. */
+void scr_timers_check_callback(const ScrDyn *cb);
 /* setImmediate AS A dyn VALUE (the traceCallback shape): a minted dyn
  * callable that schedules args[0](args[1..]) on the immediate queue and
  * answers undefined; a non-function first argument throws Node's

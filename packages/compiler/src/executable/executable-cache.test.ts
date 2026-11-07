@@ -7,6 +7,7 @@ import {
   trackedFileExists,
   trackedReadFile,
 } from "../frontend/input-tracker.js";
+import { nativeProgramPartitions } from "../backend/native-codegen-core.js";
 import {
   nativeArtifactDependenciesStillMatch,
   snapshotNativeArtifactDependencies,
@@ -24,6 +25,13 @@ import {
 
 const scratch: string[] = [];
 
+/** The host's threads, which size partitions (nativeProgramPartitions). */
+const hostThreads = vi.hoisted(() => ({ count: 8 }));
+vi.mock("node:os", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:os")>()),
+  availableParallelism: () => hostThreads.count,
+}));
+
 afterEach(async () => {
   await Promise.all(scratch.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -33,6 +41,8 @@ const native: EarlyExecutableNativeFeatures = {
   regex: false,
   copying: false,
   textDecoderLegacy: false,
+  bigintBytes: false,
+  mutableBuffers: false,
   fileHandle: false,
   fetch: true,
   zlib: false,
@@ -61,7 +71,6 @@ const native: EarlyExecutableNativeFeatures = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
-  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -249,6 +258,9 @@ test("early executable keys isolate compile modes, paths, implementation, checke
     { ...f.options, checker: "tsc-ts-executable-identity" },
     { ...f.options, shapeOverlay: true },
     { ...f.options, jsInference: true },
+    { ...f.options, jsIcWays: 0 },
+    { ...f.options, jsIcWays: 1 },
+    { ...f.options, jsIcWays: 2 },
     { ...f.options, npmStatic: "auto" },
     { ...f.options, npmStatic: ["commander"] },
     { ...f.options, outPath: join(f.options.outDir, "other") },
@@ -265,6 +277,52 @@ test("early executable keys isolate compile modes, paths, implementation, checke
   for (const options of variants) {
     expect(await readEarlyExecutableCache(f.root, options)).toBeNull();
   }
+});
+
+test("an attribution build's inline cache way count is part of the build key", async () => {
+  const f = await fixture();
+  const nativeDependency = join(f.options.outDir, "native-tool");
+  await Promise.all([
+    writeFile(f.options.outPath, "native-v1\n"),
+    writeFile(nativeDependency, "tool-v1\n"),
+  ]);
+  const nativeInfo = await stat(nativeDependency);
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  const publish = (options: EarlyExecutableCacheOptions) =>
+    publishEarlyExecutableCache(f.root, options, {
+      llvmPath: f.llvmPath,
+      irPath: f.irPath,
+      native,
+      executableRestored: true,
+      nativeDependencies: [
+        {
+          path: nativeDependency,
+          kind: "file",
+          dev: nativeInfo.dev,
+          ino: nativeInfo.ino,
+          size: nativeInfo.size,
+          mtimeMs: nativeInfo.mtimeMs,
+          ctimeMs: nativeInfo.ctimeMs,
+        },
+      ],
+      frontend: tracker.snapshot(),
+    });
+  const route = (options: EarlyExecutableCacheOptions) => {
+    const plain = { ...options };
+    delete (plain as Partial<EarlyExecutableCacheOptions>).implementation;
+    delete (plain as Partial<EarlyExecutableCacheOptions>).implementationDependencies;
+    return plain;
+  };
+  await publish(f.options);
+  expect(await readEarlyExecutableCache(f.root, f.options)).not.toBeNull();
+  expect(await readEarlyExecutableCache(f.root, { ...f.options, jsIcWays: 0 })).toBeNull();
+  expect(await readEarlyExecutableCache(f.root, { ...f.options, jsIcWays: 1 })).toBeNull();
+  expect(await readRoutedExecutableCache(f.root, route(f.options))).not.toBeNull();
+  expect(await readRoutedExecutableCache(f.root, route({ ...f.options, jsIcWays: 0 }))).toBeNull();
+  // The attribution build is a separate entry, and it stays one.
+  await publish({ ...f.options, jsIcWays: 0 });
+  expect(await readEarlyExecutableCache(f.root, { ...f.options, jsIcWays: 0 })).not.toBeNull();
 });
 
 test("speed entries round-trip their posture and stay isolated from release and dev", async () => {
@@ -353,6 +411,76 @@ test("early executable cache restores a validated final binary", async () => {
   const staleNative = await readEarlyExecutableCache(f.root, f.options);
   expect(staleNative?.executableRestored).toBe(false);
   expect(await readFile(f.options.outPath, "utf8")).toBe("keep-current\n");
+});
+
+test("a divided module's executable cache entry depends on the host's threads", async () => {
+  const f = await fixture();
+  f.options.emitIr = false;
+  // 8 MiB of LLVM text: two partitions per thread of an 8-thread host (16),
+  // eight for a host of two or four threads.
+  await writeFile(f.llvmPath, `;${"x".repeat(8 * 1024 * 1024)}\n`);
+  await writeFile(f.options.outPath, "native binary");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  hostThreads.count = 8;
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [],
+    frontend: tracker.snapshot(),
+    partitions: 16,
+  });
+  expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+  hostThreads.count = 2;
+  expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
+  hostThreads.count = 8;
+  expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+});
+
+test("an undivided module's executable cache entry ignores the host's threads", async () => {
+  const f = await fixture();
+  await writeFile(f.options.outPath, "native binary");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  hostThreads.count = 8;
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [],
+    frontend: tracker.snapshot(),
+  });
+  hostThreads.count = 1;
+  expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+  hostThreads.count = 8;
+});
+
+test("a module small enough to stay whole records one partition and hits on every host", async () => {
+  const f = await fixture();
+  // What a runtime-pack build records for a module whose text stays one
+  // partition: the helper compiled a single partition, not a divided module.
+  const bytes = (await readFile(f.llvmPath)).length;
+  expect(nativeProgramPartitions(bytes, false)).toBe(1);
+  await writeFile(f.options.outPath, "native binary");
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  hostThreads.count = 8;
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [],
+    frontend: tracker.snapshot(),
+    partitions: 1,
+  });
+  for (const threads of [1, 4, 8]) {
+    hostThreads.count = threads;
+    expect((await readEarlyExecutableCache(f.root, f.options))?.executableRestored).toBe(true);
+  }
+  hostThreads.count = 8;
 });
 
 test("routed executable hits require an unchanged compiler implementation proof", async () => {

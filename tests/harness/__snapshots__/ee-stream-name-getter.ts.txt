@@ -1,0 +1,8 @@
+ee-stream-name-getter.ts:10:7 - error SC2020: 'on with an unrestricted computed event name' is part of the standard library types but has no scriptc lowering yet
+
+   9 | const rs = new Readable({ read() {} });
+  10 | rs.on(holder.name, () => console.log("data"));
+     |       ^~~~~~~~~~~
+  11 | 
+
+  hint: computed event names need a nonempty constant prefix or suffix so they cannot collide with internal events

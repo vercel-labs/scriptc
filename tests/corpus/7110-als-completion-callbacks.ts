@@ -52,6 +52,11 @@ await step("zlib.deflate options", (done) =>
 
 await step("dns.lookup", (done) => dns.lookup("localhost", () => done()));
 await step("child_process.execFile", (done) => execFile("true", [], () => done()));
+// The exec/execFile callback form's cwd option starts the child elsewhere
+// but keeps the call-site context for its completion callback.
+await step("child_process.execFile cwd", (done) =>
+  execFile("true", [], { cwd: dir }, () => done()),
+);
 
 // A server's listen callback, a client connection and an HTTP response
 // each run in the stores of their own call.

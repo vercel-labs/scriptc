@@ -7,7 +7,8 @@ import { resolveImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
-import { isDeclaredInAmbientNamespace } from "../type-mapper.js";
+import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
+import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   arrayOf,
   BOOL,
@@ -48,6 +49,7 @@ import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
+import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 
 export function refuseUnsupportedApi(
   lowerer: Lowerer,
@@ -426,6 +428,26 @@ function fenceRequestInitProperty(
   }
 }
 
+/** Whether a RequestInit body value is certainly a FormData: every
+ * non-nullish arm of its type is the stdlib FormData, whose multipart
+ * encoding the native fetch does not implement. Blob and File arms are
+ * BodyInit's supported forms, and a union that also holds a string or bytes
+ * arm stays compilable because the value at run time may be one of those. */
+function definiteFormDataBody(lowerer: Lowerer, type: ts.Type): boolean {
+  const base = lowerer.checker.getBaseTypeOfLiteralType(type);
+  const arms = base.isUnionType() ? ts.constituentTypes(base) : [base];
+  let seen = false;
+  for (const arm of arms) {
+    if ((arm.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
+      continue;
+    const sym = arm.getAliasSymbol() ?? arm.getSymbol();
+    if (sym === undefined || ts.symbolName(sym) !== "FormData" || !lowerer.isStdlibSymbol(sym))
+      return false;
+    seen = true;
+  }
+  return seen;
+}
+
 function fenceRequestInitObject(
   lowerer: Lowerer,
   init: ts.ObjectLiteralExpression,
@@ -442,7 +464,10 @@ function fenceRequestInitObject(
   );
   const shadowed = new Set<string>();
   const fence = (row: (typeof rows)[number], value: ts.Expression | null, blame: ts.Node): void => {
-    if (row.status === "static") return;
+    const memberSym = (): ts.Symbol | undefined =>
+      contextualArms
+        .map((arm) => lowerer.checker.getPropertyOfType(arm, row.member))
+        .find((member) => member !== undefined);
     if (value !== null) {
       const type = lowerer.typeOf(requestInitValueExpr(value));
       if (
@@ -451,10 +476,21 @@ function fenceRequestInitObject(
       ) {
         return;
       }
+      // Node sends a FormData body as a multipart encoding. The native fetch
+      // has none, and its USVString fallback would send "[object FormData]"
+      // under text/plain, a silent divergence: refuse the type by name.
+      // Blob and File bodies send their bytes and type, as Node does.
+      if (row.member === "body" && definiteFormDataBody(lowerer, type)) {
+        lowerer.noLowering(
+          "RequestInit body 'FormData' in a static build",
+          blame,
+          "the native fetch sends string, Uint8Array, ReadableStream, Blob, File, or null bodies; a FormData body needs multipart encoding, which the native fetch does not implement",
+          memberSym(),
+        );
+      }
     }
-    const sym = contextualArms
-      .map((arm) => lowerer.checker.getPropertyOfType(arm, row.member))
-      .find((member) => member !== undefined);
+    if (row.status === "static") return;
+    const sym = memberSym();
     lowerer.noLowering(
       `RequestInit option '${row.member}'${" in a static build"}`,
       blame,
@@ -2631,11 +2667,57 @@ export function lowerStdlibMethodCall(
         loc,
       };
     }
+    // A fixed number tuple spreads as its positions: Node walks the
+    // tuple's own array, and every position is already a number, so the
+    // fold is the plain variadic form (arguments convert like any other
+    // number position — an all-f64 tuple needs no ToNumber at all). The
+    // receiver is bound once, then each slot is read in order.
+    const tupleShape =
+      src.type.kind === "record" && lowerer.isArrayValueType(src.type)
+        ? lowerer.shapes.get(src.type.shapeId)
+        : undefined;
+    if (tupleShape?.fields.every((f) => f.type.kind === "f64")) {
+      const srcType = src.type;
+      const fields = [...tupleShape.fields].sort((a, b) => Number(a.name) - Number(b.name));
+      const stmts: IrStmt[] = [];
+      let recv = src;
+      if (!isSafeToRepeat(src)) {
+        const temp = lowerer.declareHiddenLocal("%tupleSpread", src.type);
+        stmts.push({ kind: "varDecl", localId: temp.id, init: src, loc });
+        recv = { kind: "varRef", localId: temp.id, type: src.type, loc };
+      }
+      const shapeId = (srcType as IrType & { kind: "record" }).shapeId;
+      const values = fields.map((f): IrExpr => ({
+        kind: "recordGet",
+        obj: recv,
+        shapeId,
+        field: f.name,
+        type: f.type,
+        loc,
+      }));
+      // No positions is the fold's seed, exactly the zero-argument call.
+      if (values.length === 0) {
+        const seed: IrExpr = {
+          kind: "numLit",
+          value: name === "max" ? -Infinity : Infinity,
+          type: F64,
+          loc,
+        };
+        return afterArguments(stmts, seed);
+      }
+      const fn = name === "max" ? "math.max" : "math.min";
+      let acc = values[0]!;
+      for (let i = 1; i < values.length; i++) {
+        acc = { kind: "libCall", fn, args: [acc, values[i]!], type: F64, loc };
+      }
+      return afterArguments(stmts, acc);
+    }
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",
         spread,
-        `spreading '${lowerer.fmt(src.type)}' into Math.${name} (only a number[] spreads)`,
+        `spreading '${lowerer.fmt(src.type)}' into Math.${name} ` +
+          "(only a number[] or a fixed-length numeric tuple spreads)",
       );
     }
     return {
@@ -2731,6 +2813,22 @@ export function npmPackageOf(lowerer: Lowerer, type: ts.Type): string | null {
 }
 
 export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpression): void {
+  // A member read on a package-declared DATA shape (an interface, type
+  // alias or mapped type a declarations-only package spells) reads data the
+  // program itself holds — the request object a handler receives, a params
+  // bag, a query object. The mapper already widens such a shape to the
+  // checked-dynamic value when its structural rules cannot map it, so the
+  // read has a representation even though the package ships no code. Only a
+  // package VALUE shape (a class, a merged value declaration) has nothing
+  // to read from without that package's implementation.
+  if (
+    packageTypeIsData(lowerer.typeOf(access.expression), {
+      isStdlibFile: (sf) => lowerer.isStdlibFile(sf),
+      isExternalTypeFile: lowerer.isExternalTypeFile,
+      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, lowerer.experimentalFiles),
+    })
+  )
+    return;
   const pkg =
     lowerer.npmPackageOf(lowerer.typeOf(access.expression)) ??
     lowerer.npmPackageOfSymbol(lowerer.checker.getSymbolAtLocation(access.name));

@@ -87,6 +87,7 @@ const READS: ReadonlySet<string> = new Set([
   "dyn.this",
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
+  "dyn.classHash",
   "dyn.getPrototypeForIdentity",
   "dyn.hasKey",
   "dyn.hasOwn",

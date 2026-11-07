@@ -26,9 +26,14 @@ export function beginFunctionLoops(
   const loops = LOOPS.of(emitter);
   loops.unaliasedArrays = findUnaliasedLocalArrays(fn);
   loops.countedLoopsEnabled = emitter.debug === null && !fn.async && !fn.generator;
-  loops.byteWindowsEnabled = loops.countedLoopsEnabled;
+  // A buffer can shrink while a loop runs in a program that resizes, grows
+  // or detaches one (IrModule.bytesHeadersMutable): a window's or a
+  // version's guard, read before the loop, would not bound its body.
+  const mutableHeaders = emitter.mod.bytesHeadersMutable === true;
+  loops.byteWindowsEnabled = loops.countedLoopsEnabled && !mutableHeaders;
   loops.plainLoops = fn.plainLoops === true;
-  loops.bytesLoopVersionsEnabled = loops.countedLoopsEnabled && !loops.plainLoops;
+  loops.bytesLoopVersionsEnabled =
+    loops.countedLoopsEnabled && !loops.plainLoops && !mutableHeaders;
   loops.bytesLoopEntries = null;
   loops.bytesLoopFunction = fn;
   loops.denseLoopsEnabled = loops.countedLoopsEnabled && !loops.plainLoops;

@@ -10,7 +10,10 @@ function isFile(path: string): boolean {
 }
 
 /** The executable `command` names: a path, or the first match on PATH. */
-function commandFile(command: string, env: NodeJS.ProcessEnv): string | null {
+export function resolveCommandFile(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
   if (command.includes("/")) return isFile(command) ? resolve(command) : null;
   for (const directory of (env["PATH"] ?? "/usr/bin:/bin").split(delimiter)) {
     const candidate = join(directory || ".", command);
@@ -20,21 +23,31 @@ function commandFile(command: string, env: NodeJS.ProcessEnv): string | null {
 }
 
 /**
- * Whether the compiler driver `driver` finds ld.lld for `-fuse-ld=lld`: in
- * the directory of the driver's executable (where clang looks first) or on
- * PATH. Linking still falls back to the driver's default linker when a link
- * with lld fails.
+ * The ld.lld that `-fuse-ld=lld` selects for the compiler driver `driver`:
+ * in the directory of the driver's executable (where clang looks first) or
+ * on PATH. Linking still falls back to the driver's default linker when a
+ * link with lld fails.
  */
-export function driverFindsLld(driver: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  const file = commandFile(driver, env);
-  if (file === null) return false;
+export function resolvedLldFile(
+  driver: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const file = resolveCommandFile(driver, env);
+  if (file === null) return null;
   try {
-    for (const directory of new Set([dirname(file), dirname(realpathSync(file))]))
-      if (isFile(join(directory, "ld.lld"))) return true;
+    for (const directory of new Set([dirname(file), dirname(realpathSync(file))])) {
+      const candidate = join(directory, "ld.lld");
+      if (isFile(candidate)) return candidate;
+    }
   } catch {
-    return false;
+    return null;
   }
-  return commandFile("ld.lld", env) !== null;
+  return resolveCommandFile("ld.lld", env);
+}
+
+/** Whether the compiler driver `driver` finds ld.lld for `-fuse-ld=lld`. */
+export function driverFindsLld(driver: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return resolvedLldFile(driver, env) !== null;
 }
 
 /** `-fuse-ld=lld` for Linux links whose driver finds ld.lld. */

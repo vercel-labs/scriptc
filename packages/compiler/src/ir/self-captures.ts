@@ -7,7 +7,20 @@ import {
   type IrModule,
   type IrStmt,
 } from "./ir.js";
+import {
+  eachNodeOfKinds,
+  type IrKindScan,
+  type IrNodeIndex,
+  type IrNodeKind,
+  lacksKinds,
+} from "./node-index.js";
 import { everyExprChild, everyStmtChild, mapExprChildren, mapStmtChildren } from "./traverse.js";
+
+/** The nodes the definition scan reads: closure creations and declarations. */
+const DEFINITION_KINDS: readonly IrNodeKind[] = ["closure", "varDecl"];
+const CLOSURE_KINDS: readonly IrNodeKind[] = ["closure"];
+/** The nodes that create an environment over locals. */
+const CAPTURING_KINDS: readonly IrNodeKind[] = ["closure", "classRef"];
 
 /** Closures that capture the binding they are stored in read themselves
  * through `selfRef` instead of through that binding's box.
@@ -39,8 +52,12 @@ import { everyExprChild, everyStmtChild, mapExprChildren, mapStmtChildren } from
  * which is the same pointer the box would have produced. The creating
  * function keeps its binding; it loses its box when no other closure
  * captures it, except for temporal-dead-zone bindings, whose box still
- * carries the empty state its own reads test. */
-export function resolveSelfCaptures(mod: IrModule): IrModule {
+ * carries the empty state its own reads test. `nodes`, an index of `mod`,
+ * gives the scans of unchanged bodies without walking them. */
+export function resolveSelfCaptures(mod: IrModule, nodes?: IrNodeIndex): IrModule {
+  const definitionScan = nodes?.scan(DEFINITION_KINDS);
+  const closureScan = nodes?.scan(CLOSURE_KINDS);
+  const capturingScan = nodes?.scan(CAPTURING_KINDS);
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const sites = new Map<string, { owner: string; closure: IrExpr & { kind: "closure" } }[]>();
   /** Closure nodes stored into a local by a qualifying definition, with that
@@ -50,19 +67,16 @@ export function resolveSelfCaptures(mod: IrModule): IrModule {
   for (const fn of mod.functions) {
     const counts = new Map<string, number>();
     declarations.set(fn.name, counts);
-    const expr = (e: IrExpr): boolean => {
-      if (e.kind === "closure") {
-        let list = sites.get(e.fnName);
-        if (list === undefined) sites.set(e.fnName, (list = []));
-        list.push({ owner: fn.name, closure: e });
-      }
-      return everyExprChild(e, expr, stmt);
-    };
-    const stmt = (s: IrStmt): boolean => {
-      if (s.kind === "varDecl") counts.set(s.localId, (counts.get(s.localId) ?? 0) + 1);
-      return everyStmtChild(s, expr, stmt);
-    };
-    fn.body.every(stmt);
+    eachNodeOfKinds(fn, definitionScan, (node) => {
+      if (node.kind === "closure") {
+        let list = sites.get(node.fnName);
+        if (list === undefined) sites.set(node.fnName, (list = []));
+        list.push({ owner: fn.name, closure: node });
+      } else if (node.kind === "varDecl")
+        counts.set(node.localId, (counts.get(node.localId) ?? 0) + 1);
+    });
+    // A definition stores a closure: a body without one holds none.
+    if (lacksKinds(fn, closureScan)) continue;
     for (const list of statementLists(fn.body)) {
       list.forEach((s, i) => {
         if (s.kind !== "varDecl") return;
@@ -91,7 +105,7 @@ export function resolveSelfCaptures(mod: IrModule): IrModule {
     if (fn.async === true || fn.generator !== undefined || fn.classCaptures !== undefined) continue;
     const list = sites.get(fn.name);
     if (list === undefined || list.length === 0) continue;
-    const recaptured = capturedIds(fn.body);
+    const recaptured = capturedIds(fn, capturingScan);
     for (let index = 0; index < captures.length; index++) {
       const capture = captures[index]!;
       if (capture.type.kind !== "func" || recaptured.has(capture.localId)) continue;
@@ -108,7 +122,7 @@ export function resolveSelfCaptures(mod: IrModule): IrModule {
         if (creator.classCaptures?.some((c) => c.localId === source)) return false;
         if (declarations.get(owner)!.get(source) !== 1) return false;
         // Only unchanged() is asked: the flow reads just the bodies it needs.
-        flow ??= new CaptureFlow(mod.functions, false);
+        flow ??= new CaptureFlow(mod.functions, false, nodes);
         return flow.unchanged(owner, source, definition.writes);
       });
       if (qualifies) {
@@ -154,7 +168,7 @@ export function resolveSelfCaptures(mod: IrModule): IrModule {
     if (!changed && self === null) return fn;
     // A binding no environment captures any more needs no box. A dead-zone
     // binding keeps the box that represents its uninitialized state.
-    const stillCaptured = capturedIds(body);
+    const stillCaptured = capturedIds({ ...fn, body }, undefined);
     // The callback returns IrLocal explicitly: inferred from both returns,
     // its type would be the unboxed copy's, and the self-hosted compiler
     // would narrow every kept local to that shape, dropping `boxed`.
@@ -191,16 +205,13 @@ function wasSource(fn: IrFunction, id: string, resolved: ReadonlyMap<string, num
   return found;
 }
 
-/** Locals some closure or class created in `body` captures. */
-function capturedIds(body: readonly IrStmt[]): Set<string> {
+/** Locals some closure or class created in the body of `fn` captures. */
+function capturedIds(fn: IrFunction, scan: IrKindScan | undefined): Set<string> {
   const ids = new Set<string>();
-  const expr = (e: IrExpr): boolean => {
-    if (e.kind === "closure" || e.kind === "classRef")
-      for (const id of e.captures ?? []) ids.add(id);
-    return everyExprChild(e, expr, stmt);
-  };
-  const stmt = (s: IrStmt): boolean => everyStmtChild(s, expr, stmt);
-  body.every(stmt);
+  eachNodeOfKinds(fn, scan, (node) => {
+    if (node.kind === "closure" || node.kind === "classRef")
+      for (const id of node.captures ?? []) ids.add(id);
+  });
   return ids;
 }
 

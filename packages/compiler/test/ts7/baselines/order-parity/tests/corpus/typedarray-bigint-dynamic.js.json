@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typedarray-bigint-dynamic.js"
+ ],
+ "diags": []
+}

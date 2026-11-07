@@ -6,14 +6,19 @@
  */
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { copyFile, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CcCompileError, subprocessFailureDetail } from "./native/process.js";
 import { NativeCodegenError } from "./native-codegen-core.js";
-import { staticExecutableRefusal, staticLinkFailureNote, staticLinkMapArgs } from "./targets.js";
+import {
+  staticExecutableRefusal,
+  staticLinkFailureNote,
+  staticLinkMapArgs,
+  type NativeTargetPlatform,
+} from "./targets.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import { parseLinkTraceFiles } from "./native/linker-fingerprint.js";
 import {
@@ -27,7 +32,7 @@ import {
   type RuntimePackSelection,
 } from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
-import { inputsWithoutLld, lldLinkerArgs } from "./lld.js";
+import { inputsWithoutLld, lldLinkerArgs, resolveCommandFile, resolvedLldFile } from "./lld.js";
 import { hugeTextLinkerArgs, rewriteHugeTextExecutable } from "./huge-text.js";
 import { systemLibraryLinkerArgs } from "./link-plan-core.js";
 import {
@@ -48,14 +53,23 @@ export function resolvePlatformLinker(
   return env["SCRIPTC_LINKER"] || defaultLinker;
 }
 
+/** A linker spelling resolved the way process spawning resolves it, with the
+ * file identity that distinguishes this executable from any replacement. */
+interface PlatformLinkerProgram {
+  /** Canonical path of the file a spawn of the spelling starts. */
+  readonly path: string;
+  /** Path and stat fields, joined; equal only for the same file generation. */
+  readonly identity: string;
+}
+
 /** Exact executable selected for a linker spelling.  The object-only route
  * must still invalidate an early executable when a new `clang` appears ahead
  * of an unchanged PATH entry; relying on the string "clang" would restore a
- * binary past a wrapper that injects link inputs. */
-function platformLinkerIdentity(
+ * binary it did not link. */
+function resolvePlatformLinkerProgram(
   env: NodeJS.ProcessEnv,
   linker: string = resolvePlatformLinker(env),
-): string {
+): PlatformLinkerProgram | null {
   const hasSeparator = linker.includes("/") || linker.includes("\\");
   const pathEntries = hasSeparator ? [""] : (env["PATH"] ?? "/usr/bin:/bin").split(delimiter);
   const extensions =
@@ -75,13 +89,63 @@ function platformLinkerIdentity(
         const canonical = realpathSync(candidate);
         const info = statSync(canonical);
         if (!info.isFile()) continue;
-        return [canonical, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join("\0");
+        return {
+          path: canonical,
+          identity: [canonical, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(
+            "\0",
+          ),
+        };
       } catch {
         // Keep searching PATH exactly as process spawning does.
       }
     }
   }
-  return `<unresolved:${linker}>`;
+  return null;
+}
+
+function platformLinkerIdentity(
+  env: NodeJS.ProcessEnv,
+  linker: string = resolvePlatformLinker(env),
+): string {
+  return resolvePlatformLinkerProgram(env, linker)?.identity ?? `<unresolved:${linker}>`;
+}
+
+/** Whether `path` starts with a program image rather than a script
+ * interpreter line. A script's own bytes do not describe what it runs: the
+ * interpreter, and whatever the script decides from its surroundings at run
+ * time, stay outside the identity of the file. */
+function programIsSelfContained(path: string): boolean {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(path, "r");
+    const magic = Buffer.alloc(2);
+    const read = readSync(descriptor, magic, 0, magic.length, 0);
+    return !(read === magic.length && magic.toString("latin1") === "#!");
+  } catch {
+    return false;
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+/** The linker program a driver runs when the link line names no `-fuse-ld`.
+ * The driver reports it by name, and that name is resolved on PATH the way
+ * the driver resolves it, so a new higher-priority `ld` appears in the
+ * identity even though PATH and the driver file are unchanged. */
+async function defaultLinkerIdentity(linker: string, env: NodeJS.ProcessEnv): Promise<string> {
+  try {
+    const reported = await execFileAsync(linker, ["-print-prog-name=ld"], {
+      env,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const program = reported.stdout.trim();
+    if (program === "") return "<no-default-linker>";
+    return platformLinkerIdentity(env, program);
+  } catch {
+    return env["SCRIPTC_LINKER"] === undefined
+      ? `<unavailable:${linker}:${randomUUID()}>`
+      : `<unavailable:${linker}>`;
+  }
 }
 
 /** Cache-route identity for an object-only platform-link invocation.  The
@@ -114,13 +178,30 @@ export async function executableLinkerEnvironmentFingerprint(
         ? `<unavailable:${linker}:${randomUUID()}>`
         : `<unavailable:${linker}>`;
   }
+  // `-fuse-ld=lld` is chosen from the files around the driver, not from the
+  // environment: an ld.lld appearing or disappearing changes the link line
+  // while PATH and the driver file stay the same. Without lld the driver runs
+  // the linker program it reports, and that program is resolved on PATH at
+  // link time, so its own identity is recorded as well.
+  const lldFile = process.platform === "linux" ? resolvedLldFile(linker, env) : null;
+  const lldIdentity = process.platform === "linux" ? (lldFile ?? "<no-ld.lld>") : "<not-linux>";
+  const defaultLinkerLinkIdentity =
+    process.platform !== "linux"
+      ? "<not-linux>"
+      : lldFile !== null
+        ? "<lld-selected>"
+        : await defaultLinkerIdentity(linker, env);
   const hash = createHash("sha256")
-    .update("executable-linker-environment-v2\0")
+    .update("executable-linker-environment-v4\0")
     .update(toolchainEnvironmentFingerprint(env))
     .update("\0")
     .update(linkerIdentity)
     .update("\0")
     .update(effectiveDriverIdentity)
+    .update("\0")
+    .update(lldIdentity)
+    .update("\0")
+    .update(defaultLinkerLinkIdentity)
     .update("\0");
   for (const name of ["PATH", "SCRIPTC_TEST_RUNTIME_SRC_DIR"] as const) {
     const value = env[name];
@@ -134,21 +215,34 @@ export async function executableLinkerEnvironmentFingerprint(
 }
 
 /** Whether the object-only linker route can publish a whole executable cache
- * entry. The current proof machinery trusts only the direct default driver;
- * a caller-selected SCRIPTC_LINKER may be a wrapper with hidden inputs. */
+ * entry. A caller-selected SCRIPTC_LINKER may be a wrapper with hidden
+ * inputs, so only the environment's own driver is considered. */
 export function platformLinkerSupportsPersistentCache(
   env: NodeJS.ProcessEnv = process.env,
   target?: Pick<NativeLinkPlan["target"], "platform" | "defaultLinker">,
 ): boolean {
-  if (target !== undefined && target.platform !== "darwin") return false;
-  // The Apple system shim is a stable front door to the active SDK/linker;
-  // linkNativeExecutable snapshots the selected transitive inputs before it
-  // publishes the final cache entry. A PATH wrapper is intentionally opaque.
-  return (
-    env["SCRIPTC_LINKER"] === undefined &&
-    toolchainEnvironmentCachePolicy(env).completeArtifacts &&
-    platformLinkerIdentity(env).startsWith("/usr/bin/clang\0")
-  );
+  // The final cache entry is keyed on the driver's file identity and, before
+  // publication, linkNativeExecutable snapshots the driver, the linker it
+  // selects and every input the link opened. On Darwin that proof is only
+  // trusted for the Apple system shim, which is a stable front door to the
+  // active SDK. On Linux the driver may sit in any prefix and the proof
+  // covers it directly, so any resolved driver file is accepted.
+  const platform = target?.platform ?? process.platform;
+  if (platform !== "darwin" && platform !== "linux") return false;
+  if (env["SCRIPTC_LINKER"] !== undefined) return false;
+  if (!toolchainEnvironmentCachePolicy(env).completeArtifacts) return false;
+  const program = resolvePlatformLinkerProgram(env);
+  if (program === null) return false;
+  if (platform !== "linux") return program.path.startsWith("/usr/bin/clang");
+  // A program file's own bytes describe what it runs, so its identity is a
+  // cache key. A script is not: the interpreter and whatever the script
+  // decides at run time (injected linker options, environment) stay outside
+  // the file, so a warm build would restore an executable linked under an
+  // earlier configuration. The driver and, when `-fuse-ld=lld` selects one,
+  // the linker program must both be program files.
+  if (!programIsSelfContained(program.path)) return false;
+  const lld = resolvedLldFile(program.path, env);
+  return lld === null || programIsSelfContained(lld);
 }
 
 async function snapshotDependencies(paths: readonly string[]): Promise<NativeArtifactDependency[]> {
@@ -195,16 +289,24 @@ async function objectLinkerDependencyPaths(
   args: readonly string[],
   cwd: string,
   excludedRoots: readonly string[],
+  toolPaths: readonly string[],
 ): Promise<string[]> {
   const [reportedLinker, dryRun, trace] = await Promise.all([
     execFileAsync(linker, ["-print-prog-name=ld"], { cwd, maxBuffer: 16 * 1024 * 1024 }),
     execFileAsync(linker, [...args, "-###"], { cwd, maxBuffer: 32 * 1024 * 1024 }),
     execFileAsync(linker, [...args, "-Wl,-t"], { cwd, maxBuffer: 32 * 1024 * 1024 }),
   ]);
-  const paths = new Set<string>();
-  const add = async (candidate: string): Promise<void> => {
-    const path = resolve(cwd, candidate.trim());
-    if (path === "") return;
+  // The driver and the linker program it selects are link inputs that neither
+  // the dry run nor the trace lists.
+  const paths = new Set<string>(toolPaths);
+  const add = async (reported: string): Promise<void> => {
+    const candidate = reported.trim();
+    if (candidate === "") return;
+    // A bare program name is looked up on PATH exactly as the driver did.
+    const path = candidate.includes("/")
+      ? resolve(cwd, candidate)
+      : resolveCommandFile(candidate, process.env);
+    if (path === null) return;
     const info = await stat(path).catch(() => null);
     if (info?.isFile()) paths.add(path);
   };
@@ -261,6 +363,46 @@ export async function installRuntimeDataFiles(
   }
 }
 
+/** A driver the host cannot execute at all, rather than one that ran and
+ * failed. `execFile` reports both as a rejected call; only a missing
+ * executable says the build needs a tool this host does not have. */
+function isMissingExecutable(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+/** What to install when a target's link driver cannot be spawned. A spawn
+ * failure names only the driver (`spawn zig ENOENT`), which says neither
+ * what the driver is used for nor where it comes from, so the message names
+ * the target's requirement and the package that provides the driver. Null
+ * for any other failure, whose own output is the useful report. */
+export function missingLinkDriverMessage(
+  error: unknown,
+  linker: string,
+  platform: NativeTargetPlatform,
+): string | null {
+  if (!isMissingExecutable(error)) return null;
+  const driver = basename(linker.replace(/\\/g, "/")).replace(/\.exe$/i, "");
+  let guidance: string;
+  if (driver === "zig")
+    guidance =
+      platform === "win32"
+        ? "Windows targets link with Zig, whose releases are a single zig.exe: download it from https://ziglang.org/download and put it on PATH."
+        : "This target links with Zig: download it from https://ziglang.org/download and put zig on PATH.";
+  else if (driver === "clang" || driver === "clang-cl")
+    guidance =
+      platform === "darwin"
+        ? 'macOS targets link with the clang in Apple\'s Command Line Tools: install them with "xcode-select --install".'
+        : platform === "win32"
+          ? "Windows targets link with clang from the LLVM release: download it from https://releases.llvm.org and put clang.exe on PATH."
+          : 'Linux targets link with clang: install it with the distribution\'s package manager, for example "apt install clang".';
+  else guidance = `Install ${driver} and put it on PATH.`;
+  return (
+    `cannot run the link driver "${linker}": the host has no ${driver} executable.\n` +
+    `${guidance}\n` +
+    "Set SCRIPTC_LINKER to use a different driver."
+  );
+}
+
 export async function linkNativeExecutable(
   plan: NativeLinkPlan,
   options: {
@@ -301,6 +443,12 @@ export async function linkNativeExecutable(
       ];
     };
     const args = linkArgs(lld.length !== 0);
+    // The driver binary and the lld that `-fuse-ld=lld` selects are consumed
+    // outside the linker's own input list, so the proof names them directly.
+    const linkTools = [
+      resolveCommandFile(linker, process.env),
+      lld.length === 0 ? null : resolvedLldFile(linker, process.env),
+    ].filter((path): path is string => path !== null);
     // The pack snapshots bracket both verification passes and private staging;
     // the program-object snapshot begins before helper emission. Snapshot the
     // remaining cache-bearing inputs before the linker consumes them, then
@@ -319,21 +467,40 @@ export async function linkNativeExecutable(
       options.onArtifactReady === undefined ||
       !(await nativeArtifactDependenciesStillMatch(inheritedDependencies).catch(() => false))
         ? null
-        : await objectLinkerDependencyPaths(linker, args, privateOutRoot, [
+        : await objectLinkerDependencyPaths(
+            linker,
+            args,
             privateOutRoot,
-            staged.root,
-            ...plan.inputs,
-          ])
+            [privateOutRoot, staged.root, ...plan.inputs],
+            linkTools,
+          )
             .then(async (toolchain) => [
               ...inheritedDependencies,
               ...(await snapshotDependencies([...toolchain, ...additionalDependencyPaths])),
             ])
             .catch(() => null);
-    await execFileAsync(linker, args).catch(async (error: unknown) => {
+    const link = async (withLld: boolean): Promise<void> => {
+      try {
+        await execFileAsync(linker, linkArgs(withLld));
+      } catch (error) {
+        // Only the link invocation itself can report a driver the host lacks.
+        // Everything after it fails with its own tool, whose name the message
+        // must keep.
+        const missing = missingLinkDriverMessage(error, linker, plan.target.platform);
+        if (missing === null) throw error;
+        throw new CcCompileError(linker, subprocessFailureDetail(error), missing);
+      }
+    };
+    let linkedWithDefaultLinker = false;
+    await link(lld.length !== 0).catch(async (error: unknown) => {
       // A failed link with lld runs again with the driver's default linker,
-      // whose error (if any) is the one reported.
-      if (lld.length === 0) throw error;
-      await execFileAsync(linker, linkArgs(false));
+      // whose error (if any) is the one reported. That link line differs from
+      // the one the pre-link proof describes, so the result is not published.
+      // A driver the host cannot start is not retried, since the same command
+      // cannot succeed.
+      if (lld.length === 0 || error instanceof CcCompileError) throw error;
+      await link(false);
+      linkedWithDefaultLinker = true;
     });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
@@ -343,7 +510,21 @@ export async function linkNativeExecutable(
       if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
     }
     if (plan.darwinDebugSymbols) {
-      await createDarwinDebugSymbols(privateOut);
+      try {
+        await createDarwinDebugSymbols(privateOut);
+      } catch (error) {
+        // The link succeeded and only the debug symbols are missing, so name
+        // the tool that could not produce them rather than the driver.
+        const detail = subprocessFailureDetail(error);
+        throw new CcCompileError(
+          "dsymutil",
+          detail,
+          `dsymutil failed to collect the debug symbols for ${basename(plan.outputPath)}:\n${detail}` +
+            (isMissingExecutable(error)
+              ? '\ndsymutil comes with Apple\'s developer tools: on macOS, install them with "xcode-select --install".'
+              : ""),
+        );
+      }
       await installDarwinDebugSymbols(await readDarwinDebugSymbols(privateOut), plan.outputPath);
     }
     await rename(privateOut, plan.outputPath).catch(async () => {
@@ -356,6 +537,7 @@ export async function linkNativeExecutable(
     }
     if (
       options.onArtifactReady !== undefined &&
+      !linkedWithDefaultLinker &&
       preLinkDependencies !== null &&
       (await nativeArtifactDependenciesStillMatch(preLinkDependencies).catch(() => false))
     ) {

@@ -257,6 +257,20 @@ export class CaughtValueDispatch {
     });
     const type: IrType = { kind: "object", className };
     const returnType = kind === "instanceof" ? BOOL : type;
+    // The checked conversion of an untyped value names the class, except for
+    // a builtin error class below Error (TypeError, RangeError, ...), which
+    // has none: the Error check answers the thrown instance, and the class
+    // test that guards this conversion already established that it is a C.
+    const errorType: IrType = { kind: "object", className: "%Error" };
+    const converted = (): IrExpr =>
+      info.builtinError && className !== "%Error"
+        ? {
+            kind: "downcast",
+            value: lowerer.coerceToExpected(dynamic(), errorType),
+            type,
+            loc,
+          }
+        : lowerer.coerceToExpected(dynamic(), type);
     let value: IrExpr;
     if (kind === "instanceof") {
       value = {
@@ -272,7 +286,7 @@ export class CaughtValueDispatch {
         kind: "ternary",
         cond: native,
         then: { kind: "caughtNarrow", value: caught(), type, loc },
-        else_: lowerer.coerceToExpected(dynamic(), type),
+        else_: converted(),
         type,
         loc,
       };
@@ -280,7 +294,7 @@ export class CaughtValueDispatch {
       value = {
         kind: "ternary",
         cond: dynamicInstance(),
-        then: lowerer.coerceToExpected(dynamic(), type),
+        then: converted(),
         else_: { kind: "caughtCheck", value: caught(), className, type, loc },
         type,
         loc,

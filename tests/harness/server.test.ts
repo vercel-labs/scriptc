@@ -33,6 +33,14 @@ const fixturesRoot = join(repoRoot, "tests/fixtures/server");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
+// A case's compile is its expensive step: a sanitized build of a TLS server
+// fixture takes about a minute on an idle runner, against milliseconds in the
+// lanes that follow. Time the case for that cost, and the compile apart from
+// the lanes, so a loaded runner reports which step ran out of time instead of
+// only the case name.
+const CASE_MS = 240_000;
+const COMPILE_MS = 200_000;
+
 interface ProgramRun {
   stdout: Buffer;
   exitCode: number;
@@ -90,6 +98,20 @@ function runLane(cmd: string, args: string[], driver: string | null): Promise<Pr
   });
 }
 
+/** Rejects with `what` named when `work` has not settled within `timeoutMs`;
+ * the work itself keeps running, as a vitest timeout would leave it. */
+function withinDeadline<T>(work: Promise<T>, what: string, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${what} did not finish within ${timeoutMs} ms`)),
+      timeoutMs,
+    );
+    timer.unref();
+  });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+}
+
 async function build(entry: string): Promise<string> {
   const hash = createHash("sha256");
   hash.update(entry).update(readFileSync(entry));
@@ -99,15 +121,19 @@ async function build(entry: string): Promise<string> {
     .slice(0, 16);
   const outDir = join(cacheDir, `server-${key}`);
   mkdirSync(outDir, { recursive: true });
-  const result = await compile(entry, {
-    outPath: join(outDir, "program"),
-    outDir,
-    sanitize,
-    // Pinned: the listening-process differential was written against the
-    // C lane; keeping lane identity fixed keeps a three-leg diff meaning
-    // "server behavior changed", never "the default backend moved".
-    backend: "llvm",
-  });
+  const result = await withinDeadline(
+    compile(entry, {
+      outPath: join(outDir, "program"),
+      outDir,
+      sanitize,
+      // Pinned: the listening-process differential was written against the
+      // C lane; keeping lane identity fixed keeps a three-leg diff meaning
+      // "server behavior changed", never "the default backend moved".
+      backend: "llvm",
+    }),
+    `compiling ${entry.slice(repoRoot.length + 1)}`,
+    COMPILE_MS,
+  );
   if (!result.ok) {
     throw new Error(
       "server fixture failed to compile:\n" +
@@ -151,19 +177,23 @@ describe(`server differential (${cases.length} programs${sanitize ? ", sanitized
       expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
       expect(nativeRes.driverStdout).toBe(nodeRes.driverStdout);
     },
-    120_000,
+    CASE_MS,
   );
 
-  test("http-trailers answers 431 for a trailer block over the field limit", async () => {
-    const entry = join(fixturesRoot, "cases/http-trailers/main.ts");
-    const driver = join(fixturesRoot, "cases/http-trailers/limit-driver.mjs");
-    const binary = await build(entry);
-    const nativeRes = await runLane(binary, [], driver);
-    expect(nativeRes.exitCode).toBe(0);
-    expect(nativeRes.driverStdout).toBe(
-      "limit HTTP/1.1 431 Request Header Fields Too Large\nlimit driver done\n",
-    );
-  }, 120_000);
+  test(
+    "http-trailers answers 431 for a trailer block over the field limit",
+    async () => {
+      const entry = join(fixturesRoot, "cases/http-trailers/main.ts");
+      const driver = join(fixturesRoot, "cases/http-trailers/limit-driver.mjs");
+      const binary = await build(entry);
+      const nativeRes = await runLane(binary, [], driver);
+      expect(nativeRes.exitCode).toBe(0);
+      expect(nativeRes.driverStdout).toBe(
+        "limit HTTP/1.1 431 Request Header Fields Too Large\nlimit driver done\n",
+      );
+    },
+    CASE_MS,
+  );
 
   test("net-reuse-port emits the additive LLVM ABI", async () => {
     const entry = join(fixturesRoot, "cases/net-reuse-port/main.ts");
@@ -190,27 +220,31 @@ describe(`server differential (${cases.length} programs${sanitize ? ", sanitized
     );
   });
 
-  test("http-host-header-optout works through the LLVM runtime pack", async () => {
-    const entry = join(fixturesRoot, "cases/http-host-header-optout/main.ts");
-    const driver = join(fixturesRoot, "cases/http-host-header-optout/driver.mjs");
-    const outDir = join(cacheDir, `server-llvm-host-header${sanitize ? "-san" : ""}`);
-    mkdirSync(outDir, { recursive: true });
-    const result = await compile(entry, {
-      outPath: join(outDir, "program"),
-      outDir,
-      sanitize,
-      backend: "llvm",
-    });
-    if (!result.ok) {
-      throw new Error(
-        "server fixture failed to compile for LLVM:\n" +
-          result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
-      );
-    }
-    const nodeRes = await runLane("node", [entry], driver);
-    const nativeRes = await runLane(result.binaryPath, [], driver);
-    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
-    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
-    expect(nativeRes.driverStdout).toBe(nodeRes.driverStdout);
-  }, 120_000);
+  test(
+    "http-host-header-optout works through the LLVM runtime pack",
+    async () => {
+      const entry = join(fixturesRoot, "cases/http-host-header-optout/main.ts");
+      const driver = join(fixturesRoot, "cases/http-host-header-optout/driver.mjs");
+      const outDir = join(cacheDir, `server-llvm-host-header${sanitize ? "-san" : ""}`);
+      mkdirSync(outDir, { recursive: true });
+      const result = await compile(entry, {
+        outPath: join(outDir, "program"),
+        outDir,
+        sanitize,
+        backend: "llvm",
+      });
+      if (!result.ok) {
+        throw new Error(
+          "server fixture failed to compile for LLVM:\n" +
+            result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+        );
+      }
+      const nodeRes = await runLane("node", [entry], driver);
+      const nativeRes = await runLane(result.binaryPath, [], driver);
+      expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+      expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+      expect(nativeRes.driverStdout).toBe(nodeRes.driverStdout);
+    },
+    CASE_MS,
+  );
 });

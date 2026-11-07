@@ -94,7 +94,7 @@ import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
-import { functionKeepsRecordSources } from "./record-sources.js";
+import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
@@ -11621,6 +11621,20 @@ export class Lowerer {
       const lifted = new Set<string>();
       for (const fn of this.liftedFns) lifted.add(fn.name);
       module.functions = withoutUnreachedFunctions(module, lifted).functions;
+      // A program none of whose functions can give a record a kept source
+      // loses its source tests, the checked views they guard, and the lifted
+      // functions only those views reached (record-sources.ts). The answer
+      // is read from the final bodies, since the steps above add conversions
+      // and boxes of their own. A library is not a whole program: its
+      // callers hand it records too.
+      const folded =
+        library || this.recordSourcesPossible
+          ? null
+          : foldRecordSourceTests(this, module.functions);
+      if (folded !== null) {
+        module.recordSourcesFolded = folded;
+        module.functions = withoutUnreachedFunctions(module, lifted).functions;
+      }
     }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
@@ -12560,12 +12574,7 @@ export class Lowerer {
     // consult one keep their static copy (record-sources.ts). Decided before
     // the key-order pass, which reads the fact (a same-shape copy of a kept
     // record keeps its keys; the `"k" in r` sites answer through the view).
-    const sourceScan = { memo: new Map<string, boolean>(), visiting: new Set<string>() };
-    for (const fn of keyOrderFunctions) {
-      if (!functionKeepsRecordSources(this, fn, sourceScan)) continue;
-      this.recordSourcesPossible = true;
-      break;
-    }
+    if (programKeepsRecordSources(this, keyOrderFunctions)) this.recordSourcesPossible = true;
     applyKeyOrderWitnesses(this, keyOrderFunctions);
     // A kept width spread builds a record that holds undeclared keys, so the
     // captures that consult a kept source must be active for it too.

@@ -315,6 +315,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         "llvm emitter bug: record.sourceDelete strictness is not a literal",
       );
     host.dyn.keepsRecordSources = true;
+    if (e.args[0]!.type.kind === "record") host.dyn.keptSourceShapes.add(e.args[0]!.type.shapeId);
     host.declare(`declare zeroext i1 @scr_record_source_delete(ptr, ptr, ${host.sizeType}, i1)`);
     const keyLen = Buffer.byteLength(key.value, "utf8");
     const t = B.tmp();
@@ -337,6 +338,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);
     host.dyn.keepsRecordSources = true;
+    if (e.args[0]!.type.kind === "record") host.dyn.keptSourceShapes.add(e.args[0]!.type.shapeId);
     host.declare(`declare void @scr_record_source_share(ptr, ptr)`);
     B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
     return { name: "", type: e.type };

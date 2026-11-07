@@ -45,6 +45,7 @@ import { newSymbolProvenanceMemo, type SymbolProvenance } from "../type-mapper.j
 import { ClassProtocols } from "./class-protocols.js";
 import { inPackageFile } from "./decl-origin.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
+import { collectUnionClasses, type UnionClasses } from "../union-classes.js";
 
 /** SCRIPTC_LOWERING_FACTS_VERIFY: `1` recomputes and compares every shared
  * fact, `stats` does the same and also prints the hit count when the process
@@ -88,6 +89,8 @@ type OpinionIndex = ReadonlyMap<string, readonly AdmittedOpinion[]>;
 export interface LoweringFactsOptions {
   /** Override the SCRIPTC_LOWERING_FACTS_VERIFY environment (tests). */
   verify?: boolean;
+  /** LowerOptions.separateUnionMembers: no classes of record types. */
+  separateUnionMembers?: boolean;
 }
 
 /** The program facts every pass of one island round shares
@@ -120,6 +123,8 @@ export class LoweringFacts {
   private opinionIndexValue: OpinionIndex | null = null;
   /** jsDynamicDeclarations over the round's moduleOrder. */
   private jsDynamic: ReadonlySet<ts.Node> | null = null;
+  /** collectUnionClasses over the round's moduleOrder. */
+  private unionClassesValue: UnionClasses | null = null;
   /** The opinion index and the JavaScript declaration set are whole-program
    * answers over immutable inputs: the verify mode proves each of them once
    * per round rather than on every hit. */
@@ -141,6 +146,7 @@ export class LoweringFacts {
     options: LoweringFactsOptions = {},
   ) {
     this.verify = options.verify ?? verifyFromEnvironment;
+    if (options.separateUnionMembers === true) this.unionClassesValue = new Map();
   }
 
   /** tsgoPath(resolve(sf.fileName)): the path spelling the module tables key
@@ -287,6 +293,14 @@ export class LoweringFacts {
     return this.verifyHit("declBoundary", known, () =>
       this.program.getSourceFileNames().some(isDeclBoundaryFile),
     );
+  }
+
+  /** The classes of record types that share a discriminant literal in a
+   * union the program declares (union-classes.ts). The checker's types are
+   * the same objects in every pass of the round. */
+  unionClasses(): UnionClasses {
+    this.unionClassesValue ??= collectUnionClasses(this.moduleOrder, this.program.getTypeChecker());
+    return this.unionClassesValue;
   }
 
   /** The JavaScript declarations whose instance or object-literal types only

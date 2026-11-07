@@ -636,6 +636,9 @@ export function prepareLibrary(
         tierMode: "static-only",
         ...(cbImports.length > 0 ? { ffiImports: cbImports } : {}),
         ...(cbImports.length > 0 ? { libraryCallbacks: true } : {}),
+        // The sidecar's wire table and integer obligations name every
+        // occurrence of a composed union's repeated arm.
+        separateUnionMembers: true,
         // The profile-mapped exports are called from OUTSIDE the graph:
         // they seed reachability beside the entry's top level (an
         // executable build would dead-strip an uncalled export). A helper

@@ -386,6 +386,16 @@ test("the zero-cost gate allows listed programs and refuses a stale list", () =>
     expect(unlisted.stdout).toContain("  fixture/llvm-emitter: differs");
     expect(unlisted.stdout).not.toContain("listed ");
     expect(unlisted.status).toBe(1);
+    // Neither checkout has a self-compile budget, or the compiler's source:
+    // the candidate's own build is made, and the run says that nothing of it
+    // is budgeted instead of reading source that is not there.
+    expect(unlisted.stdout).toContain(
+      "self       candidate compiler source builds with the candidate (",
+    );
+    expect(unlisted.stdout).toContain(
+      "self       no scripts/self-compile-budget.json in the candidate, so nothing is budgeted\n",
+    );
+    expect(unlisted.stderr).toBe("");
 
     // The list may name programs of sets, languages and shards this run does
     // not select: they are programs, so the list is not stale.

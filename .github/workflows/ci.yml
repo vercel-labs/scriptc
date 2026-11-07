@@ -643,6 +643,16 @@ jobs:
   # committed one, as local builds do. It runs on the profile lane, which
   # follows compiler code, code generation and the native CLI build, where the
   # profile goes stale.
+  #
+  # The same build is held to the self-compile budget
+  # (scripts/self-compile-budget.mjs): the whole-program lowering passes the
+  # compiler takes over its own source, exactly, and the heap its frontend
+  # holds at the end of a pass against the budget and the heap limit. One
+  # construct in the compiler's source can make it lower itself again (#2918
+  # added two passes and 65% of the build's time), and this is the only build
+  # of the compiler's own source that every compiler change runs. Compile time
+  # itself is judged by the zero-cost gate, which has a baseline build to pair
+  # it with.
   native_profile:
     needs: [validation_scope, lanes]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.profile == 'true' }}
@@ -666,8 +676,8 @@ jobs:
         with:
           target: linux-x64-gnu
       - run: pnpm build
-      - name: Build the native compiler with the committed profile
-        run: pnpm build:native-compiler
+      - name: Build the native compiler with the committed profile, within the self-compile budget
+        run: node scripts/self-compile-budget.mjs --native-build
         env:
           SCRIPTC_NATIVE_PROFILE_CHECK: "1"
 

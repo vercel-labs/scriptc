@@ -20,7 +20,8 @@
 // - profile: the native compiler profile check. On when the change touches the compiler's sources or its committed
 //   layout and profile, the native code generation it is compiled with, the LLVM helper package, or the native CLI
 //   build, any of which can leave the committed profile describing functions that no longer match. Compiler tests are
-//   not part of the compiler it builds, so they do not turn it on.
+//   not part of the compiler it builds, so they do not turn it on. The same job holds that build to the self-compile
+//   budget, so a change to the budget or to one of its scripts (the judge, the heap probe) turns it on too.
 // - islands: the Node island conformance lane (tests/harness/island-conformance.test.ts), which builds every package
 //   program again with each package forced into a Node island. On when the change touches the island decision
 //   (packages/compiler/src/node-islands), the boundary lowering, the island runtime units and their host scripts, the
@@ -85,7 +86,7 @@ const bootstrapPath =
 // The native compiler's own functions: its sources, the code generation they
 // are compiled with, and the build that compiles them.
 const profilePath =
-  /^packages\/compiler\/(src|native)\/|^native\/|^packages\/llvm-[^/]+\/|^scripts\/build-native-cli/;
+  /^packages\/compiler\/(src|native)\/|^native\/|^packages\/llvm-[^/]+\/|^scripts\/(build-native-cli|self-compile-)/;
 
 // Where a Node island is decided, lowered, run and tested package by package.
 const islandPath =

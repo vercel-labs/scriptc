@@ -39,6 +39,16 @@ test.each([
     { linux: true, macos: false, effects: false, bootstrap: false, profile: true, islands: false },
   ],
   [
+    "a raised self-compile budget",
+    ["scripts/self-compile-budget.json"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true, islands: false },
+  ],
+  [
+    "the probe that measures the self-compile's heap",
+    ["scripts/self-compile-heap-probe.mjs"],
+    { linux: true, macos: false, effects: false, bootstrap: false, profile: true, islands: false },
+  ],
+  [
     "a runtime C change",
     ["packages/runtime/src/scr_array.c"],
     { linux: true, macos: false, effects: false, bootstrap: false, profile: false, islands: false },

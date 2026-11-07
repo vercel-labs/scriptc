@@ -484,6 +484,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
   ),
+  // A native AbortSignal or AbortController crossing into an island: the
+  // signal's twin there follows it through the signal unit's watcher list.
+  unit(
+    (u) => u.opts.nodeIsland === true && (u.nativeFetch || u.opts.abortSignal === true),
+    "scr_node_island_abort.c",
+  ),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
   // The dynamic global object's answer for the Node globals the native

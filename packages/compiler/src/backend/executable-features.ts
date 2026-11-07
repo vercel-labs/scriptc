@@ -64,7 +64,12 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.mime ? { mime: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.webBodies ? { webBodies: true } : {}),
-    ...(features.abortSignal ? { abortSignal: true } : {}),
+    // A Node island can hand its own AbortSignal to any native receiver of
+    // one, and a native signal then stands for it (scr_node_island_abort.c):
+    // a program with islands and a receiver links the signal unit too.
+    ...(features.abortSignal || (features.nodeIsland && features.eventTarget)
+      ? { abortSignal: true }
+      : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.fsPathValue ? { fsPathValue: true } : {}),

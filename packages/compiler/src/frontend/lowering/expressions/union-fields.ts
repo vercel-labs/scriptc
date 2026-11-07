@@ -1,5 +1,6 @@
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesAssertions } from "../../outer-expressions.js";
 import type { Lowerer } from "../lowerer.js";
 import { narrowStoredClassValue } from "../class-unions.js";
 import { markSloppyRecordWrites } from "../frozen-records.js";
@@ -222,25 +223,6 @@ export function lowerUnionFieldRead(
   return { kind: "seqExpr", stmts: [init], result: dispatch, type, loc };
 }
 
-/** The expression a receiver write actually targets, through parentheses
- * and erased type assertions (`(value as R)`, `<R>value`, and chains of
- * them). Node erases an assertion, so `(u as R).f = v` mutates the value in
- * `u`; only the checker's view of it changes. */
-function unassertedReceiver(expr: ts.Expression): ts.Expression {
-  let node = expr;
-  for (;;) {
-    if (ts.isParenthesizedExpression(node)) {
-      node = node.expression;
-      continue;
-    }
-    if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
-      node = node.expression;
-      continue;
-    }
-    return node;
-  }
-}
-
 /** Assign a common data field without projecting the union's objects into
  * a new structural shape. Each tag writes the original payload, so
  * aliases and identity-keyed collections observe the mutation. Arms may
@@ -269,7 +251,7 @@ export function lowerUnionFieldWrite(
   // first, unchanged.
   const narrowed = narrowedUnionView(
     lowerer,
-    unassertedReceiver(access.expression),
+    withoutParenthesesAssertions(access.expression),
     receiver,
     locOf(access),
   );
@@ -285,7 +267,7 @@ export function lowerUnionFieldWrite(
  * assertion narrows nothing here. */
 function unionWriteReceiver(lowerer: Lowerer, access: ts.PropertyAccessExpression): IrExpr | null {
   if (access.questionDotToken) return null;
-  const target = unassertedReceiver(access.expression);
+  const target = withoutParenthesesAssertions(access.expression);
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(target));
   if (mapped?.kind !== "union") return null;
   let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(target), target);

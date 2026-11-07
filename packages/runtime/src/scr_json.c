@@ -13871,6 +13871,17 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_HANDLE) return scr_dyn_handle_in(v, key);
   if (scr_dyn_has_key(v, key)) return true;
   if (scr_exc_pending()) return false;
+#ifdef SCR_NODE_ISLANDS
+  /* The view of an error island code threw: the V8 error answers for what
+   * the view does not hold (scr_dyn_obj_read_receiver reads it there). */
+  if (v->kind == SCR_DYN_OBJ && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->error_has != NULL) {
+    size_t island_hit = scr_errdyn_find(v, false);
+    if (island_hit != SIZE_MAX) {
+      int has = scr_ni_dyn_ops->error_has(scr_errdyn_cache[island_hit].err, key->data, key->len);
+      if (has >= 0) return has == 1;
+    }
+  }
+#endif
   if (v->kind == SCR_DYN_OBJ) return scr_dyn_builtin_inherited(v, key);
   if (v->kind == SCR_DYN_ARR) {
     if (v->prototype) return scr_dyn_in(v->prototype, key);
@@ -17981,6 +17992,21 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
   }
   ScrDyn *own = scr_dyn_obj_get(d, key, key_len);
   if (own) return scr_dyn_retain(own);
+#ifdef SCR_NODE_ISLANDS
+  /* An error island code threw is a V8 error, and its view holds only what
+   * every error has (name, message, stack, a string code). Anything else
+   * the program reads from it is the V8 error's: an own property (status,
+   * errno, cause, an AggregateError's errors), a method or accessor of its
+   * class, and its `constructor`, which is its own realm's (the island's
+   * TypeError is the one `e.constructor` names). */
+  if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->error_get != NULL) {
+    size_t island_hit = scr_errdyn_find(d, false);
+    ScrDyn *island = NULL;
+    if (island_hit != SIZE_MAX &&
+        scr_ni_dyn_ops->error_get(scr_errdyn_cache[island_hit].err, key, key_len, &island))
+      return island;
+  }
+#endif
   if (key_len == 11 && memcmp(key, "constructor", 11) == 0) {
     /* An error's constructor: the interned function value its global
      * reads as (scr_dyn_error_constructor). */
@@ -17989,16 +18015,6 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
         "ReferenceError", "EvalError", "URIError", "AggregateError",
     };
     size_t hit = scr_errdyn_find(d, false);
-#ifdef SCR_NODE_ISLANDS
-    /* An error island code threw keeps its own realm's constructor (the
-     * island unit answers it from V8), so the island's TypeError is the
-     * one `e.constructor` names. */
-    if (hit != SIZE_MAX && scr_ni_dyn_ops != NULL &&
-        scr_ni_dyn_ops->error_constructor != NULL) {
-      ScrDyn *island = NULL;
-      if (scr_ni_dyn_ops->error_constructor(scr_errdyn_cache[hit].err, &island)) return island;
-    }
-#endif
     const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
     for (size_t kind = 0; vt && kind < sizeof names / sizeof names[0]; kind++) {
       if (!names[kind]) continue;

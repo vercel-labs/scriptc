@@ -5490,6 +5490,13 @@ static void scr_hosted_microtask(ScrFiber *f) {
 }
 
 static void scr_hosted_tick(ScrNtick *t) {
+  /* Node drops what process.nextTick is given once the exit sequence began
+   * (an 'exit' listener's ticks never run), and so does the hosted queue. */
+  if (scr_process_exiting()) {
+    if (t->cb) scr_closure_release(t->cb);
+    scr_mem_free(t);
+    return;
+  }
   uint32_t token = scr_hjob_new(SCR_HJ_TICK, t);
   scr_hosted_queued++;
   scr_loop_hosted->tick(token);

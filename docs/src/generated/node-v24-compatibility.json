@@ -30018,9 +30018,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35515,9 +35515,9 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
-        "verification": "test-backed"
+        "status": "not-implemented",
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -35538,9 +35538,9 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
-        "verification": "test-backed"
+        "status": "not-implemented",
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -35561,9 +35561,9 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
-        "verification": "test-backed"
+        "status": "not-implemented",
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -35906,9 +35906,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented in JavaScript sources, where the class is a checked-dynamic constructor value; a typed TypeScript use is refused by name.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35952,9 +35952,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented in JavaScript sources, where the class is a checked-dynamic constructor value; a typed TypeScript use is refused by name.",
+        "verification": "test-backed"
       }
     },
     {
@@ -80718,9 +80718,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -80948,9 +80948,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -81408,9 +81408,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -81730,9 +81730,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -81983,9 +81983,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented in JavaScript sources, where the class is a checked-dynamic constructor value; a typed TypeScript use is refused by name.",
+        "verification": "test-backed"
       }
     },
     {
@@ -82075,9 +82075,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented in JavaScript sources, where the class is a checked-dynamic constructor value; a typed TypeScript use is refused by name.",
+        "verification": "test-backed"
       }
     },
     {

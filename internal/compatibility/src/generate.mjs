@@ -522,9 +522,12 @@ function assertGlobalTwinsAgree(snapshot) {
   const unmatched = (row) => (row.static.evidence ?? "").startsWith("compiler-unmatched:");
   const claimed = (row) => row.static.status === "supported" || row.static.status === "partial";
   const direct = (row) => row.depth === 1 && row.scope === "api" && row.apiSymbol !== "";
+  // The owning chapter may nest the class under a heading (webstreams lists
+  // its classes under "API"), so a class row owns its global at any depth.
+  const owner = (row) => direct(row) || (row.kind === "class" && row.scope === "api");
   const owners = new Map();
   for (const row of snapshot.rows) {
-    if (!direct(row) || row.chapter === "globals") continue;
+    if (!owner(row) || row.apiSymbol === "" || row.chapter === "globals") continue;
     const rows = owners.get(row.apiSymbol) ?? [];
     rows.push(row);
     owners.set(row.apiSymbol, rows);
@@ -763,6 +766,9 @@ function publicDetail(tier) {
       )
     ) {
       return "Native codec values support UTF-8 encoding and whole-buffer decoding with recognized literal labels and default options.";
+    }
+    if (/^compiler-feature:(?:globals|webstreams)\.Text(?:Encoder|Decoder)Stream$/.test(source)) {
+      return "Implemented in JavaScript sources, where the class is a checked-dynamic constructor value; a typed TypeScript use is refused by name.";
     }
     if (source === "compiler-feature:globals.Headers") {
       return "Constructs from records, header pairs and copies, and supports append/delete/get/getSetCookie/has/set/forEach with Node's coercion and error shapes, including Response and Request headers; typed iteration and method extraction remain refused.";

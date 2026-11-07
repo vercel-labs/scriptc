@@ -16,83 +16,38 @@ compat-absent-lowerings.ts:12:13 - error SC2020: 'util/types.isModuleNamespaceOb
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-compat-absent-lowerings.ts:15:7 - error SC2020: 'TextDecoderStream' is part of the standard library types but has no scriptc lowering yet
+compat-absent-lowerings.ts:15:7 - error SC2020: 'MessageChannel' is part of the standard library types but has no scriptc lowering yet
 
-  14 | // The text codec streams.
-  15 | const decoder = new TextDecoderStream();
+  14 | // The global MessageChannel and its ports.
+  15 | const channel = new MessageChannel();
      |       ^~~~~~~
-  16 | const encoder = new TextEncoderStream();
+  16 | channel.port1.postMessage("x");
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-compat-absent-lowerings.ts:15:17 - error SC2020: 'new TextDecoderStream' is part of the standard library types but has no scriptc lowering yet
+compat-absent-lowerings.ts:15:17 - error SC2020: 'new MessageChannel' is part of the standard library types but has no scriptc lowering yet
 
-  14 | // The text codec streams.
-  15 | const decoder = new TextDecoderStream();
-     |                 ^~~~~~~~~~~~~~~~~~~~~~~
-  16 | const encoder = new TextEncoderStream();
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-compat-absent-lowerings.ts:16:7 - error SC2020: 'TextEncoderStream' is part of the standard library types but has no scriptc lowering yet
-
-  15 | const decoder = new TextDecoderStream();
-  16 | const encoder = new TextEncoderStream();
-     |       ^~~~~~~
-  17 | console.log(typeof decoder, typeof encoder);
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-compat-absent-lowerings.ts:16:17 - error SC2020: 'new TextEncoderStream' is part of the standard library types but has no scriptc lowering yet
-
-  15 | const decoder = new TextDecoderStream();
-  16 | const encoder = new TextEncoderStream();
-     |                 ^~~~~~~~~~~~~~~~~~~~~~~
-  17 | console.log(typeof decoder, typeof encoder);
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-compat-absent-lowerings.ts:17:20 - error SC2004: uses of 'decoder' inherit the blocker on its declaration
-
-  16 | const encoder = new TextEncoderStream();
-  17 | console.log(typeof decoder, typeof encoder);
-     |                    ^~~~~~~
-  18 | 
-
-  hint: the declaration of 'decoder' did not compile — fix the diagnostic reported there and these sites clear with it
-
-compat-absent-lowerings.ts:20:7 - error SC2020: 'MessageChannel' is part of the standard library types but has no scriptc lowering yet
-
-  19 | // The global MessageChannel and its ports.
-  20 | const channel = new MessageChannel();
-     |       ^~~~~~~
-  21 | channel.port1.postMessage("x");
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-compat-absent-lowerings.ts:20:17 - error SC2020: 'new MessageChannel' is part of the standard library types but has no scriptc lowering yet
-
-  19 | // The global MessageChannel and its ports.
-  20 | const channel = new MessageChannel();
+  14 | // The global MessageChannel and its ports.
+  15 | const channel = new MessageChannel();
      |                 ^~~~~~~~~~~~~~~~~~~~
-  21 | channel.port1.postMessage("x");
+  16 | channel.port1.postMessage("x");
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-compat-absent-lowerings.ts:21:1 - error SC2020: 'MessagePort.postMessage' is part of the standard library types but has no scriptc lowering yet
+compat-absent-lowerings.ts:16:1 - error SC2020: 'MessagePort.postMessage' is part of the standard library types but has no scriptc lowering yet
 
-  20 | const channel = new MessageChannel();
-  21 | channel.port1.postMessage("x");
+  15 | const channel = new MessageChannel();
+  16 | channel.port1.postMessage("x");
      | ^~~~~~~~~~~~~~~~~~~~~~~~~
-  22 | channel.port2.close();
+  17 | channel.port2.close();
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-compat-absent-lowerings.ts:22:1 - error SC2020: 'MessagePort.close' is part of the standard library types but has no scriptc lowering yet
+compat-absent-lowerings.ts:17:1 - error SC2020: 'MessagePort.close' is part of the standard library types but has no scriptc lowering yet
 
-  21 | channel.port1.postMessage("x");
-  22 | channel.port2.close();
+  16 | channel.port1.postMessage("x");
+  17 | channel.port2.close();
      | ^~~~~~~~~~~~~~~~~~~
-  23 | 
+  18 | 
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)

@@ -17,46 +17,39 @@ compat-absent-node-apis.ts:7:10 - error SC0001: Module '"node:events"' has no ex
   6 | import { Resolver } from "node:dns";
   7 | import { EventEmitterAsyncResource } from "node:events";
     |          ^~~~~~~~~~~~~~~~~~~~~~~~~
-  8 | import { exists, openAsBlob } from "node:fs";
+  8 | import { openAsBlob } from "node:fs";
 
-compat-absent-node-apis.ts:8:10 - error SC0001: Module '"node:fs"' has no exported member 'exists'.
-
-  7 | import { EventEmitterAsyncResource } from "node:events";
-  8 | import { exists, openAsBlob } from "node:fs";
-    |          ^~~~~~
-  9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
-
-compat-absent-node-apis.ts:8:18 - error SC0001: Module '"node:fs"' has no exported member 'openAsBlob'.
+compat-absent-node-apis.ts:8:10 - error SC0001: Module '"node:fs"' has no exported member 'openAsBlob'.
 
   7 | import { EventEmitterAsyncResource } from "node:events";
-  8 | import { exists, openAsBlob } from "node:fs";
-    |                  ^~~~~~~~~~
+  8 | import { openAsBlob } from "node:fs";
+    |          ^~~~~~~~~~
   9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
 
 compat-absent-node-apis.ts:9:10 - error SC0001: Module '"node:module"' has no exported member 'enableCompileCache'.
 
-   8 | import { exists, openAsBlob } from "node:fs";
+   8 | import { openAsBlob } from "node:fs";
    9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
      |          ^~~~~~~~~~~~~~~~~~
   10 | import { PerformanceObserver, performance } from "node:perf_hooks";
 
 compat-absent-node-apis.ts:9:30 - error SC0001: Module '"node:module"' has no exported member 'findPackageJSON'.
 
-   8 | import { exists, openAsBlob } from "node:fs";
+   8 | import { openAsBlob } from "node:fs";
    9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
      |                              ^~~~~~~~~~~~~~~
   10 | import { PerformanceObserver, performance } from "node:perf_hooks";
 
 compat-absent-node-apis.ts:9:47 - error SC0001: Module '"node:module"' has no exported member 'flushCompileCache'.
 
-   8 | import { exists, openAsBlob } from "node:fs";
+   8 | import { openAsBlob } from "node:fs";
    9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
      |                                               ^~~~~~~~~~~~~~~~~
   10 | import { PerformanceObserver, performance } from "node:perf_hooks";
 
 compat-absent-node-apis.ts:9:66 - error SC0001: Module '"node:module"' has no exported member 'register'.
 
-   8 | import { exists, openAsBlob } from "node:fs";
+   8 | import { openAsBlob } from "node:fs";
    9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
      |                                                                  ^~~~~~~~
   10 | import { PerformanceObserver, performance } from "node:perf_hooks";
@@ -160,10 +153,3 @@ compat-absent-node-apis.ts:36:9 - error SC0001: Property 'unref' does not exist 
   37 | 
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'unref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
-
-compat-absent-node-apis.ts:51:17 - error SC0001: Parameter 'present' implicitly has an 'any' type.
-
-  50 | // fs: the deprecated exists callback and Blob-backed opens.
-  51 | exists("/tmp", (present) => console.log(present));
-     |                 ^~~~~~~
-  52 | console.log(await openAsBlob("/tmp/x"));

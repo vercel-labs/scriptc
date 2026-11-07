@@ -5,7 +5,7 @@
 import { AsyncResource } from "node:async_hooks";
 import { Resolver } from "node:dns";
 import { EventEmitterAsyncResource } from "node:events";
-import { exists, openAsBlob } from "node:fs";
+import { openAsBlob } from "node:fs";
 import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
 import { PerformanceObserver, performance } from "node:perf_hooks";
 import { Readable, Writable } from "node:stream";
@@ -47,8 +47,7 @@ console.log(resource.runInAsyncScope(() => 1), resource.asyncId());
 const emitter = new EventEmitterAsyncResource({ name: "Probe" });
 emitter.emit("x");
 
-// fs: the deprecated exists callback and Blob-backed opens.
-exists("/tmp", (present) => console.log(present));
+// fs: Blob-backed opens.
 console.log(await openAsBlob("/tmp/x"));
 
 // dns: a resolver instance.

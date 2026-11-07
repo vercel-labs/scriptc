@@ -11,11 +11,6 @@ console.trace("where");
 // util.types: the namespace-object predicate.
 console.log(types.isModuleNamespaceObject(pathNamespace));
 
-// The text codec streams.
-const decoder = new TextDecoderStream();
-const encoder = new TextEncoderStream();
-console.log(typeof decoder, typeof encoder);
-
 // The global MessageChannel and its ports.
 const channel = new MessageChannel();
 channel.port1.postMessage("x");

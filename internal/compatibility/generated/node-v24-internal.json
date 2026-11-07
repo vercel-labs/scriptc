@@ -46952,10 +46952,10 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:fs.fs.exists",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/2595-fs-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -53071,6 +53071,7 @@
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
           "tests/corpus/webassembly-jsapi.mjs",
@@ -53953,10 +53954,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "not-implemented",
         "evidence": "compiler-feature:globals.PerformanceEntry",
         "tests": [
-          "tests/corpus/compat-web-globals.ts"
+          "tests/diagnostics/compat-absent-web-globals.ts"
         ]
       },
       "anchorSource": "exact"
@@ -53979,10 +53980,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "not-implemented",
         "evidence": "compiler-feature:globals.PerformanceMark",
         "tests": [
-          "tests/corpus/compat-web-globals.ts"
+          "tests/diagnostics/compat-absent-web-globals.ts"
         ]
       },
       "anchorSource": "exact"
@@ -54005,10 +54006,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "not-implemented",
         "evidence": "compiler-feature:globals.PerformanceMeasure",
         "tests": [
-          "tests/corpus/compat-web-globals.ts"
+          "tests/diagnostics/compat-absent-web-globals.ts"
         ]
       },
       "anchorSource": "exact"
@@ -54384,10 +54385,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.TextDecoderStream",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -54439,10 +54440,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.TextEncoderStream",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -113624,12 +113625,12 @@
           "tests/corpus/2862-web-readable-async-iteration.ts",
           "tests/corpus/4875-stream-consumers-array-buffer.ts",
           "tests/corpus/7743-transform-stream-identity.ts",
+          "tests/corpus/compat-web-globals.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/web-stream-writable-untyped.mjs",
-          "tests/diagnostics/compat-absent-lowerings.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/harness/fetch-conformance.test.ts"
         ]
@@ -114138,8 +114139,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.ReadableStreamDefaultReader",
+        "tests": [
+          "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/web-stream-writable-untyped.mjs",
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114368,8 +114375,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.ReadableStreamDefaultController",
+        "tests": [
+          "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/web-stream-writable-untyped.mjs",
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114854,8 +114867,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.WritableStreamDefaultWriter",
+        "tests": [
+          "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/web-stream-writable-untyped.mjs",
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115203,8 +115222,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.TransformStreamDefaultController",
+        "tests": [
+          "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/web-stream-writable-untyped.mjs",
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115456,10 +115481,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:webstreams.TextEncoderStream",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -115551,10 +115576,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:webstreams.TextDecoderStream",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
         ]
       },
       "anchorSource": "exact"

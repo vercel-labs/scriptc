@@ -1,0 +1,6 @@
+{
+  "name": "node-island-value-observations",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "value-pkg": "node" } }
+}

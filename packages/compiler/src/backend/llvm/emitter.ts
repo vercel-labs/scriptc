@@ -122,6 +122,7 @@ import {
   type IntegerRanges,
 } from "../../ir/integer-ranges.js";
 import { unshareNodes } from "../../ir/unshare.js";
+import { rollLiteralTables } from "../../ir/literal-tables.js";
 import { runPairedWhileLoopsAsFor } from "../../ir/paired-while-loops.js";
 import { copyStableCaptures } from "../../ir/capture-values.js";
 import { resolveSelfCaptures } from "../../ir/self-captures.js";
@@ -411,7 +412,7 @@ import {
   recordViewFieldPtr,
   recordViewTestLines,
 } from "./record-views.js";
-import { LlvmUnsupportedError } from "./unsupported.js";
+import { LlvmUnsupportedError, anchorRefusal } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
   isObjectArm,
@@ -799,7 +800,9 @@ interface PreparedModule {
 function prepareModule(input: IrModule, options: LlvmTargetOptions): PreparedModule {
   // Facts are keyed by node identity: emit the same module whether it was
   // lowered in memory or read back from its serialized form.
-  const mod = unshareNodes(input);
+  // Large literals build their rows in loops first: every later pass and
+  // the emitter then see the loop, not thousands of row expressions.
+  const mod = rollLiteralTables(unshareNodes(input));
   // Each proof selectInt32Arrays asks for analyzes a marked module; the
   // emitter of the module it returns reuses the last one. A proof that
   // revised functions analyzed the module of the functions it ended with.
@@ -1726,6 +1729,9 @@ export class LlEmitter {
     string,
     { sym: string; type: "i32" | "double"; values: readonly string[] }
   >();
+  /** Constant data the program image holds for large literals (imageData):
+   * the definition's text → its symbol. */
+  readonly imageDataSyms = new Map<string, string>();
   /** Method-id slots of checked-dynamic method calls
    * (scr_dyn_invoke_prepared_id): method name → symbol of an i32 the
    * runtime fills with the name's id on the first call. */
@@ -2897,7 +2903,11 @@ export class LlEmitter {
         this.llType(g.type); // refuses out-of-tier kinds
       } catch (err) {
         if (err instanceof LlvmUnsupportedError)
-          throw new LlvmUnsupportedError(`global:${g.type.kind}`);
+          throw new LlvmUnsupportedError(
+            `global:${g.type.kind}`,
+            g.source?.loc,
+            `global ${g.name} of type ${typeKey(g.type)}`,
+          );
         throw err;
       }
       this.globalTypes.set(g.id, g.type);
@@ -3154,7 +3164,7 @@ export class LlEmitter {
       case "void":
         return "void";
       default:
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
     }
   }
 
@@ -3985,6 +3995,20 @@ export class LlEmitter {
     }
     this.journal?.entry("arrayConst", key, c);
     return { data: `@${c.sym}`, header: `@${c.sym}_h` };
+  }
+
+  /** A global of the program image holding the data of a large literal
+   * (a run of numbers an array literal appends, the columns of a literal
+   * table): `definition` is the global's text after `@<sym> = `. Equal
+   * definitions share one global, named by its content — `@`-ref. */
+  imageData(definition: string): string {
+    let sym = this.imageDataSyms.get(definition);
+    if (sym === undefined) {
+      sym = this.contentSymbol("sc_data_", definition);
+      this.imageDataSyms.set(definition, sym);
+    }
+    this.journal?.entry("imageData", definition, sym);
+    return `@${sym}`;
   }
 
   /** Interned NUL-terminated C-string constant (the scr_jb_puts /
@@ -5174,7 +5198,11 @@ export class LlEmitter {
       case "jsval":
         return jsTruthy(this, valueName);
       default:
-        throw new LlvmUnsupportedError(`truthy:${unionArm ? "union:" : ""}${kind}`);
+        throw new LlvmUnsupportedError(
+          `truthy:${unionArm ? "union:" : ""}${kind}`,
+          undefined,
+          `a truth test of a ${kind} value`,
+        );
     }
   }
 
@@ -6466,7 +6494,13 @@ export class LlEmitter {
     return copies;
   }
   emitFunction(fn: IrFunction): string {
-    return emitFunction(this, fn);
+    try {
+      return emitFunction(this, fn);
+    } catch (error) {
+      // A refusal raised outside the function's statements (its signature,
+      // locals and frame) takes the function's span.
+      throw anchorRefusal(error, fn.loc, fn.name);
+    }
   }
 
   /** What this range emitter (chunkEmitter) hands the merging emitter, as
@@ -6621,6 +6655,15 @@ export class LlEmitter {
           names,
         );
         return;
+      case "imageData": {
+        let own = this.imageDataSyms.get(key);
+        if (own === undefined) {
+          own = this.contentSymbol("sc_data_", key);
+          this.imageDataSyms.set(key, own);
+        }
+        if (own !== value) names.set(value as string, own);
+        return;
+      }
       case "mapOps": {
         let own = this.mapOpsConsts.get(key);
         if (own === undefined) {
@@ -7408,6 +7451,9 @@ export class LlEmitter {
     this.int32KindResume = this.int32Kinds?.resume.get(s) ?? null;
     try {
       this.emitStmtBody(s);
+    } catch (error) {
+      // A refusal raised without a source span takes this statement's.
+      throw anchorRefusal(error, s.loc);
     } finally {
       this.B.debugLocation = previous;
       this.int32KindResume = kindResume;
@@ -7775,6 +7821,7 @@ export class LlEmitter {
       | "arrayGet"
       | "arrayHas"
       | "arrayState"
+      | "constCell"
       | "arrIntrinsic"
       | "bytesNew"
       | "bytesIntrinsic"

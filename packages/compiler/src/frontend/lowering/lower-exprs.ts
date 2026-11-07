@@ -13,7 +13,7 @@ import {
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { lowerIslandExpr } from "./lower-node-island.js";
-import { lowerAwaitedUniformPromiseAll } from "./builtins/promises.js";
+import { lowerAwaitedUniformPromiseAll, promiseAllValueUnread } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Expression lowering: the expression dispatch (lowerExpr), literals
@@ -26,6 +26,7 @@ import * as ts from "../ts7/adapter.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
+import { PoisonError } from "./lowerer.js";
 import type { Lowerer } from "./lowerer.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { recordStringCall } from "./record-links.js";
@@ -58,6 +59,7 @@ import {
   arrayOf,
   funcOf,
   isUnitType,
+  keyedRecordFields,
   typeEquals,
   sortArms,
 } from "../../ir/ir.js";
@@ -248,6 +250,94 @@ export function templateRawTextOf(
 const LOWER_EXPR_MAX_DEPTH = 200;
 let lowerExprDepth = 0;
 
+/** Lowering an expression probes its operands (tryLowerExpression) to pick
+ * a form, and a probe lowers the operand in full, so an operand can be
+ * lowered once per form its parent tries and a chain of calls multiplies
+ * that at every link: a chain of array methods taking arrow functions costs
+ * three times as much per link, which is 3 million lowerings (over a
+ * minute) at 12 links and the heap limit at 14. A refused probe is not
+ * repeated (Lowerer.refusedProbes); the rest are bounded here. One
+ * outermost statement (or expression, where no statement is being
+ * lowered) gets this many lowerings of its parts, or
+ * LOWER_EXPR_ATTEMPTS_PER_NODE for each of its nodes when that is more (a
+ * module wrapped in one call is one statement); past that the answer is a
+ * named fence rather than a build that does not end. */
+let lowerExprAttemptsFloor = 5_000_000;
+const LOWER_EXPR_ATTEMPTS_PER_NODE = 2_000;
+
+/** Sets the attempt floor and returns the one it replaced: a test reaches
+ * the fence without the minutes the shipped floor stands for. */
+export function setLowerExprAttemptsFloor(floor: number): number {
+  const previous = lowerExprAttemptsFloor;
+  lowerExprAttemptsFloor = floor;
+  return previous;
+}
+
+let loweringBudgetDepth = 0;
+let loweringBudgetRoot: ts.Node | null = null;
+let lowerExprAttempts = 0;
+let lowerExprAttemptLimit = lowerExprAttemptsFloor;
+let lowerExprAttemptLimitSized = false;
+let lowerExprAttemptsSpent = false;
+
+/** Enters a statement or an expression. The outermost one owns the attempt
+ * budget; answers whether this is it. Pair with closeLoweringBudget. */
+export function openLoweringBudget(node: ts.Node): boolean {
+  if (loweringBudgetDepth++ > 0) return false;
+  loweringBudgetRoot = node;
+  lowerExprAttempts = 0;
+  lowerExprAttemptLimit = lowerExprAttemptsFloor;
+  lowerExprAttemptLimitSized = false;
+  lowerExprAttemptsSpent = false;
+  return true;
+}
+
+export function closeLoweringBudget(): void {
+  if (--loweringBudgetDepth === 0 && lowerExprAttempts > lowerExprAttemptsPeak)
+    lowerExprAttemptsPeak = lowerExprAttempts;
+}
+
+let lowerExprAttemptsPeak = 0;
+
+/** The most lowerings one outermost statement has taken since the last
+ * call, which starts the count again. A count, not a time: the chain
+ * scaling test compares it across chain lengths to hold lowering linear. */
+export function takeLowerExprAttemptsPeak(): number {
+  const peak = lowerExprAttemptsPeak;
+  lowerExprAttemptsPeak = 0;
+  return peak;
+}
+
+/** Refuses the budget's owner when its lowering returned after the budget
+ * was spent: a form that could finish from operands it had already probed
+ * is not the form the full search would have picked. */
+export function refuseSpentLowering(lowerer: Lowerer): void {
+  if (!lowerExprAttemptsSpent) return;
+  lowerer.unsupported(
+    "SC1090",
+    loweringBudgetRoot!,
+    `statements that take more than ${lowerExprAttemptLimit} lowering attempts (each call in a chain is lowered once for every form its caller tries)`,
+    "assign parts of the chain to variables",
+  );
+}
+
+/** The attempt count passed its limit: size the limit to the budget's owner
+ * the first time, and fence once it is truly exceeded. From then on every
+ * lowering inside the owner is refused. */
+function lowerExprAttemptsExceeded(lowerer: Lowerer): void {
+  if (!lowerExprAttemptLimitSized) {
+    lowerExprAttemptLimitSized = true;
+    let nodes = 0;
+    ts.walkPreorder(loweringBudgetRoot!, () => {
+      nodes++;
+    });
+    lowerExprAttemptLimit = Math.max(lowerExprAttemptsFloor, nodes * LOWER_EXPR_ATTEMPTS_PER_NODE);
+    if (lowerExprAttempts <= lowerExprAttemptLimit) return;
+  }
+  lowerExprAttemptsSpent = true;
+  refuseSpentLowering(lowerer);
+}
+
 export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (lowerExprDepth >= LOWER_EXPR_MAX_DEPTH) {
     lowerer.unsupported(
@@ -256,8 +346,25 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       `expressions nested deeper than ${LOWER_EXPR_MAX_DEPTH} levels`,
     );
   }
+  // A probe of this operand was refused while an enclosing expression or
+  // statement was being lowered, and it is asked for again inside a probe
+  // with nothing around it changed: the refusal stands. Without this, a
+  // call chain whose innermost link cannot be lowered is lowered twice at
+  // every link (once to probe the receiver, once to use it), which doubles
+  // the work per link.
+  if (lowerer.diagSink !== null && lowerer.refusedProbes.size > 0) {
+    const refusal = lowerer.standingRefusal(expr);
+    if (refusal !== null) {
+      for (const diagnostic of refusal.diagnostics) lowerer.diagSink.push(diagnostic);
+      throw new PoisonError();
+    }
+  }
+  const outermost = openLoweringBudget(expr);
+  const frame = lowerer.openRefusedProbeFrame();
   lowerExprDepth++;
   try {
+    if (!outermost && ++lowerExprAttempts > lowerExprAttemptLimit)
+      lowerExprAttemptsExceeded(lowerer);
     let lowered = lowerExprInner(lowerer, expr);
     const nanCoded = lowerer.nanCodedReads;
     if (nanCoded) {
@@ -269,9 +376,12 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (lowered.type.kind === "void" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Never) !== 0)
       lowerer.neverValued.add(lowered);
     if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
+    if (outermost) refuseSpentLowering(lowerer);
     return lowered;
   } finally {
     lowerExprDepth--;
+    lowerer.closeRefusedProbeFrame(frame);
+    closeLoweringBudget();
   }
 }
 
@@ -2716,7 +2826,7 @@ export function recordKeyResultOk(lowerer: Lowerer, shape: IrRecordShape, type: 
     (type.kind === "union" && lowerer.armTag(type.unionId, t) >= 0) ||
     exactUnionWidening(lowerer, t, type) ||
     (type.kind === "dyn" && lowerer.dynConvertible(t));
-  if (!shape.fields.every((f) => surfaces(f.type))) return false;
+  if (!keyedRecordFields(shape).every((f) => surfaces(f.type))) return false;
   if (shape.indexValue) {
     if (type.kind === "dyn") return shape.indexValue.kind === "dyn";
     if (!surfaces(shape.indexValue)) return false;
@@ -3086,6 +3196,28 @@ export function lowerCaughtTypeofTest(
   return null;
 }
 
+/** Whether values of `type` are JavaScript functions kept in a `%call`
+ * slot: a function with members (a hybrid record), or an instance of a
+ * class whose merged interface carries a call signature. The slot is how
+ * the value is called (hybridCallUnwrap); to `typeof` it is a function. */
+export function hasCallSlot(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "object")
+    return lowerer.classes.get(type.className)?.fields.get("%call")?.kind === "func";
+  if (type.kind === "record")
+    return (
+      lowerer.shapes
+        .get(type.shapeId)
+        ?.fields.some((f) => f.name === "%call" && f.type.kind === "func") === true
+    );
+  return false;
+}
+
+/** typeofAnswer for a lowerer's types: a value with a `%call` slot is a
+ * function, whatever its representation. */
+export function typeofAnswerOf(lowerer: Lowerer): (arm: IrType) => string | null {
+  return (arm) => (hasCallSlot(lowerer, arm) ? "function" : typeofAnswer(arm));
+}
+
 export function typeofAnswer(arm: IrType): string | null {
   switch (arm.kind) {
     case "f64":
@@ -3238,7 +3370,7 @@ function aliasTypeofArmOf(
     const mapped = lowerer.mapTypeOf(valT);
     if (mapped?.kind !== "union") continue;
     const def = lowerer.unions.get(mapped.unionId);
-    const answers = def?.arms.map(typeofAnswer);
+    const answers = def?.arms.map(typeofAnswerOf(lowerer));
     if (!def || !answers || !answers.every((s): s is string => s !== null)) continue;
     const tags = answers.flatMap((s, i) => (s === b.text ? [i] : []));
     if (tags.length !== 1) continue;
@@ -4010,9 +4142,10 @@ export function lowerPromiseRejectCall(
  * rejects — but a homogeneous tuple of promises IS a Promise<T>[] in
  * every observable way, so the entries build the array directly and
  * the runtime's countdown combinator runs (the certs read-both-files
- * shape). Result Promise<T[]>; void inners collapse to Promise<void>
- * exactly like the array path. Null otherwise: heterogeneous literals
- * and non-literal arguments keep the array path and its fences. */
+ * shape). Result Promise<T[]>; void inners whose values nothing reads
+ * are a Promise<void>, exactly like the array path. Null otherwise:
+ * heterogeneous literals, non-literal arguments and void entries whose
+ * values are read keep the static path and its fences. */
 export function lowerPromiseAllTupleCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -4039,6 +4172,14 @@ export function lowerPromiseAllTupleCall(
   }
   const loc = locOf(call);
   const inner = first.inner;
+  // Promise<void> entries whose values are read are an array, or the
+  // checker's tuple, of undefined values: the static path makes it.
+  if (
+    inner.kind === "void" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    !promiseAllValueUnread(call)
+  )
+    return null;
   const entryT: IrType = { kind: "promise", inner };
   const elems = argNode.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, entryT));
   const entries: IrExpr = { kind: "arrayLit", elems, type: arrayOf(entryT), loc };

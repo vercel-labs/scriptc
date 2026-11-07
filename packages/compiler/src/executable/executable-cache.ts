@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeProfileMatch } from "../backend/native-profile.js";
 import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
@@ -107,7 +108,9 @@ export interface EarlyExecutableNativeFeatures {
   dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
   reflectProtoTarget?: boolean;
+  recordSourceDelete?: boolean;
   genBind?: boolean;
+  genReceiver?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
@@ -351,53 +354,14 @@ function isProfileMatch(value: unknown): value is NativeProfileMatch {
   });
 }
 
-const BOOLEAN_NATIVE_KEYS = [
-  "regex",
-  "copying",
-  "textDecoderLegacy",
-  "bigintBytes",
+/** The keys a cached record always spells: the required keys of the link
+ * features it is built from (executableNativeFeatures in index.ts), and
+ * mutableBuffers, which the record spells where the link features leave it
+ * out when off. */
+const BOOLEAN_NATIVE_KEYS: readonly (keyof EarlyExecutableNativeFeatures)[] = [
+  ...REQUIRED_LINK_FEATURES,
   "mutableBuffers",
-  "fileHandle",
-  "fetch",
-  "zlib",
-  "assert",
-  "inspect",
-  "dynInvoke",
-  "dc",
-  "dynAsync",
-  "events",
-  "emitter",
-  "symbol",
-  "bigint",
-  "searchParams",
-  "qs",
-  "utilPromisify",
-  "dynBuiltinClass",
-  "dynBuiltinStream",
-  "parseArgs",
-  "stream",
-  "net",
-  "http",
-  "http2",
-  "dgram",
-  "dnsPromises",
-  "dgramDyn",
-  "textCodecDyn",
-  "watch",
-  "watchFile",
-  "foreignFfi",
-  "nodeTest",
-  "tls",
-  "tlsCa",
-  "cipher",
-  "ecdh",
-  "dh",
-  "pki",
-  "ed25519",
-  "x509",
-  "webcrypto",
-  "perfLoop",
-] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
+];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {
   return validSharedNativeFeatures<EarlyExecutableNativeFeatures>(

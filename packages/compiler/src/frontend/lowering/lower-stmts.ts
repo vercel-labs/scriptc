@@ -70,6 +70,7 @@ import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { lowerDeclaredMemberLiteral, viewTargetOf } from "./view-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
 import { nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
@@ -106,6 +107,7 @@ import {
   splitRequireBindingOf,
   splitRequireBindingOfIdent,
   splitRequireEarlyReadOf,
+  unresolvedRequireThrow,
   wholeExportSymbolOfModule,
   wholeExportValueOfModuleBinding,
 } from "./cjs-inline-require.js";
@@ -260,6 +262,8 @@ import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatc
 import {
   genericIfaceBindingKeepsClass,
   lowerClassStaticRead,
+  fenceStaticAccessorUpdate,
+  staticAccessorWrite,
   staticReceiverClass,
   superConditionLead,
 } from "./lower-classes.js";
@@ -2376,6 +2380,10 @@ function lowerVarDeclarator(
   ) {
     const spec = requireSpecOf(decl.initializer)!;
     if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
+    // A relative path that names no file: Node throws at the declaration,
+    // before the binding exists, wherever the declaration sits.
+    const missing = unresolvedRequireThrow(lowerer, decl.initializer, spec, VOID);
+    if (missing !== null) return [{ kind: "exprStmt", expr: missing, loc: locOf(decl) }];
     if (ts.isSourceFile(stmt.parent)) {
       // `const x = require("<island>")` and `const { name } = …`: the
       // island module loads here, at the statement (lower-node-island.ts).
@@ -7771,7 +7779,15 @@ function lowerVariableInitializer(
       : lowerer.lowerExpr(node);
   }
 
-  if (expected?.kind === "dyn") return lowerDynObjectLiteral(lowerer, value);
+  if (expected?.kind === "dyn") {
+    // The dynamic object of a checked-identity view holds its array and
+    // object members at their declared types (view-literals.ts).
+    const contextual = isJsSourceFile(ts.getSourceFileOfNode(value))
+      ? undefined
+      : lowerer.checker.getContextualType(value);
+    const view = contextual !== undefined && viewTargetOf(lowerer, contextual) !== null;
+    return lowerDynObjectLiteral(lowerer, value, undefined, false, view);
+  }
 
   const previous = new Map<ts.Expression, IrExpr | undefined>();
   for (const property of value.properties.nodes) {
@@ -9218,6 +9234,18 @@ function lowerCjsSingleValueExport(
     }
     const g = lowerer.globalsBySymbol.get(sym);
     if (g) {
+      // A source that is REASSIGNED in this module has a snapshot slot
+      // keyed by this statement (collectGlobals): Node stores the VALUE
+      // here, so the export keeps its own storage and requirers read it.
+      const slot = lowerer.globalsByDeclNode.get(expr);
+      if (slot !== undefined) {
+        return {
+          kind: "assign",
+          localId: slot.id,
+          value: lowerer.lowerExprExpecting(rhs, slot.type),
+          loc: locOf(rhs),
+        };
+      }
       if (g.mutable && !unchangedAfterExport(lowerer, rhs, expr)) {
         lowerer.unsupported(
           "SC1090",
@@ -9227,6 +9255,13 @@ function lowerCjsSingleValueExport(
       }
       return { kind: "block", body: [], loc };
     }
+    // A require binding of another module's whole export whose value lives
+    // in that module's snapshot global (`const snap = require("./w");
+    // module.exports = snap`, where w exports a reassigned binding): the
+    // binding already names that storage, so this statement exports the
+    // same value and requirer bindings reconnect to the same slot.
+    if (sym.declarations.some((d) => lowerer.globalsByDeclNode.has(d)))
+      return { kind: "block", body: [], loc };
     // A binding with no module storage and no alias target (an inferred
     // union or otherwise unmappable type): the export is the snapshot
     // global collectGlobals registered at this statement.
@@ -9459,6 +9494,10 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
     if (isCjsJsFile(sf, lowerer.program)) {
       const init = lowerer.requireInitStmt(spec, expr);
       if (init) return init;
+      // A relative path that names no file throws the same way; a builtin
+      // or a JSON document evaluates nothing.
+      const missing = unresolvedRequireThrow(lowerer, expr, spec, VOID);
+      if (missing !== null) return { kind: "exprStmt", expr: missing, loc: locOf(expr) };
       return { kind: "block", body: [], loc: locOf(expr) };
     }
     if (topLevelJs) return { kind: "block", body: [], loc: locOf(expr) };
@@ -9780,6 +9819,18 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
                 loc,
               };
             }
+            // `C.x = v` where the static `x` is an accessor: the setter runs.
+            {
+              const viaSetter = staticAccessorWrite(
+                lowerer,
+                classInfo,
+                expr.left.name.text,
+                expr.right,
+                expr.left,
+                locOf(expr),
+              );
+              if (viaSetter) return { kind: "exprStmt", expr: viaSetter, loc: locOf(expr) };
+            }
             const found = lowerer.findStaticOn(classInfo, expr.left.name.text);
             if (found?.field !== undefined) {
               if (found.declarer !== classInfo) {
@@ -9856,7 +9907,14 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
               type: STRING,
               loc: locOf(expr.left.name),
             };
-            const value = lowerer.lowerExprExpecting(expr.right, DYN);
+            // A fresh literal stored into a member of a checked-identity
+            // view is built at the member's declared type and held by
+            // reference, so a typed read of the member answers that value
+            // (view-literals.ts).
+            const value =
+              (viewTargetOf(lowerer, lowerer.typeOf(expr.left.expression)) !== null
+                ? lowerDeclaredMemberLiteral(lowerer, expr.right)
+                : null) ?? lowerer.lowerExprExpecting(expr.right, DYN);
             return {
               kind: "exprStmt",
               expr: {
@@ -10370,6 +10428,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
         // members (`foo.count += 1`) are callable-member table data.
         if (!expr.left.questionDotToken) {
           fenceReadonlyExpandoWrite(lowerer, expr.left);
+          fenceStaticAccessorUpdate(lowerer, expr.left);
           const nsT = nsWritableTarget(lowerer, expr.left);
           if (nsT) return lowerCompoundToTarget(lowerer, expr, compound, nsT);
         }

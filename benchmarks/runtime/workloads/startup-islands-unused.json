@@ -1,0 +1,10 @@
+{
+  "entry": "../startup/islands/main.ts",
+  "launches": 20,
+  "requires": [
+    "libnode"
+  ],
+  "args": [
+    "version"
+  ]
+}

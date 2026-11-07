@@ -15,6 +15,7 @@ import {
   selectRuntimeVariant,
   type RuntimePredicate,
 } from "../../packages/compiler/src/backend/runtime-pack-core.js";
+import { runtimeFeaturesImpliedBy } from "../../packages/compiler/src/ir/runtime-features.js";
 import { RUNTIME_PACK_MATRIX } from "../../packages/runtime-darwin-arm64/runtime-pack-matrix.mjs";
 import { createRuntimePackMatrix } from "../../packages/runtime-pack-common/runtime-pack-matrix.mjs";
 
@@ -115,6 +116,17 @@ test.each(MATRICES)(
           const features = Object.fromEntries(names.map((name) => [name, on.includes(name)]));
           // A program without the unit's own features links none of it.
           if (!evaluateRuntimePredicate(unit.predicate, features)) continue;
+          // No program has a feature without the features its rule implies
+          // (every trigger of the first is a trigger of the second), so such
+          // a combination needs no build.
+          if (
+            on.some((name) =>
+              runtimeFeaturesImpliedBy(name).some(
+                (other) => names.includes(other) && !on.includes(other),
+              ),
+            )
+          )
+            continue;
           const label = `${flavor} ${unit.source} with ${on.join("+") || "no feature"}`;
           let variant: Variant | undefined;
           expect(() => {
@@ -139,6 +151,16 @@ test.each(MATRICES)(
     expect(checked).toBeGreaterThan(0);
   },
 );
+
+test("a feature implies the features whose rules fire wherever its rule fires", () => {
+  // Every BigIntStats read is a bigint value: `bigstats.` is one of the
+  // bigint rule's prefixes.
+  expect(runtimeFeaturesImpliedBy("bigstats")).toContain("bigint");
+  expect(runtimeFeaturesImpliedBy("bigint")).not.toContain("bigstats");
+  // A rule with a predicate does not say what it fires on.
+  expect(runtimeFeaturesImpliedBy("promiseRejectDyn")).toEqual([]);
+  expect(runtimeFeaturesImpliedBy("no such feature")).toEqual([]);
+});
 
 test("a missing combination fails the build by name", () => {
   const unit: Unit = {

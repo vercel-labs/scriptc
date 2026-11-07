@@ -282,6 +282,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // A native AbortSignal's twin in an island: programs with islands and
   // native signals (the signal unit or the fetch unit).
   ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
+  ["scr_node_island_events.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
@@ -408,11 +409,14 @@ export function variantsFor(source) {
       when: { warningReplace: true, processExtras: true },
       defines: ["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS"],
     });
-    // An island object with a `then` method is a thenable to every promise
-    // resolution (Promise.resolve, a combinator's entry, an async function's
-    // return): the Node island build reads `then` in V8. The selector takes
-    // the variant with the most conditions, so each build above gets its
-    // island twin; every other program keeps its object, byte for byte.
+    // Programs with Node islands get a build of their own. An island object
+    // with a `then` method is a thenable to every promise resolution
+    // (Promise.resolve, a combinator's entry, an async function's return):
+    // the Node island build reads `then` in V8. It also moves the process
+    // event listeners onto Node's `process` once Node is loaded
+    // (scr_node_island_events.c). The selector takes the variant with the
+    // most conditions, so each build above gets its island twin; every other
+    // program keeps its object, byte for byte.
     for (const { id, when, defines } of variants.slice()) {
       variants.push({
         id: id === "default" ? "node-island" : `${id}-node-island`,

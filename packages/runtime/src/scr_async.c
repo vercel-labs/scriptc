@@ -348,6 +348,28 @@ static void scr_promise_free_side(ScrPromise *p) {
   if (p->waiters && p->waiters != &p->waiter_inline) free(p->waiters);
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* A promise that stands for an island promise (its mirror, below) subscribes
+ * to it when native code first reacts to it, not when it crosses, so a
+ * promise that only passes through native code (the promise argument of an
+ * unhandledRejection listener) does not become handled by passing.
+ *
+ * The other direction: a runtime promise whose V8 promise exists
+ * (scr_node_island_export.c). V8 tracks its unhandled rejection from here
+ * on, so the two must agree on whether it is handled. true: native code
+ * already observed it, and the caller marks the V8 promise handled; else
+ * the first native observation does (scr_rjh_notify_fn, through
+ * scr_prom_observe). A parked fiber or a conversion to another inner type
+ * is not an observation: the fiber observes when it resumes, in the
+ * checkpoint the rejection belongs to, and a conversion handles nothing. */
+bool scr_promise_tracked_by_node(ScrPromise *p) {
+  bool handled = p->rejection_observed;
+  p->rejection_observed = true;
+  p->reported_unhandled = !handled;
+  return handled;
+}
+#endif
+
 static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
   if (p->nwaiters == p->waiters_cap) {
     if (p->waiters_cap == 0) {
@@ -490,6 +512,9 @@ bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {
  * binaries keep their size class): called when a promise the checkpoint
  * report already delivered as unhandled gains a handler. */
 SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
+#ifdef SCR_NODE_ISLANDS
+SCR_TL void (*scr_urj_node_fn)(ScrPromise *p) = NULL;
+#endif
 
 /* Every handler attach funnels here: mark the rejection observed, and
  * fire Node's 'rejectionHandled' when the attach arrived AFTER the
@@ -5965,6 +5990,29 @@ void scr_loop_hosted_settle_run(void) {
  * process like main's reported-rejection path. */
 void scr_loop_hosted_microtasks_done(void) {
   if (scr_nunhandled == 0) return;
+  if (scr_urj_node_fn != NULL) {
+    /* Node's `process` holds the listeners (scr_node_island_events.c), so
+     * Node decides: each rejection nobody observed becomes the rejection
+     * of the promise's V8 promise, which Node tracks like its own. The
+     * runtime promise counts as reported: a handler native code attaches
+     * later tells Node (scr_rjh_notify_fn). */
+    size_t count = scr_nunhandled;
+    ScrPromise **reported = malloc(count * sizeof *reported);
+    if (!reported) scr_oom();
+    memcpy(reported, scr_maybe_unhandled, count * sizeof *reported);
+    scr_nunhandled = 0;
+    for (size_t i = 0; i < count; i++) {
+      ScrPromise *p = reported[i];
+      if (p->state == SCR_PROM_REJECTED && !p->rejection_observed) {
+        scr_urj_node_fn(p);
+        p->rejection_observed = true;
+        p->reported_unhandled = true;
+      }
+      scr_promise_release(p);
+    }
+    free(reported);
+    return;
+  }
   if (!scr_report_unhandled_rejections()) {
     scr_hosted_settle_exception();
     return;
@@ -6197,10 +6245,11 @@ static void scr_loop_run_hosted(bool first_checkpoint) {
   free(scr_hosted_due);
   scr_hosted_due = NULL;
   scr_hosted_due_len = scr_hosted_due_cap = 0;
-  /* process.exitCode is one property in Node; island code's assignment
-   * becomes the program's code when the loop ends. */
+  /* process.exitCode is Node's property once Node is loaded: native code's
+   * assignments went to it, so its value when the loop ends is the
+   * program's code (0: unset, or set to 0). */
   int code = scr_loop_hosted->run_loop(scr_hosted_continue_turn ? 1 : 0);
-  if (code != 0) scr_process_set_exit_code_tracked((double)code);
+  scr_exit_code_note(code);
 }
 #endif /* SCR_NODE_ISLANDS */
 

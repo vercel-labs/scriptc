@@ -483,6 +483,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+    "scr_node_island_events.c",
   ),
   // One process.stdout.write for the program and its islands: only a program
   // that holds a process output stream as a value can replace the method.

@@ -240,6 +240,7 @@ import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
+import { shareIslandProcessState } from "./island-process-state.js";
 import { adoptIslandThenables } from "./island-thenables.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
@@ -11607,6 +11608,7 @@ export class Lowerer {
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
     adoptIslandThenables(this, functions);
+    shareIslandProcessState(this, functions);
     installBufferValue(functions);
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.

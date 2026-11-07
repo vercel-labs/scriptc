@@ -78,7 +78,9 @@ static const ScrNodeBridge *nh_bridge(void) { return scr_ni_bridge(); }
 
 /* ── pinned runtime objects ──────────────────────────────────────────── */
 
-enum { NH_PIN_PROMISE = 1, NH_PIN_ERROR = 2, NH_PIN_BYTES = 3 };
+/* NH_PIN_NATIVE_ERROR: an error native code made, pinned to the V8 error it
+ * crossed as (scr_ni_error_link). The other three are views of V8 values. */
+enum { NH_PIN_PROMISE = 1, NH_PIN_ERROR = 2, NH_PIN_BYTES = 3, NH_PIN_NATIVE_ERROR = 4 };
 
 typedef struct {
   void *obj; /* retained; its reference count is the first word */
@@ -94,7 +96,8 @@ static void nh_ref_release(ScrNodeRef *ref);
 static void nh_pin_release_obj(NhPin *pin) {
   switch (pin->kind) {
   case NH_PIN_PROMISE: scr_promise_release((ScrPromise *)pin->obj); break;
-  case NH_PIN_ERROR: scr_error_release((ScrError *)pin->obj); break;
+  case NH_PIN_ERROR:
+  case NH_PIN_NATIVE_ERROR: scr_error_release((ScrError *)pin->obj); break;
   case NH_PIN_BYTES: scr_bytes_release((ScrBytes *)pin->obj); break;
   }
 }
@@ -109,7 +112,8 @@ static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
   }
   switch (kind) {
   case NH_PIN_PROMISE: scr_promise_retain((ScrPromise *)obj); break;
-  case NH_PIN_ERROR: scr_error_retain((ScrError *)obj); break;
+  case NH_PIN_ERROR:
+  case NH_PIN_NATIVE_ERROR: scr_error_retain((ScrError *)obj); break;
   case NH_PIN_BYTES: scr_bytes_retain((ScrBytes *)obj); break;
   }
   ref->rc++;
@@ -457,7 +461,7 @@ static ScrDyn *nh_promise_box(ScrNodeRef *ref) {
  * (scr_ni_settle_value). After Node stopped nothing can settle it. */
 static void nh_promise_subscribe(ScrPromise *p) {
   ScrNodeRef *ref = nh_pinned(p, NH_PIN_PROMISE);
-  if (ref == NULL || ni_stopped || scr_ni_bridge_loaded() == NULL) return;
+  if (ref == NULL || ni_stopped || ref->id == 0 || scr_ni_bridge_loaded() == NULL) return;
   ScrNodeValue value = {.tag = SCR_NV_HANDLE, .flags = ref->flags};
   value.u.handle = ref->id;
   ScrNodeValue thrown;
@@ -587,6 +591,8 @@ static void nh_error_info(uint32_t h, ScrNodeErrorInfo *out) {
 static ScrError *nh_error_of(const ScrNodeValue *v) {
   ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
   ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
+  /* The V8 error of a linked native error: that error. */
+  if (pinned == NULL) pinned = nh_pinned_obj(ref, NH_PIN_NATIVE_ERROR);
   if (pinned != NULL) {
     nh_ref_release(ref);
     return scr_error_retain(pinned);
@@ -855,6 +861,7 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   ScrError *e = scr_errdyn_err_of(v);
   if (e != NULL) {
     ScrNodeRef *ref = nh_pinned(e, NH_PIN_ERROR);
+    if (ref == NULL) ref = nh_pinned(e, NH_PIN_NATIVE_ERROR);
     if (ref != NULL) {
       scr_error_release(e);
       out->tag = SCR_NV_HANDLE;
@@ -1534,6 +1541,7 @@ uint32_t scr_ni_live_handles(void) {
 }
 
 void scr_ni_stop(void) { ni_stopped = true; }
+bool scr_ni_running(void) { return !ni_stopped && scr_ni_bridge_loaded() != NULL; }
 
 /* ── the handle tag (dynamic code over island values) ────────────────── */
 
@@ -1815,6 +1823,28 @@ bool scr_ni_report_uncaught(ScrError *error) {
   fprintf(stderr, "\n\nNode.js v%s\n", bridge->node_version);
   fflush(stderr);
   return true;
+}
+
+/* A native error the runtime raises as a process event (an uncaught error,
+ * the reason of a rejection Node tracks, a warning) is one V8 error for as
+ * long as native code holds it: the first crossing makes the V8 error, and
+ * from then on the native error crosses as that error and that error
+ * crosses back as the native one, so a native listener registered on
+ * Node's `process` receives the error that was thrown, with its class and
+ * fields, not a view of a copy. Any other value is left alone. */
+void scr_ni_error_link(ScrDyn *value) {
+  if (scr_exc_pending()) return; /* the caller's exception stays as it is */
+  ScrError *e = value != NULL ? scr_errdyn_err_of(value) : NULL;
+  if (e == NULL) return;
+  if (nh_pinned(e, NH_PIN_ERROR) == NULL && nh_pinned(e, NH_PIN_NATIVE_ERROR) == NULL) {
+    ScrDyn *args[1] = {value};
+    ScrDyn *copy = scr_ni_helper("same", args, 1);
+    if (copy != NULL && scr_ni_is_handle(copy))
+      nh_pin(e, NH_PIN_NATIVE_ERROR, (ScrNodeRef *)copy->v.handle.ptr);
+    scr_dyn_release(copy);
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+  scr_error_release(e);
 }
 
 /* ── NI-4a: libCall entry points of compiled island code ─────────────────

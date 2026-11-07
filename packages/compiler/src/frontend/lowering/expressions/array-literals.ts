@@ -34,7 +34,7 @@ import { generatorDrain } from "../iterator-adapters.js";
 import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
-import { arrayValueStore, primitiveElement } from "../array-values.js";
+import { arrayValueStore, primitiveElement, unionReadAsArray } from "../array-values.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { iteratorCanStep } from "../iterator-consumption.js";
 
@@ -661,6 +661,13 @@ export function lowerArrayLiteral(
           checkedIteratorPack(lowerer, dynSrc, notIterableSpelling(el.expression), locOf(el)),
           type,
         );
+      }
+      // A union of tuples and arrays whose every arm converts to the
+      // literal's array type: the array the value converts to spreads
+      // (unionReadAsArray).
+      if (!typeEquals(src.type, type)) {
+        const array = unionReadAsArray(lowerer, src, type, locOf(el.expression));
+        if (array) src = array;
       }
       if (!typeEquals(src.type, type)) {
         lowerer.unsupported(

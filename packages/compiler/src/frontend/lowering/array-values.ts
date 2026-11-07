@@ -146,6 +146,63 @@ function tupleArmField(
   return shape.fields.find((f) => f.name === position) ?? "past";
 }
 
+/** A union of tuples and arrays read where the checker sees ONE array type
+ * (`(names as readonly string[]).includes(name)`, `.length`, `[0]`, a
+ * `for…of`, a spread, over the values of an `as const` table: the assertion
+ * is erased, so the value keeps its union layout). A slot of the array type
+ * converts such a value arm by arm (widthLiftPlan's unionArr); these
+ * consumers are no slot, so they ask for the same conversion here. The
+ * result is a fresh array for a tuple arm, which a consumer that only reads
+ * cannot tell from the original. Null when the value is no such union. */
+export function unionReadAsArray(
+  lowerer: Lowerer,
+  value: IrExpr,
+  read: IrType | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "union" || read?.kind !== "array") return null;
+  const lift = lowerer.widthLiftPlan(value.type, read);
+  return lift?.how === "unionArr" ? lowerer.applyWidthLift(lift, value, read, loc) : null;
+}
+
+/** The array type a union of tuples and arrays converts to where nothing
+ * names one (`for (const name of GROUPS[key])`, `names.includes(name)` over
+ * the values of an `as const` table): every arm is an array or a tuple, at
+ * least one of them a tuple, and all their elements have one type (unit
+ * arms aside). A union of arrays alone has its own walk and keeps it. Null
+ * for any other type. */
+export function unionTupleJoin(
+  lowerer: Lowerer,
+  type: IrType | null,
+): (IrType & { kind: "array" }) | null {
+  if (type?.kind !== "union") return null;
+  const arms = lowerer.unions.get(type.unionId)?.arms;
+  if (!arms?.length) return null;
+  let elem: IrType | null = null;
+  let tuple = false;
+  for (const arm of arms) {
+    let parts: IrType[];
+    // A unit arm the checker excluded (the slot's own `undefined`): the
+    // conversion throws for it, as it does into a declared array slot.
+    if (arm.kind === "undefinedT" || arm.kind === "nullT") continue;
+    if (arm.kind === "array") {
+      parts = [arm.elem];
+    } else {
+      const shape = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+      if (!shape?.tuple) return null;
+      tuple = true;
+      parts = shape.fields.map((field) => field.type);
+    }
+    for (const part of parts) {
+      if (elem === null) elem = part;
+      else if (!typeEquals(elem, part)) return null;
+    }
+  }
+  if (!tuple || elem === null) return null;
+  const target: IrType & { kind: "array" } = { kind: "array", elem };
+  return lowerer.widthLiftPlan(type, target)?.how === "unionArr" ? target : null;
+}
+
 /** The type one position of a union of native arrays and tuples reads as
  * (unionArrayValueRead): the join of every arm's answer — an array arm's
  * element value with its missing-value case, a tuple arm's field at the

@@ -10,7 +10,7 @@ import {
   type IrUnionDef,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { SourceLocations } from "../source-locations.js";
+import { SourceLocations, type SourcePosition } from "../source-locations.js";
 import { mangleFunction } from "../mangle.js";
 
 /** A request a range emitter made of its debug info that added nodes
@@ -370,6 +370,11 @@ export class LlvmDebugInfo {
     );
     unit.globals.push(expression);
     return expression;
+  }
+
+  /** The line and column of `loc`, or null where the sources lack it. */
+  position(loc: SrcLoc): SourcePosition | null {
+    return this.source.position(loc);
   }
 
   location(loc: SrcLoc, fn: string | null): string | null {

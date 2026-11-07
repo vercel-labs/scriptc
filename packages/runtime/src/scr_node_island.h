@@ -148,6 +148,9 @@ typedef struct ScrNiDynOps {
    * `e.constructor === TypeError` holds with the island's TypeError. 1 for
    * an island error, 0 for any other. */
   int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+  /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
+   * the exception pending). */
+  ScrStr *(*object_tag)(const ScrDyn *value);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
@@ -165,6 +168,14 @@ const struct ScrNodeBridge *scr_ni_bridge_loaded(void); /* NULL until loaded */
  * program's module tree, under its root once Node is loaded; anything else
  * (a built-in module) as it is. */
 char *scr_ni_module_path(const ScrStr *path);
+/* The installed island module tree (scr_node_island.c, "What a start
+ * does"): whether an island error's code says Node did not find a file,
+ * whether an error's text names the tree, the repair of the files it lacks
+ * (once per process), and how many files this process put back. */
+bool scr_ni_missing_file_code(const char *code, size_t len);
+bool scr_ni_tree_named(const char *text, size_t len);
+void scr_ni_tree_repair(void);
+size_t scr_ni_tree_repairs(void);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);

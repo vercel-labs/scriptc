@@ -856,6 +856,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  // scr_record_source_delete.c, a gated unit.
+  "record.sourceDelete": "scr_record_source_delete",
   "record.sourceSpread": "scr_record_source_spread",
   "record.sourceShare": "scr_record_source_share",
   "record.sourceNote": "scr_record_source_note",
@@ -957,6 +959,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // (execSync/execCapture throw — the may-throw check); handle getters
   // are pure reads. Registration forms are special-cased (moves + per-
   // shape adapters); spawn itself is special-cased for usesTimers.
+  "cp.checkArgs": "scr_child_check_args",
   "cp.spawnSync": "scr_spawn_sync",
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",

@@ -142,9 +142,15 @@ export interface NativeLinkFeatures {
   /** Reflect.getPrototypeOf's primitive-target check compiles
    * scr_dyn_reflect_proto.c; absent (false) otherwise. */
   reflectProtoTarget?: boolean;
+  /** `delete` of a key a record's type does not declare:
+   * scr_record_source_delete.c. Absent (false) for programs without one. */
+  recordSourceDelete?: boolean;
   /** A generator that binds its parameters at the call: scr_gen_bind.c.
    * Absent (false) for programs without one. */
   genBind?: boolean;
+  /** A generator function that reads `this`: scr_gen_receiver.c. Absent
+   * (false) for programs without one. */
+  genReceiver?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
@@ -261,6 +267,85 @@ export interface NativeLinkFeatures {
    * the link plan, never a fact the program analysis answers; absent for
    * every dynamically linked build, whose objects stay unchanged. */
   staticLink?: boolean;
+}
+
+/** The keys a NativeLinkFeatures value always spells, on or off: the ones
+ * declared without `?`. An optional key is absent when its feature is off,
+ * so a program without the feature keeps its link identity, and no list
+ * below names it. */
+export type RequiredLinkFeatureName = {
+  [Name in keyof NativeLinkFeatures]-?: undefined extends NativeLinkFeatures[Name] ? never : Name;
+}[keyof NativeLinkFeatures];
+
+/** A compile error that names this type means NO_LINK_FEATURES and
+ * NativeLinkFeatures disagree about the required keys: a key declared
+ * without `?` is not listed there (add `<key>: false,` at the key's place in
+ * the interface's order), or a listed name is not such a key (delete it). */
+type EveryRequiredLinkFeatureOff = { readonly [Name in RequiredLinkFeatureName]: false };
+
+/** Every required key, off, in the interface's order. This is the one list
+ * of those keys: the cache validators and the warm-cache profiles read it,
+ * so a required key is added by declaring it in the interface and adding
+ * its line here, and removed by deleting both. An optional key has no line
+ * anywhere but the interface. */
+const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
+  regex: false,
+  copying: false,
+  textDecoderLegacy: false,
+  bigintBytes: false,
+  fileHandle: false,
+  fetch: false,
+  zlib: false,
+  assert: false,
+  inspect: false,
+  dynInvoke: false,
+  dc: false,
+  dynAsync: false,
+  events: false,
+  emitter: false,
+  symbol: false,
+  bigint: false,
+  searchParams: false,
+  qs: false,
+  utilPromisify: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
+  parseArgs: false,
+  stream: false,
+  net: false,
+  http: false,
+  http2: false,
+  dgram: false,
+  dnsPromises: false,
+  dgramDyn: false,
+  textCodecDyn: false,
+  watch: false,
+  watchFile: false,
+  foreignFfi: false,
+  nodeTest: false,
+  tls: false,
+  cipher: false,
+  ecdh: false,
+  dh: false,
+  pki: false,
+  ed25519: false,
+  x509: false,
+  perfLoop: false,
+  tlsCa: false,
+  webcrypto: false,
+};
+
+const requiredLinkFeatures: RequiredLinkFeatureName[] = [];
+for (const name in NO_LINK_FEATURES) requiredLinkFeatures.push(name as RequiredLinkFeatureName);
+
+/** The required keys, in the interface's order. */
+export const REQUIRED_LINK_FEATURES: readonly RequiredLinkFeatureName[] = requiredLinkFeatures;
+
+/** The link features of a program that links none of the optional runtime:
+ * every required key present and false, no optional key. A caller turns on
+ * what it links: `{ ...noLinkFeatures(), fetch: true }`. */
+export function noLinkFeatures(): NativeLinkFeatures {
+  return { ...NO_LINK_FEATURES };
 }
 
 export interface NativeLinkInfo {

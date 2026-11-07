@@ -6599,6 +6599,83 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
 
 #endif /* !_WIN32 */
 
+/* ── the spawnSync result in the checked-dynamic tree ──────────────────
+ * A SpawnSyncReturns boxes as a HANDLE by REFERENCE (identity, no copy):
+ * a dynamic wrapper hands the same result out, and the typed slot unwraps
+ * it through the tag check. A plain object that merely LOOKS like a
+ * spawn result is not one and fails the check (the checked-cast stance).
+ * Its members answer the accessors above; a call through the value is the
+ * usual "narrow first" fence. */
+static ScrDyn *scr_spawn_res_dyn_invoke(void *h, ScrDyn *self, const char *method,
+                                        ScrDyn *const *args, size_t argc, const char *what) {
+  (void)h;
+  (void)self;
+  (void)method;
+  (void)args;
+  (void)argc;
+  (void)what;
+  static const char msg[] =
+      "spawnSync result methods through an 'unknown' value are not supported yet — narrow the value first";
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  return NULL;
+}
+
+static ScrDyn *scr_spawn_res_dyn_str(ScrStr *s) {
+  ScrDyn *d = scr_dyn_new_str(s);
+  scr_str_release(s);
+  return d;
+}
+
+static ScrDyn *scr_spawn_res_dyn_get(void *h, const char *key, size_t len) {
+  ScrSpawnRes *r = h;
+  if (len == 6 && memcmp(key, "status", 6) == 0) {
+    return scr_spawn_res_has_status(r) ? scr_dyn_new_num(scr_spawn_res_status(r))
+                                       : scr_dyn_new_null();
+  }
+  if (len == 6 && memcmp(key, "stdout", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stdout(r));
+  if (len == 6 && memcmp(key, "stderr", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stderr(r));
+  if (len == 6 && memcmp(key, "signal", 6) == 0) {
+    return scr_spawn_res_has_signal(r) ? scr_spawn_res_dyn_str(scr_spawn_res_signal(r))
+                                       : scr_dyn_new_null();
+  }
+  if (len == 5 && memcmp(key, "error", 5) == 0) {
+    ScrError *e = scr_spawn_res_error(r);
+    if (!e) return NULL; /* the undefined arm, like Node */
+    ScrDyn *d = scr_dyn_from_error(e);
+    scr_error_release(e);
+    return d;
+  }
+  return NULL;
+}
+
+static bool scr_spawn_res_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_spawn_res_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps ops = {
+      .cls = "SpawnSyncReturns",
+      .retain = scr_spawn_res_retain_v,
+      .release = scr_spawn_res_release_v,
+      .invoke = scr_spawn_res_dyn_invoke,
+      .get = scr_spawn_res_dyn_get,
+      .set = scr_spawn_res_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_SPAWN_RES, &ops);
+}
+
+ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r) {
+  scr_spawn_res_dyn_install();
+  return scr_dyn_new_handle(r, SCR_DYNH_SPAWN_RES);
+}
+
 static void scr_child_drop_spawn_listeners(ScrChild *c) {
   for (size_t i = 0; i < c->n_spawn; i++) scr_closure_release(c->spawn_cbs[i]);
   free(c->spawn_cbs);

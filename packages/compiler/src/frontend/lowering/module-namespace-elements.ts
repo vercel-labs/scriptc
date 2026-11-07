@@ -50,8 +50,11 @@ export function lowerModuleNamespaceElement(
     try {
       const body: IrStmt[] = [];
       const symbol = lowerer.checker.getSymbolAtLocation(source);
+      const runtimeNames = lowerer.runtimeExportNames(source);
       for (const exported of symbol ? lowerer.checker.getExportsOfModule(symbol) : []) {
         const key = ts.symbolName(exported);
+        // A name a type-only export forwards has no runtime binding.
+        if (!runtimeNames.has(key)) continue;
         const target =
           exported.flags & ts.SymbolFlags.Alias
             ? lowerer.checker.getAliasedSymbol(exported)
@@ -130,9 +133,12 @@ export function moduleNamespaceObject(
   if (!symbol) return null;
   const exports: { key: string; identifier: ts.Identifier }[] = [];
   let exact = true;
+  const runtimeNames = lowerer.runtimeExportNames(source);
   // The module's resolved exports, which include `export *` members.
   for (const exported of lowerer.checker.getExportsOfModule(symbol)) {
     const key = ts.symbolName(exported);
+    // A name a type-only export forwards has no runtime binding.
+    if (!runtimeNames.has(key)) continue;
     const target =
       exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
     if (!(target.flags & ts.SymbolFlags.Value)) continue;
@@ -203,7 +209,10 @@ function moduleNamespaceGetter(
   const symbol = lowerer.checker.getSymbolAtLocation(source);
   if (!symbol) return null;
   const exports: { key: string; declaration: ts.Node | undefined; symbol: ts.Symbol }[] = [];
+  const runtimeNames = lowerer.runtimeExportNames(source);
   for (const exported of lowerer.checker.getExportsOfModule(symbol)) {
+    // A name a type-only export forwards has no runtime binding.
+    if (!runtimeNames.has(ts.symbolName(exported))) continue;
     const target =
       exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
     if (!(target.flags & ts.SymbolFlags.Value)) continue;

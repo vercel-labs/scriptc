@@ -933,8 +933,18 @@ const CIPHER_METHODS = new Set([
 ]);
 
 /** V8's spelling of a callee in "is not a function" messages: call
- * arguments render as "(...)". */
+ * arguments render as "(...)", and type syntax (`!`, `as`, `satisfies`,
+ * `<T>` assertions) and parentheses disappear, because the running
+ * JavaScript has no trace of them. */
 export function v8CalleeText(node: ts.Expression): string {
+  if (
+    ts.isNonNullExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isTypeAssertion(node)
+  )
+    return v8CalleeText(node.expression);
   if (ts.isPropertyAccessExpression(node))
     return `${v8CalleeText(node.expression)}.${node.name.text}`;
   if (ts.isCallExpression(node)) return `${v8CalleeText(node.expression)}(...)`;

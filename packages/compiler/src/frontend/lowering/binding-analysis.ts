@@ -10,6 +10,29 @@ export {
   stripValueWrappers,
   type BindingScope,
 } from "../binding-writes.js";
+/** An identifier that reads or declares a binding (not a member name).
+ * `o.value`, `{ value: 1 }`, `const { value: v } = o` and `value?: T` all put
+ * the identifier in a NAME position: the checker answers the MEMBER's symbol
+ * there, which no value slot holds. */
+export function isValueIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isQualifiedName(parent) && parent.right === node) return false;
+  if (ts.isImportSpecifier(parent) && parent.propertyName === node) return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (
+    (ts.isPropertyAssignment(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertySignature(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
+  return true;
+}
+
 
 /** The nullish unit `e` provably evaluates to: a bare null/undefined
  * literal (assertion-wrapped — `null as any`, `null!`), or a read of a

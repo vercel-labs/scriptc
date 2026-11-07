@@ -56,6 +56,20 @@ test("non-bakeable results keep their identity for shared result validation", ()
   ) as unknown[];
   expect(values).toEqual([NaN, Infinity, -Infinity, -0, undefined, null, 123n]);
   expect(typeof evaluate("() => () => 1")).toBe("function");
+  // A proxy over an array is an array, as Array.isArray says, and its traps
+  // answer for its elements.
+  expect(evaluate("() => new Proxy([1, 2, 3], {})")).toEqual([1, 2, 3]);
+  expect(
+    evaluate(
+      '() => new Proxy(new Proxy([1, 2], {}), { get: (target, key) => (key === "length" ? 2 : target[key] * 10) })',
+    ),
+  ).toEqual([10, 20]);
+  expect(evaluate("() => new Proxy({ a: 1 }, {})")).toEqual({ a: 1 });
+  expect(
+    failure(
+      "() => { const { proxy, revoke } = Proxy.revocable([1], {}); revoke(); return proxy; }",
+    ),
+  ).toMatchObject({ kind: "thrown" });
   // A hole reads as undefined; only own enumerable properties are results.
   expect(evaluate("() => [1, , 3]")).toEqual([1, undefined, 3]);
   expect(
@@ -159,6 +173,16 @@ test("asynchronous work left behind is refused, not dropped", () => {
     message: "the callback left a rejected promise unhandled",
   });
   expect(evaluate("() => { Promise.resolve(1); return 1; }")).toBe(1);
+  // Reading the result runs the callback's accessors and traps: work they
+  // leave behind is refused too.
+  expect(
+    failure("() => ({ get n() { Promise.resolve().then(() => {}); return 1; } })"),
+  ).toMatchObject({ kind: "refused", message: expect.stringContaining("reactions pending") });
+  expect(
+    failure(
+      '() => new Proxy([1], { get(target, key) { if (key === "0") Promise.reject(new Error("lost")); return target[key]; } })',
+    ),
+  ).toMatchObject({ kind: "refused", message: "the callback left a rejected promise unhandled" });
 });
 
 test("the time limit covers loops, patterns, builtins, accessors and thrown values", () => {

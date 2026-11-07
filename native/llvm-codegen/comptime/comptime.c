@@ -366,6 +366,21 @@ static int quote(JSContext *ctx, Output *out, JSValueConst value) {
   return status == 0 ? append(out, "\"") : status;
 }
 
+/* ECMAScript's IsArray: an array, or a proxy whose target, through any
+ * number of proxies, is one. A revoked proxy throws, as Array.isArray does. */
+static int is_array(JSContext *ctx, JSValueConst value) {
+  JSValue current = JS_DupValue(ctx, value);
+  while (JS_IsProxy(current)) {
+    JSValue target = JS_GetProxyTarget(ctx, current);
+    JS_FreeValue(ctx, current);
+    if (JS_IsException(target)) return -1;
+    current = target;
+  }
+  int result = JS_IsArray(current);
+  JS_FreeValue(ctx, current);
+  return result;
+}
+
 /* Serialize through engine APIs, outside the callback's mutable globals.
  * The guest cannot replace JSON.stringify or install a toJSON hook that
  * changes the value the compiler validates. Getters and proxy traps of the
@@ -391,8 +406,9 @@ static int encode(JSContext *ctx, Output *out, JSValueConst value) {
     if (out->active[i] == identity) { out->refusal = "the result contains itself"; return -1; }
   }
   out->active[out->depth++] = identity;
-  int status = 0;
-  if (JS_IsArray(value)) {
+  int array = is_array(ctx, value);
+  int status = array < 0 ? -1 : 0;
+  if (array > 0) {
     int64_t length = 0;
     if (JS_GetLength(ctx, value, &length) < 0) status = -1;
     else if (length > 1000000) { out->refusal = "the result has an array of more than 1000000 elements"; status = -1; }
@@ -403,7 +419,7 @@ static int encode(JSContext *ctx, Output *out, JSValueConst value) {
       if (status == 0) status = encode(ctx, out, item);
       JS_FreeValue(ctx, item);
     }
-  } else {
+  } else if (array == 0) {
     JSPropertyEnum *properties = NULL;
     uint32_t length = 0;
     status = JS_GetOwnPropertyNames(ctx, &properties, &length, value, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY);
@@ -492,12 +508,14 @@ int main(int argc, char **argv) {
   JSValue result = JS_Eval(ctx, source, (size_t)size, "comptime", JS_EVAL_TYPE_GLOBAL);
   Output out = {0};
   int status;
+  int encoded = !JS_IsException(result) && encode(ctx, &out, result) == 0;
   /* Promise reactions never run here. Node runs them, and reports an
    * unhandled rejection, after the callback has returned, which no value
-   * computed at compile time can reflect. */
-  if (!JS_IsException(result) && JS_IsJobPending(rt)) status = fail(&out, "refused", "the callback left promise reactions pending, and they never run at compile time");
-  else if (!JS_IsException(result) && unhandled > 0) status = fail(&out, "refused", "the callback left a rejected promise unhandled");
-  else if (!JS_IsException(result) && encode(ctx, &out, result) == 0) status = 0;
+   * computed at compile time can reflect. The result's accessors and proxy
+   * traps are the callback's code too, so the check follows the encoding. */
+  if (encoded && JS_IsJobPending(rt)) status = fail(&out, "refused", "the callback left promise reactions pending, and they never run at compile time");
+  else if (encoded && unhandled > 0) status = fail(&out, "refused", "the callback left a rejected promise unhandled");
+  else if (encoded) status = 0;
   else if (budget.interrupted) status = fail(&out, "timeout", "");
   else if (out.refusal) status = fail(&out, "refused", out.refusal);
   else {

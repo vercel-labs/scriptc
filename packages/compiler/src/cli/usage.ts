@@ -478,9 +478,10 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--node-island <pkg-or-path>",
         help: [
-          "mark an npm package or one of your modules (a path or",
-          "glob) to run in a Node island (repeatable, comma lists;",
-          "report-only)",
+          "mark an npm package (its name, whatever it looks like:",
+          "highlight.js is a package) or one of your modules (a",
+          "path or glob; ./file.js is always a file) to run in a",
+          "Node island (repeatable, comma lists; report-only)",
         ],
       },
     ],

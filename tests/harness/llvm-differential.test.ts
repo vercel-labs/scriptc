@@ -6,7 +6,7 @@
  * SCRIPTC_TARGET_CPU=<level> builds for that `--target-cpu` level. */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { globSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { globSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -224,11 +224,14 @@ function nodeOracleArgs(file: string): string[] {
 
 function programInputs(file: string): string[] {
   if (!/\/main\.(ts|js|mjs|cjs)$/.test(file)) return [file];
+  // Files only: a package directory may be named like one (node_modules/widget.js).
   return [
     ...[...ENTRY_EXTS, "tsx", "jsx"].flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
     ...globSync(join(file, "../**/tsconfig.json")),
     ...globSync(join(file, "../**/package.json")),
-  ].sort();
+  ]
+    .filter((f) => statSync(f).isFile())
+    .sort();
 }
 
 async function build(file: string, optimization: "release" | "dev") {

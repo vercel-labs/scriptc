@@ -482,6 +482,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.pipelineDyn",
   "stream.compose",
   "sp.finished",
+  // Destroys the stream, which runs a destroy hook of the program's; the
+  // hook's error rejects the returned promise.
+  "stream.asyncDispose",
   "sp.pipeline",
   "sp.pipelineStages",
   "sp.pipelineStagesOpts",

@@ -23,7 +23,7 @@ async function main() {
     readable.on("data", (c) => log(`data ${c}`));
     readable.on("end", () => {
       log("end");
-      resolve();
+      resolve(undefined);
     });
   });
   lib.onFinish(() => log("stdout write callback"));

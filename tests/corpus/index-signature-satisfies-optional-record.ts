@@ -38,3 +38,23 @@ printFailure("quiet", false);
 const maybe: Args | undefined = parsed;
 console.log(describe(maybe));
 console.log(maybe?.["no-color"], parsed.command);
+
+// A member the source object never had stays absent through the projection:
+// `in`, Object.hasOwn and the key surfaces see a property the object does not
+// hold, exactly as they do on the source itself.
+function toOptions(source: Args): OutputOptions {
+  return source;
+}
+const projected = toOptions(plain);
+console.log(
+  "color" in projected,
+  Object.hasOwn(projected, "color"),
+  "no-color" in projected,
+  projected.color === undefined,
+);
+
+// A member the source holds as an explicit undefined is a present property,
+// so the projection keeps it present.
+const explicit: Args = { command: "list", json: true, name: "relay", color: undefined };
+const kept = toOptions(explicit);
+console.log("color" in kept, Object.hasOwn(kept, "color"), kept.color === undefined);

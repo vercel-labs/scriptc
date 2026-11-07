@@ -44,3 +44,23 @@ console.log(readSpan(spans));
 
 const noSpans: Record<string, Span> = {};
 console.log(readSpan(noSpans));
+
+// Through a projection, a member the source object never held stays absent
+// and one it holds stays present, as `in` and Object.hasOwn observe on the
+// source itself.
+function toWidth(options: WidthOptions): WidthOptions {
+  return options;
+}
+const fromEmpty = toWidth(empty);
+console.log(
+  "width" in fromEmpty,
+  Object.hasOwn(fromEmpty, "width"),
+  fromEmpty.width === undefined,
+);
+const fromWidth = toWidth(widthOnly);
+console.log(
+  "width" in fromWidth,
+  Object.hasOwn(fromWidth, "width"),
+  "columns" in fromWidth,
+  fromWidth.width,
+);

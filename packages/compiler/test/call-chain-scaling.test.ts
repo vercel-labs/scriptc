@@ -22,13 +22,22 @@
  * every link multiplied through the chain the same way (a chain of eighteen
  * array methods reading such a declaration took the heap past its limit),
  * so the second test counts note recordings too, and a note must reach
- * coverage once per slot. */
+ * coverage once per slot.
+ *
+ * A single expression that lowers many operands (an array literal with
+ * thousands of arithmetic elements) kept every one of them in a list that
+ * each further operand scanned from its end, so its lookups were quadratic;
+ * the operands are keyed by node now, and the third test counts lookups the
+ * same way. */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { analyze } from "../src/index.js";
-import { takeProbedSlotNoteRequests } from "../src/frontend/lowering/lowerer.js";
+import {
+  takeKeptOperandLookups,
+  takeProbedSlotNoteRequests,
+} from "../src/frontend/lowering/lowerer.js";
 import {
   setLowerExprAttemptsFloor,
   takeLowerExprAttemptsPeak,
@@ -288,4 +297,34 @@ test("a degraded declaration read along a chain is noted once per slot, not once
     (middle.recorded - short.recorded) * 1.25,
   );
   expect(long.slots).toContain("global all");
+}, 120_000);
+
+/** The lowerings and operand lookups one array literal of `elements`
+ * arithmetic elements takes. */
+function wideArray(elements: number): { lowerings: number; lookups: number } {
+  const dir = join(directory, `wide-array-${elements}`);
+  mkdirSync(dir);
+  const entry = join(dir, "main.ts");
+  const items: string[] = [];
+  for (let i = 0; i < elements; i++) items.push(`base + step * ${i} + ${i % 7}`);
+  writeFileSync(
+    entry,
+    `const base = 1;\nconst step = 2;\nconst xs = [${items.join(", ")}];\nconsole.log(xs.length);\n`,
+  );
+  takeLowerExprAttemptsPeak();
+  takeKeptOperandLookups();
+  const { coverage } = analyze(entry, {});
+  expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  return { lowerings: takeLowerExprAttemptsPeak(), lookups: takeKeptOperandLookups() };
+}
+
+test("a wide expression looks each operand up once, not once per earlier operand", () => {
+  const short = wideArray(500);
+  const long = wideArray(2000);
+  // Four times the elements may cost no more than a quarter more lowerings
+  // or operand lookups per element. One lookup per request follows the
+  // elements; the list this replaced scanned every operand recorded since,
+  // so four times the elements multiplied its lookups by sixteen.
+  expect(long.lookups / 2000).toBeLessThanOrEqual((short.lookups / 500) * 1.25);
+  expect(long.lowerings / 2000).toBeLessThanOrEqual((short.lowerings / 500) * 1.25);
 }, 120_000);

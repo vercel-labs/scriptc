@@ -942,6 +942,19 @@ function isCheapOperand(node: ts.Expression): boolean {
   );
 }
 
+/** Test hook: operands compared with the requested one while looking up a
+ * kept operand (Lowerer.keptOperands). A map answers in one comparison; the
+ * list this replaced was scanned from its end, so a wide expression compared
+ * every operand it had recorded since, and its comparisons quadrupled with
+ * each doubling of the expression's operands. */
+let keptOperandLookups = 0;
+
+export function takeKeptOperandLookups(): number {
+  const count = keptOperandLookups;
+  keptOperandLookups = 0;
+  return count;
+}
+
 export class PoisonError extends Error {
   /** Set when a type with no static lowering poisoned a slot (badType and
    * the dyn class field policy): what failed, for the localized-failure
@@ -18210,8 +18223,8 @@ export class Lowerer {
   }
 
   /** The operands the expression or statement on top has lowered and may
-   * ask for again (null until the first), and how many expressions and
-   * statements are open.
+   * ask for again (null until the first), by node, and how many expressions
+   * and statements are open.
    *
    * A call's receiver is not the only operand lowered more than once: the
    * Object statics probe their argument to see what it lowered to and then
@@ -18219,20 +18232,23 @@ export class Lowerer {
    * lowerings per level), and assignments, updates, `in`, `typeof` and the
    * member reads of JavaScript sources probe a receiver the same way. Each
    * expression and statement keeps what it lowered for as long as it is
-   * being lowered (lowerOperand). */
-  private keptOperands: KeptOperand[] | null = null;
+   * being lowered (lowerOperand). Keyed by node because only a node's latest
+   * lowering is repeated; the list this replaced held every lowering and was
+   * scanned from its end, so a wide expression's lookups were quadratic in
+   * the operands it had lowered. */
+  private keptOperands: Map<ts.Expression, KeptOperand> | null = null;
   private operandFrames = 0;
 
   /** Starts the expression or statement that owns the operands kept until
    * closeOperandFrame; returns the enclosing owner's. */
-  openOperandFrame(): KeptOperand[] | null {
+  openOperandFrame(): Map<ts.Expression, KeptOperand> | null {
     const outer = this.keptOperands;
     this.keptOperands = null;
     this.operandFrames++;
     return outer;
   }
 
-  closeOperandFrame(outer: KeptOperand[] | null): void {
+  closeOperandFrame(outer: Map<ts.Expression, KeptOperand> | null): void {
     this.keptOperands = outer;
     this.operandFrames--;
   }
@@ -18251,14 +18267,15 @@ export class Lowerer {
     const surroundings = this.probeSurroundings();
     const kept = this.keptOperands;
     if (kept !== null) {
-      // The latest lowering of the node is the one a new lowering repeats.
-      for (let i = kept.length - 1; i >= 0; i--) {
-        const operand = kept[i]!;
-        if (operand.node !== node) continue;
-        if (operand.value !== null && this.keptOperandStands(operand, surroundings))
-          return operand.value;
-        break;
-      }
+      // The node's latest lowering is the one a new lowering repeats.
+      const operand = kept.get(node);
+      keptOperandLookups++;
+      if (
+        operand !== undefined &&
+        operand.value !== null &&
+        this.keptOperandStands(operand, surroundings)
+      )
+        return operand.value;
     }
     const effects = this.probeEffects();
     const sinkMark = this.diagSinkMark();
@@ -18268,7 +18285,7 @@ export class Lowerer {
       this.diagSinkMark() === sinkMark &&
       this.probeSurroundings() === surroundings
     ) {
-      (this.keptOperands ??= []).push({
+      (this.keptOperands ??= new Map()).set(node, {
         node,
         value,
         ctx: this.ctx,

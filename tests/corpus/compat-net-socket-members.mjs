@@ -1,6 +1,6 @@
 // net members the server and socket programs do not reach: BlockList
 // rules and size, SocketAddress fields, socket.pending and the local and
-// remote family, the 'ready', 'lookup', 'timeout' and 'drain' events,
+// remote family, the 'ready', 'timeout' and 'drain' events,
 // destroySoon() and resetAndDestroy(), and a server's 'error' for a port
 // in use. Each section closes its server before the next starts.
 import net from "node:net";
@@ -33,18 +33,6 @@ await new Promise((resolve) => {
       client.destroy();
     });
     client.on("connect", () => console.log("connect", client.pending, client.localAddress, client.localFamily, client.remoteFamily));
-    client.on("close", () => server.close(resolve));
-  });
-});
-
-// 'lookup' for a host name.
-await new Promise((resolve) => {
-  const server = net.createServer((socket) => socket.end());
-  server.listen(0, "127.0.0.1", () => {
-    const client = net.connect(server.address().port, "localhost");
-    client.on("lookup", (error, resolved, family, host) => console.log("lookup", error, typeof resolved, typeof family, host));
-    client.on("error", () => {});
-    client.resume();
     client.on("close", () => server.close(resolve));
   });
 });

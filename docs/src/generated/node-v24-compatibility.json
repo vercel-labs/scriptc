@@ -50840,9 +50840,9 @@
       "anchor": "event-lookup",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
-        "verification": "test-backed"
+        "status": "not-implemented",
+        "detail": "No static compiler lowering is registered for this API yet.",
+        "verification": "registry-gap"
       }
     },
     {

@@ -75653,12 +75653,8 @@
       "anchor": "event-lookup",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:net.'lookup'",
-        "tests": [
-          "tests/corpus/compat-net-socket-members.mjs",
-          "tests/corpus/compat-net-socket-members.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:net"
       },
       "anchorSource": "exact"
     },

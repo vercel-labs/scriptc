@@ -6,6 +6,8 @@ An `as` assertion that only adds optional members to the properties a record typ
 `scriptc build` reports `SC1031` where such a member is assigned, because a record's layout has no storage for it.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.
+An empty array literal with no element type of its own, such as the `files` of `{ files: [] }` or `const NONE = [] as const`, takes its element type from the declared types its value reaches and is the same array under every name.
+`scriptc build` reports `SC2015` where one such array is used at two element types or reaches a typed array through a computed key; writing the type at the literal (`[] as string[]`) compiles.
 A record or class instance converted to a string-keyed dictionary type such as `Record<string, string>`, directly, through a `{}`, `object` or `unknown` binding or parameter, or as an element of a constant `unknown[]` array that holds such records, keeps its identity when the program writes through, compares or inspects values of that dictionary type.
 Every dictionary type with the same value type then uses checked dynamic storage, which is slower than a native dictionary.
 Class instances retain identity at their exact type or a base class, and at any interface or object type that a class instance is passed, stored, returned, or asserted as when the program could tell a copy from the instance: values of such a type are checked views of the original object, so writes, identity comparisons, Set and Map keys, `util.inspect`, and `JSON.stringify` through them reach the instance, as in Node.js.

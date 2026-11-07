@@ -69,7 +69,9 @@ export async function load(url, context, next) {
 
     hooksModule().scriptcLoadPlan(root, root);
 
-    const loaded = (await import(pathToFileURL(join(root, "node_modules/asyncpkg/index.js")).href)) as {
+    const loaded = (await import(
+      pathToFileURL(join(root, "node_modules/asyncpkg/index.js")).href
+    )) as {
       report?: () => Promise<string>;
       default?: { report: () => Promise<string> };
     };

@@ -79,11 +79,10 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
   test("unused constants are deferred island modules, and Node never starts", async () => {
     const { binary, trace } = await build("8910-node-island-closed-const-unused");
     const modules = trace.filter(generated);
-    // One module per constant: each initializer evaluates where its
-    // constant is declared.
+    // One generated module per constant.
     expect(modules).toHaveLength(3);
-    for (const line of modules)
-      expect(line).toMatch(/^\[node-islands\] defer .*recorded evaluation is deterministic/);
+    for (const module of modules)
+      expect(module).toMatch(/^\[node-islands\] defer .*recorded evaluation is deterministic/);
     const { boot, code } = await run(binary);
     expect(code).toBe(0);
     expect(boot.filter((l) => l.includes("deferred ./.scriptc/closed/"))).toHaveLength(3);
@@ -108,42 +107,62 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
   test("an initializer with effects evaluates where its constant is declared", async () => {
     const { binary, trace } = await build("8918-node-island-closed-const-prints");
     const modules = trace.filter(generated);
-    // A native statement separates the two constants that print: two modules.
-    expect(modules).toHaveLength(2);
+    expect(modules).toHaveLength(3);
     // The build does not print for the program: the probe withholds the
     // write (console.log swallows the refusal, so the evaluation goes on and
-    // the record names the effect), and the module keeps its place.
-    expect(
-      modules.every((l) => /^\[node-islands\] eager .*effects.*: process\.stdout/.test(l)),
-    ).toBe(true);
+    // the record names the effect), and the two modules that print keep
+    // their place. The third only names the second.
+    const printing = modules.filter((l) => l.startsWith("[node-islands] eager "));
+    expect(printing).toHaveLength(2);
+    for (const module of printing) expect(module).toMatch(/effects.*: process\.stdout/);
     const { stdout } = await run(binary);
     expect(stdout).toBe(
       "before\nshape-kit: making first\nbetween\nshape-kit: making second\nafter 1 2 3\n",
     );
   }, 300_000);
 
-  test("the build does not perform an initializer's effects", async () => {
-    const stamp = join(tmpdir(), "scriptc-closed-init-effects.stamp");
-    rmSync(stamp, { force: true });
-    try {
-      const { binary, trace } = await build(
-        "effects",
-        join(repoRoot, "tests/fixtures/node-island/closed-init/effects/main.ts"),
-      );
-      // The probe stopped at the write: nothing was written while building,
-      // and the module evaluates where the constant is declared.
-      expect(existsSync(stamp)).toBe(false);
-      const modules = trace.filter(generated);
-      expect(modules).toHaveLength(1);
-      expect(modules[0]).toMatch(
-        /^\[node-islands\] eager .*fs\.writeFileSync\(\).*which the build does not perform/,
-      );
-      const { stdout } = await run(binary);
-      expect(stdout).toBe("stamped true\n");
-      expect(existsSync(stamp)).toBe(true);
-    } finally {
+  test.each([
+    ["effects", "scriptc-closed-init-effects.stamp", "fs\\.writeFileSync\\(\\)", "stamped true\n"],
+    // Opening a file for writing creates it before anything is written.
+    ["effects-open", "scriptc-closed-init-effects-open.stamp", "fs\\.openSync\\(\\)", "touched true\n"],
+  ])(
+    "the build does not perform an initializer's effects (%s)",
+    async (fixture, file, operation, output) => {
+      const stamp = join(tmpdir(), file);
       rmSync(stamp, { force: true });
-    }
+      try {
+        const { binary, trace } = await build(
+          fixture,
+          join(repoRoot, "tests/fixtures/node-island/closed-init", fixture, "main.ts"),
+        );
+        // The probe stopped at the call: the file does not exist after the
+        // build, and the module evaluates where the constant is declared.
+        expect(existsSync(stamp)).toBe(false);
+        const modules = trace.filter(generated);
+        expect(modules).toHaveLength(1);
+        expect(modules[0]).toMatch(
+          new RegExp(`^\\[node-islands\\] eager .*${operation}.*which the build does not perform`),
+        );
+        const { stdout } = await run(binary);
+        expect(stdout).toBe(output);
+        expect(existsSync(stamp)).toBe(true);
+      } finally {
+        rmSync(stamp, { force: true });
+      }
+    },
+    300_000,
+  );
+
+  test("a refusal the island package catches does not make its fallback the constant", async () => {
+    const { binary, trace } = await build("8736-node-island-closed-const-caught-refusal");
+    const modules = trace.filter(generated);
+    expect(modules).toHaveLength(2);
+    // The first initializer's package catches the refused read and returns
+    // a fallback; the second's lets it through. Both records name the read,
+    // and both constants evaluate in the run.
+    for (const module of modules) expect(module).toMatch(/^\[node-islands\] eager .*fs\.readFileSync\(\)/);
+    const { stdout } = await run(binary);
+    expect(stdout).toBe("measure twice 14\n");
   }, 300_000);
 
   test("the build says which constants the island evaluates, and what keeps the others native", async () => {

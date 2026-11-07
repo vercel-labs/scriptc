@@ -9,33 +9,31 @@
  * them starts Node while the program's modules still initialize. An
  * initializer that is built only from literals, island imports, other such
  * constants and member reads, calls and `new` on those holds no native
- * value, so the island can evaluate it itself: the build writes the
- * initializers of each closed constant into an island module of its own
- * (node-islands/generated.ts),
+ * value, so the island can evaluate it itself: the build writes each such
+ * initializer into an island module of its own (node-islands/
+ * generated.ts),
  *
  *   import { Type } from "../../node_modules/schema-pkg/index.mjs";
  *   export const item = Type.Object({ id: Type.String() });
  *
- *   import { item } from ".../main.ts.closed.0.mjs";
+ *   import { Type } from "../../node_modules/schema-pkg/index.mjs";
+ *   import { item } from "./main.<digest>.0.mjs";
  *   export const list = Type.Array(item);
  *
- * loads it where the constant is initialized, and each constant's
- * initializer becomes a read of the module's export, met with the
- * conversion the original expression's value met (fromIsland). The load
- * is the deferred load of a static island import (`nodeIsland.defer`,
- * node-islands/snapshot.ts): the build-time probe decides whether the
- * module evaluates there or on first use, with its interface snapshot
- * standing in until then. The native constant itself is unchanged: the
- * same global, type, exports and initialization flag.
+ * loads it where the constant is declared, and the constant's initializer
+ * becomes a read of the module's export, met with the conversion the
+ * original expression's value met (fromIsland). The load is the deferred
+ * load of a static island import (`nodeIsland.defer`, node-islands/
+ * snapshot.ts): the build-time probe decides whether the module evaluates
+ * there or on first use, with its interface snapshot standing in until
+ * then. The native constant itself is unchanged: the same global, type,
+ * exports and initialization flag.
  *
- * One module per constant, not per run of them: under Node a statement's
- * constants are assigned in source order, so an initializer that invokes a
- * callback an island package kept from an earlier constant reads that
- * constant's value. A module holding several initializers would evaluate
- * them all where the first is declared, before any of their native
- * assignments, and the callback would read the earlier constant early; a
- * statement that declares more than one constant therefore stays native
- * (closedDeclaration).
+ * One module per constant, so that each initializer evaluates between the
+ * native statements around it exactly as before: a native statement
+ * between two closed constants still runs between them, and when a later
+ * initializer makes the island call back into the program (a listener the
+ * program registered), that code finds the earlier constants assigned.
  *
  * Same program: under Node these expressions run in the same order against
  * the same island objects. Only the literal arguments differ from the
@@ -73,24 +71,16 @@ export interface ClosedConstant {
   imports: Map<string, GeneratedImport>;
   /** Other closed constants the text names, by local name. */
   operands: Map<string, ClosedConstant>;
-  /** The run that holds it, once its module's runs are formed. */
-  run: ClosedRun | null;
-}
-
-/** One closed constant's generated module: the constant evaluates where it
- * is declared, after the constant before it was assigned natively. */
-export interface ClosedRun {
-  /** The generated module's key (NodeIslandModuleCollector.addGenerated):
-   * the name its loads carry until lowering ends. */
-  key: string;
-  file: ts.SourceFile;
+  /** Its position among its file's closed constants, and the key of its
+   * generated module (NodeIslandModuleCollector.addGenerated: the name its
+   * loads carry until lowering ends), once its file numbered them. */
   index: number;
-  constants: ClosedConstant[];
+  key: string;
 }
 
-/** The closed constants of one source file. */
+/** The closed constants of one source file, in source order. */
 export interface ClosedFile {
-  runs: ClosedRun[];
+  constants: ClosedConstant[];
   /** By initializer node (ClosedConstant.initializer). */
   initializers: Map<ts.Expression, ClosedConstant>;
 }
@@ -214,8 +204,8 @@ function operandOf(scan: Scan, node: ts.Node, bound: ts.Symbol | undefined): Clo
     return refuse(scan, node, native);
   const statement = constStatementOf(declaration);
   if (statement === null) return refuse(scan, node, native);
-  const constant = closedStatement(lowerer, statement)?.find((c) => c.declaration === declaration);
-  if (constant === undefined) return refuse(scan, node, "a constant the island does not evaluate");
+  const constant = closedStatement(lowerer, statement);
+  if (constant === null) return refuse(scan, node, "a constant the island does not evaluate");
   // The operand is initialized whenever this statement runs: an earlier
   // statement of the same module, or a binding of another module that no
   // access can reach before its declaration (it carries no initialization
@@ -442,9 +432,6 @@ function closedDeclaration(
   // Without a call there is nothing to move: member reads of an import are
   // answered by the island module's own snapshot.
   if (scan.calls === 0) return null;
-  // One generated module holds one constant: a statement's constants are
-  // assigned in source order, and a module evaluated at the first of them
-  // would run every initializer before the others' native assignments.
   if (statement.declarationList.declarations.nodes.length > 1) {
     traceClosed(declaration, "a statement that declares more than one constant");
     return null;
@@ -458,16 +445,15 @@ function closedDeclaration(
     text,
     imports: scan.imports,
     operands: scan.operands,
-    run: null,
+    index: -1,
+    key: "",
   };
 }
 
-/** The closed constants a top-level `const` statement declares, or null
- * when one of its declarators is not closed (they would change order). */
-function closedStatement(
-  lowerer: Lowerer,
-  statement: ts.VariableStatement,
-): ClosedConstant[] | null {
+/** The closed constant a top-level `const` statement declares, or null.
+ * One declarator only: the initializers of two would evaluate before
+ * either binding is assigned. */
+function closedStatement(lowerer: Lowerer, statement: ts.VariableStatement): ClosedConstant | null {
   const known = lowerer.closedIslandStatements.get(statement);
   if (known !== undefined) return known;
   // A statement being decided names itself through a cycle of constants:
@@ -475,100 +461,77 @@ function closedStatement(
   lowerer.closedIslandStatements.set(statement, null);
   const file = statement.parent;
   if (file === undefined || !ts.isSourceFile(file) || !movable(lowerer, file)) return null;
-  const constants: ClosedConstant[] = [];
-  for (const declaration of statement.declarationList.declarations.nodes) {
-    if (constStatementOf(declaration) !== statement) return null;
-    const constant = closedDeclaration(lowerer, statement, declaration);
-    if (constant === null) return null;
-    constants.push(constant);
-  }
-  lowerer.closedIslandStatements.set(statement, constants);
-  return constants;
+  const declarations = statement.declarationList.declarations.nodes;
+  const declaration = declarations[0];
+  if (declaration === undefined || constStatementOf(declaration) !== statement) return null;
+  let constant: ClosedConstant | null = null;
+  // Each declarator is looked at, so that the trace names what keeps it
+  // native; only a statement's single declarator can be closed.
+  for (const d of declarations) constant = closedDeclaration(lowerer, statement, d);
+  lowerer.closedIslandStatements.set(statement, constant);
+  return constant;
 }
 
-/** Statements that evaluate nothing where they stand: a run of closed
- * constants continues across them. */
-function evaluatesNothing(statement: ts.Statement): boolean {
-  return (
-    ts.isInterfaceDeclaration(statement) ||
-    ts.isTypeAliasDeclaration(statement) ||
-    ts.isImportDeclaration(statement) ||
-    ts.isFunctionDeclaration(statement) ||
-    statement.kind === ts.SyntaxKind.EmptyStatement
-  );
-}
-
-/** The closed constants of `file`, each in a run of its own. */
+/** The closed constants of `file`, numbered in source order. */
 export function closedFile(lowerer: Lowerer, file: ts.SourceFile): ClosedFile {
   const known = lowerer.closedIslandFiles.get(file);
   if (known !== undefined) return known;
-  const result: ClosedFile = { runs: [], initializers: new Map() };
+  const result: ClosedFile = { constants: [], initializers: new Map() };
   lowerer.closedIslandFiles.set(file, result);
   if (lowerer.nodeIslands === null || !movable(lowerer, file)) return result;
   for (const statement of file.statements.nodes) {
-    if (evaluatesNothing(statement)) continue;
-    const constants = ts.isVariableStatement(statement)
-      ? closedStatement(lowerer, statement)
-      : null;
-    if (constants === null) continue;
-    for (const constant of constants) {
-      // The load of one constant's module runs where that constant is
-      // declared, so its initializer sees every earlier constant assigned.
-      const index = result.runs.length;
-      const run: ClosedRun = {
-        key: `${file.fileName}.closed.${index}.mjs`,
-        file,
-        index,
-        constants: [constant],
-      };
-      result.runs.push(run);
-      constant.run = run;
-      result.initializers.set(constant.initializer, constant);
-    }
+    if (!ts.isVariableStatement(statement)) continue;
+    const constant = closedStatement(lowerer, statement);
+    if (constant === null) continue;
+    constant.index = result.constants.length;
+    constant.key = `${file.fileName}.closed.${constant.index}.mjs`;
+    result.constants.push(constant);
+    result.initializers.set(constant.initializer, constant);
   }
   return result;
 }
 
-/** The generated module of `run` (node-islands/generated.ts). */
-function generatedModule(lowerer: Lowerer, run: ClosedRun): GeneratedModule {
-  const imports = new Map<string, GeneratedImport>();
-  let body = "";
-  for (const constant of run.constants) {
-    for (const [name, entry] of constant.imports) imports.set(name, entry);
-    for (const [name, operand] of constant.operands) {
-      // The operand's module forms its runs on demand.
-      if (operand.run === null) closedFile(lowerer, ts.getSourceFileOfNode(operand.statement));
-      const from = operand.run;
-      if (from === null || from === run) continue;
-      const clause = operand.name === name ? `{ ${name} }` : `{ ${operand.name} as ${name} }`;
-      imports.set(name, { clause, target: from.key });
-    }
-    body += `export const ${constant.name} = ${constant.text};\n`;
+/** The generated module of `constant` (node-islands/generated.ts). */
+function generatedModule(lowerer: Lowerer, constant: ClosedConstant): GeneratedModule {
+  const imports = new Map<string, GeneratedImport>(constant.imports);
+  for (const [name, operand] of constant.operands) {
+    // The operand's file numbers its constants on demand.
+    if (operand.key === "") closedFile(lowerer, ts.getSourceFileOfNode(operand.statement));
+    const clause = operand.name === name ? `{ ${name} }` : `{ ${operand.name} as ${name} }`;
+    imports.set(name, { clause, target: operand.key });
   }
-  return { source: run.file.fileName, index: run.index, imports: [...imports.values()], body };
+  return {
+    source: ts.getSourceFileOfNode(constant.statement).fileName,
+    index: constant.index,
+    imports: [...imports.values()],
+    body: `export const ${constant.name} = ${constant.text};\n`,
+  };
 }
 
 /** The %init statements that run before the top-level statement `stmt` of
- * `file` (lowerFileInit): when it opens a run of closed constants, the
- * load of the run's generated module, deferred like a static island
- * import's (snapshot.ts decides after lowering). */
+ * `file` (lowerFileInit): when it declares a closed constant, the load of
+ * the constant's generated module, deferred like a static island import's
+ * (snapshot.ts decides after lowering). */
 export function closedIslandInitLoad(
   lowerer: Lowerer,
   file: ts.SourceFile,
   stmt: ts.Statement,
 ): IrStmt[] {
   if (lowerer.nodeIslands === null || !ts.isVariableStatement(stmt)) return [];
-  const constants = lowerer.closedIslandStatements.get(stmt) ?? closedStatement(lowerer, stmt);
-  if (constants === null || constants.length === 0) return [];
+  const constant = closedStatement(lowerer, stmt);
+  if (constant === null) return [];
   closedFile(lowerer, file);
-  const run = constants[0]!.run;
-  if (run === null || run.constants[0] !== constants[0]) return [];
   lowerer.usesNodeIsland = true;
   const loc = locOf(stmt);
-  const module = islandModuleGlobal(lowerer, run.key);
-  lowerer.nodeIslandModules.addGenerated(run.key, generatedModule(lowerer, run));
-  const path: IrExpr & { kind: "strLit" } = { kind: "strLit", value: run.key, type: STRING, loc };
-  lowerer.nodeIslandLoads.push({ literal: path, path: run.key });
+  const module = islandModuleGlobal(lowerer, constant.key);
+  lowerer.nodeIslandModules.addGenerated(constant.key, generatedModule(lowerer, constant));
+  const path: IrExpr & { kind: "strLit" } = {
+    kind: "strLit",
+    value: constant.key,
+    type: STRING,
+    loc,
+  };
+  lowerer.nodeIslandLoads.push({ literal: path, path: constant.key });
   return [
     {
       kind: "assign",
@@ -614,15 +577,15 @@ function closedConstantAt(lowerer: Lowerer, expr: ts.Expression): ClosedConstant
 }
 
 /** The lowerIslandExpr hook: the initializer of a closed constant reads
- * its export of the run's generated module (closedIslandInitLoad loaded
+ * its export of its generated module (closedIslandInitLoad loaded
  * it), met with the conversion the original expression's value met. Null
  * for any other expression. */
 export function lowerClosedIslandInit(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
   const constant = closedConstantAt(lowerer, expr);
-  if (constant === null || constant.run === null) return null;
+  if (constant === null) return null;
   const loc = locOf(expr);
   lowerer.usesNodeIsland = true;
-  const module = islandModuleGlobal(lowerer, constant.run.key);
+  const module = islandModuleGlobal(lowerer, constant.key);
   return fromIsland(
     lowerer,
     islandGet(varRef(module.global.id, DYN, loc), constant.name, loc),

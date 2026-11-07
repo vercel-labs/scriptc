@@ -4300,10 +4300,10 @@ export class Lowerer {
   readonly islandInstanceofHandled = new Set<ts.Node>();
   /** Module-level constants the island evaluates (closed-island-init.ts):
    * what each top-level `const` statement declares (null: not closed), and
-   * each file's runs. */
+   * each file's constants. */
   readonly closedIslandStatements = new Map<
     ts.Statement,
-    import("./closed-island-init.js").ClosedConstant[] | null
+    import("./closed-island-init.js").ClosedConstant | null
   >();
   readonly closedIslandFiles = new Map<
     ts.SourceFile,

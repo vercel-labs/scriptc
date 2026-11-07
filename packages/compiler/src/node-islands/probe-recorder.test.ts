@@ -25,6 +25,7 @@ interface ProbeResult {
   throws?: string;
   reason?: string;
   root?: number;
+  inputs: string[];
 }
 
 /** Runs the recorder in a Node process of its own, as the probe host runs
@@ -97,6 +98,29 @@ test("a generated module's open for writing is withheld, not performed", () => {
     "its evaluation has effects or reads inputs: fs.openSync(), which the build does not perform",
   );
   expect(existsSync(made)).toBe(false);
+});
+
+test("a refused read that the package catches stays in the generated module's record", () => {
+  const root = project({
+    "data.txt": "real",
+    "node_modules/reader/package.json": '{ "name": "reader" }',
+    "node_modules/reader/index.js":
+      'const fs = require("fs");\nmodule.exports = (p) => { try { return fs.readFileSync(p, "utf8"); } catch { return "fallback"; } };\n',
+  });
+  const generatedFile = join(root, ".scriptc/closed/reader.0.mjs");
+  mkdirSync(dirname(generatedFile), { recursive: true });
+  writeFileSync(
+    generatedFile,
+    `import read from ${JSON.stringify(join(root, "node_modules/reader/index.js"))};\n` +
+      `export const text = read(${JSON.stringify(join(root, "data.txt"))});\n`,
+  );
+  // The evaluation completes with the package's fallback, which is not what
+  // the program computes: the record names the read, so the build does not
+  // take the module's value from this evaluation.
+  const [result] = probe(root, [generatedFile], [generatedFile]);
+  expect(result!.throws).toBeUndefined();
+  expect(result!.reason).toBeUndefined();
+  expect(result!.inputs.some((input) => input.startsWith("fs.readFileSync() "))).toBe(true);
 });
 
 test("a package that catches the refusal does not defer, nor does one that loads it later", () => {

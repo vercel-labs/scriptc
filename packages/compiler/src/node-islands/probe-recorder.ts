@@ -298,6 +298,8 @@ exports.probe = function probe(input) {
   for (const k of ["setTimeout", "setInterval", "setImmediate"]) {
     const original = globalThis[k];
     const wrapped = function (...a) {
+      // The program's own code sets no timer in the build (note throws).
+      if (withholding) note(effects, k + "()");
       const handle = original.apply(this, a);
       if (recording && !internalCaller()) {
         effects.push(k + "() (" + lastCaller + ")");
@@ -381,17 +383,13 @@ exports.probe = function probe(input) {
       // the build may take. Any other call is the program's input, and an
       // open for writing is an effect: a generated module's evaluation
       // withholds it before the call, so the build never reads a file the
-      // program would read nor truncates one it would write.
-      if (recording && !internalCaller()) {
-        const own = ownPath(target);
-        if (!(own !== null && (key !== "openSync" || readOnlyFlags(flags)))) {
-          const what = "fs." + key + "()";
-          if (withholding) {
-            if (withheld === null) withheld = what;
-            throw new Error("the build does not perform " + what + " (" + lastCaller + ") for the program");
-          }
-        }
-      }
+      // program would read nor truncates one it would write. The refusal
+      // goes through note, which records the call before it throws: a
+      // package that catches the refusal and goes on with a fallback has
+      // the call in its record, and its module is not deferred with the
+      // fallback's value.
+      if (withholding && (ownPath(target) === null || (key === "openSync" && !readOnlyFlags(flags))))
+        note(inputs, "fs." + key + "()");
       let result;
       try {
         result = original.apply(this, arguments);
@@ -421,12 +419,9 @@ exports.probe = function probe(input) {
     const original = fsModule[key];
     const wrapped = function (fd) {
       // Only a guarded read's descriptor is the build's own; any other is
-      // the program's, which a generated module's evaluation withholds.
-      if (recording && !internalCaller() && !guardedFds.has(fd) && withholding) {
-        const what = "fs." + key + "()";
-        if (withheld === null) withheld = what;
-        throw new Error("the build does not perform " + what + " (" + lastCaller + ") for the program");
-      }
+      // the program's, which a generated module's evaluation withholds
+      // (recorded before the refusal, as above).
+      if (withholding && !guardedFds.has(fd)) note(inputs, "fs." + key + "()");
       const result = original.apply(this, arguments);
       if (recording && !internalCaller()) {
         if (!guardedFds.has(fd)) inputs.push("fs." + key + "() (" + lastCaller + ")");

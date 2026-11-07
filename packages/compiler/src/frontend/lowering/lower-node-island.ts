@@ -52,7 +52,6 @@ import {
   crossingOf,
   isCopiedTsType,
   isForeignType,
-  isIslandProgramModule,
   isIslandSubclassDecl,
   markIslandSubclass,
   islandOwnerOfFile,
@@ -416,14 +415,10 @@ function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
  * a module proved effect-free at load keeps it with its interface snapshot
  * and evaluates on first use; any other becomes nodeIsland.require.
  *
- * A program module that runs in an island loads eagerly
- * (`nodeIsland.require`): deciding a deferral means evaluating the module
- * in the build-time probe, and the build never runs the program's own
- * source. */
+ * A program module that runs in an island is decided there too, under a
+ * stricter rule: the build evaluates the program's own source only when
+ * the static gate proves its top level free of effects. */
 function deferIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
-  const islands = lowerer.nodeIslands;
-  if (islands !== null && isIslandProgramModule(islands, path))
-    return loadIslandModule(lowerer, path, loc);
   return {
     kind: "libCall",
     fn: "nodeIsland.defer",

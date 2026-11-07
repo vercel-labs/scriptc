@@ -1,10 +1,8 @@
 /* Deferred island modules: the decision, the build-time probe and the
  * interface snapshot (scope-B NI-7, DESIGN.md §2.7, §5.4).
  *
- * Lowering emits `nodeIsland.defer(path, "")` for every static import of a
- * module of an island package (lower-node-island.ts); a program module that
- * runs in an island loads eagerly, so the probe never evaluates the
- * program's own source. After lowering, once the build
+ * Lowering emits `nodeIsland.defer(path, "")` for every static import of an
+ * island module (lower-node-island.ts). After lowering, once the build
  * knows the libnode pack the executable will load, finalizeDeferredIslands
  * decides each one:
  *
@@ -384,7 +382,8 @@ export function finalizeDeferredIslands(
   probeModules: (
     packDir: string,
     modules: string[],
-    generated: string[],
+    /** The modules among them whose code is the program's own. */
+    own: string[],
   ) => ProbeOutput | string = runProbe,
 ): DeferralDecision[] {
   const calls = evaluationOrder(mod, deferCalls(mod));
@@ -409,6 +408,12 @@ export function finalizeDeferredIslands(
   const generated = new Set<string>();
   for (const file of tree?.files ?? [])
     if (file.generated !== undefined) generated.add(join(tree!.root, ...file.path.split("/")));
+  // Modules of the program the static gate admits (below).
+  const program = new Set<string>();
+  /** A module whose code is the program's own: the probe withholds what it
+   * would do to the machine, and its snapshot is guarded by the loads the
+   * probe evaluated before it. */
+  const own = (path: string): boolean => generated.has(path) || program.has(path);
   const candidates: { call: DeferCall; path: string; lazy: boolean; gate: string }[] = [];
   for (const call of calls) {
     const path = fileOf(mod, pathOf(call));
@@ -417,6 +422,30 @@ export function finalizeDeferredIslands(
       continue;
     }
     const pkg = packageDirOf(path);
+    if (pkg === null) {
+      // A module of the program that runs in an island. The build evaluates
+      // the program's own source only when it can do nothing: the static
+      // gate admits the module's top level (declarations and pure
+      // expressions), and it loads no other file of the program, whose
+      // module the compiled program provides at run time.
+      const gate = effectGate(path);
+      const others = gate.ok
+        ? gate.files.filter((f) => f !== path && packageDirOf(f) === null)
+        : [];
+      if (!gate.ok)
+        decide(
+          call,
+          false,
+          `a module of the program, and its top level is not provably free of effects: ${gate.reason} in ${gate.file}`,
+        );
+      else if (others.length > 0)
+        decide(call, false, `a module of the program that loads another one (${others[0]})`);
+      else {
+        program.add(path);
+        candidates.push({ call, path, lazy: false, gate: "" });
+      }
+      continue;
+    }
     const evaluate = pkg === null ? "auto" : (config.packages.get(pkg.name)?.evaluate ?? "auto");
     if (evaluate === "eager") {
       decide(call, false, `"evaluate": "eager"`);
@@ -453,7 +482,7 @@ export function finalizeDeferredIslands(
     probe = probeModules(
       packDir,
       [...new Set(candidates.map((c) => probed(c.path)))],
-      scratch === null ? [] : [...scratch.copies.values()],
+      [...(scratch?.copies.values() ?? []), ...program],
     );
   } finally {
     if (scratch !== null) rmSync(scratch.dir, { recursive: true, force: true });
@@ -504,7 +533,7 @@ export function finalizeDeferredIslands(
     }
     const how = c.lazy
       ? `"evaluate": "lazy"`
-      : generated.has(c.path)
+      : own(c.path)
         ? "recorded evaluation is deterministic; guarded by the loads before it"
         : c.gate === ""
           ? "static gate"
@@ -519,12 +548,12 @@ export function finalizeDeferredIslands(
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
       ...env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
       ...tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
-      // A generated module computes from what earlier island code left
+      // The program's own code computes from what earlier island code left
       // behind, so its snapshot holds only in a run that registered, before
       // it, exactly the loads the probe evaluated before it. The runtime
       // compares (scr_node_island_boot.c); otherwise the module evaluates
-      // where its constants are declared.
-      ...(generated.has(fileOf(mod, pathOf(d.call))) ? [before.get(pathOf(d.call))!] : []),
+      // at its position.
+      ...(own(fileOf(mod, pathOf(d.call))) ? [before.get(pathOf(d.call))!] : []),
     ];
     const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
     const arg = d.call.args[1];
@@ -789,14 +818,14 @@ function probeHost(): { exe: string; bootstrap: string; kept: boolean } | string
   return `cannot build the probe host (${errors.join("; ")})`;
 }
 
-function runProbe(packDir: string, modules: string[], generated: string[]): ProbeOutput | string {
+function runProbe(packDir: string, modules: string[], own: string[]): ProbeOutput | string {
   const host = probeHost();
   if (typeof host === "string") return host;
   const { exe, bootstrap, kept } = host;
   const stem = join(dirname(exe), `run.${process.pid}.${Date.now()}`);
   const input = `${stem}.in.json`;
   const output = `${stem}.out.json`;
-  writeFileSync(input, JSON.stringify({ modules, generated }), { mode: 0o600 });
+  writeFileSync(input, JSON.stringify({ modules, own }), { mode: 0o600 });
   let out: string;
   try {
     execFileSync(exe, [packDir, bootstrap, input, output], {

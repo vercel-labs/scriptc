@@ -43,7 +43,7 @@ function probeOutput(
   writeFileSync(join(root, "recorder.cjs"), PROBE_RECORDER);
   writeFileSync(
     join(root, "run.cjs"),
-    `const out = require("./recorder.cjs").probe({ modules: ${JSON.stringify(modules)}, generated: ${JSON.stringify(generated)} });\n` +
+    `const out = require("./recorder.cjs").probe({ modules: ${JSON.stringify(modules)}, own: ${JSON.stringify(generated)} });\n` +
       `process.stdout.write(JSON.stringify(out));\n`,
   );
   const run = spawnSync(process.execPath, [join(root, "run.cjs")], {

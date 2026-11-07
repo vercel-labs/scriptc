@@ -238,7 +238,13 @@ export function lowerArrayCallback(
   }
   let fnArg: IrExpr;
   try {
-    fnArg = lowerer.lowerExpr(argNode);
+    // A literal callback takes the helper's argument types as its own
+    // parameter types and converts at entry, where a callback value is
+    // adapted to them below.
+    fnArg =
+      ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)
+        ? lowerer.lowerWithSlot(argNode, argNode, { params: full, ret: null, passesAll: false })
+        : lowerer.lowerExpr(argNode);
   } finally {
     for (const n of overridden) lowerer.chainNarrowedType.delete(n);
     for (const { node, previous } of patterns) {

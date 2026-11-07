@@ -66,3 +66,41 @@ export type WidthLift =
    * the checked payload widening coerceToExpected applies at a promise slot,
    * which keeps the promise's identity and settlement turn. */
   | { how: "promiseWiden" };
+
+/** The names the lowering interns its conversion helpers under. The width
+ * copy scan (width-copies.ts) finds a program's conversions by them, so a
+ * helper that copies its argument takes its name from here. */
+export const COPY_HELPERS = {
+  /** A record into a record of another layout. */
+  width: "%rec.width",
+  /** A record into an index-signature record (the overflow capture). */
+  ovf: "%rec.capture",
+  /** A class instance into a record. */
+  objWidth: "%obj.width",
+  /** A record into a class instance. */
+  clsWidth: "%cls.width",
+  /** An array into an array of another element layout. */
+  arr: "%arr.width",
+  /** A tuple into an array. */
+  tupleArr: "%tup.arr",
+} as const;
+
+/** Helpers that route their argument to copy helpers by a union tag, a
+ * discriminant or a field's presence, and copy nothing themselves. */
+export const ROUTING_HELPERS = {
+  unionRecord: "%union.record",
+  unionArr: "%union.arr",
+  presence: "%union.presence",
+  recordWrap: "%record.wrap",
+  recordRoute: "%record.route",
+  retag: "%union.retag",
+  narrowWidth: "%union.narrow.width",
+} as const;
+
+/** A checked arm extraction: it answers the object its argument holds. */
+export const ARM_EXTRACTION_HELPER = "%union.narrow";
+
+/** A written type predicate's conversion (containers/filter-predicates.ts):
+ * it answers an element that already has the predicate's type and rebuilds
+ * a record of another layout field by field. */
+export const PREDICATE_HELPER = "%narrow.checked";

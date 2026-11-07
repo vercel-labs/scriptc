@@ -57,6 +57,12 @@ import {
   type IslandGrowthContext,
 } from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
+import {
+  islandDecisionKey,
+  readIslandDecision,
+  writeIslandDecision,
+  type IslandRoundState,
+} from "../node-islands/decision-file.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 
 export interface PreparedExecutableModule {
@@ -246,9 +252,76 @@ type RoundOutcome =
   | { kind: "failed"; failure: CompileFailure }
   | { kind: "retry"; request: RoundRequest };
 
+/** `prepareExecutableModule` for a build: with `--node-island-decision` the
+ * first island round starts from the islands the file records, and the
+ * islands the build's last round started from are written back for the next
+ * build (node-islands/decision-file.ts). The replayed round runs with the
+ * fence rules on, as a first round does: they judge the program as it is
+ * now, so a dependency added since the record is not left to a rule that
+ * ran before it existed. A failed build records its decision too, so the
+ * next one reports the same failure from one round. Without the option this
+ * is `prepareExecutableModule` from scratch. */
+export function prepareExecutableBuild(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  buildPlatform: string,
+  createFrontend: FrontendFactory,
+  timing: CompilationTiming,
+  unitStore: UnitStore | null,
+): PreparedExecutableModule | CompileFailure {
+  const file = opts.nodeIslands?.decision;
+  if (file === undefined)
+    return prepareExecutableModule(
+      entryPath,
+      opts,
+      ffi,
+      buildPlatform,
+      createFrontend,
+      timing,
+      new Map(),
+      true,
+      unitStore,
+    );
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const key = islandDecisionKey(opts.nodeIslands, opts.npmStatic, buildPlatform);
+  const replayed = readIslandDecision(file, entryPath, key, policy);
+  if (replayed !== null)
+    timing("island-decision-replay", {
+      packages: replayed.packages.size,
+      modules: replayed.modules.size,
+    });
+  const last: { state: IslandRoundState | null } = { state: null };
+  const prepared = prepareExecutableModule(
+    entryPath,
+    opts,
+    ffi,
+    buildPlatform,
+    createFrontend,
+    timing,
+    replayed === null ? new Map() : replayed.packages,
+    true,
+    unitStore,
+    replayed === null ? new Map() : replayed.modules,
+    {},
+    (state) => {
+      last.state = state;
+    },
+  );
+  if (last.state !== null) writeIslandDecision(file, entryPath, key, policy, last.state);
+  return prepared;
+}
+
 /** Release the parser/checker before native object generation begins.
  * `unitStore` keeps the lowered units of this build for the next one
- * (unit-reuse.ts). */
+ * (unit-reuse.ts).
+ *
+ * `lowerIslands` and `lowerModules` are the islands an island round starts
+ * from: empty for a build that decides from scratch, the grown set for a
+ * retry, and a recorded decision for a build that replays one
+ * (node-islands/decision-file.ts). `onDecided` receives the islands of the
+ * round whose result this call returns, which is what such a recording
+ * keeps. */
 export function prepareExecutableModule(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -261,7 +334,17 @@ export function prepareExecutableModule(
   unitStore: UnitStore | null = null,
   lowerModules: ReadonlyMap<string, IslandModule> = new Map(),
   roundOptions: PrepareRoundOptions = {},
+  onDecided: ((state: IslandRoundState) => void) | null = null,
 ): PreparedExecutableModule | CompileFailure {
+  // The islands of the round whose result this call returns: the request
+  // that round ran, or, for a build that keeps its own result after its
+  // fence attempts failed, the islands that build started from.
+  const decided = (
+    packages: ReadonlyMap<string, IslandPackage>,
+    modules: ReadonlyMap<string, IslandModule>,
+  ): void => {
+    if (onDecided !== null) onDecided({ packages, modules });
+  };
   const state: RoundState = {
     firstLoad: null,
     reuseFirstLoad: roundOptions.reuseFirstLoad !== false,
@@ -319,7 +402,10 @@ export function prepareExecutableModule(
       }
       // Only a fence retry consumes a failure; otherwise it is the build's.
       const retry = fence;
-      if (retry === null) return outcome.failure;
+      if (retry === null) {
+        decided(request.islands, request.modules);
+        return outcome.failure;
+      }
       retry.firstError ??= outcome.failure.diagnostics[0] ?? null;
       const islands = retry.retry.attempts[retry.next++];
       if (islands !== undefined) {
@@ -336,11 +422,15 @@ export function prepareExecutableModule(
           nodeIslandRetryFailedDiag(added, retry.firstError, { file: entryPath, start: 0, end: 0 }),
         );
       }
+      decided(retry.retry.islands, retry.retry.modules);
       return retry.retry.prepared;
     }
     // An attempt that compiles replaces the build that asked for it; the
     // outermost build is the result.
-    if (fence !== null || outcome.fence === null) return outcome.prepared;
+    if (fence !== null || outcome.fence === null) {
+      decided(request.islands, request.modules);
+      return outcome.prepared;
+    }
     fence = { retry: outcome.fence, next: 1, firstError: null };
     request = attemptRequest(outcome.fence, outcome.fence.attempts[0]!);
   }

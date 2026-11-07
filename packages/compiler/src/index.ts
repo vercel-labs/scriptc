@@ -16,9 +16,10 @@ import {
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
-import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
+import { prepareExecutableBuild, type PreparedExecutableModule } from "./executable/prepare.js";
 import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
+import { islandDecisionDigest } from "./node-islands/decision-file.js";
 import { setIslandResolver } from "./node-islands/resolve.js";
 import {
   prepareLibrary,
@@ -1195,15 +1196,13 @@ async function prepareExecutableInput(
   const services = beginCompileServices();
   let prepared: PreparedExecutableModule | CompileFailure;
   try {
-    prepared = prepareExecutableModule(
+    prepared = prepareExecutableBuild(
       entryPath,
       opts,
       ffi,
       buildPlatform,
       nodeFrontend,
       timing,
-      new Map(),
-      true,
       await nodeUnitStore(entryPath, opts, ffi, buildPlatform),
     );
   } finally {
@@ -2132,8 +2131,14 @@ async function compileTracked(
       ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
+      // A recorded island decision changes what the build compiles, so its
+      // bytes are part of the island key (the option names only its path).
       ...(nodeIslandOptionsKey(opts.nodeIslands) !== ""
-        ? { nodeIslands: nodeIslandOptionsKey(opts.nodeIslands) }
+        ? {
+            nodeIslands:
+              nodeIslandOptionsKey(opts.nodeIslands) +
+              islandDecisionDigest(opts.nodeIslands?.decision),
+          }
         : {}),
       ...(heapCensusRequested() ? { heapCensus: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,

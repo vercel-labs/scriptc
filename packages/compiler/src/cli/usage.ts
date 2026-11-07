@@ -38,6 +38,7 @@ export const CLI_OPTIONS = {
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
+  "node-island-decision": { type: "string" },
   native: { type: "string", multiple: true },
   node: { type: "string" },
   "explain-island": { type: "string" },
@@ -444,6 +445,21 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "node-island-decision": {
+    entries: [
+      {
+        term: "--node-island-decision <file>",
+        help: [
+          "keep the Node island decision this build reaches in the",
+          "file, and start from it when the file exists: a large",
+          "program then decides its islands in one round instead of",
+          "several. A package that newly needs an island still gets",
+          "one and the file is updated; one that no longer needs its",
+          "island keeps it until the file is deleted",
+        ],
+      },
+    ],
+  },
   native: {
     entries: [
       {
@@ -581,6 +597,7 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "tier",
   "dynamic-tier-warning",
   ...NODE_ISLAND_OPTIONS,
+  "node-island-decision",
 ];
 
 /** Every command, in the order the help lists them. */

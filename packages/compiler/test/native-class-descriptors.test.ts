@@ -16,6 +16,7 @@ test.each([
   "Object.defineProperties(value, {x: {get() { return 2; }}});",
   "const map = {x: {value: 2}}; Object.defineProperties(value, map);",
   "const notGetter: any = 1; Object.defineProperties(value, {x: {value: 2}, extra: {get: notGetter}});",
+  "const get: any = 1; Object.defineProperties(value, {x: {value: 2}, extra: {get}});",
 ])("keeps unsafe native descriptor changes fenced: %s", (operation) => {
   const { dir, entry } = fixture(
     `class Value { constructor() { this.x = 1; } } const value = new Value(); ${operation}`,

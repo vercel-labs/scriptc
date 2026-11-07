@@ -196,6 +196,16 @@ function staticAccessorValue(lowerer: Lowerer, node: ts.Expression): boolean {
   });
 }
 
+/** The expression a descriptor member's value is read from: an assignment's
+ * initializer, or the identifier a shorthand refers to. Null for a shorthand
+ * whose name is not an identifier. */
+function descriptorValue(
+  property: ts.PropertyAssignment | ts.ShorthandPropertyAssignment,
+): ts.Expression | null {
+  if (ts.isPropertyAssignment(property)) return property.initializer;
+  return ts.isIdentifier(property.name) ? property.name : null;
+}
+
 /** The fields of a descriptor written as an object literal whose conversion
  * (ToPropertyDescriptor) can neither fail nor run code: plain members named
  * after descriptor fields, a `get` or `set` member whose value is statically
@@ -214,15 +224,10 @@ function staticDescriptorFields(lowerer: Lowerer, node: ts.Expression): string[]
       return null;
     const name = literalName(property.name);
     if (name === null || !DESCRIPTOR_FIELDS.includes(name) || fields.includes(name)) return null;
-    if (
-      (name === "get" || name === "set") &&
-      !ts.isMethodDeclaration(property) &&
-      !staticAccessorValue(
-        lowerer,
-        ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer,
-      )
-    )
-      return null;
+    if ((name === "get" || name === "set") && !ts.isMethodDeclaration(property)) {
+      const value = descriptorValue(property);
+      if (value === null || !staticAccessorValue(lowerer, value)) return null;
+    }
     fields.push(name);
   }
   const accessor = fields.includes("get") || fields.includes("set");

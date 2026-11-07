@@ -5,6 +5,14 @@
 
 #include "scr_closure.h"
 
+/* scr_dyn.h's checked-dynamic call entry (the closure-to-dynamic adapter a
+ * function value carries), spelled here so these declarations need no
+ * inclusion of the dyn unit; scr_dyn.h repeats both typedefs unchanged
+ * (C11 repeat, as its own header notes), and scr_dyn.h reaches this header
+ * through scr_stream.h before its body defines them. */
+typedef struct ScrDyn ScrDyn;
+typedef ScrDyn *(*ScrDynThunk)(ScrClosure *clo, ScrDyn *const *args, size_t argc);
+
 /* ── node:events EventEmitter (scr_events_emitter.c, link-gated) ──────
  * The runtime-provided emitter base class — the ScrError precedent:
  * ScrEmitter lays out exactly like a compiler-emitted hierarchy class
@@ -130,10 +138,14 @@ extern SCR_TL const ScrEeDynOps *scr_ee_dyn;
 /* The adapter-mediated registration (the LLVM backend's listeners): the
  * ADAPTER closure is what emit invokes, the ORIGINAL closure is the
  * entry's identity (the on_dyn split, with a plain-closure identity).
- * Both MOVE in; returns em +1 (chaining). */
+ * Both MOVE in; returns em +1 (chaining). `fallback` (may be NULL) is the
+ * checked-dynamic call thunk over the original closure: an untyped emit
+ * that carries no tuple for the event invokes the listener through it,
+ * converting the arguments to the listener's parameters. */
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
-                                ScrEeInvoke inv, bool once, bool prepend);
+                                ScrEeInvoke inv, ScrDynThunk fallback /*may be NULL*/, bool once,
+                                bool prepend);
 /* The same registrations for a listener that can read `this`: each call of
  * the listener runs with the emitter as the receiver (scr_dyn_this_push_typed
  * with `recv`, the typed-ref recipe of the registration's receiver type), as
@@ -141,20 +153,23 @@ ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*
  * constant. */
 typedef struct ScrDynTypedRefRecipe ScrDynTypedRefRecipe; /* scr_dyn.h */
 ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
-                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
-                                    bool prepend, const ScrDynTypedRefRecipe *recv);
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                    ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                                    const ScrDynTypedRefRecipe *recv);
 /* scr_emitter_on_via and _this for an event name whose ARGUMENT value is
  * not the registry key it converts to: Node's listener table keys `null`
  * and `"null"` alike, but the leak warning's `type` carries the argument
  * as given, so the registration hands the value across beside the key
  * (borrowed; the warning takes its own reference when it fires). */
 ScrEmitter *scr_emitter_on_via_named(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
-                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
-                                     bool prepend, const ScrDyn *name_value /*borrowed*/);
+                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                     ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                                     const ScrDyn *name_value /*borrowed*/);
 ScrEmitter *scr_emitter_on_via_this_named(ScrEmitter *em, ScrStr *name,
                                           ScrClosure *orig /*moves*/,
                                           ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
-                                          bool once, bool prepend,
+                                          ScrDynThunk fallback /*may be NULL*/, bool once,
+                                          bool prepend,
                                           const ScrDynTypedRefRecipe *recv,
                                           const ScrDyn *name_value /*borrowed*/);
 ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,

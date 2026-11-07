@@ -1002,6 +1002,10 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     host.usesTimers = true;
     const args = e.args.map((a) => host.emitExpr(a));
     const { fn: adapterFn, shim } = host.emitterFixedAdapter(cbT);
+    // An untyped emit that carries no tuple for the event reaches the
+    // listener through its checked-dynamic call thunk (the same conversion
+    // a boxed function value applies), so a typed listener runs there too.
+    const fallback = host.dyn.dynFuncThunkHelper(cbT);
     // The wrapper's capture box owns its OWN +1 of the listener; the
     // frame's +1 moves in as the entry's identity (orig).
     host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
@@ -1019,14 +1023,15 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
         ? "scr_emitter_on_via_named"
         : "scr_emitter_on_via";
     host.declare(
-      `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recv ? ", ptr" : ""}${
-        named ? ", ptr" : ""
-      })`,
+      `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${
+        recv ? ", ptr" : ""
+      }${named ? ", ptr" : ""})`,
     );
     const t = B.tmp();
     B.line(
       `${t} = call ptr @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-        `ptr ${args[cbIndex]!.name}, ptr ${wrapped}, ptr @${shim}, i1 ${args[cbIndex + 1]!.name}, ` +
+        `ptr ${args[cbIndex]!.name}, ptr ${wrapped}, ptr @${shim}, ptr @${fallback}, ` +
+        `i1 ${args[cbIndex + 1]!.name}, ` +
         `i1 ${args[cbIndex + 2]!.name}${recv ? `, ptr ${recv}` : ""}${named ? `, ptr ${args[2]!.name}` : ""})`,
     );
     const out = host.own({ name: t, type: e.type });
@@ -1253,11 +1258,11 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       host.toHeap(args[2]!);
       const sym = recv ? "scr_emitter_on_via_this" : "scr_emitter_on_via";
       host.declare(
-        `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recvParam})`,
+        `declare ptr @${sym}(ptr, ptr, ptr, ptr, ptr, ptr, i1 zeroext, i1 zeroext${recvParam})`,
       );
       B.line(
         `${t} = call ptr @${sym}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
-          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed3, i1 ${args[3]!.name}, i1 ${args[4]!.name}${recvArg})`,
+          `ptr ${args[2]!.name}, ptr ${wrapped}, ptr @scr_ee_inv_fixed3, ptr null, i1 ${args[3]!.name}, i1 ${args[4]!.name}${recvArg})`,
       );
     }
     const out = host.own({ name: t, type: e.type });

@@ -94,6 +94,14 @@ typedef struct ScrEeEntry {
    * listeners()/rawListeners() answer it — Node's identity semantics. */
   ScrClosure *orig;
   ScrEeInvoke inv;
+  /* A typed registration's checked-dynamic call thunk over `orig` (the
+   * compiler's closure-to-dynamic call adapter), invoked when an untyped
+   * emit carries no tuple for the event: the listener's parameters convert
+   * from the arguments as given, so the listener runs. NULL on entries
+   * whose registration has no such form; unlike `flex_invoke` it does not
+   * make the entry a checked-dynamic registration for listener-value and
+   * meta-event purposes. */
+  ScrDynThunk fallback_invoke;
   /* Checked-dynamic registration (computed names, and every listener
    * registered as a dynamic function value): the original closure and its
    * checked-dynamic thunk, called with the exact argument count of an
@@ -747,7 +755,8 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
                               ScrClosure *orig /*moves; may be NULL*/,
                               ScrEeInvoke inv, const ScrDyn *dyn /*borrowed; may be NULL*/,
                               const ScrDyn *flex /*borrowed; may be NULL*/,
-                              bool once, bool prepend, const ScrDynTypedRefRecipe *recv,
+                              ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                              const ScrDynTypedRefRecipe *recv,
                               const ScrDyn *name_value /*borrowed; may be NULL*/) {
   if (dyn && dyn->kind != SCR_DYN_FUNC) dyn = NULL;
   if (flex && flex->kind != SCR_DYN_FUNC) flex = NULL;
@@ -759,6 +768,7 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
   e->cb = cb;
   e->orig = orig;
   e->inv = inv;
+  e->fallback_invoke = fallback;
   if (flex) {
     e->flex_cb = scr_closure_retain(flex->v.fn.clo);
     e->flex_invoke = flex->v.fn.thunk;
@@ -790,7 +800,7 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
 
 ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                             ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, cb, NULL, inv, NULL, NULL, once, prepend, NULL, NULL);
+  return scr_ee_add(em, name, cb, NULL, inv, NULL, NULL, NULL, once, prepend, NULL, NULL);
 }
 
 /* events.once(emitter, name): a pending promise of the event's arguments
@@ -873,7 +883,8 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
    * listener it announced is never added (the event's listener stays when
    * only the 'error' announcement throws). */
   ScrCaught *thrown = NULL;
-  scr_emitter_release(scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, NULL, true, false, NULL, NULL));
+  scr_emitter_release(
+      scr_ee_add(em, name, st->event_cb, NULL, inv, NULL, NULL, NULL, true, false, NULL, NULL));
   if (scr_exc_pending()) {
     thrown = scr_exc_take();
     scr_ee_unadd(em, name, st->event_cb);
@@ -881,7 +892,9 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
     st->event_cb = st->error_cb = NULL;
   } else if (st->error_cb != NULL) {
     ScrStr *error = scr_str_new("error", 5);
-    scr_emitter_release(scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, NULL, true, false, NULL, NULL));
+    scr_emitter_release(
+        scr_ee_add(em, error, st->error_cb, NULL, err_inv, NULL, NULL, NULL, true, false, NULL,
+                   NULL));
     if (scr_exc_pending()) {
       thrown = scr_exc_take();
       scr_ee_unadd(em, error, st->error_cb);
@@ -942,7 +955,7 @@ void scr_events_once_fire(ScrClosure *cb, ScrArr *args) {
 ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
                                     bool prepend, const ScrDynTypedRefRecipe *recv) {
-  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv, cb, cb, once,
+  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv, cb, cb, NULL, once,
                     prepend, recv, NULL);
 }
 
@@ -960,7 +973,7 @@ ScrEmitter *scr_emitter_on_dyn_bound(ScrEmitter *em, ScrStr *name, const ScrDyn 
                                      const ScrDyn *flex, ScrClosure *adapter /*moves*/,
                                      ScrEeInvoke inv, bool once, bool prepend) {
   return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv, cb,
-                    flex ? flex : cb, once, prepend, NULL, NULL);
+                    flex ? flex : cb, NULL, once, prepend, NULL, NULL);
 }
 
 /* The typed adapters of a checked-dynamic listener on the events whose
@@ -1006,7 +1019,7 @@ ScrEmitter *scr_emitter_on_flex_this(ScrEmitter *em, ScrStr *name, const ScrDyn 
     scr_dyn_check_listener(cb, "listener");
     return scr_emitter_retain(em);
   }
-  return scr_ee_add(em, name, NULL, NULL, NULL, cb, cb, once, prepend, recv, NULL);
+  return scr_ee_add(em, name, NULL, NULL, NULL, cb, cb, NULL, once, prepend, recv, NULL);
 }
 
 ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
@@ -1033,10 +1046,10 @@ ScrEmitter *scr_emitter_on_any_this(ScrEmitter *em, ScrStr *name, const ScrDyn *
   }
   if (fire) {
     return scr_ee_add(em, name, scr_ee_dyn_adapter(cb, fire),
-                      scr_closure_retain(cb->v.fn.clo), &scr_ee_inv_fixed1, cb, cb, once, prepend,
-                      recv, NULL);
+                      scr_closure_retain(cb->v.fn.clo), &scr_ee_inv_fixed1, cb, cb, NULL, once,
+                      prepend, recv, NULL);
   }
-  return scr_ee_add(em, name, NULL, NULL, NULL, cb, cb, once, prepend, recv, NULL);
+  return scr_ee_add(em, name, NULL, NULL, NULL, cb, cb, NULL, once, prepend, recv, NULL);
 }
 
 ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
@@ -1046,35 +1059,41 @@ ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
 
 /* The adapter-mediated registration (the LLVM backend): adapter is what
  * emit invokes, orig is the entry's identity — the on_dyn split with a
- * plain-closure identity. Both move in. */
+ * plain-closure identity. Both move in. `fallback` is the checked-dynamic
+ * call thunk over orig for emits that carry no tuple (scr_ee_add). */
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
-                                ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, once, prepend, NULL, NULL);
+                                ScrEeInvoke inv, ScrDynThunk fallback /*may be NULL*/, bool once,
+                                bool prepend) {
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, fallback, once, prepend, NULL, NULL);
 }
 
 /* scr_emitter_on_via for a listener that can read `this` (scr_events_emitter.h). */
 ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
-                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
-                                    bool prepend, const ScrDynTypedRefRecipe *recv) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, once, prepend, recv, NULL);
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                    ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                                    const ScrDynTypedRefRecipe *recv) {
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, fallback, once, prepend, recv, NULL);
 }
 
 /* scr_emitter_on_via and _this for a name whose argument VALUE is not its
  * registry key (scr_events_emitter.h). */
 ScrEmitter *scr_emitter_on_via_named(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
-                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
-                                     bool prepend, const ScrDyn *name_value /*borrowed*/) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, once, prepend, NULL, name_value);
+                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                     ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                                     const ScrDyn *name_value /*borrowed*/) {
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, fallback, once, prepend, NULL,
+                    name_value);
 }
 
 ScrEmitter *scr_emitter_on_via_this_named(ScrEmitter *em, ScrStr *name,
                                           ScrClosure *orig /*moves*/,
                                           ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
-                                          bool once, bool prepend,
-                                          const ScrDynTypedRefRecipe *recv,
+                                          ScrDynThunk fallback /*may be NULL*/, bool once,
+                                          bool prepend, const ScrDynTypedRefRecipe *recv,
                                           const ScrDyn *name_value /*borrowed*/) {
-  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, once, prepend, recv, name_value);
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, fallback, once, prepend, recv,
+                    name_value);
 }
 
 /* ── fixed-arity invoke shims (scr_runtime.h's contract) ──────────────
@@ -1431,6 +1450,13 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
       va_copy(ap, *ap_template);
       e->inv(e->cb, ap);
       va_end(ap);
+    } else if (flex_args && e->fallback_invoke) {
+      /* A typed registration reached by an untyped emit that carries no
+       * tuple: the listener's own checked-dynamic call converts the
+       * arguments to its parameters (the checked conversion throws when
+       * they do not), so the listener runs as it does in Node. */
+      ScrDyn *answer = e->fallback_invoke(e->orig, flex_args, flex_argc);
+      scr_dyn_release(answer); /* EventEmitter ignores callback results. */
     } else {
       scr_ee_listener_mismatch(name, ap_template != NULL);
     }

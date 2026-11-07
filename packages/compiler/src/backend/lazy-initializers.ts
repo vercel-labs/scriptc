@@ -9,10 +9,16 @@ import {
   type IrGlobal,
   type IrModule,
   type IrStmt,
+  type IrType,
   type SrcLoc,
 } from "../ir/ir.js";
 import type { IrLibFn } from "../ir/builtin-signatures.js";
-import { everyExprChild, everyStmtChild, transformStmtList } from "../ir/traverse.js";
+import {
+  everyExprChild,
+  everyStmtChild,
+  transformStmtList,
+  type IrTransform,
+} from "../ir/traverse.js";
 import {
   eachNodeOfKinds,
   type IrNodeIndex,
@@ -35,7 +41,7 @@ const INIT = "%init.";
 
 /** The binding nodes: reads and writes of locals and module globals. */
 const BINDING_KINDS: readonly IrNodeKind[] = [...LOCAL_BINDING_KINDS, "varRef"];
-const CALL_KINDS: readonly IrNodeKind[] = ["call"];
+const INIT_USE_KINDS: readonly IrNodeKind[] = ["call", "closure"];
 const CLOSURE_KINDS: readonly IrNodeKind[] = ["closure"];
 
 /** Statements a closed initializer may run. Each only moves values between
@@ -213,9 +219,33 @@ const OPEN_STR_METHODS: ReadonlySet<string> = new Set(["normalize", "repeat"]);
  * byte-identical. */
 const MIN_DEFERRED_NODES = 64;
 
-/** `if (loaded) return; loaded = true; ...`: a synchronous module
- * initializer that runs its body at most once. Answers the guard's id. */
-function initializerGuard(fn: IrFunction, globals: ReadonlyMap<string, IrGlobal>): string | null {
+/** A synchronous module initializer that runs its body at most once. */
+interface InitShape {
+  /** The run-once flag. */
+  guard: string;
+  /** The form of a module the program can load again after its evaluation
+   * threw (a target of `import()` or a static dependency of one): the error
+   * is kept in `error`, `failed` says so, and every later call of the
+   * initializer throws it again. Null for the plain form. */
+  record: { error: string; failed: string; caught: string } | null;
+  /** The statements behind the guard: the loads of other modules, then the
+   * module's own. */
+  inner: readonly IrStmt[];
+}
+
+/** The two forms lowering gives a guarded synchronous initializer:
+ *
+ *     if (loaded) return;                    if (loaded) { if (failed) throw error; return; }
+ *     loaded = true;                         loaded = true;
+ *     ...inner                               try { ...inner }
+ *                                            catch (e) { error = e; failed = true; throw e; }
+ *
+ * Null for every other function: the entry's initializer (no guard), one
+ * that awaits, a CommonJS module's (its body registers the module). */
+function initializerShape(
+  fn: IrFunction,
+  globals: ReadonlyMap<string, IrGlobal>,
+): InitShape | null {
   if (fn.async || fn.generator || fn.captures?.length || fn.params.length > 0) return null;
   const check = fn.body[0],
     set = fn.body[1];
@@ -223,17 +253,57 @@ function initializerGuard(fn: IrFunction, globals: ReadonlyMap<string, IrGlobal>
     check?.kind !== "if" ||
     check.cond.kind !== "varRef" ||
     check.else_ !== null ||
-    check.then.length !== 1 ||
-    check.then[0]?.kind !== "return" ||
-    check.then[0].value !== null ||
     set?.kind !== "assign" ||
     set.localId !== check.cond.localId ||
     set.value.kind !== "boolLit" ||
     !set.value.value
   )
     return null;
-  const guard = globals.get(set.localId);
-  return guard?.type.kind === "bool" && guard.tdz !== true ? guard.id : null;
+  const flag = globals.get(set.localId);
+  if (flag?.type.kind !== "bool" || flag.tdz === true) return null;
+  const last = check.then[check.then.length - 1];
+  if (last?.kind !== "return" || last.value !== null) return null;
+  if (check.then.length === 1) return { guard: flag.id, record: null, inner: fn.body.slice(2) };
+  // The error-recording form.
+  const again = check.then[0];
+  const body = fn.body[2];
+  if (
+    check.then.length !== 2 ||
+    fn.body.length !== 3 ||
+    again?.kind !== "if" ||
+    again.cond.kind !== "varRef" ||
+    again.else_ !== null ||
+    again.then.length !== 1 ||
+    again.then[0]?.kind !== "rethrow" ||
+    body?.kind !== "tryCatch" ||
+    body.finallyBody !== null ||
+    body.catchLocalId === null ||
+    body.catchBody?.length !== 3
+  )
+    return null;
+  const [keep, mark, raise] = body.catchBody;
+  const error = again.then[0].localId;
+  const failed = again.cond.localId;
+  if (
+    keep?.kind !== "assign" ||
+    keep.localId !== error ||
+    keep.value.kind !== "varRef" ||
+    keep.value.localId !== body.catchLocalId ||
+    mark?.kind !== "assign" ||
+    mark.localId !== failed ||
+    mark.value.kind !== "boolLit" ||
+    !mark.value.value ||
+    raise?.kind !== "rethrow" ||
+    raise.localId !== body.catchLocalId ||
+    !globals.has(error) ||
+    globals.get(failed)?.type.kind !== "bool"
+  )
+    return null;
+  return {
+    guard: flag.id,
+    record: { error, failed, caught: body.catchLocalId },
+    inner: body.tryBody,
+  };
 }
 
 /** `%init.N();` as a statement, or null. */
@@ -249,9 +319,9 @@ function initCall(stmt: IrStmt): string | null {
 /** Whether every module load of an initializer precedes its own statements:
  * the shape of a module whose imports are all `import` declarations. Its
  * imports then run, in order, before anything of its own does. */
-function loadsFirst(fn: IrFunction): boolean {
+function loadsFirst(inner: readonly IrStmt[]): boolean {
   let own = false;
-  for (const stmt of fn.body.slice(2)) {
+  for (const stmt of inner) {
     if (initCall(stmt) === null) own = true;
     else if (own) return false;
   }
@@ -341,29 +411,40 @@ function settledLength(length: IrExpr, lengths: ReadonlySet<string>): boolean {
  *   written any state the group reads or writes.
  *
  * Initializers that share a global form one group, behind one flag. Each
- * member keeps its place in the module order: where an importer loaded it,
- * the importer now runs the member's own imports and then notes that the
- * member's place has been reached (`%lazy.at.N`; the members of a group
- * are numbered in the order their places come, so one counter holds how
- * many have). Nothing else happens there while the group is idle. The first guard that fires makes the
- * group active and runs, in order, the members whose places have been
+ * member keeps its place in the order modules are loaded in, whatever
+ * loads them: every call of a member's initializer (an importer's header,
+ * the helper of an `import()`, a `require()` inside a function) becomes a
+ * call of its place, `%lazy.at.N`. A place loads the member's own imports,
+ * as the initializer's header did, and then notes that the member was
+ * reached: it puts the member on its group's list. Nothing else happens
+ * there while the group is idle. The first guard that fires makes the
+ * group active and runs the members on the list, in the order they were
  * reached; from then on a member runs at its place, as it always did. A
- * member therefore never runs before its place, and it runs after its place
- * only across code that touched nothing of the group's, which is why the
- * delay cannot be seen.
+ * member therefore never runs before its place, and it runs after its
+ * place only across code that touched nothing of the group's, which is why
+ * the delay cannot be seen.
+ *
+ * A module the program can load again after its evaluation threw (a target
+ * of `import()` or a static dependency of one) has the error-recording
+ * form: the error is kept and thrown again at every later load. A member's
+ * own statements cannot throw, so the only error such a module can record
+ * is one of its imports. Its place records that error where the
+ * initializer did and throws it again when the place is visited again; the
+ * member is then never put on the list, as its statements never ran.
  *
  * Every function that names one of the group's globals gets a guard
  * (`if (!active) run()`) before the first statement that does, outside any
- * loop of the function, and inside the branch when only a branch names
- * one. A group that is never used costs a few stores; reads in a loop pay
- * no guard.
+ * loop of the function, and inside the branch (or the `try`) when only
+ * that names one. A group that is never used costs a few stores; reads in
+ * a loop pay no guard.
  *
- * Left where they are: the entry module, a module the program can load
- * dynamically or that awaits, a module of an import cycle, a module that
- * loads another after its own first statement, anything whose globals are
- * captured, flagged for a temporal dead zone or named by class metadata,
- * groups too small to be worth a guard, and groups the start-up code uses
- * for certain. Library builds and worker programs are not touched. */
+ * Left where they are: the roots (the entry, a fork target), a module
+ * whose initializer awaits or registers a CommonJS module, a module of an
+ * import cycle, a module that loads another after its own first statement,
+ * anything whose globals are captured, flagged for a temporal dead zone or
+ * named by class metadata, groups too small to be worth a guard, and
+ * groups the start-up code uses for certain. Library builds and worker
+ * programs are not touched. */
 export function deferClosedInitializers(
   mod: IrModule,
   nodes?: IrNodeIndex,
@@ -373,51 +454,49 @@ export function deferClosedInitializers(
   const globals = new Map(mod.globals.map((g) => [g.id, g]));
   const fns = new Map(mod.functions.map((fn) => [fn.name, fn]));
 
-  // The initializers and the tree of their calls. The entry's initializer
-  // is the one `%main` calls; it has no guard and never moves.
+  // The initializers, their forms and their loads of each other.
   const inits = mod.functions.filter((fn) => fn.name.startsWith(INIT));
   if (inits.length < 2) return mod;
-  const guards = new Map<string, string>();
+  const initNames = new Set(inits.map((fn) => fn.name));
+  const shapes = new Map<string, InitShape>();
+  /** By initializer: the modules its import declarations load, in order. */
   const calls = new Map<string, string[]>();
-  const plainCalls = new Map<string, number>();
   for (const fn of inits) {
-    const guard = initializerGuard(fn, globals);
-    if (guard !== null) guards.set(fn.name, guard);
+    const shape = initializerShape(fn, globals);
+    if (shape !== null) shapes.set(fn.name, shape);
     const list: string[] = [];
-    for (const stmt of fn.body) {
+    for (const stmt of shape?.inner ?? fn.body) {
       const callee = initCall(stmt);
-      if (callee === null) continue;
-      list.push(callee);
-      plainCalls.set(callee, (plainCalls.get(callee) ?? 0) + 1);
+      if (callee !== null) list.push(callee);
     }
     calls.set(fn.name, list);
   }
-  // Every other call of an initializer is a dynamic load or an awaited one:
-  // the moment it runs is not a position of the static tree.
-  const allCalls = new Map<string, number>();
-  const callScan = nodes?.scan(CALL_KINDS);
-  let entry: string | null = null;
+  // Who calls an initializer, anywhere: an importer's header, the helper of
+  // an `import()`, a `require()` inside a function. The roots are the ones
+  // `%main` calls (the entry, a fork target); they never move. A function
+  // value of an initializer has no call a place could stand for.
+  const roots = new Set<string>();
+  /** By initializer: the functions that call it. */
+  const callers = new Map<string, Set<string>>();
+  const asValue = new Set<string>();
+  const callScan = nodes?.scan(INIT_USE_KINDS);
   for (const fn of mod.functions) {
     eachNodeOfKinds(fn, callScan, (node) => {
-      if (node.kind !== "call" || !node.callee.startsWith(INIT)) return;
-      allCalls.set(node.callee, (allCalls.get(node.callee) ?? 0) + 1);
-      if (fn.name === mod.entry) entry = node.callee;
+      if (node.kind === "closure") {
+        if (initNames.has(node.fnName)) asValue.add(node.fnName);
+        return;
+      }
+      if (node.kind !== "call" || !initNames.has(node.callee)) return;
+      if (fn.name === mod.entry) roots.add(node.callee);
+      let list = callers.get(node.callee);
+      if (!list) callers.set(node.callee, (list = new Set()));
+      list.add(fn.name);
     });
   }
-  if (entry === null) return mod;
-  const entryInit: string = entry;
-  const dynamicRoots: string[] = [];
-  for (const fn of inits) {
-    if (fn.name === entryInit) continue;
-    if ((allCalls.get(fn.name) ?? 0) !== (plainCalls.get(fn.name) ?? 0)) dynamicRoots.push(fn.name);
-    // An initializer of another form (one that awaits) orders its callees
-    // by promise turns, which the static tree does not describe.
-    else if (!guards.has(fn.name)) dynamicRoots.push(fn.name);
-  }
-  if ((allCalls.get(entryInit) ?? 0) !== 1) return mod;
-  const reachedFrom = (roots: readonly string[]): Set<string> => {
-    const seen = new Set<string>(roots);
-    const work = [...roots];
+  if (roots.size === 0) return mod;
+  const reachedFrom = (from: Iterable<string>): Set<string> => {
+    const seen = new Set<string>(from);
+    const work = [...seen];
     while (work.length > 0)
       for (const callee of calls.get(work.pop()!) ?? [])
         if (!seen.has(callee)) {
@@ -426,8 +505,6 @@ export function deferClosedInitializers(
         }
     return seen;
   };
-  const dynamic = reachedFrom(dynamicRoots);
-  const staticTree = reachedFrom([entryInit]);
   // Initializers on an import cycle reach themselves.
   const cyclic = new Set<string>();
   for (const fn of inits) {
@@ -441,12 +518,14 @@ export function deferClosedInitializers(
   };
   const candidates = new Set<string>();
   for (const fn of inits) {
-    if (fn.name === entryInit) stays(fn.name, "the entry module");
-    else if (dynamic.has(fn.name))
-      stays(fn.name, "the module, or one that imports it, is loaded dynamically or awaits");
-    else if (!staticTree.has(fn.name)) stays(fn.name, "not in the entry's static import tree");
+    const shape = shapes.get(fn.name);
+    if (roots.has(fn.name)) stays(fn.name, "the entry module");
+    else if (shape === undefined)
+      stays(fn.name, "its initializer awaits, or registers a CommonJS module");
+    else if (asValue.has(fn.name)) stays(fn.name, "its initializer is held as a function value");
     else if (cyclic.has(fn.name)) stays(fn.name, "the module is on an import cycle");
-    else if (!loadsFirst(fn)) stays(fn.name, "it loads a module after its own first statement");
+    else if (!loadsFirst(shape.inner))
+      stays(fn.name, "it loads a module after its own first statement");
     else candidates.add(fn.name);
   }
   const report = (): void => {
@@ -605,10 +684,10 @@ export function deferClosedInitializers(
     }
     return f;
   };
-  /** An initializer's own statements: its body without the guard and the
-   * loads of other modules. */
+  /** A candidate's own statements: what stands behind its guard, without
+   * the loads of other modules. */
   const ownBody = (fn: IrFunction): IrStmt[] =>
-    fn.body.slice(2).filter((s) => initCall(s) === null);
+    shapes.get(fn.name)!.inner.filter((s) => initCall(s) === null);
 
   interface Closure {
     own: FnFacts;
@@ -646,7 +725,7 @@ export function deferClosedInitializers(
       stays(init, open.what, open.loc);
       continue;
     }
-    touched.delete(guards.get(init)!);
+    touched.delete(shapes.get(init)!.guard);
     closures.set(init, { own, reached, globals: touched });
   }
   if (candidates.size === 0) {
@@ -712,7 +791,6 @@ export function deferClosedInitializers(
   // the candidate reads it. Such a constant is read freely; it is not the
   // group's and gets no guard. Any other value made by a module that stays
   // could have changed by the time the candidate runs.
-  const initNames = new Set(inits.map((fn) => fn.name));
   const stayingWriter = (id: string): string | null => {
     let staying: string | null = null;
     for (const writer of writers.get(id) ?? []) {
@@ -868,8 +946,9 @@ export function deferClosedInitializers(
   // Used at start for certain? A group whose globals the start-up code
   // names outside any branch or loop would run in full before `main` gets
   // anywhere: deferring it only adds the places and the guards. Start-up
-  // code is the top-level statements of the initializers that stay and of
-  // the functions those statements call, a few calls deep; a statement
+  // code is the top-level statements of the initializers that stay, in the
+  // roots' static import tree, and of the functions those statements call,
+  // a few calls deep; a statement
   // under an `if`, a loop, a `switch` or a `try` is not counted, since it
   // may not run.
   {
@@ -923,9 +1002,14 @@ export function deferClosedInitializers(
           }
         }
       };
-      straight(fn.body);
+      // An initializer's statements stand behind its guard (inside the
+      // `try` of the error-recording form).
+      straight(depth === 0 ? (shapes.get(fn.name)?.inner ?? fn.body) : fn.body);
     };
-    for (const fn of inits) if (!candidates.has(fn.name)) scan(fn, 0);
+    // The modules the roots load through import declarations: a module
+    // only `import()` or a `require()` in a function loads may never run.
+    const startUp = reachedFrom(roots);
+    for (const fn of inits) if (startUp.has(fn.name) && !candidates.has(fn.name)) scan(fn, 0);
     for (const [root, by] of certain) {
       const list = members.get(root);
       if (!list) continue;
@@ -941,44 +1025,33 @@ export function deferClosedInitializers(
     return mod;
   }
 
-  // The static tree in the order module bodies run: imports first, then
-  // the module (each once, at its first place).
-  const order: string[] = [];
-  {
-    const seen = new Set<string>();
-    const visit = (init: string): void => {
-      if (seen.has(init)) return;
-      seen.add(init);
-      for (const callee of calls.get(init) ?? []) visit(callee);
-      order.push(init);
-    };
-    visit(entryInit);
-  }
-  // Groups, numbered by their first member in that order; each group's
-  // members in that order.
+  // Groups, numbered by their first member in the order of the module's
+  // functions; a member's number is its position in its group, from one.
   const groupOf = new Map<string, number>();
   const groupMembers: string[][] = [];
-  const indexIn = new Map<string, number>();
+  const numberIn = new Map<string, number>();
   {
-    const numberOf = new Map<string, number>();
-    for (const init of order) {
-      if (!candidates.has(init)) continue;
-      const root = find(init);
-      let group = numberOf.get(root);
+    const groupOfRoot = new Map<string, number>();
+    for (const fn of inits) {
+      if (!candidates.has(fn.name)) continue;
+      const root = find(fn.name);
+      let group = groupOfRoot.get(root);
       if (group === undefined) {
         group = groupMembers.length;
-        numberOf.set(root, group);
+        groupOfRoot.set(root, group);
         groupMembers.push([]);
       }
-      groupOf.set(init, group);
-      indexIn.set(init, groupMembers[group]!.length);
-      groupMembers[group]!.push(init);
+      groupOf.set(fn.name, group);
+      groupMembers[group]!.push(fn.name);
+      numberIn.set(fn.name, groupMembers[group]!.length);
     }
   }
   const activeOf = (group: number): string => `%g.%lazy.${group}`;
-  const reachedOf = (group: number): string => `%g.%lazy.${group}.reached`;
+  const lastOf = (group: number): string => `%g.%lazy.${group}.last`;
   const runOf = (group: number): string => `%lazy.${group}`;
   const placeOf = (init: string): string => `%lazy.at.${init.slice(INIT.length)}`;
+  const atOf = (init: string): string => `%g.%lazy.at.${init.slice(INIT.length)}`;
+  const linkOf = (init: string): string => `%g.%lazy.link.${init.slice(INIT.length)}`;
   const ownerOf = new Map<string, number>();
   for (const init of candidates)
     for (const id of closures.get(init)!.globals) ownerOf.set(id, groupOf.get(init)!);
@@ -990,69 +1063,135 @@ export function deferClosedInitializers(
     loc,
   });
   const num = (value: number, loc: SrcLoc): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const flag = (value: boolean, loc: SrcLoc): IrExpr => ({
+    kind: "boolLit",
+    value,
+    type: BOOL,
+    loc,
+  });
+  const read = (localId: string, type: IrType, loc: SrcLoc): IrExpr => ({
+    kind: "varRef",
+    localId,
+    type,
+    loc,
+  });
+  const store = (localId: string, value: IrExpr, loc: SrcLoc): IrStmt => ({
+    kind: "assign",
+    localId,
+    value,
+    loc,
+  });
   const rewritten = new Map<string, IrFunction>();
   const added: IrFunction[] = [];
+  const state: IrGlobal[] = [];
   for (const fn of inits) {
-    const member = candidates.has(fn.name);
-    const group = member ? groupOf.get(fn.name)! : -1;
-    // A member's place: its imports, as its initializer's header would
-    // have run them, then the note that the place has been reached (or,
-    // in an active group, the member itself).
-    if (member) {
-      const loc = fn.loc;
-      const reached = indexIn.get(fn.name)! + 1;
-      added.push({
-        name: placeOf(fn.name),
-        params: [],
-        returnType: VOID,
-        locals: [],
-        loc,
-        body: [
-          // Been here: a module imported from several places.
-          {
-            kind: "if",
-            cond: {
-              kind: "bin",
-              op: ">=",
-              left: { kind: "varRef", localId: reachedOf(group), type: F64, loc },
-              right: num(reached, loc),
-              type: BOOL,
-              loc,
-            },
-            then: [{ kind: "return", value: null, loc }],
-            else_: null,
-            loc,
-          },
-          ...(calls.get(fn.name) ?? []).map((callee) =>
-            callStmt(candidates.has(callee) ? placeOf(callee) : callee, loc),
-          ),
-          { kind: "assign", localId: reachedOf(group), value: num(reached, loc), loc },
-          {
-            kind: "if",
-            cond: { kind: "varRef", localId: activeOf(group), type: BOOL, loc },
-            then: [callStmt(fn.name, loc)],
-            else_: null,
-            loc,
-          },
-        ],
-      });
-    }
-    // Loads of deferred modules: an initializer that stays goes to the
-    // module's place; a member keeps the loads of its own group (they have
-    // run by then, or run here in the order they always did) and drops the
-    // loads of other groups, whose places its own place has visited.
-    let body: IrStmt[] | null = null;
-    fn.body.forEach((stmt, index) => {
-      const callee = initCall(stmt);
-      if (callee === null || !candidates.has(callee) || (member && groupOf.get(callee) === group)) {
-        body?.push(stmt);
-        return;
-      }
-      body ??= fn.body.slice(0, index);
-      if (!member) body.push(callStmt(placeOf(callee), stmt.loc));
+    if (!candidates.has(fn.name)) continue;
+    const shape = shapes.get(fn.name)!;
+    const group = groupOf.get(fn.name)!;
+    const loc = fn.loc;
+    const at = atOf(fn.name);
+    const link = linkOf(fn.name);
+    state.push({ id: at, name: "%lazy.at", type: BOOL, mutable: true });
+    state.push({ id: link, name: "%lazy.link", type: F64, mutable: true });
+    // A member's place stands where its initializer was called: an
+    // importer's header, the helper of an `import()`, a `require()`. It
+    // loads the member's imports as the initializer's header did, then
+    // notes that the member was reached: in an idle group by adding it to
+    // the group's list, in an active one by running it. A module the
+    // program can load again keeps an error of its imports and throws it
+    // again at every later load, as its initializer did.
+    const loads = (calls.get(fn.name) ?? []).map((callee) =>
+      callStmt(candidates.has(callee) ? placeOf(callee) : callee, loc),
+    );
+    const record = shape.record;
+    const caught = record === null ? undefined : fn.locals.find((l) => l.id === record.caught);
+    added.push({
+      name: placeOf(fn.name),
+      params: [],
+      returnType: VOID,
+      locals: caught === undefined || loads.length === 0 ? [] : [caught],
+      loc,
+      body: [
+        {
+          kind: "if",
+          cond: read(at, BOOL, loc),
+          then: [
+            ...(record === null
+              ? []
+              : [
+                  {
+                    kind: "if" as const,
+                    cond: read(record.failed, BOOL, loc),
+                    then: [{ kind: "rethrow" as const, localId: record.error, loc }],
+                    else_: null,
+                    loc,
+                  },
+                ]),
+            { kind: "return", value: null, loc },
+          ],
+          else_: null,
+          loc,
+        },
+        store(at, flag(true, loc), loc),
+        ...(record === null || caught === undefined || loads.length === 0
+          ? loads
+          : [
+              {
+                kind: "tryCatch" as const,
+                tryBody: loads,
+                catchBody: [
+                  store(record.error, read(caught.id, caught.type, loc), loc),
+                  store(record.failed, flag(true, loc), loc),
+                  { kind: "rethrow" as const, localId: caught.id, loc },
+                ],
+                catchLocalId: caught.id,
+                finallyBody: null,
+                loc,
+              },
+            ]),
+        {
+          kind: "if",
+          cond: read(activeOf(group), BOOL, loc),
+          then: [callStmt(fn.name, loc)],
+          else_: [
+            store(link, read(lastOf(group), F64, loc), loc),
+            store(lastOf(group), num(numberIn.get(fn.name)!, loc), loc),
+          ],
+          loc,
+        },
+      ],
     });
-    if (body !== null) rewritten.set(fn.name, { ...fn, body });
+    // The member itself: its own statements behind its guard. Its place
+    // loaded its imports before it was reached, and its statements cannot
+    // throw, so neither the loads nor the error record are needed here.
+    rewritten.set(fn.name, {
+      ...fn,
+      locals: record === null ? fn.locals : fn.locals.filter((l) => l.id !== record.caught),
+      body: [
+        {
+          kind: "if",
+          cond: read(shape.guard, BOOL, loc),
+          then: [{ kind: "return", value: null, loc }],
+          else_: null,
+          loc,
+        },
+        store(shape.guard, flag(true, loc), loc),
+        ...ownBody(fn),
+      ],
+    });
   }
+  // Every other call of a member's initializer goes to its place.
+  const toPlace: IrTransform = {
+    expr: (e) =>
+      e.kind === "call" && candidates.has(e.callee) ? { ...e, callee: placeOf(e.callee) } : e,
+    stmt: (s) => s,
+  };
+  for (const init of candidates)
+    for (const name of callers.get(init) ?? []) {
+      if (candidates.has(name) || rewritten.has(name)) continue;
+      const fn = fns.get(name)!;
+      rewritten.set(name, { ...fn, body: transformStmtList(fn.body, toPlace) });
+    }
 
   // Guards.
   const accessing = new Set<string>();
@@ -1124,6 +1263,16 @@ export function deferClosedInitializers(
           // A labeled block can be left early: what it guards is not
           // guarded after it.
           out.push({ ...s, body: place(s.body, s.labels?.length ? new Set(ran) : ran) });
+        } else if (s.kind === "tryCatch") {
+          // Each body keeps its guards inside, like a branch: the try body
+          // can be left before its guard, and a module the program can
+          // load again has its whole top level in one.
+          out.push({
+            ...s,
+            tryBody: place(s.tryBody, new Set(ran)),
+            catchBody: s.catchBody === null ? null : place(s.catchBody, new Set(ran)),
+            finallyBody: s.finallyBody === null ? null : place(s.finallyBody, new Set(ran)),
+          });
         } else {
           guard(need, s.loc);
           out.push(s);
@@ -1134,49 +1283,88 @@ export function deferClosedInitializers(
     rewritten.set(name, { ...fn, body: place(fn.body, new Set()) });
   }
 
-  // The groups' state and runs.
-  const loc0: SrcLoc = fns.get(entryInit)!.loc;
-  const state: IrGlobal[] = [];
+  // The groups' state and runs. A group's list is kept through the members'
+  // link slots, newest first (a place only stores twice); the run turns it
+  // around and then takes the members in the order their places were
+  // reached, which is the order their modules ran in.
   groupMembers.forEach((list, group) => {
+    const loc = fns.get(list[0]!)!.loc;
     const active = activeOf(group);
-    const reached = reachedOf(group);
+    const last = lastOf(group);
     state.push({ id: active, name: "%lazy", type: BOOL, mutable: true });
-    state.push({ id: reached, name: "%lazy.reached", type: F64, mutable: true });
+    state.push({ id: last, name: "%lazy.last", type: F64, mutable: true });
+    const at = `%lazy.${group}.at`;
+    const next = `%lazy.${group}.next`;
+    const held = `%lazy.${group}.held`;
+    const positive = (localId: string): IrExpr => ({
+      kind: "bin",
+      op: ">",
+      left: read(localId, F64, loc),
+      right: num(0, loc),
+      type: BOOL,
+      loc,
+    });
+    const each = (cases: (member: string) => IrStmt[]): IrStmt => ({
+      kind: "switch",
+      disc: read(at, F64, loc),
+      cases: [
+        ...list.map((member) => ({
+          test: num(numberIn.get(member)!, loc),
+          body: [...cases(member), { kind: "break" as const, loc }],
+        })),
+        { test: null, body: [store(at, num(0, loc), loc)] },
+      ],
+      loc,
+    });
     added.push({
       name: runOf(group),
       params: [],
       returnType: VOID,
-      locals: [],
-      loc: loc0,
+      locals: [
+        { id: at, name: "%at", type: F64, mutable: true },
+        { id: next, name: "%next", type: F64, mutable: true },
+        { id: held, name: "%held", type: F64, mutable: true },
+      ],
+      loc,
       body: [
         {
           kind: "if",
-          cond: { kind: "varRef", localId: active, type: BOOL, loc: loc0 },
-          then: [{ kind: "return", value: null, loc: loc0 }],
+          cond: read(active, BOOL, loc),
+          then: [{ kind: "return", value: null, loc }],
           else_: null,
-          loc: loc0,
+          loc,
         },
+        store(active, flag(true, loc), loc),
+        { kind: "varDecl", localId: at, init: read(last, F64, loc), loc },
+        { kind: "varDecl", localId: next, init: num(0, loc), loc },
+        { kind: "varDecl", localId: held, init: num(0, loc), loc },
+        // Newest first becomes oldest first: each link now names the member
+        // reached after its own.
         {
-          kind: "assign",
-          localId: active,
-          value: { kind: "boolLit", value: true, type: BOOL, loc: loc0 },
-          loc: loc0,
+          kind: "while",
+          cond: positive(at),
+          body: [
+            each((member) => [
+              store(held, read(linkOf(member), F64, loc), loc),
+              store(linkOf(member), read(next, F64, loc), loc),
+              store(next, read(at, F64, loc), loc),
+              store(at, read(held, F64, loc), loc),
+            ]),
+          ],
+          loc,
         },
-        // The members whose places have been reached, in order.
-        ...list.map((member, index): IrStmt => ({
-          kind: "if",
-          cond: {
-            kind: "bin",
-            op: ">",
-            left: { kind: "varRef", localId: reached, type: F64, loc: loc0 },
-            right: num(index, loc0),
-            type: BOOL,
-            loc: loc0,
-          },
-          then: [callStmt(member, loc0)],
-          else_: null,
-          loc: loc0,
-        })),
+        store(at, read(next, F64, loc), loc),
+        {
+          kind: "while",
+          cond: positive(at),
+          body: [
+            each((member) => [
+              store(at, read(linkOf(member), F64, loc), loc),
+              callStmt(member, loc),
+            ]),
+          ],
+          loc,
+        },
       ],
     });
   });

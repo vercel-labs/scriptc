@@ -72,6 +72,33 @@ const init = (n: number, imports: number[], body: IrStmt[]): IrFunction =>
     ...imports.map((dep) => run(`%init.${dep}`)),
     ...body,
   ]);
+const CAUGHT: IrType = { kind: "caught" };
+const failed = (n: number): string => `%g.m${n}.%loaded%failed`;
+const error = (n: number): string => `%g.m${n}.%loaded%error`;
+/** Module `n`'s initializer in the form of a module the program can load
+ * again after it threw: the error is kept and thrown again. */
+const recording = (n: number, imports: number[], body: IrStmt[]): IrFunction => ({
+  ...fn(`%init.${n}`, [
+    when(ref(loaded(n), BOOL), [
+      when(ref(failed(n), BOOL), [{ kind: "rethrow", localId: error(n), loc }]),
+      { kind: "return", value: null, loc },
+    ]),
+    assign(loaded(n), { kind: "boolLit", value: true, type: BOOL, loc }),
+    {
+      kind: "tryCatch",
+      tryBody: [...imports.map((dep) => run(`%init.${dep}`)), ...body],
+      catchBody: [
+        assign(error(n), ref(`%moduleError.${n}`, CAUGHT)),
+        assign(failed(n), { kind: "boolLit", value: true, type: BOOL, loc }),
+        { kind: "rethrow", localId: `%moduleError.${n}`, loc },
+      ],
+      catchLocalId: `%moduleError.${n}`,
+      finallyBody: null,
+      loc,
+    },
+  ]),
+  locals: [{ id: `%moduleError.${n}`, name: "%moduleError", type: CAUGHT, mutable: false }],
+});
 /** The entry's initializer: its imports and its body, no guard. */
 const entry = (imports: number[], body: IrStmt[]): IrFunction =>
   fn("%init.0", [...imports.map((dep) => run(`%init.${dep}`)), ...body]);
@@ -91,7 +118,11 @@ function program(functions: IrFunction[], globals: IrGlobal[]): IrModule {
     globals: [
       ...globals,
       global("%g.e.flag", BOOL, true),
-      ...modules.map((n) => global(loaded(n), BOOL, true)),
+      ...modules.flatMap((n) => [
+        global(loaded(n), BOOL, true),
+        global(failed(n), BOOL, true),
+        global(error(n), CAUGHT, true),
+      ]),
     ],
     entry: "%main",
   };
@@ -113,6 +144,16 @@ const guardOf = (stmt: IrStmt | undefined): string | null =>
   stmt.then[0]!.expr.kind === "call"
     ? `${stmt.cond.operand.localId} ${stmt.then[0]!.expr.callee}`
     : null;
+/** The members a group's run can take: [number in the group, initializer]. */
+const runOrder = (group: IrFunction): [number, string][] => {
+  const loop = group.body[group.body.length - 1] as IrStmt & { kind: "while" };
+  const select = loop.body[0] as IrStmt & { kind: "switch" };
+  return select.cases.flatMap((c): [number, string][] =>
+    c.test?.kind === "numLit"
+      ? [[c.test.value, (c.body[1] as { expr: { callee: string } }).expr.callee]]
+      : [],
+  );
+};
 const callees = (f: IrFunction): string[] =>
   f.body.flatMap((s) => (s.kind === "exprStmt" && s.expr.kind === "call" ? [s.expr.callee] : []));
 
@@ -134,27 +175,42 @@ test("a module that only computes runs at the first use of what it makes", () =>
   const use = named(out, "use");
   expect(use.body.map((s) => s.kind)).toEqual(["if", "return"]);
   expect(guardOf(use.body[0])).toBe("%g.%lazy.0 %lazy.0");
-  // The initializer itself is unchanged, and the entry is not guarded: its
-  // own statements do not name the table.
-  expect(named(out, "%init.1")).toBe(named(mod, "%init.1"));
+  // The initializer keeps its guard and its own statements, and the entry
+  // is not guarded: its own statements do not name the table.
+  expect(named(out, "%init.1").body).toEqual(named(mod, "%init.1").body);
   expect(named(out, "%init.0").body.some((s) => guardOf(s) !== null)).toBe(false);
-  // The place notes that it was reached, and runs the module when the
-  // group is already active; the run takes the members reached so far.
+  // The place notes that it was reached: in an idle group it puts the
+  // module on the group's list, in an active one it runs it.
   const place = named(out, "%lazy.at.1");
   expect(place.body.map((s) => s.kind)).toEqual(["if", "assign", "if"]);
-  expect(place.body[1]).toMatchObject({ localId: "%g.%lazy.0.reached", value: { value: 1 } });
+  expect(place.body[0]).toMatchObject({
+    cond: { localId: "%g.%lazy.at.1" },
+    then: [{ kind: "return" }],
+  });
+  expect(place.body[1]).toMatchObject({ localId: "%g.%lazy.at.1", value: { value: true } });
   expect(place.body[2]).toMatchObject({
     cond: { kind: "varRef", localId: "%g.%lazy.0" },
     then: [{ expr: { callee: "%init.1" } }],
+    else_: [
+      { localId: "%g.%lazy.link.1", value: { localId: "%g.%lazy.0.last" } },
+      { localId: "%g.%lazy.0.last", value: { value: 1 } },
+    ],
   });
+  // The run turns the list around and takes its members in order.
   const group = named(out, "%lazy.0");
-  expect(group.body.map((s) => s.kind)).toEqual(["if", "assign", "if"]);
-  expect(group.body[2]).toMatchObject({
-    cond: { kind: "bin", op: ">", left: { localId: "%g.%lazy.0.reached" }, right: { value: 0 } },
-    then: [{ expr: { callee: "%init.1" } }],
-  });
+  expect(group.body.map((s) => s.kind)).toEqual([
+    "if",
+    "assign",
+    "varDecl",
+    "varDecl",
+    "varDecl",
+    "while",
+    "assign",
+    "while",
+  ]);
+  expect(runOrder(group)).toEqual([[1, "%init.1"]]);
   expect(out.globals!.map((g) => g.id)).toEqual(
-    expect.arrayContaining(["%g.%lazy.0", "%g.%lazy.0.reached"]),
+    expect.arrayContaining(["%g.%lazy.0", "%g.%lazy.0.last", "%g.%lazy.at.1", "%g.%lazy.link.1"]),
   );
 });
 
@@ -306,19 +362,16 @@ test("modules that share a binding form one group and keep their order", () => {
   // 3 visits the place of 1.
   expect(callees(named(out, "%init.0"))).toEqual(["%lazy.at.2", "%init.3", "%lazy.at.4"]);
   expect(callees(named(out, "%init.3")).slice(0, 1)).toEqual(["%lazy.at.1"]);
-  // A member keeps the loads of its own group.
-  expect(callees(named(out, "%init.4"))).toEqual(["%init.1", "%init.2"]);
+  // A member keeps its own statements only: its place loaded its imports.
+  expect(callees(named(out, "%init.4"))).toEqual([]);
   // A member's place visits its imports' places first.
   expect(callees(named(out, "%lazy.at.4"))).toEqual(["%lazy.at.1", "%lazy.at.2"]);
-  // The run takes the members in the order their modules ran: 1, 2, 4.
-  const group = named(out, "%lazy.0");
-  expect(
-    group.body
-      .slice(2)
-      .map((s) =>
-        s.kind === "if" ? (s.then[0] as { expr: { callee: string } }).expr.callee : null,
-      ),
-  ).toEqual(["%init.1", "%init.2", "%init.4"]);
+  // The run can take every member; which and in what order is the list's.
+  expect(runOrder(named(out, "%lazy.0"))).toEqual([
+    [1, "%init.1"],
+    [2, "%init.2"],
+    [3, "%init.4"],
+  ]);
   // The counter's function is guarded: whoever draws runs the group first.
   expect(guardOf(named(out, "draw").body[0])).toBe("%g.%lazy.0 %lazy.0");
 });
@@ -398,28 +451,105 @@ test("a constant of a module that stays is read freely; another value of it is n
   expect(array.verdicts.get("%init.2")?.reason).toMatch(/'base' is made by a module that stays/);
 });
 
-test("modules the static import tree does not place stay", () => {
+test("a module is placed wherever it is loaded from", () => {
   const body = [assign("%g.m1.table", call("seven", [], F64))];
   const reader = fn("use", [{ kind: "return", value: ref("%g.m1.table"), loc }], F64);
-  // Loaded by a function: a dynamic import.
+  // Loaded by a function: a dynamic import, a require().
   const dynamic = program(
     [seven, init(1, [], body), reader, fn("load", [run("%init.1")]), entry([], [])],
     [global("%g.m1.table")],
   );
-  expect(defer(dynamic).out).toBe(dynamic);
-  // Imported by a module that is loaded dynamically.
+  const loadedByFunction = defer(dynamic);
+  expect(loadedByFunction.verdicts.get("%init.1")?.group).toBe("%lazy.0");
+  expect(callees(named(loadedByFunction.out, "load"))).toEqual(["%lazy.at.1"]);
+  // Imported by a module that is loaded dynamically, and by the entry.
   const below = program(
     [
       seven,
       init(1, [], body),
-      init(2, [1], []),
+      init(2, [1], [{ kind: "exprStmt", expr: unknown, loc }]),
       reader,
       fn("load", [run("%init.2")]),
       entry([1], []),
     ],
     [global("%g.m1.table")],
   );
-  expect(defer(below).verdicts.get("%init.1")?.reason).toMatch(/loaded dynamically/);
+  const both = defer(below);
+  expect(both.verdicts.get("%init.1")?.group).toBe("%lazy.0");
+  expect(callees(named(both.out, "%init.0"))).toEqual(["%lazy.at.1"]);
+  expect(callees(named(both.out, "%init.2"))).toEqual(["%lazy.at.1"]);
+  expect(callees(named(both.out, "load"))).toEqual(["%init.2"]);
+});
+
+test("a module the program can load again keeps an error of its imports at its place", () => {
+  const body = [assign("%g.m2.table", call("seven", [], F64))];
+  const thrower: IrStmt = { kind: "throw", value: num(1), loc } as IrStmt;
+  const mod = program(
+    [
+      seven,
+      // m1 throws while it loads; m2 imports it and only computes; m3
+      // imports m2 and prints.
+      recording(1, [], [thrower]),
+      recording(2, [1], body),
+      recording(
+        3,
+        [2],
+        [
+          {
+            kind: "exprStmt",
+            expr: { kind: "intrinsic", name: "console.log", args: [num(1)], type: VOID, loc },
+            loc,
+          },
+        ],
+      ),
+      fn("use", [{ kind: "return", value: ref("%g.m2.table"), loc }], F64),
+      fn("load", [run("%init.2"), run("%init.3")]),
+      entry([], []),
+    ],
+    [global("%g.m2.table")],
+  );
+  const { out, verdicts } = defer(mod);
+  expect(verdicts.get("%init.1")?.reason).toMatch(/'throw' statement/);
+  expect(verdicts.get("%init.2")?.group).toBe("%lazy.0");
+  expect(verdicts.get("%init.3")?.group).toBeNull();
+  // The place: visited again after a failed load it throws the kept error;
+  // the first time it loads the imports inside the record.
+  const place = named(out, "%lazy.at.2");
+  expect(place.body.map((s) => s.kind)).toEqual(["if", "assign", "tryCatch", "if"]);
+  expect(place.body[0]).toMatchObject({
+    cond: { localId: "%g.%lazy.at.2" },
+    then: [
+      { kind: "if", cond: { localId: failed(2) }, then: [{ kind: "rethrow", localId: error(2) }] },
+      { kind: "return" },
+    ],
+  });
+  expect(place.body[2]).toMatchObject({
+    tryBody: [{ expr: { callee: "%init.1" } }],
+    catchBody: [
+      { kind: "assign", localId: error(2) },
+      { kind: "assign", localId: failed(2), value: { value: true } },
+      { kind: "rethrow", localId: "%moduleError.2" },
+    ],
+    catchLocalId: "%moduleError.2",
+  });
+  expect(place.locals.map((l) => l.id)).toEqual(["%moduleError.2"]);
+  // The member: its guard and its own statements, with nothing that throws.
+  const member = named(out, "%init.2");
+  expect(member.body.map((s) => s.kind)).toEqual(["if", "assign", "assign"]);
+  expect(member.body[0]).toMatchObject({ then: [{ kind: "return" }] });
+  expect(member.locals).toEqual([]);
+  // The importer that stays calls the place from inside its own record,
+  // and so does the function that loads both.
+  const importer = named(out, "%init.3");
+  expect((importer.body[2] as IrStmt & { kind: "tryCatch" }).tryBody[0]).toMatchObject({
+    expr: { callee: "%lazy.at.2" },
+  });
+  expect(callees(named(out, "load"))).toEqual(["%lazy.at.2", "%init.3"]);
+});
+
+test("modules that cannot be placed stay", () => {
+  const body = [assign("%g.m1.table", call("seven", [], F64))];
+  const reader = fn("use", [{ kind: "return", value: ref("%g.m1.table"), loc }], F64);
   // Two modules that import each other.
   const cycle = program(
     [seven, init(1, [2], body), init(2, [1], []), reader, entry([1], [])],
@@ -441,6 +571,31 @@ test("modules the static import tree does not place stay", () => {
     [global("%g.m1.table"), global("%g.m2.x")],
   );
   expect(defer(late).verdicts.get("%init.2")?.reason).toMatch(/after its own first statement/);
+  // An initializer that awaits.
+  const awaits = program(
+    [seven, { ...init(1, [], body), async: true }, reader, entry([], [])],
+    [global("%g.m1.table")],
+  );
+  expect(defer(awaits).verdicts.get("%init.1")?.reason).toMatch(/awaits/);
+  // An initializer held as a function value.
+  const held: IrExpr = {
+    kind: "closure",
+    fnName: "%init.1",
+    captures: [],
+    type: { kind: "func", params: [], ret: VOID },
+    loc,
+  };
+  const value = program(
+    [
+      seven,
+      init(1, [], body),
+      reader,
+      fn("holds", [{ kind: "exprStmt", expr: held, loc }]),
+      entry([1], []),
+    ],
+    [global("%g.m1.table")],
+  );
+  expect(defer(value).verdicts.get("%init.1")?.reason).toMatch(/function value/);
 });
 
 test("a group the start-up code uses for certain, or too small to matter, stays", () => {
@@ -515,4 +670,39 @@ test("bindings a guard cannot stand in front of keep their module", () => {
   );
   expect(defer(plain).out).not.toBe(plain);
   expect(defer({ ...plain, workers: true }).out.functions).toBe(plain.functions);
+});
+
+test("only what the roots load for certain counts as start-up code", () => {
+  const body = [assign("%g.m1.table", call("seven", [], F64))];
+  const reads: IrStmt = { kind: "exprStmt", expr: ref("%g.m1.table"), loc };
+  const prints: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "intrinsic", name: "console.log", args: [num(1)], type: VOID, loc },
+    loc,
+  };
+  // m2 prints and reads the table at its top level, and only a function
+  // loads m2.
+  const mod = program(
+    [
+      seven,
+      recording(1, [], body),
+      recording(2, [1], [prints, reads]),
+      fn("load", [run("%init.2")]),
+      entry([1], []),
+    ],
+    [global("%g.m1.table")],
+  );
+  const { out, verdicts } = defer(mod);
+  expect(verdicts.get("%init.1")?.group).toBe("%lazy.0");
+  // The reader's guard stands inside its record, after its loads.
+  const reader = named(out, "%init.2").body[2] as IrStmt & { kind: "tryCatch" };
+  expect(reader.tryBody.map((s) => s.kind)).toEqual(["exprStmt", "exprStmt", "if", "exprStmt"]);
+  expect(reader.tryBody[0]).toMatchObject({ expr: { callee: "%lazy.at.1" } });
+  expect(guardOf(reader.tryBody[2])).toBe("%g.%lazy.0 %lazy.0");
+  // The same module imported by the entry is start-up code.
+  const atStart = program(
+    [seven, recording(1, [], body), recording(2, [1], [prints, reads]), entry([2], [])],
+    [global("%g.m1.table")],
+  );
+  expect(defer(atStart).verdicts.get("%init.1")?.reason).toMatch(/start-up code uses it/);
 });

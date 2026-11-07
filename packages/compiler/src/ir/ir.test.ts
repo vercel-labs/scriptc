@@ -201,6 +201,95 @@ describe("checked records with opaque payloads", () => {
   });
 });
 
+describe("functions under JSON.stringify", () => {
+  const callback: IrType = { kind: "func", params: [], ret: { kind: "void" } };
+  const shapes: IrRecordShape[] = [
+    { id: "field", fields: [{ name: "run", type: callback }] },
+    { id: "armed", fields: [{ name: "label", type: { kind: "union", unionId: "lazy" } }] },
+    { id: "tuple", tuple: true, fields: [{ name: "0", type: callback }] },
+    { id: "index", fields: [], indexValue: callback },
+    { id: "hook", fields: [{ name: "toJSON", type: callback }] },
+    {
+      id: "maybeHook",
+      fields: [{ name: "toJSON", type: { kind: "union", unionId: "optional" } }],
+    },
+    { id: "textHook", fields: [{ name: "toJSON", type: STRING }] },
+    { id: "narrow", fields: [{ name: "id", type: F64 }] },
+    {
+      id: "wide",
+      fields: [
+        { name: "id", type: F64 },
+        { name: "pick", type: { kind: "union", unionId: "optional" } },
+      ],
+    },
+    {
+      id: "wideUnknown",
+      fields: [
+        { name: "extra", type: DYN },
+        { name: "id", type: F64 },
+      ],
+    },
+    {
+      id: "wideMap",
+      fields: [
+        { name: "id", type: F64 },
+        { name: "index", type: { kind: "map", key: STRING, value: F64 } },
+      ],
+    },
+  ];
+  const records = new Map(shapes.map((shape) => [shape.id, shape]));
+  const unions = new Map<string, IrUnionDef>([
+    ["lazy", { id: "lazy", arms: [STRING, callback] }],
+    ["optional", { id: "optional", arms: [callback, { kind: "undefinedT" }] }],
+  ]);
+  const record = (id: string): IrRecordShape | undefined => records.get(id);
+  const union = (id: string): IrUnionDef | undefined => unions.get(id);
+  const shape = (id: string): IrType => ({ kind: "record", shapeId: id });
+  const safe = (type: IrType): boolean => isJsonStringifySafeType(type, record, union);
+
+  test("a function is dropped or written as null below the root", () => {
+    for (const id of ["field", "armed", "tuple", "index"]) expect(safe(shape(id))).toBe(true);
+    expect(safe(arrayOf(callback))).toBe(true);
+    expect(safe(arrayOf({ kind: "union", unionId: "lazy" }))).toBe(true);
+  });
+
+  test("a root that is or may be a function is not a string", () => {
+    expect(safe(callback)).toBe(false);
+    expect(safe({ kind: "union", unionId: "lazy" })).toBe(false);
+  });
+
+  test("checked JSON conversion still excludes functions", () => {
+    for (const id of ["field", "armed", "index"])
+      expect(isJsonSafeType(shape(id), record, union)).toBe(false);
+    expect(isJsonSafeType(arrayOf(callback), record, union)).toBe(false);
+  });
+
+  test("a record with a toJSON hook takes the runtime traversal", () => {
+    for (const id of ["hook", "maybeHook"]) {
+      expect(safe(shape(id))).toBe(false);
+      expect(safe(arrayOf(shape(id)))).toBe(false);
+      expect(isJsonStringifyDynamicType(shape(id), record, union)).toBe(true);
+    }
+    expect(safe(shape("textHook"))).toBe(true);
+  });
+
+  test("a linked copy is as serializable as its sources", () => {
+    const sources = (from: string) => (id: string) => (id === "narrow" ? [from] : undefined);
+    const narrow = shape("narrow");
+    expect(isJsonStringifySafeType(narrow, record, union, sources("wide"))).toBe(true);
+    expect(isJsonStringifySafeType(narrow, record, union, sources("wideMap"))).toBe(false);
+    expect(isJsonStringifySafeType(arrayOf(narrow), record, union, sources("wideMap"))).toBe(false);
+    expect(isJsonStringifySafeType(narrow, record, union, sources("hook"))).toBe(false);
+    expect(isJsonStringifySafeType(shape("wide"), record, union, sources("wideMap"))).toBe(true);
+  });
+
+  test("the writer serializes a checked-dynamic member of a link source itself", () => {
+    const sources = (id: string) => (id === "narrow" ? ["wideUnknown"] : undefined);
+    expect(safe(shape("wideUnknown"))).toBe(false);
+    expect(isJsonStringifySafeType(shape("narrow"), record, union, sources)).toBe(true);
+  });
+});
+
 describe("native typed-array boundaries", () => {
   test.each(Object.keys(BYTES_ELEMENT_NAME) as IrBytesElem[])(
     "preserves %s in checked records without a JSON/island claim",

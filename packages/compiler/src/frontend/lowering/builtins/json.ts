@@ -21,6 +21,7 @@ import {
   isUnitType,
 } from "../../../ir/ir.js";
 import { optionalStringTags } from "./arguments.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { constituentTypes } from "../../ts7/checker.js";
 
 /** JSON parse produces checked-dynamic data; a native reviver walks it
@@ -162,6 +163,21 @@ export function lowerJsonMethodCall(
     }
     const optionalString = lowerOptionalStringifyRoot(lowerer, value, indent, loc);
     if (optionalString) return optionalString;
+    // A function root is not serialized: once its argument has run,
+    // JSON.stringify answers undefined.
+    if (value.type.kind === "func") {
+      const missing = lowerer.wrappedUndefined(lowerer.withUndefinedArm(STRING), loc);
+      if (!missing)
+        throw new InternalCompilerError("JSON.stringify of a function needs an undefined arm");
+      if (isSafeToDiscard(value)) return missing;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: value, loc }],
+        result: missing,
+        type: missing.type,
+        loc,
+      };
+    }
     // A program class instance whose class (or a base) declares toJSON:
     // JSON.stringify serializes whatever toJSON(key) returns, so the
     // instance crosses into the runtime walker, which calls the hook
@@ -238,6 +254,21 @@ export function lowerJsonMethodCall(
             `narrow with '!== undefined' first, model absence with a null arm, ` +
             `or use an optional record field ('{ a?: string }'), which drops ` +
             `from the output like Node's)`,
+        );
+      }
+      // A root that may be a function gets its own wording too: the
+      // result is undefined for the function and text for the rest.
+      if (
+        value.type.kind === "union" &&
+        lowerer.unions.get(value.type.unionId)?.arms.some((arm) => arm.kind === "func") === true
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          argNode,
+          `JSON.stringify of '${lowerer.fmt(value.type)}' values ` +
+            `(Node's stringify of a function is undefined, not a string — ` +
+            `test 'typeof value !== "function"' first; a function inside a ` +
+            `record or an array serializes like Node's)`,
         );
       }
       lowerer.unsupported(

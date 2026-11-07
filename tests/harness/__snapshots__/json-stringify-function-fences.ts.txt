@@ -1,0 +1,15 @@
+json-stringify-function-fences.ts:6:34 - error SC1090: JSON.stringify of '() => string | string' values (Node's stringify of a function is undefined, not a string — test 'typeof value !== "function"' first; a function inside a record or an array serializes like Node's) are not supported yet
+
+  5 | }
+  6 | const rootUnion = JSON.stringify(pick(true));
+    |                                  ^~~~~~~~~~
+  7 | 
+
+json-stringify-function-fences.ts:20:16 - error SC1090: JSON.stringify of '{ id: number }' values converted from '{ id: number; index: Map<string, number> }' (the value keeps its source object's other properties, and that type has members the JSON writer cannot serialize) is not supported yet
+
+  19 | }
+  20 | const linked = JSON.stringify(narrow({ id: 1, index: new Map() }));
+     |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 | 
+
+  hint: serialize an object literal that names the properties to write

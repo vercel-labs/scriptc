@@ -22,6 +22,7 @@ import {
   KEY_ORDER_FIELD,
   STRING,
   arrayOf,
+  isJsonStringifySafeType,
   type IrExpr,
   type IrFunction,
   type IrRecordLink,
@@ -241,6 +242,7 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
   const scan = scanModule(lowerer, [...functions, ...lowerer.liftedFns]);
   const sourced = scan.sourced;
   keepObservedLinks(lowerer, scan.exposed);
+  refuseUnserializableSources(lowerer, scan.stringified);
   for (const site of lowerer.recordLinkSites)
     if (lowerer.recordLinks.has(`${site.link.from}:${site.link.to}`))
       linkCopies(site.projection, site.link);
@@ -269,6 +271,73 @@ export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): 
   // The module's functions already hold the helpers lifted before.
   functions.push(...lowerer.liftedFns.slice(lifted));
   restoreStringConversions(lowerer, functions, answering);
+}
+
+/** JSON.stringify writes a linked copy as its composed record, a record of
+ * the source's type, so a serialized type that reaches the target of a kept
+ * link is as serializable as that link's source type. A call whose source
+ * holds something the JSON writer has no case for is refused and names
+ * both types. */
+function refuseUnserializableSources(
+  lowerer: Lowerer,
+  stringified: readonly (IrExpr & { kind: "jsonStringify" })[],
+): void {
+  if (lowerer.recordLinks.size === 0 || stringified.length === 0) return;
+  const sourcesOf = new Map<string, string[]>();
+  for (const link of lowerer.recordLinks.values()) {
+    const sources = sourcesOf.get(link.to);
+    if (sources) sources.push(link.from);
+    else sourcesOf.set(link.to, [link.from]);
+  }
+  const getRecord = (id: string) => lowerer.shapes.get(id);
+  const getUnion = (id: string) => lowerer.unions.get(id);
+  const refused = new Set<string>();
+  for (const site of stringified) {
+    const t = site.value.type;
+    if (t.kind === "dyn") continue;
+    // The targets of kept links the serialized type reaches.
+    const targets: string[] = [];
+    const safe = isJsonStringifySafeType(t, getRecord, getUnion, (id) => {
+      const sources = sourcesOf.get(id);
+      if (sources) targets.push(id);
+      return sources;
+    });
+    if (safe) continue;
+    const key = `${site.loc.file}:${site.loc.start}:${typeKey(t)}`;
+    if (refused.has(key)) continue;
+    refused.add(key);
+    let pair: { to: string; from: string } | null = null;
+    for (const to of targets) {
+      const from = sourcesOf
+        .get(to)!
+        .find(
+          (id) =>
+            !isJsonStringifySafeType(
+              { kind: "record", shapeId: to },
+              getRecord,
+              getUnion,
+              (target) => (target === to ? [id] : sourcesOf.get(target)),
+            ),
+        );
+      if (from !== undefined) {
+        pair = { to, from };
+        break;
+      }
+    }
+    // The type itself was serializable when its call was lowered.
+    if (pair === null) continue;
+    const surface = site.circular === true ? "util.format %j" : "JSON.stringify";
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        site.loc,
+        `${surface} of '${lowerer.fmt({ kind: "record", shapeId: pair.to })}' values converted from ` +
+          `'${lowerer.fmt({ kind: "record", shapeId: pair.from })}' (the value keeps its source object's ` +
+          `other properties, and that type has members the JSON writer cannot serialize)`,
+        "serialize an object literal that names the properties to write",
+      ),
+    );
+  }
 }
 
 /** A call of an Object.prototype method by name on a record type runs
@@ -517,7 +586,12 @@ const EXPOSING_LIB_CALLS = /^(json|insp|dyn|js)\.|^(child|process)\.send$/;
 function scanModule(
   lowerer: Lowerer,
   functions: readonly IrFunction[],
-): { sourced: Set<string>; exposed: IrType[] } {
+): {
+  sourced: Set<string>;
+  exposed: IrType[];
+  stringified: (IrExpr & { kind: "jsonStringify" })[];
+} {
+  const stringified: (IrExpr & { kind: "jsonStringify" })[] = [];
   const sourced = new Set<string>();
   const seen = new Set<string>();
   const exposed = new Map<string, IrType>();
@@ -543,14 +617,17 @@ function scanModule(
         }
         if (!links) return true;
         if (e.kind === "dynFrom") expose(e.value.type);
-        if (e.kind === "jsonStringify") expose(e.value.type);
+        if (e.kind === "jsonStringify") {
+          expose(e.value.type);
+          stringified.push(e);
+        }
         if (e.kind === "libCall" && EXPOSING_LIB_CALLS.test(e.fn))
           for (const arg of e.args) expose(arg.type);
         return true;
       },
     });
   }
-  return { sourced, exposed: [...exposed.values()] };
+  return { sourced, exposed: [...exposed.values()], stringified };
 }
 
 /** Adds to `out` the record types a checked conversion into `t` can build

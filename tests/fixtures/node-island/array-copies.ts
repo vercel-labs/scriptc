@@ -52,6 +52,11 @@ const fallback = maybe(false) ?? [];
 // An array of arrays.
 let nested: number[][] = grid();
 
+// An array of arrays read by destructuring: the inner arrays it binds are
+// copies, so a write through one no longer reaches the island.
+const [row] = grid();
+const [, secondRow] = grid();
+
 // A standard function that can keep what it is given.
 const kept: number[][] = [];
 kept.push(makeList());

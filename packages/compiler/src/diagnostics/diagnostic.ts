@@ -350,6 +350,7 @@ export function unrelatedClassCastDivergenceDiag(
 export type IslandArrayCopyUse =
   | "argument"
   | "binding"
+  | "destructuring"
   | "assignment"
   | "return"
   | "member"
@@ -377,6 +378,7 @@ export function islandArrayCopyDivergenceDiag(
   const where: Record<IslandArrayCopyUse, string> = {
     argument: "passed to native code as an argument",
     binding: "bound to a name that is not a 'const' of the island's array",
+    destructuring: "read by an array destructuring pattern that binds its element arrays",
     assignment: "assigned to a native variable or property",
     return: "returned from a native function",
     member: "stored as a member of a native object",

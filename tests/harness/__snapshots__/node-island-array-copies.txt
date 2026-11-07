@@ -151,11 +151,29 @@ main.ts:53:26 - warning SC6007: this Node island array ('number[][]') is bound t
 
   hint: write the copy where it happens ('[...value]') so that Node copies too, or keep the island's array: bind it to a 'const' and use it through its members (an index, 'length', its methods), or pass it back to the island
 
-main.ts:57:11 - warning SC6007: this Node island array ('number[]') is passed to native code as an argument, which copies its elements into a native array: under Node it is the island's own array, so the island's later changes are visible here, writes made here reach the island, and it is '===' to the island's array; the copy has none of the three
+main.ts:57:15 - warning SC6007: this Node island array ('number[][]') is read by an array destructuring pattern that binds its element arrays, which copies its elements into a native array: under Node it is the island's own array, so the island's later changes are visible here, writes made here reach the island, and it is '===' to the island's array; the copy has none of the three
 
-  56 | const kept: number[][] = [];
-  57 | kept.push(makeList());
+  56 | // copies, so a write through one no longer reaches the island.
+  57 | const [row] = grid();
+     |               ^~~~~~
+  58 | const [, secondRow] = grid();
+
+  hint: write the copy where it happens ('[...value]') so that Node copies too, or keep the island's array: bind it to a 'const' and use it through its members (an index, 'length', its methods), or pass it back to the island
+
+main.ts:58:23 - warning SC6007: this Node island array ('number[][]') is read by an array destructuring pattern that binds its element arrays, which copies its elements into a native array: under Node it is the island's own array, so the island's later changes are visible here, writes made here reach the island, and it is '===' to the island's array; the copy has none of the three
+
+  57 | const [row] = grid();
+  58 | const [, secondRow] = grid();
+     |                       ^~~~~~
+  59 | 
+
+  hint: write the copy where it happens ('[...value]') so that Node copies too, or keep the island's array: bind it to a 'const' and use it through its members (an index, 'length', its methods), or pass it back to the island
+
+main.ts:62:11 - warning SC6007: this Node island array ('number[]') is passed to native code as an argument, which copies its elements into a native array: under Node it is the island's own array, so the island's later changes are visible here, writes made here reach the island, and it is '===' to the island's array; the copy has none of the three
+
+  61 | const kept: number[][] = [];
+  62 | kept.push(makeList());
      |           ^~~~~~~~~~
-  58 | 
+  63 | 
 
   hint: write the copy where it happens ('[...value]') so that Node copies too, or keep the island's array: bind it to a 'const' and use it through its members (an index, 'length', its methods), or pass it back to the island

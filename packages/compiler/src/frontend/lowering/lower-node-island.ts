@@ -40,6 +40,7 @@ import {
 } from "../../ir/ir.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { classMethodValue } from "./class-method-values.js";
+import type { ClassInfo } from "./lower-classes.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { resolveBareModule } from "../resolve.js";
 import {
@@ -972,8 +973,10 @@ function arrayCopyUse(lowerer: Lowerer, node: ts.Expression): IslandArrayCopyUse
   if (ts.isSpreadElement(p) || ts.isTemplateSpan(p)) return null;
   if (ts.isAwaitExpression(p)) return arrayCopyUse(lowerer, p) === null ? null : "await";
   if (ts.isTypeOfExpression(p) || onlyTested(n)) return null;
-  if (ts.isVariableDeclaration(p) && p.initializer === n)
-    return ts.isArrayBindingPattern(p.name) ? null : "binding";
+  if (ts.isVariableDeclaration(p) && p.initializer === n) {
+    if (!ts.isArrayBindingPattern(p.name)) return "binding";
+    return destructuringHoldsArray(lowerer, node, p.name) ? "destructuring" : null;
+  }
   if (ts.isBinaryExpression(p)) {
     const op = p.operatorToken.kind;
     if (op === ts.SyntaxKind.EqualsToken && p.right === n)
@@ -1003,6 +1006,52 @@ function arrayCopyUse(lowerer: Lowerer, node: ts.Expression): IslandArrayCopyUse
   if (ts.isArrayLiteralExpression(p)) return "element";
   if (ts.isForOfStatement(p) && p.expression === n) return "iteration";
   return "value";
+}
+
+/** Whether destructuring the island array at `node` with `pattern` keeps a
+ * copy of an element. A pattern that binds nothing keeps nothing, and a flat
+ * array of copied values binds those values alone. An array whose elements
+ * are arrays binds them as their native copies, and a write through the
+ * binding no longer reaches the island, so that destructuring is the copy
+ * SC6007 warns about. */
+function destructuringHoldsArray(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  pattern: ts.ArrayBindingPattern,
+): boolean {
+  if (!pattern.elements.nodes.some((element) => !ts.isOmittedExpression(element))) return false;
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return mapped !== null && arrayElementHoldsArray(lowerer, mapped);
+}
+
+/** Whether the element type of the array type `t`, or of a non-nullish arm
+ * of a union of array types, is itself an array. */
+function arrayElementHoldsArray(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "union") {
+    const def = lowerer.unions.get(t.unionId);
+    return (
+      def !== undefined &&
+      def.arms.some(
+        (arm) =>
+          arm.kind !== "nullT" && arm.kind !== "undefinedT" && arrayElementHoldsArray(lowerer, arm),
+      )
+    );
+  }
+  return t.kind === "array" && holdsArray(lowerer, t.elem);
+}
+
+/** Whether the type `t`, or a non-nullish arm of it, is an array. */
+function holdsArray(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "union") {
+    const def = lowerer.unions.get(t.unionId);
+    return (
+      def !== undefined &&
+      def.arms.some(
+        (arm) => arm.kind !== "nullT" && arm.kind !== "undefinedT" && holdsArray(lowerer, arm),
+      )
+    );
+  }
+  return t.kind === "array";
 }
 
 /** Whether only the truth of the value at `n` is read: under `!`, as a
@@ -1493,6 +1542,19 @@ function islandMemberName(name: string): boolean {
   return half === null || !half[1]!.startsWith("#");
 }
 
+/** The property an island member name spells: the two halves of an
+ * accessor (`get:name`, `set:name`) share the property `name`. */
+function islandPropertyName(name: string): string {
+  const half = /^(?:get|set):(.*)$/s.exec(name);
+  return half === null ? name : half[1]!;
+}
+
+/** Whether `name` is the setter half collectClassShape synthesized because
+ * the class overrides an inherited accessor pair with only a getter. */
+function isSynthesizedSetter(info: ClassInfo, name: string): boolean {
+  return name.startsWith("set:") && info.throwingSetters.includes(islandPropertyName(name));
+}
+
 /** A class instance crossing into an island: its capsule answers island
  * reads of its fields, and what the class declares comes from a table the
  * runtime builds once per class (nodeIsland.classMethods): the unbound
@@ -1528,13 +1590,29 @@ function classMethodsBuilderOf(
   const info = lowerer.classes.get(className);
   if (info === undefined || info.def.runtime) return null;
   const names: string[] = [];
+  // A member name is one property of the prototype, and the class nearest
+  // the instance owns it: a subclass's getter alone makes the property
+  // getter-only (its base's setter must not be table beside it, where Node
+  // ignores a sloppy-mode write), and a data member hides an inherited
+  // accessor of the same name. A class's names are claimed after the class
+  // is read, so both halves of one class's pair stay.
+  const claimed = new Set<string>();
   for (
     let c: typeof info | undefined = info;
     c !== undefined;
     c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
   ) {
-    for (const m of c.def.methods ?? [])
-      if (!names.includes(m) && islandMemberName(m)) names.push(m);
+    for (const m of c.def.methods ?? []) {
+      if (!islandMemberName(m) || claimed.has(islandPropertyName(m))) continue;
+      // A getter-only override of an inherited accessor pair synthesizes a
+      // native setter that throws, so a base-typed write fails exactly as
+      // Node's TypeError does. The island's prototype must not see it: there
+      // the property is getter-only again, and a sloppy-mode write is simply
+      // ignored.
+      if (isSynthesizedSetter(c, m)) continue;
+      if (!names.includes(m)) names.push(m);
+    }
+    for (const m of c.def.methods ?? []) if (islandMemberName(m)) claimed.add(islandPropertyName(m));
   }
   if (names.length === 0) return null;
   const builder = `%island.methods:${className}`;

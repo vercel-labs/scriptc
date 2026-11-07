@@ -714,6 +714,11 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
     scr_tls_oom();
   }
   mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
+  /* Node refuses a server's finite-field Diffie-Hellman group under 2048
+   * bits (OpenSSL's default security level: "dh key too small"); the
+   * mbedTLS default accepts 1024. Every client configuration is built
+   * here, so this is the one place the floor is set. */
+  mbedtls_ssl_conf_dhm_min_bitlen(&c->conf, 2048);
   c->verify_recorded = reject_unauthorized || verify_optional;
   c->reject = reject_unauthorized;
   c->has_ca = ca != NULL;

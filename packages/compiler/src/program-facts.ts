@@ -659,9 +659,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   scan("frontend/pipeline.ts#scanDroppedPackages", 1, "discovery", "the packages a load dropped"),
   scan(
     "frontend/pipeline.ts#loadFrontend",
-    2,
+    3,
     "discovery",
-    "the entry contract's files and the source texts of the library identity",
+    "the entry contract's files, the source texts of the library identity, and the files whose imports of its recorded packages a replayed island decision asks for",
   ),
   scan(
     "frontend/program.ts#createRequireProgramRoots7",

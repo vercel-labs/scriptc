@@ -8709,6 +8709,50 @@ function recordAssignHelper(
   return helper;
 }
 
+/** `Object.create(...)` written where a record type is expected (a declared
+ * binding, parameter or return type, or an `as` assertion). The created
+ * object inherits its prototype's members and can hold non-enumerable and
+ * accessor properties; a record holds its declared members as its own
+ * enumerable fields, so the conversion would answer own-key tests,
+ * `Object.keys`, JSON, `Object.getPrototypeOf` and later writes to the
+ * prototype differently from Node. The created object stays exact as an
+ * untyped value. `Object.create(null)` with no descriptors is an empty
+ * object, which an index-signature record holds as it is. */
+function refuseObjectCreateAsRecord(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  nullProto: boolean,
+): void {
+  let node: ts.Node = call;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  const asserted =
+    (ts.isAsExpression(parent) || ts.isTypeAssertion(parent)) && parent.expression === node
+      ? lowerer.checker.getTypeFromTypeNode(parent.type)
+      : undefined;
+  const destination = asserted ?? lowerer.checker.getContextualType(call);
+  if (destination === undefined || (destination.flags & ts.TypeFlags.Any) !== 0) return;
+  let mapped: IrType | null;
+  try {
+    mapped = lowerer.mapTypeOf(destination);
+  } catch {
+    return;
+  }
+  const records = (
+    mapped?.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped]
+  ).filter((arm): arm is IrType & { kind: "record" } => arm?.kind === "record");
+  if (records.length === 0) return;
+  const empty = nullProto && call.arguments.nodes.length === 1;
+  if (empty && records.every((arm) => lowerer.shapes.get(arm.shapeId)?.indexValue !== undefined))
+    return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    `an Object.create result as a '${lowerer.fmt(mapped!)}' value (a typed object holds its declared members as its own properties: it has no prototype to inherit from and no property attributes)`,
+    "keep the result untyped ('unknown', or 'Record<string, unknown>' for keyed access), or build the object with a literal or a spread",
+  );
+}
+
 /** The `Iterator` global's statics (ES2025): `Iterator.from` over a typed
  * built-in iterable lowers (lowerIteratorFromCall); every other member,
  * and other arguments, fence with the working spelling named instead of
@@ -8941,6 +8985,18 @@ export function isPlainDescriptorMap(
     shape.indexValue === undefined &&
     shape.fields.every((field) => field.type.kind === "record")
   );
+}
+
+/** A descriptor map as Object.defineProperties and Object.create read it:
+ * an ordinary object. A record literal written at the call is boxed as a
+ * copy rather than by reference (nothing else holds the literal, so the
+ * copy is unobservable), which is the plain object the runtime's property
+ * walk reads. */
+function descriptorMapValue(descriptors: IrExpr): IrExpr {
+  if (descriptors.kind !== "dynFrom" || descriptors.liveRef !== true) return descriptors;
+  if (descriptors.value.kind !== "recordLit") return descriptors;
+  const { liveRef: _live, ...copied } = descriptors;
+  return copied;
 }
 
 function lowerObjectStaticCall(
@@ -9217,6 +9273,7 @@ function lowerObjectStaticCall(
     let protoNode: ts.Expression = call.arguments.nodes[0]!;
     while (ts.isParenthesizedExpression(protoNode)) protoNode = protoNode.expression;
     const nullProto = protoNode.kind === ts.SyntaxKind.NullKeyword;
+    refuseObjectCreateAsRecord(lowerer, call, nullProto);
 
     if (nullProto && call.arguments.nodes.length === 1) {
       return { kind: "libCall", fn: "dyn.objCreateNullProto", args: [], type: DYN, loc };
@@ -9253,7 +9310,9 @@ function lowerObjectStaticCall(
     if (proto.type.kind === "dyn") {
       if (call.arguments.nodes.length === 1)
         return { kind: "libCall", fn: "dyn.objCreate", args: [proto], type: DYN, loc };
-      const descriptors = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+      const descriptors = descriptorMapValue(
+        lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
+      );
       if (descriptors.type.kind === "dyn")
         return {
           kind: "libCall",
@@ -9789,7 +9848,7 @@ function lowerObjectStaticCall(
       if (boxed) target = boxed;
     }
     if (target?.type.kind === "dyn") {
-      const descs = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+      const descs = descriptorMapValue(lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN));
       if (descs.type.kind === "dyn") {
         return {
           kind: "libCall",

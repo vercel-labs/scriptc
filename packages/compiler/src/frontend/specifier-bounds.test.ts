@@ -157,3 +157,35 @@ export {};
     "(the result of `computed(...)`)",
   ]);
 });
+
+test("a concatenation's cap counts distinct values, and a spread argument is unbounded", () => {
+  // 17 x 17 pairs with repeats: 273 distinct strings, over the cap. The
+  // first 258 pairs hold only 243 of them, so a product cut short at a raw
+  // pair count looked finite and lacked the rest.
+  expect(
+    unboundedWhys(`
+const pick = process.argv.length * 8;
+const head = pick === 0 ? "" : pick === 1 ? "a" : pick === 2 ? "aa" : pick === 3 ? "aaa" : pick === 4 ? "aaaa" : pick === 5 ? "aaaaa" : pick === 6 ? "aaaaaa" : pick === 7 ? "aaaaaaa" : pick === 8 ? "aaaaaaaa" : pick === 9 ? "aaaaaaaaa" : pick === 10 ? "aaaaaaaaaa" : pick === 11 ? "aaaaaaaaaaa" : pick === 12 ? "aaaaaaaaaaaa" : pick === 13 ? "aaaaaaaaaaaaa" : pick === 14 ? "aaaaaaaaaaaaaa" : pick === 15 ? "aaaaaaaaaaaaaaa" : "aaaaaaaaaaaaaaaa";
+const tail = pick === 0 ? "" : pick === 1 ? "a" : pick === 2 ? "x0" : pick === 3 ? "x1" : pick === 4 ? "x2" : pick === 5 ? "x3" : pick === 6 ? "x4" : pick === 7 ? "x5" : pick === 8 ? "x6" : pick === 9 ? "x7" : pick === 10 ? "x8" : pick === 11 ? "x9" : pick === 12 ? "x10" : pick === 13 ? "x11" : pick === 14 ? "x12" : pick === 15 ? "x13" : "x14";
+await import(head + tail);
+export {};
+`),
+  ).toEqual(["(more than 256 possible values)"]);
+  // A spread supplies any number of values: the parameter's value is not the
+  // argument at its index, nor its default.
+  expect(
+    unboundedWhys(`
+async function load(tag: string, spec: string = "node:os"): Promise<unknown> {
+  return [tag, await import(spec)];
+}
+async function first(spec: string, tag: string): Promise<unknown> {
+  return [tag, await import(spec)];
+}
+const pair: [string, string] = ["tag", "node:path"];
+const rest: [string] = ["tag"];
+void load(...pair);
+void first("node:path", ...rest);
+export {};
+`),
+  ).toEqual(["(a call of 'load' that spreads its arguments)"]);
+});

@@ -89,18 +89,21 @@ function union(bounds: readonly SpecifierBound[], at: ts.Node): SpecifierBound {
   return finite(values, at);
 }
 
-/** The cartesian concatenation of two bounds, or the operand that is Top. */
+/** The cartesian concatenation of two bounds, or the operand that is Top.
+ * The cap counts DISTINCT strings: pairs can repeat a string, and a product
+ * cut short at a raw pair count would lack the values only later pairs
+ * produce while still looking finite. */
 function concat(left: SpecifierBound, right: SpecifierBound, at: ts.Node): SpecifierBound {
   if (left.kind === "top") return left;
   if (right.kind === "top") return right;
-  const values: string[] = [];
+  const values = new Set<string>();
   for (const l of left.values) {
     for (const r of right.values) {
-      if (values.length > MAX_VALUES) break;
-      values.push(l + r);
+      values.add(l + r);
+      if (values.size > MAX_VALUES) return top(at, `more than ${MAX_VALUES} possible values`);
     }
   }
-  return finite(values, at);
+  return finite([...values], at);
 }
 
 function bound(
@@ -448,6 +451,14 @@ function boundParameter(
   inProgress.add(fnSym);
   try {
     for (const call of calls) {
+      // A spread element supplies any number of values, so no argument from
+      // it on has a fixed position: the parameter's value is not the one
+      // written at its index (nor its default when nothing is written there).
+      const spread = call.arguments.nodes.findIndex((argument) => ts.isSpreadElement(argument));
+      if (spread >= 0 && spread <= index) {
+        bounds.push(top(call, `a call of '${binding.text}' that spreads its arguments`));
+        continue;
+      }
       const arg = call.arguments.nodes[index];
       if (arg !== undefined) {
         bounds.push(bound(ctx, arg, inProgress));

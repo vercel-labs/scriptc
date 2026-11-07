@@ -885,6 +885,9 @@ static void ni_main_stack(void) {
 
 static void ni_on_node_stack(void (*job)(void *), void *arg);
 static const ScrNodeBridgeHost ni_host;
+#if defined(__APPLE__)
+static void ni_pthread_hold(bool hold);
+#endif
 
 /* ── Node's stack ─────────────────────────────────────────────────────── */
 
@@ -919,6 +922,16 @@ static void ni_make_context(ucontext_t *ctx, char *lo, size_t size, void (*fn)(v
   ctx->uc_stack.ss_size = size;
   ctx->uc_link = NULL;
   makecontext(ctx, fn, 0);
+#if defined(__APPLE__) && defined(__aarch64__)
+  /* getcontext captured the creating stack's frame pointer and macOS's
+   * makecontext leaves it in the context, so the stack's outermost frame
+   * would link to a frame on another stack. The stack starts empty: its
+   * outermost frame has no caller, the link a zeroed stack would give.
+   * backtrace, which Node's diagnostic report calls, walks those links;
+   * it ends at the top of this stack instead of following the other
+   * stack's frames. */
+  if (ctx->uc_mcontext != NULL) ctx->uc_mcontext->__ss.__fp = 0;
+#endif
 }
 
 static void ni_trampoline(void) {
@@ -1064,7 +1077,13 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
   void *caller_fake = NULL;
   __sanitizer_start_switch_fiber(&caller_fake, ni_stack + NI_GUARD, NI_STACK - NI_GUARD);
 #endif
+#if defined(__APPLE__)
+  ni_pthread_hold(true);
+#endif
   swapcontext(&ni_caller_ctx, &ni_node_ctx);
+#if defined(__APPLE__)
+  ni_pthread_hold(false);
+#endif
 #ifdef NI_ASAN
   const void *bottom;
   size_t size;
@@ -1085,14 +1104,16 @@ typedef struct {
  * pthread_get_stackaddr_np the first time it asks, and keeps it for the
  * thread's life. On Linux the bridge's definitions of those functions
  * answer for libnode with Node's stack; macOS binds libnode's own calls
- * inside libnode, so they cannot. While Node starts on its stack (where
+ * inside libnode, so they cannot. While a job runs on Node's stack (where
  * V8 first asks, and where every frame of Node runs), the main thread's
  * pthread record names Node's stack instead: its stack address and the
  * bottom pthread_get_stacksize_np derives from it, found by value next
  * to each other in the record and checked through the public accessors.
- * The record is restored once Node has started. */
+ * The record is restored when the job returns to the thread's own stack,
+ * and asks again on the next one. */
 static void **ni_pthread_stack = NULL;
 static void *ni_pthread_saved[2];
+static int ni_pthread_held = 0; /* jobs holding the record */
 
 static void ni_pthread_stack_enter(uintptr_t start, size_t size) {
   pthread_t self = pthread_self();
@@ -1120,6 +1141,22 @@ static void ni_pthread_stack_leave(void) {
   ni_pthread_stack[1] = ni_pthread_saved[1];
   ni_pthread_stack = NULL;
 }
+
+/* The record names the stack the thread runs on. While a job runs on
+ * Node's stack that is Node's stack, for the reason above and for the
+ * other readers of the record: libc's backtrace() (which Node's
+ * diagnostic report calls) checks its own frame against it, and takes the
+ * alternate-stack path with bounds of one megabyte per frame otherwise,
+ * walking whatever an island frame links to. Nested jobs keep the outer
+ * record, which already names this stack. */
+static void ni_pthread_hold(bool hold) {
+  if (hold) {
+    if (ni_pthread_held++ == 0)
+      ni_pthread_stack_enter((uintptr_t)ni_stack + NI_STACK, NI_STACK - NI_GUARD);
+    return;
+  }
+  if (ni_pthread_held > 0 && --ni_pthread_held == 0) ni_pthread_stack_leave();
+}
 #endif
 
 static void ni_start_job(void *p) {
@@ -1127,13 +1164,7 @@ static void ni_start_job(void *p) {
   /* JavaScript may use Node's stack down to a reserve above its guard page
    * (native frames below V8's limit, the runtime's stack guard). */
   uintptr_t limit = (uintptr_t)(ni_stack + NI_GUARD) + NI_STACK / 8;
-#if defined(__APPLE__)
-  ni_pthread_stack_enter((uintptr_t)ni_stack + NI_STACK, NI_STACK - NI_GUARD);
-#endif
   a->error = ni_bridge->start(&ni_host, a->bootstrap, a->argv0, limit);
-#if defined(__APPLE__)
-  ni_pthread_stack_leave();
-#endif
 }
 
 typedef struct {

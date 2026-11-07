@@ -202,12 +202,17 @@ describe("the JavaScript checker decisions", () => {
   test("only a site guard's fallback puts a code in both tables", () => {
     // An opinion row admits the construct; the triage row of the same code
     // stays for the sites the row's guard excludes, where the user must keep
-    // the named SC1090 refusal instead of an unnamed passthrough.
+    // the named SC1090 refusal instead of an unnamed passthrough. The one
+    // exception is a code whose excluded sites are SyntaxErrors in Node: a
+    // regex decimal escape without its group, or in a character class, is
+    // legal outside Unicode mode and a grammar error inside it.
+    const grammarFallbacks = new Set([1533, 1534, 1536]);
     for (const [code, opinion] of JS_OPINIONS) {
       const decision = jsTscCodeTriage(code);
       if (decision === null) continue;
       expect(typeof opinion.site, `TS${code}`).toBe("function");
-      expect(decision.action, `TS${code}`).not.toBe("keep");
+      if (grammarFallbacks.has(code)) expect(decision.action, `TS${code}`).toBe("keep");
+      else expect(decision.action, `TS${code}`).not.toBe("keep");
     }
   });
 

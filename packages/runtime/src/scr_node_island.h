@@ -156,6 +156,9 @@ typedef struct ScrNiDynOps {
    * 0, or -1 for an error the runtime made itself. */
   int (*error_get)(const struct ScrError *err, const char *key, size_t len, ScrDyn **out);
   int (*error_has)(const struct ScrError *err, const char *key, size_t len);
+  /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
+   * the exception pending). */
+  ScrStr *(*object_tag)(const ScrDyn *value);
   /* A member of an island promise that a promise does not have itself (an
    * island class that extends Promise adds its own), read from the V8
    * promise (+1 in *out, NULL with the exception pending when the read

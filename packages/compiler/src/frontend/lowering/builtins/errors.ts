@@ -3,6 +3,7 @@ import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
+import { builtinErrorNew } from "../lower-classes.js";
 import {
   BOOL,
   CAUGHT,
@@ -313,13 +314,7 @@ export function lowerErrorFunctionCall(lowerer: Lowerer, call: ts.CallExpression
     if (receiver.kind !== "varRef" && receiver.kind !== "unitLit")
       stmts.push({ kind: "exprStmt", expr: receiver, loc: receiver.loc });
   }
-  const error: IrExpr = {
-    kind: "libCall",
-    fn: "error.newOptions",
-    args: lowerer.errorConstructorArgs(args, loc, call),
-    type: { kind: "object", className: info.def.name },
-    loc,
-  };
+  const error = builtinErrorNew(info.def.name, lowerer.errorConstructorArgs(args, loc, call), loc);
   return stmts.length > 0
     ? { kind: "seqExpr", stmts, result: error, type: error.type, loc }
     : error;

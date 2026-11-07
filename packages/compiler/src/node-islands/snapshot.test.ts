@@ -205,6 +205,60 @@ describe("the order deferred loads are probed in", () => {
     expect(paths(mod, [later, required])).toEqual(["required", "later"]);
   });
 
+  test("an inline require() inside a string comparison is walked at its position", () => {
+    // `"x" === require("./a")` keeps the require's sequence inside the
+    // comparison's right operand, and `require("./b") < "y"` inside its left
+    // one. Both comparisons are evaluated where they are written, so the
+    // loads inside the required modules come ahead of the later statement's.
+    const requiredA = defer("requiredA");
+    const requiredB = defer("requiredB");
+    const later = defer("later");
+    const requireA = {
+      kind: "seqExpr",
+      stmts: [init("%init.1")],
+      result: { kind: "varRef", localId: "%g.island.0" },
+    };
+    const requireB = {
+      kind: "seqExpr",
+      stmts: [init("%init.2")],
+      result: { kind: "varRef", localId: "%g.island.1" },
+    };
+    const mod = {
+      entry: "%main",
+      functions: [
+        { name: "%init.1", body: [load(requiredA)] },
+        { name: "%init.2", body: [load(requiredB)] },
+        {
+          name: "%main",
+          body: [
+            {
+              kind: "varDecl",
+              localId: "same",
+              init: {
+                kind: "strEq",
+                negated: false,
+                left: { kind: "strLit", value: "x" },
+                right: requireA,
+              },
+            },
+            {
+              kind: "varDecl",
+              localId: "before",
+              init: {
+                kind: "strCmp",
+                op: "lt",
+                left: requireB,
+                right: { kind: "strLit", value: "y" },
+              },
+            },
+            load(later),
+          ],
+        },
+      ],
+    };
+    expect(paths(mod, [later, requiredB, requiredA])).toEqual(["requiredA", "requiredB", "later"]);
+  });
+
   test("an initializer that awaits continues after the code that called it", () => {
     // dep awaits between its two loads; the importer starts its next
     // dependency before waiting for either.

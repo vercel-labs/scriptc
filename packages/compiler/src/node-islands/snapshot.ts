@@ -114,9 +114,10 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * another module's initializer where it is called (`%init.<n>`, once, as
  * the run-once guard has it), and through a sequence (`seqExpr`): an inline
  * require() lowers to the required module's %init ahead of its export read,
- * both at the require's position. An initializer that awaits is left there
- * and taken up again after the code that called it, in the order of the
- * awaits, as module evaluation continues with later siblings while one is
+ * both at the require's position. A string comparison evaluates both of its
+ * operands, so the walk follows them too. An initializer that awaits is left
+ * there and taken up again after the code that called it, in the order of
+ * the awaits, as module evaluation continues with later siblings while one is
  * suspended. Loads the walk does not reach (inside functions, dynamic
  * imports, conditions other than the ones below) keep IR order after it. */
 export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] {
@@ -144,6 +145,13 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
       // the export read, both where the require is written.
       for (const s of e.stmts) if (statement(s)) return true;
       return evaluate(e.result);
+    }
+    if (e.kind === "strEq" || e.kind === "strCmp") {
+      // A string comparison evaluates both operands, left to right, so a
+      // require() written as either side keeps its initializer there.
+      const awaitingLeft = evaluate(e.left);
+      const awaitingRight = evaluate(e.right);
+      return awaitingLeft || awaitingRight;
     }
     if (e.kind === "awaitExpr") {
       evaluate(e.value);

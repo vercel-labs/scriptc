@@ -275,6 +275,9 @@ export interface CcOptions {
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;
+  /** SCR_CHILD_STREAM_FLOW: a child's output streams keep Node's flowing
+   * state (pause(), resume(), isPaused(), readableFlowing). */
+  childStreamFlow?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;

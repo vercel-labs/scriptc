@@ -23,6 +23,9 @@
 #include "scr_runtime.h"
 #include <math.h>
 #include <stdio.h>
+#ifdef SCR_CHILD_STREAM_FLOW
+#include "scr_child_flow.h"
+#endif
 
 typedef struct ScrIpc ScrIpc;
 static ScrIpc *scr_ipc_new(ScrChildStream *reader, ScrChildWriter *writer);
@@ -1685,6 +1688,9 @@ struct ScrChildStream {
    * stream (+1, NULL outside a store): its events run in it, as Node's
    * pipe handles run theirs. */
   ScrAlsCtx *als;
+#ifdef SCR_CHILD_STREAM_FLOW
+  ScrChildFlow flow; /* pause()/resume() state (scr_child_flow.h) */
+#endif
   struct ScrChildStream *next; /* the service registry (+1) */
 };
 
@@ -1859,6 +1865,9 @@ void scr_child_stream_release(ScrChildStream *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
     scr_child_stream_drop_listeners(s); /* only reachable pre-'end' via leaks */
+#ifdef SCR_CHILD_STREAM_FLOW
+    scr_child_flow_free(s);
+#endif
     if (s->h != NULL) CloseHandle(s->h);
     scr_str_release(s->encoding);
     free(s->capture_data);
@@ -1872,8 +1881,18 @@ void scr_child_stream_release_v(void *p) { scr_child_stream_release((ScrChildStr
 
 /* True while the stream has a consumer and can still deliver. */
 static bool scr_child_stream_watching(const ScrChildStream *s) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  /* Paused or resumed: the stream reads until it holds the high-water mark,
+   * with or without listeners (scr_child_flow.h). */
+  if (s->flow.state != SCR_CHILD_FLOW_NONE)
+    return !s->eof && s->h != NULL && (s->capture || s->flow.len < SCR_CHILD_FLOW_HWM);
+#endif
   return !s->eof && s->h != NULL && (s->n_data > 0 || s->capture || s->close_wait);
 }
+
+#ifdef SCR_CHILD_STREAM_FLOW
+#include "scr_child_flow_impl.h"
+#endif
 
 /* A fresh piped stream over the pipe's read end, registered with the
  * service registry (+1). NULL = the never-opened husk a degraded pipe
@@ -1990,6 +2009,9 @@ static void scr_child_stream_finish(ScrChildStream *s, bool fire_end) {
 }
 
 static void scr_child_stream_finish_in(ScrChildStream *s, bool fire_end) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (fire_end && scr_child_flow_defer_end(s)) return;
+#endif
   if (fire_end && s->encoding != NULL && s->n_data > 0) {
     ScrStr *tail = scr_strdec_end(s->encoding, s->dec_pending);
     s->dec_pending = 0;
@@ -2047,6 +2069,12 @@ static bool scr_child_stream_pump(ScrChildStream *s) {
     DWORD got = 0;
     if (!ReadFile(s->h, buf, avail, &got, NULL) || got == 0) return true;
     scr_child_stream_capture_append(s, buf, (size_t)got);
+#ifdef SCR_CHILD_STREAM_FLOW
+    if (scr_child_flow_take(s, buf, (size_t)got)) {
+      if (scr_exc_pending()) return false;
+      continue;
+    }
+#endif
     if (s->n_data == 0) continue;
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)got);
     chunk->is_buffer = true; /* Node delivers a Buffer */
@@ -2103,6 +2131,9 @@ static void scr_child_stream_drain_now(ScrChildStream *s) {
 
 void scr_child_stream_on_data(ScrChildStream *s, ScrClosure *cb /*moves*/,
                               ScrChildStreamDataFn fn, bool once) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (scr_child_flow_on_data(s, cb, fn, NULL, once)) return;
+#endif
   if (s->eof || s->h == NULL) {
     scr_closure_release(cb);
     return;
@@ -2126,6 +2157,9 @@ void scr_child_stream_on_data(ScrChildStream *s, ScrClosure *cb /*moves*/,
 
 void scr_child_stream_on_data_str(ScrChildStream *s, ScrClosure *cb /*moves*/,
                                   ScrChildStreamDataStrFn fn, bool once) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (scr_child_flow_on_data(s, cb, NULL, fn, once)) return;
+#endif
   if (s->eof || s->h == NULL) {
     scr_closure_release(cb);
     return;
@@ -2147,11 +2181,17 @@ ScrChildStream *scr_child_stream_set_encoding(ScrChildStream *s, ScrStr *enc) {
   scr_str_release(s->encoding);
   s->encoding = scr_str_retain(enc);
   s->dec_pending = 0;
+#ifdef SCR_CHILD_STREAM_FLOW
+  scr_child_flow_set_encoding(s);
+#endif
   return scr_child_stream_retain(s);
 }
 
 void scr_child_stream_on_end(ScrChildStream *s, ScrClosure *cb /*moves*/, bool once) {
   (void)once; /* 'end' fires at most once; the flag changes nothing */
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (scr_child_flow_on_end(s, cb, once)) return;
+#endif
   if (s->eof || s->h == NULL) {
     scr_closure_release(cb);
     return;
@@ -3002,6 +3042,9 @@ bool scr_children_reffed_pending(void) {
 }
 
 void scr_children_teardown(void) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  scr_child_flow_teardown();
+#endif
   while (scr_child_streams != NULL) {
     ScrChildStream *s = scr_child_streams;
     scr_child_streams = s->next;
@@ -3309,8 +3352,20 @@ static void scr_child_settle_in(ScrChild *c) {
       c->exit_cbs[i].fn(c->exit_cbs[i].cb, c->has_code, c->code, c->exit_signal);
       if (scr_exc_pending()) break;
     }
+#ifdef SCR_CHILD_STREAM_FLOW
+    if (!scr_exc_pending() && c->exec_cb != NULL) {
+      scr_child_flow_exec_flush(c->out_stream);
+      if (!scr_exc_pending()) scr_child_flow_exec_flush(c->err_stream);
+    }
+#endif
     if (!scr_exc_pending()) scr_exec_file_fire(c);
   }
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (!scr_exc_pending() && c->state == SCR_CHILD_EXITED) {
+    scr_child_flow_exit(c->out_stream);
+    scr_child_flow_exit(c->err_stream);
+  }
+#endif
   scr_child_drop_terminal_listeners(c);
   if (c->n_close == 0) {
     c->close_done = true;
@@ -4659,6 +4714,9 @@ struct ScrChildStream {
    * stream (+1, NULL outside a store): its events run in it, as Node's
    * pipe handles run theirs. */
   ScrAlsCtx *als;
+#ifdef SCR_CHILD_STREAM_FLOW
+  ScrChildFlow flow; /* pause()/resume() state (scr_child_flow.h) */
+#endif
   struct ScrChildStream *next; /* the service registry (+1) */
 };
 
@@ -4998,6 +5056,9 @@ void scr_child_stream_release(ScrChildStream *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
     scr_child_stream_drop_listeners(s); /* only reachable pre-'end' via leaks */
+#ifdef SCR_CHILD_STREAM_FLOW
+    scr_child_flow_free(s);
+#endif
     if (s->fd >= 0) close(s->fd);
     scr_str_release(s->encoding);
     free(s->capture_data);
@@ -5014,8 +5075,18 @@ static void scr_child_stream_arm(ScrChildStream *s);
 
 /* True while the stream has a consumer and can still deliver. */
 static bool scr_child_stream_watching(const ScrChildStream *s) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  /* Paused or resumed: the stream reads until it holds the high-water mark,
+   * with or without listeners (scr_child_flow.h). */
+  if (s->flow.state != SCR_CHILD_FLOW_NONE)
+    return !s->eof && s->fd >= 0 && (s->capture || s->flow.len < SCR_CHILD_FLOW_HWM);
+#endif
   return !s->eof && s->fd >= 0 && (s->n_data > 0 || s->capture || s->close_wait);
 }
+
+#ifdef SCR_CHILD_STREAM_FLOW
+#include "scr_child_flow_impl.h"
+#endif
 
 /* A fresh piped stream over the pipe's read end (nonblocking, cloexec);
  * registered with the service registry (+1). fd < 0 = the never-opened
@@ -5148,6 +5219,9 @@ static void scr_child_stream_finish(ScrChildStream *s, bool fire_end) {
 }
 
 static void scr_child_stream_finish_in(ScrChildStream *s, bool fire_end) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (fire_end && scr_child_flow_defer_end(s)) return;
+#endif
   if (fire_end && s->encoding != NULL && s->n_data > 0) {
     ScrStr *tail = scr_strdec_end(s->encoding, s->dec_pending);
     s->dec_pending = 0;
@@ -5213,6 +5287,12 @@ static bool scr_child_stream_pump(ScrChildStream *s) {
     }
     if (n == 0) return true;
     scr_child_stream_capture_append(s, buf, (size_t)n);
+#ifdef SCR_CHILD_STREAM_FLOW
+    if (scr_child_flow_take(s, buf, (size_t)n)) {
+      if (scr_exc_pending()) return false;
+      continue;
+    }
+#endif
     if (s->n_data == 0) continue;
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
     chunk->is_buffer = true; /* Node delivers a Buffer */
@@ -5336,6 +5416,9 @@ static void scr_child_stream_arm(ScrChildStream *s) {
  * and never fire, the stdin rule. */
 void scr_child_stream_on_data(ScrChildStream *s, ScrClosure *cb /*moves*/,
                                ScrChildStreamDataFn fn, bool once) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (scr_child_flow_on_data(s, cb, fn, NULL, once)) return;
+#endif
   if (s->eof || s->fd < 0) {
     scr_closure_release(cb);
     return;
@@ -5362,6 +5445,9 @@ void scr_child_stream_on_data(ScrChildStream *s, ScrClosure *cb /*moves*/,
 
 void scr_child_stream_on_data_str(ScrChildStream *s, ScrClosure *cb /*moves*/,
                                   ScrChildStreamDataStrFn fn, bool once) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (scr_child_flow_on_data(s, cb, NULL, fn, once)) return;
+#endif
   if (s->eof || s->fd < 0) {
     scr_closure_release(cb);
     return;
@@ -5386,6 +5472,9 @@ ScrChildStream *scr_child_stream_set_encoding(ScrChildStream *s, ScrStr *enc) {
   scr_str_release(s->encoding);
   s->encoding = scr_str_retain(enc);
   s->dec_pending = 0;
+#ifdef SCR_CHILD_STREAM_FLOW
+  scr_child_flow_set_encoding(s);
+#endif
   return scr_child_stream_retain(s);
 }
 
@@ -5393,6 +5482,9 @@ ScrChildStream *scr_child_stream_set_encoding(ScrChildStream *s, ScrStr *enc) {
  * nor keeps the loop alive (the stdin rule). */
 void scr_child_stream_on_end(ScrChildStream *s, ScrClosure *cb /*moves*/, bool once) {
   (void)once; /* 'end' fires at most once; the flag changes nothing */
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (scr_child_flow_on_end(s, cb, once)) return;
+#endif
   if (s->eof || s->fd < 0) {
     scr_closure_release(cb);
     return;
@@ -6349,6 +6441,9 @@ bool scr_children_reffed_pending(void) {
  * references (listeners never fire; Node's process-exit behavior) so the
  * RC audit stays clean. */
 void scr_children_teardown(void) {
+#ifdef SCR_CHILD_STREAM_FLOW
+  scr_child_flow_teardown();
+#endif
   /* Streams the loop abandons (a data consumer over a pipe whose child
    * was unref'd, exception exits): release the registry's references so
    * the RC audit stays clean; listeners never fire again. */
@@ -6688,8 +6783,20 @@ static void scr_child_settle_in(ScrChild *c) {
       c->exit_cbs[i].fn(c->exit_cbs[i].cb, c->has_code, c->code, c->exit_signal);
       if (scr_exc_pending()) break;
     }
+#ifdef SCR_CHILD_STREAM_FLOW
+    if (!scr_exc_pending() && c->exec_cb != NULL) {
+      scr_child_flow_exec_flush(c->out_stream);
+      if (!scr_exc_pending()) scr_child_flow_exec_flush(c->err_stream);
+    }
+#endif
     if (!scr_exc_pending()) scr_exec_file_fire(c);
   }
+#ifdef SCR_CHILD_STREAM_FLOW
+  if (!scr_exc_pending() && c->state == SCR_CHILD_EXITED) {
+    scr_child_flow_exit(c->out_stream);
+    scr_child_flow_exit(c->err_stream);
+  }
+#endif
   scr_child_drop_terminal_listeners(c);
   if (c->n_close == 0) {
     c->close_done = true;

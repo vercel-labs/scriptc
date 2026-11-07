@@ -22,6 +22,7 @@ const features = {
   childOptionExt: false,
   spawnCaptureBytes: false,
   childErrorFields: false,
+  childStreamFlow: false,
   declAdopt: false,
   typeOrigins: false,
   dynForAwait: false,

@@ -53,6 +53,7 @@ export function executableLinkFeatures(mod: IrModule, largePages = false): Nativ
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
     ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
+    ...(features.childStreamFlow ? { childStreamFlow: true } : {}),
     ...(features.declAdopt ? { declAdopt: true } : {}),
     ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),

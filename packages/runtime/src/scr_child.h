@@ -281,6 +281,13 @@ void scr_child_stream_on_data_str(ScrChildStream *s, ScrClosure *cb /*moves*/,
                                    ScrChildStreamDataStrFn fn, bool once);
 void scr_child_stream_on_end(ScrChildStream *s, ScrClosure *cb /*moves*/, bool once);
 ScrChildStream *scr_child_stream_set_encoding(ScrChildStream *s, ScrStr *enc); /* +1 */
+/* pause(), resume(), isPaused() and readableFlowing: the entries of
+ * scr_child.c's SCR_CHILD_STREAM_FLOW build (scr_child_flow.h), which a
+ * program that calls one of them links in place of the default build. */
+ScrChildStream *scr_child_stream_pause(ScrChildStream *s);  /* +1 */
+ScrChildStream *scr_child_stream_resume(ScrChildStream *s); /* +1 */
+bool scr_child_stream_is_paused(ScrChildStream *s);
+double scr_child_stream_flowing(ScrChildStream *s); /* 0 false, 1 true, -1 null */
 void scr_child_stream_thunk0(ScrClosure *cb, ScrBytes *chunk);
 void scr_child_stream_thunk_bytes(ScrClosure *cb, ScrBytes *chunk);
 void scr_child_stream_thunk_str(ScrClosure *cb, ScrStr *chunk);

@@ -129,6 +129,10 @@ export interface NativeLinkFeatures {
    * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
    * (false) otherwise. */
   childErrorFields?: boolean;
+  /** pause(), resume(), isPaused() or readableFlowing on a child's output
+   * stream selects scr_child.c's SCR_CHILD_STREAM_FLOW build; absent (false)
+   * otherwise. */
+  childStreamFlow?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent

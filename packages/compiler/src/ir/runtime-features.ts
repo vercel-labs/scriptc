@@ -1318,6 +1318,14 @@ const RUNTIME_FEATURE_RULES = {
    * program that never reads `.error` keeps the default object and the
    * result container exactly as they were. */
   childErrorFields: rule({ fns: ["spawnRes.error"] }),
+  /** pause(), resume(), isPaused() and readableFlowing on a child's output
+   * stream: Node's flowing state lives on the handle in a build of
+   * scr_child.c of its own (SCR_CHILD_STREAM_FLOW), so a program that never
+   * calls them keeps the default object, where a stream reads its pipe only
+   * while it has a 'data' listener and holds nothing back. */
+  childStreamFlow: rule({
+    fns: ["stream.childPause", "stream.childResume", "stream.childIsPaused", "stream.childFlowing"],
+  }),
   /** The program can register an 'error' listener on a ChildProcess: a
    * typed or an untyped registration, or a child that converts to an
    * untyped value, whose `on` the handle table serves. Such a program
@@ -2126,6 +2134,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childOptionExt: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
+    childStreamFlow: false,
     childErrorEvent: false,
     declAdopt: false,
     typeOrigins: false,

@@ -792,6 +792,7 @@ async function build() {
           "SCR_WEB_BODIES",
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
+          "SCR_CHILD_STREAM_FLOW",
           "SCR_NODE_ISLANDS",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],

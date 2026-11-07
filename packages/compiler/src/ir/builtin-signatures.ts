@@ -3327,6 +3327,15 @@ function buildLibFnSignatures() {
     "stream.onDataStr": { argTypes: [CHILDSTREAM_T, null, BOOL], result: VOID },
     "stream.onEnd": { argTypes: [CHILDSTREAM_T, null, BOOL], result: VOID },
     "stream.childSetEncoding": { argTypes: [CHILDSTREAM_T, STRING], result: CHILDSTREAM_T },
+    /** Node's flowing state on the piped-output handle (the runtime's
+     * scr_child_flow.h): pause() and resume() answer the receiver (+1),
+     * isPaused() a boolean, and readableFlowing the `boolean | null` union
+     * (the libCall case checks the arms). A paused stream holds its chunks
+     * back up to the high-water mark and then stops reading the pipe. */
+    "stream.childPause": { argTypes: [CHILDSTREAM_T], result: CHILDSTREAM_T },
+    "stream.childResume": { argTypes: [CHILDSTREAM_T], result: CHILDSTREAM_T },
+    "stream.childIsPaused": { argTypes: [CHILDSTREAM_T], result: BOOL },
+    "stream.childFlowing": { argTypes: [CHILDSTREAM_T], result: VOID },
     "writer.writeString": { argTypes: [CHILDWRITER_T, STRING], result: BOOL },
     "writer.writeBytes": { argTypes: [CHILDWRITER_T, BYTES_U8], result: BOOL },
     "writer.end": { argTypes: [CHILDWRITER_T], result: VOID },

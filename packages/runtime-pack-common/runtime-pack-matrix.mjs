@@ -670,6 +670,30 @@ export function variantsFor(source) {
       when: { childOptionExt: true, childErrorFields: true },
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
     });
+    // pause(), resume(), isPaused() and readableFlowing on a child's output
+    // stream: the build where the stream handle keeps Node's flowing state
+    // (scr_child_flow.h). A program that never calls them keeps the default
+    // object. The combinations with the builds above need their own objects,
+    // since the variant with the most conditions is the one selected.
+    for (const [id, when, defines] of [
+      ["stream-flow", { childStreamFlow: true }, ["SCR_CHILD_STREAM_FLOW"]],
+      [
+        "cp-options-stream-flow",
+        { childOptionExt: true, childStreamFlow: true },
+        ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+      [
+        "err-fields-stream-flow",
+        { childErrorFields: true, childStreamFlow: true },
+        ["SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+      [
+        "cp-options-err-fields-stream-flow",
+        { childOptionExt: true, childErrorFields: true, childStreamFlow: true },
+        ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // A static executable cannot load NSS modules, so the os unit's passwd
   // fallback (os.homedir() with HOME unset, and os.userInfo()) reads

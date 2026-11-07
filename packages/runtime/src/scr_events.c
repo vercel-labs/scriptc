@@ -1815,11 +1815,28 @@ double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path) {
 #ifdef SCR_STDIO_WRITE_SLOT
 /* process.stdout/stderr.write(chunk) with a run-time chunk: the stream
  * method's own validation and write, without creating the stream value
- * or installing the write hook. False with an exception pending when the
- * chunk is invalid. */
+ * or installing the write hook. A replaced write receives the call, with
+ * the chunk as its only argument and the stream as `this`, as in
+ * scr_stdio_write_str_dyn: the call site cannot know that nothing replaced
+ * it (a replacement through an alias, or one a Node island installed).
+ * False with an exception pending when the chunk is invalid or the
+ * replacement threw. */
 bool scr_process_stdio_write_dyn(double fd, ScrDyn *chunk) {
   ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
-  ScrDyn *result = scr_stdio_write_call(stream, &chunk, 1);
+  ScrDyn *result;
+  if (stream->write && !scr_dyn_strict_eq(stream->write, scr_stdio_methods[STDIO_WRITE])) {
+    /* The call keeps the replacement alive: it may restore the stream. */
+    ScrDyn *write = scr_dyn_retain(stream->write);
+    ScrDyn *self = scr_dyn_new_handle(stream, SCR_DYNH_STDIO);
+    scr_dyn_this_push_dyn(self);
+    result = scr_dyn_call(write, &chunk, 1,
+                          stream->fd == 2 ? "process.stderr.write" : "process.stdout.write");
+    scr_dyn_this_pop();
+    scr_dyn_release(self);
+    scr_dyn_release(write);
+  } else {
+    result = scr_stdio_write_call(stream, &chunk, 1);
+  }
   if (!result) return false;
   bool accepted = scr_dyn_truthy(result);
   scr_dyn_release(result);

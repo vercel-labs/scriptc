@@ -25,6 +25,13 @@ process.stdout.write("native callback\n", (error) => {
   rawStderr(`native callback ran: ${error === null}\n`);
 });
 const accepted = process.stdout.write("native result\n");
+// Chunks whose type is known only at run time take the same route.
+const untyped: any = JSON.parse('"native untyped string\\n"');
+const untypedBytes: any = Buffer.from("native untyped buffer\n");
+const either: string | Uint8Array = accepted ? "native union string\n" : new Uint8Array(0);
+process.stdout.write(untyped);
+process.stdout.write(untypedBytes);
+process.stdout.write(either);
 rawStderr(`accepted ${accepted}, replaced ${process.stdout.write !== original}\n`);
 
 // 2. Native code restores the stream the island replaced.

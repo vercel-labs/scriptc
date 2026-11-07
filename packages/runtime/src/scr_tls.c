@@ -2182,6 +2182,8 @@ ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                                   auto_end, NULL, cb, fn, 443, &scr_tls_cli_wrap,
                                                   cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (c == NULL) scr_tls_cli_free(cli);
   return c;
 }
 
@@ -2224,6 +2226,8 @@ ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port
                                                   auto_end, agent, cb, fn, 443, &scr_tls_cli_wrap,
                                                   cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (c == NULL) scr_tls_cli_free(cli);
   return c;
 }
 
@@ -2454,6 +2458,8 @@ ScrHttpClientReq *scr_https_request_dyn(const ScrDyn *opts /*borrowed*/, bool au
   ScrHttpClientReq *req = scr_http_req_opts_send(&o, auto_end, cb, fn, add_abort,
                                                  &scr_tls_cli_wrap, cli, key);
   scr_str_release(key);
+  /* a constructor check threw before any socket took the config */
+  if (req == NULL) scr_tls_cli_free(cli);
   if (ca) scr_bytes_release(ca);
   scr_http_req_opts_free(&o);
   return req;

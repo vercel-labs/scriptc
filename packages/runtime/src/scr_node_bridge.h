@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 10u
+#define SCR_NODE_BRIDGE_ABI 15u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -110,6 +110,8 @@ enum {
   SCR_NVF_DATAVIEW = 128,
   SCR_NVF_MAP = 256, /* EXPORT: a native Map (NI-5b) */
   SCR_NVF_SET = 512, /* EXPORT: a native Set (NI-5b) */
+  SCR_NVF_INSTANCE = 1024, /* EXPORT: an instance of a program class; exp.proto is its class's
+                              member table, from which the bridge builds its prototype */
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
 typedef struct ScrNodeValue {
@@ -138,8 +140,11 @@ typedef struct ScrNodeValue {
     struct {
       uint32_t id;     /* the runtime's export-table id */
       uint32_t length; /* functions: their `length` */
-      const char *name; /* functions: their `name` (NULL: anonymous) */
+      const char *name; /* functions: their `name` (NULL: anonymous); class instances: the
+                           class's name */
       size_t name_len;
+      uint32_t proto; /* SCR_NVF_INSTANCE: the export id of the class's member table, an object
+                         of {name: method, "get:name" | "set:name": accessor half} */
     } exp;
   } u;
 } ScrNodeValue;
@@ -234,7 +239,10 @@ typedef struct ScrNodeBridgeHost {
   /* Native values in Node (NI-5): the V8 representative of export `id`
    * was called, constructed, or had a property read, written, tested,
    * deleted or enumerated. 0: returned (*out), 1: threw (*out is the thrown
-   * value), 2: absent (get/set/delete: the ordinary object answers). Out
+   * value), 2: absent (get/set/delete: the ordinary object answers, which
+   * for a class instance is the prototype built from its member table), 3:
+   * refused (set/delete: the object does not take the write or keeps the
+   * property; a TypeError in strict code, ignored otherwise). Out
    * strings are runtime-owned until the next host call. Keys are strings
    * or array indices (numbers). export_keys answers SCR_NV_JSON: the own
    * enumerable string keys. */

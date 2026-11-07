@@ -1840,9 +1840,22 @@ function lowerToIrWithIslands(
   const divergences = [
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
+    ...resultLowerer.islandArrayCopies.values(),
   ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };
+  // SCRIPTC_TRACE_ISLAND_COPIES=1 lists the SC6007 sites on stderr, one per
+  // line. A build that fails reports no warnings, and the number of these
+  // sites in a program that does not build yet is what decides when the
+  // copy can become a refusal.
+  if (process.env["SCRIPTC_TRACE_ISLAND_COPIES"] === "1") {
+    for (const [node, diag] of resultLowerer.islandArrayCopies) {
+      const sf = ts.getSourceFileOfNode(node);
+      const pos = ts.getLineAndCharacterOfPosition(sf, ts.tokenStartOfNode(node));
+      const what = diag.message.slice(0, diag.message.indexOf(", which copies"));
+      process.stderr.write(`SC6007 ${sf.fileName}:${pos.line + 1}:${pos.character + 1} ${what}\n`);
+    }
+  }
   // The performance warning (SC6101): likely-hot functions of the program
   // that compile to the dynamic tier because the source leaves them untyped.
   if (result.module !== null && resultLowerer.dynamicFunctions.length > 0) {
@@ -3551,6 +3564,49 @@ export class Lowerer {
     return shape.indexValue;
   }
 
+  /** The value type a string index signature answers for `key` (null: a key
+   * known only at run time) on a receiver whose type is a view because it
+   * receives island values. Null for any other receiver, for a key the type
+   * declares, and for a signature whose value already admits undefined or
+   * has no native type.
+   *
+   * TypeScript types `table[key]` and `table.name` as the signature's value
+   * whether or not the key exists, so the read can answer undefined. The
+   * native record of the same type represents that (optionalIndexSignatureRead);
+   * the view is the same type held as a dynamic object, which can be one the
+   * island made, and its keyed read means the same. A dictionary view of the
+   * program's own records (a cast from `unknown`) keeps the extraction of
+   * the declared value: those programs have no islands and stay as they
+   * compile today. */
+  viewIndexSignatureValue(receiver: ts.Expression, key: string | null): IrType | null {
+    const declared = panicSafe(() => this.typeOf(receiver), null);
+    if (declared === null || this.mapTypeOf(declared)?.kind !== "dyn") return null;
+    const type = declared.isUnionType() ? this.checker.getNonNullableType(declared) : declared;
+    if ((type.flags & ts.TypeFlags.Object) === 0 || !this.receivesIslandValues(type)) return null;
+    if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) return null;
+    const index = this.checker
+      .getIndexInfosOfType(type)
+      .find((info) => (info.keyType.flags & ts.TypeFlags.String) !== 0);
+    if (index === undefined) return null;
+    if (key !== null && this.checker.getPropertyOfType(type, key) !== undefined) return null;
+    const value = panicSafe(() => this.mapTypeOf(index.type), null);
+    if (value === null || value.kind === "dyn" || value.kind === "void") return null;
+    if (value.kind === "union" && this.armTag(value.unionId, UNDEFINED_T) >= 0) return null;
+    return value;
+  }
+
+  /** viewIndexSignatureValue for the member or element read `node`. */
+  viewIndexSignatureRead(node: ts.Node): IrType | null {
+    if (ts.isPropertyAccessExpression(node))
+      return this.viewIndexSignatureValue(node.expression, node.name.text);
+    if (!ts.isElementAccessExpression(node)) return null;
+    const key = node.argumentExpression;
+    return this.viewIndexSignatureValue(
+      node.expression,
+      ts.isStringLiteralLike(key) || ts.isNumericLiteral(key) ? key.text : null,
+    );
+  }
+
   runtimeOptionalIdentifierValue(
     node: ts.Expression,
   ): { value: IrExpr; present: IrType; unionId: string } | null {
@@ -4339,6 +4395,10 @@ export class Lowerer {
   readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
+  /** The uses that copy an island array of primitives into a native array
+   * (lower-node-island.ts), by the expression that crosses: one SC6007
+   * divergence warning each. */
+  readonly islandArrayCopies = new Map<ts.Node, ScrDiagnostic>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
@@ -4931,6 +4991,8 @@ export class Lowerer {
       // module; a warning it adds is a diagnostic of that unit, so its count
       // is journaled like `diags` (the plan itself is unjournaled).
       checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
+      // A copied island array is a warning of the unit that copies it.
+      checkedTable("islandArrayCopies", () => this.islandArrayCopies.size),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -6261,11 +6323,18 @@ export class Lowerer {
     );
   }
 
+  /** A program type that is a view because it receives island values. */
+  receivesIslandValues(type: ts.Type): boolean {
+    return this.verifyProtocol("receivesIslandValues", type, (protocols) =>
+      protocols.receivesIslandValues(type),
+    );
+  }
+
   /** The round's shared class protocol index (lowering-facts.ts): a pure
    * analysis of (checker, moduleOrder). With SCRIPTC_LOWERING_FACTS_VERIFY
    * this Lowerer builds its own index and every answer is compared. */
   private verifyProtocol(
-    query: "usesCheckedIdentity" | "collectionView",
+    query: "usesCheckedIdentity" | "collectionView" | "receivesIslandValues",
     type: ts.Type,
     ask: (protocols: ClassProtocols) => boolean,
   ): boolean {
@@ -8547,6 +8616,8 @@ export class Lowerer {
       if (kind === "bytes") return !nanCoded.isNumericRead(e);
       if (kind === "record")
         return this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e);
+      // The same read of an index-signature type held as a view.
+      if (kind === "dyn") return this.viewIndexSignatureRead(e) !== null;
       return kind === "array";
     };
     /** `r.name` where the name resolves to the receiver's index signature. */
@@ -8565,6 +8636,8 @@ export class Lowerer {
         (nameSymbol.declarations ?? []).some((decl) => ts.isIndexSignatureDeclaration(decl));
       if (!answersIndexSignature) return false;
       const receiver = this.mapTypeOf(this.typeOf(e.expression));
+      // The same read of an index-signature type held as a view.
+      if (receiver?.kind === "dyn") return this.viewIndexSignatureRead(e) !== null;
       if (receiver?.kind !== "record") return false;
       const shape = this.shapes.get(receiver.shapeId);
       if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn")
@@ -9064,6 +9137,38 @@ export class Lowerer {
       });
       return changed;
     };
+    /** `const { a, b } = view` over an index-signature type held as a
+     * checked-identity view (viewIndexSignatureValue). */
+    const scanViewPattern = (name: ts.ObjectBindingPattern, init: ts.Expression): boolean => {
+      let changed = false;
+      for (const el of name.elements.nodes) {
+        if (el.dotDotDotToken || el.initializer || el.name === undefined) continue;
+        if (!ts.isIdentifier(el.name)) continue;
+        const key = el.propertyName ?? el.name;
+        const keyName = ts.isComputedPropertyName(key)
+          ? this.foldedStringKeyOf(key.expression)
+          : ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isNumericLiteral(key)
+            ? key.text
+            : undefined;
+        if (keyName === undefined) continue;
+        const value = this.viewIndexSignatureValue(init, keyName);
+        if (value === null) continue;
+        const symbol = symbolOf(el.name);
+        if (!symbol || optionalSymbols.has(symbol)) continue;
+        const widened = this.withUndefinedArmOf(value);
+        if (!widened) continue;
+        optionalSymbols.add(symbol);
+        provenance?.note("pattern-binding", el.name, init);
+        this.runtimeOptionalBindingTypes.set(symbol, widened);
+        const global = this.globalsBySymbol.get(symbol);
+        if (global) {
+          global.type = widened;
+          this.runtimeOptionalGlobals.add(global);
+        }
+        changed = true;
+      }
+      return changed;
+    };
     /** `const { a, b } = table` over an index-signature record: a name that
      * is not a declared field reads the index signature and can be
      * missing. */
@@ -9072,6 +9177,13 @@ export class Lowerer {
       init: ts.Node,
       sourceType: IrType | null = this.mapTypeOf(this.typeOf(init)),
     ): boolean => {
+      // The same type held as a view: a name its index signature answers
+      // can be missing too. Only the pattern `init` itself initializes: a
+      // nested pattern reads a member of it.
+      if (sourceType?.kind === "dyn")
+        return ts.isExpression(init) && !ts.isBindingElement(name.parent)
+          ? scanViewPattern(name, init)
+          : false;
       if (sourceType?.kind !== "record") return false;
       const shape = this.shapes.get(sourceType.shapeId);
       if (!shape || shape.tuple) return false;

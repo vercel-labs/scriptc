@@ -1,0 +1,5 @@
+- **Arrays from Node islands:** An array of numbers, strings, booleans or bigints that code in a Node island made stays the island's array while the program reads it through a `const` binding's members, an index, its methods or a spread, or passes it back to the island.
+  Any other use copies its elements into a native array: an argument of a program function, a binding that is not a `const` of the island's array, a `return`, a property of a program object, a `for…of` loop.
+  The copy does not see the island's later changes, the island does not see writes to the copy, and the copy is not `===` to the island's array.
+  scriptc reports each such use as an `SC6007` warning.
+  Write the copy where it happens (`[...value]`) so that Node.js copies too.

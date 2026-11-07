@@ -726,6 +726,12 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         narrowed.kind === "string" ||
         narrowed.kind === "bigint")
     ) {
+      // A key that the index signature of a checked-identity view answers
+      // can be missing: the read is `V | undefined`, as the native record's
+      // keyed read is. Extracting the declared `V` threw on a missing key
+      // and let `table[key] === undefined` fold to false.
+      if (lowerer.viewIndexSignatureRead(node) !== null)
+        return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(narrowed));
       return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
     }
     // An instanceof narrow retains the native view after validating its

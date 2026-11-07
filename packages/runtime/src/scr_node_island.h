@@ -160,6 +160,9 @@ typedef struct ScrNiDynOps {
    * NULL when `root` is not such a root. A signature adapter over a view of
    * an island function boxes as the function itself through this. */
   ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
+  /* Object.hasOwn(value, key), answered by Node: 1 or 0, or -1 with the
+   * exception pending. */
+  int (*has_own)(const ScrDyn *value, const ScrStr *key);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

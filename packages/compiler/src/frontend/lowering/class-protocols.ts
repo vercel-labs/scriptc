@@ -31,6 +31,9 @@ export class ClassProtocols {
   /** The program types that receive island values and cannot carry the
    * marking on a symbol, recorded by the type itself (see markIslandView). */
   private readonly islandViews = new Set<ts.Type>();
+  /** The symbols of the program types that receive island values and carry
+   * the marking themselves (see markIslandView). */
+  private readonly islandReceivers = new Set<ts.Symbol>();
   /** islandValue's answers: which expressions read an island handle. */
   private readonly islandValues = new Map<ts.Node, boolean>();
 
@@ -209,7 +212,7 @@ export class ClassProtocols {
     // Partial and Record in the program.
     const source = this.mappedViewSource(type);
     if (source !== null) {
-      if (this.isStructuralTarget(source)) add(source);
+      if (this.isStructuralTarget(source)) this.addIslandReceiver(source, add);
       else this.islandViews.add(type);
       return;
     }
@@ -218,7 +221,7 @@ export class ClassProtocols {
       return;
     }
     if (this.isStructuralTarget(type)) {
-      add(type);
+      this.addIslandReceiver(type, add);
       return;
     }
     // A class instance keeps its own native value (fromIsland unboxes it, it
@@ -228,6 +231,14 @@ export class ClassProtocols {
     if (this.checker.isTupleType(type)) return;
     if (this.checker.getCallSignatures(type).length > 0) return;
     this.islandViews.add(type);
+  }
+
+  /** Marks a type that receives island values through its symbol, and
+   * remembers that this is why (receivesIslandValues). */
+  private addIslandReceiver(type: ts.Type, add: (type: ts.Type) => void): void {
+    add(type);
+    const symbol = type.getSymbol();
+    if (symbol !== undefined) this.islandReceivers.add(symbol);
   }
 
   /** Whether `expr` reads a value out of an island handle: its receiver
@@ -1765,6 +1776,17 @@ export class ClassProtocols {
       return ts.constituentTypes(type).some((part) => this.collectionView(part));
     const symbol = type.getSymbol();
     return symbol !== undefined && this.collectionViews.has(symbol);
+  }
+
+  /** Whether `type` is a view because it receives island values
+   * (markIslandView), rather than because a class implements it or it views
+   * the program's own records. Such a view can be an object the island made,
+   * whose keys the program's type does not bound. */
+  receivesIslandValues(type: ts.Type): boolean {
+    this.index();
+    if (this.islandViews.has(type)) return true;
+    const symbol = type.getSymbol();
+    return symbol !== undefined && this.islandReceivers.has(symbol);
   }
 
   /** Class-backed protocols require live receiver dispatch. Other interfaces,

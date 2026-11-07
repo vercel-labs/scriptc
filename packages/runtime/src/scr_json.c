@@ -19880,6 +19880,11 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     return has;
   }
   if (v->kind == SCR_DYN_HANDLE) {
+#ifdef SCR_NODE_ISLANDS
+    /* An island object answers from Node, as its `in` does. */
+    if (scr_ni_dyn_handle(v) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->has_own != NULL)
+      return scr_ni_dyn_ops->has_own(v, key) == 1;
+#endif
 #ifdef SCR_JS_OBJECT_MODEL
     bool out;
     if (SCR_HP(v) && scr_dyn_handle_props_hooks->has_own(v, key, false, &out)) return out;

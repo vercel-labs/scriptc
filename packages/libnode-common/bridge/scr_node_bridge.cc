@@ -1263,6 +1263,9 @@ Local<v8::Private> ExportKey(Isolate *isolate) {
 // Array exports are Proxies (Array.isArray holds); a Proxy has no private
 // symbols of its own, so they are found by identity hash.
 std::unordered_multimap<int, uint32_t> g_proxy_ids;
+// The exports whose representative already has its class's prototype
+// (SetClassPrototype).
+std::unordered_set<uint32_t> g_class_instances;
 
 uint32_t ExportIdOf(Isolate *isolate, Local<Context> context, Local<Value> v) {
   if (!v->IsObject() || g_exports.empty()) return 0;
@@ -1294,6 +1297,7 @@ void OnExportGone(const v8::WeakCallbackInfo<void> &info) {
   }
   g_gc_stats.freed_exports++;
   g_cycle_freed_exports++;
+  g_class_instances.erase(id);
   for (auto p = g_proxy_ids.begin(); p != g_proxy_ids.end();) {
     if (p->second == id) p = g_proxy_ids.erase(p);
     else ++p;
@@ -1397,6 +1401,22 @@ void IndexKey(uint32_t index, ScrNodeValue *key) {
   key->u.num = index;
 }
 
+// The TypeError of a write or delete the native object refused, worded as
+// V8 words it: `<before><key><between>#<Class><after>`.
+void ThrowRefused(Isolate *isolate, const char *before, const ScrNodeValue *key,
+                  const char *between, Local<Object> holder, const char *after) {
+  std::string message = before;
+  if (key->tag == SCR_NV_STRING) message.append(key->u.str.data, key->u.str.len);
+  else if (key->tag == SCR_NV_NUMBER) message += std::to_string(static_cast<uint32_t>(key->u.num));
+  message += between;
+  message += "#<";
+  String::Utf8Value name(isolate, holder->GetConstructorName());
+  if (*name != nullptr) message.append(*name, static_cast<size_t>(name.length()));
+  message += ">";
+  message += after;
+  isolate->ThrowException(v8::Exception::TypeError(FromWtf8(isolate, message.data(), message.size())));
+}
+
 v8::Intercepted GetKey(const v8::PropertyCallbackInfo<Value> &info, const ScrNodeValue *key) {
   Isolate *isolate = info.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
@@ -1422,6 +1442,11 @@ v8::Intercepted SetKey(const v8::PropertyCallbackInfo<void> &info, const ScrNode
   int status = g_host->export_set(InfoId(info), key, &v, &out);
   if (status == 2) return v8::Intercepted::kNo;
   if (status == 1) isolate->ThrowException(ToV8(isolate, context, &out));
+  // The native object refused the write (a frozen record): strict code
+  // gets the TypeError Node throws, sloppy code goes on, as in Node.
+  if (status == 3 && info.ShouldThrowOnError())
+    ThrowRefused(isolate, "Cannot assign to read only property '", key, "' of object '",
+                 info.HolderV2(), "'");
   return v8::Intercepted::kYes;
 }
 
@@ -1442,8 +1467,17 @@ v8::Intercepted DeleteKey(const v8::PropertyCallbackInfo<v8::Boolean> &info,
   std::memset(&out, 0, sizeof out);
   int status = g_host->export_delete(InfoId(info), key, &out);
   if (status == 2) return v8::Intercepted::kNo;
-  if (status == 1) isolate->ThrowException(ToV8(isolate, context, &out));
-  else info.GetReturnValue().Set(true);
+  if (status == 1) {
+    isolate->ThrowException(ToV8(isolate, context, &out));
+  } else if (status == 3) {
+    // The native object keeps the property (a frozen record, a field of a
+    // class instance): `delete` answers false, and throws in strict code.
+    if (info.ShouldThrowOnError())
+      ThrowRefused(isolate, "Cannot delete property '", key, "' of ", info.HolderV2(), "");
+    else info.GetReturnValue().Set(false);
+  } else {
+    info.GetReturnValue().Set(true);
+  }
   return v8::Intercepted::kYes;
 }
 
@@ -1849,12 +1883,70 @@ void AttachReach(Isolate *isolate, Local<Context> context, uint32_t id, Local<Ob
   ReportExternal(isolate);
 }
 
+Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNodeValue *in);
+
+// ── class instances: a prototype per program class ──────────────────────
+// The representative of a class instance answers the instance's own
+// properties through its interceptors. What the class declares lives on a
+// prototype object the host helper builds once per class from the class's
+// member table (an export: {name: method, "get:name" | "set:name": accessor
+// half}): methods as non-enumerable data properties, accessors as accessor
+// properties, `constructor` a function named after the class. V8 then finds
+// them the way it finds any class's members, with the instance as the
+// receiver. The table's representative is held with the prototype, so its
+// export id is never released and names the class for the run.
+struct ClassPrototype {
+  Global<Object> table;
+  Global<Object> prototype;
+};
+std::unordered_map<uint32_t, ClassPrototype> g_class_prototypes;
+void SetClassPrototype(Isolate *isolate, Local<Context> context, uint32_t id,
+                       const ScrNodeValue *in, Local<Object> obj) {
+  if ((in->flags & SCR_NVF_INSTANCE) == 0 || in->u.exp.proto == 0 || obj->IsProxy()) return;
+  if (!g_class_instances.insert(id).second) return;
+  uint32_t table_id = in->u.exp.proto;
+  auto known = g_class_prototypes.find(table_id);
+  if (known == g_class_prototypes.end()) {
+    // A helper that fails leaves the representative a plain object: the
+    // class's members are then missing, never wrong.
+    v8::TryCatch failed(isolate);
+    // The name is read before anything runs: `in` is the runtime's.
+    Local<Value> name = in->u.exp.name != nullptr
+                            ? Local<Value>(FromWtf8(isolate, in->u.exp.name, in->u.exp.name_len))
+                            : Local<Value>(String::Empty(isolate));
+    ScrNodeValue table;
+    std::memset(&table, 0, sizeof table);
+    table.tag = SCR_NV_EXPORT;
+    table.u.exp.id = table_id;
+    Local<Value> members = ExportValue(isolate, context, &table);
+    Local<Value> helpers, build, prototype;
+    Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+    Local<Value> argv[] = {name, members};
+    if (!members->IsObject() ||
+        !g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) ||
+        !helpers->IsObject() ||
+        !helpers.As<Object>()->Get(context, Utf8(isolate, "classPrototype")).ToLocal(&build) ||
+        !build->IsFunction() ||
+        !build.As<Function>()->Call(context, helpers, 2, argv).ToLocal(&prototype) ||
+        !prototype->IsObject()) {
+      g_class_instances.erase(id);
+      return;
+    }
+    ClassPrototype &slot = g_class_prototypes[table_id];
+    slot.table.Reset(isolate, members.As<Object>());
+    slot.prototype.Reset(isolate, prototype.As<Object>());
+    known = g_class_prototypes.find(table_id);
+  }
+  obj->SetPrototypeV2(context, known->second.prototype.Get(isolate)).FromMaybe(false);
+}
+
 Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
   uint32_t id = in->u.exp.id;
   auto found = g_exports.find(id);
   if (found != g_exports.end()) {
     Touch(id);
     Local<Object> existing = found->second.Get(isolate);
+    SetClassPrototype(isolate, context, id, in, existing);
     RefreshMirror(isolate, context, id, in->flags, existing);
     return existing;
   }
@@ -1901,6 +1993,7 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
   slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
                v8::WeakCallbackType::kParameter);
   if (in->flags & SCR_NVF_PROMISE) g_host->export_watch(id);
+  SetClassPrototype(isolate, context, id, in, obj);
   RefreshMirror(isolate, context, id, in->flags, obj);
   return obj;
 }
@@ -1929,6 +2022,12 @@ void DropAllExports() {
   g_resolvers.clear();
   g_released_exports.clear();
   g_proxy_ids.clear();
+  for (auto &it : g_class_prototypes) {
+    it.second.table.Reset();
+    it.second.prototype.Reset();
+  }
+  g_class_prototypes.clear();
+  g_class_instances.clear();
   g_export_template.Reset();
   g_export_key.Reset();
 }

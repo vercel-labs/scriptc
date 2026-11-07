@@ -67,6 +67,7 @@ import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import {
   scanFiles,
+  scanPackagesBelow,
   type NodeIslandScan,
   type RefusalKind,
   type RefusalRecord,
@@ -564,12 +565,13 @@ function packagesNamedByDiag(message: string, optedIn: ReadonlySet<string>): Set
 function scanDroppedPackages(
   load: LoadResult,
   packages: readonly string[],
-  into: { modules: NodeIslandScan["modules"]; edges: NodeIslandScan["edges"] },
+  into: DroppedScan,
 ): void {
   if (packages.length === 0) return;
   try {
     const wanted = new Set(packages);
-    const files = load.program.getImplementationSourceFiles().filter((sf) => {
+    const implementation = load.program.getImplementationSourceFiles();
+    const files = implementation.filter((sf) => {
       if (sf.isDeclarationFile) return false;
       const at = packageDirOf(sf.fileName);
       return at !== null && wanted.has(at.name);
@@ -577,9 +579,23 @@ function scanDroppedPackages(
     const scanned = scanFiles(load.program, files, { userJs: false, dropped: true, edges: true });
     for (const module of scanned.modules) into.modules.push(module);
     for (const edge of scanned.edges) into.edges.push(edge);
+    // The packages the dropped ones load leave the program with them unless
+    // something else imports them: their imports are read here, while the
+    // program still holds their modules.
+    for (const edge of scanPackagesBelow(load.program, implementation, wanted, scanned.edges))
+      into.below.push(edge);
   } catch {
     /* report-only detection */
   }
+}
+
+/** What the drop-and-reload loop keeps of the packages it removes: their
+ * modules and package imports, and (`below`) the package imports of every
+ * package they load. */
+interface DroppedScan {
+  modules: NodeIslandScan["modules"];
+  edges: NodeIslandScan["edges"];
+  below: NodeIslandScan["edges"];
 }
 
 export function runFrontend(
@@ -743,10 +759,7 @@ function loadFrontend(
   // the program.
   const scanIslands = options.nodeIslands === true || options.islandScan === true;
   const refusals: RefusalRecord[] = [];
-  const droppedScan: { modules: NodeIslandScan["modules"]; edges: NodeIslandScan["edges"] } = {
-    modules: [],
-    edges: [],
-  };
+  const droppedScan: DroppedScan = { modules: [], edges: [], below: [] };
   const recordRefusal = (pkg: string, kind: RefusalKind, diag: ScrDiagnostic | null): void => {
     refusals.push({ package: pkg, kind, diag });
   };
@@ -1406,10 +1419,17 @@ function loadFrontend(
             dropped: false,
             edges: npm,
           });
+          // Of the imports read below dropped packages, the ones whose
+          // module the final program no longer holds (the rest are in
+          // `scanned.edges`).
+          const loaded = new Set<string>();
+          for (const sf of files) loaded.add(sf.fileName);
+          const insideEdges = droppedScan.below.filter((edge) => !loaded.has(edge.fromFile));
           return {
             modules: [...droppedScan.modules, ...scanned.modules],
             edges: [...droppedScan.edges, ...scanned.edges],
             refusals,
+            ...(insideEdges.length > 0 ? { insideEdges } : {}),
           };
         },
     dispose: () => finalLoad.dispose(),

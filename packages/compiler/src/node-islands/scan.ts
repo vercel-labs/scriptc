@@ -70,6 +70,13 @@ export interface NodeIslandScan {
   modules: ScannedModule[];
   edges: PackageEdge[];
   refusals: RefusalRecord[];
+  /** The package imports of the modules that left the program together
+   * with a package the load refused: nothing the program still loads
+   * imports them, so they are in neither `modules` nor `edges`. Only the
+   * containment closure reads them (graph-islands.ts's containedIslands):
+   * these are the packages a refused package, which runs in a Node island,
+   * loads there. */
+  insideEdges?: PackageEdge[];
 }
 
 export function emptyScan(): NodeIslandScan {
@@ -238,36 +245,83 @@ export function scanFiles(
           : null,
       dropped: opts.dropped,
     });
-    if (!opts.edges) continue;
-    for (const { spec, node, loads } of specifiersOf(program, sf)) {
-      if (isRelativeSpecifier(spec) || spec.startsWith("/") || spec.startsWith("#")) continue;
-      // scriptc's own packages lower at their use sites.
-      if (spec.startsWith("@scriptc/")) continue;
-      const alias = npmBuiltinAliasOf(spec);
-      if (alias === null && (spec.startsWith("node:") || canonicalBuiltinModule(spec) !== null))
-        continue;
-      const name = packageNameOfSpecifier(spec);
-      const shim = alias !== null || isShimmedImport(sf.fileName, spec);
-      let toDir: string | null = null;
-      if (!shim) {
-        const resolved = resolveBareModule(sf.fileName, spec, "js-only");
-        if (resolved !== null) {
-          const target = packageDirOf(resolved.typesFile);
-          // A workspace package compiled from source is user code.
-          if (target === null) continue;
-          toDir = target.dir;
-        }
-      }
-      edges.push({
-        fromDir: at === null ? null : at.dir,
-        fromFile: sf.fileName,
-        to: name,
-        toDir,
-        shim,
-        loads,
-        loc: locOfNode(node),
-      });
-    }
+    if (opts.edges) pushPackageEdges(program, sf, at === null ? null : at.dir, edges);
   }
   return { modules, edges };
+}
+
+/** Appends the npm package imports of one file to `edges`. */
+function pushPackageEdges(
+  program: ts.Program,
+  sf: ts.SourceFile,
+  fromDir: string | null,
+  edges: PackageEdge[],
+): void {
+  for (const { spec, node, loads } of specifiersOf(program, sf)) {
+    if (isRelativeSpecifier(spec) || spec.startsWith("/") || spec.startsWith("#")) continue;
+    // scriptc's own packages lower at their use sites.
+    if (spec.startsWith("@scriptc/")) continue;
+    const alias = npmBuiltinAliasOf(spec);
+    if (alias === null && (spec.startsWith("node:") || canonicalBuiltinModule(spec) !== null))
+      continue;
+    const name = packageNameOfSpecifier(spec);
+    const shim = alias !== null || isShimmedImport(sf.fileName, spec);
+    let toDir: string | null = null;
+    if (!shim) {
+      const resolved = resolveBareModule(sf.fileName, spec, "js-only");
+      if (resolved !== null) {
+        const target = packageDirOf(resolved.typesFile);
+        // A workspace package compiled from source is user code.
+        if (target === null) continue;
+        toDir = target.dir;
+      }
+    }
+    edges.push({
+      fromDir,
+      fromFile: sf.fileName,
+      to: name,
+      toDir,
+      shim,
+      loads,
+      loc: locOfNode(node),
+    });
+  }
+}
+
+/** The npm package imports of every package that `roots` reach through
+ * `known` edges and the program's own files, the roots excluded: the
+ * packages a set of packages loads, directly or through others. Markers are
+ * not scanned: these edges only say what loads what (NodeIslandScan.
+ * insideEdges). */
+export function scanPackagesBelow(
+  program: ts.Program,
+  files: readonly ts.SourceFile[],
+  roots: ReadonlySet<string>,
+  known: readonly PackageEdge[],
+): PackageEdge[] {
+  const byDir = new Map<string, ts.SourceFile[]>();
+  for (const sf of files) {
+    if (sf.isDeclarationFile) continue;
+    const at = packageDirOf(sf.fileName);
+    if (at === null) continue;
+    const list = byDir.get(at.dir);
+    if (list === undefined) byDir.set(at.dir, [sf]);
+    else list.push(sf);
+  }
+  const edges: PackageEdge[] = [];
+  const seen = new Set<string>();
+  const queue: string[] = [];
+  const enter = (edge: PackageEdge): void => {
+    if (edge.shim || edge.toDir === null || roots.has(edge.to) || seen.has(edge.toDir)) return;
+    seen.add(edge.toDir);
+    queue.push(edge.toDir);
+  };
+  for (const edge of known) enter(edge);
+  while (queue.length > 0) {
+    const dir = queue.pop()!;
+    const from = edges.length;
+    for (const sf of byDir.get(dir) ?? []) pushPackageEdges(program, sf, dir, edges);
+    for (let i = from; i < edges.length; i++) enter(edges[i]!);
+  }
+  return edges;
 }

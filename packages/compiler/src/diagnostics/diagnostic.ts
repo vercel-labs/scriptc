@@ -73,9 +73,11 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
- *            outside the native parser's grammar) is retired — the runtime
- *            parses date strings with V8's grammar. SC61xx are performance
+ *            to a cast to an unrelated class (SC6004), a package compiled
+ *            with operations the program can reach that throw (SC6006);
+ *            SC6005 (Date strings outside the native parser's grammar) is
+ *            retired — the runtime parses date strings with V8's grammar.
+ *            SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
  *            likely-hot functions that use untyped values (SC6101,
  *            diagnostics/dynamic-tier.ts), package files whose projected
@@ -130,6 +132,14 @@ export interface ScrDiagnostic {
    * alone does not say it (a computed require(), a native addon, `with`).
    * Report-only: never part of the rendered message. */
   reason?: string;
+  /** The npm package export this refusal could not bind: the site reads
+   * `name`, an export of a package the build compiles, and that package's
+   * compiled module does not provide it as a binding (its exports are
+   * defined at run time). The refusal is then the package's, wherever the
+   * site is, and island selection treats it as one
+   * (node-islands/growth.ts). Report-only: never part of the rendered
+   * message. */
+  exportOf?: { package: string; name: string };
   /** Runtime fences only: the fenced site is in a module's top-level code
    * (outside every function body), so it runs, and throws, when the module
    * evaluates. Island selection treats such a fence like one that needs the
@@ -562,6 +572,26 @@ export function nodeIslandNoteDiag(
   };
 }
 
+/** SC8001 — the packages only island code loads run in that island's Node
+ * (one note for all of them, after the islands' own notes: a package with
+ * many dependencies would otherwise print one note for each). */
+export function nodeIslandContainedNoteDiag(
+  packages: readonly string[],
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const one = packages.length === 1;
+  return {
+    code: "SC8001",
+    message: `${one ? "package" : `${packages.length} packages`} ${packages
+      .map((p) => `'${p}'`)
+      .join(
+        ", ",
+      )} ${one ? "runs" : "run"} in a Node island: packaging: only code that runs in a Node island loads ${one ? "it" : "them"}`,
+    loc,
+    hint: "scriptc coverage --explain-island=<package> names what loads each one",
+  };
+}
+
 /** SC8001 — a program module runs in a Node island (a note, once per island
  * module in the build output; DESIGN.md note 1 §3.2). */
 export function nodeIslandModuleNoteDiag(
@@ -586,6 +616,23 @@ export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic
     message: `${what} cannot cross into or out of a Node island yet`,
     loc,
     hint: "pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on",
+  };
+}
+
+/** SC6006 — a package compiles natively with operations the program can
+ * reach that do not compile (runtime fences): each throws when it runs,
+ * where Node runs it. One warning per package, at its import. */
+export function deferredOperationsDivergenceDiag(
+  pkg: string,
+  count: number,
+  first: ScrDiagnostic,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6006",
+    message: `npm package '${pkg}' compiles with ${count === 1 ? "an operation" : `${count} operations`} the program can reach that ${count === 1 ? "does" : "do"} not compile: ${count === 1 ? "it throws" : "each throws"} when the program reaches it (first ${first.code}: ${first.message})`,
+    loc,
+    hint: `scriptc coverage lists them; --node-island=${pkg} runs the package in Node.js instead, and --npm-static=${pkg} accepts the throws and drops this warning`,
   };
 }
 

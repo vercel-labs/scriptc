@@ -89,10 +89,14 @@ Point `SCRIPTC_LIBNODE` at that directory, as the example does. A pack is tied t
 
 With the default policy, `--node-islands=auto`:
 
-- An npm package runs in an island when scriptc can't compile it natively, or when it compiles but contains code that would fail at run time because it needs Node.js itself.
+- An npm package runs in an island when scriptc can't compile it natively, or when it compiles but contains code that fails as soon as the package loads or that needs Node.js itself.
+- An npm package runs in an island when your program reads an export that the package defines only when it runs, so the compiled package has no binding for it. The note names the export and the place that reads it.
+- An npm package that only code in an island loads runs in that island too. The build names these packages together in one `SC8001` note, and their values are island values like those of the package that loads them.
 - A JavaScript file of your own program runs in an island when it depends on semantics that only sloppy-mode JavaScript has, such as a `with` statement, or when it patches a built-in module.
 - Your TypeScript files always compile natively. Anything unsupported in them is a build error, as it is without islands.
 - The entry file is always native.
+
+The decision reads the package and how your program reaches it, nothing else. An error somewhere else in your program doesn't change which packages run in an island. A construct that only might need Node.js, such as a call of `Object.defineProperty`, doesn't move a package either: coverage lists it as a reason, and a build moves the package only when code your program reaches can't compile.
 
 Every island has a reason, and each reason belongs to one of these classes:
 
@@ -104,7 +108,7 @@ Every island has a reason, and each reason belongs to one of these classes:
     <tr><td><code>runtime</code></td><td>The code needs the JavaScript runtime itself.</td><td>Code built from strings (<code>eval</code>, <code>new Function</code>, <code>node:vm</code>), <code>require()</code> or <code>import()</code> of a computed name, native addons, loader hooks, engine internals.</td></tr>
     <tr><td><code>object-model</code></td><td>The code needs JavaScript's mutable object model.</td><td>Constructor functions and writes to a <code>prototype</code>, <code>Object.defineProperty</code> on objects the type checker can't follow, sloppy-mode <code>this</code>, <code>with</code>, patched built-ins.</td></tr>
     <tr><td><code>gap</code></td><td>The code is within what scriptc means to compile, but it can't yet.</td><td>Any construct whose native compilation is still missing. These islands go away as the compiler improves.</td></tr>
-    <tr><td><code>packaging</code></td><td>The package can't be compiled as it is shipped.</td><td>A package that doesn't meet the requirements under <a href="/docs/dependencies#which-packages-compile">Which packages compile</a>.</td></tr>
+    <tr><td><code>packaging</code></td><td>The package can't be compiled as it is shipped, or it comes along with one that runs in an island.</td><td>A package that doesn't meet the requirements under <a href="/docs/dependencies#which-packages-compile">Which packages compile</a>. A package that only island code loads.</td></tr>
     <tr><td><code>marked</code></td><td>You asked for it.</td><td><code>--node-island</code> or a <code>package.json</code> setting.</td></tr>
   </tbody>
 </table>
@@ -174,7 +178,7 @@ Read the report with three things in mind:
 
 - The `would-be, report-only` wording in the header is from the releases in which islands were only reported. Builds do run these packages in Node.js.
 - The statement counts and the `fully static` verdict describe your own files. The statement that calls into the island counts in the dynamic tier, because the values it passes are typed only at run time.
-- The list can be longer than what a build does. Coverage names every package in which it finds a construct of one of the classes above. A build moves a package into an island only when it can't compile the package natively, or when the compiled package would fail when that code runs. The `SC8001` notes of `scriptc build` are the record of what a build did.
+- The list can be longer than what a build does. Coverage names every package in which it finds a construct of one of the classes above. A build moves a package into an island only for the reasons under [What runs in an island](#what-runs-in-an-island). The `SC8001` notes of `scriptc build` are the record of what a build did.
 
 `--explain-island=<package>` prints the same report and then the first reason in each module of the package, the count of all reasons by class, and the places where your code imports it:
 

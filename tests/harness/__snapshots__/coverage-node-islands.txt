@@ -34,3 +34,8 @@ scriptc coverage tests/coverage-fixtures/node-islands/main.ts
       ×1  SC2013  cannot compile npm package 'ni-bundled' statically: its shipped JS carries build-transform markers (bundled/transpiled dist)
           at tests/coverage-fixtures/node-islands/main.ts:8:1
           hint: to compile it anyway, name it with --npm-static=ni-bundled (or --npm-static=ni-bundled... to include its dependencies)
+
+  differs from Node   1 site (compiles; the native program can behave differently)
+      ×1  SC6006  npm package 'ni-gap' compiles with an operation the program can reach that does not compile: it throws when the program reaches it (first SC1090: a builtin function alias as an escaping value (call '…
+          at tests/coverage-fixtures/node-islands/main.ts:5:1
+          hint: scriptc coverage lists them; --node-island=ni-gap runs the package in Node.js instead, and --npm-static=ni-gap accepts the throws and drops this warning

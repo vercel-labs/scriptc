@@ -27,6 +27,15 @@ export interface IslandPackage {
    * reason, for the SC8001 note. */
   class: string;
   reason: string;
+  /** The reason names what the program does with the package (the export
+   * it could not bind, and where): the note keeps it over the first reason
+   * the package's own modules give. */
+  named?: true;
+  /** The CommonJS island package an ES module of this package imports, when
+   * that import is why this package is in the set
+   * (graph-islands.ts, growEsmImporters): it leaves the set with that
+   * island. */
+  follows?: string;
 }
 
 /** One program module the build runs in a Node island (DESIGN.md

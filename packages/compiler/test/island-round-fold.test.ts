@@ -1,9 +1,9 @@
-// A round that grew the island set also decides the fence-report growth from
-// the same lowering pass (WP9, node-islands/growth.ts's foldFenceGrowth), so
-// a build reloads once instead of twice. The fence rule reads what the reload
+// A round that grew the island set also decides the fence growth from the
+// same lowering pass (WP9, node-islands/growth.ts's foldFenceGrowth), so a
+// build reloads once instead of twice. The fence rule reads what the reload
 // still compiles: a package the new islands reach only through themselves
 // leaves the compiled program with them, so its fences are not a decision
-// that round can make.
+// that round can make (it is in the set by containment instead).
 //
 // This compiles one fixture through prepareExecutableModule with the fold on
 // and off, and requires the merged round to island exactly what today's
@@ -23,9 +23,12 @@ afterEach(() => {
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-/** The ES-module-bundle prologue scriptc compiles natively only with runtime
- * fences (getters over live bindings, a constructor function with prototype
- * methods): a package the fence rule islands, never the lowering rule. */
+/** An ES-module-bundle prologue whose exports are defined at run time
+ * (getters over live bindings) beside a constructor function with prototype
+ * methods, with the annotation bundlers add so Node's lexer finds the
+ * names. The package compiles natively, with pre-scan markers and no
+ * refusal of its own; a program that imports `value` cannot bind it, which
+ * is the package's refusal (ScrDiagnostic.exportOf). */
 function fencedBundle(value: string): string {
   return `"use strict";
 var __defProp = Object.defineProperty;
@@ -44,6 +47,7 @@ Schema.prototype.describe = function () {
 function value() {
   return new Schema("${value}").describe();
 }
+0 && (module.exports = { value });
 `;
 }
 
@@ -77,14 +81,24 @@ exports.refuse = () => new Thing().value()${nested ? " + nested.value()" : ""};
 `;
 }
 
-function fixture(withFenced = true): string {
+/** A package that compiles with a runtime fence in its top-level module
+ * code: the fence rule islands it, never the lowering rule. */
+const SURE_FENCE = `"use strict";
+var stop = process.exit;
+exports.value = function () { return typeof stop; };
+`;
+
+type Direct = "surefence" | "fenceddirect" | "conditionalmodel";
+
+function fixture(direct: Direct = "surefence"): string {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-island-fold-"));
   scratch.push(dir);
+  const withFenced = direct !== "conditionalmodel";
   writeFileSync(
     join(dir, "main.ts"),
     withFenced
       ? `import { refuse } from "refuser";
-import { value } from "fenceddirect";
+import { value } from "${direct}";
 
 console.log(refuse(), value());
 `
@@ -98,12 +112,13 @@ console.log(refuse(), decorate({}).constructor === Object);
   // Reached only through `refuser`: the reload runs it in the island's own
   // program, so the fence rule never sees it and must not island it.
   writePackage(dir, "fencelib", fencedBundle("lib"), "export declare function value(): string;\n");
-  // Imported by the program itself: the fence rule islands it.
+  // Imported by the program itself: the fence rule islands `surefence`, and
+  // the program's use of `fenceddirect`'s export islands that one.
   if (withFenced) {
     writePackage(
       dir,
-      "fenceddirect",
-      fencedBundle("direct"),
+      direct,
+      direct === "surefence" ? SURE_FENCE : fencedBundle("direct"),
       "export declare function value(): string;\n",
     );
   } else {
@@ -149,24 +164,16 @@ console.log(refuse(), value());
     refusingPackage(false),
     "export declare function refuse(): string;\n",
   );
-  writePackage(
-    dir,
-    "surefence",
-    `"use strict";
-var stop = process.exit;
-exports.value = function () { return typeof stop; };
-`,
-    "export declare function value(): string;\n",
-  );
+  writePackage(dir, "surefence", SURE_FENCE, "export declare function value(): string;\n");
   return dir;
 }
 
 function build(
   fold: boolean,
   copyResult = false,
-  withFenced = true,
+  direct: Direct = "surefence",
   failOn: string | null = null,
-  dir = fixture(withFenced),
+  dir = fixture(direct),
 ) {
   let firstLoads = 0;
   let reloads = 0;
@@ -237,24 +244,27 @@ function build(
   };
 }
 
-test("the merged round decides the fence-report growth exactly as the second reload does", () => {
+test("the merged round decides the fence growth exactly as the second reload does", () => {
   const off = build(false);
   const on = build(true);
   const copied = build(true, true);
   expect(off.diagnostics).toEqual([]);
   expect(on.diagnostics).toEqual([]);
-  // Today's sequence: the lowering grows `refuser`, and the reload's fences
-  // grow `fenceddirect`. `fencelib` is only reached through `refuser`, so the
-  // reload never compiles it and never islands it.
+  // The two-round sequence: the lowering grows `refuser`, and the reload,
+  // which compiles, asks for `surefence`. `fencelib` is only reached through
+  // `refuser`: the reload never compiles it, so no rule islands it, and it is
+  // in the set by containment from the round `refuser` joins.
   expect(off.reloads).toBe(2);
-  expect(off.rounds).toEqual([["refuser"], ["fenceddirect", "refuser"]]);
+  expect(off.rounds).toEqual([
+    ["fencelib", "refuser"],
+    ["fencelib", "refuser", "surefence"],
+  ]);
   // The merged round decides both from the first pass: one reload fewer with
-  // the set today's second reload ends on. A plain union of the two rules
-  // would island `fencelib` too, on its markers alone.
+  // the set the second reload ends on.
   expect(on.reloads).toBe(1);
-  expect(on.rounds).toEqual([["fenceddirect", "refuser"]]);
+  expect(on.rounds).toEqual([["fencelib", "refuser", "surefence"]]);
   expect(on.ok).toBe(true);
-  expect(on.islands).toEqual(["fenceddirect", "refuser"]);
+  expect(on.islands).toEqual(["fencelib", "refuser", "surefence"]);
   expect(off.islands).toEqual(on.islands);
   // The first load is reused, not repeated: one load per compile either way.
   expect(on.firstLoads).toBe(1);
@@ -262,30 +272,43 @@ test("the merged round decides the fence-report growth exactly as the second rel
   // A lowering result that comes back as a copy still carries the merged
   // decision: the round must not fall back to the lowering rule alone.
   expect(copied.reloads).toBe(1);
-  expect(copied.rounds).toEqual([["fenceddirect", "refuser"]]);
+  expect(copied.rounds).toEqual([["fencelib", "refuser", "surefence"]]);
   expect(copied.islands).toEqual(on.islands);
 }, 600_000);
 
-// The fence report is the failed build's rule: it islands the packages whose
-// class explains a failure the lowering still reports. When the islands the
-// lowering grew remove every compilation error, the reload compiles, and a
-// compiling build keeps a conditional object-model dependency native (its
-// marker sits in a function body the program may never run). The merged round
-// must make the same choice rather than island it on its markers alone.
-test("a reload the island set makes compile keeps a conditional object-model dependency native", () => {
-  const off = build(false, false, false);
-  const on = build(true, false, false);
+// A pre-scan marker alone islands nothing, in a build that fails as in one
+// that compiles: `conditionalmodel` has an object-model marker in a function
+// body the program may never run, and stays native whichever way the round
+// is decided.
+test("a package with only a pre-scan marker stays native", () => {
+  const off = build(false, false, "conditionalmodel");
+  const on = build(true, false, "conditionalmodel");
   expect(off.diagnostics).toEqual([]);
   expect(on.diagnostics).toEqual([]);
-  expect(off.rounds).toEqual([["refuser"]]);
-  expect(off.islands).toEqual(["refuser"]);
-  // One reload, the same set: the fence report did not run on a program that
-  // compiles, so `conditionalmodel` stays native.
+  expect(off.rounds).toEqual([["fencelib", "refuser"]]);
+  expect(off.islands).toEqual(["fencelib", "refuser"]);
   expect(on.reloads).toBe(1);
-  expect(on.rounds).toEqual([["refuser"]]);
+  expect(on.rounds).toEqual([["fencelib", "refuser"]]);
   expect(on.ok).toBe(true);
-  expect(on.islands).toEqual(["refuser"]);
+  expect(on.islands).toEqual(["fencelib", "refuser"]);
   expect(on.firstLoads).toBe(1);
+}, 600_000);
+
+// A package whose exports are defined at run time compiles, but the program
+// cannot bind what it imports from it: the error is at the program's use and
+// is the package's refusal. The round that sees it islands that package with
+// the others, whether or not the package has a marker and whatever else in
+// the program fails.
+test("a use of an export a compiled package does not provide islands that package", () => {
+  const off = build(false, false, "fenceddirect");
+  const on = build(true, false, "fenceddirect");
+  for (const built of [off, on]) {
+    expect(built.diagnostics).toEqual([]);
+    expect(built.ok).toBe(true);
+    expect(built.reloads).toBe(1);
+    expect(built.rounds).toEqual([["fenceddirect", "fencelib", "refuser"]]);
+    expect(built.islands).toEqual(["fenceddirect", "fencelib", "refuser"]);
+  }
 }, 600_000);
 
 // The sure rule folds the growth a compiling build asks for. A build with that
@@ -295,8 +318,8 @@ test("a reload the island set makes compile keeps a conditional object-model dep
 // SC8023 warning that names the islands it does not have.
 test("a folded sure-fence build that fails keeps the compiling build with an SC8023 warning", () => {
   const dir = sureFixture();
-  const off = build(false, false, true, "surefence", dir);
-  const on = build(true, false, true, "surefence", dir);
+  const off = build(false, false, "surefence", "surefence", dir);
+  const on = build(true, false, "surefence", "surefence", dir);
   // The fold retries with the set the compiling build would ask for; that
   // build fails, and the retry goes back to the lowering's set, compiles,
   // and asks for the sure-fence retry that fails again.

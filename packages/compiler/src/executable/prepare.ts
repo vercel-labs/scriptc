@@ -7,6 +7,7 @@ import {
   nodeIslandEntryPatchDiag,
   nodeIslandEntryReadDiag,
   nodeIslandImplicitGlobalReadDiag,
+  nodeIslandContainedNoteDiag,
   nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
   nodeIslandReaderStripDiag,
@@ -50,8 +51,11 @@ import {
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
+import { containedIslands } from "../node-islands/graph-islands.js";
 import type { NodeIslandScan } from "../node-islands/scan.js";
 import {
+  deferredFenceWarnings,
+  explicitNpmStaticOf,
   foldFenceGrowth,
   growIslandSet,
   type IslandGrowthContext,
@@ -113,9 +117,13 @@ interface RoundState {
  * starting set and the retry it decides: the evidence a build that folds its
  * growth rules (D4) islanded exactly what the two-round sequence did. */
 function traceIslandRound(line: string): void {
-  const t = process.env["SCRIPTC_ISLAND_ROUNDS_TRACE"];
-  if (t === undefined || t === "" || t === "0") return;
+  if (!islandRoundTraceOn()) return;
   process.stderr.write(`[island-round] ${line}\n`);
+}
+
+function islandRoundTraceOn(): boolean {
+  const t = process.env["SCRIPTC_ISLAND_ROUNDS_TRACE"];
+  return t !== undefined && t !== "" && t !== "0";
 }
 
 function traceSet<K>(known: ReadonlyMap<string, K> | null): string {
@@ -488,6 +496,10 @@ function prepareRound(
     captured.seal();
     if (state.firstLoad === null && firstLoadReusable(state)) state.firstLoad = captured.inputs;
   }
+  if (islandDecision !== null && islandRoundTraceOn())
+    traceIslandRound(
+      `round ${round} set packages=${traceSet(islandDecision.packages)} modules=${traceSet(islandDecision.modules)}`,
+    );
   // A patched builtin the native build cannot represent (an entry module
   // patch, or a native read of a patched member) fails here.
   if (islandDecision !== null && islandDecision.errors.length > 0) {
@@ -518,6 +530,7 @@ function prepareRound(
   let disposed = false;
   let fenceGrown: Map<string, IslandPackage> | null = null;
   const fenceSure = new Set<string>();
+  let deferredWarnings: ScrDiagnostic[] = [];
   // The growth inputs this build's frontend offers (node-islands/growth.ts).
   // Built once: the frontend does not change inside a build, and its scan is
   // a whole-program walk.
@@ -544,13 +557,15 @@ function prepareRound(
     let islands =
       growth === null
         ? null
-        : growIslandSet(growth, lowerIslands, { diagnostics: result.diagnostics });
+        : growIslandSet(growth, lowerIslands, {
+            diagnostics: result.diagnostics,
+            ownFences: result.runtimeFences,
+          });
     let fences =
       retryFences && growth !== null
         ? growIslandSet(growth, lowerIslands, {
             diagnostics: result.diagnostics,
             fences: result.runtimeFences,
-            fenceMode: "report",
           })
         : null;
     let nextRetryFences = retryFences;
@@ -570,7 +585,7 @@ function prepareRound(
         // A folded sure-fence set is the growth a compiling build asks for;
         // the build carrying it can fail where that compiling build does
         // not, so the retry keeps the lowering's set to fall back to.
-        if (folded.sure) fenceFallback = islands;
+        if (folded.compiles) fenceFallback = islands;
         islands = folded.islands;
         fences = null;
         nextRetryFences = false;
@@ -755,6 +770,20 @@ function prepareRound(
           },
         };
       }
+      if (islandRoundTraceOn())
+        traceIslandRound(
+          `round ${round} fails; native with reachable fences: ${JSON.stringify(
+            deferredFenceWarnings(
+              entryPath,
+              nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands),
+              fe.npmStatic,
+              explicitNpmStaticOf(opts.npmStatic),
+              fe.npmImportSites,
+              lowered.runtimeFences,
+              islanded,
+            ).map((d) => d.message),
+          )}`,
+        );
       return fail(lowered.diagnostics);
     }
 
@@ -793,6 +822,17 @@ function prepareRound(
       if (checked.contracts) lowered.module.contracts = checked.contracts;
       contractWarnings = checked.warnings;
     }
+    // The packages that stay native with fences the program can reach: the
+    // build ships those throws, and says so (SC6006).
+    deferredWarnings = deferredFenceWarnings(
+      entryPath,
+      nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands),
+      fe.npmStatic,
+      explicitNpmStaticOf(opts.npmStatic),
+      fe.npmImportSites,
+      lowered.runtimeFences,
+      islanded,
+    );
     if (retryFences) {
       const growth = growthOf();
       fenceGrown =
@@ -801,7 +841,6 @@ function prepareRound(
           : growIslandSet(growth, lowerIslands, {
               diagnostics: lowered.diagnostics,
               fences: lowered.runtimeFences,
-              fenceMode: "sure",
               sure: fenceSure,
             });
     }
@@ -822,6 +861,7 @@ function prepareRound(
       ...(islandDecision?.notes ?? []),
       ...(fe.warnings ?? []),
       ...(lowered.divergences ?? []),
+      ...deferredWarnings,
       ...(lowered.performance ?? []),
       ...contractWarnings,
     ],
@@ -1229,6 +1269,23 @@ function decideNodeIslands(
     if (seen.has(name) && packages.has(name)) {
       const kept = packages.get(name)!;
       if (kept.reason === "" || kept.class === "") packages.set(name, island);
+      // What it follows is a fact about the set, whichever reason is kept.
+      else if (island.follows !== undefined)
+        packages.set(name, { ...kept, follows: island.follows });
+      // A reason that names the program's own use of the package outranks
+      // the first reason its modules give: the note says what moved it.
+      if (island.named === true) {
+        packages.set(name, island);
+        const noted = packageNoteIndex(notes, name);
+        if (noted >= 0)
+          notes[noted] = nodeIslandNoteDiag(
+            island.name,
+            island.version,
+            island.class,
+            island.reason,
+            notes[noted]!.loc,
+          );
+      }
       continue;
     }
     packages.set(name, island);
@@ -1288,6 +1345,26 @@ function decideNodeIslands(
       ),
     );
   }
+  // The packages only these islands load run in their Node too, and are in
+  // the set like them (node-islands/graph-islands.ts).
+  // One note names them all, after the islands' own; a package the rules
+  // above already named for a reason of its own is described the same way,
+  // and gives up the note it had.
+  const inside: string[] = [];
+  for (const [name, island] of containedIslands(policy, scan, packages, modules)) {
+    const noted = packages.has(name) ? packageNoteIndex(notes, name) : -1;
+    if (noted >= 0) notes.splice(noted, 1);
+    packages.set(name, island);
+    inside.push(island.version === null ? name : `${name}@${island.version}`);
+  }
+  // It sits where the first island's note sits, so it prints after it.
+  if (inside.length > 0)
+    notes.push(
+      nodeIslandContainedNoteDiag(
+        inside,
+        notes.find((n) => n.code === "SC8001")?.loc ?? { file: entryPath, start: 0, end: 0 },
+      ),
+    );
   for (const island of [...modules.values()].sort((a, b) =>
     a.file < b.file ? -1 : a.file > b.file ? 1 : 0,
   ))
@@ -1301,6 +1378,15 @@ function decideNodeIslands(
   return packages.size === 0 && modules.size === 0
     ? null
     : { ...nodeIslandSet(packages, modules), notes, errors };
+}
+
+/** The index of package `name`'s SC8001 note in `notes`, or -1. */
+function packageNoteIndex(notes: readonly ScrDiagnostic[], name: string): number {
+  return notes.findIndex(
+    (n) =>
+      n.code === "SC8001" &&
+      (n.message.startsWith(`package '${name}@`) || n.message.startsWith(`package '${name}' `)),
+  );
 }
 
 /** The installed package directory of `name` as Node resolves it from

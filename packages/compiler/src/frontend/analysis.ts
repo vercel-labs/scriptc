@@ -12,8 +12,13 @@ import { packageDirOf } from "../node-islands/origin.js";
 import { nodeIslandPolicy } from "../node-islands/policy.js";
 import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.js";
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
-import { outsideGraphIslands } from "../node-islands/graph-islands.js";
-import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
+import { containedIslands, outsideGraphIslands } from "../node-islands/graph-islands.js";
+import {
+  deferredFenceWarnings,
+  explicitNpmStaticOf,
+  growIslandSet,
+  type IslandGrowthContext,
+} from "../node-islands/growth.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
  * Unlike compile(), lowering diagnostics are data here, not failure. */
@@ -170,7 +175,19 @@ export function analyzeWithFrontend(
       }
       return lowerLoad.fe;
     };
-    const lowerWith = (islands: NodeIslandSet | null): LowerResult => {
+    // The packages only the islands load are in the set a lowering uses, as
+    // they are in a build's (node-islands/graph-islands.ts): derived from the
+    // set each time, never grown.
+    const withContained = (roots: NodeIslandSet | null): NodeIslandSet | null => {
+      if (roots === null || scan === undefined) return roots;
+      const contained = containedIslands(policy, scan, roots.packages, roots.modules);
+      if (contained.size === 0) return roots;
+      const packages = new Map(roots.packages);
+      for (const [name, island] of contained) packages.set(name, island);
+      return nodeIslandSet(packages, roots.modules);
+    };
+    const lowerWith = (roots: NodeIslandSet | null): LowerResult => {
+      const islands = withContained(roots);
       const islandsActive = islands !== null && islands.packages.size > 0;
       return lowerFrontend(islands).lower({
         coverage: true,
@@ -246,7 +263,6 @@ export function analyzeWithFrontend(
       const grown = growIslandSet(growth, known.packages, {
         diagnostics: lowered.diagnostics,
         fences: lowered.runtimeFences,
-        fenceMode: "sure",
       });
       if (grown === null) break;
       growthReasons.push(...lowered.diagnostics);
@@ -254,6 +270,19 @@ export function analyzeWithFrontend(
       lowerIslandsLocal = nodeIslandSet(grown, known.modules);
       lowered = lowerWith(lowerIslandsLocal);
     }
+    // The packages a build keeps native with fences the program can reach
+    // (SC6006), beside the lowering's own divergences: the list a build of
+    // the same program prints.
+    const deferredWarnings = deferredFenceWarnings(
+      entryPath,
+      policy,
+      fe.npmStatic,
+      explicitNpmStaticOf(opts.npmStatic),
+      fe.npmImportSites,
+      lowered.runtimeFences,
+      withContained(lowerIslandsLocal)?.packages ?? new Map(),
+    );
+    const divergences = [...(lowered.divergences ?? []), ...deferredWarnings];
     const provenance = provenanceSources();
     const islandReport =
       scan === undefined
@@ -287,7 +316,9 @@ export function analyzeWithFrontend(
         // (SC8101–SC8105), as scope B's builds will make them errors.
         diagnostics: [...preflight, ...lowered.diagnostics, ...(nodeIslands?.userJs ?? [])],
         ...(lowered.runtimeFences.length > 0 ? { runtimeFences: lowered.runtimeFences } : {}),
-        ...(lowered.divergences !== undefined ? { divergences: lowered.divergences } : {}),
+        ...(lowered.divergences !== undefined || deferredWarnings.length > 0
+          ? { divergences }
+          : {}),
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),

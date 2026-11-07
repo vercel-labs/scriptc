@@ -31,12 +31,16 @@ Install the dependency, then build and run the executable:
 
 ```console
 $ npm install commander
-$ scriptc build tool.ts -o greet >/dev/null
+$ scriptc build tool.ts -o greet
+/work/extras/tool.ts:1:1 - warning SC6006: npm package 'commander' compiles with 10 operations the program can reach that do not compile: each throws when the program reaches it (first SC1030: the reference to 'process' above its 'var' declaration (a read there would be 'undefined', which the binding's type cannot hold — annotate it '| undefined' or move the declaration up) is not supported yet)
+  hint: scriptc coverage lists them; --node-island=commander runs the package in Node.js instead, and --npm-static=commander accepts the throws and drops this warning
+1 warning: the program compiled, but this site can behave differently from Node.
+/work/extras/greet
 $ ./greet ada --upper
 HELLO, ADA
 ```
 
-Your callback and the commander implementation both compile to native code. No extra flags are needed.
+Your callback and the commander implementation both compile to native code. No extra flags are needed. The warning says that commander also holds ten operations scriptc can't compile on paths your program could take, none of which this run takes; [unsupported code inside a package](#unsupported-code-inside-a-package) explains what they do and how to answer the warning.
 
 <span id="package-resolution-and-embedding" />
 <span id="runtime-behavior" />
@@ -141,7 +145,7 @@ CommonJS packages compile with Node.js's module semantics. Each `require()` eval
 
 ## Unsupported code inside a package
 
-A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. When such an operation needs Node.js itself, such as building a function from a string, the build runs the whole package in a [Node island](/docs/node-islands). Other unsupported operations don't fail the build: each one compiles to code that throws a runtime error if it ever runs. Coverage reports list them as deferred sites, so review the list and test the parts of the package your program uses. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
+A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. When such an operation needs Node.js itself, such as building a function from a string, the build runs the whole package in a [Node island](/docs/node-islands). Other unsupported operations don't fail the build: each one compiles to code that throws a runtime error if it ever runs. When your program can reach such an operation, the build prints an `SC6006` warning that names the package, the number of operations, and the first one. Coverage reports list every one as a deferred site, so review the list and test the parts of the package your program uses. `--node-island=<pkg>` runs the package in Node.js instead, and naming the package with `--npm-static` accepts its deferred operations and drops the warning. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
 
 ## Fix a package's types
 

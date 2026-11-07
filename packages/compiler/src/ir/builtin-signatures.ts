@@ -388,6 +388,8 @@ function buildLibFnSignatures() {
     "collection.preventExtensions": { argTypes: [null], result: VOID },
     "collection.isExtensible": { argTypes: [null], result: BOOL },
     "dyn.nativeSetNew": { argTypes: [DYN], result: DYN },
+    "dyn.collectionConstruct": { argTypes: [STRING, DYN], result: DYN },
+    "dyn.setValues": { argTypes: [DYN], result: DYN },
     "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
@@ -570,6 +572,12 @@ function buildLibFnSignatures() {
      * the function with zero arguments at drain. */
     "timers.queueMicrotask": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
     "timers.queueMicrotaskDyn": { argTypes: [DYN], result: VOID },
+    /** Node's synchronous timer callback gate (scr_timers_check_callback):
+     * a non-function throws ERR_INVALID_ARG_TYPE before anything schedules.
+     * Lowered only for a callback that is not statically a function — a
+     * checked-dynamic value — and sequenced after every argument
+     * expression evaluates, where Node validates the callback. */
+    "timers.checkCallback": { argTypes: [DYN], result: VOID },
     "timers.clearImmediate": { argTypes: [F64], result: VOID },
     /** process.nextTick(cb, ...args) — the user tick queue. args: [cb
      * (() => void; trailing call arguments ride the timer surface's
@@ -785,6 +793,10 @@ function buildLibFnSignatures() {
     "dir.read": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
     "dir.closeSync": { argTypes: [DIR_T], result: VOID },
     "dir.close": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
+    "dir.readCb": { argTypes: [DIR_T, DYN], result: VOID },
+    "dir.closeCb": { argTypes: [DIR_T, DYN], result: VOID },
+    "dir.dispose": { argTypes: [DIR_T], result: VOID },
+    "dir.asyncDispose": { argTypes: [DIR_T], result: { kind: "promise", inner: VOID } },
     /** node:path (scr_path.c ports BOTH of Node's implementations
      * function-by-function): the `path.*` family is posix, the
      * `path.win32*` family is Node v24's path.win32 ported exactly — the
@@ -4466,6 +4478,22 @@ function buildLibFnSignatures() {
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
     "dyn.functionApply": { argTypes: [], result: DYN },
     "dyn.builtinMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** A <Class>.prototype member value (scr_dyn_collections.c) for Set,
+     * Map, WeakMap or WeakSet: one interned function per (class, name), so
+     * `Map.prototype.get.call(receiver, key)` brand-checks and runs the
+     * member's implementation. */
+    "dyn.collectionMethod": { argTypes: [STRING, STRING], result: DYN },
+    /** %<Class>.prototype%, the object `Object.getPrototypeOf(new Map())`
+     * answers. */
+    "dyn.collectionPrototype": { argTypes: [STRING], result: DYN },
+    /** Object.getPrototypeOf for a value that may be a collection handle. */
+    "dyn.collectionGetPrototype": { argTypes: [DYN], result: DYN },
+    /** The ES2025 Set compositions over a set-like argument. */
+    "dyn.setCombine": { argTypes: [DYN, STRING, DYN], result: DYN },
+    /** <Class>.prototype.forEach with a callback that is not statically a
+     * function: Node's `<value> is not a function` for a non-callable, and
+     * (value, value, set) / (value, key, map) visits otherwise. */
+    "dyn.collectionForEach": { argTypes: [DYN, STRING, DYN, DYN], result: VOID },
     /** A builtin prototype method as a function value, by its prototype
      * (`String`, `RegExp`) and canonical member name (`trim`, `trimStart`,
      * `trimEnd`; `exec`, `test`, `toString`): the unit in
@@ -5451,6 +5479,12 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "rl.on": { argTypes: [F64, F64, null, BOOL], result: VOID },
+    "rl.onFirst": { argTypes: [F64, F64, null, BOOL], result: VOID },
+    "rl.off": { argTypes: [F64, F64, null], result: VOID },
+    "rl.offAll": { argTypes: [F64, F64], result: VOID },
+    "rl.listenerCount": { argTypes: [F64, F64], result: F64 },
+    "rl.listenerCountFn": { argTypes: [F64, F64, null], result: F64 },
+    "rl.eventNames": { argTypes: [F64], result: arrayOf(STRING) },
     "rl.iterOpen": { argTypes: [F64], result: VOID },
     "rl.iterNext": { argTypes: [F64], result: { kind: "promise", inner: DYN } },
     "rl.iterReturn": { argTypes: [F64], result: VOID },

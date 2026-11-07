@@ -3387,12 +3387,17 @@ function validateFunction(
         break;
       }
       case "fieldAbsent": {
-        const def = unions.get(e.unionId);
-        if (!def) err(`fieldAbsent of undeclared union "${e.unionId}"`, e.loc);
-        else if (!def.arms.some((arm) => arm.kind === "undefinedT"))
-          err(`fieldAbsent of ${e.unionId}: the union has no undefined arm`, e.loc);
-        if (e.type.kind !== "union" || e.type.unionId !== e.unionId)
-          err("fieldAbsent must have its union type", e.loc);
+        if (e.unionId === undefined) {
+          // The optional checked-dynamic slot's ABSENT marker.
+          if (e.type.kind !== "dyn") err("fieldAbsent without a union must be dyn", e.loc);
+        } else {
+          const def = unions.get(e.unionId);
+          if (!def) err(`fieldAbsent of undeclared union "${e.unionId}"`, e.loc);
+          else if (!def.arms.some((arm) => arm.kind === "undefinedT"))
+            err(`fieldAbsent of ${e.unionId}: the union has no undefined arm`, e.loc);
+          if (e.type.kind !== "union" || e.type.unionId !== e.unionId)
+            err("fieldAbsent must have its union type", e.loc);
+        }
         if (!fieldSlotValues.has(e)) err("fieldAbsent outside a record field write", e.loc);
         break;
       }

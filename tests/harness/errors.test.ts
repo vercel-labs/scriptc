@@ -915,6 +915,43 @@ console.log(\`\${register(7)}\`);
     expect(r.stdout).toBe("caught: Cannot read properties of undefined (reading 'registry')\n");
     expect(r.stderr).toBe("");
   });
+
+  test("a tuple-typed receiver keeps the fence on an added property write (JS lane)", async () => {
+    // A tuple is a record layout whose checked view is an array rebuilt
+    // from the tuple's fields, so the view cannot hold a property the
+    // tuple does not declare: the write stays fenced instead of landing in
+    // a view whose next refresh drops it.
+    const r = await compileAndRun(
+      "tuple-added-property-write",
+      `/** @type {[number, number]} */
+const pair = [1, 2];
+pair.extra = "x";
+console.log(pair[0], pair[1]);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: assignment to non-variables are not supported yet \[SC1090 at .*tuple-added-property-write\.js:3\]\n$/,
+    );
+  });
+
+  test("a tuple-typed receiver keeps the fence on an undeclared member read (JS lane)", async () => {
+    const r = await compileAndRun(
+      "tuple-added-property-read",
+      `/** @type {[number, number]} */
+const pair = [1, 2];
+console.log(pair.extra);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: reading 'extra' from a value of type '\[number, number\]' is not supported yet \[SC1090 at .*tuple-added-property-read\.js:3\]\n$/,
+    );
+  });
 });
 
 // An RSA-PSS key whose parameters restrict it to a digest the runtime does
@@ -2044,9 +2081,13 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
     // read (direct, bracketed, through an alias or globalThis), and
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
-    // Date.prototype is the one value: it reads as the prototype object, so
-    // a direct read, a member read through it and reflection on it answer as
-    // Node does. `key in Ctor` answers from the constructor's fixed keys.
+    // Date.prototype and the four keyed collections' prototypes are the
+    // values: Date.prototype reads as the prototype object, so a direct read, a
+    // member read through it and reflection on it answer as Node does; the
+    // Set/Map/WeakMap/WeakSet prototypes read as the objects the JavaScript
+    // lane provides (%Set.prototype% and friends), with their `constructor`
+    // member answering the interned constructor. `key in Ctor` answers from the
+    // constructor's fixed keys.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
@@ -2073,11 +2114,19 @@ try { console.log("delete index", "value", String(delete (s as any)[0])); } catc
       ["defineProperty(Promise)", 'Object.defineProperty(Promise, "resolve", { value: 1 })'],
       ["hasOwnProperty.call(Map)", 'Object.prototype.hasOwnProperty.call(Map, "groupBy")'],
     ] as const;
-    // The reads that answer from Date.prototype's object rather than refusing.
+    // The reads that answer from a prototype object rather than refusing.
     const readsAsValue = new Map<string, string>([
+      ["Map.prototype", "read object"],
       ["Date.prototype", "read object"],
       ["Date.prototype.getYear", "read function"],
+      ["Set.prototype", "read object"],
+      ["WeakMap.prototype", "read object"],
+      ["WeakSet.prototype", "read object"],
+      ["Map.prototype.constructor", "read function"],
+      ["getOwnPropertyDescriptor(Map.prototype)", "read object"],
       ["isExtensible(Date.prototype)", "read boolean"],
+      ["globalThis.Map.prototype", "read object"],
+      ["Map alias prototype", "read object"],
     ]);
     const source = `"use strict";
 const MapAlias = Map;
@@ -2110,8 +2159,8 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
           : `${label} ${read}`;
       }),
     );
-    // Promise.prototype reads as an object holding the runtime's methods,
-    // and `in` on a builtin constructor answers from its fixed keys.
+    // Promise.prototype reads as an object holding the runtime's methods, and
+    // `in` on a builtin constructor answers from its fixed keys.
     expect(lines.slice(reads.length)).toEqual([
       "7 2 1 1 0 0",
       "Date Map true true",

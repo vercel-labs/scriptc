@@ -6819,9 +6819,10 @@ static ScrHttpClientReq *scr_http_request_global(ScrStr *host /*borrowed*/, doub
                                                  ScrStr *pool_key /*borrowed, nullable*/) {
   ScrStr *socket_path = scr_http_next_socket_path;
   scr_http_next_socket_path = NULL;
+  /* an http.request options record: its host and headers are checked (#3228) */
   return scr_http_request_pooled(scr_http_global_agent(default_port == 443), host, port, path,
                                  method, timeout_ms, header_pairs, auto_end, cb, fn, default_port,
-                                 wrap, wrap_ctx, pool_key, socket_path);
+                                 wrap, wrap_ctx, pool_key, socket_path, true);
 }
 
 ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double port,

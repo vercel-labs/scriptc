@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test, vi } from "vitest";
 import {
   DYN,
@@ -467,4 +470,82 @@ test("the checked widening stays out of the union plan", () => {
   // conversion would build the code of a compiling program around.
   expect(lowerer.widthLiftPlan(source, mixed)).toBeNull();
   expect(lowerer.checkedWidthLift(source, wider)).toEqual({ how: "checkedWiden" });
+});
+
+test("a lifted function is found by name through the index, never by scanning the list", () => {
+  // Lowerer.liftedFnNamed answers `liftedFns.find((fn) => fn.name === name)`
+  // from an index. A scan reads every lifted function of the program, tens of
+  // thousands in a large one, at each lookup.
+  const scan =
+    /\bliftedFns\s*\.\s*(?:some|find|findIndex|findLast|findLastIndex)\(\s*\(?\s*(\w+)\s*\)?\s*=>\s*\1\.name\s*===/g;
+  // A site that asks more than "is there a function of this name", with the
+  // reason the index does not answer it.
+  const otherQuestions = new Map([
+    // Whether any function of the name has captures, not only the first.
+    ["frontend/lowering/native-ffi.ts", 1],
+  ]);
+  const sourceRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const found = new Map<string, number>();
+  const visit = (dir: string): void => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) visit(path);
+      else if (name.endsWith(".ts") && !name.endsWith(".test.ts")) {
+        const count = readFileSync(path, "utf8").match(scan)?.length ?? 0;
+        if (count > 0) found.set(relative(sourceRoot, path).split("\\").join("/"), count);
+      }
+    }
+  };
+  visit(sourceRoot);
+  expect([...found]).toEqual([...otherQuestions]);
+});
+
+test("the lifted-function index answers what a scan of the list answers", () => {
+  const lowerer = context();
+  const named = (name: string): IrFunction => ({
+    name,
+    params: [],
+    returnType: VOID,
+    locals: [],
+    body: [],
+    loc,
+  });
+  const scanned = (name: string) => lowerer.liftedFns.find((fn) => fn.name === name);
+  const before = lowerer.liftedFns.length;
+  expect(lowerer.liftedFnNamed("%helper.a")).toBeUndefined();
+  const first = named("%helper.a");
+  lowerer.liftedFns.push(first, named("%helper.b"), named("%helper.a"));
+  // The first function of a name, as `find` returns it, and a function pushed
+  // after an earlier lookup.
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(first);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(scanned("%helper.a"));
+  expect(lowerer.liftedFnNamed("%helper.b")).toBe(scanned("%helper.b"));
+  expect(lowerer.liftedFnNamed("%helper.c")).toBeUndefined();
+  expect(lowerer.liftedFnNamed(undefined)).toBeUndefined();
+  const later = named("%helper.c");
+  lowerer.liftedFns.push(later);
+  expect(lowerer.liftedFnNamed("%helper.c")).toBe(later);
+  // record-links.ts removes helpers from the middle of the list
+  // (restoreStringConversions): the functions behind them move down, and one
+  // pushed afterwards lands where the index had already been.
+  lowerer.liftedFns.splice(before + 1, 1);
+  const afterRemoval = named("%helper.d");
+  lowerer.liftedFns.push(afterRemoval);
+  for (const name of ["%helper.a", "%helper.b", "%helper.c", "%helper.d"])
+    expect(lowerer.liftedFnNamed(name)).toBe(scanned(name));
+  expect(lowerer.liftedFnNamed("%helper.b")).toBeUndefined();
+  expect(lowerer.liftedFnNamed("%helper.d")).toBe(afterRemoval);
+  // Removing the first of two functions with one name leaves the second.
+  lowerer.liftedFns.splice(before, 1);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(scanned("%helper.a"));
+  expect(lowerer.liftedFnNamed("%helper.a")).not.toBe(first);
+  lowerer.liftedFns.splice(before, 0, first);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(first);
+  // The unit journal cuts the list back and tells the index.
+  const table = lowerer.journalTables().find((entry) => entry.name === "liftedFns")!;
+  table.truncate!(before + 1);
+  expect(lowerer.liftedFns).toEqual([...lowerer.liftedFns.slice(0, before), first]);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(first);
+  expect(lowerer.liftedFnNamed("%helper.b")).toBeUndefined();
+  expect(lowerer.liftedFnNamed("%helper.c")).toBeUndefined();
 });

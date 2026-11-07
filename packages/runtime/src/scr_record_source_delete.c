@@ -33,17 +33,21 @@ static ScrRecordSource *scr_record_source_kept(const void *rec) {
  * another layout. Borrows the record and the key. */
 bool scr_record_source_delete(void *rec, const char *key, size_t key_len, bool strict) {
   if (!rec || !key) return true;
+  /* A view addresses the record it views: that record's own kept source
+   * holds the property, or its link leads to the one that does. (A view's
+   * rc word always carries the frozen bit, which marks the view, so the
+   * view itself never takes part in the frozen check below.) */
   ScrRecordSource *entry = scr_record_source_entry(rec);
-  bool view = entry && entry->capsule;
-  const void *target = view ? entry->viewed : rec;
+  const void *target = entry && entry->capsule ? entry->viewed : rec;
   ScrRecordSource *source = scr_record_source_kept(target);
-  const void *copied = NULL;
+  bool frozen = scr_rc_frozen(target);
   /* Copies nest (a narrower copy of a narrower copy), so follow the chain
-   * of links until a record keeps a source. */
-  for (const void *linked = rec; !source && (linked = scr_record_link_source(linked));) {
+   * of links until a record keeps a source. Freezing any record of the
+   * chain freezes the one object Node has, so every record the walk passes
+   * counts, the last included. */
+  for (const void *linked = target; !source && (linked = scr_record_link_source(linked));) {
+    frozen = frozen || scr_rc_frozen(linked);
     source = scr_record_source_kept(linked);
-    target = linked;
-    copied = linked;
   }
   ScrDyn *store = source ? source->view : NULL;
   if (!store || store->kind != SCR_DYN_OBJ) return true;
@@ -62,7 +66,7 @@ bool scr_record_source_delete(void *rec, const char *key, size_t key_len, bool s
   ScrStr *name = scr_str_new(key, key_len);
   /* Node has one object where these records are two: freezing the copy
    * freezes what the delete removes, so it refuses the removal too. */
-  if (!configurable || scr_rc_frozen(target) || (copied && scr_rc_frozen(rec))) {
+  if (!configurable || frozen) {
     if (strict) {
       ScrStr *owner = scr_str_new("#<Object>", 9);
       scr_record_throw_frozen(name, owner, 2);

@@ -214,6 +214,7 @@ console.log(typeof holder.read);
 test("a failing stream program decides once, from its stream pass, and lowers with streams once", () => {
   const source = `${readFileSync(join(corpus, STREAM_PROGRAMS[1]!), "utf8")}\n${UNLOWERED_FIELD}`;
   withProgram("failing-stream.ts", source, (lower) => {
+    // The push-down pass ends where it asks for the general representation.
     // A predicate that implies a retry ends the round at the stream pass:
     // the whole-slot comparison would only pick the pass a failure is
     // reported from, and the retry discards it.
@@ -226,7 +227,7 @@ test("a failing stream program decides once, from its stream pass, and lowers wi
     });
     expect(asked).toEqual(["failed"]);
     expect(retried.passes).toEqual([
-      "reachable-emit",
+      "reachable-emit (stream-flags)",
       "general-streams-relower",
       "stop-after-push-down",
     ]);
@@ -237,7 +238,7 @@ test("a failing stream program decides once, from its stream pass, and lowers wi
     // program is never lowered with streams a second time.
     const declined = lower({ stopAfterPushDown: () => false });
     expect(declined.passes).toEqual([
-      "reachable-emit",
+      "reachable-emit (stream-flags)",
       "general-streams-relower",
       "stream-relower-reused",
       "whole-slot-relower",
@@ -245,7 +246,7 @@ test("a failing stream program decides once, from its stream pass, and lowers wi
     // It reports what the pipeline reports without a predicate.
     const plain = lower({});
     expect(plain.passes).toEqual([
-      "reachable-emit",
+      "reachable-emit (stream-flags)",
       "general-streams-relower",
       "whole-slot-relower",
     ]);

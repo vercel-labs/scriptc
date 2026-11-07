@@ -19,6 +19,7 @@ import {
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
   arrayOf,
 } from "../../../ir/ir.js";
 import { staticForkModulePath } from "../../fork-target.js";
@@ -1627,9 +1628,8 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
  * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
  * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
- * `encoding: "utf8"` and a pure numeric `maxBuffer` are accepted; the latter
- * is not enforced by the growing native capture, as
- * with the synchronous and promisified capture forms. Other options remain
+ * `encoding: "utf8"` and a numeric `maxBuffer` are accepted; the limit applies
+ * to each stream as in Node (1 MiB without the option). Other options remain
  * fenced until their lifecycle can share this asynchronous core. */
 export function lowerExecFileCall(
   lowerer: Lowerer,
@@ -1661,6 +1661,7 @@ export function lowerExecFileCall(
   // `cwd` (the SCR_CHILD_CP_OPTIONS build): the child's directory, the
   // one launch member the callback slice lacked.
   let cwd: IrExpr | null = null;
+  let maxBuffer: IrExpr | null = null;
   const optionsNode =
     expr.arguments.nodes.length === (shell ? 3 : 4)
       ? expr.arguments.nodes[shell ? 1 : 2]
@@ -1674,18 +1675,6 @@ export function lowerExecFileCall(
         "pass encoding and maxBuffer in an inline object literal",
       );
     }
-    const pureNumber = (node: ts.Expression): boolean =>
-      ts.isNumericLiteral(node) ||
-      (ts.isParenthesizedExpression(node) && pureNumber(node.expression)) ||
-      (ts.isBinaryExpression(node) &&
-        [
-          ts.SyntaxKind.PlusToken,
-          ts.SyntaxKind.MinusToken,
-          ts.SyntaxKind.AsteriskToken,
-          ts.SyntaxKind.SlashToken,
-        ].includes(node.operatorToken.kind) &&
-        pureNumber(node.left) &&
-        pureNumber(node.right));
     for (const property of options.properties.nodes) {
       const member = optionMember(property);
       if (!member)
@@ -1706,13 +1695,7 @@ export function lowerExecFileCall(
           );
         }
       } else if (member.name === "maxBuffer") {
-        if (!pureNumber(member.value)) {
-          lowerer.noLowering(
-            `${what} with a non-literal maxBuffer`,
-            member.value,
-            "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
-          );
-        }
+        maxBuffer = lowerer.lowerExprExpecting(member.value, F64);
       } else if (member.name === "cwd") {
         cwd = lowerer.lowerExprExpecting(member.value, STRING);
       } else if (member.name === "shell" && !shell) {
@@ -1730,7 +1713,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', a pure numeric maxBuffer, cwd, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -1811,19 +1794,70 @@ export function lowerExecFileCall(
     }
   }
   if (cwd !== null) {
-    return {
+    return withMaxBuffer(
+      lowerer,
+      {
+        kind: "libCall",
+        fn: "cp.execFileCwd",
+        args: [cmd, argv, callback, boolLit(shellForm, loc), cwd],
+        type: CHILD_T,
+        loc,
+      },
+      maxBuffer,
+      loc,
+    );
+  }
+  return withMaxBuffer(
+    lowerer,
+    {
       kind: "libCall",
-      fn: "cp.execFileCwd",
-      args: [cmd, argv, callback, boolLit(shellForm, loc), cwd],
+      fn: "cp.execFile",
+      args: [cmd, argv, callback, boolLit(shellForm, loc)],
       type: CHILD_T,
       loc,
-    };
-  }
-  return {
-    kind: "libCall",
-    fn: "cp.execFile",
-    args: [cmd, argv, callback, boolLit(shellForm, loc)],
-    type: CHILD_T,
+    },
+    maxBuffer,
     loc,
-  };
+  );
+}
+
+/** A capturing child_process call under the program's own `maxBuffer`
+ * (without one the runtime applies Node's 1 MiB default). The call's
+ * arguments are evaluated first, into hidden locals, so that a capture one
+ * of them runs has finished; then cp.maxBuffer validates the limit
+ * (Node's ERR_OUT_OF_RANGE for a negative or NaN value) and arms it for
+ * the next capture, which is this call. Literals and function values stay
+ * in place: evaluating them runs nothing. */
+export function withMaxBuffer(
+  lowerer: Lowerer,
+  call: Extract<IrExpr, { kind: "libCall" }>,
+  maxBuffer: IrExpr | null,
+  loc: SrcLoc,
+): IrExpr {
+  if (maxBuffer === null) return call;
+  const stmts: IrStmt[] = [];
+  const args = call.args.map((arg) => {
+    if (
+      arg.kind === "numLit" ||
+      arg.kind === "strLit" ||
+      arg.kind === "boolLit" ||
+      arg.type.kind === "func"
+    )
+      return arg;
+    const local = lowerer.declareHiddenLocal("%captureArg", arg.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: arg, loc });
+    return varRef(local.id, arg.type, loc);
+  });
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "cp.maxBuffer",
+      args: [maxBuffer, boolLit(true, loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  return { kind: "seqExpr", stmts, result: { ...call, args }, type: call.type, loc };
 }

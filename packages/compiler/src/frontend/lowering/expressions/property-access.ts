@@ -3939,7 +3939,10 @@ export function lowerGroupsProjection(
  * an interned unbound callable; invocation supplies its receiver separately. */
 /** Whether a receiver is a binding or `this`, or a chain of property reads
  * from one whose every member is a plain property (no accessor), so that
- * reading it has no effect. */
+ * reading it has no effect. A member the standard library declares is not
+ * such a field: its read is a builtin's, with a lowering or a refusal of
+ * its own that a caller must not skip (`child.stdio` has none, and is
+ * declared as a 5-tuple where Node's array has one entry per stdio slot). */
 function plainReadChain(lowerer: Lowerer, node: ts.Expression): boolean {
   let current = node;
   while (ts.isPropertyAccessExpression(current)) {
@@ -3948,6 +3951,7 @@ function plainReadChain(lowerer: Lowerer, node: ts.Expression): boolean {
     if (member === undefined || (member.flags & ts.SymbolFlags.Property) === 0) return false;
     if ((member.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0)
       return false;
+    if (lowerer.isStdlibMember(current)) return false;
     current = current.expression;
   }
   return ts.isIdentifier(current) || current.kind === ts.SyntaxKind.ThisKeyword;

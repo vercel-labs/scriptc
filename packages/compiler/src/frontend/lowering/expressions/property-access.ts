@@ -135,7 +135,12 @@ import {
   lowerRuntimeConstructorName,
   runtimeConstructorReceiver,
 } from "../builtins/runtime-constructor.js";
-import { findGenericMethodOn, lowerStaticFieldRead } from "../lower-classes.js";
+import { lowerInstanceConstructorRead } from "../class-instance-constructor.js";
+import {
+  findGenericMethodOn,
+  lowerStaticFieldRead,
+  lowerStaticSuperRead,
+} from "../lower-classes.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
 import { lowerEnumAccess } from "../lower-enums.js";
 import {
@@ -415,6 +420,11 @@ export function lowerPropertyAccessExpr(
     lowerer.buffersMutable = true;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
+  // `x.constructor`, `x.constructor.name` and a static read through
+  // `(x.constructor as typeof K)` on an instance of a program class: the
+  // instance's own class answers (class-instance-constructor.ts).
+  const instanceConstructor = lowerInstanceConstructorRead(lowerer, expr, loc);
+  if (instanceConstructor !== null) return instanceConstructor;
   // `Set.prototype`, `Map.prototype`, `WeakMap.prototype` and
   // `WeakSet.prototype` as values in a JavaScript source: the runtime's
   // %<Class>.prototype% object, whose methods brand-check their receiver and
@@ -612,6 +622,10 @@ export function lowerPropertyAccessExpr(
   // super.method() calls are routed at the call site; a bare super
   // property read lands here.
   if (expr.expression.kind === ts.SyntaxKind.SuperKeyword) {
+    // In a static member: the base class's static, read with the current
+    // receiver class as `this`.
+    const viaStatic = lowerStaticSuperRead(lowerer, expr, loc);
+    if (viaStatic) return viaStatic;
     return lowerer.lowerSuperAccessorRead(expr);
   }
   // Enum member reads (`E.A`) fold to their compile-time constants —

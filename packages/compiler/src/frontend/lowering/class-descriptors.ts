@@ -14,6 +14,7 @@ import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
+import { classFieldDefine, isDefinableClassField } from "./class-attributes.js";
 
 function literalName(name: ts.PropertyName): string | null {
   return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
@@ -172,6 +173,112 @@ export function lowerClassDataDescriptor(
       loc,
     },
   ];
+  return { kind: "seqExpr", stmts, result: value, type: value.type, loc };
+}
+
+const DESCRIPTOR_FIELDS = ["value", "writable", "enumerable", "configurable", "get", "set"];
+
+/** The fields of a descriptor written as an object literal whose conversion
+ * (ToPropertyDescriptor) can neither fail nor run code: plain members named
+ * after descriptor fields, and no accessor beside a value or `writable`.
+ * Null for any other expression. */
+function staticDescriptorFields(node: ts.Expression): string[] | null {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (!ts.isObjectLiteralExpression(node)) return null;
+  const fields: string[] = [];
+  for (const property of node.properties.nodes) {
+    if (
+      !ts.isPropertyAssignment(property) &&
+      !ts.isShorthandPropertyAssignment(property) &&
+      !ts.isMethodDeclaration(property)
+    )
+      return null;
+    const name = literalName(property.name);
+    if (name === null || !DESCRIPTOR_FIELDS.includes(name) || fields.includes(name)) return null;
+    fields.push(name);
+  }
+  const accessor = fields.includes("get") || fields.includes("set");
+  const data = fields.includes("value") || fields.includes("writable");
+  return accessor && data ? null : fields;
+}
+
+/** Object.defineProperties on a class instance whose literal map names a
+ * declared field: Object.defineProperty's lowering, applied per key.
+ *
+ * Node evaluates the map, reads and converts every descriptor, and then
+ * defines the properties in key order. Each descriptor here is an object
+ * literal whose conversion cannot fail or run code (staticDescriptorFields),
+ * so evaluating the descriptors first, in source order, and defining
+ * afterwards is that order exactly. No name is an array index, so source
+ * order is key order. A declared field takes classFieldDefine; any other
+ * name is a property of the instance's bag, as in lowerClassDataDescriptor.
+ * Null when the call is not of this form; the caller's refusal then names
+ * the call. */
+export function lowerClassDescriptorMap(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  target: IrExpr,
+): IrExpr | null {
+  if (!isDynTypedRefType(target.type)) return null;
+  const info = lowerer.classes.get(target.type.className);
+  if (!info || runtimeRooted(info)) return null;
+  let map = call.arguments.nodes[1]!;
+  while (ts.isParenthesizedExpression(map)) map = map.expression;
+  if (!ts.isObjectLiteralExpression(map)) return null;
+  const entries: { name: string; descriptor: ts.Expression; field: boolean }[] = [];
+  for (const property of map.properties.nodes) {
+    if (!ts.isPropertyAssignment(property)) return null;
+    const name = literalName(property.name);
+    if (
+      name === null ||
+      name === "__proto__" ||
+      /^(0|[1-9][0-9]*)$/.test(name) ||
+      entries.some((entry) => entry.name === name) ||
+      staticDescriptorFields(property.initializer) === null
+    )
+      return null;
+    const field = isDefinableClassField(lowerer, target, name);
+    if (!field && !bagOnlyProperty(info, name)) return null;
+    entries.push({ name, descriptor: property.initializer, field });
+  }
+  if (!entries.some((entry) => entry.field)) return null;
+  const loc = locOf(call);
+  const receiver = lowerer.declareHiddenLocal("%descriptorReceiver", target.type);
+  const value = varRef(receiver.id, target.type, loc);
+  const stmts: IrStmt[] = [{ kind: "varDecl", localId: receiver.id, init: target, loc }];
+  const evaluated = entries.map((entry) => {
+    const slot = lowerer.declareHiddenLocal("%descriptors", DYN);
+    stmts.push({
+      kind: "varDecl",
+      localId: slot.id,
+      init: lowerer.lowerExprExpecting(entry.descriptor, DYN),
+      loc,
+    });
+    return varRef(slot.id, DYN, loc);
+  });
+  entries.forEach((entry, index) => {
+    const defined: IrExpr | null = entry.field
+      ? classFieldDefine(lowerer, loc, value, entry.name, entry.descriptor, evaluated[index]!)
+      : {
+          kind: "libCall",
+          fn: "dyn.defineProperty",
+          args: [
+            {
+              kind: "call",
+              callee: classPropertiesHelper(lowerer, loc).name,
+              args: [lowerer.coerceToExpected(value, DYN)],
+              type: DYN,
+              loc,
+            },
+            lowerer.coerceToExpected({ kind: "strLit", value: entry.name, type: STRING, loc }, DYN),
+            evaluated[index]!,
+          ],
+          type: DYN,
+          loc,
+        };
+    if (defined === null) throw new Error("a definable class field has a definition");
+    stmts.push({ kind: "exprStmt", expr: defined, loc });
+  });
   return { kind: "seqExpr", stmts, result: value, type: value.type, loc };
 }
 

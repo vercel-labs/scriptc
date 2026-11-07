@@ -2817,7 +2817,7 @@ ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const Sc
       /* Only a string has own keys: its characters, then `length`, which
        * is not enumerable. */
       if (descs->kind != SCR_DYN_STR || i + 1 == keys->v.arr.len) continue;
-      descriptor = scr_dyn_index_get(descs, (double)i);
+      descriptor = scr_dyn_string_index_get(descs, (double)i);
     } else {
       if (!scr_dyn_property_is_enumerable_computed(descs, key)) {
         if (scr_exc_pending()) goto fail;

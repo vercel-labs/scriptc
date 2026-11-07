@@ -4900,7 +4900,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // (required — the "WithStringEncoding" refinement), cwd/input/timeout,
   // stdio (the "pipe"/"ignore" string or 3-tuple forms — a runtime array
   // is string[]; unsupported runtime modes throw at the call), and the
-  // accepted-but-inert maxBuffer/windowsHide. Members outside this set
+  // maxBuffer and the accepted-but-inert windowsHide. Members outside this set
   // (env, killSignal, shell, uid, ...) keep the shape unmatched — their
   // literals fence at the shape check instead of being dropped without a
   // diagnostic.

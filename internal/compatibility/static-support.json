@@ -403,6 +403,7 @@
     { "chapter": "packages", "symbols": ["--input-type"], "status": "not-applicable" },
     { "chapter": "child_process", "signatures": ["`subprocess[Symbol.dispose]()`"], "status": "partial", "evidence": ["tests/corpus/2844-node-disposable-resources.ts"] },
     { "chapter": "child_process", "signatures": ["`child_process.execFile(file[, args][, options][, callback])`"], "status": "partial", "evidence": ["tests/corpus/2911-execfile-callback.ts"] },
+    { "chapter": "child_process", "signatures": ["`maxBuffer` and Unicode"], "status": "partial", "evidence": ["tests/corpus/8921-child-max-buffer-sync.js", "tests/corpus/8922-child-max-buffer-async.ts"] },
     { "chapter": "child_process", "signatures": ["`child_process.exec(command[, options][, callback])`"], "status": "partial", "evidence": ["tests/corpus/5627-exec-callback.ts", "tests/fixtures/node-types/child-exec.ts", "tests/harness/project-config.test.ts"] },
     { "chapter": "child_process", "signatures": ["`child_process.fork(modulePath[, args][, options])`", "`subprocess.send(message[, sendHandle[, options]][, callback])`", "`subprocess.disconnect()`", "`connected` Type: {boolean} Set to `false` after `subprocess.disconnect()` is called.", "Event: `'message'`", "Event: `'disconnect'`"], "status": "partial", "evidence": ["tests/corpus/2946-child-fork-ipc/main.ts"] },
     { "chapter": "child_process", "signatures": ["Event: `'close'`"], "status": "partial", "evidence": ["tests/corpus/2939-child-shell-text.ts", "tests/corpus/3131-child-rest-listeners.js"] },

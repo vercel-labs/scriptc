@@ -3088,6 +3088,12 @@ function buildLibFnSignatures() {
      * Called only from the frontend's interned %execFileAsync and
      * %execAsync ASYNC helpers, whose fiber turns the throw into the
      * rejection. */
+    /** The program's own maxBuffer for the capturing call that follows
+     * (validateMaxBuffer: a negative or NaN value throws Node's
+     * ERR_OUT_OF_RANGE). The flag arms the value as the next capture's
+     * limit; without it the call only validates. Without this call a
+     * capture has Node's 1 MiB default. */
+    "cp.maxBuffer": { argTypes: [F64, BOOL], result: VOID },
     "cp.execCapture": {
       argTypes: [STRING, arrayOf(STRING), BOOL, STRING, BOOL, arrayOf(STRING), F64],
       result: SPAWNRES_T,

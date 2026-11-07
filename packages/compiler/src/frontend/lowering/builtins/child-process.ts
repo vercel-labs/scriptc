@@ -53,6 +53,26 @@ export function lowerChildArgsArg(
  * a file, and whose list follows the module path in what Node spawns. */
 export type ChildLaunchForm = 0 | 1 | 2 | 3;
 
+/** A capturing launch's own `maxBuffer` (without one the runtime applies
+ * Node's 1 MiB default). cp.maxBuffer validates it as validateMaxBuffer
+ * does (ERR_OUT_OF_RANGE for a negative or NaN value); `arm` also makes it
+ * the limit of the next capture, which is the launch. The promisified
+ * forms arm inside their helper and only validate at the call. `sync`
+ * names the order of Node's checks: spawnSync validates the limit after
+ * normalizeSpawnArguments has checked the launch's values; execFile
+ * validates it before spawn checks them, and exec checks its command
+ * before it calls execFile. */
+export interface ChildMaxBuffer {
+  value: IrExpr;
+  arm: boolean;
+  sync: boolean;
+}
+
+/** The limit of a launch that arms its own capture, or none. */
+export function armedMaxBuffer(value: IrExpr | null, sync: boolean): ChildMaxBuffer | undefined {
+  return value === null ? undefined : { value, arm: true, sync };
+}
+
 /** Node checks what a child launch hands to the operating system before
  * it starts a process (normalizeSpawnArguments and normalizeExecArgs): a
  * NUL in the file or command, an argument, `cwd` or an environment key or
@@ -60,13 +80,24 @@ export type ChildLaunchForm = 0 | 1 | 2 | 3;
  * arguments are evaluated first, in their order, into hidden locals; the
  * may-throw cp.checkArgs call reads them; the launch follows. `launch`
  * starts with the command and the argument list; `options` picks the
- * `cwd` and environment-pairs arguments it carries, if any. A launch
- * whose checked values are all literals that pass gets no check. */
+ * `cwd` and environment-pairs arguments it carries, if any, and names a
+ * capturing launch's `maxBuffer`. A launch whose checked values are all
+ * literals that pass gets no check.
+ *
+ * The limit shares the evaluated arguments, so a capture one of them runs
+ * has finished before the limit is armed, and it is armed last: a check
+ * that throws leaves no limit behind for another capture. Its own value is
+ * evaluated with the arguments, before any check. Where both the limit and
+ * a value can be refused, the checks run in Node's order. */
 export function withChildArgsCheck(
   lowerer: Lowerer,
   launch: Extract<IrExpr, { kind: "libCall" | "call" }>,
   form: ChildLaunchForm,
-  options: (args: readonly IrExpr[]) => { cwd?: IrExpr | undefined; envPairs?: IrExpr | undefined },
+  options: (args: readonly IrExpr[]) => {
+    cwd?: IrExpr | undefined;
+    envPairs?: IrExpr | undefined;
+    maxBuffer?: ChildMaxBuffer | undefined;
+  },
   loc: SrcLoc,
 ): IrExpr {
   const passes = (e: IrExpr | undefined, mayBeEmpty: boolean): boolean =>
@@ -83,7 +114,13 @@ export function withChildArgsCheck(
       : form === 3
         ? allPass(list)
         : list.kind === "arrayLit" && list.elems[1] !== undefined && passes(list.elems[1], false);
-  if (fileAndArgsPass && passes(given.cwd, true) && allPass(given.envPairs)) return launch;
+  const optionsPass = passes(given.cwd, true) && allPass(given.envPairs);
+  // A literal limit in range cannot be refused; it is still armed.
+  const limitPasses =
+    given.maxBuffer === undefined ||
+    (given.maxBuffer.value.kind === "numLit" && given.maxBuffer.value.value >= 0);
+  const limited = given.maxBuffer !== undefined && (given.maxBuffer.arm || !limitPasses);
+  if (fileAndArgsPass && optionsPass && !limited) return launch;
   const stmts: IrStmt[] = [];
   const args = launch.args.map((arg): IrExpr => {
     // Literals and function literals have no evaluation to order, and a
@@ -101,23 +138,71 @@ export function withChildArgsCheck(
     return varRef(local.id, arg.type, loc);
   });
   const held = options(args);
-  stmts.push({
+  const noStrings = (): IrExpr => ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc });
+  const check = (
+    checked: ChildLaunchForm,
+    file: IrExpr,
+    values: IrExpr,
+    envPairs: IrExpr | undefined,
+    cwd: IrExpr | undefined,
+  ): IrStmt => ({
     kind: "exprStmt",
     expr: {
       kind: "libCall",
       fn: "cp.checkArgs",
-      args: [
-        numLit(form, loc),
-        form === 3 ? strLit("", loc) : args[0]!,
-        args[1]!,
-        held.envPairs ?? { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
-        held.cwd ?? strLit("", loc),
-      ],
+      args: [numLit(checked, loc), file, values, envPairs ?? noStrings(), cwd ?? strLit("", loc)],
       type: VOID,
       loc,
     },
     loc,
   });
+  const checkAll = (): IrStmt =>
+    check(form, form === 3 ? strLit("", loc) : args[0]!, args[1]!, held.envPairs, held.cwd);
+  const maxBufferCall = (value: IrExpr, arm: boolean): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "cp.maxBuffer",
+      args: [value, boolLit(arm, loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  // The limit is an option, and Node has every option's value before it
+  // checks anything: an expression that changes the argument list has done
+  // so when the list is checked. So its value is evaluated here, before the
+  // checks, and they and the launch read the local. (A limit that is an
+  // argument of the launch was evaluated with the arguments.)
+  let limit = limited ? held.maxBuffer : undefined;
+  if (limit !== undefined && limit.value.kind !== "numLit" && limit.value.kind !== "varRef") {
+    const local = lowerer.declareHiddenLocal("%childArg", limit.value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: limit.value, loc });
+    limit = { ...limit, value: varRef(local.id, limit.value.type, loc) };
+  }
+  if (limit === undefined) {
+    stmts.push(checkAll());
+  } else if (fileAndArgsPass && optionsPass) {
+    stmts.push(maxBufferCall(limit.value, limit.arm));
+  } else if (limit.sync || limitPasses) {
+    stmts.push(checkAll(), maxBufferCall(limit.value, limit.arm));
+  } else {
+    // exec and execFile, callback or promisified, where the limit and a
+    // launch value can both be refused. The limit is validated first and
+    // armed after the last check.
+    const value = limit.value;
+    if (form === 1) {
+      // exec: normalizeExecArgs checks the command, execFile the limit,
+      // spawn the options. Form 3 with no list checks neither a file nor
+      // an argument, which leaves the options.
+      if (!fileAndArgsPass) stmts.push(check(1, args[0]!, args[1]!, undefined, undefined));
+      stmts.push(maxBufferCall(value, false));
+      if (!optionsPass) stmts.push(check(3, strLit("", loc), noStrings(), held.envPairs, held.cwd));
+    } else {
+      stmts.push(maxBufferCall(value, false), checkAll());
+    }
+    if (limit.arm) stmts.push(maxBufferCall(value, true));
+  }
   return { kind: "seqExpr", stmts, result: { ...launch, args }, type: launch.type, loc };
 }
 
@@ -1755,9 +1840,8 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
  * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
  * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
- * `encoding: "utf8"` and a pure numeric `maxBuffer` are accepted; the latter
- * is not enforced by the growing native capture, as
- * with the synchronous and promisified capture forms. Other options remain
+ * `encoding: "utf8"` and a numeric `maxBuffer` are accepted; the limit applies
+ * to each stream as in Node (1 MiB without the option). Other options remain
  * fenced until their lifecycle can share this asynchronous core. */
 export function lowerExecFileCall(
   lowerer: Lowerer,
@@ -1789,6 +1873,7 @@ export function lowerExecFileCall(
   // `cwd` (the SCR_CHILD_CP_OPTIONS build): the child's directory, the
   // one launch member the callback slice lacked.
   let cwd: IrExpr | null = null;
+  let maxBuffer: IrExpr | null = null;
   const optionsNode =
     expr.arguments.nodes.length === (shell ? 3 : 4)
       ? expr.arguments.nodes[shell ? 1 : 2]
@@ -1802,18 +1887,6 @@ export function lowerExecFileCall(
         "pass encoding and maxBuffer in an inline object literal",
       );
     }
-    const pureNumber = (node: ts.Expression): boolean =>
-      ts.isNumericLiteral(node) ||
-      (ts.isParenthesizedExpression(node) && pureNumber(node.expression)) ||
-      (ts.isBinaryExpression(node) &&
-        [
-          ts.SyntaxKind.PlusToken,
-          ts.SyntaxKind.MinusToken,
-          ts.SyntaxKind.AsteriskToken,
-          ts.SyntaxKind.SlashToken,
-        ].includes(node.operatorToken.kind) &&
-        pureNumber(node.left) &&
-        pureNumber(node.right));
     for (const property of options.properties.nodes) {
       const member = optionMember(property);
       if (!member)
@@ -1834,13 +1907,7 @@ export function lowerExecFileCall(
           );
         }
       } else if (member.name === "maxBuffer") {
-        if (!pureNumber(member.value)) {
-          lowerer.noLowering(
-            `${what} with a non-literal maxBuffer`,
-            member.value,
-            "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
-          );
-        }
+        maxBuffer = lowerer.lowerExprExpecting(member.value, F64);
       } else if (member.name === "cwd") {
         cwd = lowerer.lowerExprExpecting(member.value, STRING);
       } else if (member.name === "shell" && !shell) {
@@ -1858,7 +1925,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', a pure numeric maxBuffer, cwd, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -1952,7 +2019,7 @@ export function lowerExecFileCall(
         loc,
       },
       form,
-      (a) => ({ cwd: a[4] }),
+      (a) => ({ cwd: a[4], maxBuffer: armedMaxBuffer(maxBuffer, false) }),
       loc,
     );
   }
@@ -1966,7 +2033,7 @@ export function lowerExecFileCall(
       loc,
     },
     form,
-    () => ({}),
+    () => ({ maxBuffer: armedMaxBuffer(maxBuffer, false) }),
     loc,
   );
 }

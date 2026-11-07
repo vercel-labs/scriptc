@@ -647,6 +647,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.connectLookupDyn",
   "cp.execSync",
   "cp.execCapture",
+  // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
+  "cp.maxBuffer",
   // The client request constructors validate the method token
   // synchronously (Node's ClientRequest ctor throw:
   // ERR_INVALID_HTTP_TOKEN).

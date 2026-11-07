@@ -84,6 +84,12 @@ ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
  * ordinary SIGTERM command failures), each error with Node's code, killed,
  * signal, cmd, stdout and stderr properties. +1 ScrSpawnRes on success
  * (stdout + stderr; status unused). All args borrowed. */
+/* cp.maxBuffer: the program's maxBuffer for the capturing call that
+ * follows (scr_spawn_sync*, scr_exec_sync, scr_exec_capture,
+ * scr_exec_file*). A negative or NaN value throws Node's ERR_OUT_OF_RANGE;
+ * `arm` makes it the next capture's limit, else the call only validates.
+ * Without it a capture has Node's default, 1024 * 1024. */
+void scr_child_max_buffer(double max_buffer, bool arm);
 ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd,
                                bool has_env, ScrArr *env_pairs, double timeout_ms);
 ScrSpawnRes *scr_spawn_res_retain(ScrSpawnRes *r);

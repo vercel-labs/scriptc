@@ -35,4 +35,5 @@ Passing `process.stdin` where `Duplex` or `EventEmitter` is declared throws the 
 The bundled declarations declare `process.stdin` by its own members, so these conversions need `@types/node`.
 After `process.stdin.setEncoding`, a `'data'` listener registered on `process.stdin` whose parameter is declared `string` receives the decoded chunks, with a multi-byte sequence split across reads kept whole.
 A listener whose parameter is a `Buffer` or `Uint8Array`, which includes a parameter with no annotation, throws a TypeError with code `SC2020` at the first chunk, because Node delivers a string there.
-`process.stdin.read()` and `for await` over `process.stdin` still answer bytes after `setEncoding`, where Node answers strings.
+`process.stdin.read()` and `for await` over `process.stdin` answer bytes, so after `setEncoding` they throw the same kind of TypeError, where Node answers strings.
+To read text that way, leave the encoding unset and decode the Buffers with a `TextDecoder`.

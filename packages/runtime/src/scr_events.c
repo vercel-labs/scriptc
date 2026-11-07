@@ -889,6 +889,20 @@ void scr_stdin_destroy(void) {
  * One parked promise at a time — concurrent iterations of process.stdin
  * would share deliveries (nothing real does this). */
 ScrPromise *scr_stdin_next_chunk(void) {
+#ifdef SCR_STDIO_EXTENDED
+  if (scr_stdin_encoding != NULL) {
+    /* With an encoding set Node's iteration yields strings. The compiled
+     * loop takes Buffers, so the step is refused by name: a promise
+     * rejected with the TypeError, which the loop's await throws. */
+    static const char msg[] =
+        "for await over process.stdin takes Buffers, but setEncoding makes the chunks strings "
+        "(leave the encoding unset and decode the Buffers) [SC2020]";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+    ScrPromise *refused = scr_promise_new();
+    scr_promise_reject_pending(refused);
+    return refused;
+  }
+#endif
   if (scr_stdin_eof || scr_stdin_destroyed) {
     ScrPromise *p = scr_promise_new();
     ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
@@ -1278,6 +1292,17 @@ static void scr_stdio_finish_read(void) {
  * can be taken yet — the stream then reads ahead to what the read wanted
  * (or Node's 64 KiB default) and fires 'readable' when it arrives. */
 ScrBytes *scr_stdin_read_bytes(bool all, double size) {
+#ifdef SCR_STDIO_EXTENDED
+  if (scr_stdin_encoding != NULL) {
+    /* With an encoding set Node's read() answers a string. This read
+     * answers a Buffer, so it is refused by name instead. */
+    static const char msg[] =
+        "process.stdin.read() answers a Buffer, but setEncoding makes the chunks strings "
+        "(leave the encoding unset and decode the Buffer) [SC2020]";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+    return NULL;
+  }
+#endif
   size_t available = scr_stdin_buffered;
   size_t wanted = available;
   if (!all) {

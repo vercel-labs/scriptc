@@ -375,8 +375,8 @@ declare var process: {
    * (`for await (const chunk of process.stdin)` — chunks are Uint8Array
    * values, ending at EOF). setEncoding decodes the chunks a 'data'
    * listener with a string parameter receives. read() and async iteration
-   * still answer bytes after setEncoding, where Node answers strings
-   * (decode with TextDecoder). */
+   * answer bytes, so once an encoding is set they throw (Node answers
+   * strings there): leave the encoding unset and decode with TextDecoder. */
   stdin: {
     readonly isTTY: boolean;
     /* The descriptor the stream is built over (Node reports 0 here and

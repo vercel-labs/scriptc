@@ -116,7 +116,12 @@ function flatStatements(stmts: readonly IrStmt[], out: IrStmt[] = []): IrStmt[] 
  * require() lowers to the required module's %init ahead of its export read,
  * both at the require's position. Any other expression is followed through
  * what it holds, in the order it is written, so a load is reached where its
- * expression is (`typeof require("pkg").name === "function"`). An
+ * expression is (`typeof require("pkg").name === "function"`). A part of an
+ * expression that runs only when a condition holds (the right operand of
+ * `&&`, `||` or `??`, an arm of a `?:`, the body of an optional chain) is
+ * followed after the loads the walk reaches, in the order it is written: the
+ * program may not evaluate it, and ordering it ahead of the loads that do
+ * happen would let it take a shared file's effects from them. An
  * initializer that awaits is left there and taken up again after the code
  * that called it, in the order of the awaits, as module evaluation continues
  * with later siblings while one is suspended. Loads the walk does not reach
@@ -128,6 +133,7 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
   const reached = new Set<DeferCall>();
   const ordered: DeferCall[] = [];
   const suspended: { stmts: IrStmt[]; at: number }[] = [];
+  const conditional: IrExpr[] = [];
   /** Evaluates what the walk follows of `e`; true when it awaits. */
   function evaluate(e: IrExpr): boolean {
     if (e.kind === "libCall" && e.fn === "nodeIsland.defer") {
@@ -155,6 +161,21 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
       for (const arg of e.args) evaluate(arg);
       return true;
     }
+    // A part that the program evaluates only when a condition holds is kept
+    // for after the loads the walk reaches: it may not run at all, and where
+    // it does it cannot be placed ahead of a load that always does.
+    if (e.kind === "logical" || e.kind === "nullish" || e.kind === "orDefault") {
+      conditional.push(e.right);
+      return evaluate(e.left);
+    }
+    if (e.kind === "ternary") {
+      conditional.push(e.then, e.else_);
+      return evaluate(e.cond);
+    }
+    if (e.kind === "optChain") {
+      conditional.push(e.body);
+      return evaluate(e.receiver);
+    }
     // Any other expression: what it holds, in the order it is written. A
     // comparison, a member read, a `typeof`, a call's arguments: an inline
     // require() inside any of them keeps its initializer there.
@@ -170,7 +191,8 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
       const value = fields[key];
       for (const part of Array.isArray(value) ? value : [value]) {
         if (part === null || typeof part !== "object") continue;
-        if (typeof (part as { kind?: unknown }).kind === "string") awaits = evaluate(part as IrExpr) || awaits;
+        if (typeof (part as { kind?: unknown }).kind === "string")
+          awaits = evaluate(part as IrExpr) || awaits;
         else awaits = within(part) || awaits;
       }
     }
@@ -207,6 +229,9 @@ export function evaluationOrder(mod: IrModule, calls: DeferCall[]): DeferCall[] 
   }
   if (typeof mod.entry === "string") enter(mod.entry);
   for (let i = 0; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
+  const resumed = suspended.length;
+  for (let i = 0; i < conditional.length; i++) evaluate(conditional[i]!);
+  for (let i = resumed; i < suspended.length; i++) run(suspended[i]!.stmts, suspended[i]!.at);
   if (ordered.length === 0) return calls;
   return [...ordered, ...calls.filter((c) => !reached.has(c))];
 }

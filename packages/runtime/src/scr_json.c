@@ -11508,12 +11508,10 @@ static ScrStr *scr_dyn_string_tag(const ScrDyn *d) {
 }
 
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
-#ifdef SCR_NODE_ISLANDS
   /* An island object answers from Node, which reads its builtin tag and
-   * its @@toStringTag: an island array is "[object Array]". */
-  if (scr_ni_dyn_handle(d) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->object_tag != NULL)
-    return scr_ni_dyn_ops->object_tag(d);
-#endif
+   * its @@toStringTag: an island array is "[object Array]". Only a program
+   * that links the island units, which install the table, can hold one. */
+  if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->object_tag(d);
   if (d->kind == SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
     return NULL;
@@ -14517,13 +14515,11 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
   scr_dyn_path_render(&b, path);
   scr_jb_puts(&b, ", got ");
   scr_jb_puts(&b, scr_dyn_kind_name(got));
-#ifdef SCR_NODE_ISLANDS
   /* The value has no wrong shape: it is a Node island's object, which this
    * type has no way to hold. Say so, and what does hold it. */
   if (scr_ni_dyn_handle(got))
     scr_jb_puts(&b, " from a Node island (an island object stays an island value: declare the island's "
                     "type or 'unknown' for it, or copy it with structuredClone)");
-#endif
   /* A real TypeError instance: catch bindings narrow it with instanceof
    * and read the path off e.message; the uncaught line ("Uncaught
    * TypeError: expected ...") is byte-identical to the old string form. */
@@ -19394,11 +19390,11 @@ static void scr_dyn_assign_linked_from(ScrDyn *target, const ScrDyn *src, bool d
 }
 
 static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) {
-#ifdef SCR_NODE_ISLANDS
   /* An island object's own enumerable string keys, read in Node as
    * Object.keys of one reads them: `{ ...islandObject }` and Object.assign
-   * copy them where they copied nothing. */
-  if (scr_ni_dyn_handle(src) && scr_ni_dyn_ops != NULL) {
+   * copy them where they copied nothing. Only a program that links the
+   * island units, which install the table, can hold one. */
+  if (scr_ni_dyn_handle(src)) {
     ScrDyn *keys = scr_ni_dyn_ops->own_keys((ScrDyn *)src, 0);
     if (keys == NULL) return;
     for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
@@ -19412,7 +19408,6 @@ static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) 
     scr_dyn_release(keys);
     return;
   }
-#endif
   if (scr_typed_ref_linked_copy(src)) {
     scr_dyn_assign_linked_from(target, src, define);
     return;

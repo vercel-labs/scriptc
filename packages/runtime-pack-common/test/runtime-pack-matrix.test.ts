@@ -1,5 +1,10 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
+
+const runtimeSources = fileURLToPath(new URL("../../runtime/src", import.meta.url));
 
 const matrix = createRuntimePackMatrix({
   target: { object_format: "elf" },
@@ -281,4 +286,23 @@ test("Node islands select no build of the units that reach them through the inst
     selected("scr_dyn_builtin_class.c", { workers: false, webStreams: true, nodeIsland: true })
       .defines,
   ).toEqual(["SCR_HANDLE_CLASSES"]);
+});
+
+test("a unit that tests SCR_NODE_ISLANDS has a build that defines it", () => {
+  // A block under the define in a unit with no such build is compiled into
+  // no program, so an island path added there would never run. In those
+  // units an island path calls through the installed table instead.
+  const testsDefine = /^[ \t]*#[ \t]*(?:if|ifdef|ifndef|elif)\b.*\bSCR_NODE_ISLANDS\b/m;
+  const units = readdirSync(runtimeSources).filter((name) => {
+    if (!name.endsWith(".c")) return false;
+    return testsDefine.test(readFileSync(join(runtimeSources, name), "utf8"));
+  });
+  expect(units).toContain("scr_async.c");
+  const withoutBuild = units.filter(
+    (unit) =>
+      !variantsFor(unit).some((variant: { defines: string[] }) =>
+        variant.defines.includes("SCR_NODE_ISLANDS"),
+      ),
+  );
+  expect(withoutBuild).toEqual([]);
 });

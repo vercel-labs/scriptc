@@ -47,6 +47,8 @@ import {
   nodeIslandBoundaryDiag,
   nodeIslandDataFileDiag,
   nodeIslandModuleDiag,
+  islandArrayCopyDivergenceDiag,
+  type IslandArrayCopyUse,
 } from "../../diagnostics/diagnostic.js";
 import {
   crossingOf,
@@ -887,6 +889,7 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   // not stay handles (below); the checked cast then meets the copy. A
   // native array that crossed in comes back as itself.
   if (mapped.kind === "promise" && copiedArrayType(lowerer, mapped.inner)) {
+    noteArrayCopy(lowerer, node, true);
     const promise: IrExpr = {
       kind: "libCall",
       fn: "nodeIsland.awaitCopy",
@@ -907,6 +910,7 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     return raw;
   // Otherwise an array of copied values is a copy (above).
   if (copyableArrayType(lowerer, mapped)) {
+    noteArrayCopy(lowerer, node, false);
     const copy: IrExpr = {
       kind: "libCall",
       fn: "nodeIsland.copyArrays",
@@ -939,6 +943,128 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
       node,
     );
   return lowerer.coerceToExpected(raw, mapped);
+}
+
+/** The use that makes the island array at `node` a native copy, or null
+ * where no program can tell that copy from the island's array:
+ * - JavaScript itself reads every element at once and keeps nothing: a
+ *   spread, an array destructuring pattern, a template span;
+ * - the program states the copy: the argument of `Array.from` or
+ *   `structuredClone`, which answer a new array under Node too;
+ * - only the value's presence is read: a comparison with `null` or
+ *   `undefined`, `typeof`, `!`, a condition (onlyTested).
+ * Every other use that reaches a copy is a divergence: the copy does not see
+ * the island's later changes, the island does not see writes to it, and it
+ * is never `===` to the island's array. */
+function arrayCopyUse(lowerer: Lowerer, node: ts.Expression): IslandArrayCopyUse | null {
+  let n: ts.Node = node;
+  while (
+    n.parent !== undefined &&
+    (ts.isParenthesizedExpression(n.parent) ||
+      ts.isAsExpression(n.parent) ||
+      ts.isTypeAssertion(n.parent) ||
+      ts.isNonNullExpression(n.parent) ||
+      ts.isSatisfiesExpression(n.parent))
+  )
+    n = n.parent;
+  const p = n.parent;
+  if (p === undefined) return "value";
+  if (ts.isSpreadElement(p) || ts.isTemplateSpan(p)) return null;
+  if (ts.isAwaitExpression(p)) return arrayCopyUse(lowerer, p) === null ? null : "await";
+  if (ts.isTypeOfExpression(p) || onlyTested(n)) return null;
+  if (ts.isVariableDeclaration(p) && p.initializer === n)
+    return ts.isArrayBindingPattern(p.name) ? null : "binding";
+  if (ts.isBinaryExpression(p)) {
+    const op = p.operatorToken.kind;
+    if (op === ts.SyntaxKind.EqualsToken && p.right === n)
+      return ts.isArrayLiteralExpression(p.left) ? null : "assignment";
+    if (
+      (op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        op === ts.SyntaxKind.EqualsEqualsToken ||
+        op === ts.SyntaxKind.ExclamationEqualsToken) &&
+      unitLiteralOf(lowerer, p.left === n ? p.right : p.left) !== null
+    )
+      return null;
+    return "value";
+  }
+  if (ts.isCallExpression(p) || ts.isNewExpression(p)) {
+    if (ts.isCallExpression(p) && p.arguments.nodes[0] === n && statedCopyCallee(lowerer, p))
+      return null;
+    return "argument";
+  }
+  if (ts.isReturnStatement(p) || (ts.isArrowFunction(p) && p.body === n)) return "return";
+  if (
+    ts.isPropertyAssignment(p) ||
+    ts.isShorthandPropertyAssignment(p) ||
+    ts.isPropertyDeclaration(p)
+  )
+    return "member";
+  if (ts.isArrayLiteralExpression(p)) return "element";
+  if (ts.isForOfStatement(p) && p.expression === n) return "iteration";
+  return "value";
+}
+
+/** Whether only the truth of the value at `n` is read: under `!`, as a
+ * condition, or as an operand of `&&` or `||` that is itself only tested
+ * (`if (a.list || b.list)`). */
+function onlyTested(node: ts.Node): boolean {
+  let n = node;
+  for (;;) {
+    const p = n.parent;
+    if (p === undefined) return false;
+    if (ts.isParenthesizedExpression(p)) {
+      n = p;
+      continue;
+    }
+    if (ts.isPrefixUnaryExpression(p)) return p.operator === ts.SyntaxKind.ExclamationToken;
+    if (ts.isIfStatement(p) || ts.isWhileStatement(p) || ts.isDoStatement(p))
+      return p.expression === n;
+    if (ts.isConditionalExpression(p) || ts.isForStatement(p)) return p.condition === n;
+    if (
+      ts.isBinaryExpression(p) &&
+      (p.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        p.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    ) {
+      n = p;
+      continue;
+    }
+    return false;
+  }
+}
+
+/** `Array.from(v)` or `structuredClone(v)` by the standard library's own
+ * names: the calls whose answer is a new array under Node too. */
+function statedCopyCallee(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const callee = stripTypeWrappers(call.expression);
+  if (ts.isIdentifier(callee))
+    return (
+      callee.text === "structuredClone" &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(callee) ?? undefined)
+    );
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "from") return false;
+  const owner = stripTypeWrappers(callee.expression);
+  return (
+    ts.isIdentifier(owner) &&
+    owner.text === "Array" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(owner) ?? undefined)
+  );
+}
+
+/** Records the SC6007 divergence warning of the island array `node` that
+ * crosses as a native copy (`awaited`: as the value an island promise
+ * settles with). */
+function noteArrayCopy(lowerer: Lowerer, node: ts.Expression, awaited: boolean): void {
+  if (lowerer.islandArrayCopies.has(node)) return;
+  const reached = arrayCopyUse(lowerer, node);
+  const use = awaited && reached !== null ? "await" : reached;
+  if (use === null) return;
+  const declared = lowerer.typeOf(node);
+  const type = awaited ? (lowerer.checker.getAwaitedType(declared) ?? declared) : declared;
+  lowerer.islandArrayCopies.set(
+    node,
+    islandArrayCopyDivergenceDiag(lowerer.checker.typeToString(type), use, locOf(node)),
+  );
 }
 
 /** An array whose elements are copied values or such arrays. */
@@ -1355,18 +1481,24 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   }
 }
 
-/** Whether an island reads the lowered method `name` by that name: a
- * public, string-keyed prototype method. The constructor, #private methods,
- * accessor halves (`get:x`, `set:x`) and symbol-keyed slots (`sym:iterator`)
- * are not properties an island can name. */
-function islandMethodName(name: string): boolean {
-  return name !== "constructor" && !name.startsWith("#") && !/^(?:get|set|sym):/.test(name);
+/** Whether the lowered member `name` is on the prototype an island sees: a
+ * public, string-keyed prototype method under its own name, or a public
+ * accessor half under its lowered name (`get:x`, `set:x`), which the
+ * runtime reads as the getter or setter of `x`. The constructor, #private
+ * members and symbol-keyed slots (`sym:iterator`) are not properties an
+ * island can name. */
+function islandMemberName(name: string): boolean {
+  if (name === "constructor" || name.startsWith("#") || name.startsWith("sym:")) return false;
+  const half = /^(?:get|set):(.*)$/s.exec(name);
+  return half === null || !half[1]!.startsWith("#");
 }
 
 /** A class instance crossing into an island: its capsule answers island
- * reads of its fields, and its prototype methods come from a table the
+ * reads of its fields, and what the class declares comes from a table the
  * runtime builds once per class (nodeIsland.classMethods): the unbound
- * method values, whose thunks check the receiver Node calls them on. */
+ * method values and accessor halves, whose thunks check the receiver Node
+ * calls them on. The island sees them as the instance's prototype (methods
+ * non-enumerable, accessors as accessors), never as own properties. */
 function withClassMethods(
   lowerer: Lowerer,
   value: IrExpr,
@@ -1384,8 +1516,9 @@ function withClassMethods(
   };
 }
 
-/** The builder of a class's method table (a dyn closure answering
- * {name: unbound method value}), or null for a class without methods. */
+/** The builder of a class's member table (a dyn closure answering
+ * {name: unbound method value, "get:name" | "set:name": unbound accessor
+ * half}), or null for a class that declares neither. */
 function classMethodsBuilderOf(
   lowerer: Lowerer,
   className: string,
@@ -1401,7 +1534,7 @@ function classMethodsBuilderOf(
     c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
   ) {
     for (const m of c.def.methods ?? [])
-      if (!names.includes(m) && islandMethodName(m)) names.push(m);
+      if (!names.includes(m) && islandMemberName(m)) names.push(m);
   }
   if (names.length === 0) return null;
   const builder = `%island.methods:${className}`;
@@ -1855,6 +1988,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       if (slot === null) return null; // the local is declared dyn
       slot.type = DYN;
       const ref = varRef(slot.id, DYN, loc);
+      if (copy !== null) noteArrayCopy(lowerer, expr, false);
       return copy === null
         ? ref
         : lowerer.coerceToExpected(

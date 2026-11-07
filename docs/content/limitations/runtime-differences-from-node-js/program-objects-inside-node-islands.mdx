@@ -1,0 +1,4 @@
+- **Program objects inside Node islands:** Code in a Node island sees an instance of a program class with the class's methods and accessors on its prototype, as under Node.js.
+  That prototype inherits from `Object.prototype` directly, whatever the class extends, and its `constructor` has the class's name but cannot build an instance.
+  `Object.isFrozen`, `Object.isSealed` and `Object.isExtensible` answer for the island's view of a program object, so a frozen record reports as extensible.
+  A write to a frozen record is still refused, and deleting a field of a class instance is refused too: with a `TypeError` in strict island code, silently in sloppy code.

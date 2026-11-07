@@ -1525,6 +1525,28 @@ static ScrStr *nh_object_tag(const ScrDyn *value) {
   return out;
 }
 
+/* The host's Object.hasOwn, loaded once. */
+static ScrDyn *nh_has_own_fn = NULL;
+
+/* Object.hasOwn of an island object, by Node: 1 or 0, or -1 with the
+ * exception pending. */
+static int nh_has_own(const ScrDyn *value, const ScrStr *key) {
+  if (nh_has_own_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:hasOwn", 14);
+    nh_has_own_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_has_own_fn == NULL) return -1;
+  }
+  ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+  ScrDyn *args[2] = {(ScrDyn *)value, k};
+  ScrDyn *answer = scr_ni_call(nh_has_own_fn, scr_dyn_undefined(), args, 2);
+  scr_dyn_release(k);
+  if (answer == NULL) return -1;
+  int has = answer->kind == SCR_DYN_BOOL && answer->v.b;
+  scr_dyn_release(answer);
+  return has;
+}
+
 static const ScrDynHandleOps nh_ops = {
     .cls = "Object",
     .retain = nh_ref_retain_v,
@@ -1561,6 +1583,10 @@ static void nh_cleanup(void) {
   if (nh_object_tag_fn != NULL) {
     scr_dyn_release(nh_object_tag_fn);
     nh_object_tag_fn = NULL;
+  }
+  if (nh_has_own_fn != NULL) {
+    scr_dyn_release(nh_has_own_fn);
+    nh_has_own_fn = NULL;
   }
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
@@ -1750,6 +1776,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .is_function = scr_ni_is_function,
     .error_constructor = nh_error_constructor,
     .object_tag = nh_object_tag,
+    .has_own = nh_has_own,
 };
 
 __attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }

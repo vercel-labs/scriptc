@@ -1,0 +1,6 @@
+{
+  "name": "node-island-class-prototype",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "class-pkg": "node" } }
+}

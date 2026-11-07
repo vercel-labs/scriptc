@@ -151,6 +151,9 @@ typedef struct ScrNiDynOps {
   /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);
+  /* Object.hasOwn(value, key), answered by Node: 1 or 0, or -1 with the
+   * exception pending. */
+  int (*has_own)(const ScrDyn *value, const ScrStr *key);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

@@ -1,0 +1,6 @@
+{
+  "name": "node-island-array-crossing",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "array-pkg": "node" } }
+}

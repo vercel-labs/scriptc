@@ -73,7 +73,9 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
+ *            to a cast to an unrelated class (SC6004), a Node island's
+ *            array of primitives used where native code needs an array of
+ *            its own, which is a copy (SC6007); SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
@@ -341,6 +343,53 @@ export function unrelatedClassCastDivergenceDiag(
     message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
     loc,
     hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
+  };
+}
+
+/** How an island array reaches the native use that copies it (SC6007). */
+export type IslandArrayCopyUse =
+  | "argument"
+  | "binding"
+  | "assignment"
+  | "return"
+  | "member"
+  | "element"
+  | "await"
+  | "iteration"
+  | "value";
+
+/** SC6007 — an array of primitives a Node island made is used where native
+ * code needs an array of its own: the elements are copied into a native
+ * array. Under Node there is one array, so the island's later changes show
+ * through every name, the program's writes reach the island, and `===`
+ * holds; the copy has none of the three. Uses that stay the island's array
+ * (a `const` binding read through its members, an index, a method call, a
+ * spread, a pass back into the island) are not copies and are not reported.
+ * Neither is a copy no program can tell from the island's array: one that
+ * JavaScript reads at once and drops (a spread, an array destructuring
+ * pattern, a template span), one the program states (`Array.from`,
+ * `structuredClone`), or one of which only the presence is read. */
+export function islandArrayCopyDivergenceDiag(
+  typeText: string,
+  use: IslandArrayCopyUse,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const where: Record<IslandArrayCopyUse, string> = {
+    argument: "passed to native code as an argument",
+    binding: "bound to a name that is not a 'const' of the island's array",
+    assignment: "assigned to a native variable or property",
+    return: "returned from a native function",
+    member: "stored as a member of a native object",
+    element: "stored as an element of a native array",
+    await: "the result of awaiting an island promise",
+    iteration: "iterated by a native loop",
+    value: "used as a native value",
+  };
+  return {
+    code: "SC6007",
+    message: `this Node island array ('${typeText}') is ${where[use]}, which copies its elements into a native array: under Node it is the island's own array, so the island's later changes are visible here, writes made here reach the island, and it is '===' to the island's array; the copy has none of the three`,
+    loc,
+    hint: "write the copy where it happens ('[...value]') so that Node copies too, or keep the island's array: bind it to a 'const' and use it through its members (an index, 'length', its methods), or pass it back to the island",
   };
 }
 

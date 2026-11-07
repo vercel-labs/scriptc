@@ -284,6 +284,44 @@ const INTRINSIC_CLASSES = {
 };
 const collectionSyncs = new WeakMap();
 const islandHelpers = {
+  // The prototype island code sees behind an instance of the program class
+  // `name` (the bridge sets it on each representative). `members` is the
+  // class's member table: methods under their names, accessor halves under
+  // "get:name" and "set:name", each a native function that takes the
+  // instance as `this`. As on a class in JavaScript, methods are
+  // non-enumerable data properties and accessors are accessor properties;
+  // `constructor` is a function with the class's name, which cannot build
+  // an instance from island code.
+  classPrototype(name, members) {
+    const C = {
+      [name]: function () {
+        throw new TypeError(`scriptc: island code cannot construct the program class ${name}`);
+      },
+    }[name];
+    const proto = C.prototype;
+    const accessors = new Map();
+    for (const key of Object.keys(members)) {
+      const half = /^(get|set):(.*)$/s.exec(key);
+      if (half === null) {
+        Object.defineProperty(proto, key, {
+          value: members[key],
+          writable: true,
+          configurable: true,
+        });
+        continue;
+      }
+      const accessor = accessors.get(half[2]) ?? {};
+      accessor[half[1]] = members[key];
+      accessors.set(half[2], accessor);
+    }
+    for (const [key, accessor] of accessors)
+      Object.defineProperty(proto, key, {
+        get: accessor.get,
+        set: accessor.set,
+        configurable: true,
+      });
+    return proto;
+  },
   isInstance(value, name) {
     // The error classes by their intrinsics; any other standard class by
     // the global of that name (Array, Map, Date, …).
@@ -446,6 +484,7 @@ function load(path, esm) {
   if (path === "scriptc:spread") return (value) => [...value];
   if (path === "scriptc:clone") return (value) => structuredClone(value);
   if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
+  if (path === "scriptc:hasOwn") return (value, key) => Object.hasOwn(value, key);
   if (path === "scriptc:island-helpers") return islandHelpers;
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);

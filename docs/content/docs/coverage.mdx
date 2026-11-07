@@ -135,6 +135,7 @@ Some code compiles but can behave differently than under Node.js. Coverage repor
 - `SC6002`: values of one record type are built in key orders scriptc cannot track per value, so the type keeps its declaration order, an object literal's key order differs from it, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
 - `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
+- `SC6007`: an array of primitives made in a Node island is used where native code needs an array of its own (an argument of a program function, a binding that is not a `const` of the island's array, a `return`, a member of a program object, a `for…of` loop), which copies it.
 
 ## Gating builds and CI
 

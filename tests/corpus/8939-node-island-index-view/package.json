@@ -1,0 +1,6 @@
+{
+  "name": "node-island-index-view",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "table-pkg": "node" } }
+}

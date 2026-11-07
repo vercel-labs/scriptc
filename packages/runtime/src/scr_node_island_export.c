@@ -262,6 +262,8 @@ ScrDyn *scr_ni_export_value(uint32_t id) {
   return ni_exports[id].value;
 }
 
+static ScrDyn *ni_methods_of(const ScrDyn *v);
+
 /* Fills `out` with the export of `v` (borrowed). */
 void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
   uint32_t id = scr_ni_export_id(v);
@@ -275,6 +277,21 @@ void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
       out->u.exp.name = v->v.fn.name;
       out->u.exp.name_len = strlen(v->v.fn.name);
     }
+  }
+  /* An instance of a class whose member table is registered: the bridge
+   * gives its representative the prototype it builds from that table. */
+  ScrDyn *members = ni_methods_of(v);
+  if (members != NULL && out->flags == 0) {
+    out->flags = SCR_NVF_INSTANCE;
+    out->u.exp.proto = scr_ni_export_id(members);
+    const char *key = v->v.typed_ref.type_key;
+    size_t len = v->v.typed_ref.type_key_len;
+    if (len > 7 && memcmp(key, "object:", 7) == 0) {
+      key += 7;
+      len -= 7;
+    }
+    out->u.exp.name = key;
+    out->u.exp.name_len = len;
   }
 }
 
@@ -511,19 +528,45 @@ static ScrDyn *ni_class_ctor(const ScrDyn *cls) {
   return m != NULL ? m->ctor : NULL;
 }
 
-/* A prototype method of a class capsule (+1), or NULL. An own property the
- * island wrote under the method's name (kept in the capsule's materialized
- * view) hides the method, as an own property hides a prototype's in Node. */
-static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key) {
-  if (key->kind != SCR_DYN_STR) return NULL;
+/* What `key` names in the class of capsule `target`, as an island sees the
+ * class: a prototype method, an accessor (a getter, a setter or both, kept
+ * in the member table under "get:name" and "set:name"), or nothing. Such a
+ * name is not an own property of the instance. The representative's
+ * prototype holds it (the bridge builds it from the table), so V8 finds it
+ * there with the instance as the receiver: a setter runs, a write to a
+ * getter-only accessor throws in strict code, and reflection answers as it
+ * does for a class instance in Node. An own property the island wrote under
+ * a method's name (kept in the capsule's materialized view) hides the
+ * method, as an own property hides a prototype's in Node. */
+enum { NI_MEMBER_NONE = 0, NI_MEMBER_METHOD = 1, NI_MEMBER_ACCESSOR = 2 };
+
+static bool ni_member_half(const ScrDyn *table, const char *prefix, const ScrStr *name) {
+  char small[128];
+  size_t len = 4 + name->len;
+  char *key = len <= sizeof small ? small : malloc(len);
+  if (key == NULL) ni_export_oom();
+  memcpy(key, prefix, 4);
+  memcpy(key + 4, name->data, name->len);
+  bool found = scr_dyn_obj_get(table, key, len) != NULL;
+  if (key != small) free(key);
+  return found;
+}
+
+static int ni_class_member(const ScrDyn *target, const ScrDyn *key) {
+  if (key == NULL || key->kind != SCR_DYN_STR) return NI_MEMBER_NONE;
   ScrDyn *table = ni_methods_of(target);
-  if (table == NULL) return NULL;
+  if (table == NULL) return NI_MEMBER_NONE;
+  const ScrStr *name = key->v.str;
+  if (ni_member_half(table, "get:", name) || ni_member_half(table, "set:", name))
+    return NI_MEMBER_ACCESSOR;
+  /* The table's own keys for accessor halves are not names of the class. */
+  if (name->len >= 4 && (memcmp(name->data, "get:", 4) == 0 || memcmp(name->data, "set:", 4) == 0))
+    return NI_MEMBER_NONE;
+  if (scr_dyn_obj_get(table, name->data, name->len) == NULL) return NI_MEMBER_NONE;
   const ScrDyn *view = target->v.typed_ref.materialized;
-  if (view != NULL && view->kind == SCR_DYN_OBJ &&
-      scr_dyn_obj_get(view, key->v.str->data, key->v.str->len) != NULL)
-    return NULL;
-  ScrDyn *m = scr_dyn_obj_get(table, key->v.str->data, key->v.str->len);
-  return m != NULL ? scr_dyn_retain(m) : NULL;
+  if (view != NULL && view->kind == SCR_DYN_OBJ && scr_dyn_obj_get(view, name->data, name->len) != NULL)
+    return NI_MEMBER_NONE;
+  return NI_MEMBER_METHOD;
 }
 
 /* Whether `key` is a name `target` only inherits from Object.prototype.
@@ -555,6 +598,12 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
   if (pk == NULL) {
     scr_dyn_release(k);
     return ni_threw(out);
+  }
+  if (ni_class_member(target, pk) != NI_MEMBER_NONE) {
+    /* The class's: the representative's prototype answers. */
+    scr_dyn_release(pk);
+    scr_dyn_release(k);
+    return 2;
   }
   if (ni_is_array(target) && pk->kind == SCR_DYN_STR) {
     /* length and elements straight from the native array: a live array
@@ -589,25 +638,16 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
   int present = 0;
   if (pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
   if (!present && !scr_exc_pending()) {
-    /* A prototype method of a class instance (its table). */
-    ScrDyn *method = ni_class_method(target, pk);
     scr_dyn_release(pk);
     scr_dyn_release(k);
-    if (method != NULL) return ni_returned(method, out);
     return 2;
   }
   ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_reflect_get(target, pk, target);
-  if (result != NULL && result->kind == SCR_DYN_UNDEF) {
-    ScrDyn *method = ni_class_method(target, pk);
-    if (method != NULL) {
-      scr_dyn_release(result);
-      result = method;
-    } else if (ni_inherited_name(target, pk)) {
-      scr_dyn_release(result);
-      scr_dyn_release(pk);
-      scr_dyn_release(k);
-      return 2;
-    }
+  if (result != NULL && result->kind == SCR_DYN_UNDEF && ni_inherited_name(target, pk)) {
+    scr_dyn_release(result);
+    scr_dyn_release(pk);
+    scr_dyn_release(k);
+    return 2;
   }
   scr_dyn_release(pk);
   scr_dyn_release(k);
@@ -624,16 +664,23 @@ int scr_ni_host_export_set(uint32_t id, const ScrNodeValue *key, const ScrNodeVa
   ScrDyn *target = scr_ni_export_value(id);
   if (target == NULL) return 2;
   ScrDyn *k = scr_ni_value_in(key);
+  if (k->kind == SCR_DYN_STR && ni_class_member(target, k) == NI_MEMBER_ACCESSOR) {
+    /* The class's accessor: the prototype's setter runs with the instance
+     * as its receiver, or V8 refuses the write to a getter-only one. */
+    scr_dyn_release(k);
+    return 2;
+  }
   ScrDyn *v = scr_ni_value_in(value);
   bool ok = scr_dyn_reflect_set(target, k, v, target);
   scr_dyn_release(v);
   scr_dyn_release(k);
   scr_ni_shared_refresh();
   if (scr_exc_pending()) return ni_threw(out);
-  (void)ok; /* a refused write is silent outside strict mode; Node's setter
-             * interceptor reports the same */
   memset(out, 0, sizeof *out);
-  return 0;
+  /* A write the object refuses (a frozen record, a read-only property): the
+   * bridge throws Node's TypeError where the island code is strict and
+   * ignores the write where it is not. Arrays keep answering as written. */
+  return ok || ni_is_array(target) ? 0 : 3;
 }
 
 int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
@@ -657,17 +704,11 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
     present = scr_dyn_in(target, pk->v.str);
   }
   if (scr_exc_pending()) scr_exc_clear();
-  if (!present && pk != NULL) {
-    ScrDyn *method = ni_class_method(target, pk);
-    present = method != NULL;
-    scr_dyn_release(method);
-  } else if (present && !ni_is_array(target) && ni_inherited_name(target, pk)) {
-    /* Not an own property: V8 answers `in` from the prototype chain. A
-     * class's own method of that name stays the capsule's. */
-    ScrDyn *method = ni_class_method(target, pk);
-    present = method != NULL;
-    scr_dyn_release(method);
-  }
+  /* Not an own property: V8 answers `in` from the prototype chain, which
+   * holds what the class declares and Object.prototype's names. */
+  if (present && !ni_is_array(target) &&
+      (ni_class_member(target, pk) != NI_MEMBER_NONE || ni_inherited_name(target, pk)))
+    present = 0;
   scr_dyn_release(pk);
   scr_dyn_release(k);
   return present;
@@ -679,10 +720,21 @@ int scr_ni_host_export_delete(uint32_t id, const ScrNodeValue *key, ScrNodeValue
   if (target == NULL) return 2;
   ScrDyn *k = scr_ni_value_in(key);
   scr_dyn_key_delete_computed(target, k, false);
+  /* A property that is still there was not deleted (a frozen record, a
+   * field of a class instance, whose layout is fixed): the bridge throws
+   * Node's TypeError where the island code is strict and answers false
+   * where it is not. */
+  bool thrown = scr_exc_pending();
+  bool kept = !thrown && !ni_is_array(target) && scr_dyn_has_own_computed(target, k);
+  if (!thrown && scr_exc_pending()) {
+    /* The object cannot say (a kind without own-property checks): as before. */
+    scr_exc_clear();
+    kept = false;
+  }
   scr_dyn_release(k);
-  if (scr_exc_pending()) return ni_threw(out);
+  if (thrown) return ni_threw(out);
   memset(out, 0, sizeof *out);
-  return 0;
+  return kept ? 3 : 0;
 }
 
 /* Own enumerable string keys, in JS order, as an array value. */

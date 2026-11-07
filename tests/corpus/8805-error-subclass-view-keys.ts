@@ -152,3 +152,23 @@ for (const error of [new Bare("b"), new WithField("f")] as Error[]) {
     view instanceof WithField,
   );
 }
+
+// An accessor the program adds is called with the instance as `this`,
+// through a computed key as through a literal one, and writes through it
+// land on the instance.
+function defineProbe(target: object, expected: object): void {
+  Object.defineProperty(target, "probe", {
+    get(this: { seen?: number }) {
+      this.seen = (this.seen ?? 0) + 1;
+      return this === expected;
+    },
+    configurable: true,
+  });
+}
+{
+  const error = new WithField("accessor");
+  defineProbe(error, error);
+  const key: string = ["pro", "be"].join("");
+  console.log(read(error, key), read(error, "seen"), read(error, key), read(error, "seen"));
+  console.log((error as any).probe, (error as any).seen, read(error, "status"), read(error, "message"));
+}

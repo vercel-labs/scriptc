@@ -121,6 +121,9 @@ test("the planned build really carries lane loops", async () => {
   expect(row).toMatch(/zext <4 x i1> [^,]+ to <4 x i64>/);
   expect(row).toMatch(/store <4 x double> [^,]+, ptr %s\d+/);
   expect(row).toMatch(/alloca <4 x double> ; lane z\.re/);
+  // Two inner statements, the second reading the first's result: both are
+  // planned, and each reads the slots the group before it stored.
+  expect(fn("sc_f_pairRowStepwise")).toMatch(/outer\.g\d+:/);
   // Rows that keep their scalar form: a counter the integer lowering keeps in
   // a register, a second inner loop, a branch inside it, a write to a local
   // the row did not declare, an instance that changes class, a stride, and a
@@ -136,6 +139,7 @@ test("the planned build really carries lane loops", async () => {
     "rowNoDecl",
   ]) {
     const text = fn(`sc_f_${name}`);
+    expect(text, name).not.toBe("");
     expect(text, name).not.toMatch(/outer\./);
   }
 }, 300_000);

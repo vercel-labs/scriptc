@@ -556,6 +556,10 @@ test("the outer row's guard bounds the start, the bound and the accumulator", as
   expect(fn).toMatch(/load i32, ptr @sc_lanes/);
   expect(fn).toMatch(/fptosi double [^ ]+ to i64/);
   expect(fn).toMatch(/sitofp i64 [^ ]+ to double/);
+  // Negative zero is not an exact integer here: the round trip would turn its
+  // bits into positive zero without the comparison noticing.
+  expect(fn).toMatch(/bitcast double [^ ]+ to i64/);
+  expect(fn).toMatch(/icmp eq i64 [^,]+, -9223372036854775808/);
   // The count the handler leaves: the mask is widened and summed once per
   // group, then added to the accumulator's own slot.
   expect(fn).toMatch(/zext <4 x i1> [^,]+ to <4 x i64>/);

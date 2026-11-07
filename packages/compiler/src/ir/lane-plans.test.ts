@@ -880,6 +880,49 @@ test("a value-object row gets an outer plan", () => {
   });
 });
 
+test("an inner assignment reads the slots the earlier groups stored", () => {
+  const plain = rowBody();
+  const loop = plain[3] as IrStmt & { kind: "while" };
+  expect(loop.kind).toBe("while");
+  const p = rowPlan([
+    row([
+      ...plain.slice(0, 3),
+      whileOf(loop.cond, [
+        assign("z", callOf("%Pair.times", [ref("z"), ref("c")])),
+        assign("z", callOf("%Pair.times", [ref("z"), ref("z")])),
+        assign("n", bin("+", ref("n"), num(1))),
+      ]),
+      plain[4]!,
+    ]),
+  ]);
+  if (p?.shape !== "outer") throw new Error("expected an outer plan");
+  expect(p.steps.map((v) => `${slotName(v)}@${v.group}`)).toEqual([
+    "z.re@0",
+    "z.im@0",
+    "z.re@1",
+    "z.im@1",
+    "n@2",
+  ]);
+  // The second assignment's `z` reads what the first group stored; the trees
+  // the first assignment was built from would read the updated slots instead.
+  expect(p.steps[2]!.value).toEqual({
+    kind: "op",
+    op: "-",
+    left: {
+      kind: "op",
+      op: "*",
+      left: { kind: "state", id: "z", field: "re" },
+      right: { kind: "state", id: "z", field: "re" },
+    },
+    right: {
+      kind: "op",
+      op: "*",
+      left: { kind: "state", id: "z", field: "im" },
+      right: { kind: "state", id: "z", field: "im" },
+    },
+  });
+});
+
 test("a row's test reads the slots and its constant keeps the counter", () => {
   const p = rowPlan([row(rowBody())]);
   if (p?.shape !== "outer") throw new Error("expected an outer plan");

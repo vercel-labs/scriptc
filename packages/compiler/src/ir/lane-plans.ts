@@ -577,7 +577,9 @@ function outerPlan(
         steps.push({ id: s.localId, field, group, value: num });
       }
     }
-    ctx.frame.set(s.localId, value);
+    // The groups store their slots in order, so a later statement reads the
+    // slots the earlier groups wrote, not the trees they were built from.
+    ctx.frame = new Map(state);
     group++;
   }
   if (steps.length === 0) return null;

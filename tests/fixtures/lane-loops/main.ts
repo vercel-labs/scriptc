@@ -790,6 +790,26 @@ function pairRowSeed(size: number, limit: number, cim: number, seed: number): nu
   return inside;
 }
 
+// One inner statement per step, the second reading what the first stored: the
+// lanes store each statement's group before the next one is evaluated, so a
+// plan that reapplies the first statement's expression tree to the updated
+// slots counts a different number of rows.
+function pairRowStepwise(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.plus(c);
+      z = z.times(z);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
 // Carried numbers, with the third assignment reading what the first left
 // behind: the lanes compute and store one statement at a time.
 function numberRow(size: number, limit: number, cim: number): number {
@@ -1010,6 +1030,7 @@ for (const size of rowSizes) {
         pairRowTrue(size, limit, cim),
         pairRowNot(size, limit, cim),
         pairRowOr(size, limit, cim),
+        pairRowStepwise(size, limit, cim),
       );
     }
   }
@@ -1022,6 +1043,10 @@ for (const [start, bound] of [
   [0, 33],
   [1, 33],
   [-3, 9],
+  // Negative zero is not an exact integer for this guard: the lanes would
+  // round its bits to positive zero and count a different number of rows.
+  [-0, 9],
+  [-0, 33],
   [2 ** 45 - 8, 2 ** 45],
   [2 ** 45 - 4, 2 ** 45],
   [2 ** 45 - 2, 2 ** 45],

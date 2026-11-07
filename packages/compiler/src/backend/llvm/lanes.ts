@@ -993,7 +993,9 @@ function laneDoubles(emitter: LlEmitter, width: number): string {
 /** Whether `value` is an exact integer small enough that adding a lane
  * offset or a group's lane count stays exact: an integer below 2^45 in
  * magnitude. The conversion is guarded by a `select`, because `fptosi` is
- * undefined for a value it cannot hold. */
+ * undefined for a value it cannot hold. Negative zero is refused: the round
+ * trip through `i64` turns it into positive zero, and `fcmp oeq` cannot tell
+ * the two apart, so a counter starting at `-0` would lose its sign. */
 function laneExactInteger(emitter: LlEmitter, value: string): string {
   const B = emitter.B;
   const low = B.tmp(),
@@ -1003,7 +1005,11 @@ function laneExactInteger(emitter: LlEmitter, value: string): string {
     whole = B.tmp(),
     back = B.tmp(),
     same = B.tmp(),
-    ok = B.tmp();
+    digits = B.tmp(),
+    negativeZero = B.tmp(),
+    notNegativeZero = B.tmp(),
+    ok = B.tmp(),
+    guarded = B.tmp();
   B.line(`${low} = fcmp ogt double ${value}, ${f64Lit(-(2 ** 45))}`);
   B.line(`${high} = fcmp olt double ${value}, ${f64Lit(2 ** 45)}`);
   B.line(`${inRange} = and i1 ${low}, ${high}`);
@@ -1011,8 +1017,12 @@ function laneExactInteger(emitter: LlEmitter, value: string): string {
   B.line(`${whole} = fptosi double ${safe} to i64`);
   B.line(`${back} = sitofp i64 ${whole} to double`);
   B.line(`${same} = fcmp oeq double ${back}, ${value}`);
+  B.line(`${digits} = bitcast double ${value} to i64`);
+  B.line(`${negativeZero} = icmp eq i64 ${digits}, -9223372036854775808`);
+  B.line(`${notNegativeZero} = xor i1 ${negativeZero}, true`);
   B.line(`${ok} = and i1 ${inRange}, ${same}`);
-  return ok;
+  B.line(`${guarded} = and i1 ${ok}, ${notNegativeZero}`);
+  return guarded;
 }
 
 /** Evaluates `num` lane by lane: one `<W x double>`. */

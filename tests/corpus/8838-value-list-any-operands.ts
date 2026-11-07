@@ -14,6 +14,12 @@ console.log(Object.values(parsed).flatMap((v: any) => v.tags).join(""));
 console.log(Object.values(parsed).flatMap((v: any) => Object.values(v)).length);
 const untyped = Object.values(parsed).map((v) => (v as { n: number }).n + 1);
 console.log(untyped.join(","), untyped.length);
+// A rest-parameter callback receives the arguments the method passes.
+console.log(
+  Object.values(parsed)
+    .map((...args: unknown[]) => `${args.length}${String((args[0] as { n: number }).n)}`)
+    .join(","),
+);
 function total(input: any): number {
   return Object.values(input)
     .map((v: any) => Number(v.n))

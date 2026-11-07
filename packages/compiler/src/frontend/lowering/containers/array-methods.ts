@@ -65,6 +65,7 @@ import {
 import { arrayLengthDeclaration } from "./array-iteration.js";
 import {
   lowerArrayCallback,
+  arrayCallbackDeclaresRest,
   callbackArrayElement,
   requireProducedArrayElement,
 } from "./callback-arguments.js";
@@ -441,6 +442,33 @@ function orderedSeparatorJoin(
   };
 }
 
+/** A rest-parameter callback cannot ride a native array helper: the helper
+ * passes only the parameters the callback declares, while the callback
+ * expects every argument the method passes. A list a method is handed runs
+ * on the list's checked-dynamic view instead, where the method calls the
+ * callback the way Node does. Undefined when the callback takes a fixed
+ * parameter list, which keeps the native list; null when no
+ * checked-dynamic path answers the call. */
+function lowerRestCallbackOverProbedList(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  probe: IrExpr,
+): IrExpr | null | undefined {
+  if (
+    !arrayCallbackDeclaresRest(lowerer, call) ||
+    (!isJsSourceFile(ts.getSourceFileOfNode(access)) && !lowerer.isStdlibMember(access))
+  )
+    return undefined;
+  const view = lowerer.coerceInto(access.expression, probe, DYN);
+  const dispatched = lowerDynDispatchMethodCall(lowerer, call, access, view, true);
+  if (!dispatched) return null;
+  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+  return result && result.kind !== "void" && result.kind !== "dyn"
+    ? lowerer.coerceInto(call, dispatched, result)
+    : dispatched;
+}
+
 /** Ambient array method calls. `push`/`unshift`/`pop`/`reverse`/
  * `indexOf`/`includes`/`join`
  * lower to arrIntrinsic; the HOF family — `map`/`filter`/`forEach`/
@@ -524,6 +552,8 @@ export function lowerArrayMethodCall(
   ) {
     const probe = lowerer.lowerExpr(access.expression);
     if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
       receiverIr = probe.type;
       probedUntyped = true;
     } else if (
@@ -556,7 +586,11 @@ export function lowerArrayMethodCall(
   // receiver.
   if (receiverIr === null && lowerer.checker.isArrayType(checkerReceiver)) {
     const probe = lowerer.lowerExpr(access.expression);
-    if (probe.type.kind === "array") receiverIr = probe.type;
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+      receiverIr = probe.type;
+    }
   }
   // A checker array of checked-dynamic elements (`object[]`) maps to the
   // checked-dynamic array, but a list nothing else can observe is a native
@@ -568,7 +602,11 @@ export function lowerArrayMethodCall(
   // before this one.
   if (receiverIr?.kind === "dyn" && lowerer.checker.isArrayType(checkerReceiver)) {
     const probe = lowerer.lowerExpr(access.expression);
-    if (probe.type.kind === "array") receiverIr = probe.type;
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+      receiverIr = probe.type;
+    }
   }
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);

@@ -14,6 +14,17 @@ function named(value: object, index: number): string {
 console.log(Object.values(d).filter(big).map(idOf).join(","), Object.values(d).map(named).join(","));
 console.log(Object.values(d).map(String).join("|"), Object.values(d).filter(Boolean).length);
 
+// Rest-parameter callbacks receive the arguments the method passes, not the
+// parameters they declare.
+const restId = (...args: unknown[]): string => `${args.length}${idOf(args[0] as object)}`;
+console.log(Object.values(d).map(restId).join(","));
+console.log(Object.values(d).filter((...args: unknown[]) => big(args[0] as object)).length);
+let restSeen = "";
+Object.values(d).forEach((...args: unknown[]) => {
+  restSeen += `${args.length}${idOf(args[0] as object)}`;
+});
+console.log(restSeen, Object.values(d).some((...args: unknown[]) => big(args[0] as object)));
+
 // The list read in place.
 console.log(Object.values(d).filter(big).length, Object.values(d).map(idOf).length);
 console.log(JSON.stringify(Object.values(d).filter(big)[1]), Object.values(d).filter(big)[9] === undefined);

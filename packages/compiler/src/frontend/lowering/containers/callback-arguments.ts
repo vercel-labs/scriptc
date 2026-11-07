@@ -40,6 +40,19 @@ export function requireProducedArrayElement(
   }
 }
 
+/** Whether the callback handed to an array method declares a rest
+ * parameter. Such a callback lowers to a variadic closure, and a native
+ * helper calls it with exactly the parameters it declares, so a call it
+ * takes cannot ride the native tables. */
+export function arrayCallbackDeclaresRest(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const callback = call.arguments.nodes[0];
+  if (callback === undefined || ts.isSpreadElement(callback)) return false;
+  return lowerer.checker.getCallSignatures(lowerer.typeOf(callback)).some((signature) => {
+    const params = signature.declaration?.parameters?.nodes ?? [];
+    return params.some((param) => ts.isParameter(param) && param.dotDotDotToken !== undefined);
+  });
+}
+
 /** A callback's `(value, index, array)` positions count from its first
  * data parameter: TypeScript declares an explicit `this` parameter
  * first, and it is not one of them. */

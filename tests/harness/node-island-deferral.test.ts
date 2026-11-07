@@ -159,20 +159,27 @@ describe.skipIf(skip)("when deferred island modules evaluate", () => {
   test("all of them when Node starts, in import order, before the first call", async () => {
     const name = "8750-node-island-deferred-call-order";
     const { binary, trace } = await build(name, corpus);
-    expect(trace.filter((l) => l.startsWith("[node-islands] defer "))).toHaveLength(2);
+    // The two packages, and the program's `install();`: a statement the
+    // island evaluates (closed-island-init.ts), which waits with them.
+    expect(trace.filter((l) => l.startsWith("[node-islands] defer "))).toHaveLength(3);
     expect(trace.every((l) => l.endsWith("evaluated when Node starts"))).toBe(true);
     const ran = await runTraced(binary);
     expect(ran.stdout).toBe(await underNode(name));
     // The module tree's install is traced where Node starts, by its own
     // unit; this test is about which deferred modules evaluate and when.
     const evaluation = ran.trace.filter((l) => l !== "[node-islands] installing the module tree");
-    expect(evaluation.map((l) => l.replace(/ \S*node_modules\//, " "))).toEqual([
+    const short = (l: string): string =>
+      l.replace(/ \S*node_modules\//, " ").replace(/closed\/main\.\w+\./, "closed/main.");
+    expect(evaluation.map(short)).toEqual([
       "[node-islands] deferred patch-pkg/index.js",
       "[node-islands] deferred reader-pkg/index.js",
+      "[node-islands] deferred ./.scriptc/closed/main.0.mjs",
       "[node-islands] starting Node",
-      "[node-islands] Node started: evaluating 2 deferred module(s)",
+      "[node-islands] Node started: evaluating 3 deferred module(s)",
       "[node-islands] evaluating deferred patch-pkg/index.js",
       "[node-islands] evaluating deferred reader-pkg/index.js",
+      // After the second package, which read the state the call writes.
+      "[node-islands] evaluating deferred ./.scriptc/closed/main.0.mjs",
     ]);
   }, 300_000);
 });

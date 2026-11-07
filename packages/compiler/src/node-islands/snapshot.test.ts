@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import type { IrModule } from "../ir/ir.js";
 import {
@@ -778,7 +778,9 @@ describe("generated island modules (closed-island-init.ts)", () => {
    * generated modules: one where the entry's own statements reach it, one
    * inside a function. The probe's stand-in records what it was given and
    * answers a deterministic load for every module. */
-  function generatedProject() {
+  function generatedProject(
+    options: { statement?: boolean; volatile?: string[]; effects?: string[] } = {},
+  ) {
     const root = scratch();
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
     mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
@@ -786,6 +788,8 @@ describe("generated island modules (closed-island-init.ts)", () => {
     writeFileSync(join(root, "node_modules", "dep", "index.js"), "exports.make = () => ({});\n");
     const text = (name: string) =>
       `import dep from "../../node_modules/dep/index.js";\nexport const ${name} = dep.make();\n`;
+    // A statement of the program the island evaluates: no export.
+    const statement = `import dep from "../../node_modules/dep/index.js";\ndep.make();\n`;
     const defer = (path: string) => ({
       kind: "libCall",
       fn: "nodeIsland.defer",
@@ -821,7 +825,12 @@ describe("generated island modules (closed-island-init.ts)", () => {
           root,
           files: [
             { path: loads.first.slice(2), size: 0, sha256: "", generated: text("a") },
-            { path: loads.second.slice(2), size: 0, sha256: "", generated: text("b") },
+            {
+              path: loads.second.slice(2),
+              size: 0,
+              sha256: "",
+              generated: options.statement === true ? statement : text("b"),
+            },
             { path: "node_modules/dep/index.js", size: 0, sha256: "" },
           ],
           links: [],
@@ -846,8 +855,9 @@ describe("generated island modules (closed-island-init.ts)", () => {
             path,
             root: i + 1,
             inputs: [],
-            volatile: [],
-            effects: [],
+            volatile: i === 0 ? [] : (options.volatile ?? []),
+            // The second generated module's own.
+            effects: i === 2 ? (options.effects ?? []) : [],
             mutations: [],
             env: [],
             tty: [],
@@ -901,5 +911,39 @@ describe("generated island modules (closed-island-init.ts)", () => {
     // A package's entry point is not: its load does not compute from what
     // other modules left behind.
     expect(snapshot(dep)).not.toMatch(/^P /m);
+  });
+
+  test("a statement defers like a constant, with nothing in its snapshot but its guards", () => {
+    const { decisions, second, snapshot } = generatedProject({ statement: true });
+    const decision = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
+    expect(decision.deferred).toBe(true);
+    expect(snapshot(second)).toMatch(/^P 2 \d+$/m);
+  });
+
+  test("a statement that read the clock stays where it stands; a constant that did still waits", () => {
+    // A constant that fails when it finally evaluates raises its error
+    // where its value is used. A statement has no value: its evaluation
+    // must be the probe's, and one that read the clock is not.
+    const { decisions } = generatedProject({ statement: true, volatile: ["Date.now()"] });
+    const constant = decisions.find((d) => d.path.endsWith("main.0000000000.0.mjs"))!;
+    const statement = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
+    expect(constant.deferred).toBe(true);
+    expect(constant.reason).toContain("volatile Date.now(): no constants");
+    expect(statement.deferred).toBe(false);
+    expect(statement.reason).toContain("its evaluation reads Date.now()");
+    // The package they both name read nothing: its import still waits.
+    expect(decisions.find((d) => d.path.endsWith("dep/index.js"))!.deferred).toBe(true);
+  });
+
+  test("a generated module's effects are its own: the package it names and its neighbour still wait", () => {
+    // The second module prints through the package's function. The
+    // package's file evaluated in the package's own import, before it, and
+    // did nothing; the first module does not import the second.
+    const { decisions } = generatedProject({ effects: ["process.stdout.write()"] });
+    const of = (end: string) => decisions.find((d) => d.path.endsWith(end))!;
+    expect(of("dep/index.js").deferred).toBe(true);
+    expect(of("main.0000000000.0.mjs").deferred).toBe(true);
+    expect(of("main.0000000000.1.mjs").deferred).toBe(false);
+    expect(of("main.0000000000.1.mjs").reason).toContain("its load has effects");
   });
 });

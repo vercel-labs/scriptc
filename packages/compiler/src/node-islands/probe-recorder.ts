@@ -12,9 +12,10 @@
  *     constants are snapshotted);
  *   - effects: output, warnings, process listeners and exits, timers,
  *     immediates, ticks, microtasks and any other async resource created
- *     during the load (promises included), child processes, the network,
- *     workers, vm, the inspector, native addons (process.dlopen), writes
- *     to process.env;
+ *     during the load (promises included), a promise the load leaves
+ *     rejected (Node reports it unhandled when the import's turn ends),
+ *     child processes, the network, workers, vm, the inspector, native
+ *     addons (process.dlopen), writes to process.env;
  *   - mutations of builtin state: globalThis, the builtin prototypes and
  *     constructors, `process`, and the exports of common builtin modules
  *     (island-local, since native code has its own builtins, but
@@ -487,8 +488,14 @@ exports.probe = function probe(input) {
   // function that returns at once creates one); a reaction to a promise
   // the load created (then/catch/finally, an await) is.
   const loadPromises = new Set();
+  // The promises themselves, for their state once the load returns.
+  const madePromises = [];
+  const inspect = require("node:util").inspect;
+  const rejected = (p) => {
+    try { return /^[^{]*\{\s*<rejected>/.test(inspect(p, { depth: 0, customInspect: false })); } catch { return false; }
+  };
   const hook = asyncHooks.createHook({
-    init(id, type, trigger) {
+    init(id, type, trigger, resource) {
       // Timers and immediates are the timer wrappers' to account for.
       if (type === "Timeout" || type === "Immediate" || !recording) return;
       if (type === "PROMISE") {
@@ -497,6 +504,9 @@ exports.probe = function probe(input) {
           effects.push("a promise reaction (" + lastCaller + ")");
         } else if (!internalCaller()) {
           loadPromises.add(id);
+          // The module's own promise (not the loader's for the module's
+          // evaluation, which a throw rejects: that is the load's throw).
+          if (types.isPromise(resource)) madePromises.push(resource);
         }
         return;
       }
@@ -581,19 +591,33 @@ exports.probe = function probe(input) {
     try { return d.get.call(o); } catch { return MISSING; }
   };
 
+  // What the snapshot answers of a function besides its identity: its
+  // name and length, and whether 'instanceof' against it is the ordinary
+  // prototype walk (plainClass).
+  const PLAIN = Symbol("plain");
+  const answered = (o, k) => (k === PLAIN ? plainClass(o) : memberValue(o, k));
+  const functionShape = (shape, f) => {
+    if (types.isProxy(f)) return;
+    for (const k of ["name", "length", PLAIN]) shape.push([f, k, answered(f, k)]);
+  };
   // A module's exported values right after its load, at the depth the
-  // snapshot covers (the module value's members, and theirs for objects).
+  // snapshot covers (the module value's members, and theirs for objects),
+  // with what it answers of the functions among them.
   const exportShape = (v) => {
     const shape = [];
     if (v === null || (typeof v !== "object" && typeof v !== "function")) return shape;
+    if (typeof v === "function" && !types.isProxy(v)) shape.push([v, PLAIN, plainClass(v)]);
     for (const k of Reflect.ownKeys(v)) {
       const m = memberValue(v, k);
       if (m === MISSING) continue;
       shape.push([v, k, m]);
-      if (m !== null && typeof m === "object")
+      if (typeof m === "function") functionShape(shape, m);
+      else if (m !== null && typeof m === "object")
         for (const k2 of Reflect.ownKeys(m)) {
           const m2 = memberValue(m, k2);
-          if (m2 !== MISSING) shape.push([m, k2, m2]);
+          if (m2 === MISSING) continue;
+          shape.push([m, k2, m2]);
+          if (typeof m2 === "function") functionShape(shape, m2);
         }
     }
     return shape;
@@ -604,6 +628,7 @@ exports.probe = function probe(input) {
     inputs.length = volatile.length = effects.length = 0;
     pendingTimers.clear();
     loadPromises.clear();
+    madePromises.length = 0;
     tty.clear(); envKeys.clear(); files.clear();
     refused = null;
     withholding = own.has(path);
@@ -619,6 +644,10 @@ exports.probe = function probe(input) {
     recording = true;
     try { exportsValue = createRequire(path)(path); } catch (e) { threw = String((e && e.message) || e); }
     recording = false;
+    // A promise the load made and left rejected: Node reports it unhandled
+    // when the turn of the import ends, which no later evaluation repeats.
+    if (madePromises.some(rejected)) effects.push("a promise the load leaves rejected");
+    madePromises.length = 0;
     // The load's closure also holds what it was handed without the resolve
     // hook being asked: Node answers a relative request that another module
     // of the same directory already made from a cache of its own, and a
@@ -700,7 +729,7 @@ exports.probe = function probe(input) {
     // earlier snapshot no longer holds, and this load's change has to happen
     // where the program imports it).
     for (const [earlier, shape] of shapes) {
-      const changed = shape.some(([o, k, v]) => !Object.is(memberValue(o, k), v));
+      const changed = shape.some(([o, k, v]) => !Object.is(answered(o, k), v));
       if (!changed) continue;
       delete earlier.root;
       earlier.reason = "a later island module's load changes its exports";

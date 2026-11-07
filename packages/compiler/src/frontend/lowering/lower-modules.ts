@@ -4,7 +4,7 @@ import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
-import { closedIslandInitLoad } from "./closed-island-init.js";
+import { closedIslandInitLoad, isClosedIslandStatement } from "./closed-island-init.js";
 import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
@@ -3673,9 +3673,13 @@ export function lowerFileInit(
         body.push(...lowerStaticsAt(statics[at]!));
         at++;
       }
-      // A run of constants the island evaluates loads its generated module
-      // where the run begins (closed-island-init.ts).
-      if (lowerer.nodeIslands !== null) body.push(...closedIslandInitLoad(lowerer, sf, stmt));
+      // A constant the island evaluates loads its generated module where
+      // it is declared, and a statement the island evaluates is that load
+      // and nothing else (closed-island-init.ts).
+      if (lowerer.nodeIslands !== null) {
+        body.push(...closedIslandInitLoad(lowerer, sf, stmt));
+        if (isClosedIslandStatement(lowerer, sf, stmt)) continue;
+      }
       // A cycle binding's declaration stays at its position: its
       // initialization flag must be set where the declaration runs.
       const deferred = lowerer.cycleInitDeclarations.has(stmt)

@@ -4,6 +4,7 @@ import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { pathModuleSpreadSource } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import {
   BOOL,
   DYN,
@@ -3599,19 +3600,14 @@ export function conditionalRecordSpreadOf(
   let e: ts.Expression = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isConditionalExpression(e)) return null;
-  const unwrap = (a: ts.Expression): ts.Expression => {
-    let x = a;
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
   const isEmpty = (x: ts.Expression): boolean =>
     (ts.isObjectLiteralExpression(x) && x.properties.nodes.length === 0) ||
     x.kind === ts.SyntaxKind.NullKeyword ||
     (ts.isIdentifier(x) &&
       x.text === "undefined" &&
       (lowerer.typeOf(x).flags & ts.TypeFlags.Undefined) !== 0);
-  const whenTrue = unwrap(e.whenTrue);
-  const whenFalse = unwrap(e.whenFalse);
+  const whenTrue = withoutParentheses(e.whenTrue);
+  const whenFalse = withoutParentheses(e.whenFalse);
   const sourceIsTrue = isEmpty(whenFalse) && !isEmpty(whenTrue);
   if (!sourceIsTrue && !(isEmpty(whenTrue) && !isEmpty(whenFalse))) return null;
   const source = sourceIsTrue ? whenTrue : whenFalse;
@@ -3880,13 +3876,8 @@ export function conditionalSpreadOf(
   let e: ts.Expression = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isConditionalExpression(e)) return null;
-  const unwrap = (a: ts.Expression): ts.Expression => {
-    let x = a;
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
-  const whenTrue = unwrap(e.whenTrue);
-  const whenFalse = unwrap(e.whenFalse);
+  const whenTrue = withoutParentheses(e.whenTrue);
+  const whenFalse = withoutParentheses(e.whenFalse);
   if (!ts.isObjectLiteralExpression(whenTrue) || !ts.isObjectLiteralExpression(whenFalse)) {
     return "unsupported";
   }

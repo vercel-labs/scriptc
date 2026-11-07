@@ -13,6 +13,7 @@
  * other declared names: a value, `undefined` for the token, or `null` for
  * a name without one, whose read keeps its SC2020 refusal. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import {
   BYTES_ELEMENT_NAME,
   DYN,
@@ -311,12 +312,6 @@ function readsSloppyThis(lowerer: Lowerer, expr: ts.Expression): boolean {
   const init =
     declaration.initializer === undefined ? undefined : withoutParentheses(declaration.initializer);
   return init !== undefined && init.kind === ts.SyntaxKind.ThisKeyword && sloppyReceiverOf(init);
-}
-
-function withoutParentheses(expr: ts.Expression): ts.Expression {
-  let inner = expr;
-  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
-  return inner;
 }
 
 /** Whether the `this` at `node` is a sloppy-mode function's receiver

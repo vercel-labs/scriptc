@@ -73,7 +73,9 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
+ *            to a cast to an unrelated class (SC6004), an import the
+ *            build keeps although tsc drops it after inlining a const enum
+ *            (SC6006); SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
@@ -83,6 +85,9 @@
  *            overlay report: what it typed and how many inferred facts the
  *            build checks (SC6103, frontend/shape-inference), and InlineArray
  *            fields that keep ordinary arrays (SC6105, contracts/check.ts)
+ *            SC62xx are failures the program has under Node too, also
+ *            warnings: Node refuses the program before any module runs, and
+ *            the compiled program reproduces that refusal (SC6201)
  *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
  *            Acyclic or ProgramLifetime contract that does not hold or
  *            cannot be checked (SC7001–SC7009, contracts/check.ts)
@@ -257,6 +262,37 @@ export function nodeIslandDataFileDiag(message: string, loc: SrcLoc): ScrDiagnos
 }
 
 /* ── SC6xxx: divergences from Node (warnings) ─────────────────────────── */
+
+/** SC6006 — tsc inlines const enum members and drops an import whose only
+ * uses are such members, so the module is never loaded by tsc's output. The
+ * native program keeps the import: the module is loaded. */
+export function inlinedImportKeptDiag(specifier: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6006",
+    message: `tsc drops this import after inlining the const enum members it is used for, so its build never loads ${specifier}; the compiled program keeps the import and loads the module`,
+    loc,
+    hint: 'set "isolatedModules": true in the project tsconfig (tsc then keeps the import too), or move the const enum into a module with no load-time effects',
+  };
+}
+
+/** SC6201 — Node refuses the program before any module runs (a module that
+ * does not resolve, a named import the target module does not export), and
+ * the compiled program fails the same way. The build succeeds: the program
+ * is what was written. The warning says so before the binary does. */
+export function startupFailureDiag(
+  className: string,
+  message: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
+  const name = className.startsWith("%") ? className.slice(1) : className;
+  return {
+    code: "SC6201",
+    message: `this program cannot start: Node refuses it before any module runs, and the compiled program fails the same way (${name}: ${message.split("\n")[0]})`,
+    loc,
+    ...(hint === undefined ? {} : { hint }),
+  };
+}
 
 /** SC6001 — a value passed to (or declared as) a narrower record type is
  * copied field by field, and the program then writes through or compares

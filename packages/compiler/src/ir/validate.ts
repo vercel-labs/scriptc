@@ -4790,6 +4790,18 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http.clientOnInformation") {
+      // The information listener: void, no params or exactly (info: dyn).
+      const cbT = e.args[1]?.type;
+      const ok =
+        cbT?.kind === "func" &&
+        cbT.ret.kind === "void" &&
+        (cbT.params.length === 0 || (cbT.params.length === 1 && cbT.params[0]!.kind === "dyn"));
+      if (!ok) {
+        err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "http.reqOnError" || e.fn === "http.clientOnError") {
       // The error listener: void, no params or exactly (err: %Error).
       const cbT = e.args[1]?.type;
@@ -4819,6 +4831,7 @@ function validateFunction(
     if (
       e.fn === "http.serverOnUpgrade" ||
       e.fn === "http.clientOnUpgrade" ||
+      e.fn === "http.clientOnConnect" ||
       e.fn === "http.serverOnConnect"
     ) {
       // (req, socket, head) or any shorter prefix, void return. The

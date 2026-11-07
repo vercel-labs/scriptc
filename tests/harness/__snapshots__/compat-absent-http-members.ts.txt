@@ -1,0 +1,129 @@
+compat-absent-http-members.ts:10:26 - error SC0001: Property 'createConnection' does not exist on type 'Agent'.
+
+   9 | const agent = new http.Agent({ keepAlive: true });
+  10 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+     |                          ^~~~~~~~~~~~~~~~
+  11 | console.log(agent.maxTotalSockets);
+
+compat-absent-http-members.ts:10:57 - error SC0001: Property 'keepSocketAlive' does not exist on type 'Agent'.
+
+   9 | const agent = new http.Agent({ keepAlive: true });
+  10 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+     |                                                         ^~~~~~~~~~~~~~~
+  11 | console.log(agent.maxTotalSockets);
+
+compat-absent-http-members.ts:10:87 - error SC0001: Property 'reuseSocket' does not exist on type 'Agent'. Did you mean 'freeSockets'?
+
+   9 | const agent = new http.Agent({ keepAlive: true });
+  10 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+     |                                                                                       ^~~~~~~~~~~
+  11 | console.log(agent.maxTotalSockets);
+
+compat-absent-http-members.ts:11:19 - error SC0001: Property 'maxTotalSockets' does not exist on type 'Agent'. Did you mean 'maxSockets'?
+
+  10 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+  11 | console.log(agent.maxTotalSockets);
+     |                   ^~~~~~~~~~~~~~~
+  12 | agent.destroy();
+
+compat-absent-http-members.ts:18:23 - error SC0001: Property 'signal' does not exist on type 'IncomingMessage'.
+
+  17 |   // IncomingMessage: the abort signal.
+  18 |   console.log(request.signal.aborted);
+     |                       ^~~~~~
+  19 |   // OutgoingMessage: several headers at once, an arbitrary 1xx response,
+
+compat-absent-http-members.ts:21:12 - error SC0001: Property 'setHeaders' does not exist on type 'ServerResponse'. Did you mean 'setHeader'?
+
+  20 |   // and the state and event behind write()'s result.
+  21 |   response.setHeaders(new Map([["x-a", "1"]]));
+     |            ^~~~~~~~~~
+  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
+
+compat-absent-http-members.ts:22:12 - error SC0001: Property 'writeInformation' does not exist on type 'ServerResponse'.
+
+  21 |   response.setHeaders(new Map([["x-a", "1"]]));
+  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
+     |            ^~~~~~~~~~~~~~~~
+  23 |   console.log(response.writableLength);
+
+compat-absent-http-members.ts:23:24 - error SC0001: Property 'writableLength' does not exist on type 'ServerResponse'.
+
+  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
+  23 |   console.log(response.writableLength);
+     |                        ^~~~~~~~~~~~~~
+  24 |   response.on("drain", () => {});
+
+compat-absent-http-members.ts:24:15 - error SC0001: Argument of type '"drain"' is not assignable to parameter of type '"close" | "finish" | "prefinish"'.
+
+  23 |   console.log(response.writableLength);
+  24 |   response.on("drain", () => {});
+     |               ^~~~~~~
+  25 |   response.end();
+
+compat-absent-http-members.ts:27:20 - error SC0001: Property 'maxHeadersCount' does not exist on type 'Server'.
+
+  26 | });
+  27 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
+     |                    ^~~~~~~~~~~~~~~
+  28 | server.on("dropRequest", () => {});
+
+compat-absent-http-members.ts:27:44 - error SC0001: Property 'maxRequestsPerSocket' does not exist on type 'Server'.
+
+  26 | });
+  27 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
+     |                                            ^~~~~~~~~~~~~~~~~~~~
+  28 | server.on("dropRequest", () => {});
+
+compat-absent-http-members.ts:28:11 - error SC0001: No overload matches this call.
+  The last overload gave the following error.
+    Argument of type '"dropRequest"' is not assignable to parameter of type '"checkContinue" | "checkExpectation" | "request"'.
+
+  27 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
+  28 | server.on("dropRequest", () => {});
+     |           ^~~~~~~~~~~~~
+  29 | await server[Symbol.asyncDispose]();
+
+compat-absent-http-members.ts:29:7 - error SC0001: Element implicitly has an 'any' type because expression of type 'unique symbol' can't be used to index type 'Server'.
+  Property '[SymbolConstructor.asyncDispose]' does not exist on type 'Server'.
+
+  28 | server.on("dropRequest", () => {});
+  29 | await server[Symbol.asyncDispose]();
+     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  30 | 
+
+compat-absent-http-members.ts:33:21 - error SC0001: Property 'maxHeadersCount' does not exist on type 'ClientRequest'.
+
+  32 | const request = http.request({ host: "127.0.0.1", port: 1 });
+  33 | console.log(request.maxHeadersCount);
+     |                     ^~~~~~~~~~~~~~~
+  34 | request.destroy();
+
+compat-absent-http-members.ts:37:6 - error SC0001: Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import("node:http")'.
+
+  36 | // The module: the proxy configuration read from the environment.
+  37 | http.setGlobalProxyFromEnv();
+     |      ^~~~~~~~~~~~~~~~~~~~~
+  38 | 
+
+compat-absent-http-members.ts:40:35 - error SC0001: Type '{}' is missing the following properties from type 'ServerOptions': cert, key
+
+  39 | // https: the same server members.
+  40 | const secure = https.createServer({}, (_request, response) => response.end());
+     |                                   ^~
+  41 | console.log(secure.maxHeadersCount);
+
+compat-absent-http-members.ts:41:20 - error SC0001: Property 'maxHeadersCount' does not exist on type 'Server'.
+
+  40 | const secure = https.createServer({}, (_request, response) => response.end());
+  41 | console.log(secure.maxHeadersCount);
+     |                    ^~~~~~~~~~~~~~~
+  42 | await secure[Symbol.asyncDispose]();
+
+compat-absent-http-members.ts:42:7 - error SC0001: Element implicitly has an 'any' type because expression of type 'unique symbol' can't be used to index type 'Server'.
+  Property '[SymbolConstructor.asyncDispose]' does not exist on type 'Server'.
+
+  41 | console.log(secure.maxHeadersCount);
+  42 | await secure[Symbol.asyncDispose]();
+     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  43 | 

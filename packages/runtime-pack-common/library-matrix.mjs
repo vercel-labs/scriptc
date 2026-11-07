@@ -24,6 +24,10 @@ export function withLibraryRuntimeFlavors(matrix) {
     // detaches a buffer names scr_js_buffers_arm from its own object, so the
     // library flavors must carry the unit the executable flavors compile.
     "scr_js_buffers.c",
+    // WeakRef (scr_weakref.c) has no library-incompatible dependency: with
+    // no microtask queue in a library build, its kept list is released by
+    // the library's reset instead.
+    "scr_weakref.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

@@ -10,7 +10,10 @@ Memory that a package frees only from a cleanup callback is not reclaimed until 
 For example, a wasm-bindgen package frees the WebAssembly memory behind a wrapper object from its cleanup callback, so a long-running server that drops such wrappers without calling their `free()` method keeps that memory.
 Call `free()` on wrappers the program no longer needs.
 Symbol targets and unregister tokens are unsupported.
-`WeakRef` is unsupported.
+`WeakRef` holds a target weakly: `deref()` answers the same object while the program keeps it and `undefined` once the native heap frees it.
+A target stays alive until at least the end of the current job, and a target only the `WeakRef` holds is freed at the next collection point, earlier than V8 usually collects.
+Plain objects, arrays, proxies, and native records that keep their identity across the checked boundary are targets, and primitives and registered symbols throw Node's `TypeError: WeakRef: invalid target`.
+Unregistered symbols, functions, and other native reference kinds have no weak lifetime lowering and throw the coded `SC2020` error instead of being held strongly.
 
 Memory uses reference counting.
 Acyclic values are freed deterministically, and cycles are collected at defined collection points.

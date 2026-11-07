@@ -134,6 +134,9 @@ export interface EarlyExecutableNativeFeatures {
   /** A computed read of the global object, or `… in globalThis`:
    * scr_global_host_absent.c. */
   hostAbsentGlobals?: boolean;
+  /** A constructed WeakRef and its dispose-observer arm: scr_weakref.c and
+   * the SCR_WEAK_REF build of scr_json.c. */
+  weakRef?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;

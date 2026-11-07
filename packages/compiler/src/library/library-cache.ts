@@ -83,6 +83,8 @@ export interface EarlyLibraryNativeFeatures {
   /** The buffer views registry (scr_js_buffers.c) and the archive's
    * JavaScript object model build of its bytes and json units. */
   mutableBuffers: boolean;
+  /** WeakRef (scr_weakref.c) and the archive's SCR_WEAK_REF json build. */
+  weakRef?: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }

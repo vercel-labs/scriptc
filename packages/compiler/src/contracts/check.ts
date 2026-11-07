@@ -294,10 +294,10 @@ class ContractChecker {
    * the lifetimes of the objects they receive). Publication to other
    * threads needs no check: an instance carries a reference count of its
    * own until publication marks it like any other object it reaches
-   * (classes.ts programLifetimeRc). Static code has no WeakRef, and a
-   * FinalizationRegistry never runs its cleanup callbacks; weak collections
-   * stay correct because an entry keyed by an object that is never freed is
-   * never observable as removed. */
+   * (classes.ts programLifetimeRc). A WeakRef to such an instance never
+   * clears, and a FinalizationRegistry never runs its cleanup callbacks;
+   * weak collections stay correct because an entry keyed by an object that
+   * is never freed is never observable as removed. */
   private checkProgramLifetime(): void {
     if (this.notes.classes.size === 0) return;
     const roots: string[] = [];

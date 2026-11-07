@@ -60,6 +60,7 @@
 #include "scr_itable.h"
 #include "scr_slots.h"
 #include "scr_async.h"
+#include "scr_weakref.h"
 #include "scr_events.h"
 #include "scr_readline.h"
 #include "scr_generator.h"

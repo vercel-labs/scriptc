@@ -11881,6 +11881,37 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         loc,
       };
     }
+    // A WeakRef construction (scr_weakref_new): the target's identity
+    // clears when the native collector frees it, and both the construction
+    // and deref keep it alive to the end of the job (AddToKeptObjects).
+    if (symbol !== null && ts.symbolName(symbol) === "WeakRef" && lowerer.isStdlibSymbol(symbol)) {
+      const args = expr.arguments?.nodes ?? [];
+      if (args.some(ts.isSpreadElement)) {
+        lowerer.unsupported("SC1090", expr, "WeakRef construction with spread arguments");
+      }
+      const target = args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc);
+      const surplus = args.slice(1).map((arg) => lowerer.lowerExpr(arg));
+      const created: IrExpr = {
+        kind: "libCall",
+        fn: "weakRef.new",
+        args: [target],
+        type: DYN,
+        loc,
+      };
+      if (surplus.length === 0) return created;
+      // Surplus arguments evaluate after the target and are ignored.
+      const local = lowerer.declareHiddenLocal("%weakRefTarget", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: local.id, init: target, loc },
+          ...surplus.map((value): IrStmt => ({ kind: "exprStmt", expr: value, loc })),
+        ],
+        result: { ...created, args: [varRef(local.id, DYN, loc)] },
+        type: DYN,
+        loc,
+      };
+    }
     // `new Set<T>()`: construct + bulk add from supported values,
     // including live collection cursors. Duplicates collapse in insertion order.
     if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Set")) {
@@ -12077,8 +12108,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "boxed wrapper objects have no lowering — use the string primitive (the box is only distinguishable via typeof/identity, which nothing here can honor)",
         Number: "boxed wrapper objects have no lowering — use the number primitive",
         Boolean: "boxed wrapper objects have no lowering — use the boolean primitive",
-        WeakRef:
-          "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
         SharedArrayBuffer:
           "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage",
         ArrayBuffer:

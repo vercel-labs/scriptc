@@ -21,7 +21,6 @@ const fmt = new Intl.NumberFormat();
 
 // Constructors.
 const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced
-const wr = new WeakRef({});
 const px = new Proxy({ a: 1 }, {});
 const buf = new ArrayBuffer(8);
 const st = new Set(new Set([1, 2])); // string and array seeds lower; Set-valued seeds stay fenced

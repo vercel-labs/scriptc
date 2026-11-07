@@ -79,6 +79,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "weakSet.new": "scr_weak_set_new",
   "finalizationRegistry.new": "scr_finalization_registry_new",
   "finalizationRegistry.is": "scr_finalization_registry_is",
+  "weakRef.new": "scr_weakref_new",
+  "weakRef.is": "scr_weakref_is",
   "dyn.fromEntries": "scr_dyn_from_entries",
   "bytes.constructor": "scr_bytes_constructor",
   "bytes.construct": "scr_bytes_construct",

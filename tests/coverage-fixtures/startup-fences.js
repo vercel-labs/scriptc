@@ -2,8 +2,8 @@
 // a fence inside a function runs when the function is called.
 "use strict";
 var value = JSON.parse("{}");
-console.log(value instanceof WeakRef);
+console.log(value instanceof escape);
 function check(other) {
-  return other instanceof WeakRef;
+  return other instanceof escape;
 }
 console.log(check([]));

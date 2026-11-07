@@ -213,7 +213,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ]
       : [],
   ),
-  unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
+  // scr_symbol.c calls this unit's equality message assemblers, so a
+  // program that links the symbol unit (a WeakRef program does) links this
+  // one too.
+  unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.weakRef === true, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
     (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
@@ -347,7 +350,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // net families (http implies net), so handle-free binaries keep
   // their exact size class.
   unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
-  unit((u) => u.opts.symbol, "scr_symbol.c"),
+  // The WeakRef unit asks scr_sym_key_for whether a symbol target is
+  // registered (a registered symbol is an invalid target), so a program that
+  // constructs a WeakRef links the symbol unit even when it creates no symbol
+  // of its own. Symbol- and WeakRef-free binaries keep their exact link line.
+  unit((u) => u.opts.symbol || u.opts.weakRef === true, "scr_symbol.c"),
   unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
   unit((u) => u.opts.qs, "scr_qs.c"),
   // The legacy url unit references the regex, querystring and dyn-async
@@ -483,6 +490,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
+  // WeakRef over the native heap's dispose observers.
+  unit((u) => u.opts.weakRef === true, "scr_weakref.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -510,6 +519,9 @@ const RUNTIME_DEFINES: readonly {
   // globals the native runtime does not implement; a program with a computed
   // global read or `… in globalThis` selects that build (host-globals.ts).
   { define: "SCR_GLOBAL_HOST_ABSENT", when: (opts) => opts.hostAbsentGlobals },
+  // scr_json.c's dispose-observer arm that clears WeakRef cells when the
+  // target is freed (scr_weakref.h).
+  { define: "SCR_WEAK_REF", when: (opts) => opts.weakRef },
   // The JavaScript object model build (t262-da §J): the code the runtime
   // features only a JavaScript source reaches share. Its objects are separate
   // builds selected by runtime-pack-matrix.mjs, so the source build must name

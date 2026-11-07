@@ -113,8 +113,12 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
     "default",
     "node-island",
+    "weak-ref",
+    "weak-ref-node-island",
     "js-om",
     "js-om-node-island",
+    "js-om-weak-ref",
+    "js-om-weak-ref-node-island",
   ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
@@ -154,6 +158,26 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
       recordViewPartial: true,
     }).defines,
   ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program that constructs a WeakRef selects the build with the
+  // dispose-observer arm, alone, beside the island build, and beside the
+  // object model build.
+  expect(selected("scr_json.c", { workers: false, weakRef: true }).defines).toEqual([
+    "SCR_WEAK_REF",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, weakRef: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_WEAK_REF"]);
+  expect(
+    selected("scr_json.c", { workers: false, weakRef: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_WEAK_REF", "SCR_JS_OBJECT_MODEL"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      weakRef: true,
+      nodeIsland: true,
+      jsObjectModel: true,
+    }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_WEAK_REF", "SCR_JS_OBJECT_MODEL"]);
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
@@ -261,4 +285,34 @@ test("extended spawn options beside an error read keep both child builds", () =>
     selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: false })
       .defines,
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
+});
+
+test("a unit has one build for every combination of the features its builds name", () => {
+  // A program links one build of each unit: the one that carries the define
+  // of every feature it has. Two features that each add a build column to
+  // the same unit therefore need a build that carries both defines, also
+  // when the columns were added by changes that did not know of each other.
+  for (const { source } of matrix.runtime_units as { source: string }[]) {
+    const variants: { id: string; when: Record<string, boolean>; defines: string[] }[] =
+      variantsFor(source);
+    const named = (when: Record<string, boolean>): string =>
+      Object.keys(when)
+        .filter((name) => when[name])
+        .sort()
+        .join("+");
+    const features = [...new Set(variants.flatMap((variant) => Object.keys(variant.when)))].sort();
+    const alone = (feature: string): string[] =>
+      variants.find((variant) => named(variant.when) === feature)?.defines ?? [];
+    for (let mask = 0; mask < 1 << features.length; mask++) {
+      const on = features.filter((_, index) => (mask & (1 << index)) !== 0);
+      const builds = variants.filter((variant) => named(variant.when) === on.join("+"));
+      expect(
+        builds.map((variant) => variant.id),
+        `${source} with ${on.join("+") || "no feature"}`,
+      ).toHaveLength(1);
+      expect([...builds[0]!.defines].sort(), `${source} with ${on.join("+")}`).toEqual(
+        [...new Set(on.flatMap(alone))].sort(),
+      );
+    }
+  }
 });

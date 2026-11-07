@@ -198,8 +198,8 @@ test("the body of a signature-blocked function reports its diagnostics", () => {
     "SC2004 uses of 'extra' inherit the blocker on its declaration",
     "SC2004 uses of 'measure' inherit the blocker on its declaration",
     "SC2004 uses of 'target' inherit the blocker on its declaration",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'NumberFormat' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new Intl.NumberFormat' is part of the standard library types but has no scriptc lowering yet",
   ]);
   // Nothing calls unused or described: their signatures and bodies report
   // as unreached. described's declared `this` is its receiver, so
@@ -207,9 +207,9 @@ test("the body of a signature-blocked function reports its diagnostics", () => {
   expect(sites(coverage.unreached?.diagnostics ?? [])).toEqual([
     "SC2004 uses of 'extra' inherit the blocker on its declaration",
     "SC2004 uses of 'target' inherit the blocker on its declaration",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'NumberFormat' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'NumberFormat' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new Intl.NumberFormat' is part of the standard library types but has no scriptc lowering yet",
   ]);
   // The bodies' statements still count once each, as not static.
   const un = coverage.unreached?.stats;

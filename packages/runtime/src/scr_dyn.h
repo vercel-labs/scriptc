@@ -233,6 +233,7 @@ typedef enum {
   X(WASM_MODULE, 57) /* WebAssembly.Module (scr_wasm.c) */ \
   X(WASM_TABLE, 60) /* WebAssembly.Table */ \
   X(WEAK_MAP, 23) /* native weak-key metadata */ \
+  X(WEAK_REF, 100) /* native WeakRef (scr_weakref.c) */ \
   X(WEAK_SET, 24) /* native weak membership */ \
   X(WEB_CONTROLLER, 11) /* native ReadableStreamDefaultController */ \
   X(WEB_READER, 10) /* native ReadableStreamDefaultReader */ \

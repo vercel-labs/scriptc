@@ -3259,8 +3259,13 @@ export class LlEmitter {
    * builders, JSON schemas and weak collection constructors are requested
    * lazily. */
   disposeObserverGates(): string[] {
+    // A weak collection or a WeakRef makes the program observe frees: the
+    // emitted record frees test this gate before reaching the dispose hook.
     const weak = [...this.decls].some(
-      (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
+      (d) =>
+        d.includes("@scr_weak_map_new(") ||
+        d.includes("@scr_weak_set_new(") ||
+        d.includes("@scr_weakref_new("),
     );
     return [
       `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,

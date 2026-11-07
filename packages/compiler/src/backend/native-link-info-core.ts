@@ -32,6 +32,10 @@ export interface NativeLinkFeatures {
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
    * without it keep their link identity. */
   wasm?: boolean;
+  /** WeakRef (scr_weakref.c): selects the SCR_WEAK_REF build of the JSON
+   * unit whose dispose observers clear the cells it keeps. Absent when
+   * unused, so programs without it keep their link identity. */
+  weakRef?: boolean;
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;

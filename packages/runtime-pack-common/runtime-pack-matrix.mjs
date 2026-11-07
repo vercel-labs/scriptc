@@ -80,7 +80,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
-  ["scr_assert.c", any("assert", "regex", "symbol")],
+  // scr_symbol.c calls the equality message assemblers, and the WeakRef unit
+  // asks the symbol unit whether a symbol target is registered.
+  ["scr_assert.c", any("assert", "regex", "symbol", "weakRef")],
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   // Island libCalls on native values typed by island declarations invoke
@@ -162,7 +164,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_handle_class.c", "webStreams"],
   ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
-  ["scr_symbol.c", "symbol"],
+  // The WeakRef unit asks scr_sym_key_for whether a symbol target is
+  // registered, so a program that constructs a WeakRef links this unit.
+  ["scr_symbol.c", any("symbol", "weakRef")],
   ["scr_bigint_assert.c", all("assert", "bigint")],
   ["scr_qs.c", "qs"],
   // The legacy url unit lowercases and normalizes through the regex unit
@@ -271,7 +275,29 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
   // instead of answering undefined.
   ["scr_global_host_absent.c", "hostAbsentGlobals"],
+  // WeakRef over the native heap's dispose observers (scr_weakref.c): a
+  // cell holds the referent's identity and rebuild recipe, and the unit
+  // installs the one dispose hook on its first construction.
+  ["scr_weakref.c", "weakRef"],
 ];
+
+/** One more build column for a unit: a twin, with `define`, of every build
+ * the unit has so far, selected by `feature`. A program links one build per
+ * unit, so a unit whose builds are keyed on several features needs a build
+ * for every combination of them; listing a column's builds by hand names
+ * only the columns its author knew, and a program with a combination nobody
+ * listed would link a build without one of its defines. Doubling what is
+ * there keeps every combination, whichever order the columns were added. */
+function withBuildColumn(variants, id, feature, define) {
+  for (const { id: other, when, defines } of variants.slice()) {
+    variants.push({
+      id: other === "default" ? id : `${id}-${other}`,
+      when: { ...when, [feature]: true },
+      defines: [...defines, define],
+    });
+  }
+  return variants;
+}
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
  * object model features reach (t262-da §J). Every such feature is inert
@@ -310,6 +336,13 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+    // A program that constructs a WeakRef carries the dispose-observer arm
+    // that clears its cells (SCR_WEAK_REF, scr_weakref.h): a twin of every
+    // build above, so a program with the arm and any of their features
+    // links one build that carries each define. Added before the object
+    // model twins, which double it in turn; every other program keeps the
+    // default object, byte for byte.
+    withBuildColumn(variants, "weak-ref", "weakRef", "SCR_WEAK_REF");
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —

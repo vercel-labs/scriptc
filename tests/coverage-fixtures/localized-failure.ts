@@ -40,7 +40,7 @@ function pick(n: number): boolean {
 
 // Refused: a value the compiler cannot produce stays an error.
 class Cache {
-  tokens: WeakRef<object> = new WeakRef({});
+  tokens: Intl.NumberFormat = new Intl.NumberFormat();
   size(): number {
     return 0;
   }

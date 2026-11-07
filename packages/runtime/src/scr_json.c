@@ -1545,6 +1545,11 @@ static inline bool scr_weak_maybe_key(const void *key) {
   return scr_weak_observing && (scr_weak_key_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)));
 }
 static inline void scr_dyn_weak_dispose(ScrDyn *d) {
+#ifdef SCR_WEAK_REF
+  /* The WeakRef build's arm (scr_weakref.h): a pooled node recycles
+   * without reaching scr_dispose_observers, so its cells clear here. */
+  if (scr_weakref_live) scr_weakref_disposed(d);
+#endif
   if (scr_weak_maybe_key(d)) scr_weak_disposed(d);
 }
 
@@ -4272,10 +4277,21 @@ static void scr_dispose_observers(void *object) {
    * a program without the fact has no table to consult. */
   if (scr_js_buffer_ops) scr_js_buffer_ops->disposed(object);
 #endif
+#ifdef SCR_WEAK_REF
+  /* A WeakRef over this referent answers undefined from now on
+   * (scr_weakref.h; the arm exists only in the WeakRef build). */
+  if (scr_weakref_live) scr_weakref_disposed(object);
+#endif
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
   if (scr_record_link_count) scr_record_link_disposed(object);
 }
+
+#ifdef SCR_WEAK_REF
+/* scr_weakref_new: a program that constructs a WeakRef must see frees even
+ * when it creates no weak collection, so the unit installs the one hook. */
+void scr_weakref_observers_install(void) { scr_weak_dispose_hook = &scr_dispose_observers; }
+#endif
 
 #ifdef SCR_JS_OBJECT_MODEL
 /* scr_js_buffers_arm: the registry must see frees even in a program that

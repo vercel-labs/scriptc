@@ -654,11 +654,13 @@ export function lowerIncDecTarget(
         loc,
       };
     }
-    // `bigint | undefined` narrowed to its bigint arm: the same step the
-    // plain bigint target takes, read through the union and written back
-    // tagged.
-    const bigintRead = lowerOptionalBigint(lowerer, varRef(target.id, target.type, loc), loc);
-    if (bigintRead.type.kind === "bigint") {
+    const bigintRead = lowerOptionalBigint(
+      lowerer,
+      varRef(target.id, target.type, loc),
+      loc,
+      expr.operand,
+    );
+    if (bigintRead) {
       const old = lowerer.declareHiddenLocal("%bigintOld", BIGINT_T);
       const next = lowerer.declareHiddenLocal("%bigintNext", BIGINT_T);
       return {

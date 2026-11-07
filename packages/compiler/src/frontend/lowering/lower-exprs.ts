@@ -268,10 +268,34 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     }
     if (lowered.type.kind === "void" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Never) !== 0)
       lowerer.neverValued.add(lowered);
+    if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
     return lowered;
   } finally {
     lowerExprDepth--;
   }
+}
+
+/** Record that the enclosing arrow resumed: the assignment runs right after
+ * the await's value lands, so anything the body does later reads it. The
+ * await expression itself is the sequence's result, which keeps void awaits
+ * representable. */
+function markSuspension(lowerer: Lowerer, awaited: IrExpr, loc: SrcLoc): IrExpr {
+  const flag = lowerer.ctx.suspendedFlag;
+  if (!flag) return awaited;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "assign",
+        localId: flag.id,
+        value: { kind: "boolLit", value: true, type: BOOL, loc },
+        loc,
+      },
+    ],
+    result: awaited,
+    type: awaited.type,
+    loc,
+  };
 }
 
 /** `number | undefined` from a NaN-coded double whose slot never holds a
@@ -2298,23 +2322,32 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
-/** The `bigint | undefined` twin of lowerOptionalNumber: a binding tsc has
- * narrowed to its bigint arm (`sequence === undefined ? … : sequence++`
- * over a `bigint | undefined` local) reads through that arm, the same
- * unchecked unionNarrow a `number | undefined` read uses — the undefined
- * arm is what tsc's narrowing ruled out, and `++` on a possibly-undefined
- * operand never type-checks. Any other operand comes back unchanged for
- * the caller's own fence. */
-export function lowerOptionalBigint(lowerer: Lowerer, operand: IrExpr, loc: SrcLoc): IrExpr {
-  if (operand.type.kind !== "union") return operand;
-  if (lowerer.armTag(operand.type.unionId, UNDEFINED_T) < 0) return operand;
-  if (lowerer.stripUndefinedArm(operand.type).kind !== "bigint") return operand;
-  const tag = lowerer.armTag(operand.type.unionId, BIGINT_T);
-  if (tag < 0) return operand;
+/** `lowerOptionalNumber`'s bigint twin: an `undefined`-armed BIGINT value at
+ * a `++`/`--` use (`let sequence: bigint | undefined` read back after the
+ * guard proved it present). JavaScript's ToNumeric(undefined) is NaN, which
+ * a bigint slot has no representation for, so the payload is EXTRACTED with
+ * the same checked helper a narrowed read uses: a value that is really
+ * undefined there (only a lying assertion reaches it) throws the catchable
+ * TypeError instead of yielding a number the checker says cannot appear.
+ * Null when the operand is not an optional bigint the checker narrowed to
+ * bigint — the caller keeps its refusal. */
+export function lowerOptionalBigint(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  loc: SrcLoc,
+  narrowedNode: ts.Expression,
+): IrExpr | null {
+  if (operand.type.kind !== "union") return null;
+  const unionId = operand.type.unionId;
+  const valueTag = lowerer.armTag(unionId, BIGINT_T);
+  if (valueTag < 0 || lowerer.armTag(unionId, UNDEFINED_T) < 0) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(narrowedNode))?.kind !== "bigint") return null;
+  const checked = lowerer.narrowedArmHelper(unionId, BIGINT_T, loc);
+  if (checked) return { kind: "call", callee: checked, args: [operand], type: BIGINT_T, loc };
   return {
     kind: "unionNarrow",
-    unionId: operand.type.unionId,
-    tag,
+    unionId,
+    tag: valueTag,
     value: operand,
     type: BIGINT_T,
     loc,

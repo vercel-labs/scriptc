@@ -111,6 +111,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "text.decodeStream",
   "text.decodeLegacyOptions",
   "dyn.nativeSetNew",
+  // new Set(iterable)/new Map(iterable) run the program's own add/set and
+  // step the iterable
+  "dyn.collectionConstruct",
+  "dyn.setValues",
   "ffi.argument",
   "ffi.memoryModule",
   "process.stdoutWrite",
@@ -739,6 +743,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // synchronously on a non-function argument (the closure form never
   // throws — the callback's own throw surfaces at drain, uncaught).
   "timers.queueMicrotaskDyn",
+  // the timer callback gate: a non-function throws ERR_INVALID_ARG_TYPE
+  // synchronously (Node validates before anything schedules)
+  "timers.checkCallback",
   // structuredClone: option validation throws Node's TypeErrors,
   // functions/handles the spec's DataCloneError, cycles the scriptc
   // fence; the zero-argument form always throws ERR_MISSING_ARGS. The
@@ -769,6 +776,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.getPrototype",
   "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
+  // ES2025 Set compositions run the set-like protocol: reading and calling
+  // `size`/`has`/`keys` can throw, and so can a user `has` or iterator.
+  "dyn.setCombine",
+  // forEach with a callback that is not statically a function throws Node's
+  // `<value> is not a function`.
+  "dyn.collectionForEach",
+  // a proxy in the prototype chain can throw
+  "dyn.collectionGetPrototype",
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
@@ -1175,7 +1190,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.fsStreamClose",
   "fs.fsStreamCloseCb",
   "dir.readSync",
+  "dir.readCb",
   "dir.closeSync",
+  // Symbol.dispose is closeSync on an open Dir: ERR_DIR_CONCURRENT_OPERATION
+  // while an operation is queued.
+  "dir.dispose",
   "fs.copyFileSync",
   "fs.copyFileFlagsSync",
   "fs.renameSync",

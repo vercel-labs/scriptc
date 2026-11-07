@@ -343,6 +343,25 @@ child.on("close", () => console.log("close"));
   expect(dynInvokes(mod, "kill")).toBe(1);
 });
 
+test("a typed child call reaches a member an aliased definition names with a variable", async () => {
+  // The key is a variable, not a literal, so it may name any member: the
+  // typed call below must still go through the child's box rather than keep
+  // the native lowering.
+  const mod = await compileIr(
+    `"use strict";
+const { spawn } = require("child_process");
+const define = Object.defineProperty;
+const key = "kill";
+const child = spawn(process.execPath, ["-e", ""]);
+define(child, key, { value: () => "replaced", configurable: true });
+console.log(child.kill());
+child.on("close", () => console.log("close"));
+`,
+    "js",
+  );
+  expect(dynInvokes(mod, "kill")).toBe(1);
+});
+
 test("a child call of a member no definition names stays native", async () => {
   // The program defines `label`; `kill` is untouched, so its typed call keeps
   // the native lowering.

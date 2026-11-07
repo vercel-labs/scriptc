@@ -192,16 +192,20 @@ function childAdditions(lowerer: Lowerer): ChildAdditions {
     }
     return null;
   };
-  const key = (k: ts.Expression | ts.PropertyName): void => {
-    if (ts.isIdentifier(k) || ts.isStringLiteralLike(k) || ts.isNumericLiteral(k))
-      written.add(k.text);
+  /** The member a key expression names, when the program fixes it as a
+   * literal. A key expression that is anything else, a variable in
+   * `child[k] = value` or `defineProperty(child, k, ...)`, may name any
+   * member, so every member then goes through the child's box; the
+   * variable's own name is not a member name. */
+  const key = (k: ts.Expression): void => {
+    if (ts.isStringLiteralLike(k) || ts.isNumericLiteral(k)) written.add(k.text);
     else everyName = true;
   };
   /** The members a definition's second argument names: `defineProperty`
    * names one, `defineProperties` the keys of its descriptor object. */
   const definedNames = (
     method: "defineProperty" | "defineProperties",
-    second: ts.Expression | ts.PropertyName,
+    second: ts.Expression,
   ): void => {
     if (method === "defineProperty") {
       key(second);

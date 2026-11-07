@@ -34,9 +34,10 @@
  * type here. The checker lets such types pass for each other in both
  * directions without a cast, so a value does flow between them.
  *
- * Anything this cannot decide (a generic signature, a comparison that runs
- * past its budget, a checker query that fails) is a different type. That is
- * the answer the caller had before it asked. */
+ * Anything this cannot decide (a generic signature, a mapped type over a
+ * type parameter, a comparison that runs past its budget, a checker query
+ * that fails) is a different type. That is the answer the caller had before
+ * it asked. */
 import * as ts from "../ts7/adapter.js";
 
 /** Pairs one comparison may visit before it gives up. */
@@ -94,6 +95,7 @@ export class TypeSameness {
     if ((type.flags & ts.TypeFlags.Object) === 0) return null;
     const nominal = this.nominal(type);
     if (nominal !== null) return nominal;
+    if (this.unresolved(type)) return null;
     const names = this.checker.getPropertiesOfType(type).map((property) => ts.symbolName(property));
     return [
       `{${names.sort().join(",")}}`,
@@ -112,6 +114,17 @@ export class TypeSameness {
     if (this.checker.isTupleType(type)) return `[,]${this.typeArguments(type).length}`;
     if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Class) !== 0) return `class ${name}`;
     return null;
+  }
+
+  /** A mapped type that has no member yet because it maps a type parameter
+   * (`Partial<T>` inside a generic body): two of them look alike and are
+   * not known to be the same. */
+  private unresolved(type: ts.Type): boolean {
+    return (
+      (type.objectFlags & ts.ObjectFlags.Mapped) !== 0 &&
+      this.checker.getPropertiesOfType(type).length === 0 &&
+      this.checker.getIndexInfosOfType(type).length === 0
+    );
   }
 
   private same(a: ts.Type, b: ts.Type): boolean {
@@ -156,6 +169,7 @@ export class TypeSameness {
     )
       return true;
     if (this.nominal(a) !== null || this.nominal(b) !== null) return false;
+    if (this.unresolved(a) || this.unresolved(b)) return false;
     const { checker } = this;
     const left = checker.getPropertiesOfType(a);
     if (left.length !== checker.getPropertiesOfType(b).length) return false;

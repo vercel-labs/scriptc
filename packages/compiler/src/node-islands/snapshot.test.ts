@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import type { IrModule } from "../ir/ir.js";
 import {

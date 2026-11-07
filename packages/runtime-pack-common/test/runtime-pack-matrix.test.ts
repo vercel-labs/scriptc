@@ -243,6 +243,17 @@ test("extended spawn options beside an error read keep both child builds", () =>
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
 });
 
+test("a worker program links the symbol and assert units its env option needs", () => {
+  // The Worker env option compares against worker_threads.SHARE_ENV, whose
+  // symbol lives in scr_symbol.c, so a worker program selects that unit even
+  // when it never uses a symbol itself; scr_symbol.c assembles symbol
+  // equality messages through scr_assert.c, which travels with it.
+  const symbol = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_symbol.c");
+  expect(symbol.predicate).toEqual({ any: ["symbol", "workers"] });
+  const assert = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_assert.c");
+  expect(assert.predicate).toEqual({ any: ["assert", "regex", "symbol", "workers"] });
+});
+
 test("Node islands select no build of the units that reach them through the installed table", () => {
   // util.inspect and instanceof of an island value, an island error's
   // constructor and its uncaught report call through ScrNiDynOps, which

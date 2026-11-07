@@ -294,6 +294,11 @@ export function crossingOf(
   }
   if ((type.flags & COPIED) !== 0) return "copy";
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return "dyn";
+  // Checker flow can narrow a live value to never (a failed type
+  // predicate whose type is `unknown` subtracts every member). The value
+  // still exists at run time, so it crosses as a handle-agnostic dyn
+  // value rather than a refusal; nothing can observe an uninhabited type.
+  if ((type.flags & ts.TypeFlags.Never) !== 0) return "dyn";
   if (isForeignType(islands, type, checker)) return "handle";
   return "refused";
 }

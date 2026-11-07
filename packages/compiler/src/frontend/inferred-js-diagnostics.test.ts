@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { checkPreflight, loadProgram } from "./program-node.js";
+import * as ts from "./ts7/ast.js";
 
 function diagnostics(library: string, main: string, extension = "js") {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-inferred-js-"));
@@ -176,6 +177,152 @@ export const bag = {
     "Property 'only' implicitly has type 'any', because its set accessor lacks a parameter type annotation.",
   );
 });
+
+test.for([
+  ["unchecked", ""],
+  ["checked", "// @ts-check\n"],
+] as const)(
+  "%s JavaScript setter JSDoc does not make its executable parameter optional",
+  ([, directive]) => {
+    const library = `${directive}export class Sink {
+  /** @param {string | null} [next] */
+  set value(next) { console.log(next); }
+}
+export const sink = {
+  /** @param {string | null} [next] */
+  set value(next) { console.log(next); },
+};
+`;
+    expect(
+      diagnostics(
+        library,
+        'import { Sink, sink } from "./library.js"; new Sink().value = "class"; sink.value = null;',
+      ),
+    ).toEqual([]);
+  },
+);
+
+test("an optional setter JSDoc type still constrains TypeScript callers", () => {
+  expect(
+    diagnostics(
+      `export class Sink {
+  /** @param {string} [next] */
+  set value(next) { console.log(next); }
+}`,
+      'import { Sink } from "./library.js"; new Sink().value = 42;',
+    ).some((diagnostic) => diagnostic.message.includes("not assignable")),
+  ).toBe(true);
+});
+
+test("setter JSDoc spans belong to each JSX source snapshot", () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-setter-jsx-snapshot-"));
+  const file = join(directory, "app.jsx");
+  writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+  writeFileSync(
+    join(directory, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { allowJs: true, strict: true, jsx: "react", jsxFactory: "h" },
+    }),
+  );
+  writeFileSync(
+    join(directory, "jsx-types.d.ts"),
+    "declare namespace JSX { interface IntrinsicElements { div: unknown } }",
+  );
+  writeFileSync(
+    file,
+    `/// <reference path="./jsx-types.d.ts" />
+/** @jsx h */
+function h(tag, props, ...children) { return { tag, props, children }; }
+export const view = <div><div /><div /><div /><div /><div /><div /><div /><div /></div>;
+export class Sink {
+  /** @param {string} [next] */
+  set value(next) { console.log(next); }
+}`,
+  );
+  const load = loadProgram(file);
+  try {
+    const original = load.tscWorld!.program.getSourceFile(file)!;
+    const rewritten = load.program.getSourceFile(file)!;
+    const comment = "/** @param {string} [next] */";
+    expect(original).not.toBe(rewritten);
+    expect(rewritten.text.indexOf(comment) - original.text.indexOf(comment)).toBeGreaterThan(
+      comment.length,
+    );
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("setter JSDoc suppression keeps whole-file traversal work linear", () => {
+  const measure = (setterCount: number) => {
+    const directory = mkdtempSync(join(tmpdir(), "scriptc-setter-jsdoc-work-"));
+    const libraryPath = join(directory, "library.js");
+    const setters = Array.from(
+      { length: setterCount },
+      (_, index) =>
+        `/** @param {string | null} [next] */\nset value${index}(next) { console.log(next); }`,
+    );
+    writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+    writeFileSync(
+      libraryPath,
+      `export class Sink {\n${setters.join("\n")}\n}\nexport const sink = {\n${setters.join(",\n")}\n};\n`,
+    );
+    writeFileSync(
+      join(directory, "main.ts"),
+      'import { Sink, sink } from "./library.js"; new Sink().value0 = "class"; sink.value0 = null;',
+    );
+    const load = loadProgram(join(directory, "main.ts"));
+    const source = load.program.getSourceFile(libraryPath)!;
+    const walkPreorder = ts.walkPreorder;
+    let visited = 0;
+    const walk = vi.spyOn(ts, "walkPreorder").mockImplementation((root, visit, kinds) => {
+      if (root !== source) return walkPreorder(root, visit, kinds);
+      return walkPreorder(
+        root,
+        (node, depth) => {
+          visited++;
+          return visit(node, depth);
+        },
+        kinds,
+      );
+    });
+    try {
+      expect(checkPreflight(load)).toEqual([]);
+      return visited;
+    } finally {
+      walk.mockRestore();
+      load.dispose();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+
+  const small = measure(32);
+  const large = measure(64);
+  expect(small).toBeGreaterThan(0);
+  // Doubling the source may double a bounded number of scans. Rescanning
+  // it for every TS1051 diagnostic instead makes this work quadratic.
+  expect(large).toBeLessThanOrEqual(small * 3);
+});
+
+test.for([
+  ["js", 'set value(next = "") {}', "initializer"],
+  ["js", "set value(...next) {}", "rest parameter"],
+  ["js", "set value(next?) {}", "optional parameter"],
+  ["ts", "set value(next?: string) {}", "optional parameter"],
+] as const)(
+  "executable setter parameter restrictions remain in %s: %s",
+  ([extension, setter, message]) => {
+    expect(
+      diagnostics(
+        `const marker = "/*"; export class Sink { /** @param {string} [next] */ ${setter} }`,
+        'import { Sink } from "./library.js"; new Sink();',
+        extension,
+      ).some((diagnostic) => diagnostic.message.includes(message)),
+    ).toBe(true);
+  },
+);
 
 test.for([
   [

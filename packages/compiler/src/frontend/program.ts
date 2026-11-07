@@ -7289,16 +7289,61 @@ function preflightGate7(load: LoadResult): PreflightGate {
     const close = text.indexOf("*/", open + 2);
     return close === -1 || close >= pos;
   };
+  // JSX preflight checks original and rewritten trees with the same path.
+  const setterJsdocRanges = new Map<ts.SourceFile, { pos: number; end: number }[]>();
+  const setterJsdocRangesOf = (sf: ts.SourceFile): readonly { pos: number; end: number }[] => {
+    const cached = setterJsdocRanges.get(sf);
+    if (cached !== undefined) return cached;
+    const ranges: { pos: number; end: number }[] = [];
+    ts.walkPreorder(sf, (node) => {
+      if (!ts.isSetAccessor(node) || node.parameters.nodes.length !== 1) return undefined;
+      const parameter = node.parameters.nodes[0]!;
+      // TS7 also synthesizes a question token spanning an optional
+      // JSDoc tag. Only a token inside the parameter is actual syntax.
+      const optional = parameter.questionToken;
+      if (
+        (optional && parameter.pos <= optional.pos && optional.end <= parameter.end) ||
+        parameter.initializer ||
+        parameter.dotDotDotToken
+      )
+        return undefined;
+      // Optional JSDoc describes an undefined value; the executable
+      // setter still has exactly one required parameter.
+      for (const doc of node.jsDoc ?? []) ranges.push({ pos: doc.pos, end: doc.end });
+      return undefined;
+    });
+    ranges.sort((a, b) => a.pos - b.pos);
+    setterJsdocRanges.set(sf, ranges);
+    return ranges;
+  };
   const jsdocTypeSuppressed = (
     p: ts.Program,
     d: ts.Diagnostic,
     commentDup: Set<string>,
   ): boolean => {
     if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003) return false;
+    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003 && d.code !== 1051)
+      return false;
     if (d.pos === undefined) return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;
+    if (d.code === 1051) {
+      const pos = d.pos;
+      const end = d.end;
+      if (end === undefined) return false;
+      const ranges = setterJsdocRangesOf(sf);
+      // JSDoc blocks are disjoint. Find the last block starting at or
+      // before the diagnostic, then check its complete span.
+      let low = 0;
+      let high = ranges.length;
+      while (low < high) {
+        const middle = low + ((high - low) >>> 1);
+        if (ranges[middle]!.pos <= pos) low = middle + 1;
+        else high = middle;
+      }
+      const range = ranges[low - 1];
+      return range !== undefined && end <= range.end;
+    }
     if (insideBlockComment(sf.text, d.pos)) return true;
     return (
       d.code === 2300 && commentDup.has(`${d.fileName}:${ts.sourceTextRange(sf, d.pos, d.end)}`)

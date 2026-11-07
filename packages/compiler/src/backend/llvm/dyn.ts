@@ -1537,7 +1537,10 @@ export class LlDyn {
           break;
         }
         // An index-signature shape walks every own key, so it reads the
-        // whole object first; the other records read each field.
+        // whole object first; the other records read each field. The
+        // snapshot is the index's own-key view only: a declared field is an
+        // ordinary property read, which also answers a member the object
+        // inherits or defines as non-enumerable.
         let src = "%d";
         let srcOwned: string | null = null;
         if (shape.indexValue) {
@@ -1568,7 +1571,7 @@ export class LlDyn {
         // order index is no key.
         for (const f of shape.fields) {
           if (f.type.kind === "dyn" || f.name === KEY_ORDER_FIELD) continue;
-          const { value: m, release } = this.memberRead(B, f.name, f.type, src);
+          const { value: m, release } = this.memberRead(B, f.name, f.type);
           const lNext = B.newLabel("dm.n");
           this.pendingBail(
             B,
@@ -2856,7 +2859,10 @@ export class LlDyn {
           break;
         }
         // An index-signature record captures every own key, so it reads the
-        // whole object up front; the other records read each field.
+        // whole object up front; the other records read each field. The
+        // snapshot is the index's own-key view only: a declared field is an
+        // ordinary property read, which also answers a member the object
+        // inherits or defines as non-enumerable.
         let src = "%d";
         let srcOwned: string | null = null;
         if (shape.indexValue) {
@@ -2909,7 +2915,7 @@ export class LlDyn {
         // when it differs from the table.
         for (const f of shape.fields) {
           if (f.name === KEY_ORDER_FIELD) continue;
-          const { value: m, release } = this.memberRead(B, f.name, f.type, src);
+          const { value: m, release } = this.memberRead(B, f.name, f.type);
           this.pendingBail(
             B,
             "dcr.read",

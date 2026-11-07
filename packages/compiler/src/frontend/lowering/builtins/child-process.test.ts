@@ -87,3 +87,55 @@ execSync("");
 `),
   ).toEqual([0, 0, 0, 1]);
 });
+
+/** A one-file program's cp.checkArgs calls (`args:<form>`), the
+ * cp.checkShellArgs calls of a launch that joins its list (`list:<form>`)
+ * and cp.shellLine calls (`line`), in the order the IR holds them. */
+async function checksAndLines(source: string): Promise<string[]> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-child-line-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(entry, source);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const found: string[] = [];
+    const visit = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        for (const item of node) visit(item);
+        return;
+      }
+      if (node === null || typeof node !== "object") return;
+      const record = node as { kind?: unknown; fn?: unknown; args?: { value?: unknown }[] };
+      if (record.kind === "libCall" && record.fn === "cp.checkArgs")
+        found.push(`args:${Number(record.args?.[0]?.value)}`);
+      if (record.kind === "libCall" && record.fn === "cp.checkShellArgs")
+        found.push(`list:${Number(record.args?.[0]?.value)}`);
+      if (record.kind === "libCall" && record.fn === "cp.shellLine") found.push("line");
+      for (const value of Object.values(node)) visit(value);
+    };
+    visit(deserializeModule(await readFile(outPath, "utf8")).functions);
+    return found;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a shell launch joins its arguments after they are checked and before the environment is", async () => {
+  const name = `const name: string = process.argv[2] ?? "echo";\n`;
+  // The file and the arguments Node checks are the ones the call names,
+  // not the line built from them.
+  expect(
+    await checksAndLines(`${imports}${name}spawnSync(name, ["a"], { shell: true });
+spawnSync("echo", [name], { shell: true, cwd: name });
+`),
+  ).toEqual(["list:0", "line", "list:0", "line"]);
+  // An environment that can be refused is checked after the line: form 3
+  // checks no file and no argument.
+  expect(
+    await checksAndLines(
+      `${imports}${name}spawnSync("echo", [name], { shell: true, env: { A: name } });\n`,
+    ),
+  ).toEqual(["list:0", "line", "args:3"]);
+});

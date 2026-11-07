@@ -221,6 +221,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_child_lifecycle.c", "childLifecycle"],
   // The spawnSync capture Buffers; a unit of its own for the same reason.
   ["scr_child_capture.c", "spawnCaptureBytes"],
+  // The joined command line (and DEP0190) of a shell-enabled call with
+  // separate arguments; a unit of its own for the same reason.
+  ["scr_child_shell.c", "childShellLine"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.

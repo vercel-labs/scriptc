@@ -2084,7 +2084,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       }
     }
     {
-      const unionCall = lowerUnionReceiverMethodCall(lowerer, expr, expr.expression);
+      const unionCall =
+        lowerUnionReceiverMethodCall(lowerer, expr, expr.expression) ??
+        lowerUnionOptionalCallableCall(lowerer, expr, expr.expression);
       if (unionCall) return unionCall;
     }
     lowerer.unsupported("SC1090", expr, `method calls like '${ts.getTextOfNode(expr.expression)}'`);
@@ -4279,6 +4281,59 @@ function lowerUnionReceiverMethodCall(
     type: DYN,
     loc,
   };
+}
+
+/** `o.cb(x)` where `o` is a UNION of records that all declare `cb` as the
+ * same OPTIONAL callable, and the checker narrowed the member to the
+ * function at this call (`if (o?.cb) await o.cb(x)` inside a generic
+ * instance whose options parameter is bound to a union of option records).
+ * lowerRecordFieldCall's union arm answers a member every arm holds as a
+ * function; here every arm holds `F | undefined`, so the shared-field read
+ * dispatches on the runtime tag as it does for any same-typed field and
+ * the checker's narrowing extracts the function, exactly as the
+ * single-record receiver's optional callback does. The last attempt before
+ * the method-call fence: no call another lowering answers reaches it.
+ * Null when the arms disagree on the member, or the checker left it
+ * possibly undefined (the fence names the call). */
+function lowerUnionOptionalCallableCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || call.questionDotToken) return null;
+  const receiverType = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (receiverType?.kind !== "union") return null;
+  const arms = lowerer.unions.get(receiverType.unionId)?.arms;
+  if (!arms || arms.length === 0) return null;
+  let member: IrType | undefined;
+  for (const arm of arms) {
+    if (arm.kind !== "record") return null;
+    const field = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === access.name.text);
+    if (!field) return null;
+    if (member === undefined) member = field.type;
+    else if (!typeEquals(member, field.type)) return null;
+  }
+  if (member?.kind !== "union") return null;
+  const memberArms = lowerer.unions.get(member.unionId)?.arms;
+  const fn = memberArms?.find((arm) => arm.kind === "func");
+  if (
+    !memberArms ||
+    !fn ||
+    memberArms.length !== 2 ||
+    !memberArms.some((arm) => arm.kind === "undefinedT")
+  )
+    return null;
+  // The narrowing is the checker's: the member's type at this call is the
+  // function alone.
+  const narrowed = lowerer.mapTypeOf(lowerer.typeOf(access));
+  if (!narrowed || !typeEquals(narrowed, fn)) return null;
+  const read = lowerer.lowerUnionProperty(access);
+  if (!read) return null;
+  const callee = read.type.kind === "union" ? lowerer.maybeNarrow(read, access) : read;
+  if (callee.type.kind !== "func") return null;
+  const loc = locOf(call);
+  const args = completeFuncValueArgs(lowerer, call, callee.type, loc);
+  return { kind: "callValue", callee, args, type: callee.type.ret, loc };
 }
 
 /** Primitive arms a union receiver may carry next to its object/record

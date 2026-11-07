@@ -8,7 +8,7 @@ const original = process.stdout.write;
 callSync("./writer.cjs", "install");
 process.on("exit", (code) => {
   process.stdout.write("native exit write\n");
-  console.log("native exit log", code);
+  process.stdout.write(`native exit code ${code}\n`);
 });
 setTimeout(() => console.log("last timer"), 5);
 console.log("main done", process.stdout.write !== original);

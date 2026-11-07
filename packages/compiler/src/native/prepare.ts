@@ -15,6 +15,7 @@ import {
 } from "../backend/llvm/emitter.js";
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { executableLinkFeatures } from "../backend/executable-features.js";
+import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
 import {
   loweringOptions,
@@ -263,52 +264,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
   if (features["workers"] !== undefined && typeof features["workers"] !== "boolean") return false;
   if (features["youngNursery"] !== undefined && typeof features["youngNursery"] !== "boolean")
     return false;
-  return [
-    "regex",
-    "copying",
-    "textDecoderLegacy",
-    "bigintBytes",
-    "fileHandle",
-    "fetch",
-    "zlib",
-    "assert",
-    "inspect",
-    "dynInvoke",
-    "dc",
-    "dynAsync",
-    "events",
-    "emitter",
-    "symbol",
-    "bigint",
-    "searchParams",
-    "qs",
-    "utilPromisify",
-    "dynBuiltinClass",
-    "dynBuiltinStream",
-    "parseArgs",
-    "stream",
-    "net",
-    "http",
-    "http2",
-    "dgram",
-    "dnsPromises",
-    "dgramDyn",
-    "textCodecDyn",
-    "watch",
-    "watchFile",
-    "foreignFfi",
-    "nodeTest",
-    "tls",
-    "tlsCa",
-    "cipher",
-    "ecdh",
-    "dh",
-    "pki",
-    "ed25519",
-    "x509",
-    "webcrypto",
-    "perfLoop",
-  ].every((name) => typeof features[name] === "boolean");
+  return REQUIRED_LINK_FEATURES.every((name) => typeof features[name] === "boolean");
 }
 
 function validCachedInput(value: unknown): value is FrontendCacheEntry {

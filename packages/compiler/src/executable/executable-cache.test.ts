@@ -372,6 +372,37 @@ test("early executable cache rejects corruption and refreshes payload LRU times"
   expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
 });
 
+test("an entry whose feature record misspells a key every record carries is a miss", async () => {
+  // The record spells each required link feature and mutableBuffers as a
+  // boolean. A stamp without one of them, or with another type there, was
+  // not written by this compiler, whatever its digest says.
+  const without = (key: string): unknown =>
+    Object.fromEntries(Object.entries(native).filter(([name]) => name !== key));
+  const records: [unknown, boolean][] = [
+    [native, true],
+    [without("fetch"), false],
+    [without("perfLoop"), false],
+    [without("mutableBuffers"), false],
+    [{ ...native, webcrypto: "yes" }, false],
+  ];
+  for (const [record, hit] of records) {
+    const f = await fixture();
+    const tracker = new FrontendInputTracker();
+    tracker.run(() => trackedReadFile(f.source));
+    await publishEarlyExecutableCache(f.root, f.options, {
+      llvmPath: f.llvmPath,
+      irPath: f.irPath,
+      native: record as EarlyExecutableNativeFeatures,
+      executableRestored: false,
+      frontend: tracker.snapshot(),
+    });
+    expect(
+      (await readEarlyExecutableCache(f.root, f.options)) !== null,
+      JSON.stringify(record),
+    ).toBe(hit);
+  }
+});
+
 test("early executable cache restores a validated final binary", async () => {
   const f = await fixture();
   const dependency = join(f.options.outDir, "native-tool");

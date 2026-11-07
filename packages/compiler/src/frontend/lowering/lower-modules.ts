@@ -159,6 +159,7 @@ import {
   trapDeclRootOf,
 } from "./lower-namespaces.js";
 import { collectExpandoMembers } from "./lower-expando.js";
+import { isFunduleMemberStatement, lowerFunduleFnStore } from "./lower-fundule.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -383,8 +384,17 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
       // instantiated bodies FLATTEN into this file's parts (functions/
       // classes hoist under namespace-qualified names, statements join
       // the init body in source order) — lower-namespaces.ts.
-      else if (ts.isModuleDeclaration(stmt)) collectNamespaceStmt(lowerer, stmt, fp);
-      else if (
+      else if (ts.isModuleDeclaration(stmt)) {
+        try {
+          collectNamespaceStmt(lowerer, stmt, fp);
+        } catch (error) {
+          // A collection-time refusal (a merged namespace exporting a member
+          // this lowering cannot store on the function object) already
+          // pushed its diagnostic; the block contributes nothing and the
+          // compilation stops on that diagnostic.
+          if (!(error instanceof PoisonError)) throw error;
+        }
+      } else if (
         ts.isInterfaceDeclaration(stmt) ||
         ts.isTypeAliasDeclaration(stmt) ||
         ts.isImportDeclaration(stmt) ||
@@ -2001,6 +2011,10 @@ export function collectGlobals(
       continue;
     const list = stmt.declarationList;
     if ((list.flags & ts.NodeFlags.Using) !== 0) continue; // fenced at the statement lowering
+    // An EXPORTED member of a function+namespace merge has no module global:
+    // its storage is the merged function's own-property table, written at
+    // the statement's position (lower-fundule.ts).
+    if (isFunduleMemberStatement(lowerer, stmt)) continue;
     const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     // `var` registers a mutable module global exactly like `let` — the
     // hoisting difference (binding exists from module entry, undefined
@@ -3615,8 +3629,16 @@ export function lowerFileInit(
       if (ms && ms.sf === sf) statics.push({ pos: ms.pos, info: c });
     }
     statics.sort((a, b) => a.pos - b.pos);
+    // Function+namespace merges: the merged block's exported FUNCTIONS
+    // join the function object at their declaration's source position
+    // (`fmt.helper = helper` in Node's emit), which fixes the members'
+    // own-key order among a block's statements (lower-fundule.ts).
+    const funduleFns = [...(lowerer.funduleFnStores.get(sf) ?? [])].sort(
+      (a, b) => ts.tokenStartOfNode(a) - ts.tokenStartOfNode(b),
+    );
     const body = [...header, ...islandUnplaced, ...prelude];
     let at = 0;
+    let funduleAt = 0;
     for (const stmt of stmts) {
       // `<=`: a mixin instantiation's position IS its statement's start
       // — its statics run mid-statement in JS (the call), before
@@ -3626,6 +3648,15 @@ export function lowerFileInit(
       while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
         body.push(...lowerStaticsAt(statics[at]!));
         at++;
+      }
+      // A hoisted function member's property assignment runs where its
+      // declaration stands, before the next statement's own code.
+      while (
+        funduleAt < funduleFns.length &&
+        ts.tokenStartOfNode(funduleFns[funduleAt]!) <= ts.tokenStartOfNode(stmt)
+      ) {
+        body.push(...lowerFunduleFnStore(lowerer, funduleFns[funduleAt]!));
+        funduleAt++;
       }
       // A cycle binding's declaration stays at its position: its
       // initialization flag must be set where the declaration runs.
@@ -3646,6 +3677,10 @@ export function lowerFileInit(
     while (at < statics.length) {
       body.push(...lowerStaticsAt(statics[at]!));
       at++;
+    }
+    while (funduleAt < funduleFns.length) {
+      body.push(...lowerFunduleFnStore(lowerer, funduleFns[funduleAt]!));
+      funduleAt++;
     }
     for (const { at, g } of unionEntryInits) {
       if (g.type.kind !== "dyn") continue;

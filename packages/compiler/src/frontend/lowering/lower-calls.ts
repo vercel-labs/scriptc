@@ -297,6 +297,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "./lower-namespaces.js";
+import { funduleMemberOf } from "./lower-fundule.js";
 import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
 import { fenceExpandoRead } from "./lower-expando.js";
 import {
@@ -1634,9 +1635,16 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
       if (memberSym) fenceEarlyNsMemberRef(lowerer, expr.expression, memberSym);
       refuseModuleMemberThis(lowerer, expr, nsMember);
-      const generic = lowerer.genericFnOf(nsMember);
+      // A member of a function+namespace merge is an own property of the
+      // function object (lower-fundule.ts), and the qualified call reads
+      // that property as Node does: after `Object.assign(fmt, { helper })`
+      // or a write through an untyped alias, `fmt.helper()` runs the
+      // function the property holds now. The direct paths below name the
+      // declaration, so a merge member takes the call through its value.
+      const merged = funduleMemberOf(lowerer, lowerer.resolveValueSymbol(nsMember)) !== null;
+      const generic = merged ? null : lowerer.genericFnOf(nsMember);
       if (generic) return lowerer.lowerGenericCall(expr, generic);
-      const sig = lowerer.fnSigOf(nsMember);
+      const sig = merged ? null : lowerer.fnSigOf(nsMember);
       if (sig) {
         lowerer.noteEdge(sig.name);
         const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
@@ -1648,8 +1656,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           loc,
         });
       }
-      let callee = lowerer.lowerExpr(nsMember);
-      if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
+      const callee = lowerer.lowerExpr(nsMember);
       const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
       if (checked) return checked;
       if (callee.type.kind !== "func")
@@ -1714,8 +1721,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         loc,
       });
     }
-    let callee = lowerer.lowerExpr(nameId);
-    if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
+    const callee = lowerer.lowerExpr(nameId);
     const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
     if (checked) return checked;
     if (callee.type.kind !== "func")
@@ -2251,8 +2257,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const direct = callableInstanceStringCall(lowerer, expr, callee, loc);
     if (direct) return direct;
   }
-  if (callee.type.kind === "record" || callee.type.kind === "object")
-    callee = lowerer.hybridCallUnwrap(callee);
+  if (callee.type.kind === "object") callee = lowerer.hybridCallUnwrap(callee);
   return lowerCallThroughValue(lowerer, expr, callee, loc);
 }
 
@@ -11021,8 +11026,7 @@ export function lowerRecordFieldCall(
     const closure = lowerer.hybridCallUnwrap(callee);
     if (closure !== callee) return lowerCallThroughValue(lowerer, call, closure, loc);
   }
-  if (callee.type.kind === "record" || callee.type.kind === "object")
-    callee = lowerer.hybridCallUnwrap(callee);
+  if (callee.type.kind === "object") callee = lowerer.hybridCallUnwrap(callee);
   // Inferred JavaScript option records can retain checked callables in
   // fields even when the checker only describes those members as any.
   // TypeScript reaches here for callable library types that are checked

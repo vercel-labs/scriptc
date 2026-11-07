@@ -74,6 +74,7 @@ import {
   lowerNsIdentifierValue,
   nsUndefRead,
 } from "../lower-namespaces.js";
+import { lowerFunduleMemberRead } from "../lower-fundule.js";
 import {
   blockedBindingUseDiag,
   unsupportedDiag,
@@ -424,6 +425,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
     }
     return narrowed;
+  }
+  // An EXPORTED member of a function+namespace merge reads as the merged
+  // function object's own property (Node's transform qualifies the bare
+  // reference to `fn.member`), not as a module binding — lower-fundule.ts.
+  {
+    const fundule = lowerFunduleMemberRead(lowerer, expr, loc);
+    if (fundule !== null) return fundule;
   }
   // `import x = N.y` aliases resolve transparently through globalOf/
   // fnSigOf below; their source-order guards live here (a no-op for

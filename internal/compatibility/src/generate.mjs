@@ -793,6 +793,24 @@ function publicDetail(tier) {
     }
     if (tier.status === "not-applicable")
       return "Node configuration or documentation that does not map to a compiled program API.";
+    // The compat-*.mjs programs exercise a member from a JavaScript source. A TypeScript source
+    // reaches only the members the declarations in use list, so the claim says which source proved it.
+    if (
+      (tier.status === "supported" || tier.status === "partial") &&
+      (tier.tests?.length ?? 0) > 0 &&
+      tier.tests.every((path) => /^tests\/corpus\/compat-[a-z0-9-]+\.mjs$/.test(path))
+    )
+      return "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.";
+    // A row that names a compat-*.mjs program and its compat-*.ts twin was exercised from both
+    // source languages; the claim is the call shapes the two programs use.
+    if (
+      (tier.status === "supported" || tier.status === "partial") &&
+      (tier.tests?.length ?? 0) > 1 &&
+      tier.tests.every((path) => /^tests\/corpus\/compat-[a-z0-9-]+\.(?:mjs|ts)$/.test(path)) &&
+      tier.tests.some((path) => path.endsWith(".mjs")) &&
+      tier.tests.some((path) => path.endsWith(".ts"))
+    )
+      return "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.";
     if (tier.status === "not-implemented" && (tier.tests?.length ?? 0) > 0)
       return "Not implemented: a test pins the refusal a program using this API gets.";
     if (tier.status === "not-implemented")

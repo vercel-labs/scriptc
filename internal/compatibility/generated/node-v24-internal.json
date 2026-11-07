@@ -1401,6 +1401,8 @@
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -1487,8 +1489,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_context"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:async_context.async/await"
       },
       "anchorSource": "exact"
     },
@@ -1756,8 +1758,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_context"
+        "status": "partial",
+        "evidence": "compiler-feature:async_context.name",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -1851,8 +1857,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_context"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:async_context.AsyncResource"
       },
       "anchorSource": "exact"
     },
@@ -1874,8 +1880,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_context"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:async_context.AsyncResource"
       },
       "anchorSource": "exact"
     },
@@ -2689,8 +2695,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:async_hooks.AsyncHook"
       },
       "anchorSource": "exact"
     },
@@ -2729,6 +2735,7 @@
           "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
           "tests/corpus/buffer-to-json.ts",
           "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-core-members.mjs",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/fixtures/node-types/blob-file.ts",
@@ -2801,8 +2808,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:buffer.Uint8Array"
       },
       "anchorSource": "exact"
     },
@@ -3266,8 +3273,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:buffer.Buffer.allocUnsafe"
       },
       "anchorSource": "exact"
     },
@@ -5350,8 +5357,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "compiler-feature:buffer.buf.parent",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -11509,8 +11519,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:child_process..bat"
       },
       "anchorSource": "exact"
     },
@@ -19753,6 +19763,8 @@
           "tests/corpus/7156-cipher-key-wrap.cjs",
           "tests/corpus/7157-crypto-cipher-info-typed.ts",
           "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20015,8 +20027,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:crypto.node:crypto"
       },
       "anchorSource": "exact"
     },
@@ -23802,8 +23814,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.symmetricKeySize",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -23825,8 +23841,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.type",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24395,8 +24415,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.ca",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24418,8 +24442,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.fingerprint",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24441,8 +24469,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.fingerprint256",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24464,8 +24496,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.fingerprint512",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24510,8 +24546,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.issuer",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24609,8 +24649,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.raw",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24632,8 +24676,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.serialNumber",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24655,8 +24703,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.subject",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24678,8 +24730,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.subjectAltName",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24701,8 +24757,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.validFrom",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24724,8 +24784,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.validFromDate",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24747,8 +24811,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.validTo",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24770,8 +24838,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.validToDate",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24793,8 +24865,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.signatureAlgorithm",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24816,8 +24892,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.signatureAlgorithmOid",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -32553,7 +32633,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "by-design",
         "evidence": "derived:descendants"
       },
       "anchorSource": "chapter"
@@ -32599,8 +32679,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32622,8 +32702,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32645,8 +32725,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32668,8 +32748,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32691,8 +32771,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32714,8 +32794,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32737,8 +32817,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32760,8 +32840,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32783,8 +32863,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "ancestor"
     },
@@ -32806,8 +32886,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -32852,8 +32932,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:domain"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:domain"
       },
       "anchorSource": "exact"
     },
@@ -33188,17 +33268,63 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/2564-stream-promises-finished.ts",
+          "tests/corpus/2570-buffer-arg-validation.cjs",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/2678-util-parseargs.ts",
+          "tests/corpus/2858-import-meta-resolve/main.mjs",
+          "tests/corpus/2953-http-header-validation.ts",
+          "tests/corpus/2957-http-static-response-controls.ts",
+          "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/4994-lone-surrogate-uri.ts",
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/5254-cipher-errors.js",
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5341-readable-from-dynamic.cjs",
+          "tests/corpus/5444-crypto-timing-safe-equal.js",
+          "tests/corpus/5450-fs-glob-validation.js",
+          "tests/corpus/5562-https-verify-errors.ts",
+          "tests/corpus/5568-fs-cp-errors.js",
+          "tests/corpus/5634-error-extra-props-inspect.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/5658-net-reset-dynamic.cjs",
+          "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/corpus/5761-crypto-hash-stream-states.ts",
+          "tests/corpus/5787-readline-cursor-helpers.cjs",
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/6563-constructor-function-stream-errors.cjs",
           "tests/corpus/6702-ecdh-errors.js",
+          "tests/corpus/6704-ecdh-set-public-key.cjs",
           "tests/corpus/6708-dh-errors.js",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6931-fs-url-paths.ts",
+          "tests/corpus/7097-tls-client-certificates.ts",
+          "tests/corpus/7155-cipher-aes-ccm.cjs",
+          "tests/corpus/7246-stream-construct.ts",
           "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7510-pipeline-untyped-later-iterables.mjs",
           "tests/corpus/7707-util-mime-type.cjs",
           "tests/corpus/7711-util-throttle.cjs",
           "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/8166-rsa-pss-keys.cjs",
+          "tests/corpus/8167-encrypted-private-keys.cjs",
+          "tests/corpus/8179-tls-reject-unauthorized-values.mjs",
+          "tests/corpus/8210-require-computed-missing/main.ts",
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
+          "tests/corpus/fs-dir-dispose.ts",
+          "tests/corpus/http-response-header-errors.ts",
+          "tests/corpus/node24-crypto-kdf-errors.ts",
+          "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/zstd-compress.cjs",
           "tests/fixtures/node-types/terminal-error-fields.ts",
           "tests/harness/project-config.test.ts"
@@ -33303,8 +33429,12 @@
       "anchor": "class-error",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.code",
+        "tests": [
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -33364,8 +33494,12 @@
       "anchor": "class-assertionerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.AssertionError",
+        "tests": [
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33466,8 +33600,12 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.SystemError",
+        "tests": [
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33502,8 +33640,11 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.address",
+        "tests": [
+          "tests/corpus/compat-error-properties.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -33589,8 +33730,11 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.info",
+        "tests": [
+          "tests/corpus/compat-error-properties.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -33607,8 +33751,12 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.message",
+        "tests": [
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -33648,8 +33796,11 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.port",
+        "tests": [
+          "tests/corpus/compat-error-properties.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -33926,8 +34077,11 @@
       "anchor": "err_assertion",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_ASSERTION",
+        "tests": [
+          "tests/corpus/5634-error-extra-props-inspect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34076,8 +34230,11 @@
       "anchor": "err_buffer_too_large",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_BUFFER_TOO_LARGE",
+        "tests": [
+          "tests/corpus/7715-zlib-brotli-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34442,8 +34599,11 @@
       "anchor": "err_crypto_hash_finalized",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_HASH_FINALIZED",
+        "tests": [
+          "tests/corpus/5761-crypto-hash-stream-states.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34460,8 +34620,11 @@
       "anchor": "err_crypto_hash_update_failed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_HASH_UPDATE_FAILED",
+        "tests": [
+          "tests/corpus/5761-crypto-hash-stream-states.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34478,8 +34641,11 @@
       "anchor": "err_crypto_incompatible_key",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INCOMPATIBLE_KEY",
+        "tests": [
+          "tests/corpus/7451-crypto-diffie-hellman.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34496,8 +34662,11 @@
       "anchor": "err_crypto_incompatible_key_options",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "tests": [
+          "tests/corpus/8166-rsa-pss-keys.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34532,8 +34701,11 @@
       "anchor": "err_crypto_invalid_auth_tag",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_AUTH_TAG",
+        "tests": [
+          "tests/corpus/5254-cipher-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34568,8 +34740,11 @@
       "anchor": "err_crypto_invalid_curve",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_CURVE",
+        "tests": [
+          "tests/corpus/6702-ecdh-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34586,8 +34761,11 @@
       "anchor": "err_crypto_invalid_digest",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_DIGEST",
+        "tests": [
+          "tests/corpus/8166-rsa-pss-keys.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34604,8 +34782,11 @@
       "anchor": "err_crypto_invalid_iv",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_IV",
+        "tests": [
+          "tests/corpus/5254-cipher-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34661,8 +34842,11 @@
       "anchor": "err_crypto_invalid_keypair",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_KEYPAIR",
+        "tests": [
+          "tests/corpus/6704-ecdh-set-public-key.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34679,8 +34863,11 @@
       "anchor": "err_crypto_invalid_keytype",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_KEYTYPE",
+        "tests": [
+          "tests/corpus/6702-ecdh-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34697,8 +34884,11 @@
       "anchor": "err_crypto_invalid_key_object_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
+        "tests": [
+          "tests/corpus/7451-crypto-diffie-hellman.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34733,8 +34923,11 @@
       "anchor": "err_crypto_invalid_messagelen",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_MESSAGELEN",
+        "tests": [
+          "tests/corpus/7155-cipher-aes-ccm.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34751,8 +34944,11 @@
       "anchor": "err_crypto_invalid_scrypt_params",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_SCRYPT_PARAMS",
+        "tests": [
+          "tests/corpus/node24-crypto-kdf-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34844,8 +35040,11 @@
       "anchor": "err_crypto_jwk_unsupported_key_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE",
+        "tests": [
+          "tests/corpus/8166-rsa-pss-keys.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34934,8 +35133,11 @@
       "anchor": "err_crypto_operation_failed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_OPERATION_FAILED",
+        "tests": [
+          "tests/corpus/6702-ecdh-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35006,8 +35208,11 @@
       "anchor": "err_crypto_timing_safe_equal_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH",
+        "tests": [
+          "tests/corpus/5444-crypto-timing-safe-equal.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35024,8 +35229,11 @@
       "anchor": "err_crypto_unknown_cipher",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_UNKNOWN_CIPHER",
+        "tests": [
+          "tests/corpus/5254-cipher-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35063,8 +35271,11 @@
       "anchor": "err_crypto_unsupported_operation",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CRYPTO_UNSUPPORTED_OPERATION",
+        "tests": [
+          "tests/corpus/5254-cipher-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35117,8 +35328,11 @@
       "anchor": "err_dir_closed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_DIR_CLOSED",
+        "tests": [
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35135,8 +35349,11 @@
       "anchor": "err_dir_concurrent_operation",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_DIR_CONCURRENT_OPERATION",
+        "tests": [
+          "tests/corpus/fs-dir-dispose.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35261,8 +35478,11 @@
       "anchor": "err_encoding_invalid_encoded_data",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_ENCODING_INVALID_ENCODED_DATA",
+        "tests": [
+          "tests/corpus/3133-text-decoder-streaming.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35318,8 +35538,11 @@
       "anchor": "err_event_recursion",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_EVENT_RECURSION",
+        "tests": [
+          "tests/corpus/5130-event-target-dispatch.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35354,8 +35577,11 @@
       "anchor": "err_falsy_value_rejection",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FALSY_VALUE_REJECTION",
+        "tests": [
+          "tests/corpus/5634-error-extra-props-inspect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35390,8 +35616,11 @@
       "anchor": "err_fs_cp_dir_to_non_dir",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_DIR_TO_NON_DIR",
+        "tests": [
+          "tests/corpus/5568-fs-cp-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35408,8 +35637,11 @@
       "anchor": "err_fs_cp_eexist",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_EEXIST",
+        "tests": [
+          "tests/corpus/5568-fs-cp-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35426,8 +35658,11 @@
       "anchor": "err_fs_cp_einval",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_EINVAL",
+        "tests": [
+          "tests/corpus/5568-fs-cp-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35462,8 +35697,11 @@
       "anchor": "err_fs_cp_non_dir_to_dir",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_NON_DIR_TO_DIR",
+        "tests": [
+          "tests/corpus/5568-fs-cp-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35534,8 +35772,11 @@
       "anchor": "err_fs_eisdir",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_FS_EISDIR",
+        "tests": [
+          "tests/corpus/5568-fs-cp-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36470,8 +36711,11 @@
       "anchor": "err_http_content_length_mismatch",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_HTTP_CONTENT_LENGTH_MISMATCH",
+        "tests": [
+          "tests/corpus/2957-http-static-response-controls.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36488,8 +36732,11 @@
       "anchor": "err_http_headers_sent",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_HTTP_HEADERS_SENT",
+        "tests": [
+          "tests/corpus/http-response-header-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36506,8 +36753,11 @@
       "anchor": "err_http_invalid_header_value",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_HTTP_INVALID_HEADER_VALUE",
+        "tests": [
+          "tests/corpus/2953-http-header-validation.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36524,8 +36774,11 @@
       "anchor": "err_http_invalid_status_code",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_HTTP_INVALID_STATUS_CODE",
+        "tests": [
+          "tests/corpus/http-response-header-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36614,8 +36867,11 @@
       "anchor": "err_illegal_constructor",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_ILLEGAL_CONSTRUCTOR",
+        "tests": [
+          "tests/corpus/web-stream-readable-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36686,8 +36942,11 @@
       "anchor": "err_incompatible_option_pair",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INCOMPATIBLE_OPTION_PAIR",
+        "tests": [
+          "tests/corpus/5568-fs-cp-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36866,8 +37125,11 @@
       "anchor": "err_internal_assertion",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INTERNAL_ASSERTION",
+        "tests": [
+          "tests/corpus/5450-fs-glob-validation.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36884,8 +37146,11 @@
       "anchor": "err_invalid_address",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_ADDRESS",
+        "tests": [
+          "tests/corpus/5659-net-blocklist-socketaddress.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36980,8 +37245,11 @@
       "anchor": "err_invalid_buffer_size",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_BUFFER_SIZE",
+        "tests": [
+          "tests/corpus/2570-buffer-arg-validation.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36998,8 +37266,11 @@
       "anchor": "err_invalid_char",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_CHAR",
+        "tests": [
+          "tests/corpus/6441-http-request-options-record.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37016,8 +37287,11 @@
       "anchor": "err_invalid_cursor_pos",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_CURSOR_POS",
+        "tests": [
+          "tests/corpus/5787-readline-cursor-helpers.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37070,8 +37344,11 @@
       "anchor": "err_invalid_file_url_host",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_FILE_URL_HOST",
+        "tests": [
+          "tests/corpus/6931-fs-url-paths.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37088,8 +37365,11 @@
       "anchor": "err_invalid_file_url_path",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_FILE_URL_PATH",
+        "tests": [
+          "tests/corpus/6931-fs-url-paths.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37106,8 +37386,11 @@
       "anchor": "err_invalid_handle_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_HANDLE_TYPE",
+        "tests": [
+          "tests/corpus/5658-net-reset-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37124,8 +37407,11 @@
       "anchor": "err_invalid_http_token",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_HTTP_TOKEN",
+        "tests": [
+          "tests/corpus/6441-http-request-options-record.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37271,8 +37557,11 @@
       "anchor": "err_invalid_protocol",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_PROTOCOL",
+        "tests": [
+          "tests/corpus/6441-http-request-options-record.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37361,8 +37650,11 @@
       "anchor": "err_invalid_return_value",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_RETURN_VALUE",
+        "tests": [
+          "tests/corpus/5568-fs-cp-errors.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37379,8 +37671,11 @@
       "anchor": "err_invalid_state",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_STATE",
+        "tests": [
+          "tests/corpus/web-stream-readable-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37415,8 +37710,11 @@
       "anchor": "err_invalid_this",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_THIS",
+        "tests": [
+          "tests/corpus/web-stream-readable-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37469,8 +37767,11 @@
       "anchor": "err_invalid_uri",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_URI",
+        "tests": [
+          "tests/corpus/4994-lone-surrogate-uri.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37526,8 +37827,11 @@
       "anchor": "err_invalid_url_scheme",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_URL_SCHEME",
+        "tests": [
+          "tests/corpus/6931-fs-url-paths.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37706,8 +38010,11 @@
       "anchor": "err_method_not_implemented",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_METHOD_NOT_IMPLEMENTED",
+        "tests": [
+          "tests/corpus/6563-constructor-function-stream-errors.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37724,8 +38031,11 @@
       "anchor": "err_missing_args",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_MISSING_ARGS",
+        "tests": [
+          "tests/corpus/5656-dgram-option-states.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37742,8 +38052,11 @@
       "anchor": "err_missing_option",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_MISSING_OPTION",
+        "tests": [
+          "tests/corpus/web-stream-readable-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37760,8 +38073,11 @@
       "anchor": "err_missing_passphrase",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_MISSING_PASSPHRASE",
+        "tests": [
+          "tests/corpus/8167-encrypted-private-keys.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37814,8 +38130,11 @@
       "anchor": "err_module_not_found",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_MODULE_NOT_FOUND",
+        "tests": [
+          "tests/corpus/2858-import-meta-resolve/main.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37832,8 +38151,11 @@
       "anchor": "err_multiple_callback",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_MULTIPLE_CALLBACK",
+        "tests": [
+          "tests/corpus/7246-stream-construct.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38231,8 +38553,11 @@
       "anchor": "err_parse_args_invalid_option_value",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_PARSE_ARGS_INVALID_OPTION_VALUE",
+        "tests": [
+          "tests/corpus/2678-util-parseargs.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38249,8 +38574,11 @@
       "anchor": "err_parse_args_unexpected_positional",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL",
+        "tests": [
+          "tests/corpus/2678-util-parseargs.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38288,8 +38616,11 @@
       "anchor": "err_performance_invalid_timestamp",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_PERFORMANCE_INVALID_TIMESTAMP",
+        "tests": [
+          "tests/corpus/5213-perf-timing-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38306,8 +38637,11 @@
       "anchor": "err_performance_measure_invalid_options",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_PERFORMANCE_MEASURE_INVALID_OPTIONS",
+        "tests": [
+          "tests/corpus/5213-perf-timing-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38752,8 +39086,11 @@
       "anchor": "err_socket_bad_buffer_size",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_BUFFER_SIZE",
+        "tests": [
+          "tests/corpus/5656-dgram-option-states.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38770,8 +39107,11 @@
       "anchor": "err_socket_bad_port",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_PORT",
+        "tests": [
+          "tests/corpus/6441-http-request-options-record.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38806,8 +39146,11 @@
       "anchor": "err_socket_buffer_size",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_BUFFER_SIZE",
+        "tests": [
+          "tests/corpus/5656-dgram-option-states.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38878,8 +39221,11 @@
       "anchor": "err_socket_dgram_is_connected",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_DGRAM_IS_CONNECTED",
+        "tests": [
+          "tests/corpus/2597-dgram-send-ladders.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38896,8 +39242,11 @@
       "anchor": "err_socket_dgram_not_connected",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_DGRAM_NOT_CONNECTED",
+        "tests": [
+          "tests/corpus/5656-dgram-option-states.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38914,8 +39263,11 @@
       "anchor": "err_socket_dgram_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_DGRAM_NOT_RUNNING",
+        "tests": [
+          "tests/corpus/5656-dgram-option-states.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39076,8 +39428,11 @@
       "anchor": "err_stream_destroyed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_DESTROYED",
+        "tests": [
+          "tests/corpus/7510-pipeline-untyped-later-iterables.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39112,8 +39467,11 @@
       "anchor": "err_stream_null_values",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_NULL_VALUES",
+        "tests": [
+          "tests/corpus/5341-readable-from-dynamic.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39130,8 +39488,11 @@
       "anchor": "err_stream_premature_close",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_PREMATURE_CLOSE",
+        "tests": [
+          "tests/corpus/2564-stream-promises-finished.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39220,8 +39581,11 @@
       "anchor": "err_stream_write_after_end",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_STREAM_WRITE_AFTER_END",
+        "tests": [
+          "tests/corpus/6563-constructor-function-stream-errors.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39274,8 +39638,11 @@
       "anchor": "err_system_error",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_SYSTEM_ERROR",
+        "tests": [
+          "tests/corpus/5140-os-host-facts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39385,8 +39752,11 @@
       "anchor": "err_tls_cert_altname_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_TLS_CERT_ALTNAME_INVALID",
+        "tests": [
+          "tests/corpus/5562-https-verify-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39475,8 +39845,11 @@
       "anchor": "err_tls_invalid_protocol_version",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_PROTOCOL_VERSION",
+        "tests": [
+          "tests/corpus/6722-tls-min-max-version.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39511,8 +39884,11 @@
       "anchor": "err_tls_protocol_version_conflict",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_TLS_PROTOCOL_VERSION_CONFLICT",
+        "tests": [
+          "tests/corpus/6722-tls-min-max-version.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39676,8 +40052,11 @@
       "anchor": "err_trailing_junk_after_stream_end",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_TRAILING_JUNK_AFTER_STREAM_END",
+        "tests": [
+          "tests/corpus/7715-zlib-brotli-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39784,8 +40163,11 @@
       "anchor": "err_unescaped_characters",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_UNESCAPED_CHARACTERS",
+        "tests": [
+          "tests/corpus/6441-http-request-options-record.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39823,8 +40205,11 @@
       "anchor": "err_unknown_builtin_module",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_UNKNOWN_BUILTIN_MODULE",
+        "tests": [
+          "tests/corpus/8210-require-computed-missing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40027,8 +40412,11 @@
       "anchor": "err_use_after_close",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_USE_AFTER_CLOSE",
+        "tests": [
+          "tests/corpus/5295-readline-promises-question.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40533,8 +40921,11 @@
       "anchor": "err_zlib_initialization_failed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_ZLIB_INITIALIZATION_FAILED",
+        "tests": [
+          "tests/corpus/7715-zlib-brotli-decompress.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -42007,8 +42398,11 @@
       "anchor": "unable_to_get_issuer_cert",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.UNABLE_TO_GET_ISSUER_CERT",
+        "tests": [
+          "tests/corpus/7097-tls-client-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -42043,8 +42437,11 @@
       "anchor": "depth_zero_self_signed_cert",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.DEPTH_ZERO_SELF_SIGNED_CERT",
+        "tests": [
+          "tests/corpus/8179-tls-reject-unauthorized-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -42061,8 +42458,11 @@
       "anchor": "self_signed_cert_in_chain",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.SELF_SIGNED_CERT_IN_CHAIN",
+        "tests": [
+          "tests/corpus/7097-tls-client-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -42115,8 +42515,11 @@
       "anchor": "unable_to_verify_leaf_signature",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        "tests": [
+          "tests/corpus/5562-https-verify-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -42259,8 +42662,11 @@
       "anchor": "invalid_purpose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.INVALID_PURPOSE",
+        "tests": [
+          "tests/corpus/7097-tls-client-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -42566,8 +42972,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:events.this"
       },
       "anchorSource": "exact"
     },
@@ -44842,6 +45248,8 @@
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-fs-dirent-realpath.ts",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-native-realpath.ts",
@@ -47802,8 +48210,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.rm",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48275,8 +48687,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.fs.writeFile"
       },
       "anchorSource": "exact"
     },
@@ -51649,8 +52061,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.frsize",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -53063,7 +53478,11 @@
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts",
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
           "tests/corpus/headers-static-accessors.ts",
@@ -53455,8 +53874,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.ByteLengthQueuingStrategy",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -53527,8 +53949,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.CountQueuingStrategy",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -54697,8 +55122,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.WritableStreamDefaultController",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55111,8 +55540,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.console",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55543,8 +55976,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.process",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55623,6 +56060,8 @@
           "tests/corpus/2987-http-static-timeout-errors.ts",
           "tests/corpus/2988-http-static-client-abort.ts",
           "tests/corpus/compat-http-outgoing-headers.ts",
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -55724,8 +56163,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:http.NO_PROXY"
       },
       "anchorSource": "exact"
     },
@@ -57581,8 +58020,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.'checkExpectation'",
+        "tests": [
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -59595,8 +60038,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.outgoingMessage.setTimeout",
+        "tests": [
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -59671,8 +60118,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.outgoingMessage.connection",
+        "tests": [
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -60345,6 +60796,8 @@
           "tests/corpus/2596-net-arg-ladders.cjs",
           "tests/corpus/2672-http-request-response-callback.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -60626,8 +61079,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:http2.CONNECT"
       },
       "anchorSource": "exact"
     },
@@ -60649,8 +61102,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:http2.CONNECT"
       },
       "anchorSource": "exact"
     },
@@ -60718,8 +61171,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2session.close",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61132,8 +61589,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.socket",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -61178,8 +61639,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.type",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -61201,8 +61666,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'close'",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61224,8 +61693,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'connect'",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61247,8 +61720,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'error'",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61385,8 +61862,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'stream'",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -62052,8 +62533,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.session",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -63209,8 +63694,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.http2.createServer"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2.createServer",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63255,8 +63744,12 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.http2.connect"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2.connect",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63462,8 +63955,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:http2.RST_STREAM"
       },
       "anchorSource": "exact"
     },
@@ -63679,8 +64172,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.complete",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -63978,8 +64475,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'close'",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64149,8 +64650,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.response.getHeaderNames",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64172,8 +64677,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.response.getHeaders",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64279,8 +64788,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.response.setTimeout",
+        "tests": [
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64726,8 +65239,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:http2.:authority"
       },
       "anchorSource": "exact"
     },
@@ -64758,6 +65271,8 @@
           "tests/corpus/2672-http-request-response-callback.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts",
           "tests/corpus/compat-http-outgoing-headers.ts",
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -64914,8 +65429,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:https"
+        "status": "partial",
+        "evidence": "compiler-feature:https.server.closeAllConnections",
+        "tests": [
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64937,8 +65456,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:https"
+        "status": "partial",
+        "evidence": "compiler-feature:https.server.closeIdleConnections",
+        "tests": [
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64993,8 +65516,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:https"
+        "status": "partial",
+        "evidence": "compiler-feature:https.server.setTimeout",
+        "tests": [
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65317,7 +65844,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "by-design",
         "evidence": "derived:descendants"
       },
       "anchorSource": "chapter"
@@ -65363,8 +65890,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65386,8 +65913,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65409,8 +65936,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65432,8 +65959,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65455,8 +65982,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65524,8 +66051,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65547,8 +66074,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65593,8 +66120,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65616,8 +66143,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65639,8 +66166,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65662,8 +66189,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65685,8 +66212,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65754,8 +66281,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65777,8 +66304,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65823,8 +66350,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65846,8 +66373,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65869,8 +66396,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65892,8 +66419,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65915,8 +66442,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "ancestor"
     },
@@ -65961,8 +66488,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -65984,8 +66511,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66007,8 +66534,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66030,8 +66557,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66053,8 +66580,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66076,8 +66603,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66099,8 +66626,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66122,8 +66649,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66145,8 +66672,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66168,8 +66695,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "exact"
     },
@@ -66191,8 +66718,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "ancestor"
     },
@@ -66214,8 +66741,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "ancestor"
     },
@@ -66237,8 +66764,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "ancestor"
     },
@@ -66260,8 +66787,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "ancestor"
     },
@@ -66283,8 +66810,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:inspector"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:inspector"
       },
       "anchorSource": "ancestor"
     },
@@ -70733,8 +71260,8 @@
       "anchor": "the-module-object",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:module.Module"
       },
       "anchorSource": "exact"
     },
@@ -71372,8 +71899,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:module.data:"
       },
       "anchorSource": "exact"
     },
@@ -72985,6 +73512,8 @@
           "tests/corpus/2689-http-server-timeout-properties.ts",
           "tests/corpus/5659-net-blocklist-socketaddress.ts",
           "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -73425,8 +73954,12 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.rules",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -73443,8 +73976,12 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.size",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -73505,8 +74042,12 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.address",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -73523,8 +74064,12 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.family",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -73541,8 +74086,12 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.flowlabel",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -73559,8 +74108,12 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.port",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -73977,8 +74530,12 @@
       "anchor": "event-error",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.'error'",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74206,8 +74763,12 @@
       "anchor": "socketdestroysoon",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.socket.destroySoon",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74301,8 +74862,12 @@
       "anchor": "socketresetanddestroy",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.socket.resetAndDestroy",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74694,8 +75259,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.localAddress",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -74733,8 +75302,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.localFamily",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -74751,8 +75324,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.pending",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -74790,8 +75367,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.remoteFamily",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -75008,8 +75589,12 @@
       "anchor": "event-drain",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.'drain'",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75086,8 +75671,12 @@
       "anchor": "event-ready",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.'ready'",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75104,8 +75693,12 @@
       "anchor": "event-timeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "partial",
+        "evidence": "compiler-feature:net.'timeout'",
+        "tests": [
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -79675,8 +80268,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:perf_hooks.ELDHistogram"
       },
       "anchorSource": "exact"
     },
@@ -80920,6 +81513,8 @@
           "tests/corpus/6424-process-exit-keeps-exitcode.ts",
           "tests/corpus/8830-process-report-island/main.ts",
           "tests/corpus/990-process-basics.ts",
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -81152,8 +81747,8 @@
       "anchor": "warning-using-uncaughtexception-correctly",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:process.'uncaughtException'"
       },
       "anchorSource": "exact"
     },
@@ -81684,8 +82279,12 @@
       "anchor": "processgetactiveresourcesinfo",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.process.getActiveResourcesInfo",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82055,8 +82654,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:process.queueMicrotask"
       },
       "anchorSource": "exact"
     },
@@ -88274,6 +88873,8 @@
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
           "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/writable-error-callbacks.ts",
@@ -89996,8 +90597,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.closed",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -90019,8 +90624,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.destroyed",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -90118,8 +90727,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.writableCorked",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -90193,8 +90806,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.writableHighWaterMark",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -90242,8 +90859,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.writableNeedDrain",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -90265,8 +90886,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.writableObjectMode",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -90288,8 +90913,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.'close'",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90985,8 +91614,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable.compose",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91354,8 +91987,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.closed",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91403,8 +92040,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91573,8 +92214,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readableHighWaterMark",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91622,8 +92267,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readableObjectMode",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91775,8 +92424,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.'readable'",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91925,8 +92578,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.transform.destroy",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92109,8 +92766,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.writable._construct",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92158,8 +92819,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.writable._writev",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92181,8 +92846,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.writable._destroy",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92276,8 +92945,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable._construct",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92325,8 +92998,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.readable._destroy",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92581,8 +93258,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.'finish'",
+        "tests": [
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -93916,8 +94597,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:test.bindStore"
       },
       "anchorSource": "exact"
     },
@@ -96775,6 +97456,8 @@
           "tests/corpus/5830-timers-promises-signal.ts",
           "tests/corpus/5839-timers-promises-scheduler.ts",
           "tests/corpus/5889-timers-scheduler-signal.ts",
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -97191,8 +97874,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:timers"
+        "status": "partial",
+        "evidence": "compiler-feature:timers.Immediate",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -97330,8 +98017,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:timers"
+        "status": "partial",
+        "evidence": "compiler-feature:timers.Timeout",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -97572,6 +98263,8 @@
           "tests/corpus/7440-tls-server-add-context.ts",
           "tests/corpus/7441-tls-client-error.ts",
           "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -98152,8 +98845,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.'connection'",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98267,8 +98964,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.'secureConnection'",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98347,8 +99048,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.address",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98467,8 +99172,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.getCipher",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98761,8 +99470,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.isSessionReused",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98937,8 +99650,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.encrypted",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98960,8 +99677,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.localAddress",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -98983,8 +99704,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.localPort",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -99006,8 +99731,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.remoteAddress",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -99029,8 +99758,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.remoteFamily",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -99052,8 +99785,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.remotePort",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -99172,8 +99909,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.'secureConnect'",
+        "tests": [
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100307,7 +101048,9 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -100330,8 +101073,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:dgram.node:dgram"
       },
       "anchorSource": "exact"
     },
@@ -100428,8 +101171,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.addMembership",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100696,8 +101443,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.dropMembership",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100742,8 +101493,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.getRecvBufferSize",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100765,8 +101520,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.getSendBufferSize",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100788,8 +101547,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.getSendQueueSize",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100811,8 +101574,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.getSendQueueCount",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100935,8 +101702,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.setBroadcast",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100958,8 +101729,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.setMulticastInterface",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101004,8 +101779,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.setMulticastLoopback",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101027,8 +101806,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.setMulticastTTL",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101050,8 +101833,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.setRecvBufferSize",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101073,8 +101860,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.setSendBufferSize",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101096,8 +101887,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.socket.setTTL",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101145,8 +101940,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.'close'",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101214,8 +102013,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.'listening'",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -101237,8 +102040,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "partial",
+        "evidence": "compiler-feature:dgram.'message'",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103297,6 +104104,8 @@
           "tests/corpus/7711-util-throttle.cjs",
           "tests/corpus/7712-util-debounce-throttle.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/corpus/inspect-getters-dyn.cjs",
           "tests/corpus/inspect-getters.ts",
           "tests/corpus/inspect-hidden-properties.cjs",
@@ -103553,8 +104362,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.type",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -103576,8 +104389,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.subtype",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -103599,8 +104416,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.essence",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -103622,8 +104443,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.params",
+        "tests": [
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -103964,8 +104789,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:util.small-icu"
       },
       "anchorSource": "exact"
     },
@@ -109151,6 +109976,8 @@
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -109640,8 +110467,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.Algorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -109663,8 +110494,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109686,8 +110521,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.AeadParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -109709,8 +110548,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.additionalData",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109732,8 +110575,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.iv",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109755,8 +110602,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109778,8 +110629,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.tagLength",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109801,8 +110656,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.AesDerivedKeyParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -109824,8 +110683,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109847,8 +110710,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109870,8 +110737,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.AesCbcParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -109893,8 +110764,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.iv",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109916,8 +110791,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109939,8 +110818,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.AesCtrParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -109962,8 +110845,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.counter",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -109985,8 +110872,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110008,8 +110899,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110031,8 +110926,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.AesKeyAlgorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110054,8 +110953,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110077,8 +110980,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110100,8 +111007,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.AesKeyGenParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110123,8 +111034,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110146,8 +111061,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110629,8 +111548,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.EcdsaParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110686,8 +111609,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110709,8 +111636,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.EcKeyAlgorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110732,8 +111663,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110755,8 +111690,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.namedCurve",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110778,8 +111717,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.EcKeyGenParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110801,8 +111744,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110824,8 +111771,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.namedCurve",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110847,8 +111798,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.EcKeyImportParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110870,8 +111825,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -110893,8 +111852,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.namedCurve",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111054,8 +112017,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.HkdfParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111111,8 +112078,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.info",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111134,8 +112105,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111157,8 +112132,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.salt",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111180,8 +112159,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.HmacImportParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111237,8 +112220,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111260,8 +112247,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111283,8 +112274,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.HmacKeyAlgorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111340,8 +112335,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111363,8 +112362,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111386,8 +112389,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.HmacKeyGenParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111443,8 +112450,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111466,8 +112477,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111489,8 +112504,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KeyAlgorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111512,8 +112531,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -111926,8 +112949,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.Pbkdf2Params",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111983,8 +113010,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.iterations",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112006,8 +113037,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112029,8 +113064,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.salt",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112132,8 +113171,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.RsaHashedKeyAlgorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112189,8 +113232,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.modulusLength",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112212,8 +113259,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112235,8 +113286,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.publicExponent",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112258,8 +113313,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.RsaHashedKeyGenParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112315,8 +113374,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.modulusLength",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112338,8 +113401,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112361,8 +113428,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.publicExponent",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112453,8 +113524,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.RsaPssParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112476,8 +113551,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112499,8 +113578,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.saltLength",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112875,8 +113958,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.CryptoKeyPair",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112898,8 +113985,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.privateKey",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112921,8 +114012,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.publicKey",
+        "tests": [
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113626,6 +114721,8 @@
           "tests/corpus/4875-stream-consumers-array-buffer.ts",
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
           "tests/corpus/web-stream-readable-untyped.mjs",
@@ -113975,8 +115072,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStream.cancel",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113998,8 +115099,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStream.getReader",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114021,8 +115126,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStream.pipeThrough",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114044,8 +115153,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStream.pipeTo",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114067,8 +115180,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStream.tee",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114116,8 +115233,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.locked",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114168,8 +115289,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStreamDefaultReader.cancel",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114191,8 +115316,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStreamDefaultReader.read",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114214,8 +115343,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStreamDefaultReader.releaseLock",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114237,8 +115370,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.closed",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114404,8 +115541,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStreamDefaultController.close",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114427,8 +115568,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStreamDefaultController.enqueue",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114450,8 +115595,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readableStreamDefaultController.error",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114473,8 +115622,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.desiredSize",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114775,8 +115928,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writableStream.abort",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114798,8 +115955,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writableStream.close",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114821,8 +115982,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writableStream.getWriter",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114844,8 +116009,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.locked",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114896,8 +116065,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writableStreamDefaultWriter.abort",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114919,8 +116092,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writableStreamDefaultWriter.close",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114942,8 +116119,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writableStreamDefaultWriter.releaseLock",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114965,8 +116146,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writableStreamDefaultWriter.write",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114988,8 +116173,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.closed",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115011,8 +116200,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.desiredSize",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115034,8 +116227,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.ready",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115057,8 +116254,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.WritableStreamDefaultController",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115080,8 +116281,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writableStreamDefaultController.error",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115103,8 +116308,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.signal",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115176,8 +116385,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readable",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115199,8 +116412,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writable",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115251,8 +116468,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.transformStreamDefaultController.enqueue",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115274,8 +116495,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.transformStreamDefaultController.error",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115297,8 +116522,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.transformStreamDefaultController.terminate",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115320,8 +116549,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.desiredSize",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115343,8 +116576,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.ByteLengthQueuingStrategy",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115366,8 +116602,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.highWaterMark",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115389,8 +116628,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.size",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115412,8 +116654,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.CountQueuingStrategy",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115435,8 +116680,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.highWaterMark",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115458,8 +116706,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.size",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115507,8 +116758,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.encoding",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115530,8 +116784,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readable",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115553,8 +116810,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writable",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115602,8 +116862,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.encoding",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115625,8 +116888,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.fatal",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115648,8 +116914,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.ignoreBOM",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115671,8 +116940,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.readable",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115694,8 +116966,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.writable",
+        "tests": [
+          "tests/corpus/compat-web-stream-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },

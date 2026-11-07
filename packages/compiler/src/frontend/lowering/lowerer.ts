@@ -809,7 +809,7 @@ import type { ExpandoMembers } from "./lower-expando.js";
 import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
-import { partialAssertionFields } from "./partial-assertions.js";
+import { guardPartialReads, partialAssertionFields } from "./partial-assertions.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import { lowerTernary } from "./lower-exprs.js";
@@ -11252,6 +11252,7 @@ export class Lowerer {
     boxClassInstancesExactly(this, functions);
     addUntypedIntegrityWords(this);
     guardClassAttributeWrites(this, functions);
+    guardPartialReads(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
     installBufferValue(functions);

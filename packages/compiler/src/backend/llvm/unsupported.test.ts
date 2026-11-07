@@ -84,7 +84,8 @@ test("a refusal raised by a type-keyed helper takes the statement's span", () =>
   expect(diag.code).toBe("SC3001");
   expect(diag.loc).toEqual(stmtLoc);
   expect(diag.message).toBe(
-    "the LLVM backend does not support this construct yet (jsonStringify:map): in show",
+    "the LLVM backend does not support this construct yet (jsonStringify:map): " +
+      "JSON.stringify reaching a value of type map<string,f64>, in show",
   );
 });
 

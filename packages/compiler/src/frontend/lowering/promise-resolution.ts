@@ -1,12 +1,33 @@
 /* The promise resolution procedure, decided per site. Resolving a promise
  * with a value fulfils it, unless the value is a promise or has a callable
  * `then`: JavaScript adopts those. A site whose value's static type proves
- * neither keeps its plain fulfilment and emits no run-time test; every
- * other site asks the value. */
-import type { IrType } from "../../ir/ir.js";
+ * neither keeps its plain fulfilment and emits no run-time test; a site
+ * whose value's static type has a promise arm tests that arm (the second
+ * half of this file); every other site asks the value. */
+import { varRef } from "../../ir/build.js";
+import {
+  BOOL,
+  UNDEFINED_T,
+  VOID,
+  sortArms,
+  typeEquals,
+  typeKey,
+  type IrExpr,
+  type IrParam,
+  type IrStmt,
+  type IrType,
+  type SrcLoc,
+} from "../../ir/ir.js";
+import { InternalCompilerError } from "../../errors.js";
+import { withoutParentheses } from "../outer-expressions.js";
+import { isJsSourceFile } from "../program.js";
 import * as ts from "../ts7/adapter.js";
+import { buildFunctionAdapter } from "./coercions/builders.js";
+import { newFnCtx } from "./function-context.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
+import { nonPromiseArmsAs, promiseArmedUnionOf } from "./maybe-promise.js";
+import { keyedHelperName } from "./stable-names.js";
 
 const PRIMITIVE =
   ts.TypeFlags.StringLike |
@@ -281,4 +302,334 @@ export function executorResolvesPlainly(lowerer: Lowerer, executor: ts.Expressio
   for (const p of fn.parameters.nodes) if (p.initializer) visit(p.initializer);
   visit(fn.body);
   return plain;
+}
+
+/* ── a typed promise resolved with a value whose type has a promise arm ──
+ * `new Promise<T>((resolve) => resolve(v))` with `v: T | Promise<T>` or
+ * `v: Promise<T>`. The static type says the value may be a promise, so
+ * nothing asks the value. At each use of the executor's resolve parameter
+ * that gives it such a value, the parameter reads as a function of
+ * `T | Promise<T>` over the promise's own fulfilling closure: it tests the
+ * union's promise arm, hands that arm to the runtime's adoption
+ * (promise.adopt) and fulfils with every other arm. That covers a call in
+ * the executor or in a closure it creates, a scheduling call that passes
+ * the value on, and the function stored in or handed to a position whose
+ * type lets its callers pass a promise. Every other use reads the
+ * fulfilling closure as before, and an executor with no such use keeps the
+ * code it had. */
+
+/** Whether `type` is the library's Promise or PromiseLike, or a union with
+ * such an arm. */
+function hasPromiseArm(lowerer: Lowerer, type: ts.Type): boolean {
+  for (const part of type.isUnionType() ? ts.constituentTypes(type) : [type]) {
+    const symbol = part.getSymbol();
+    if (symbol === undefined) continue;
+    const name = ts.symbolNameOf(symbol);
+    if ((name === "Promise" || name === "PromiseLike") && lowerer.isStdlibSymbol(symbol))
+      return true;
+  }
+  return false;
+}
+
+/** Whether a function value of static type `type` may be called with a
+ * first argument whose type has a promise arm. */
+function receivesPromiseArm(lowerer: Lowerer, type: ts.Type): boolean {
+  const { checker } = lowerer;
+  for (const part of type.isUnionType() ? ts.constituentTypes(type) : [type]) {
+    for (const signature of checker.getCallSignatures(part)) {
+      const first = signature.getParameters()[0];
+      if (first === undefined) continue;
+      const declaration = first.valueDeclaration;
+      let value = checker.getTypeOfSymbol(first);
+      if (declaration !== undefined && ts.isParameter(declaration) && declaration.dotDotDotToken) {
+        if (!checker.isTupleType(value) && !checker.isArrayType(value)) continue;
+        const elements = checker.getTypeArguments(value as ts.TypeReference);
+        if (elements.length === 0) continue;
+        value = elements[0]!;
+      }
+      if (hasPromiseArm(lowerer, value)) return true;
+    }
+  }
+  return false;
+}
+
+/** The use `use` of a resolve parameter, with the parentheses around it. */
+function resolveUseSite(use: ts.Identifier): {
+  node: ts.Expression;
+  parent: ts.Node | undefined;
+} {
+  let node: ts.Expression = use;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  return { node, parent: node.parent };
+}
+
+/** Whether the use `use` of an executor's resolve parameter gives the
+ * function a value whose static type has a promise arm: a call with such
+ * an argument, a scheduling call that passes one on, or the function
+ * handed to a position whose type lets its callers pass one. */
+function resolveUseTakesPromise(lowerer: Lowerer, use: ts.Identifier): boolean {
+  const { node, parent } = resolveUseSite(use);
+  if (ts.isCallExpression(parent) && parent.expression === node) {
+    const first = parent.arguments.nodes[0];
+    return (
+      first !== undefined &&
+      !ts.isSpreadElement(first) &&
+      hasPromiseArm(lowerer, lowerer.typeOf(first))
+    );
+  }
+  if (ts.isCallExpression(parent) && parent.arguments.nodes[0] === node) {
+    // `setTimeout(resolve, ms, value)`: the callback receives the first
+    // argument the call passes after the delay.
+    const scheduled = scheduledArgumentsIndex(lowerer, parent);
+    if (scheduled >= 0) {
+      const first = parent.arguments.nodes[scheduled];
+      return (
+        first !== undefined &&
+        !ts.isSpreadElement(first) &&
+        hasPromiseArm(lowerer, lowerer.typeOf(first))
+      );
+    }
+  }
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.left === node &&
+    ts.isAssignmentOperator(parent.operatorToken.kind)
+  )
+    return false;
+  const slot = lowerer.checker.getContextualType(node);
+  return slot !== undefined && receivesPromiseArm(lowerer, slot);
+}
+
+/** The symbol of the executor's resolve parameter when some use of it
+ * gives it a value with a promise arm (resolveUseTakesPromise), else null.
+ * Null as well for a parameter the body assigns: the binding no longer
+ * names the promise's own function. */
+function promiseTakingResolve(
+  lowerer: Lowerer,
+  fn: ts.ArrowFunction | ts.FunctionExpression,
+): ts.Symbol | null {
+  const parameter = fn.parameters.nodes[0];
+  if (parameter === undefined) return null;
+  const name = parameter.name;
+  if (
+    !ts.isIdentifier(name) ||
+    parameter.dotDotDotToken ||
+    parameter.initializer ||
+    parameter.questionToken
+  )
+    return null;
+  const { checker } = lowerer;
+  const symbol = checker.getSymbolAtLocation(name);
+  if (symbol === undefined) return null;
+  let takes = false;
+  let assigned = false;
+  const visit = (node: ts.Node): void => {
+    if (assigned) return;
+    if (ts.isIdentifier(node)) {
+      // The property name of `x.resolve` and of `{ resolve: v }` is another
+      // symbol.
+      if (node.text !== name.text || node === name) return;
+      if (checker.getSymbolAtLocation(node) !== symbol) return;
+      const site = resolveUseSite(node);
+      if (
+        ts.isBinaryExpression(site.parent) &&
+        site.parent.left === site.node &&
+        ts.isAssignmentOperator(site.parent.operatorToken.kind)
+      )
+        assigned = true;
+      else if (!takes && resolveUseTakesPromise(lowerer, node)) takes = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(fn.body);
+  return takes && !assigned ? symbol : null;
+}
+
+/** `T | Promise<T>` for a promise of the lowered type `inner`, as the type
+ * mapper lays that union out: the arms of T beside one promise arm. Null
+ * for a T with no such union (a function, a value that can be a thenable,
+ * a checked-dynamic value, a regular expression, a generator). */
+function valueOrPromiseUnion(
+  lowerer: Lowerer,
+  construction: ts.NewExpression,
+  inner: IrType,
+): IrType | null {
+  const { checker } = lowerer;
+  // A data arm that declares `then` beside the promise arm would be a
+  // thenable the union's tag cannot see (the type mapper's rule).
+  const promised = checker.getTypeArguments(lowerer.typeOf(construction) as ts.TypeReference)[0];
+  if (promised === undefined) return null;
+  const absent = ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null;
+  for (const part of promised.isUnionType() ? ts.constituentTypes(promised) : [promised]) {
+    if (part.flags & absent) continue;
+    if (checker.getPropertyOfType(part, "then") !== undefined) return null;
+  }
+  const home = (arm: IrType): boolean => {
+    switch (arm.kind) {
+      case "void":
+      case "union":
+      case "regex":
+      case "generator":
+      case "dyn":
+      case "jsval":
+      case "caught":
+      case "moduleNs":
+      case "func":
+      case "promise":
+        return false;
+      default:
+        return true;
+    }
+  };
+  const promise: IrType = { kind: "promise", inner };
+  if (inner.kind === "union") {
+    const def = lowerer.unions.get(inner.unionId);
+    if (def === undefined || def.arms.length === 0 || !def.arms.every(home)) return null;
+    return {
+      kind: "union",
+      unionId: lowerer.unions.transform(def, sortArms([...def.arms, promise])),
+    };
+  }
+  const data = inner.kind === "void" ? UNDEFINED_T : inner;
+  if (!home(data)) return null;
+  return { kind: "union", unionId: lowerer.unions.intern(sortArms([data, promise])) };
+}
+
+/** For `new Promise<T>(executor)` with a typed T whose executor is written
+ * in place and gives its resolve parameter a value with a promise arm: that
+ * parameter's symbol and the type it reads as at those uses, `(value: T |
+ * Promise<T>) => void`. Null for every other construction, whose resolve
+ * function only fulfils. */
+export function adoptingResolveType(
+  lowerer: Lowerer,
+  construction: ts.NewExpression,
+  inner: IrType,
+): { parameter: ts.Symbol; resolve: IrType & { kind: "func" } } | null {
+  if (inner.kind === "dyn" || isJsSourceFile(ts.getSourceFileOfNode(construction))) return null;
+  const first = construction.arguments?.nodes[0];
+  if (first === undefined) return null;
+  const fn = withoutParentheses(first);
+  if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return null;
+  if (fn.asteriskToken !== undefined || fn.typeParameters?.nodes.length) return null;
+  const parameter = promiseTakingResolve(lowerer, fn);
+  if (parameter === null) return null;
+  const union = valueOrPromiseUnion(lowerer, construction, inner);
+  if (union === null) return null;
+  return { parameter, resolve: { kind: "func", params: [union], ret: VOID } };
+}
+
+/** The read of `use`, a local holding the fulfilling closure `fulfil`, when
+ * it is the resolve parameter of an executor adoptingResolveType answered
+ * for and this use gives it a value with a promise arm: the function that
+ * adopts that arm. Null for every other read. */
+export function adoptingResolveUse(
+  lowerer: Lowerer,
+  use: ts.Identifier,
+  fulfil: IrExpr,
+): IrExpr | null {
+  const symbol = lowerer.checker.getSymbolAtLocation(use);
+  const resolve = symbol === undefined ? undefined : lowerer.adoptingResolves.get(symbol);
+  if (resolve === undefined || fulfil.type.kind !== "func") return null;
+  if (!resolveUseTakesPromise(lowerer, use)) return null;
+  return adoptingResolveClosure(lowerer, fulfil, resolve, fulfil.loc);
+}
+
+/** A closure of type `resolve` over `fulfil`, the fulfilling closure of a
+ * promise whose construction carries `resolves`. Given the union's promise
+ * arm it hands the promise to the runtime, which adopts it (and from then
+ * on ignores both resolving functions); given any other arm it fulfils. */
+function adoptingResolveClosure(
+  lowerer: Lowerer,
+  fulfil: IrExpr,
+  resolve: IrType & { kind: "func" },
+  loc: SrcLoc,
+): IrExpr {
+  const native = fulfil.type;
+  const union = resolve.params[0]!;
+  const armed = promiseArmedUnionOf(lowerer, union);
+  if (native.kind !== "func" || armed === null)
+    throw new InternalCompilerError(
+      "lowerer bug: adopting resolve function over a non-promise union",
+    );
+  const inner = armed.promise.inner;
+  const key = `promise.resolving:${typeKey(native)}:${typeKey(resolve)}`;
+  let name = lowerer.arrHofHelpers.get(key);
+  if (name === undefined) {
+    name = keyedHelperName(lowerer, "%promise.resolving", key);
+    lowerer.arrHofHelpers.set(key, name);
+    lowerer.freshClosureAdapters.add(name);
+    const params: IrParam[] = [{ localId: "a.0", name: "a0", type: union }];
+    const value = varRef("a.0", union, loc);
+    const target = varRef("f.0", native, loc);
+    const context = newFnCtx(false, null, null, VOID);
+    let body: IrStmt[];
+    lowerer.fnStack.push(context);
+    try {
+      const plain =
+        inner.kind === "void" ? null : nonPromiseArmsAs(lowerer, armed, value, inner, loc);
+      if (inner.kind !== "void" && (plain === null || !typeEquals(plain.type, inner)))
+        throw new InternalCompilerError(
+          "lowerer bug: an arm of a value-or-promise union is not the value",
+        );
+      body = [
+        {
+          kind: "if",
+          cond: {
+            kind: "unionIsTag",
+            unionId: armed.def.id,
+            tag: armed.promiseTag,
+            negated: false,
+            value,
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "promise.adopt",
+                args: [
+                  target,
+                  {
+                    kind: "unionNarrow",
+                    unionId: armed.def.id,
+                    tag: armed.promiseTag,
+                    value,
+                    type: armed.promise,
+                    loc,
+                  },
+                ],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          else_: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "callValue",
+                callee: target,
+                args: plain === null ? [] : [plain],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ];
+    } finally {
+      lowerer.fnStack.pop();
+    }
+    lowerer.liftedFns.push(
+      ...buildFunctionAdapter(name, native, resolve, params, context.locals, body, loc),
+    );
+  }
+  return { kind: "call", callee: name, args: [fulfil], type: resolve, loc };
 }

@@ -3481,11 +3481,14 @@ export type IrExpr =
   /** `new Promise<T>((resolve) => ...)`: creates a pending promise and runs
    * the executor synchronously with a resolve closure; an executor throw
    * rejects the promise (JS-exact). Result +1.
-   * `resolves`: the resolve function runs the promise resolution procedure
-   * on a checked-dynamic value that the static types do not prove plain: a
-   * promise it is given is adopted, and from then on neither resolving
-   * function nor a throw of the executor changes the promise. Only on a
-   * promise of a checked-dynamic value. */
+   * `resolves`: the resolve function runs the promise resolution procedure:
+   * a promise it is given is adopted, and from then on neither resolving
+   * function nor a throw of the executor changes the promise. On a promise
+   * of a checked-dynamic value the resolve function asks each value the
+   * static types do not prove plain. On a typed promise the resolve function
+   * is the fulfilling one, sharing its target with the reject function, and
+   * the executor hands it a promise through `promise.adopt` where the
+   * value's static type has a promise arm. */
   | { kind: "newPromise"; executor: IrExpr; resolves?: true; type: IrType; loc: SrcLoc }
   /** `Promise.withResolvers<T>()`: a pending promise plus its runtime
    * resolve/reject closures (the newPromise pieces without an executor),

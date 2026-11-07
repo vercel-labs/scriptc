@@ -106,6 +106,7 @@ import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
 import { envSnapshotHelper, heldEnvValueType } from "../builtins/environment.js";
 import { processDataMemberValue } from "../builtins/process.js";
+import { adoptingResolveUse } from "../promise-resolution.js";
 
 /** Whether this identifier is the RECEIVER of a member access — the dotted
  * or bracketed `held.X` / `held[k]`, read or written, through any erasure
@@ -259,6 +260,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
   const local = lowerer.resolveLocal(expr);
+  // The resolve parameter of a typed promise's executor, at a use that gives
+  // it a value with a promise arm: the function that adopts that arm.
+  if (local && lowerer.adoptingResolves.size > 0) {
+    const adopting = adoptingResolveUse(lowerer, expr, {
+      kind: "varRef",
+      localId: local.id,
+      type: local.type,
+      loc,
+    });
+    if (adopting) return adopting;
+  }
   // A BARE use of a value HELD from process.env (`{ ...env }`, Object.keys,
   // an argument, a return) reads the environment as it is HERE: Node's hold
   // IS the environment object, so its contents at use time are the live

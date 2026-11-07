@@ -26,7 +26,7 @@ import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
-import { executorResolvesPlainly } from "./promise-resolution.js";
+import { adoptingResolveType, executorResolvesPlainly } from "./promise-resolution.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import {
@@ -12487,7 +12487,23 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       // `unknown` for exactly that tier). First settle wins, exactly JS:
       // reject-after-resolve and double-reject are no-ops, and an
       // executor throw after any settle is swallowed.
-      let executor = lowerer.lowerExpr(args[0]!);
+      // A typed promise whose resolve function is given a value with a
+      // promise arm: the executor's resolve parameter reads as the function
+      // that adopts that arm at those uses (promise-resolution.ts).
+      const adopting = adoptingResolveType(lowerer, expr, type.inner);
+      let executor: IrExpr;
+      if (adopting === null) {
+        executor = lowerer.lowerExpr(args[0]!);
+      } else {
+        const outer = lowerer.adoptingResolves.get(adopting.parameter);
+        lowerer.adoptingResolves.set(adopting.parameter, adopting.resolve);
+        try {
+          executor = lowerer.lowerExpr(args[0]!);
+        } finally {
+          if (outer === undefined) lowerer.adoptingResolves.delete(adopting.parameter);
+          else lowerer.adoptingResolves.set(adopting.parameter, outer);
+        }
+      }
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       executor = adaptPromiseExecutor(lowerer, executor, type.inner, loc) ?? executor;
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
@@ -12521,6 +12537,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         executor.type.params.length > 0 &&
         !executorResolvesPlainly(lowerer, args[0]!)
       )
+        return { kind: "newPromise", executor, resolves: true, type, loc };
+      // A typed promise whose resolve function adopts a promise arm: both
+      // resolving functions end with the adoption.
+      if (adopting !== null && executor.type.params.length > 0)
         return { kind: "newPromise", executor, resolves: true, type, loc };
       return { kind: "newPromise", executor, type, loc };
     }

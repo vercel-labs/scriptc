@@ -3334,6 +3334,17 @@ export class LlEmitter {
     const weak = [...this.decls].some(
       (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
     );
+    // The frontend removed the source tests of these record types because
+    // nothing in the module gives a record a source
+    // (IrModule.recordSourcesFolded). A helper that keeps one for such a
+    // type all the same would make records whose undeclared keys and key
+    // order no surface reads: stop instead of emitting a program that
+    // answers wrongly.
+    const kept = this.mod.recordSourcesFolded?.find((id) => this.dyn.keptSourceShapes.has(id));
+    if (kept !== undefined)
+      throw new InternalCompilerError(
+        `llvm emitter bug: a helper keeps a source for record type ${kept}, whose source tests were removed`,
+      );
     return [
       `${WEAK_KEYS_GATE} = internal constant i1 ${weak}`,
       `${RECORD_SOURCES_GATE} = internal constant i1 ${this.dyn.keepsRecordSources || this.hasRecordLinks()}`,

@@ -973,6 +973,89 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     expect(where.get("matcher")).not.toBe(where.get("step9"));
   });
 
+  test.runIf(target?.llvmTriple.includes("linux") === true)(
+    "a definition whose last reference the optimizer removes leaves the linked executable",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-unreferenced-"));
+      dirs.push(dir);
+      // step6 hands @closure to @spawn only when @gate holds, and @gate is a
+      // false constant that lives with its first reader, @home, in main's
+      // partition. @closure is large, so it is placed by its own name and
+      // promoted for step6's reference. step6's partition learns the
+      // constant from the thin link, after which the branch folds and
+      // nothing refers to @closure any more.
+      const source = program()
+        .split("\n")
+        .flatMap((line) => {
+          if (line === "define internal void @step6(i64 %value) noinline {")
+            return [
+              "@gate = internal constant i1 false",
+              "define internal void @home() noinline {",
+              "  %held = load i1, ptr @gate",
+              "  br i1 %held, label %counted, label %done",
+              "counted:",
+              "  call void @bump(i64 0)",
+              "  br label %done",
+              "done:",
+              "  ret void",
+              "}",
+              "define internal void @closure(i64 %value) noinline {",
+              ...Array.from(
+                { length: 40 },
+                (_, index) =>
+                  `  %v${index} = add i64 ${index === 0 ? "%value" : `%v${index - 1}`}, 1`,
+              ),
+              "  call void @bump(i64 0)",
+              "  ret void",
+              "}",
+              "define internal void @spawn(ptr %fn) noinline {",
+              "  call void %fn(i64 1)",
+              "  ret void",
+              "}",
+              line,
+              "  %held = load i1, ptr @gate",
+              "  br i1 %held, label %kept, label %plain",
+              "kept:",
+              "  call void @spawn(ptr @closure)",
+              "  br label %plain",
+              "plain:",
+            ];
+          if (line === "define i32 @main() {") return [line, "  call void @home()"];
+          return [line];
+        })
+        .join("\n");
+      const defined = async (path: string): Promise<Set<string>> => {
+        const { stdout } = await execFileAsync("nm", ["--defined-only", path]);
+        return new Set(stdout.split("\n").map((line) => line.trim().split(" ").pop() ?? ""));
+      };
+      const objects = await emit(dir, source, { outputs: 4, optLevel: "2", name: "unreferenced" });
+      expect(await exitCode(dir, objects, "unreferenced")).toBe(expectedExit());
+      // The scenario: @closure is defined beside neither its referrer nor
+      // the constant, and no object refers to it.
+      const homes = await Promise.all(objects.map(defined));
+      const partitionOf = (name: string): number => homes.findIndex((names) => names.has(name));
+      expect(partitionOf("closure")).toBeGreaterThanOrEqual(0);
+      expect(partitionOf("closure")).not.toBe(partitionOf("step6"));
+      expect(partitionOf("step6")).not.toBe(partitionOf("main"));
+      for (const object of objects) {
+        const { stdout } = await execFileAsync("nm", ["--undefined-only", object]);
+        expect(stdout).not.toMatch(/ closure$/m);
+      }
+      // It has a section of its own, so the link that collects unreferenced
+      // sections, as an executable's does, leaves it out.
+      const collected = join(dir, "collected");
+      await execFileAsync(process.env["CC"] ?? "cc", [
+        ...objects,
+        "-Wl,--gc-sections",
+        "-o",
+        collected,
+      ]);
+      const linked = await defined(collected);
+      expect(linked.has("step6")).toBe(true);
+      expect(linked.has("closure")).toBe(false);
+    },
+  );
+
   test("a fallback body that its referrer calls is placed by its own name", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-cold-"));
     dirs.push(dir);

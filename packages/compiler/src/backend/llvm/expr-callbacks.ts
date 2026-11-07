@@ -309,7 +309,8 @@ export function genResultThunkFor(
     host.journal?.built();
     return sym;
   }
-  if (valueT.kind !== "union") throw new LlvmUnsupportedError(
+  if (valueT.kind !== "union")
+    throw new LlvmUnsupportedError(
       `genResume:${valueT.kind}`,
       undefined,
       `a generator resumed with a value of type ${typeKey(valueT)}`,

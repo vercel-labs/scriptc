@@ -253,15 +253,25 @@ export function prepareExecutableModule(
       // too (the authoritative lowering, DESIGN.md §1.4): build again with
       // them as islands.
       // A computed import() of the program's own CommonJS module names a
-      // package that runs in an island whole (SPEC §5.6). It is tried
-      // first: a round that grows it retries with it, and the lowering
-      // rules (node-islands/growth.ts) answer the next one.
+      // package that runs in an island whole (SPEC §5.6). It joins the
+      // packages the lowering rules (node-islands/growth.ts) grow from the
+      // same diagnostics: one retry with every island this round found,
+      // never a round of its own (on pi that round was a whole extra load
+      // and lowering of the program).
       const growth = growthOf();
+      const namespaces = cjsNamespaceIslands(
+        entryPath,
+        opts,
+        fe,
+        lowered.diagnostics,
+        lowerIslands,
+      );
       const grown =
-        cjsNamespaceIslands(entryPath, opts, fe, lowered.diagnostics, lowerIslands) ??
         (growth === null
           ? null
-          : growIslandSet(growth, lowerIslands, { diagnostics: lowered.diagnostics }));
+          : growIslandSet(growth, namespaces ?? lowerIslands, {
+              diagnostics: lowered.diagnostics,
+            })) ?? namespaces;
       // Sloppy user modules the lowering refused join the same retry
       // (DESIGN.md note 1 §3.2): one reload with every island at once,
       // never one round per module.

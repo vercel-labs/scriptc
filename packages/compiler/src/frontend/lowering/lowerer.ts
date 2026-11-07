@@ -185,6 +185,7 @@ import {
   widthNarrowHelper,
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
+import { siteDiscriminantConversion } from "./coercions/site-discriminant.js";
 import {
   boxBuiltinValuesChecked,
   shareBuiltinValueIdentities,
@@ -882,10 +883,49 @@ interface RefusedProbe {
   diagnostics: ScrDiagnostic[];
 }
 
-/** The receiver of the call being dispatched (Lowerer.dispatchedReceiver)
- * and, once a lowering produced one that may be handed out again, its
- * value with what that lowering ran under. */
-interface DispatchedReceiver {
+/** The declaration slots a lowering inside a probe met, keyed by node and
+ * then by checker type id: the same slot met again is one entry.
+ *
+ * A kept receiver's notes are handed to every form that asks for the value
+ * and forwarded into the enclosing receiver's notes, so the same slot is met
+ * many times along a chain of calls. Recording it once per node keeps a
+ * chain's notes in proportion to the slots it declares; recording every
+ * meeting made them multiply at each link (three ways for an array method),
+ * which took a chain of eighteen array methods past the heap limit. */
+type ProbedSlotNotes = Map<ts.Node, Map<number, ts.Type>>;
+
+/** Test hook: note-recording requests since the last call (see
+ * ProbedSlotNotes); a request for a slot the scope already holds is
+ * counted too, because it is the work a chain of calls must not repeat. */
+let probedSlotNoteRequests = 0;
+
+export function takeProbedSlotNoteRequests(): number {
+  const count = probedSlotNoteRequests;
+  probedSlotNoteRequests = 0;
+  return count;
+}
+
+/** Adds `from` to `into`, one entry per node and type id. Copies the type
+ * maps it adds rather than sharing them: a node reached in two subtrees
+ * keeps each subtree's types. */
+function mergeSlotNotes(into: ProbedSlotNotes, from: ProbedSlotNotes): void {
+  for (const [node, types] of from) {
+    const seen = into.get(node);
+    if (seen === undefined) {
+      into.set(node, new Map(types));
+      continue;
+    }
+    for (const [id, type] of types) if (!seen.has(id)) seen.set(id, type);
+  }
+}
+
+/** An operand that may be asked for again while the expression that asked
+ * is still being lowered: the receiver of the call being dispatched
+ * (Lowerer.dispatchedReceiver) or another operand of the expression or
+ * statement on top (Lowerer.keptOperands). Once a lowering produced a value
+ * that may be handed out again, the value with what that lowering ran
+ * under. */
+interface KeptOperand {
   node: ts.Expression;
   value: IrExpr | null;
   ctx: FnCtx | null;
@@ -895,6 +935,35 @@ interface DispatchedReceiver {
   /** The expression overrides in force then, in the table's order (null
    * for none): replacing one leaves the table's size as it was. */
   overrides: IrExpr[] | null;
+  /** The declaration slots the lowering would have reported as dynamic had
+   * it not run inside a probe (noteDegradedSlot), or null for none. */
+  slotNotes: ProbedSlotNotes | null;
+}
+
+/** Operands that cost less to lower than to keep (Lowerer.keptOperands). */
+function isCheapOperand(node: ts.Expression): boolean {
+  return (
+    ts.isIdentifier(node) ||
+    ts.isNumericLiteral(node) ||
+    ts.isStringLiteralLike(node) ||
+    node.kind === ts.SyntaxKind.ThisKeyword ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword ||
+    node.kind === ts.SyntaxKind.NullKeyword
+  );
+}
+
+/** Test hook: operands compared with the requested one while looking up a
+ * kept operand (Lowerer.keptOperands). A map answers in one comparison; the
+ * list this replaced was scanned from its end, so a wide expression compared
+ * every operand it had recorded since, and its comparisons quadrupled with
+ * each doubling of the expression's operands. */
+let keptOperandLookups = 0;
+
+export function takeKeptOperandLookups(): number {
+  const count = keptOperandLookups;
+  keptOperandLookups = 0;
+  return count;
 }
 
 export class PoisonError extends Error {
@@ -3044,6 +3113,15 @@ export class Lowerer {
     ts.Type,
     { tsBindings: Map<ts.Symbol, ts.Type>; instance: ts.Type }[]
   >();
+  /** The ts bindings of each call-keyed instance whose key names bound
+   * literals beyond the keyof ones (generic-functions.ts memberPatternKey),
+   * with the type parameters it names them for. No call that binds those
+   * parameters otherwise shares the instance, so its body may map a type by
+   * them (pinnedTypeParamTsResolver). */
+  readonly pinnedTypeParams: {
+    tsBindings: Map<ts.Symbol, ts.Type>;
+    pinned: ReadonlySet<ts.Symbol>;
+  }[] = [];
   /** Values an erased type assertion produced, with the asserted type
    * (`x as T` keeps x's representation): a slot that no ordinary
    * conversion reaches converts them as asserted (assertedConversion). */
@@ -5085,6 +5163,7 @@ export class Lowerer {
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
       checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
+      checkedTable("pinnedTypeParams", () => this.pinnedTypeParams.length),
       checkedTable("castGlobalAliases", () => this.castGlobalAliases.size),
       checkedTable("methodAccessSites", () => this.methodAccessSites.size),
       checkedTable("checkedJsOverrideMethods", () => this.checkedJsOverrideMethods.size),
@@ -5303,6 +5382,11 @@ export class Lowerer {
     // Set and restored around one call's dispatch (lowerCall), so a unit
     // begins and ends with none.
     "dispatchedReceiver",
+    "probedSlotNotes",
+    // Kept only while the expression or statement that lowered them is
+    // being lowered, so a unit begins and ends with none.
+    "keptOperands",
+    "operandFrames",
     "spreadArmOverrides",
     "splitIdentifierUses",
     "typeMemo",
@@ -5685,40 +5769,64 @@ export class Lowerer {
    * power of the chain's length through classes and records, three for
    * array methods. The first lowering's value is kept here and handed to
    * every later request for the same node (lowerDispatchedReceiver). */
-  private dispatchedReceiver: DispatchedReceiver | null = null;
+  private dispatchedReceiver: KeptOperand | null = null;
 
   /** The lowering of the dispatched call's receiver: the value an earlier
    * form's lowering produced when a new lowering would produce it again,
    * and a lowering that is kept for the next form otherwise.
    *
-   * A value is kept only when its lowering left nothing behind
-   * (probeEffects, and nothing in the capture buffer): a lowering that
-   * declares a local, lifts a function or takes a closure name numbers
-   * what it declares by how often it ran, so running it once instead of
-   * twice would rename them. It is handed out only in the function context
-   * and under the type bindings it was lowered in, with the surroundings
-   * that decide how an expression lowers unchanged (probeSurroundings) and
-   * the same expression overrides in force, and never for a receiver that
-   * is itself overridden (an optional chain's guarded receiver is its bind
-   * temp). */
-  private lowerDispatchedReceiver(receiver: DispatchedReceiver): IrExpr {
+   * What the kept lowering declared (a local, a lifted function, a closure
+   * name) is declared once, by it, and the forms that follow use those
+   * declarations: lowering the receiver again would declare all of it a
+   * second time under later names and leave the first set behind unused.
+   * A lowering that recorded a diagnostic or a deferred fence is not kept:
+   * the next form's lowering reports it again, as before.
+   *
+   * A value is handed out only in the function context and under the type
+   * bindings it was lowered in, with the surroundings that decide how an
+   * expression lowers unchanged (probeSurroundings) and the same expression
+   * overrides in force, and never for a receiver that is itself overridden
+   * (an optional chain's guarded receiver is its bind temp).
+   *
+   * A lowering inside a probe does not report the declaration slots whose
+   * type is degraded (noteDegradedSlot); the kept value carries them, and
+   * the first request outside a probe reports them. */
+  private lowerDispatchedReceiver(receiver: KeptOperand): IrExpr {
     const node = receiver.node;
     if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
     const surroundings = this.probeSurroundings();
-    if (
-      receiver.value !== null &&
-      receiver.ctx === this.ctx &&
-      receiver.bindings === this.typeParamBindings &&
-      receiver.surroundings === surroundings &&
-      this.expressionOverridesAre(receiver.overrides)
-    ) {
+    if (receiver.value !== null && this.keptOperandStands(receiver, surroundings)) {
+      const notes = receiver.slotNotes;
+      if (notes !== null) {
+        if (this.diagSink === null) {
+          receiver.slotNotes = null;
+          for (const [node, types] of notes)
+            for (const type of types.values()) this.noteDegradedSlot(node, type);
+        } else if (this.probedSlotNotes !== null) {
+          // Still inside a probe: the notes join that probe's notes, which
+          // defer them further up, without recording each one again.
+          mergeSlotNotes(this.probedSlotNotes, notes);
+        }
+      }
       return receiver.value;
     }
-    const effects = this.probeEffects();
+    const diagsBefore = this.diags.length;
+    const fencesBefore = this.runtimeFences.length;
     const sinkMark = this.diagSinkMark();
-    const value = lowerExpr(this, node);
+    const outerNotes = this.probedSlotNotes;
+    const notes: ProbedSlotNotes = new Map();
+    this.probedSlotNotes = notes;
+    let value: IrExpr;
+    try {
+      value = lowerExpr(this, node);
+    } finally {
+      this.probedSlotNotes = outerNotes;
+      // An enclosing receiver's lowering skipped them too.
+      if (outerNotes !== null) mergeSlotNotes(outerNotes, notes);
+    }
     if (
-      this.probeEffects() === effects &&
+      this.diags.length === diagsBefore &&
+      this.runtimeFences.length === fencesBefore &&
       this.diagSinkMark() === sinkMark &&
       this.probeSurroundings() === surroundings
     ) {
@@ -5728,8 +5836,26 @@ export class Lowerer {
       receiver.surroundings = surroundings;
       receiver.overrides =
         this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()];
+      receiver.slotNotes = notes.size > 0 ? notes : null;
     }
     return value;
+  }
+
+  /** The degraded declaration slots a probe did not report while a
+   * dispatched receiver is being lowered (null otherwise): its kept value
+   * reports them when it is used outside a probe. */
+  private probedSlotNotes: ProbedSlotNotes | null = null;
+
+  /** Whether a new lowering here would run under what `kept` was lowered
+   * under: the function context, the type bindings, the surroundings
+   * (probeSurroundings, given) and the expression overrides in force. */
+  private keptOperandStands(kept: KeptOperand, surroundings: number): boolean {
+    return (
+      kept.ctx === this.ctx &&
+      kept.bindings === this.typeParamBindings &&
+      kept.surroundings === surroundings &&
+      this.expressionOverridesAre(kept.overrides)
+    );
   }
 
   /** Whether the expression overrides in force are exactly `overrides`. */
@@ -5956,6 +6082,7 @@ export class Lowerer {
       classNamer: (decl) => this.classNamer(decl),
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
+      resolvePinnedTypeParamTs: this.pinnedTypeParamTsResolver,
       resolveBoundAliasTs: this.boundAliasTsResolver,
       degradedType: (type) => {
         const id = (type as { id?: number }).id;
@@ -13066,7 +13193,17 @@ export class Lowerer {
    * dynamic slot too, though only the first such slot failed: record it
    * (outside probes; the lookup is skipped while nothing is degraded). */
   noteDegradedSlot(node: ts.Node, type: ts.Type): void {
-    if (this.diagSink !== null) return;
+    if (this.diagSink !== null) {
+      const notes = this.probedSlotNotes;
+      if (notes !== null) {
+        probedSlotNoteRequests++;
+        let types = notes.get(node);
+        if (types === undefined) notes.set(node, (types = new Map()));
+        const id = (type as { id?: number }).id ?? -1;
+        if (!types.has(id)) types.set(id, type);
+      }
+      return;
+    }
     const degraded = this.degradedTypes.get((type as { id?: number }).id ?? -1);
     // A pushed-down type is one slot, reported where it degraded; only
     // whole-slot dynamic declarations are reported one by one.
@@ -14033,6 +14170,21 @@ export class Lowerer {
     if (!this.typeParamTsBindings) return null;
     const sym: ts.Symbol | undefined = t.getSymbol();
     return (sym && this.typeParamTsBindings.get(sym)) ?? null;
+  };
+
+  /** typeParamTsResolver for the parameters the current instance is keyed
+   * on by their bound literals (pinnedTypeParams): the instance serves no
+   * other binding of them, so a mapping may follow the literal. Null for
+   * every other parameter, whose instance other bindings share. */
+  readonly pinnedTypeParamTsResolver = (t: ts.Type): ts.Type | null => {
+    if (!(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    noteScopeSensitiveMapping();
+    const bindings = this.typeParamTsBindings;
+    if (!bindings) return null;
+    const sym: ts.Symbol | undefined = t.getSymbol();
+    if (!sym) return null;
+    const keyed = this.pinnedTypeParams.find((entry) => entry.tsBindings === bindings);
+    return keyed?.pinned.has(sym) ? (bindings.get(sym) ?? null) : null;
   };
 
   /** The concrete instantiation of a generic alias reference (`Catalog<G,
@@ -15550,6 +15702,14 @@ export class Lowerer {
         type: expected,
         loc: e.loc,
       };
+    }
+    // A union with no discriminant of its own, which the value fits several
+    // arms of: the checker types of this conversion can still name the arm
+    // each discriminant value enters (site-discriminant.ts). Asked last, so
+    // only a conversion that is otherwise refused (SC2003) takes it.
+    if (!typeEquals(e.type, expected) && expected.kind === "union") {
+      const routed = siteDiscriminantConversion(this, node, e, expected);
+      if (routed) e = routed;
     }
     this.requireExactShape(node, e.type, expected);
     return e;
@@ -18266,11 +18426,13 @@ export class Lowerer {
   lowerStmt(stmt: ts.Statement): IrStmt | IrStmt[] | null {
     const outermost = openLoweringBudget(stmt);
     const frame = this.openRefusedProbeFrame();
+    const operands = this.openOperandFrame();
     try {
       const lowered = lowerStmt(this, stmt);
       if (outermost) refuseSpentLowering(this);
       return lowered;
     } finally {
+      this.closeOperandFrame(operands);
       this.closeRefusedProbeFrame(frame);
       closeLoweringBudget();
     }
@@ -18423,7 +18585,92 @@ export class Lowerer {
     const dispatched = this.dispatchedReceiver;
     if (dispatched !== null && dispatched.node === expr)
       return this.lowerDispatchedReceiver(dispatched);
+    if (this.operandFrames > 0 && !isCheapOperand(expr)) return this.lowerOperand(expr);
     return lowerExpr(this, expr);
+  }
+
+  /** The operands the expression or statement on top has lowered and may
+   * ask for again (null until the first), by node, and how many expressions
+   * and statements are open.
+   *
+   * A call's receiver is not the only operand lowered more than once: the
+   * Object statics probe their argument to see what it lowered to and then
+   * lower it for the form they pick (`Object.keys(Object.keys(x))` cost four
+   * lowerings per level), and assignments, updates, `in`, `typeof` and the
+   * member reads of JavaScript sources probe a receiver the same way. Each
+   * expression and statement keeps what it lowered for as long as it is
+   * being lowered (lowerOperand). Keyed by node because only a node's latest
+   * lowering is repeated; the list this replaced held every lowering and was
+   * scanned from its end, so a wide expression's lookups were quadratic in
+   * the operands it had lowered. */
+  private keptOperands: Map<ts.Expression, KeptOperand> | null = null;
+  private operandFrames = 0;
+
+  /** Starts the expression or statement that owns the operands kept until
+   * closeOperandFrame; returns the enclosing owner's. */
+  openOperandFrame(): Map<ts.Expression, KeptOperand> | null {
+    const outer = this.keptOperands;
+    this.keptOperands = null;
+    this.operandFrames++;
+    return outer;
+  }
+
+  closeOperandFrame(outer: Map<ts.Expression, KeptOperand> | null): void {
+    this.keptOperands = outer;
+    this.operandFrames--;
+  }
+
+  /** The lowering of an operand of the expression or statement on top: the
+   * value its earlier lowering produced for the same request, when a new
+   * lowering would produce it again (keptOperandStands), and a lowering
+   * that is kept for the next request otherwise.
+   *
+   * Only a lowering that left nothing behind is kept (probeEffects, and
+   * nothing in the capture buffer), so the output cannot depend on whether
+   * it ran once or twice. The receiver of a call is the one operand that is
+   * kept when it declares something (lowerDispatchedReceiver). */
+  private lowerOperand(node: ts.Expression): IrExpr {
+    if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
+    const surroundings = this.probeSurroundings();
+    const kept = this.keptOperands;
+    if (kept !== null) {
+      // The node's latest lowering is the one a new lowering repeats.
+      const operand = kept.get(node);
+      keptOperandLookups++;
+      if (
+        operand !== undefined &&
+        operand.value !== null &&
+        this.keptOperandStands(operand, surroundings)
+      )
+        return operand.value;
+    }
+    const effects = this.probeEffects();
+    const sinkMark = this.diagSinkMark();
+    const value = lowerExpr(this, node);
+    if (
+      this.probeEffects() === effects &&
+      this.diagSinkMark() === sinkMark &&
+      this.probeSurroundings() === surroundings
+    ) {
+      // Created and written in separate statements: the compiler compiles
+      // its own source, and it has no lowering for a Map method chained onto
+      // the `??=` that creates the map (SC2020).
+      let operands = this.keptOperands;
+      if (operands === null) {
+        operands = new Map();
+        this.keptOperands = operands;
+      }
+      operands.set(node, {
+        node,
+        value,
+        ctx: this.ctx,
+        bindings: this.typeParamBindings,
+        surroundings,
+        overrides: this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()],
+        slotNotes: null,
+      });
+    }
+    return value;
   }
 
   /** The value storedImplicitArgumentType lowered for `expr` in the active
@@ -18912,6 +19159,7 @@ export class Lowerer {
             bindings: null,
             surroundings: 0,
             overrides: null,
+            slotNotes: null,
           }
         : null;
     try {

@@ -12333,6 +12333,14 @@ export function lowerObjectMethodCall(
       loc,
       ts.getTextOfNode(access),
       original,
+      // The declared dispatch answers while nothing is replaced, for the
+      // calls whose dynamic form is not chosen for another reason (a spread
+      // argument, an inferred JavaScript result).
+      call.arguments.nodes.some(ts.isSpreadElement) ||
+        !declarerFile ||
+        (isJsSourceFile(declarerFile) && !lowerer.checkedJsFile(declarerFile))
+        ? undefined
+        : info,
     );
     return {
       kind: "seqExpr",

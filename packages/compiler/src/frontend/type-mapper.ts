@@ -1556,6 +1556,16 @@ export interface TypeMapperCtx {
    * only where literal identity matters — indexed accesses (`T[K]`) inside
    * generic bodies whose K is bound to a literal key. */
   resolveTypeParamTs?: TypeParamTsResolver;
+  /** resolveTypeParamTs restricted to the parameters whose bound literals
+   * the instance is keyed on (generic-functions.ts memberPatternTypeParams):
+   * the instance serves no other binding of them, so its body may map a
+   * type by them. Null for every other parameter. */
+  resolvePinnedTypeParamTs?: TypeParamTsResolver;
+  /** Set on the context pinnedBindingsCtx derives: evalMappedTemplate also
+   * decides a conditional by its member pattern (memberPatternExtendsCheck). */
+  memberPatterns?: true;
+  /** The context pinnedBindingsCtx derived from this one, kept for reuse. */
+  pinnedBindings?: TypeMapperCtx;
   /** A generic alias reference inside a generic body (`Catalog<G, P>`)
    * re-instantiated with the instance's bound type arguments: the concrete
    * checker type its signature instantiates, or null. Consulted only when
@@ -2663,6 +2673,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (viaDistribution !== null) {
         contextResolutions++;
         return viaDistribution;
+      }
+      // One distributed member of `Extract<U, { k: T }>`, whose branch the
+      // literal this instance is keyed on decides (memberPatternExtendsCheck).
+      const pinned = pinnedBindingsCtx(ctx);
+      const selected = pinned ? evalMappedTemplate(type, new Map(), new Map(), pinned) : null;
+      if (selected && selected !== type) {
+        const viaPattern = mapType(selected, ctx);
+        if (viaPattern !== null) {
+          contextResolutions++;
+          return viaPattern;
+        }
       }
     }
   }
@@ -5959,6 +5980,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           neverConditionalPart = true;
           continue;
         }
+        // So does a member of a distributed `Extract<U, { k: T }>` whose
+        // pattern the instance's binding of T rejects.
+        if (memberPatternSelectsNever(part, ctx)) {
+          neverConditionalPart = true;
+          continue;
+        }
         // A `void` PART is inhabited only by undefined (`Promise<void> |
         // void` return types, `string | void`): it becomes the undefinedT
         // unit arm, exactly like an undefined part — the value either
@@ -7529,7 +7556,9 @@ function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null
  * parameters (through the instance's bindings), indexed accesses
  * (`S[K]`, `S[K]["_output"]`) and conditional types whose `extends` side
  * is a reference to the same generic type as the checked type
- * (`S extends Schema<infer T> ? T : never`); answers the type itself
+ * (`S extends Schema<infer T> ? T : never`), and under pinnedBindingsCtx
+ * conditional types whose `extends` side is a member pattern over a pinned
+ * parameter (`C extends { kind: K } ? C : never`); answers the type itself
  * when it mentions none of the bound parameters, null otherwise. */
 function evalMappedTemplate(
   type: ts.Type,
@@ -7590,7 +7619,10 @@ function evalMappedTemplate(
     if (!checked) return null;
     const inferred =
       primitiveExtendsCheck(checked, extendsType, ctx) ??
-      matchInferReference(checked, extendsType, ctx);
+      matchInferReference(checked, extendsType, ctx) ??
+      (ctx.memberPatterns
+        ? memberPatternExtendsCheck(checked, extendsType, keys, scope, ctx)
+        : undefined);
     if (inferred === undefined) return null;
     const branch = inferred ? type.getTrueType() : type.getFalseType();
     const branchScope = inferred ? new Map([...scope, ...inferred]) : scope;
@@ -7621,6 +7653,119 @@ function primitiveExtendsCheck(
   const extendsParts = extendsType.isUnionType() ? ts.constituentTypes(extendsType) : [extendsType];
   if (!isPrimitive(checked) || !extendsParts.every(isPrimitive)) return undefined;
   return ctx.checker.isTypeAssignableTo(checked, extendsType) ? new Map() : false;
+}
+
+/** `checked extends { k: T }` where the extends side is an object type that
+ * declares only properties and each property type, evaluated under the
+ * bindings, is a primitive or literal type or a union of them (the member
+ * pattern of `Extract<U, { kind: K }>` once the instance binds K): the
+ * pattern has no infer positions, so the branch is decided property by
+ * property as TypeScript's assignability decides it. `checked` must have
+ * every required property, required itself, with a type assignable to the
+ * pattern's. A `checked` that is not one object type, a pattern with
+ * signatures or an index signature, and a property type that stays symbolic
+ * or is not primitive all stay undecided (undefined).
+ *
+ * Asked only under pinnedBindingsCtx: an instance body is shared by every
+ * call that maps to its key, so a branch may follow a parameter's binding
+ * only when the key names that binding. */
+function memberPatternExtendsCheck(
+  checked: ts.Type,
+  extendsType: ts.Type,
+  keys: Map<ts.Symbol, string>,
+  aliases: Map<ts.Symbol, ts.Type>,
+  ctx: TypeMapperCtx,
+): Map<ts.Symbol, ts.Type> | false | undefined {
+  const { checker } = ctx;
+  const plainObject = (t: ts.Type): boolean =>
+    (t.flags & ts.TypeFlags.Object) !== 0 &&
+    !t.isUnionType() &&
+    !t.isIntersectionType() &&
+    !checker.isArrayType(t) &&
+    !checker.isTupleType(t);
+  if (!plainObject(checked) || !plainObject(extendsType)) return undefined;
+  if (
+    checker.getCallSignatures(extendsType).length > 0 ||
+    checker.getConstructSignatures(extendsType).length > 0 ||
+    checker.getIndexInfosOfType(extendsType).length > 0
+  )
+    return undefined;
+  const pattern = checker.getPropertiesOfType(extendsType);
+  if (pattern.length === 0) return undefined;
+  const primitive =
+    ts.TypeFlags.StringLike |
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined;
+  const closed = (t: ts.Type): boolean =>
+    (t.isUnionType() ? ts.constituentTypes(t) : [t]).every(
+      (part) => (part.flags & primitive) !== 0 && (part.flags & ts.TypeFlags.TypeParameter) === 0,
+    );
+  const accessor = ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor;
+  // Every property is evaluated before any answer: one that stays symbolic
+  // leaves the whole conditional undecided, whatever the others say.
+  const wanted: { name: string; optional: boolean; type: ts.Type }[] = [];
+  let bound = false;
+  for (const property of pattern) {
+    if (property.flags & accessor) return undefined;
+    const declared = checker.getTypeOfSymbol(property);
+    const type = evalMappedTemplate(declared, keys, aliases, ctx);
+    if (!type || !closed(type)) return undefined;
+    if (type !== declared) bound = true;
+    wanted.push({
+      name: ts.symbolName(property),
+      optional: (property.flags & ts.SymbolFlags.Optional) !== 0,
+      type,
+    });
+  }
+  // A pattern that names no bound parameter is the checker's to decide.
+  if (!bound) return undefined;
+  const owned: (ts.Symbol | undefined)[] = [];
+  for (const want of wanted) {
+    const own = checker.getPropertyOfType(checked, want.name);
+    if (own && own.flags & accessor) return undefined;
+    owned.push(own);
+  }
+  for (let i = 0; i < wanted.length; i++) {
+    const want = wanted[i]!;
+    const own = owned[i];
+    if (!own) {
+      if (want.optional) continue;
+      return false;
+    }
+    if ((own.flags & ts.SymbolFlags.Optional) !== 0 && !want.optional) return false;
+    if (!checker.isTypeAssignableTo(checker.getTypeOfSymbol(own), want.type)) return false;
+  }
+  return new Map();
+}
+
+/** `ctx` resolving only the type parameters the instance is keyed on
+ * (resolvePinnedTypeParamTs), with the member pattern rule on, for
+ * evalMappedTemplate. Null where no such resolver is installed. */
+function pinnedBindingsCtx(ctx: TypeMapperCtx): TypeMapperCtx | null {
+  const resolve = ctx.resolvePinnedTypeParamTs;
+  if (!resolve) return null;
+  ctx.pinnedBindings ??= { ...ctx, resolveTypeParamTs: resolve, memberPatterns: true };
+  return ctx.pinnedBindings;
+}
+
+/** A union member that is a conditional only the member pattern decides
+ * (memberPatternExtendsCheck) and that selects `never`: one distributed
+ * member of `Extract<U, { k: T }>` whose `k` the literal this instance is
+ * keyed on excludes. Such a member contributes no arm to the union. A
+ * conditional the other rules already decide keeps their answer. */
+function memberPatternSelectsNever(part: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!part.isConditionalType()) return false;
+  const pinned = pinnedBindingsCtx(ctx);
+  if (!pinned || evalMappedTemplate(part, new Map(), new Map(), ctx) !== null) return false;
+  const selected = evalMappedTemplate(part, new Map(), new Map(), pinned);
+  if (!selected || !ctx.checker.isNeverType(selected)) return false;
+  // The answer depends on the instance's binding, like every mapping that
+  // consults it.
+  contextResolutions++;
+  return true;
 }
 
 /** `checked extends G<..., infer T, ...>`: the infer bindings when

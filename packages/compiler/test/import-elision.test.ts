@@ -22,6 +22,31 @@ import { ts7TestServers, type Ts7TestServer } from "../src/frontend/ts7/test-ser
  * in its output must be the ones that survive in the rewritten source. */
 
 const FILES: Record<string, string> = {
+  "import-aliases.ts": `import * as V from "./values";
+import * as W from "./values";
+import * as X from "./values";
+import * as Y from "./values";
+import * as Z from "./values";
+namespace N {
+  import fn = V.f;
+  export const r = fn();
+  import unused = W.f;
+  export import kept = X.a;
+}
+import top = Y.a;
+import dead = Z.a;
+console.log(N.r, top);
+`,
+  "type-alias-of-import.ts": `import * as V from "./values";
+import T = V.OnlyTypes;
+let p: T.P | undefined;
+console.log(p);
+`,
+  "only-empty-imports.ts": `import {} from "./values";
+import { type I } from "./types";
+const i: I = { x: 1 };
+console.log(i);
+`,
   "ambient.ts": `import { C, a, f } from "./values";
 import { C as C3 } from "./values";
 declare class DC extends C {}
@@ -367,26 +392,32 @@ function tscRequests(root: string, options: ts5.CompilerOptions): Map<string, st
   return out;
 }
 
-/** `inlinedOnly`: the cases whose import tsc drops after inlining const enum
- * members, which the rewrite keeps and reports. */
+/** `inlinedOnly`: the cases whose import tsc drops because it resolves every
+ * use at compile time (const enum members, an import alias used only in
+ * types), which the rewrite keeps and reports. */
 const DIALECTS: {
   label: string;
   tsc: ts5.CompilerOptions;
   scriptc: Record<string, unknown>;
   inlinedOnly: string[];
 }[] = [
-  { label: "default", tsc: {}, scriptc: {}, inlinedOnly: ["const-enums.ts", "const-enums.ts"] },
+  {
+    label: "default",
+    tsc: {},
+    scriptc: {},
+    inlinedOnly: ["const-enums.ts", "const-enums.ts", "type-alias-of-import.ts"],
+  },
   {
     label: "isolatedModules",
     tsc: { isolatedModules: true },
     scriptc: { isolatedModules: true },
-    inlinedOnly: [],
+    inlinedOnly: ["type-alias-of-import.ts"],
   },
   {
     label: "preserveConstEnums",
     tsc: { preserveConstEnums: true },
     scriptc: { preserveConstEnums: true },
-    inlinedOnly: ["const-enums.ts", "const-enums.ts"],
+    inlinedOnly: ["const-enums.ts", "const-enums.ts", "type-alias-of-import.ts"],
   },
 ];
 
@@ -445,7 +476,7 @@ describe.each(ts7TestServers())("import elision ($name)", (server) => {
       // The table holds cases of both kinds.
       expect(elisions.size).toBeGreaterThan(15);
       expect(elisions.has(join(root, "default-export-value.ts"))).toBe(false);
-      expect(elision.inlinedOnly.map((kept) => kept.file.slice(root.length + 1))).toEqual(
+      expect(elision.inlinedOnly.map((kept) => kept.file.slice(root.length + 1)).sort()).toEqual(
         dialect.inlinedOnly,
       );
       program.dispose();
@@ -579,6 +610,28 @@ describe.each(ts7TestServers())("import elision ($name)", (server) => {
     });
     // With isolatedModules tsc keeps the import too.
     expect(elide(files, "main.ts", { isolatedModules: true, preserveConstEnums: true })).toBeNull();
+  });
+
+  test("a file whose only imports bind nothing loses them, as in tsc's output", () => {
+    const files = {
+      "values.ts": VALUES,
+      "main.ts":
+        'import {} from "./values";\nimport { type I } from "./values";\nconst x: I = { x: 1 };\nconsole.log(x);\n',
+    };
+    expect(rewrite(files, "main.ts", {})).toBe(
+      `${" ".repeat('import {} from "./values";'.length)}\n${" ".repeat('import { type I } from "./values";'.length)}\nconst x: I = { x: 1 };\nconsole.log(x);\nimport type { I } from "./values";\nexport {};\n`,
+    );
+  });
+
+  test("an import alias inside a namespace keeps the import it reads when it is used", () => {
+    const files = {
+      "values.ts": "export function helper(): number { return 1; }\nexport const spare = 2;\n",
+      "main.ts":
+        'import * as lib from "./values";\nimport * as other from "./values";\nnamespace N {\n  import helper = lib.helper;\n  import unused = other.spare;\n  export const r = helper();\n}\nconsole.log(N.r);\n',
+    };
+    expect(rewrite(files, "main.ts", {})).toBe(
+      `import * as lib from "./values";\n${" ".repeat('import * as other from "./values";'.length)}\nnamespace N {\n  import helper = lib.helper;\n  ${" ".repeat("import unused = other.spare;".length)}\n  export const r = helper();\n}\nconsole.log(N.r);\nimport type * as other from "./values";\nexport {};\n`,
+    );
   });
 
   test("a file with nothing to drop is left alone", () => {

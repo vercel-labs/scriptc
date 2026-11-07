@@ -74,8 +74,7 @@
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
  *            to a cast to an unrelated class (SC6004), an import the
- *            build keeps although tsc drops it after inlining a const enum
- *            (SC6006); SC6005 (Date strings
+ *            build keeps although tsc's output drops it (SC6008); SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
@@ -263,15 +262,16 @@ export function nodeIslandDataFileDiag(message: string, loc: SrcLoc): ScrDiagnos
 
 /* ── SC6xxx: divergences from Node (warnings) ─────────────────────────── */
 
-/** SC6006 — tsc inlines const enum members and drops an import whose only
- * uses are such members, so the module is never loaded by tsc's output. The
+/** SC6008 — tsc drops an import whose only uses it resolves at compile time
+ * (const enum members, which it inlines; an import alias of the binding
+ * that is used only in types), so its output never loads the module. The
  * native program keeps the import: the module is loaded. */
 export function inlinedImportKeptDiag(specifier: string, loc: SrcLoc): ScrDiagnostic {
   return {
-    code: "SC6006",
-    message: `tsc drops this import after inlining the const enum members it is used for, so its build never loads ${specifier}; the compiled program keeps the import and loads the module`,
+    code: "SC6008",
+    message: `tsc drops this import, because it resolves every use of it at compile time (const enum members, or an import alias used only in types), so its build never loads ${specifier}; the compiled program keeps the import and loads the module`,
     loc,
-    hint: 'set "isolatedModules": true in the project tsconfig (tsc then keeps the import too), or move the const enum into a module with no load-time effects',
+    hint: "for a const enum, set \"isolatedModules\": true in the project tsconfig (tsc then keeps the import too); otherwise import the types with 'import type'",
   };
 }
 

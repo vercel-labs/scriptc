@@ -484,7 +484,7 @@ export interface LoadResult {
   /** SC6102 performance notes of the declaration-typed boundary
    * (decl-projection.ts): files whose projection was dropped. */
   declBoundaryNotes?: ScrDiagnostic[];
-  /** SC6006 warnings: imports the build keeps although tsc's output drops
+  /** SC6008 warnings: imports the build keeps although tsc's output drops
    * them (import-elision.ts, inlinedOnly). */
   importWarnings?: ScrDiagnostic[];
   /** The files whose JSX the program lowers (jsx-source.ts), by file name.

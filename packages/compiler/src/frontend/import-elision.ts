@@ -65,12 +65,12 @@ export interface ImportElision {
   declarations: number;
   /** Bindings dropped from declarations that stay. */
   bindings: number;
-  /** Local names of bindings kept only because a use tsc inlines needs
-   * them as values. */
+  /** Local names of bindings kept only for uses tsc does not count: a const
+   * enum member it inlines, an import alias used only in types. */
   inlined: string[];
   /** Import declarations kept although tsc drops them: every use of their
-   * bindings is one tsc inlines (a const enum member), and the use needs
-   * the binding as a value here. Spans in the file as written. */
+   * bindings is one tsc does not count, and the use needs the binding as a
+   * value here. Spans in the file as written. */
   inlinedOnly: { start: number; end: number; specifier: string }[];
 }
 
@@ -85,7 +85,9 @@ interface Alias {
   name: ts.Identifier;
   symbol: ts.Symbol | undefined;
   referenced: boolean;
-  /** A value use that tsc inlines instead of counting. */
+  /** A use that needs the binding as a value here and that tsc does not
+   * count: a const enum member it inlines, or an import alias of the
+   * binding that the file uses only in types. */
   inlined: boolean;
 }
 
@@ -247,6 +249,20 @@ export function elideImports(
     if (list === undefined) byName.set(name.text, [alias]);
     else list.push(alias);
   };
+  const addNamespaceAliases = (declaration: ts.ModuleDeclaration): void => {
+    const body = declaration.body;
+    if (body === undefined) return;
+    if (ts.isModuleDeclaration(body)) return addNamespaceAliases(body);
+    if (!ts.isModuleBlock(body)) return;
+    for (const stmt of body.statements.nodes) {
+      if (ts.isImportEqualsDeclaration(stmt)) {
+        if (!stmt.isTypeOnly && !ts.isExternalModuleReference(stmt.moduleReference))
+          addAlias(stmt, stmt.name);
+      } else if (ts.isModuleDeclaration(stmt)) {
+        addNamespaceAliases(stmt);
+      }
+    }
+  };
   const imports: ts.ImportDeclaration[] = [];
   const exportLists: ts.ExportDeclaration[] = [];
   const defaultExports: ts.ExportAssignment[] = [];
@@ -268,6 +284,10 @@ export function elideImports(
       }
     } else if (ts.isImportEqualsDeclaration(stmt)) {
       if (!stmt.isTypeOnly) addAlias(stmt, stmt.name);
+    } else if (ts.isModuleDeclaration(stmt)) {
+      // `import x = ns.member` inside a namespace is an alias too: a use of
+      // `x` is a use of `ns`.
+      if (!hasDeclareModifier(stmt)) addNamespaceAliases(stmt);
     } else if (ts.isExportDeclaration(stmt)) {
       if (
         !stmt.isTypeOnly &&
@@ -279,7 +299,15 @@ export function elideImports(
       if (!stmt.isExportEquals && ts.isIdentifier(stmt.expression)) defaultExports.push(stmt);
     }
   }
-  if (aliases.length === 0 && exportLists.length === 0 && defaultExports.length === 0) return null;
+  // An import with no binding to keep (`import {} from`, a clause of `type`
+  // specifiers only) is still a declaration tsc drops.
+  if (
+    aliases.length === 0 &&
+    imports.length === 0 &&
+    exportLists.length === 0 &&
+    defaultExports.length === 0
+  )
+    return null;
 
   // ---- what a symbol names ----
   /** The symbol an alias resolves to, or null when it resolves to nothing
@@ -409,20 +437,24 @@ export function elideImports(
     if (!ts.isImportEqualsDeclaration(node)) continue;
     // A name the checker cannot place is left as written.
     if (alias.symbol === undefined) alias.referenced = true;
-    // `export import x = …` of a value is always kept, and so is an alias of
-    // a value entity (`import x = ns.member` is emitted as a variable).
-    else if (hasExportModifier(node) || !ts.isExternalModuleReference(node.moduleReference))
-      mark(alias, hasExportModifier(node));
+    // `export import x = …` of a value is always kept. Any other alias,
+    // `import x = require("m")` and `import x = ns.member` alike, is emitted
+    // only when the file uses it as a value.
+    else if (hasExportModifier(node)) mark(alias, true);
   }
 
   // ---- the uses ----
   const uses: Use[] = [];
+  /** The names that occur anywhere beyond the aliases' own declarations. */
+  const mentioned = new Set<string>();
+  const aliasNames = new Set<ts.Node>(aliases.map((alias) => alias.name));
   if (byName.size > 0) {
     ts.walkPreorder(
       sf,
       (node) => {
         const id = node as ts.Identifier;
         if (!byName.has(id.text)) return;
+        if (!aliasNames.has(id)) mentioned.add(id.text);
         const kind = useKindOf(id);
         if (kind !== null && emitsWhereItStands(id)) uses.push({ id, kind });
       },
@@ -510,6 +542,26 @@ export function elideImports(
     const id = assignment.expression as ts.Identifier;
     const symbol = checker.resolveName(id.text, ALL_MEANINGS, id, false);
     if (symbol !== undefined && !emitsValue(symbol)) droppedDefaults.push(assignment);
+  }
+
+  // `import x = ns.member` that no value use reached: tsc emits nothing for
+  // it. One that is never mentioned again goes; one that still names a type
+  // (`let v: x.T`) has to stay as written, and the `ns` it reads with it.
+  const droppedEntityAliases: ts.ImportEqualsDeclaration[] = [];
+  for (const alias of aliases) {
+    const node = alias.node;
+    if (!ts.isImportEqualsDeclaration(node) || alias.referenced) continue;
+    if (ts.isExternalModuleReference(node.moduleReference)) continue;
+    if (!mentioned.has(alias.name.text)) {
+      droppedEntityAliases.push(node);
+      continue;
+    }
+    alias.inlined = true;
+    let head: ts.Node = node.moduleReference;
+    while (ts.isQualifiedName(head)) head = head.left;
+    if (!ts.isIdentifier(head)) continue;
+    const target = aliasOf(checker.resolveName(head.text, ALL_MEANINGS, head, false), head.text);
+    if (target !== undefined && !target.referenced) target.inlined = true;
   }
 
   const kept = (alias: Alias): boolean => {
@@ -624,6 +676,10 @@ export function elideImports(
     if (typeNames.length > 0) added.push(`import type { ${typeNames.join(", ")} } from ${from};`);
   }
 
+  for (const node of droppedEntityAliases) {
+    blanks.push([startOf(node), node.end]);
+    declarations++;
+  }
   for (const alias of aliases) {
     const node = alias.node;
     if (!ts.isImportEqualsDeclaration(node) || keptNode.get(node) === true) continue;

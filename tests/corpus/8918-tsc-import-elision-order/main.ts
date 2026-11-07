@@ -17,6 +17,8 @@ import { Base } from "./base.js";
 import { Contract } from "./contract.js";
 import { late } from "./late.js";
 import Unused, { alsoUsed } from "./partial.js";
+import { leaf } from "./leaf.js";
+import { aliased } from "./aliases.js";
 
 export { Shape as PublicShape };
 export { relayed } from "./relay.js";
@@ -46,3 +48,4 @@ const point: shapes.Point = { x: 1, y: 2 };
 const copy: typeof queried = 5;
 console.log("main", shape.sides, tag, config.name, kind, point.x + point.y, copy);
 console.log(used(), live.value, shadow(), new Derived().describe(), later(), alsoUsed);
+console.log(leaf, aliased);

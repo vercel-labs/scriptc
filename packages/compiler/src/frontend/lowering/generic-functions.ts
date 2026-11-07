@@ -4,6 +4,7 @@ import { staticNameBindings } from "./static-function-names.js";
 import { positionTag } from "./structural-positions.js";
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { heritageElementTarget, isHeritageTypeReference } from "../heritage-elements.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
@@ -48,11 +49,7 @@ import {
   hasExplicitJsDocReturn,
   promiseCarriesDyn,
 } from "./function-returns.js";
-import {
-  bindingNeverReassigned,
-  isValueIdentifier,
-  stripValueWrappers,
-} from "./binding-analysis.js";
+import { bindingNeverReassigned, isValueIdentifier } from "./binding-analysis.js";
 import { declareContextLocal } from "./function-context.js";
 import {
   extendInstantiationPath,
@@ -3719,7 +3716,7 @@ export function bindingGenericFnNodeOf(
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
   // Assertion wrappers strip like parens: `const r = (<T>(x: T) => x) as
   // Mapper` evaluates the arrow — the cast only renames its type.
-  const init = stripValueWrappers(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (
     (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) &&
     init.typeParameters !== undefined &&
@@ -3749,7 +3746,7 @@ export function bindingContextualGenericFnNodeOf(
   // asserted signature exactly like an annotation would).
   const asserted = ts.isAsExpression(decl.initializer) || ts.isTypeAssertion(decl.initializer);
   if (decl.type === undefined && !asserted) return null;
-  const init = stripValueWrappers(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (
     !(ts.isArrowFunction(init) || ts.isFunctionExpression(init)) ||
     init.typeParameters !== undefined ||

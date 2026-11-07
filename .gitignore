@@ -13,6 +13,8 @@ node_modules/
 !tests/fixtures/npm-static/node_modules/
 !tests/coverage-fixtures/wasm/node_modules/
 !tests/coverage-fixtures/node-islands*/node_modules/
+!tests/fixtures/node-island/*/node_modules/
+!tests/fixtures/node-island/*/*/node_modules/
 !tests/coverage-fixtures/dynamic-tier/package/node_modules/
 !tests/fixtures/npm-static/nested/inner/node_modules/
 !tests/fixtures/npm-static/node_modules/*/node_modules/
@@ -25,8 +27,6 @@ node_modules/
 !tests/fixtures/fetch/node_modules/
 !tests/fixtures/gateway-e2e/node_modules/
 !tests/fixtures/node-types/node_modules/
-!tests/fixtures/node-island/*/node_modules/
-!tests/fixtures/node-island/*/*/node_modules/
 dist/
 output/
 /packages/llvm-darwin-arm64/bin/

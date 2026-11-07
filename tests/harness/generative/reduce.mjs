@@ -10,6 +10,10 @@
  * Usage: node tests/harness/generative/reduce.mjs <program.ts> --out <reduced.ts>
  *          [--node-prints <text>] [--native-prints <text>]
  *
+ * A program of several files (an island program and its module, a variant
+ * the `module` rewrite split in two) is reduced in its entry: the files the
+ * entry reads beside it are copied along unchanged.
+ *
  * The verdict alone can be kept by a different bug than the one the program
  * started with (a reduction that empties an interface turns a silent copy
  * into a documented one). --node-prints keeps only candidates where Node's
@@ -17,11 +21,17 @@
  * keeps only candidates whose native output (stdout or stderr) contains the
  * text. Either pins the reduction to the difference that matters.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, extname, join, resolve } from "node:path";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { differential, FAILURES, programDirectory, requireBuiltCompiler } from "./oracle.mjs";
+import {
+  companionFiles,
+  differential,
+  FAILURES,
+  programDirectory,
+  repoRoot,
+  requireBuiltCompiler,
+} from "./oracle.mjs";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -40,8 +50,20 @@ if (positionals.length !== 1 || values.out === undefined) {
 requireBuiltCompiler();
 
 const file = resolve(positionals[0]);
-const workDir = programDirectory(mkdtempSync(join(tmpdir(), "scriptc-reduce-")));
-const entry = join(workDir, `candidate${extname(file)}`);
+// The candidates are built in a directory of their own, with the files the
+// program reads beside it (a second module, an island module) under their
+// own names, and the entry under its own: only the entry's lines are
+// reduced. The directory is inside the repository, where an island program
+// resolves @scriptc/node, and not under node_modules, where Node refuses to
+// strip types.
+const scratch = join(repoRoot, ".scriptc/generative");
+mkdirSync(scratch, { recursive: true });
+const workDir = programDirectory(mkdtempSync(join(scratch, "reduce-")));
+for (const name of companionFiles(file)) {
+  mkdirSync(dirname(join(workDir, name)), { recursive: true });
+  copyFileSync(join(dirname(file), name), join(workDir, name));
+}
+const entry = join(workDir, basename(file));
 const exe = join(workDir, "candidate.exe");
 
 async function outcome(lines) {

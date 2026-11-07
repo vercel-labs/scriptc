@@ -9,8 +9,8 @@
  * warnings the first build printed, and the verdict depends on them.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -34,6 +34,67 @@ export function programDirectory(directory) {
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "package.json"), `{ "type": "module" }\n`);
   return directory;
+}
+
+/** The files a program reads beside its entry, as paths relative to the
+ * entry's directory: every relative path one of its string literals names
+ * that exists (an import, or the module of a Node island call, which is
+ * named by a literal too), and what those files name in turn. A program
+ * moved to another directory needs them moved with it; without them it
+ * fails on the missing module, which is a different failure from the one
+ * it had. Throws for a file outside the entry's directory: the copy would
+ * not keep its place. */
+export function companionFiles(entry) {
+  const root = dirname(resolve(entry));
+  const found = new Set();
+  const pending = [resolve(entry)];
+  const sourceLike = /\.[cm]?[jt]sx?$/;
+  while (pending.length > 0) {
+    const file = pending.pop();
+    const text = readFileSync(file, "utf8");
+    for (const match of text.matchAll(/(["'`])(\.\.?\/[^"'`\n]*)\1/g)) {
+      const named = resolve(dirname(file), match[2]);
+      // A TypeScript module is imported under the name its output will have.
+      const candidates = [
+        named,
+        named.replace(/\.js$/, ".ts"),
+        named.replace(/\.js$/, ".tsx"),
+        named.replace(/\.mjs$/, ".mts"),
+        named.replace(/\.cjs$/, ".cts"),
+        `${named}.ts`,
+      ];
+      const target = candidates.find((path) => existsSync(path) && statSync(path).isFile());
+      if (target === undefined || target === resolve(entry)) continue;
+      const name = relative(root, target);
+      if (name.startsWith("..")) {
+        throw new Error(
+          `${file} reads ${match[2]}, outside the program's directory: copy the program and what it reads into one directory first`,
+        );
+      }
+      if (found.has(name)) continue;
+      found.add(name);
+      if (sourceLike.test(target)) pending.push(target);
+    }
+  }
+  return [...found].sort();
+}
+
+/** What --record keeps of the generators' digests and of the keys recorded
+ * under an older digest. Only the generators this run ran (`names`) are
+ * touched: a baseline key names a program by seed and index, so a digest
+ * may only move together with a run of that generator, never because
+ * another lane recorded. A generator whose digest moved emits other
+ * programs now, so every key of it this run did not observe names nothing
+ * and is dropped, whether or not the run covered its seed and index. */
+export function recordGeneratorDigests(baseline, names, observed, digestOf) {
+  for (const name of names) {
+    const digest = digestOf(name);
+    if (baseline.digests[name] === digest) continue;
+    for (const key of Object.keys(baseline.generate)) {
+      if (key.startsWith(`${name}/`) && observed[key] === undefined) delete baseline.generate[key];
+    }
+    baseline.digests[name] = digest;
+  }
 }
 
 /** Runs a command with stdin closed and returns its output as latin1 text, so

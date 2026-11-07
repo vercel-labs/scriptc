@@ -62,6 +62,7 @@ import {
   firstDiagnostic,
   pool,
   programDirectory,
+  recordGeneratorDigests,
   repoRoot,
   requireBuiltCompiler,
   runBoth,
@@ -133,7 +134,6 @@ function settle(lane, observed, covers, reproduce, recordMore = () => {}) {
     for (const key of Object.keys(known)) if (covers(key)) delete known[key];
     Object.assign(known, observed);
     recordMore(baseline);
-    for (const name of Object.keys(generators)) baseline.digests[name] = generatorDigest(name);
     writeBaseline(baseline);
     console.log(`recorded ${Object.keys(observed).length} ${lane} failures in ${options.baseline}`);
     return 0;
@@ -255,6 +255,10 @@ async function runGenerate() {
     observed,
     covers,
     "Write one again with: node tests/harness/generative/run.mjs emit <generator> <seed> <index> [<out dir>]",
+    // The digests of the generators this run ran, and of no other: a
+    // generator left out (islands without a libnode pack) keeps its digest,
+    // and the metamorphic lane records none.
+    (baseline) => recordGeneratorDigests(baseline, names, observed, generatorDigest),
   );
 }
 

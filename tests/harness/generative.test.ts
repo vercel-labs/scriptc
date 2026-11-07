@@ -5,11 +5,20 @@
  * names the programs it was recorded for, and every rewrite still produces
  * a program that parses.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { generate, generatorDigest, generators } from "./generative/generators.mjs";
-import { FAILURES } from "./generative/oracle.mjs";
+import { companionFiles, FAILURES, recordGeneratorDigests } from "./generative/oracle.mjs";
 import { rewrites, syntaxErrors } from "./generative/rewrites.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
@@ -71,6 +80,111 @@ describe("baseline", () => {
       expect(baseline.programs, key).toContain(key.slice(0, cut));
       expect(Object.keys(rewrites), key).toContain(key.slice(cut + 1));
       expect([...FAILURES, "warned-diff"], key).toContain(category);
+    }
+  });
+});
+
+describe("recording", () => {
+  const recorded = () => ({
+    digests: { records: "old-records", numbers: "same-numbers", islands: "old-islands" },
+    programs: [],
+    generate: {
+      "records/1/0003": "silent-diff",
+      "records/1/0150": "silent-diff",
+      "records/2/0001": "refused",
+      "numbers/1/0007": "runtime-error",
+      "islands/1/0024": "silent-diff",
+    },
+    metamorphic: {},
+  });
+  const digestOf = (name: string): string =>
+    ({ records: "new-records", numbers: "same-numbers", islands: "new-islands" })[name]!;
+
+  test("a digest moves only with a run of its generator", () => {
+    const baseline = recorded();
+    // A run of `records` and `numbers`: `islands` was left out (no libnode
+    // pack), so its digest and its keys stay as they were recorded, and the
+    // digest check still stops a later comparison across the change.
+    recordGeneratorDigests(baseline, ["records", "numbers"], {}, digestOf);
+    expect(baseline.digests).toEqual({
+      records: "new-records",
+      numbers: "same-numbers",
+      islands: "old-islands",
+    });
+    expect(baseline.generate["islands/1/0024"]).toBe("silent-diff");
+    expect(baseline.generate["numbers/1/0007"]).toBe("runtime-error");
+    // No generator ran (the metamorphic lane): nothing moves.
+    const untouched = recorded();
+    recordGeneratorDigests(untouched, [], {}, digestOf);
+    expect(untouched).toEqual(recorded());
+  });
+
+  test("a generator that changed keeps only the keys the run observed", () => {
+    const baseline = recorded();
+    // The run covered seed 1, programs 0..49, and saw one failure there.
+    // The keys recorded for the old generator name other programs now, the
+    // ones outside the run's range too.
+    const observed = { "records/1/0003": "refused" };
+    Object.assign(baseline.generate, observed);
+    recordGeneratorDigests(baseline, ["records"], observed, digestOf);
+    expect(Object.keys(baseline.generate).sort()).toEqual([
+      "islands/1/0024",
+      "numbers/1/0007",
+      "records/1/0003",
+    ]);
+    expect(baseline.digests.records).toBe("new-records");
+  });
+});
+
+describe("reducing", () => {
+  test("a program is moved with the files it reads beside it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-companions-"));
+    try {
+      mkdirSync(join(dir, "sub"));
+      // An island program names its module in a call, a split program
+      // imports its second module under the name its output will have.
+      writeFileSync(
+        join(dir, "main.ts"),
+        [
+          'import { callSync } from "@scriptc/node";',
+          'import { helper } from "./helper.js";',
+          'console.log(helper(), callSync<number>("./island.cjs", "count"), "./absent.js");',
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(dir, "helper.ts"),
+        'import { deep } from "./sub/deep.js";\nexport const helper = (): number => deep;\n',
+      );
+      writeFileSync(join(dir, "sub/deep.ts"), 'import "../main.js";\nexport const deep = 1;\n');
+      writeFileSync(join(dir, "island.cjs"), "exports.count = () => 1;\n");
+      writeFileSync(join(dir, "unrelated.ts"), "export {};\n");
+      expect(companionFiles(join(dir, "main.ts"))).toEqual([
+        "helper.ts",
+        "island.cjs",
+        join("sub", "deep.ts"),
+      ]);
+      // A file outside the program's directory cannot keep its place.
+      expect(() => companionFiles(join(dir, "sub/deep.ts"))).toThrow(
+        "outside the program's directory",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the programs the generators emit name their own companions", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-companions-"));
+    try {
+      const files = generate("islands", 1, 3);
+      for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+      expect(companionFiles(join(dir, "main.ts"))).toEqual(
+        Object.keys(files)
+          .filter((name) => name !== "main.ts")
+          .sort(),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

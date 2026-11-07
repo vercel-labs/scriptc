@@ -313,6 +313,20 @@ export function lowerArrayCallback(
     fnArg.type.params.length > full.length ||
     !fnArg.type.params.every((p, i) => typeEquals(p, full[i]!))
   ) {
+    // A function whose parameters past the element cannot hold what the
+    // method passes there (`items.map(format)` with `format(item, options?)`):
+    // JavaScript would hand it the index as its options. Name the position
+    // and the rewrite instead of the function's type.
+    if (fnArg.type.kind === "func" && fnArg.type.params.length <= full.length) {
+      const params = fnArg.type.params;
+      const at = params.findIndex((p, i) => i >= lead.length && !typeEquals(p, full[i]!));
+      if (at >= 0)
+        lowerer.unsupported(
+          "SC1090",
+          argNode,
+          `an array-method callback whose parameter ${at + 1} is '${lowerer.fmt(params[at]!)}' where the method passes ${at === lead.length ? "the index" : "the array"} (JavaScript calls the callback with the element, its index and the array, so the function would receive that value; pass a function that takes only what it reads, such as '(value) => f(value)')`,
+        );
+    }
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   return {

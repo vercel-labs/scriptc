@@ -575,6 +575,7 @@ import {
 } from "./lower-functions.js";
 import { lowerArrayMethodCall } from "./containers/array-methods.js";
 import { type ArrayHofInfo, fuseArrayPipelines } from "./containers/array-pipelines.js";
+import type { ArrayHelperRecipe } from "./containers/array-callbacks.js";
 import {
   lowerMapMethodCall,
   lowerMapForEachCall,
@@ -3847,6 +3848,10 @@ export class Lowerer {
   /** What each array-HOF helper computes, keyed by helper name: the chain
    * fusion pass reads it to recognize pipelines of helper calls. */
   readonly arrHofInfo = new Map<string, ArrayHofInfo>();
+  /** What each shared array-method helper was built from, keyed by helper
+   * name: function-views.ts rebuilds the helper for a callback of more
+   * parameters from it. */
+  readonly arrHofRecipes = new Map<string, ArrayHelperRecipe>();
   /** Per-arm calls through union-typed class receivers, interned by the
    * receiver union, member, completed argument ABI, and result type. */
   readonly unionCallHelpers = new Map<string, string>();
@@ -4845,6 +4850,7 @@ export class Lowerer {
       mapTable("equalityHelpers", this.equalityHelpers),
       mapTable("arrHofHelpers", this.arrHofHelpers),
       irDataTable("arrHofInfo", this.arrHofInfo),
+      irDataTable("arrHofRecipes", this.arrHofRecipes),
       mapTable("unionCallHelpers", this.unionCallHelpers),
       mapTable("indexedUnionNumericTwins", this.indexedUnionNumericTwins),
       setTable("coercions.checkedNarrows", this.coercions.checkedNarrows),

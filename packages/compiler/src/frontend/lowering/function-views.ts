@@ -9,6 +9,7 @@ import {
 import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { strandedFuncAdapter } from "./coercions/function-adapters.js";
+import { widerArrayHelper } from "./containers/array-callbacks.js";
 import { keyedHelperName } from "./stable-names.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 
@@ -44,6 +45,13 @@ import { PoisonError, type Lowerer } from "./lowerer.js";
  * parameter cannot hold takes the stranded TypeError when the wide view is
  * invoked. A chain of views unwinds one adapter at a time: the adapter to
  * S⁺ is itself a widening adapter when the view only converted types.
+ *
+ * An array method is the same kind of consumer: JavaScript hands every
+ * callback the element, its index and the array, and the method's helper
+ * passes the parameters the callback's type has. A shared helper whose
+ * callback type has such a view tests for it the same way and hands the
+ * function the view forwards to, adapted to the full parameter list, to
+ * the same helper built for that list (ArrayHelperRecipe).
  *
  * Two more consumers hand a function more than a view's type has, and
  * both are settled once, when every function is lowered (finish):
@@ -111,16 +119,23 @@ export class FunctionViews {
   private readonly holding = new Set<Adapter>();
   /** The (widening adapter, view) pairs already given a test. */
   private readonly looked = new Set<string>();
+  /** The array-method helpers that test for views: the body each was
+   * built with, and its tests by the view's name. */
+  private readonly helpers = new Map<string, { own: IrStmt[]; tests: Map<string, IrStmt> }>();
+  /** How many helper recipes the last call saw. */
+  private recipes = 0;
 
   /** Reads the adapters lowering added since the last call and gives every
    * widening adapter its tests. True when it added or changed a function. */
   process(lowerer: Lowerer): boolean {
     let changed = false;
     for (;;) {
-      // A pair to test appears only with a new adapter.
-      if (!this.scan(lowerer)) return changed;
+      // A pair to test appears only with a new adapter or a new helper.
+      const adapters = this.scan(lowerer);
+      if (!adapters && lowerer.arrHofRecipes.size === this.recipes) return changed;
+      this.recipes = lowerer.arrHofRecipes.size;
       this.settleHolders();
-      let added = false;
+      let added = this.helperTests(lowerer);
       // Building a test adds adapters to the list; they are read on the
       // next round.
       // By name, so the tests and their order do not depend on the order
@@ -143,6 +158,88 @@ export class FunctionViews {
       if (!added) return changed;
       changed = true;
     }
+  }
+
+  /** Gives each shared array-method helper whose callback type has a view
+   * its tests. True when it added one. */
+  private helperTests(lowerer: Lowerer): boolean {
+    let added = false;
+    for (const name of [...lowerer.arrHofRecipes.keys()].sort()) {
+      const helper = lowerer.liftedFnNamed(name);
+      const callback = helper?.params[1];
+      if (helper === undefined || callback?.type.kind !== "func") continue;
+      const views = this.holders.get(typeKey(callback.type));
+      if (views === undefined) continue;
+      for (const view of [...views].sort(byFactoryName)) {
+        const pair = `${name}\n${view.factory.name}`;
+        if (this.looked.has(pair)) continue;
+        this.looked.add(pair);
+        const test = this.quietly(lowerer, () => this.throughHelper(lowerer, helper, view));
+        if (test === null) continue;
+        let entry = this.helpers.get(name);
+        if (entry === undefined) {
+          entry = { own: helper.body, tests: new Map() };
+          this.helpers.set(name, entry);
+          // A fused pipeline calls the callback itself and would skip the
+          // tests: the helper leaves the registry fusion reads.
+          lowerer.arrHofInfo.delete(name);
+        }
+        entry.tests.set(view.factory.name, test);
+        const tests = entry.tests;
+        helper.body = [...[...tests.keys()].sort().map((key) => tests.get(key)!), ...entry.own];
+        added = true;
+      }
+    }
+    return added;
+  }
+
+  /** `if (f is the view `view` makes) return <the same helper for the full
+   * parameter list>(…, <the function it forwards to, adapted to that
+   * list>, …)`, for the array-method helper `helper`. Null when the helper
+   * already passes everything. */
+  private throughHelper(lowerer: Lowerer, helper: IrFunction, view: Adapter): IrStmt | null {
+    const loc = helper.loc;
+    const recipe = lowerer.arrHofRecipes.get(helper.name);
+    const wide = recipe === undefined ? null : widerArrayHelper(lowerer, recipe, loc);
+    if (wide === null || wide === helper.name) return null;
+    const full = lowerer.liftedFnNamed(wide)?.params[1]?.type;
+    const callback = helper.params[1]!;
+    if (full?.kind !== "func" || callback.type.kind !== "func") return null;
+    const value: IrExpr = { kind: "varRef", localId: callback.localId, type: callback.type, loc };
+    const first =
+      this.adapter(lowerer, view.source, full, view.checked, loc) ??
+      strandedFuncAdapter(lowerer, view.source, full, loc);
+    const source: IrExpr = {
+      kind: "viewSource",
+      value,
+      adapter: view.body,
+      type: view.source,
+      loc,
+    };
+    const call: IrExpr = {
+      kind: "call",
+      callee: wide,
+      args: helper.params.map((param): IrExpr =>
+        param === callback
+          ? { kind: "call", callee: first, args: [source], type: full, loc }
+          : { kind: "varRef", localId: param.localId, type: param.type, loc },
+      ),
+      type: helper.returnType,
+      loc,
+    };
+    return {
+      kind: "if",
+      cond: { kind: "viewOf", value, adapter: view.body, type: BOOL, loc },
+      then:
+        helper.returnType.kind === "void"
+          ? [
+              { kind: "exprStmt", expr: call, loc },
+              { kind: "return", value: null, loc },
+            ]
+          : [{ kind: "return", value: call, loc }],
+      else_: null,
+      loc,
+    };
   }
 
   /** Runs `build` with diagnostics captured. The adapters built here

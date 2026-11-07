@@ -10,6 +10,7 @@ import {
 } from "../../ir/build.js";
 
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesAssertions } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { ladderFenceExpr } from "./lowerer.js";
 import type { FnCtx } from "./function-context.js";
@@ -4932,7 +4933,7 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
     );
   }
   if (args.length === 1) {
-    const optsNode = stripParensAndCasts(args[0]!);
+    const optsNode = withoutParenthesesAssertions(args[0]!);
     if (!ts.isObjectLiteralExpression(optsNode)) {
       lowerer.noLowering(
         `${api} with a non-literal options value`,
@@ -6013,13 +6014,8 @@ function clientFnConditionalOf(
   let e: ts.Expression = init;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isConditionalExpression(e)) return null;
-  const unwrap = (a: ts.Expression): ts.Expression => {
-    let x = a;
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
-  const t = clientFnRefOf(lowerer, unwrap(e.whenTrue));
-  const f = clientFnRefOf(lowerer, unwrap(e.whenFalse));
+  const t = clientFnRefOf(lowerer, withoutParentheses(e.whenTrue));
+  const f = clientFnRefOf(lowerer, withoutParentheses(e.whenFalse));
   if (!t || !f) return null;
   if (t.member !== f.member || t.module === f.module) {
     lowerer.noLowering(
@@ -6028,7 +6024,11 @@ function clientFnConditionalOf(
       "the lowered shape is `cond ? https.request : http.request` (or the .get pair, either order) — the same member of both modules",
     );
   }
-  return { cond: unwrap(e.condition), trueSecure: t.module === "https", member: t.member };
+  return {
+    cond: withoutParentheses(e.condition),
+    trueSecure: t.module === "https",
+    member: t.member,
+  };
 }
 
 /** Whether a condition is a bare identifier over a never-reassigned
@@ -6298,17 +6298,6 @@ function checkSniCallbackValue(lowerer: Lowerer, v: IrExpr, blame: ts.Node, what
   return v;
 }
 
-/** Strips parentheses and type assertions: the portless spelling wraps
- * an options spread as `...({ ... } as Record<string, unknown>)`. */
-function stripParensAndCasts(node: ts.Expression): ts.Expression {
-  let e = node;
-  for (;;) {
-    if (ts.isParenthesizedExpression(e)) e = e.expression;
-    else if (ts.isAsExpression(e) || ts.isTypeAssertion(e)) e = e.expression;
-    else return e;
-  }
-}
-
 /** Module-function calls on http2 import bindings. createServer lowers h2c;
  * createSecureServer lowers h2 over TLS, with allowHTTP1 selecting one
  * dual-ALPN server whose request/connect listeners mirror across parsers. */
@@ -6566,10 +6555,10 @@ function lowerHttp2ModuleCall(
         // semantics — PROVIDED the included value IS the condition, which
         // the text check pins. Any other spread operand is opaque to the
         // static walk.
-        const inner = stripParensAndCasts(prop.expression);
+        const inner = withoutParenthesesAssertions(prop.expression);
         if (ts.isConditionalExpression(inner)) {
-          const whenTrue = stripParensAndCasts(inner.whenTrue);
-          const whenFalse = stripParensAndCasts(inner.whenFalse);
+          const whenTrue = withoutParenthesesAssertions(inner.whenTrue);
+          const whenFalse = withoutParenthesesAssertions(inner.whenFalse);
           const condText = ts.getTextOfNode(inner.condition);
           const ok =
             ts.isObjectLiteralExpression(whenTrue) &&
@@ -7446,7 +7435,7 @@ function lowerHttpClientCall(
         // through the requestAgent rows: getName-keyed maxSockets
         // accounting over one-dial-per-request connections; a runtime
         // non-Agent value is Node's ERR_INVALID_ARG_TYPE.
-        const e = initializer !== null ? stripParensAndCasts(initializer) : null;
+        const e = initializer !== null ? withoutParenthesesAssertions(initializer) : null;
         if (e !== null && e.kind === ts.SyntaxKind.FalseKeyword) {
           agentClose = prop;
           break;

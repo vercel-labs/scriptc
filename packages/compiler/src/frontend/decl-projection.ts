@@ -27,6 +27,7 @@
  * scriptc-perf/results/design-decl-boundary/DESIGN.md. */
 
 import * as ts from "./ts7/adapter.js";
+import { withoutParenthesesNonNullAwait } from "./outer-expressions.js";
 import { declarationSelector, originAt } from "./lowering/decl-origin.js";
 
 /** Per user file, the origin (lowering/decl-origin.ts) of each boundary
@@ -533,13 +534,6 @@ function inTypeContext(node: ts.Node): boolean {
   return false;
 }
 
-function unwrapTransparent(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAwaitExpression(e))
-    e = e.expression;
-  return e;
-}
-
 /** Whether the walk reads an expression's own type in the JavaScript world:
  * considerExpr's gate, which needs no checker answer. The syntactic pass
  * below selects the same nodes, so the batch it issues is exactly the walk's
@@ -818,7 +812,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
           deferred.add(jsNode);
         }
       } else if (ts.isAwaitExpression(d)) {
-        const inner = unwrapTransparent(d.expression);
+        const inner = withoutParenthesesNonNullAwait(d.expression);
         produced =
           (ts.isCallExpression(inner) || ts.isPropertyAccessExpression(inner)) &&
           (declaredInPackage(
@@ -1019,7 +1013,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
     /** A receiver that stays `any` after the rewrite: a package call whose
      * type does not project, or a user const bound to one. */
     const staysUntyped = (e: ts.Node): boolean => {
-      const u = unwrapTransparent(e as ts.Expression);
+      const u = withoutParenthesesNonNullAwait(e as ts.Expression);
       if (unprojected.has(u)) return true;
       if (!ts.isIdentifier(u)) return false;
       let sym: ts.Symbol | undefined;
@@ -1038,7 +1032,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
         decl.parent !== undefined &&
         ts.isVariableDeclarationList(decl.parent) &&
         (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
-        unprojected.has(unwrapTransparent(decl.initializer))
+        unprojected.has(withoutParenthesesNonNullAwait(decl.initializer))
       );
     };
     for (const e of exprOrder) {
@@ -1077,7 +1071,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
         const recv = receiverOf(e);
         if (
           recv !== null &&
-          (keptSet.has(unwrapTransparent(recv as ts.Expression)) || willBeTyped(recv))
+          (keptSet.has(withoutParenthesesNonNullAwait(recv as ts.Expression)) || willBeTyped(recv))
         )
           continue;
       }

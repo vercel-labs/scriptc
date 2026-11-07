@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { indexStoreInBounds } from "./runtime-optional-bounds.js";
 
 /** Program queries the element-state scan needs from the optional-read
@@ -143,7 +144,7 @@ export class ArrayElementStates {
         node.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
       // `xs[i]++` writes index i, and `xs.length++` grows the array.
-      const target = peel(node.operand as ts.Expression);
+      const target = withoutParenthesesTypeWrappers(node.operand as ts.Expression);
       if (ts.isElementAccessExpression(target)) return this.addHolesTo(target.expression);
       if (
         ts.isPropertyAccessExpression(target) &&
@@ -154,7 +155,7 @@ export class ArrayElementStates {
       return false;
     }
     if (ts.isDeleteExpression(node)) {
-      const target = peel(node.expression);
+      const target = withoutParenthesesTypeWrappers(node.expression);
       return ts.isElementAccessExpression(target) ? this.addHolesTo(target.expression) : false;
     }
     if (ts.isArrayLiteralExpression(node)) return this.record(node);
@@ -183,7 +184,7 @@ export class ArrayElementStates {
 
   /** `[a, ...rest] = source` as an assignment. */
   private scanRestAssignment(node: ts.BinaryExpression): boolean {
-    const pattern = peel(node.left);
+    const pattern = withoutParenthesesTypeWrappers(node.left);
     if (!ts.isArrayLiteralExpression(pattern)) return false;
     const last = pattern.elements.nodes[pattern.elements.nodes.length - 1];
     if (!last || !ts.isSpreadElement(last)) return false;
@@ -195,7 +196,7 @@ export class ArrayElementStates {
    * is generic. Arrays the expression creates are judged by how they are
    * built; any other array by the facts of its element ABI. */
   private contents(node: ts.Expression): Contents | null {
-    const e = peel(node);
+    const e = withoutParenthesesTypeWrappers(node);
     if (ts.isArrayLiteralExpression(e)) {
       let undefinedValue = false;
       let holes = false;
@@ -230,7 +231,7 @@ export class ArrayElementStates {
    * known array constructor or method. */
   private builtContents(node: ts.CallExpression | ts.NewExpression): Contents | null | undefined {
     const args = node.arguments?.nodes ?? [];
-    const callee = peel(node.expression);
+    const callee = withoutParenthesesTypeWrappers(node.expression);
     if (ts.isIdentifier(callee)) {
       if (!this.host.isGlobal(callee, "Array")) return undefined;
       // `new Array(n)` allocates holes; more arguments are the elements.
@@ -566,7 +567,7 @@ export class ArrayElementStates {
   private scanAssignment(node: ts.BinaryExpression): boolean {
     const op = node.operatorToken.kind;
     if (op < ts.SyntaxKind.FirstAssignment || op > ts.SyntaxKind.LastAssignment) return false;
-    const target = peel(node.left);
+    const target = withoutParenthesesTypeWrappers(node.left);
     if (op === ts.SyntaxKind.EqualsToken && ts.isArrayLiteralExpression(target))
       return this.scanRestAssignment(node);
     if (ts.isElementAccessExpression(target)) {
@@ -629,7 +630,7 @@ export class ArrayElementStates {
         )
           changed = true;
     if (this.record(node)) changed = true;
-    const callee = peel(node.expression);
+    const callee = withoutParenthesesTypeWrappers(node.expression);
     if (!ts.isPropertyAccessExpression(callee)) return changed;
     if (this.scanReflectiveWrite(callee, args)) changed = true;
     // In-place stores into the receiver.
@@ -671,7 +672,7 @@ export class ArrayElementStates {
     args: readonly ts.Expression[],
   ): boolean {
     const method = callee.name.text;
-    const owner = peel(callee.expression);
+    const owner = withoutParenthesesTypeWrappers(callee.expression);
     const reflective =
       (this.host.isGlobal(owner, "Object") &&
         (method === "assign" ||
@@ -682,10 +683,12 @@ export class ArrayElementStates {
         (method === "set" || method === "defineProperty" || method === "apply")) ||
       ((method === "call" || method === "apply") &&
         ts.isPropertyAccessExpression(owner) &&
-        ts.isPropertyAccessExpression(peel(owner.expression)) &&
-        (peel(owner.expression) as ts.PropertyAccessExpression).name.text === "prototype" &&
+        ts.isPropertyAccessExpression(withoutParenthesesTypeWrappers(owner.expression)) &&
+        (withoutParenthesesTypeWrappers(owner.expression) as ts.PropertyAccessExpression).name
+          .text === "prototype" &&
         this.host.isGlobal(
-          (peel(owner.expression) as ts.PropertyAccessExpression).expression,
+          (withoutParenthesesTypeWrappers(owner.expression) as ts.PropertyAccessExpression)
+            .expression,
           "Array",
         ));
     if (!reflective) return false;
@@ -731,7 +734,7 @@ export class ArrayElementStates {
   }
 
   private loopSource(node: ts.ForOfStatement): ts.Expression {
-    let source = peel(node.expression);
+    let source = withoutParenthesesTypeWrappers(node.expression);
     if (
       ts.isCallExpression(source) &&
       ts.isPropertyAccessExpression(source.expression) &&
@@ -787,7 +790,7 @@ const ARRAY_BUILDERS = new Set([
 ]);
 
 function buildsArray(node: ts.CallExpression | ts.NewExpression): boolean {
-  const callee = peel(node.expression);
+  const callee = withoutParenthesesTypeWrappers(node.expression);
   if (ts.isIdentifier(callee)) return callee.text === "Array";
   return ts.isPropertyAccessExpression(callee) && ARRAY_BUILDERS.has(callee.name.text);
 }
@@ -850,22 +853,9 @@ function merge(a: Contents | null, b: Contents | null): Contents | null {
   return { undefined: a.undefined || b.undefined, holes: a.holes || b.holes };
 }
 
-function peel(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
-}
-
 function sameReference(a: ts.Expression, b: ts.Expression): boolean {
-  const left = peel(a);
-  const right = peel(b);
+  const left = withoutParenthesesTypeWrappers(a);
+  const right = withoutParenthesesTypeWrappers(b);
   if (ts.isIdentifier(left) && ts.isIdentifier(right)) return left.text === right.text;
   if (left.kind === ts.SyntaxKind.ThisKeyword && right.kind === ts.SyntaxKind.ThisKeyword)
     return true;
@@ -876,7 +866,7 @@ function sameReference(a: ts.Expression, b: ts.Expression): boolean {
 
 /** `xs[xs.length] = v` appends without leaving a hole. */
 function isAppendIndex(target: ts.ElementAccessExpression): boolean {
-  const index = peel(target.argumentExpression);
+  const index = withoutParenthesesTypeWrappers(target.argumentExpression);
   return (
     ts.isPropertyAccessExpression(index) &&
     index.name.text === "length" &&
@@ -887,7 +877,7 @@ function isAppendIndex(target: ts.ElementAccessExpression): boolean {
 /** `o["name"]`: a string literal key that is not an array index writes a
  * named property, never an element. */
 function namesProperty(target: ts.ElementAccessExpression): boolean {
-  const key = peel(target.argumentExpression);
+  const key = withoutParenthesesTypeWrappers(target.argumentExpression);
   if (!ts.isStringLiteral(key) && !ts.isNoSubstitutionTemplateLiteral(key)) return false;
   return !/^(0|[1-9][0-9]*)$/.test(key.text) || Number(key.text) >= 2 ** 32 - 1;
 }
@@ -899,15 +889,15 @@ function isShrinkingLength(
   target: ts.PropertyAccessExpression,
 ): boolean {
   const op = node.operatorToken.kind;
-  const right = peel(node.right);
+  const right = withoutParenthesesTypeWrappers(node.right);
   if (op === ts.SyntaxKind.MinusEqualsToken) return ts.isNumericLiteral(right);
   if (op !== ts.SyntaxKind.EqualsToken) return false;
   if (ts.isNumericLiteral(right)) return Number(right.text) === 0;
   if (!ts.isBinaryExpression(right) || right.operatorToken.kind !== ts.SyntaxKind.MinusToken)
     return false;
-  const length = peel(right.left);
+  const length = withoutParenthesesTypeWrappers(right.left);
   return (
-    ts.isNumericLiteral(peel(right.right)) &&
+    ts.isNumericLiteral(withoutParenthesesTypeWrappers(right.right)) &&
     ts.isPropertyAccessExpression(length) &&
     length.name.text === "length" &&
     sameReference(length.expression, target.expression)
@@ -915,7 +905,7 @@ function isShrinkingLength(
 }
 
 function isNumberLike(node: ts.Expression): boolean {
-  const e = peel(node);
+  const e = withoutParenthesesTypeWrappers(node);
   return !(
     ts.isStringLiteral(e) ||
     ts.isNoSubstitutionTemplateLiteral(e) ||

@@ -61,7 +61,8 @@ import {
   BUILTIN_MEMBER_READS,
 } from "./builtin-object-members.generated.js";
 import type { Lowerer } from "./lowerer.js";
-import { stdlibGlobalNameOf, withoutTypeCasts } from "./surfaces.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { stdlibGlobalNameOf } from "./surfaces.js";
 
 /** What one operation reads: `keys` through its operand's prototype chain,
  * `others` from named objects ("Promise resolve"). */
@@ -860,7 +861,7 @@ function calleeOf(
   call: ts.CallExpression | ts.NewExpression,
   interest: Interest,
 ): string | null {
-  const callee = withoutTypeCasts(call.expression);
+  const callee = withoutParenthesesTypeWrappers(call.expression);
   if (ts.isIdentifier(callee)) {
     if (!interest.calleeNames.has(callee.text)) return null;
     const name = ts.isNewExpression(call) ? `new:${callee.text}` : callee.text;

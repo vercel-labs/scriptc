@@ -30,7 +30,8 @@ import {
   BUILTIN_OBJECT_MEMBERS,
 } from "./builtin-object-members.generated.js";
 import type { Lowerer } from "./lowerer.js";
-import { stdlibGlobalNameOf, withoutTypeCasts } from "./surfaces.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { stdlibGlobalNameOf } from "./surfaces.js";
 
 /** f: a function; a: an accessor; t: other data that is truthy; z: other
  * data that is falsy. */
@@ -163,7 +164,7 @@ function constInitializer(lowerer: Lowerer, id: ts.Identifier): ts.Expression | 
  * "globalThis"), through parentheses, type-only wrappers, the global
  * object's spellings and `const` aliases. Null for every other expression. */
 export function builtinObjectOf(lowerer: Lowerer, expr: ts.Expression, depth = 0): string | null {
-  const e = withoutTypeCasts(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   if (ts.isPropertyAccessExpression(e) && !e.questionDotToken && e.name.text === "prototype") {
     const base = builtinObjectOf(lowerer, e.expression, depth);
     if (base !== null) return table().has(`${base}.prototype`) ? `${base}.prototype` : null;
@@ -185,7 +186,7 @@ export function builtinObjectOf(lowerer: Lowerer, expr: ts.Expression, depth = 0
 function prototypeOperand(lowerer: Lowerer, e: ts.Expression): ts.Expression | null {
   if (ts.isPropertyAccessExpression(e) && e.name.text === "__proto__") return e.expression;
   if (!ts.isCallExpression(e) || e.arguments.nodes.length !== 1) return null;
-  const callee = withoutTypeCasts(e.expression);
+  const callee = withoutParenthesesTypeWrappers(e.expression);
   if (
     !ts.isPropertyAccessExpression(callee) ||
     callee.name.text !== "getPrototypeOf" ||
@@ -201,7 +202,7 @@ function prototypeOperand(lowerer: Lowerer, e: ts.Expression): ts.Expression | n
  * object, regular expression or function literal, or `new X(…)` of a
  * built-in constructor. */
 function literalPrototype(lowerer: Lowerer, value: ts.Expression): string | null {
-  const v = withoutTypeCasts(value);
+  const v = withoutParenthesesTypeWrappers(value);
   if (ts.isArrayLiteralExpression(v)) return "Array.prototype";
   if (ts.isObjectLiteralExpression(v)) return "Object.prototype";
   if (ts.isRegularExpressionLiteral(v)) return "RegExp.prototype";
@@ -219,7 +220,7 @@ export function staticMemberKey(lowerer: Lowerer, access: ts.Expression): string
   if (ts.isPropertyAccessExpression(access))
     return ts.isIdentifier(access.name) ? access.name.text : null;
   if (!ts.isElementAccessExpression(access)) return null;
-  const key = withoutTypeCasts(access.argumentExpression);
+  const key = withoutParenthesesTypeWrappers(access.argumentExpression);
   if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
   if (
     ts.isPropertyAccessExpression(key) &&
@@ -246,17 +247,17 @@ function ownerRootNames(): Set<string> {
  * rooted at a built-in global or at an alias already found, or a read of a
  * value's prototype. */
 function initializerMayNameBuiltin(init: ts.Expression, aliases: ReadonlySet<string>): boolean {
-  let e = withoutTypeCasts(init);
+  let e = withoutParenthesesTypeWrappers(init);
   for (;;) {
     if (ts.isPropertyAccessExpression(e)) {
       if (e.name.text === "__proto__") return true;
-      e = withoutTypeCasts(e.expression);
-    } else if (ts.isElementAccessExpression(e)) e = withoutTypeCasts(e.expression);
+      e = withoutParenthesesTypeWrappers(e.expression);
+    } else if (ts.isElementAccessExpression(e)) e = withoutParenthesesTypeWrappers(e.expression);
     else break;
   }
   if (ts.isIdentifier(e)) return ownerRootNames().has(e.text) || aliases.has(e.text);
   if (!ts.isCallExpression(e)) return false;
-  const callee = withoutTypeCasts(e.expression);
+  const callee = withoutParenthesesTypeWrappers(e.expression);
   return ts.isPropertyAccessExpression(callee) && callee.name.text === "getPrototypeOf";
 }
 
@@ -297,12 +298,12 @@ function aliasNames(lowerer: Lowerer, sf: ts.SourceFile): Set<string> {
  * a value's prototype (`Object.getPrototypeOf([])`, `[].__proto__`). The
  * cheap test in front of every checker query here. */
 function mayNameBuiltin(lowerer: Lowerer, expr: ts.Expression): boolean {
-  let e = withoutTypeCasts(expr);
+  let e = withoutParenthesesTypeWrappers(expr);
   for (;;) {
     if (ts.isPropertyAccessExpression(e)) {
       if (e.name.text === "__proto__") return true;
-      e = withoutTypeCasts(e.expression);
-    } else if (ts.isElementAccessExpression(e)) e = withoutTypeCasts(e.expression);
+      e = withoutParenthesesTypeWrappers(e.expression);
+    } else if (ts.isElementAccessExpression(e)) e = withoutParenthesesTypeWrappers(e.expression);
     else break;
   }
   if (ts.isIdentifier(e))
@@ -310,7 +311,7 @@ function mayNameBuiltin(lowerer: Lowerer, expr: ts.Expression): boolean {
       ownerRootNames().has(e.text) || aliasNames(lowerer, ts.getSourceFileOfNode(e)).has(e.text)
     );
   if (!ts.isCallExpression(e)) return false;
-  const callee = withoutTypeCasts(e.expression);
+  const callee = withoutParenthesesTypeWrappers(e.expression);
   return ts.isPropertyAccessExpression(callee) && callee.name.text === "getPrototypeOf";
 }
 
@@ -319,7 +320,7 @@ function mayNameBuiltin(lowerer: Lowerer, expr: ts.Expression): boolean {
  * global object). Null when the object is not a built-in, the key is not
  * static, or the object has no such member. */
 export function builtinMemberOf(lowerer: Lowerer, expr: ts.Expression): BuiltinMember | null {
-  const e = withoutTypeCasts(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   table();
   if (ts.isIdentifier(e)) {
     const kind = builtinOwnMemberKind("globalThis", e.text);
@@ -364,7 +365,7 @@ function writeTargetIn(owner: string, member: string): WriteTarget | null {
 /** The member the target of an assignment, update or `delete` names
  * (builtinMemberOf), or the protocol member it would add. */
 function writeTargetOf(lowerer: Lowerer, expr: ts.Expression): WriteTarget | null {
-  const e = withoutTypeCasts(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   if (ts.isIdentifier(e)) return builtinMemberOf(lowerer, e);
   if (!ts.isPropertyAccessExpression(e) && !ts.isElementAccessExpression(e)) return null;
   if (e.questionDotToken !== undefined) return null;
@@ -407,7 +408,7 @@ function keepsOwnValue(lowerer: Lowerer, write: ts.BinaryExpression, target: Wri
   if (op === ts.SyntaxKind.BarBarEqualsToken || op === ts.SyntaxKind.QuestionQuestionEqualsToken)
     return true;
   if (op !== ts.SyntaxKind.EqualsToken) return false;
-  const value = withoutTypeCasts(write.right);
+  const value = withoutParenthesesTypeWrappers(write.right);
   if (!ts.isBinaryExpression(value)) return false;
   const inner = value.operatorToken.kind;
   if (inner !== ts.SyntaxKind.BarBarToken && inner !== ts.SyntaxKind.QuestionQuestionToken)
@@ -483,7 +484,7 @@ function literalMemberName(lowerer: Lowerer, member: ts.ObjectLiteralElementLike
   if (name === undefined) return null;
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
   if (ts.isComputedPropertyName(name)) {
-    const key = withoutTypeCasts(name.expression);
+    const key = withoutParenthesesTypeWrappers(name.expression);
     if (
       ts.isPropertyAccessExpression(key) &&
       ts.isIdentifier(key.expression) &&
@@ -513,7 +514,7 @@ function builtinMemberWriteCall(
   call: ts.CallExpression,
   all: BuiltinMemberWrite[] | null = null,
 ): BuiltinMemberWrite | null {
-  const callee = withoutTypeCasts(call.expression);
+  const callee = withoutParenthesesTypeWrappers(call.expression);
   if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression)) return null;
   const holder = callee.expression.text;
   const method = callee.name.text;
@@ -532,7 +533,7 @@ function builtinMemberWriteCall(
   if (method === "defineProperties" || method === "assign") {
     let found: BuiltinMemberWrite | null = null;
     for (const source of args.slice(1)) {
-      const literal = withoutTypeCasts(source);
+      const literal = withoutParenthesesTypeWrappers(source);
       if (!ts.isObjectLiteralExpression(literal)) continue;
       for (const member of literal.properties.nodes) {
         const target = hit(literalMemberName(lowerer, member));
@@ -554,7 +555,7 @@ function builtinMemberWriteCall(
     }
     return found;
   }
-  const key = args[1] === undefined ? null : withoutTypeCasts(args[1]);
+  const key = args[1] === undefined ? null : withoutParenthesesTypeWrappers(args[1]);
   if (key === null) return null;
   let member: string | null = null;
   if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) member = key.text;
@@ -583,7 +584,7 @@ function keepsMemberValue(
   target: WriteTarget,
 ): boolean {
   if (target.kind === null) return false;
-  const literal = descriptor === undefined ? undefined : withoutTypeCasts(descriptor);
+  const literal = descriptor === undefined ? undefined : withoutParenthesesTypeWrappers(descriptor);
   if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return false;
   for (const member of literal.properties.nodes) {
     const name = literalMemberName(lowerer, member);
@@ -635,9 +636,9 @@ export function builtinMembersTested(lowerer: Lowerer, test: ts.Expression): Bui
     let key: ts.Expression | undefined;
     if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.InKeyword) {
       owner = n.right;
-      key = unparenthesized(n.left);
+      key = withoutParentheses(n.left);
     } else if (ts.isCallExpression(n) && n.arguments.nodes.length === 1) {
-      const callee = unparenthesized(n.expression);
+      const callee = withoutParentheses(n.expression);
       if (ts.isPropertyAccessExpression(callee) && callee.name.text === "hasOwnProperty") {
         owner = callee.expression;
         key = n.arguments.nodes[0];
@@ -677,13 +678,8 @@ const WRITE_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.CallExpression,
 ]);
 
-function unparenthesized(e: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
-
 function isUndefinedOrNull(e: ts.Expression): boolean {
-  const x = unparenthesized(e);
+  const x = withoutParentheses(e);
   return (
     x.kind === ts.SyntaxKind.NullKeyword ||
     ts.isVoidExpression(x) ||
@@ -729,7 +725,7 @@ export function builtinPresenceTest(
   // A feature test is a handful of operands; a chain of thousands is not
   // one, and must not cost a frame per operand.
   if (depth > 16) return null;
-  const e = unparenthesized(expr);
+  const e = withoutParentheses(expr);
   if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
     const inner = builtinPresenceTest(lowerer, e.operand, depth + 1, skipped);
     return inner === null ? null : !inner;
@@ -753,7 +749,7 @@ export function builtinPresenceTest(
       return left === null || right === null ? null : isAnd;
     }
     if (op === ts.SyntaxKind.InKeyword) {
-      const key = unparenthesized(e.left);
+      const key = withoutParentheses(e.left);
       if (!ts.isStringLiteral(key) || !mayNameBuiltin(lowerer, e.right)) return null;
       const owner = builtinObjectOf(lowerer, e.right);
       return owner !== null && builtinMemberKind(owner, key.text) !== null ? true : null;
@@ -764,8 +760,8 @@ export function builtinPresenceTest(
       op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
       op === ts.SyntaxKind.ExclamationEqualsToken;
     if (!equal && !unequal) return null;
-    const left = unparenthesized(e.left);
-    const right = unparenthesized(e.right);
+    const left = withoutParentheses(e.left);
+    const right = withoutParentheses(e.right);
     let answer: boolean | null = null;
     if (ts.isTypeOfExpression(left) && ts.isStringLiteral(right))
       answer = typeofComparison(lowerer, left.expression, right.text);
@@ -779,7 +775,7 @@ export function builtinPresenceTest(
     return answer === null ? null : equal ? answer : !answer;
   }
   if (ts.isCallExpression(e)) {
-    const callee = unparenthesized(e.expression);
+    const callee = withoutParentheses(e.expression);
     const key = e.arguments.nodes[0];
     if (
       !ts.isPropertyAccessExpression(callee) ||
@@ -838,7 +834,7 @@ function noteBuiltinFeatureTest(lowerer: Lowerer, test: ts.Expression): void {
  * that run are reads of built-in members and have no effects, so the
  * statement lowers to nothing. */
 export function isDeadBuiltinPolyfill(lowerer: Lowerer, expr: ts.Expression): boolean {
-  const e = unparenthesized(expr);
+  const e = withoutParentheses(expr);
   if (!ts.isBinaryExpression(e)) return false;
   const op = e.operatorToken.kind;
   if (isAssignmentOperator(op)) {

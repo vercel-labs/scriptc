@@ -49,6 +49,7 @@ import {
 } from "../../diagnostics/diagnostic.js";
 import {
   crossingOf,
+  isCopiedTsType,
   isForeignType,
   isIslandProgramModule,
   isIslandSubclassDecl,
@@ -744,8 +745,9 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
   const islands = lowerer.nodeIslands!;
   if (isForeignType(islands, tsType, lowerer.checker)) return raw;
   if ((tsType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return raw;
-  if ((tsType.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 && isDiscarded(node))
-    return raw;
+  // A conversion whose value nobody reads is never a copy the program can
+  // observe: `obj.k = v;` and `void obj.k` (the read itself stays in raw).
+  if (isDiscarded(node)) return raw;
   const mapped = lowerer.mapTypeOf(tsType);
   if (mapped === null) {
     // An intersection of containers (`Choice[] & GenChoice[]`: the
@@ -818,8 +820,22 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     };
     return lowerer.coerceToExpected(copy, mapped);
   }
-  if (!copiedType(lowerer, mapped) && copiedRecordType(lowerer, tsType))
+  // An island object whose declared type is a program record is a deep
+  // checked copy, so identity and the island's later changes are lost (K1).
+  // The copy is never implicit: the program states it with structuredClone,
+  // keeps the value a handle by declaring the island's type (or unknown/any),
+  // or gets SC8010 (SPEC 1b = B). Promises, class instances and closures
+  // meet their declared type exactly (an adoption or an unboxing of the same
+  // native value) and cross here as they always have.
+  if (!copiedType(lowerer, mapped) && copiedRecordType(lowerer, tsType)) {
+    if (recordConversion(lowerer, mapped) && !isStructuredCloneArgument(lowerer, node))
+      boundaryFail(
+        lowerer,
+        `an island object typed as the program record '${lowerer.checker.typeToString(tsType)}' (keep the handle by declaring the island's type or 'unknown'/'any', or copy it explicitly with 'structuredClone(v)')`,
+        node,
+      );
     return lowerer.coerceToExpected(raw, mapped);
+  }
   if (!copiedType(lowerer, mapped))
     boundaryFail(
       lowerer,
@@ -888,6 +904,35 @@ function isDiscarded(node: ts.Node): boolean {
   return (
     n.parent !== undefined && (ts.isExpressionStatement(n.parent) || ts.isVoidExpression(n.parent))
   );
+}
+
+/** Whether `node` is the value argument of a `structuredClone` call, the
+ * one place an island object may convert into a program record type: the
+ * program states the copy there, and it is exact (Node's structuredClone
+ * also yields a fresh object nobody else holds). */
+function isStructuredCloneArgument(lowerer: Lowerer, node: ts.Node): boolean {
+  let n: ts.Node = node;
+  for (;;) {
+    const parent = n.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isTypeAssertion(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isNonNullExpression(parent)
+    ) {
+      n = parent;
+      continue;
+    }
+    if (!ts.isCallExpression(parent) || parent.arguments.nodes[0] !== n) return false;
+    const callee = parent.expression;
+    return (
+      ts.isIdentifier(callee) &&
+      callee.text === "structuredClone" &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(callee) ?? undefined)
+    );
+  }
 }
 
 /** Whether `node` evaluates to an island handle (by its declared type) or
@@ -1168,19 +1213,31 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
         lowerer.typeParamResolver(type)?.kind === "dyn"
       )
         return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
-      // NI-5: closures, promises, records and class instances cross by
-      // reference (scr_node_island_export.c): their dyn boxes keep the
-      // native referent, and the closure's thunk checks its arguments.
-      if (exportedByReference(lowerer, type)) {
+      const crossByReference = (): IrExpr => {
         const lowered = lowerer.lowerExpr(node);
         const value = lowerer.coerceToExpected(lowered, DYN);
         return lowered.type.kind === "object"
           ? withClassMethods(lowerer, value, lowered.type.className, node)
           : value;
-      }
+      };
+      // The crossing follows the value's NATIVE representation: a dyn value
+      // (a primitive arm beside an object the checker cannot map, `string |
+      // Part[]`) crosses the way `any` values do, and a union of copied
+      // values with representations the export table holds crosses arm by
+      // arm through its dyn box. The runtime exports objects by reference
+      // and copies primitives, so the representation is already exact.
+      const mapped = lowerer.mapTypeOf(type);
+      if (mapped !== null && crossesByRepresentation(lowerer, mapped)) return crossByReference();
+      // NI-5: closures, promises, records and class instances cross by
+      // reference (scr_node_island_export.c): their dyn boxes keep the
+      // native referent, and the closure's thunk checks its arguments.
+      if (exportedByReference(lowerer, type)) return crossByReference();
+      const arm = unexportableUnionArm(lowerer, type);
       return boundaryFail(
         lowerer,
-        `a '${lowerer.checker.typeToString(type)}' value (a native object would cross as a copy and lose its identity)`,
+        arm === null
+          ? `a '${lowerer.checker.typeToString(type)}' value (its native representation has no island export)`
+          : `a '${lowerer.checker.typeToString(type)}' value (its '${arm}' arm has no island export)`,
         node,
       );
     }
@@ -1352,25 +1409,52 @@ function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
   if (type.isUnionType())
     return ts
       .constituentTypes(type)
-      .every(
-        (t) =>
-          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
-          exportedByReference(lowerer, t),
-      );
+      .every((t) => isCopiedTsType(t) || exportedByReference(lowerer, t));
   if ((type.flags & ts.TypeFlags.Intersection) !== 0)
     return ts
       .constituentTypes(type)
-      .every(
-        (t) =>
-          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
-          exportedByReference(lowerer, t),
-      );
+      .every((t) => isCopiedTsType(t) || exportedByReference(lowerer, t));
   if ((type.flags & ts.TypeFlags.Object) === 0) return false;
   // Arrays and tuples cross as Proxies over the native array (NI-5b).
   void checker;
   const name = type.getSymbol()?.escapedName;
   if (name === "WeakMap" || name === "WeakSet") return false;
   return true;
+}
+
+/** Whether a value of native IR type `t` crosses INTO an island by
+ * reference: a dyn value (the runtime exports its objects, and copies its
+ * primitives), or a union whose arms are all copied values or kinds the
+ * export table holds (records, class instances, closures, promises,
+ * arrays, Maps, Sets, bytes). */
+function crossesByRepresentation(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind === "dyn") return true;
+  if (t.kind !== "union") return false;
+  const def = lowerer.unions.get(t.unionId);
+  if (def === undefined) return false;
+  return def.arms.every(
+    (arm) =>
+      copiedType(lowerer, arm) ||
+      arm.kind === "record" ||
+      arm.kind === "object" ||
+      arm.kind === "func" ||
+      arm.kind === "promise" ||
+      arm.kind === "array" ||
+      arm.kind === "map" ||
+      arm.kind === "set" ||
+      arm.kind === "bytes",
+  );
+}
+
+/** The arm of `type` that has no island export, named in the SC8010
+ * message: the first arm of a union that is neither copied nor exported by
+ * reference (a WeakMap or WeakSet). Null when `type` is not such a union. */
+function unexportableUnionArm(lowerer: Lowerer, type: ts.Type): string | null {
+  if (!type.isUnionType()) return null;
+  for (const arm of ts.constituentTypes(type))
+    if (!isCopiedTsType(arm) && !exportedByReference(lowerer, arm))
+      return lowerer.checker.typeToString(arm);
+  return null;
 }
 
 /** A record type an island object crosses OUT into as a deep checked
@@ -1390,6 +1474,25 @@ function copiedRecordType(lowerer: Lowerer, type: ts.Type): boolean {
           copiedRecordType(lowerer, t),
       );
   return exportedByReference(lowerer, type);
+}
+
+/** Whether meeting the declared type `mapped` builds a native record: the
+ * deep checked copy `copiedRecordType` names, or a union of that with null
+ * and/or undefined. A promise is adopted, a class instance and a closure
+ * unbox their own native value, and a container stays a handle: none of
+ * them is a copy, so none is refused (SPEC 1b = B). */
+function recordConversion(lowerer: Lowerer, mapped: IrType): boolean {
+  if (mapped.kind === "record") return true;
+  if (mapped.kind !== "union") return false;
+  const def = lowerer.unions.get(mapped.unionId);
+  if (def === undefined) return false;
+  let records = 0;
+  for (const arm of def.arms) {
+    if (arm.kind === "nullT" || arm.kind === "undefinedT") continue;
+    if (arm.kind !== "record") return false;
+    records++;
+  }
+  return records > 0;
 }
 
 /** A fresh object or array literal crosses as a copy (a plain dyn object

@@ -2282,7 +2282,10 @@ export class LlEmitter {
   /** The positions of the frame of the function being emitted, when it has
    * a positioned frame. */
   framePositions: FramePositions | null = null;
-  private frameAnchorsValue: ReadonlySet<string> | null = null;
+  private frameCapturesValue: {
+    anchors: ReadonlySet<string>;
+    constructors: ReadonlySet<string>;
+  } | null = null;
   private memberFrameNamesValue: ReadonlyMap<string, string> | null = null;
   /** The options this emitter was built with (chunk emitters reuse them). */
   readonly targetOptions: LlvmTargetOptions;
@@ -3426,17 +3429,46 @@ export class LlEmitter {
    * finds such a function's frame by its text, so these keep the one
    * constant line of a frame without positions. */
   private get frameAnchors(): ReadonlySet<string> {
-    if (this.frameAnchorsValue !== null) return this.frameAnchorsValue;
+    return this.frameCaptures.anchors;
+  }
+
+  /** What `Error.captureStackTrace` calls ask of frames. `anchors` are the
+   * functions named as the frame to stop at. `constructors` are the
+   * constructors that keep no frame: one that captures without naming a
+   * function, which is how the frontend lowers `this.constructor`,
+   * `new.target` and the class's own name there (V8 drops the
+   * constructor's frame, and a release build has none to drop), and the
+   * constructor of every class derived from its class, which
+   * `this.constructor` and `new.target` name when one of those is built. */
+  private get frameCaptures(): {
+    anchors: ReadonlySet<string>;
+    constructors: ReadonlySet<string>;
+  } {
+    if (this.frameCapturesValue !== null) return this.frameCapturesValue;
     const anchors = new Set<string>();
+    const capturing = new Set<string>();
     const scan = this.nodeIndex.scan(LIB_CALL_KINDS);
     for (const fn of this.mod.functions) {
       eachNodeOfKinds(fn, scan, (node) => {
         if (node.kind !== "libCall" || node.fn !== "error.captureStackTrace") return;
         const named = node.args[1];
-        if (named?.kind === "strLit" && named.value !== "") anchors.add(named.value);
+        if (named?.kind !== "strLit") return;
+        if (named.value !== "") anchors.add(named.value);
+        else capturing.add(fn.name);
       });
     }
-    return (this.frameAnchorsValue = anchors);
+    const constructors = new Set<string>();
+    const classes = new Map((this.mod.classes ?? []).map((cls) => [cls.name, cls]));
+    for (const cls of classes.values()) {
+      for (let c: typeof cls | undefined = cls; c !== undefined;) {
+        if (capturing.has(`%${c.name}.constructor`)) {
+          constructors.add(`%${cls.name}.constructor`);
+          break;
+        }
+        c = c.base === undefined ? undefined : classes.get(c.base);
+      }
+    }
+    return (this.frameCapturesValue = { anchors, constructors });
   }
 
   /** The frame names of class constructors, methods and accessors, by
@@ -3460,8 +3492,9 @@ export class LlEmitter {
   }
 
   /** The positions `fn`'s frame takes, or null when its frame (if it has
-   * one) holds one constant line: builds without debug sources, and the
-   * functions `Error.captureStackTrace` names. Positioned frames also
+   * one) holds one constant line: builds without debug sources, the
+   * functions `Error.captureStackTrace` names, and the constructors that
+   * capture onto themselves (frameCaptures), which keep no frame. Positioned frames also
    * cover what has no source name: class members, and a module's top-level
    * code (its `%init.<n>`), which prints no function name. Generated
    * helpers stay without a frame, so their statements leave the position
@@ -3470,6 +3503,7 @@ export class LlEmitter {
     const debug = this.debug;
     if (!this.positionedFrames || debug === null) return null;
     if (this.frameAnchors.has(fn.name)) return null;
+    if (this.frameCaptures.constructors.has(fn.name)) return null;
     const name = this.memberFrameNames.get(fn.name) ?? fn.sourceName;
     if (name === undefined && !fn.name.startsWith("%init.")) return null;
     return new FramePositions(

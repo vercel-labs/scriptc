@@ -31,8 +31,14 @@ function exprStmt(text: string): IrStmt {
   return { kind: "exprStmt", expr: unit(at(text)), loc: at(text) };
 }
 
-/** Walks `body` as the emitter does and returns the stored frame lines. */
-function stores(sourceName: string | undefined, body: IrStmt[]): string[] {
+/** Walks `body` as the emitter does and returns the stored frame lines.
+ * `embedded` gives the statements an expression of a statement embeds,
+ * which the emitter reaches before the statement's body. */
+function stores(
+  sourceName: string | undefined,
+  body: IrStmt[],
+  embedded: ReadonlyMap<IrStmt, IrStmt[]> = new Map(),
+): string[] {
   const out: string[] = [];
   const positions = new FramePositions(
     sourceName,
@@ -48,6 +54,7 @@ function stores(sourceName: string | undefined, body: IrStmt[]): string[] {
   const walk = (s: IrStmt): void => {
     const restore = positions.enter(s);
     if (s.kind === "continue") positions.continueLoop(s.label);
+    for (const child of embedded.get(s) ?? []) walk(child);
     for (const child of children(s)) walk(child);
     positions.leave(restore, s.kind !== "continue" && s.kind !== "return");
   };
@@ -127,6 +134,31 @@ test("a block stores nothing, and a container does not take its position back", 
     "    at /work/app.ts:4:5",
     "    at /work/app.ts:5:5",
     "    at /work/app.ts:7:3",
+  ]);
+});
+
+test("a container takes its position back after a statement embedded in its head", () => {
+  // `if ((skip(), more())) { sum += next(); }`: the comma's left operand is
+  // a statement inside the condition, and the rest of the condition runs
+  // after it.
+  const left = exprStmt("skip()");
+  const branch: IrStmt = {
+    kind: "if",
+    cond: unit(at("more()")),
+    then: [exprStmt("sum += next();")],
+    else_: null,
+    loc: at("while (more())"),
+  };
+  expect(
+    stores("total", [branch, exprStmt("return sum;")], new Map([[branch, [left]]])).map((line) =>
+      line.slice("    at total (/work/app.ts:".length, -1),
+    ),
+  ).toEqual([
+    "3:3", // the if
+    "4:9", // skip(), embedded in the condition
+    "3:3", // the rest of the condition
+    "5:5", // sum += next(); in the body: nothing of the if runs after it
+    "7:3", // return sum;
   ]);
 });
 

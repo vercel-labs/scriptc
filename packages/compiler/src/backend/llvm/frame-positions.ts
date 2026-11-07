@@ -9,6 +9,7 @@
  * frame the statement whose call is still running. The runtime copies the
  * text as it always did, so no runtime unit knows about positions. */
 import type { IrStmt, SrcLoc } from "../../ir/ir.js";
+import { everyStmtChild } from "../../ir/traverse.js";
 import type { SourcePosition } from "../source-locations.js";
 
 /** The frame line of a function that stores no positions. */
@@ -37,12 +38,13 @@ export function memberFrameName(className: string, member: string): string {
   return accessor === null ? `${cls}.${name}` : `${cls}.${accessor[1]} ${accessor[2]}`;
 }
 
-/** Statements whose children are statements and which run nothing of their
- * own once a child has finished: the next child stores its position, or
- * control leaves the statement. Every other statement that holds a
- * statement (a loop's condition, update and iterator step; an expression
- * that embeds statements) has code left to run, so its position is stored
- * again when the child finishes. */
+/** Statements that run nothing of their own once a statement of their body
+ * has finished: the next one stores its position, or control leaves. Every
+ * other statement that holds a statement (a loop's condition, update and
+ * iterator step) has code left to run, so its position is stored again
+ * when the child finishes. So is a container's when the child was not in
+ * its body but embedded in its head: the rest of an `if` condition or a
+ * `switch` test runs next. */
 const CONTAINERS: ReadonlySet<IrStmt["kind"]> = new Set(["if", "switch", "tryCatch"]);
 
 /** Statements that store nothing: a block runs no code of its own, and a
@@ -58,18 +60,24 @@ const TRANSPARENT: ReadonlySet<IrStmt["kind"]> = new Set([
 /** What `enter` hands to `leave`: the enclosing statement's state. */
 export interface FramePositionRestore {
   readonly text: string | null;
+  /** The enclosing statement has code of its own left once this one ends. */
   readonly resumes: boolean;
   /** The statement is a loop, which `continue` statements inside it name. */
   readonly loop: boolean;
+  /** The enclosing statement is a container. */
+  readonly container: boolean;
 }
 
 /** The positions one function's frame takes while its body is emitted. */
 export class FramePositions {
   /** The text the frame holds while the innermost storing statement runs. */
   private text: string | null = null;
-  /** Whether that statement has code of its own after a nested statement. */
-  private resumes = false;
+  /** Whether that statement is a container (CONTAINERS). */
+  private container = false;
   private readonly loops: { labels: readonly string[] | undefined; text: string }[] = [];
+  /** The statements of the bodies of the containers and blocks entered so
+   * far. A statement outside this set is embedded in an expression. */
+  private readonly bodies = new Set<IrStmt>();
 
   constructor(
     /** The frame's function name; undefined for module-level code. */
@@ -88,6 +96,16 @@ export class FramePositions {
   /** Before statement `s` is emitted. Null when `s` stores nothing, which
    * `leave` takes back unchanged. */
   enter(s: IrStmt): FramePositionRestore | null {
+    if (s.kind === "block" || CONTAINERS.has(s.kind)) {
+      everyStmtChild(
+        s,
+        () => true,
+        (child) => {
+          this.bodies.add(child);
+          return true;
+        },
+      );
+    }
     if (TRANSPARENT.has(s.kind)) return null;
     const text = this.textAt(s.loc);
     if (text === null) return null;
@@ -96,10 +114,16 @@ export class FramePositions {
       this.loops.push({ labels: s.labels, text });
       loop = true;
     }
-    const restore = { text: this.text, resumes: this.resumes, loop };
+    // A container resumes only after a statement embedded in its head.
+    const restore = {
+      text: this.text,
+      resumes: this.container ? !this.bodies.has(s) : this.text !== null,
+      loop,
+      container: this.container,
+    };
     this.store(text);
     this.text = text;
-    this.resumes = !CONTAINERS.has(s.kind);
+    this.container = CONTAINERS.has(s.kind);
     return restore;
   }
 
@@ -123,7 +147,7 @@ export class FramePositions {
     if (restore === null) return;
     if (restore.loop) this.loops.pop();
     this.text = restore.text;
-    this.resumes = restore.resumes;
+    this.container = restore.container;
     if (open && restore.resumes && restore.text !== null) this.store(restore.text);
   }
 }

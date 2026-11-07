@@ -831,6 +831,101 @@ run();
     },
   );
 
+  // A constructor that captures onto itself (`this.constructor`,
+  // `new.target` or the class's own name) asks for the trace to start
+  // below the constructor. It keeps no frame, and neither do the
+  // constructors of the classes derived from its class, as in a release
+  // build: the first frame is the function that ran `new`, as under Node.
+  test("a constructor that captures its own stack trace is not in it", async () => {
+    const r = await dev(
+      "located-capture-constructor",
+      `class HttpError extends Error {
+  constructor(message: string) {
+    super(message);
+    Error.captureStackTrace(this, HttpError);
+  }
+}
+class BaseError extends Error {
+  constructor(message: string) {
+    super(message);
+    Error.captureStackTrace(this, new.target);
+  }
+}
+class NotFound extends BaseError {
+  constructor(what: string) {
+    super("not found: " + what);
+  }
+}
+function fetchUser(id: number): never {
+  throw new HttpError("no user " + id);
+}
+function findPage(name: string): never {
+  throw new NotFound(name);
+}
+try {
+  fetchUser(7);
+} catch (e) {
+  console.log((e as Error).stack);
+}
+findPage("home");
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(located(r.stdout)).toBe(
+      [
+        "Error: no user 7",
+        "    at fetchUser (located-capture-constructor.ts:19:3)",
+        "    at located-capture-constructor.ts:25:3",
+        "",
+      ].join("\n"),
+    );
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught Error: not found: home",
+        "    at findPage (located-capture-constructor.ts:22:3)",
+        "    at located-capture-constructor.ts:29:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // A statement embedded in the head of an `if` (the left operand of a
+  // comma) stores its own position; the rest of the condition runs at the
+  // position of the `if` again.
+  test("an if condition that throws after an embedded statement is reported at the if", async () => {
+    const r = await dev(
+      "located-if-head",
+      `function first(): number {
+  console.log("first");
+  return 1;
+}
+function second(): boolean {
+  throw new Error("second failed");
+}
+function run(): void {
+  if (
+    (first(),
+    second())
+  ) {
+    console.log("unreachable");
+  }
+}
+run();
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("first\n");
+    expect(located(r.stderr)).toBe(
+      [
+        "Uncaught Error: second failed",
+        "    at second (located-if-head.ts:6:3)",
+        "    at run (located-if-head.ts:9:3)",
+        "    at located-if-head.ts:16:1",
+        "",
+      ].join("\n"),
+    );
+  });
+
   // The two differences from a release build that a program can observe:
   // `.stack` holds positions (and the frames release builds do not keep),
   // and an Error that captured frames is displayed with them, where a

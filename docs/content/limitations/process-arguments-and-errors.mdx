@@ -20,5 +20,6 @@ The other own properties Node gives them, such as a system error's `errno`, `sys
 Errors carry stack frames that name the function and the source file, without Node.js's internal frames; `file:line:column` positions appear only in the `dev` builds described above.
 An error's `stack` text therefore differs between a `dev` build and a release build of one program, and so does what `console.log` prints for an Error: a `dev` build shows its frames where a release build of a program that reads no `stack` prints `[Error: message]`.
 A function passed to `Error.captureStackTrace` as the frame to stop at keeps a frame without a position.
+A class constructor that passes `this.constructor`, `new.target`, or its own class to `Error.captureStackTrace` keeps no frame, and neither do the constructors of its subclasses, so the trace starts at the function that ran `new`.
 `console.log`, `util.format`, and `util.inspect` print an Error from its stack the way Node.js does: the frames under the `name: message` heading, brackets when the stack has no frame line, and a subclass's header named after its class (for example `Bailable [Error]: message`).
 Only the frames themselves diverge, so the output agrees with Node.js when `Error.stackTraceLimit` is `0`.

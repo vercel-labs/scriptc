@@ -1539,7 +1539,7 @@ export function lowerPropertyAccessExpr(
   // os.constants members vary by platform (the declared groups list
   // every platform's names): a number member reads as `number |
   // undefined`, like an array element, and a group stays checked.
-  const osConstants = isOsConstantsType(lowerer.typeOf(expr.expression), lowerer);
+  const osConstants = isOsConstantsType(lowerer.typeOf(expr.expression), lowerer.osConstantsCtx());
   if (
     isParseArgsDynProperty(lowerer, expr) ||
     isStatFsDynProperty(lowerer, expr) ||

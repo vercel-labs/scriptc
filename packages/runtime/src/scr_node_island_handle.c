@@ -843,7 +843,14 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
     }
     return nh_bytes_box(v);
   case SCR_NV_EXPORT: {
-    /* A native value's representative came back: the value itself. */
+    /* A native value's representative came back: the value itself. The
+     * export is the island thread's object, as the export table is, so a
+     * worker gets a refusal and not the island's object, matching the
+     * refusal on the way out (nh_export_value). */
+    if (!nh_on_island()) {
+      nh_worker_refusal("a native function or object passed by reference");
+      return NULL;
+    }
     ScrDyn *d = scr_ni_export_value(v->u.exp.id);
     return d != NULL ? scr_dyn_retain(d) : scr_dyn_undefined();
   }
@@ -1230,6 +1237,13 @@ static void nh_call_job(void *p) {
 static void nh_call_job_routed(void *p) {
   NhRouted *r = p;
   NhCall *c = r->call;
+  /* Drops a worker's release queued for this thread (nh_drop). This job is
+   * the island's thread serving an operation another thread made, and a
+   * program whose island is used from workers alone reaches no operation of
+   * its own to drain at (nh_enter): without this the queue empties only at
+   * shutdown, keeping every dropped V8 value alive. nh_shared() is true
+   * whenever a worker has queued anything. */
+  if (nh_shared()) nh_drop_drain();
   nh_call_job(c);
   nh_copy_str_out(c->out, r->copy);
   /* The ref of the handle the requester receives, made while the id is

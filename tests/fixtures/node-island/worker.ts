@@ -5,16 +5,27 @@
 // would have to settle a promise on another thread's loop, so they reject by
 // name instead.
 import { Worker, isMainThread, parentPort } from "node:worker_threads";
-import { call, callSync } from "@scriptc/node";
+import { call, callSync, requireModule } from "@scriptc/node";
 import { parts } from "thenable-pkg";
 
 if (isMainThread) {
   console.log("main", callSync<number>("./helper.cjs", "answer"));
+  // The island keeps a native object by reference: the export is the island
+  // thread's object, so a worker asking for it back is refused by code.
+  requireModule("./helper.cjs").keep({ tag: "kept" });
   const worker = new Worker(new URL(import.meta.url));
   worker.on("message", (message: string) => console.log("worker", message));
   worker.on("exit", (code: number) => console.log("exit", code));
 } else {
   parentPort!.postMessage("called " + callSync<number>("./helper.cjs", "answer"));
+  // The value the main thread kept: a native object passed by reference
+  // belongs to the island's thread, so the worker's retrieval is refused.
+  try {
+    requireModule("./helper.cjs").get();
+    parentPort!.postMessage("get taken");
+  } catch (error) {
+    parentPort!.postMessage("get " + (error as { code?: string }).code);
+  }
   call("./helper.cjs", "answer").then(
     () => parentPort!.postMessage("async called"),
     (error: unknown) => parentPort!.postMessage("async " + (error as { code?: string }).code),

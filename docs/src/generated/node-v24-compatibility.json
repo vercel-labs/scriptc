@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3863,
+    "matrixRows": 3782,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 26,
+      "not-applicable": 107,
       "chapters": 6
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 478,
-      "apiEntries": 478
+      "entries": 397,
+      "apiEntries": 397
     },
     {
       "slug": "events",
@@ -17860,9 +17860,9 @@
       "anchor": "erroropensslerrorstack",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -17896,9 +17896,9 @@
       "anchor": "errorlibrary",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -17914,9 +17914,9 @@
       "anchor": "errorreason",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -17932,9 +17932,9 @@
       "anchor": "abort_err",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -17951,8 +17951,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -17986,9 +17986,9 @@
       "anchor": "err_arg_not_iterable",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -18023,8 +18023,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18041,8 +18041,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -18059,8 +18059,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -18112,9 +18112,9 @@
       "anchor": "err_buffer_context_not_available",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -18167,8 +18167,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18185,8 +18185,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18203,8 +18203,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18239,8 +18239,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18257,8 +18257,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18275,8 +18275,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18293,8 +18293,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18310,9 +18310,9 @@
       "anchor": "err_context_not_initialized",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -18328,9 +18328,9 @@
       "anchor": "err_cpu_profile_already_started",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -18346,9 +18346,9 @@
       "anchor": "err_cpu_profile_not_started",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -18364,9 +18364,9 @@
       "anchor": "err_cpu_profile_too_many",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -18383,8 +18383,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18401,8 +18401,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18455,26 +18455,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:3ad417a98b35",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_crypto_fips_forced`",
-      "signature": "`ERR_CRYPTO_FIPS_FORCED`",
-      "label": "ERR_CRYPTO_FIPS_FORCED",
-      "apiSymbol": "ERR_CRYPTO_FIPS_FORCED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_crypto_fips_forced",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18491,8 +18473,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18581,8 +18563,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18617,8 +18599,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18688,9 +18670,9 @@
       "anchor": "err_crypto_invalid_jwk",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -18779,8 +18761,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18851,8 +18833,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18869,8 +18851,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18923,8 +18905,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18941,8 +18923,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18959,8 +18941,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -18977,8 +18959,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19013,8 +18995,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19031,8 +19013,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19048,9 +19030,9 @@
       "anchor": "err_crypto_sign_key_required",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19126,42 +19108,6 @@
       }
     },
     {
-      "id": "errors:fff1522fadd2",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_debugger_error`",
-      "signature": "`ERR_DEBUGGER_ERROR`",
-      "label": "ERR_DEBUGGER_ERROR",
-      "apiSymbol": "ERR_DEBUGGER_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_debugger_error",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:8ac58d0d91e4",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_debugger_startup_error`",
-      "signature": "`ERR_DEBUGGER_STARTUP_ERROR`",
-      "label": "ERR_DEBUGGER_STARTUP_ERROR",
-      "apiSymbol": "ERR_DEBUGGER_STARTUP_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_debugger_startup_error",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "errors:93d80817e498",
       "chapter": "errors",
       "kind": "module",
@@ -19210,9 +19156,9 @@
       "anchor": "err_dlopen_disabled",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -19228,9 +19174,9 @@
       "anchor": "err_dlopen_failed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -19247,8 +19193,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19264,9 +19210,9 @@
       "anchor": "err_domain_callback_not_available",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -19282,27 +19228,9 @@
       "anchor": "err_domain_cannot_set_uncaught_exception_capture",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:1a7e7ab4221e",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_duplicate_startup_snapshot_main_function`",
-      "signature": "`ERR_DUPLICATE_STARTUP_SNAPSHOT_MAIN_FUNCTION`",
-      "label": "ERR_DUPLICATE_STARTUP_SNAPSHOT_MAIN_FUNCTION",
-      "apiSymbol": "ERR_DUPLICATE_STARTUP_SNAPSHOT_MAIN_FUNCTION",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_duplicate_startup_snapshot_main_function",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -19342,24 +19270,6 @@
       }
     },
     {
-      "id": "errors:1bf53a9d6546",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_eval_esm_cannot_print`",
-      "signature": "`ERR_EVAL_ESM_CANNOT_PRINT`",
-      "label": "ERR_EVAL_ESM_CANNOT_PRINT",
-      "apiSymbol": "ERR_EVAL_ESM_CANNOT_PRINT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_eval_esm_cannot_print",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "errors:8d80b6bf8bd8",
       "chapter": "errors",
       "kind": "module",
@@ -19391,8 +19301,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19427,8 +19337,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19498,9 +19408,9 @@
       "anchor": "err_fs_cp_fifo_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19534,9 +19444,9 @@
       "anchor": "err_fs_cp_socket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19552,9 +19462,9 @@
       "anchor": "err_fs_cp_symlink_to_subdirectory",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19625,8 +19535,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19643,8 +19553,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19661,8 +19571,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19679,8 +19589,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19697,8 +19607,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19715,8 +19625,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19733,8 +19643,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19751,8 +19661,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19769,8 +19679,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19787,8 +19697,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19805,8 +19715,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19823,8 +19733,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19841,8 +19751,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19859,8 +19769,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19877,8 +19787,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19895,8 +19805,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19913,8 +19823,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19931,8 +19841,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -19985,8 +19895,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20003,8 +19913,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20021,8 +19931,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20039,8 +19949,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20057,8 +19967,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20075,8 +19985,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20093,8 +20003,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20111,8 +20021,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20129,8 +20039,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20147,8 +20057,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20165,8 +20075,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20183,8 +20093,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20201,8 +20111,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20219,8 +20129,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20237,8 +20147,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20255,8 +20165,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20273,8 +20183,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20291,8 +20201,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20309,8 +20219,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20327,8 +20237,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20345,8 +20255,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20381,8 +20291,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20399,8 +20309,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20417,8 +20327,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20435,8 +20345,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20453,8 +20363,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20471,8 +20381,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20489,8 +20399,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20507,8 +20417,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20597,8 +20507,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20615,8 +20525,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20632,9 +20542,9 @@
       "anchor": "err_http_socket_encoding",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20650,9 +20560,9 @@
       "anchor": "err_http_trailer_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20687,8 +20597,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20705,8 +20615,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20723,8 +20633,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -20746,24 +20656,6 @@
       }
     },
     {
-      "id": "errors:0d9409025cef",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_input_type_not_allowed`",
-      "signature": "`ERR_INPUT_TYPE_NOT_ALLOWED`",
-      "label": "ERR_INPUT_TYPE_NOT_ALLOWED",
-      "apiSymbol": "ERR_INPUT_TYPE_NOT_ALLOWED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_input_type_not_allowed",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "errors:e56b8ffbab4e",
       "chapter": "errors",
       "kind": "module",
@@ -20776,9 +20668,9 @@
       "anchor": "err_inspector_already_activated",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -20794,9 +20686,9 @@
       "anchor": "err_inspector_already_connected",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -20812,9 +20704,9 @@
       "anchor": "err_inspector_closed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -20830,9 +20722,9 @@
       "anchor": "err_inspector_command",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -20848,9 +20740,9 @@
       "anchor": "err_inspector_not_active",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -20866,9 +20758,9 @@
       "anchor": "err_inspector_not_available",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -20884,9 +20776,9 @@
       "anchor": "err_inspector_not_connected",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -20902,9 +20794,9 @@
       "anchor": "err_inspector_not_worker",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -20957,8 +20849,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21011,8 +20903,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -21083,8 +20975,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21101,8 +20993,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21191,8 +21083,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21211,24 +21103,6 @@
         "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "errors:fafb6632a396",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_invalid_module`",
-      "signature": "`ERR_INVALID_MODULE`",
-      "label": "ERR_INVALID_MODULE",
-      "apiSymbol": "ERR_INVALID_MODULE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_invalid_module",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -21263,8 +21137,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21335,8 +21209,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21353,8 +21227,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21371,8 +21245,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -21389,8 +21263,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -21443,8 +21317,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21478,27 +21352,9 @@
       "anchor": "err_invalid_tuple",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:6dc192ecfb0d",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_invalid_typescript_syntax`",
-      "signature": "`ERR_INVALID_TYPESCRIPT_SYNTAX`",
-      "label": "ERR_INVALID_TYPESCRIPT_SYNTAX",
-      "apiSymbol": "ERR_INVALID_TYPESCRIPT_SYNTAX",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_invalid_typescript_syntax",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -21551,8 +21407,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -21605,8 +21461,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21623,8 +21479,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21641,8 +21497,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21659,8 +21515,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21677,8 +21533,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -21695,8 +21551,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -21712,9 +21568,9 @@
       "anchor": "err_memory_allocation_failed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -21730,9 +21586,9 @@
       "anchor": "err_message_target_context_unavailable",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -21808,24 +21664,6 @@
       }
     },
     {
-      "id": "errors:e78d70175dea",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_missing_platform_for_worker`",
-      "signature": "`ERR_MISSING_PLATFORM_FOR_WORKER`",
-      "label": "ERR_MISSING_PLATFORM_FOR_WORKER",
-      "apiSymbol": "ERR_MISSING_PLATFORM_FOR_WORKER",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_missing_platform_for_worker",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "errors:063e585c6b1d",
       "chapter": "errors",
       "kind": "module",
@@ -21838,9 +21676,9 @@
       "anchor": "err_module_link_mismatch",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -21892,9 +21730,9 @@
       "anchor": "err_napi_cons_function",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -21910,9 +21748,9 @@
       "anchor": "err_napi_invalid_dataview_args",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -21928,9 +21766,9 @@
       "anchor": "err_napi_invalid_typedarray_alignment",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -21946,9 +21784,9 @@
       "anchor": "err_napi_invalid_typedarray_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -21964,9 +21802,9 @@
       "anchor": "err_napi_tsfn_call_js",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -21982,9 +21820,9 @@
       "anchor": "err_napi_tsfn_get_undefined",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -22000,117 +21838,9 @@
       "anchor": "err_non_context_aware_disabled",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:fa53c0c34106",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_not_building_snapshot`",
-      "signature": "`ERR_NOT_BUILDING_SNAPSHOT`",
-      "label": "ERR_NOT_BUILDING_SNAPSHOT",
-      "apiSymbol": "ERR_NOT_BUILDING_SNAPSHOT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_not_building_snapshot",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:2e2f1782dc4b",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_not_in_single_executable_application`",
-      "signature": "`ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION`",
-      "label": "ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION",
-      "apiSymbol": "ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_not_in_single_executable_application",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:bc59ef481c10",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_not_supported_in_snapshot`",
-      "signature": "`ERR_NOT_SUPPORTED_IN_SNAPSHOT`",
-      "label": "ERR_NOT_SUPPORTED_IN_SNAPSHOT",
-      "apiSymbol": "ERR_NOT_SUPPORTED_IN_SNAPSHOT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_not_supported_in_snapshot",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:b3c2351d41a5",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_no_crypto`",
-      "signature": "`ERR_NO_CRYPTO`",
-      "label": "ERR_NO_CRYPTO",
-      "apiSymbol": "ERR_NO_CRYPTO",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_no_crypto",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:cae28646b828",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_no_icu`",
-      "signature": "`ERR_NO_ICU`",
-      "label": "ERR_NO_ICU",
-      "apiSymbol": "ERR_NO_ICU",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_no_icu",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:2a21cdce7923",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_no_typescript`",
-      "signature": "`ERR_NO_TYPESCRIPT`",
-      "label": "ERR_NO_TYPESCRIPT",
-      "apiSymbol": "ERR_NO_TYPESCRIPT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_no_typescript",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -22127,26 +21857,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:622cef05a25b",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_options_before_bootstrapping`",
-      "signature": "`ERR_OPTIONS_BEFORE_BOOTSTRAPPING`",
-      "label": "ERR_OPTIONS_BEFORE_BOOTSTRAPPING",
-      "apiSymbol": "ERR_OPTIONS_BEFORE_BOOTSTRAPPING",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_options_before_bootstrapping",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22178,60 +21890,6 @@
       "depth": 1,
       "scope": "api",
       "anchor": "err_package_import_not_defined",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:e17495198d37",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_package_map_external_file`",
-      "signature": "`ERR_PACKAGE_MAP_EXTERNAL_FILE`",
-      "label": "ERR_PACKAGE_MAP_EXTERNAL_FILE",
-      "apiSymbol": "ERR_PACKAGE_MAP_EXTERNAL_FILE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_package_map_external_file",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:ff3640a7d624",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_package_map_invalid`",
-      "signature": "`ERR_PACKAGE_MAP_INVALID`",
-      "label": "ERR_PACKAGE_MAP_INVALID",
-      "apiSymbol": "ERR_PACKAGE_MAP_INVALID",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_package_map_invalid",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:4bc366c6011c",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_package_map_key_not_found`",
-      "signature": "`ERR_PACKAGE_MAP_KEY_NOT_FOUND`",
-      "label": "ERR_PACKAGE_MAP_KEY_NOT_FOUND",
-      "apiSymbol": "ERR_PACKAGE_MAP_KEY_NOT_FOUND",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_package_map_key_not_found",
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
@@ -22360,9 +22018,9 @@
       "anchor": "err_proto_access",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -22379,8 +22037,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22397,8 +22055,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22420,8 +22078,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22443,8 +22101,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22466,8 +22124,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22489,8 +22147,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22512,8 +22170,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22535,8 +22193,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22558,8 +22216,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22581,8 +22239,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22599,8 +22257,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22617,8 +22275,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22640,8 +22298,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22663,8 +22321,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22680,9 +22338,9 @@
       "anchor": "err_script_execution_interrupted",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -22698,9 +22356,9 @@
       "anchor": "err_script_execution_timeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -22734,27 +22392,9 @@
       "anchor": "err_server_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:8ceeb2ed91b0",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_single_executable_application_asset_not_found`",
-      "signature": "`ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND`",
-      "label": "ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND",
-      "apiSymbol": "ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_single_executable_application_asset_not_found",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22770,9 +22410,9 @@
       "anchor": "err_socket_already_bound",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22825,8 +22465,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22861,8 +22501,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22878,9 +22518,9 @@
       "anchor": "err_socket_closed_before_connection",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22897,8 +22537,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -22969,44 +22609,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:e1def23be437",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_source_map_corrupt`",
-      "signature": "`ERR_SOURCE_MAP_CORRUPT`",
-      "label": "ERR_SOURCE_MAP_CORRUPT",
-      "apiSymbol": "ERR_SOURCE_MAP_CORRUPT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_source_map_corrupt",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:2d37dafaac37",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_source_map_missing_source`",
-      "signature": "`ERR_SOURCE_MAP_MISSING_SOURCE`",
-      "label": "ERR_SOURCE_MAP_MISSING_SOURCE",
-      "apiSymbol": "ERR_SOURCE_MAP_MISSING_SOURCE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_source_map_missing_source",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23023,8 +22627,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23041,26 +22645,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:be361a517f6f",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_sri_parse`",
-      "signature": "`ERR_SRI_PARSE`",
-      "label": "ERR_SRI_PARSE",
-      "apiSymbol": "ERR_SRI_PARSE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_sri_parse",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23094,9 +22680,9 @@
       "anchor": "err_stream_cannot_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23131,8 +22717,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23184,9 +22770,9 @@
       "anchor": "err_stream_push_after_eof",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23202,9 +22788,9 @@
       "anchor": "err_stream_unable_to_pipe",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23220,9 +22806,9 @@
       "anchor": "err_stream_unshift_after_end_event",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23239,8 +22825,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23274,9 +22860,9 @@
       "anchor": "err_string_too_long",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -23293,8 +22879,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23365,8 +22951,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23383,8 +22969,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23401,8 +22987,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23455,8 +23041,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23473,8 +23059,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23491,8 +23077,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23527,8 +23113,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23563,8 +23149,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23581,8 +23167,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23599,8 +23185,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23635,8 +23221,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23653,8 +23239,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23671,8 +23257,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23689,8 +23275,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23712,42 +23298,6 @@
       }
     },
     {
-      "id": "errors:325ad59f0fc1",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_transform_already_transforming`",
-      "signature": "`ERR_TRANSFORM_ALREADY_TRANSFORMING`",
-      "label": "ERR_TRANSFORM_ALREADY_TRANSFORMING",
-      "apiSymbol": "ERR_TRANSFORM_ALREADY_TRANSFORMING",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_transform_already_transforming",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:4af3cc70a2ff",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_transform_with_length_0`",
-      "signature": "`ERR_TRANSFORM_WITH_LENGTH_0`",
-      "label": "ERR_TRANSFORM_WITH_LENGTH_0",
-      "apiSymbol": "ERR_TRANSFORM_WITH_LENGTH_0",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_transform_with_length_0",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "errors:168d82885391",
       "chapter": "errors",
       "kind": "module",
@@ -23761,8 +23311,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23779,8 +23329,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23797,8 +23347,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {
@@ -23869,8 +23419,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23905,8 +23455,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23923,8 +23473,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -23977,26 +23527,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:dcd1b99428b4",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_unsupported_node_modules_type_stripping`",
-      "signature": "`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`",
-      "label": "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING",
-      "apiSymbol": "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_unsupported_node_modules_type_stripping",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24013,26 +23545,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:29dfe11fa3a0",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_unsupported_typescript_syntax`",
-      "signature": "`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`",
-      "label": "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX",
-      "apiSymbol": "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_unsupported_typescript_syntax",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24054,24 +23568,6 @@
       }
     },
     {
-      "id": "errors:6740f8efde1a",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_valid_performance_entry_type`",
-      "signature": "`ERR_VALID_PERFORMANCE_ENTRY_TYPE`",
-      "label": "ERR_VALID_PERFORMANCE_ENTRY_TYPE",
-      "apiSymbol": "ERR_VALID_PERFORMANCE_ENTRY_TYPE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_valid_performance_entry_type",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "errors:c3428053070e",
       "chapter": "errors",
       "kind": "module",
@@ -24084,9 +23580,9 @@
       "anchor": "err_vm_dynamic_import_callback_missing",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24102,9 +23598,9 @@
       "anchor": "err_vm_dynamic_import_callback_missing_flag",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24120,9 +23616,9 @@
       "anchor": "err_vm_module_already_linked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24138,9 +23634,9 @@
       "anchor": "err_vm_module_cached_data_rejected",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24156,9 +23652,9 @@
       "anchor": "err_vm_module_cannot_create_cached_data",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24174,9 +23670,9 @@
       "anchor": "err_vm_module_different_context",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24192,9 +23688,9 @@
       "anchor": "err_vm_module_link_failure",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24210,9 +23706,9 @@
       "anchor": "err_vm_module_not_module",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24228,9 +23724,9 @@
       "anchor": "err_vm_module_status",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24246,9 +23742,9 @@
       "anchor": "err_wasi_already_started",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24264,27 +23760,9 @@
       "anchor": "err_wasi_not_started",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:a8cbde85cdb9",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_webassembly_not_supported`",
-      "signature": "`ERR_WEBASSEMBLY_NOT_SUPPORTED`",
-      "label": "ERR_WEBASSEMBLY_NOT_SUPPORTED",
-      "apiSymbol": "ERR_WEBASSEMBLY_NOT_SUPPORTED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_webassembly_not_supported",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24301,8 +23779,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24319,8 +23797,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24355,8 +23833,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24378,8 +23856,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24401,8 +23879,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24424,8 +23902,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24447,8 +23925,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24465,8 +23943,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24482,9 +23960,9 @@
       "anchor": "err_worker_out_of_memory",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -24501,8 +23979,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -24536,9 +24014,9 @@
       "anchor": "err_worker_unsupported_operation",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24590,9 +24068,9 @@
       "anchor": "hpe_chunk_extensions_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24608,9 +24086,9 @@
       "anchor": "hpe_header_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24626,9 +24104,9 @@
       "anchor": "hpe_unexpected_content_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24644,1205 +24122,9 @@
       "anchor": "module_not_found",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:439ad52bd8d8",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_cannot_transfer_object`",
-      "signature": "`ERR_CANNOT_TRANSFER_OBJECT`",
-      "label": "ERR_CANNOT_TRANSFER_OBJECT",
-      "apiSymbol": "ERR_CANNOT_TRANSFER_OBJECT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_cannot_transfer_object",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:c0a7823c7c67",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_cpu_usage`",
-      "signature": "`ERR_CPU_USAGE`",
-      "label": "ERR_CPU_USAGE",
-      "apiSymbol": "ERR_CPU_USAGE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_cpu_usage",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:4f1d4c79332c",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_crypto_hash_digest_no_utf16`",
-      "signature": "`ERR_CRYPTO_HASH_DIGEST_NO_UTF16`",
-      "label": "ERR_CRYPTO_HASH_DIGEST_NO_UTF16",
-      "apiSymbol": "ERR_CRYPTO_HASH_DIGEST_NO_UTF16",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_crypto_hash_digest_no_utf16",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:0e98b56c97e8",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_crypto_scrypt_invalid_parameter`",
-      "signature": "`ERR_CRYPTO_SCRYPT_INVALID_PARAMETER`",
-      "label": "ERR_CRYPTO_SCRYPT_INVALID_PARAMETER",
-      "apiSymbol": "ERR_CRYPTO_SCRYPT_INVALID_PARAMETER",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_crypto_scrypt_invalid_parameter",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:0bb0b3213086",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_fs_invalid_symlink_type`",
-      "signature": "`ERR_FS_INVALID_SYMLINK_TYPE`",
-      "label": "ERR_FS_INVALID_SYMLINK_TYPE",
-      "apiSymbol": "ERR_FS_INVALID_SYMLINK_TYPE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_fs_invalid_symlink_type",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:f22975942220",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_http2_frame_error`",
-      "signature": "`ERR_HTTP2_FRAME_ERROR`",
-      "label": "ERR_HTTP2_FRAME_ERROR",
-      "apiSymbol": "ERR_HTTP2_FRAME_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_http2_frame_error",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:d37ab7415eb1",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_http2_headers_object`",
-      "signature": "`ERR_HTTP2_HEADERS_OBJECT`",
-      "label": "ERR_HTTP2_HEADERS_OBJECT",
-      "apiSymbol": "ERR_HTTP2_HEADERS_OBJECT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_http2_headers_object",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:82447626cae9",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_http2_header_required`",
-      "signature": "`ERR_HTTP2_HEADER_REQUIRED`",
-      "label": "ERR_HTTP2_HEADER_REQUIRED",
-      "apiSymbol": "ERR_HTTP2_HEADER_REQUIRED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_http2_header_required",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:da8cf45429e4",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_http2_info_headers_after_respond`",
-      "signature": "`ERR_HTTP2_INFO_HEADERS_AFTER_RESPOND`",
-      "label": "ERR_HTTP2_INFO_HEADERS_AFTER_RESPOND",
-      "apiSymbol": "ERR_HTTP2_INFO_HEADERS_AFTER_RESPOND",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_http2_info_headers_after_respond",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:f846d1688f40",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_http2_stream_closed`",
-      "signature": "`ERR_HTTP2_STREAM_CLOSED`",
-      "label": "ERR_HTTP2_STREAM_CLOSED",
-      "apiSymbol": "ERR_HTTP2_STREAM_CLOSED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_http2_stream_closed",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:dbdb23ef8707",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_http_invalid_char`",
-      "signature": "`ERR_HTTP_INVALID_CHAR`",
-      "label": "ERR_HTTP_INVALID_CHAR",
-      "apiSymbol": "ERR_HTTP_INVALID_CHAR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_http_invalid_char",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:af06e0979e6f",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_import_assertion_type_failed`",
-      "signature": "`ERR_IMPORT_ASSERTION_TYPE_FAILED`",
-      "label": "ERR_IMPORT_ASSERTION_TYPE_FAILED",
-      "apiSymbol": "ERR_IMPORT_ASSERTION_TYPE_FAILED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_import_assertion_type_failed",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:43950d683294",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_import_assertion_type_missing`",
-      "signature": "`ERR_IMPORT_ASSERTION_TYPE_MISSING`",
-      "label": "ERR_IMPORT_ASSERTION_TYPE_MISSING",
-      "apiSymbol": "ERR_IMPORT_ASSERTION_TYPE_MISSING",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_import_assertion_type_missing",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:8d0d238ca2be",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_import_assertion_type_unsupported`",
-      "signature": "`ERR_IMPORT_ASSERTION_TYPE_UNSUPPORTED`",
-      "label": "ERR_IMPORT_ASSERTION_TYPE_UNSUPPORTED",
-      "apiSymbol": "ERR_IMPORT_ASSERTION_TYPE_UNSUPPORTED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_import_assertion_type_unsupported",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:d40a10834bde",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_index_out_of_range`",
-      "signature": "`ERR_INDEX_OUT_OF_RANGE`",
-      "label": "ERR_INDEX_OUT_OF_RANGE",
-      "apiSymbol": "ERR_INDEX_OUT_OF_RANGE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_index_out_of_range",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:74df823db69b",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_invalid_opt_value`",
-      "signature": "`ERR_INVALID_OPT_VALUE`",
-      "label": "ERR_INVALID_OPT_VALUE",
-      "apiSymbol": "ERR_INVALID_OPT_VALUE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_invalid_opt_value",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:d5e7a70605a9",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_invalid_opt_value_encoding`",
-      "signature": "`ERR_INVALID_OPT_VALUE_ENCODING`",
-      "label": "ERR_INVALID_OPT_VALUE_ENCODING",
-      "apiSymbol": "ERR_INVALID_OPT_VALUE_ENCODING",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_invalid_opt_value_encoding",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:380651a487d3",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_invalid_performance_mark`",
-      "signature": "`ERR_INVALID_PERFORMANCE_MARK`",
-      "label": "ERR_INVALID_PERFORMANCE_MARK",
-      "apiSymbol": "ERR_INVALID_PERFORMANCE_MARK",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_invalid_performance_mark",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:b2cf2dee707f",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_invalid_transfer_object`",
-      "signature": "`ERR_INVALID_TRANSFER_OBJECT`",
-      "label": "ERR_INVALID_TRANSFER_OBJECT",
-      "apiSymbol": "ERR_INVALID_TRANSFER_OBJECT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_invalid_transfer_object",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:390eb0517f49",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_manifest_assert_integrity`",
-      "signature": "`ERR_MANIFEST_ASSERT_INTEGRITY`",
-      "label": "ERR_MANIFEST_ASSERT_INTEGRITY",
-      "apiSymbol": "ERR_MANIFEST_ASSERT_INTEGRITY",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_manifest_assert_integrity",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:f9f70133d0d3",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_manifest_dependency_missing`",
-      "signature": "`ERR_MANIFEST_DEPENDENCY_MISSING`",
-      "label": "ERR_MANIFEST_DEPENDENCY_MISSING",
-      "apiSymbol": "ERR_MANIFEST_DEPENDENCY_MISSING",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_manifest_dependency_missing",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:4096c4d31809",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_manifest_integrity_mismatch`",
-      "signature": "`ERR_MANIFEST_INTEGRITY_MISMATCH`",
-      "label": "ERR_MANIFEST_INTEGRITY_MISMATCH",
-      "apiSymbol": "ERR_MANIFEST_INTEGRITY_MISMATCH",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_manifest_integrity_mismatch",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:d85a9bba8d33",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_manifest_invalid_resource_field`",
-      "signature": "`ERR_MANIFEST_INVALID_RESOURCE_FIELD`",
-      "label": "ERR_MANIFEST_INVALID_RESOURCE_FIELD",
-      "apiSymbol": "ERR_MANIFEST_INVALID_RESOURCE_FIELD",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_manifest_invalid_resource_field",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:4d6e41331130",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_manifest_invalid_specifier`",
-      "signature": "`ERR_MANIFEST_INVALID_SPECIFIER`",
-      "label": "ERR_MANIFEST_INVALID_SPECIFIER",
-      "apiSymbol": "ERR_MANIFEST_INVALID_SPECIFIER",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_manifest_invalid_specifier",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:0549a7ac0837",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_manifest_parse_policy`",
-      "signature": "`ERR_MANIFEST_PARSE_POLICY`",
-      "label": "ERR_MANIFEST_PARSE_POLICY",
-      "apiSymbol": "ERR_MANIFEST_PARSE_POLICY",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_manifest_parse_policy",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:2cf2e8e964aa",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_manifest_tdz`",
-      "signature": "`ERR_MANIFEST_TDZ`",
-      "label": "ERR_MANIFEST_TDZ",
-      "apiSymbol": "ERR_MANIFEST_TDZ",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_manifest_tdz",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:2fdc4ffb3667",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_manifest_unknown_onerror`",
-      "signature": "`ERR_MANIFEST_UNKNOWN_ONERROR`",
-      "label": "ERR_MANIFEST_UNKNOWN_ONERROR",
-      "apiSymbol": "ERR_MANIFEST_UNKNOWN_ONERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_manifest_unknown_onerror",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:27bcb9745c97",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_missing_message_port_in_transfer_list`",
-      "signature": "`ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST`",
-      "label": "ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST",
-      "apiSymbol": "ERR_MISSING_MESSAGE_PORT_IN_TRANSFER_LIST",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_missing_message_port_in_transfer_list",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:09f8cac35b41",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_missing_transferable_in_transfer_list`",
-      "signature": "`ERR_MISSING_TRANSFERABLE_IN_TRANSFER_LIST`",
-      "label": "ERR_MISSING_TRANSFERABLE_IN_TRANSFER_LIST",
-      "apiSymbol": "ERR_MISSING_TRANSFERABLE_IN_TRANSFER_LIST",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_missing_transferable_in_transfer_list",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:c8a4f1e72052",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_napi_cons_prototype_object`",
-      "signature": "`ERR_NAPI_CONS_PROTOTYPE_OBJECT`",
-      "label": "ERR_NAPI_CONS_PROTOTYPE_OBJECT",
-      "apiSymbol": "ERR_NAPI_CONS_PROTOTYPE_OBJECT",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_napi_cons_prototype_object",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:c5fe6f0c53b0",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_napi_tsfn_start_idle_loop`",
-      "signature": "`ERR_NAPI_TSFN_START_IDLE_LOOP`",
-      "label": "ERR_NAPI_TSFN_START_IDLE_LOOP",
-      "apiSymbol": "ERR_NAPI_TSFN_START_IDLE_LOOP",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_napi_tsfn_start_idle_loop",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:8ad60b8eafcc",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_napi_tsfn_stop_idle_loop`",
-      "signature": "`ERR_NAPI_TSFN_STOP_IDLE_LOOP`",
-      "label": "ERR_NAPI_TSFN_STOP_IDLE_LOOP",
-      "apiSymbol": "ERR_NAPI_TSFN_STOP_IDLE_LOOP",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_napi_tsfn_stop_idle_loop",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:245e851177d7",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_no_longer_supported`",
-      "signature": "`ERR_NO_LONGER_SUPPORTED`",
-      "label": "ERR_NO_LONGER_SUPPORTED",
-      "apiSymbol": "ERR_NO_LONGER_SUPPORTED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_no_longer_supported",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:84dd75ef7a58",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_outofmemory`",
-      "signature": "`ERR_OUTOFMEMORY`",
-      "label": "ERR_OUTOFMEMORY",
-      "apiSymbol": "ERR_OUTOFMEMORY",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_outofmemory",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:6af35b4b138c",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_parse_history_data`",
-      "signature": "`ERR_PARSE_HISTORY_DATA`",
-      "label": "ERR_PARSE_HISTORY_DATA",
-      "apiSymbol": "ERR_PARSE_HISTORY_DATA",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_parse_history_data",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:945f9d5653be",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_socket_cannot_send`",
-      "signature": "`ERR_SOCKET_CANNOT_SEND`",
-      "label": "ERR_SOCKET_CANNOT_SEND",
-      "apiSymbol": "ERR_SOCKET_CANNOT_SEND",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_socket_cannot_send",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:56a2687d7785",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_stderr_close`",
-      "signature": "`ERR_STDERR_CLOSE`",
-      "label": "ERR_STDERR_CLOSE",
-      "apiSymbol": "ERR_STDERR_CLOSE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_stderr_close",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:d366ab4d6a93",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_stdout_close`",
-      "signature": "`ERR_STDOUT_CLOSE`",
-      "label": "ERR_STDOUT_CLOSE",
-      "apiSymbol": "ERR_STDOUT_CLOSE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_stdout_close",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:eb156aa35a3f",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_stream_read_not_implemented`",
-      "signature": "`ERR_STREAM_READ_NOT_IMPLEMENTED`",
-      "label": "ERR_STREAM_READ_NOT_IMPLEMENTED",
-      "apiSymbol": "ERR_STREAM_READ_NOT_IMPLEMENTED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_stream_read_not_implemented",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:a8caf4be8238",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_tap_lexer_error`",
-      "signature": "`ERR_TAP_LEXER_ERROR`",
-      "label": "ERR_TAP_LEXER_ERROR",
-      "apiSymbol": "ERR_TAP_LEXER_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_tap_lexer_error",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:41036708462f",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_tap_parser_error`",
-      "signature": "`ERR_TAP_PARSER_ERROR`",
-      "label": "ERR_TAP_PARSER_ERROR",
-      "apiSymbol": "ERR_TAP_PARSER_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_tap_parser_error",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:617359cbc761",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_tap_validation_error`",
-      "signature": "`ERR_TAP_VALIDATION_ERROR`",
-      "label": "ERR_TAP_VALIDATION_ERROR",
-      "apiSymbol": "ERR_TAP_VALIDATION_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_tap_validation_error",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:e2b537b9cf81",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_tls_renegotiation_failed`",
-      "signature": "`ERR_TLS_RENEGOTIATION_FAILED`",
-      "label": "ERR_TLS_RENEGOTIATION_FAILED",
-      "apiSymbol": "ERR_TLS_RENEGOTIATION_FAILED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_tls_renegotiation_failed",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:aa08fb64ea29",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_transferring_externalized_sharedarraybuffer`",
-      "signature": "`ERR_TRANSFERRING_EXTERNALIZED_SHAREDARRAYBUFFER`",
-      "label": "ERR_TRANSFERRING_EXTERNALIZED_SHAREDARRAYBUFFER",
-      "apiSymbol": "ERR_TRANSFERRING_EXTERNALIZED_SHAREDARRAYBUFFER",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_transferring_externalized_sharedarraybuffer",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:2885aac07c34",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_unknown_stdin_type`",
-      "signature": "`ERR_UNKNOWN_STDIN_TYPE`",
-      "label": "ERR_UNKNOWN_STDIN_TYPE",
-      "apiSymbol": "ERR_UNKNOWN_STDIN_TYPE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_unknown_stdin_type",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:3002db6010f3",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_unknown_stream_type`",
-      "signature": "`ERR_UNKNOWN_STREAM_TYPE`",
-      "label": "ERR_UNKNOWN_STREAM_TYPE",
-      "apiSymbol": "ERR_UNKNOWN_STREAM_TYPE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_unknown_stream_type",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:c42be6185200",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_v8breakiterator`",
-      "signature": "`ERR_V8BREAKITERATOR`",
-      "label": "ERR_V8BREAKITERATOR",
-      "apiSymbol": "ERR_V8BREAKITERATOR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_v8breakiterator",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:576989a96e5f",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_value_out_of_range`",
-      "signature": "`ERR_VALUE_OUT_OF_RANGE`",
-      "label": "ERR_VALUE_OUT_OF_RANGE",
-      "apiSymbol": "ERR_VALUE_OUT_OF_RANGE",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_value_out_of_range",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:2a75e3b52031",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_vm_module_linking_errored`",
-      "signature": "`ERR_VM_MODULE_LINKING_ERRORED`",
-      "label": "ERR_VM_MODULE_LINKING_ERRORED",
-      "apiSymbol": "ERR_VM_MODULE_LINKING_ERRORED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_vm_module_linking_errored",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:d35cd312d972",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_vm_module_not_linked`",
-      "signature": "`ERR_VM_MODULE_NOT_LINKED`",
-      "label": "ERR_VM_MODULE_NOT_LINKED",
-      "apiSymbol": "ERR_VM_MODULE_NOT_LINKED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_vm_module_not_linked",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:7eba9487bb7b",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_worker_unsupported_extension`",
-      "signature": "`ERR_WORKER_UNSUPPORTED_EXTENSION`",
-      "label": "ERR_WORKER_UNSUPPORTED_EXTENSION",
-      "apiSymbol": "ERR_WORKER_UNSUPPORTED_EXTENSION",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_worker_unsupported_extension",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "errors:b626bda0cacd",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_zlib_binding_closed`",
-      "signature": "`ERR_ZLIB_BINDING_CLOSED`",
-      "label": "ERR_ZLIB_BINDING_CLOSED",
-      "apiSymbol": "ERR_ZLIB_BINDING_CLOSED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_zlib_binding_closed",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated. These error codes are either inconsistent, or have been removed.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25859,8 +24141,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -25895,8 +24177,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -25913,8 +24195,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -25931,8 +24213,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -25967,8 +24249,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26021,8 +24303,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26039,8 +24321,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26075,8 +24357,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26093,8 +24375,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26111,8 +24393,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26129,8 +24411,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26165,8 +24447,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26183,8 +24465,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26201,8 +24483,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26219,8 +24501,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26237,8 +24519,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26255,8 +24537,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26273,8 +24555,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26291,8 +24573,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26309,8 +24591,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26327,8 +24609,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -26345,8 +24627,8 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {

@@ -89361,6 +89361,8 @@
           "tests/corpus/5612-readable-from-iterables.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
           "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
           "tests/corpus/compat-stream-async-dispose.ts",
           "tests/corpus/compat-stream-classes.ts",
@@ -91604,7 +91606,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.'pipe'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91627,8 +91630,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "partial",
+        "evidence": "compiler-feature:stream.'unpipe'",
+        "tests": [
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts"
+        ]
       },
       "anchorSource": "exact"
     },

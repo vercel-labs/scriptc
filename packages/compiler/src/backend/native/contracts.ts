@@ -153,13 +153,22 @@ export interface CcOptions {
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
+  /** A spawnSync capture read as a Buffer: compiles scr_child_capture.c. */
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
+  /** The keyed collections' prototype objects and member values, their
+   * constructors' adder lookup and the ES2025 Set compositions: compiles
+   * scr_dyn_collections.c. */
+  dynCollections?: boolean;
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
+  /** Reflect.getPrototypeOf's primitive-target check: compiles
+   * scr_dyn_reflect_proto.c. */
+  reflectProtoTarget?: boolean;
   /** A generator that binds its parameters at the call: compiles
    * scr_gen_bind.c. */
   genBind?: boolean;

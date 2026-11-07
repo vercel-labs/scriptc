@@ -7,7 +7,8 @@ import { resolveImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
-import { isDeclaredInAmbientNamespace } from "../type-mapper.js";
+import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
+import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   arrayOf,
   BOOL,
@@ -2812,6 +2813,22 @@ export function npmPackageOf(lowerer: Lowerer, type: ts.Type): string | null {
 }
 
 export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpression): void {
+  // A member read on a package-declared DATA shape (an interface, type
+  // alias or mapped type a declarations-only package spells) reads data the
+  // program itself holds — the request object a handler receives, a params
+  // bag, a query object. The mapper already widens such a shape to the
+  // checked-dynamic value when its structural rules cannot map it, so the
+  // read has a representation even though the package ships no code. Only a
+  // package VALUE shape (a class, a merged value declaration) has nothing
+  // to read from without that package's implementation.
+  if (
+    packageTypeIsData(lowerer.typeOf(access.expression), {
+      isStdlibFile: (sf) => lowerer.isStdlibFile(sf),
+      isExternalTypeFile: lowerer.isExternalTypeFile,
+      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, lowerer.experimentalFiles),
+    })
+  )
+    return;
   const pkg =
     lowerer.npmPackageOf(lowerer.typeOf(access.expression)) ??
     lowerer.npmPackageOfSymbol(lowerer.checker.getSymbolAtLocation(access.name));

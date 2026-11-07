@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-opendir-buffer-size-uncaught.cjs"
+ ],
+ "diags": []
+}

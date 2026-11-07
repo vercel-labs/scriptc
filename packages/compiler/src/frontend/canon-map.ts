@@ -128,16 +128,20 @@ function mapCanonicalRecord(
   depth: number,
   notes: CanonMapNotes | undefined,
 ): IrType | null {
-  const fields: { name: string; type: IrType }[] = [];
+  const fields: { name: string; type: IrType; optional?: true }[] = [];
   for (const p of props) {
     let t = mapCanonical(p.type(), ctx, depth + 1, notes);
     if (t === null) return null;
-    if (p.optional && t.kind !== "dyn") {
-      const armed = withUndefinedArm(t, ctx.unions);
-      if (armed === null) return null;
-      t = armed;
+    let absentable = false;
+    if (p.optional) {
+      if (t.kind === "dyn") absentable = true;
+      else {
+        const armed = withUndefinedArm(t, ctx.unions);
+        if (armed === null) return null;
+        t = armed;
+      }
     }
-    fields.push({ name: p.name, type: t });
+    fields.push({ name: p.name, type: t, ...(absentable ? { optional: true as const } : {}) });
   }
   const declaredOrder = fields.map((f) => f.name);
   fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

@@ -57,7 +57,7 @@ export function nullishEmptyPatternSource(
     declaredShape.indexValue ||
     declaredShape.fields.length === 0 ||
     declaredShape.fields.every(
-      (field) => lowerer.absentFieldValue(field.type, loc)?.kind === "fieldAbsent",
+      (field) => lowerer.absentFieldValue(field, loc)?.kind === "fieldAbsent",
     )
   )
     return null;

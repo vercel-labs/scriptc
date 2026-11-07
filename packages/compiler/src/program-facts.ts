@@ -481,13 +481,13 @@ const decides = (site: string, count: number, fact: string): ProgramScan =>
 export const PROGRAM_SCANS: readonly ProgramScan[] = [
   scan(
     "frontend/contract-types.ts#collectContractAnnotations",
-    1,
+    2,
     "prefilter",
     "a file that never names the contract-type modules imports none of them",
   ),
   scan(
     "frontend/fork-target.ts#namesChildProcess",
-    1,
+    4,
     "discovery",
     "finds the modules a fork() can start, which become program roots",
   ),
@@ -620,6 +620,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   decides("frontend/lowering/lower-server.ts#unixListenReachable", 2, "unix-listen-reachable"),
   scan(
+    "frontend/lowering/lower-shared-modules.ts#sharedModulePlans",
+    1,
+    "prefilter",
+    "a module that never names requireModule starts no island root",
+  ),
+  scan(
     "frontend/lowering/lower-stdlib.ts#requestInitPropMutatedSymbols",
     1,
     "closed-world",
@@ -697,7 +703,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "program roots of the entry package",
   ),
-  decides("frontend/program.ts#programNamesTemporal7", 1, "names-temporal"),
+  decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
   scan(
     "frontend/program.ts#lowerProgramJsx7",
     1,
@@ -712,7 +718,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/program.ts#declBoundaryUserFiles",
-    1,
+    5,
     "discovery",
     "the user files of a declaration-typed boundary",
   ),
@@ -755,7 +761,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "wasm/discover.ts#Discovery",
-    1,
+    4,
     "discovery",
     "the packages that mention WebAssembly, for the wasm report",
   ),

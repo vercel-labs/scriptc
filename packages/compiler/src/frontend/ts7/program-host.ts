@@ -44,6 +44,8 @@ import {
   trackedDirectoryExists,
   trackedFileExists,
   trackedReadFile,
+  trackedReadSource,
+  trackedWholeText,
   trackedRealpath,
 } from "../input-tracker.js";
 import { packageShimDeclarationText } from "../package-shims.js";
@@ -233,7 +235,7 @@ export class Ts7Host {
       // A package file a project type patch edits (type-patches/layer.ts).
       const patched = typePatchedText(fileName);
       if (patched !== undefined) return stripSourceBom(patched);
-      const source = trackedReadFile(fileName);
+      const source = trackedReadSource(fileName);
       return source === null ? null : stripSourceBom(source);
     };
     this.api = createApi({
@@ -456,6 +458,8 @@ export class Ts7Program {
   /** A file's text as the host serves it, without fetching its syntax
    * tree (Ts7Host.sourceText). */
   getSourceText(fileName: string): string | null {
+    // The caller inspects the text itself.
+    trackedWholeText(fileName);
     return this.host.sourceText(fileName);
   }
 

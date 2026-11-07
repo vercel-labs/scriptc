@@ -62,6 +62,7 @@ import {
 } from "./ir.js";
 import {
   DYN_CLASS_PROPERTIES,
+  keyedRecordFields,
   callSiteReturnType,
   classValueAbiEquals,
   classValueConstructor,
@@ -2871,6 +2872,19 @@ function validateFunction(
         if (e.adapts === true && locals.get(e.captures[0] ?? "")?.type.kind !== "func") {
           err(`closure ${e.fnName}: an adapter's first capture must be a function`, e.loc);
         }
+        if (
+          e.length !== undefined &&
+          (e.adapts === true ||
+            target.captures === undefined ||
+            !Number.isInteger(e.length) ||
+            e.length < 0 ||
+            e.length >= e.type.params.length)
+        ) {
+          err(
+            `closure ${e.fnName}: length ${e.length} must be below the ${e.type.params.length} parameters of a lifted function's type`,
+            e.loc,
+          );
+        }
         if (target.captures === undefined && e.captures.length > 0) {
           err(`closure over plain function "${e.fnName}" cannot capture`, e.loc);
         }
@@ -3464,7 +3478,7 @@ function validateFunction(
             e.loc,
           );
         }
-        if (!e.overflowOnly && !shape.fields.every((f) => surfaces(f.type))) {
+        if (!e.overflowOnly && !keyedRecordFields(shape).every((f) => surfaces(f.type))) {
           err(
             `recordKeyGet on ${e.shapeId}: a declared field cannot surface as the result type`,
             e.loc,
@@ -7047,8 +7061,9 @@ function validateFunction(
           // Signature-free dispatch: every declared field shares ONE type
           // (the frontend's gate), the value IS that type, and a key miss
           // traps at runtime — so overflowOnly writes cannot exist here.
-          const common = shape.fields[0]?.type;
-          if (!common || !shape.fields.every((f) => typeEquals(f.type, common))) {
+          const keyed = keyedRecordFields(shape);
+          const common = keyed[0]?.type;
+          if (!common || !keyed.every((f) => typeEquals(f.type, common))) {
             err(
               `recordKeySet on non-index-signature shape ${s.shapeId} without one shared field type`,
               s.loc,
@@ -7073,7 +7088,7 @@ function validateFunction(
         if (
           !s.overflowOnly &&
           shape.indexValue.kind !== "dyn" &&
-          !shape.fields.every((f) => typeEquals(f.type, shape.indexValue!))
+          !keyedRecordFields(shape).every((f) => typeEquals(f.type, shape.indexValue!))
         ) {
           err(
             `recordKeySet on ${s.shapeId}: declared fields differ from the index-value type`,

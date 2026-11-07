@@ -4805,8 +4805,10 @@ export class Lowerer {
       visit(fn);
     }
   }
-  /** The first lifted function named `name`, the one
-   * `liftedFns.find((fn) => fn.name === name)` returns. */
+  /** The first lifted function named `name`: the one a search of
+   * `liftedFns` from the front finds. Every lookup of a lifted function by
+   * name goes through here; a search of the list reads each lifted function
+   * of the program at every lookup (lowerer.test.ts keeps searches out). */
   liftedFnNamed(name: string | undefined): IrFunction | undefined {
     for (; this.liftedFnsIndexed < this.liftedFns.length; this.liftedFnsIndexed++) {
       const fn = this.liftedFns[this.liftedFnsIndexed]!;
@@ -6368,7 +6370,7 @@ export class Lowerer {
     const loc = value.loc;
     const name = `%module.promise:${inner.moduleId}`;
     const promiseT: IrType & { kind: "promise" } = { kind: "promise", inner };
-    if (!this.liftedFns.some((fn) => fn.name === name)) {
+    if (this.liftedFnNamed(name) === undefined) {
       const context = newFnCtx(false, null, null, DYN);
       context.isAsync = true;
       const previousClass = this.currentClass;

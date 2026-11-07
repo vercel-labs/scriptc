@@ -572,7 +572,7 @@ export function constructedValue(lowerer: Lowerer, info: ClassInfo, constructed:
   const loc = constructed.loc;
   const type = instanceType(info);
   const name = `%${info.def.name}.%constructed`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const instance = { id: "instance.0", name: "instance", type, mutable: false };
     const returned = {
       id: "returned.0",
@@ -696,7 +696,7 @@ export function superIntoResultSlot(
   const loc = locOf(blame);
   const type = instanceType(base);
   const name = `%${sub.def.name}.%superResult`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const instance = { id: "instance.0", name: "instance", type, mutable: false };
     const returned = {
       id: "returned.0",

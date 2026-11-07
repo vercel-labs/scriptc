@@ -245,7 +245,7 @@ export function createRequireResolveValue(
     "%createRequire.resolve",
     createRequireLoaderAnchorOf(lowerer, access.expression),
   );
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const call = computedResolveCall(
       lowerer,
       access,
@@ -309,7 +309,7 @@ export function createRequireResolveFenceValue(
     "%createRequire.fence",
     `${createRequireLoaderAnchorOf(lowerer, access.expression)}:${paths ? "paths" : "resolve"}`,
   );
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     lowerer.liftedFns.push({
       name,
       params: [],
@@ -369,7 +369,7 @@ export function createRequireLoaderValue(
     "%createRequire.loader",
     createRequireLoaderAnchorOf(lowerer, ident),
   );
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const call: IrExpr = {
       kind: "libCall",
       fn: "module.requireComputed",
@@ -416,7 +416,7 @@ function createRequireFenceFunctionValue(
     "%createRequire.fenceLoader",
     createRequireLoaderAnchorOf(lowerer, node),
   );
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "request", name: "request", type: DYN }],

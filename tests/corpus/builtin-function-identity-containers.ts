@@ -48,3 +48,15 @@ console.log(anyList.includes(basename), anyList.indexOf(path.basename), anyList[
 const record = { fn: basename };
 const loose: { fn: unknown } = { fn: base };
 console.log(record.fn === loose.fn, record.fn === path.basename);
+
+// `length` is Node's through every container too: a rest parameter does not
+// count.
+const joined = viaArray(join);
+const resolved = viaField(path.resolve);
+const untypedJoin: unknown = joined;
+console.log(joined.length, join.length, path.join.length, resolved.length, path.resolve.length);
+console.log((untypedJoin as typeof join).length, joined.name, resolved.name, joined("a", "b"));
+const viaCast = viaUnknown(basename);
+const viaRead = viaClosure(path.dirname);
+const viaList = viaArray(path.extname);
+console.log(viaCast.length, viaRead.length, viaList.name, viaList.length);

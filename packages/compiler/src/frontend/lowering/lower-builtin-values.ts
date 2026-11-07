@@ -1044,7 +1044,12 @@ export function shareBuiltinValueIdentities(lowerer: Lowerer, functions: IrFunct
         args: [
           { kind: "closure", fnName: adapter, captures: [], type, loc },
           { kind: "closure", fnName: twinName, captures: [], type: twin.funcType, loc },
-          numLit(fn.valueLength ?? (fn.valueParams ?? []).length, loc),
+          // Node's `length` for the builtin: a rest parameter does not count.
+          numLit(
+            fn.valueLength ??
+              (fn.valueParams ?? []).filter((param) => param.mode !== "rest").length,
+            loc,
+          ),
         ],
         type: VOID,
         loc,

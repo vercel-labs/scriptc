@@ -251,9 +251,11 @@ $ scriptc coverage logger.ts | tail -n 7
 $ scriptc build logger.ts -o logger >/dev/null 2>&1
 $ ./logger
 Uncaught TypeError: expected boolean at $, got undefined
+    debug@4.4.3 declares debug.Debugger.enabled as boolean (@types/debug/index.d.ts:44)
+    if that declaration is wrong, patch it: scriptc types patch debug debug.Debugger.enabled '| undefined'
 ```
 
-The first declaration is wrong: `enabled` is `undefined` when the `DEBUG` environment variable isn't set. The command from the report fixes it, and the program then prints what it prints under Node.js:
+The first declaration is wrong: `enabled` is `undefined` when the `DEBUG` environment variable isn't set. The error names the declaration the report listed, with the type that would admit the value. That command fixes it, and the program then prints what it prints under Node.js:
 
 ```console
 $ scriptc types patch debug debug.Debugger.enabled "| undefined"

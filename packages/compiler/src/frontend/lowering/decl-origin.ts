@@ -12,12 +12,13 @@
  *       { "typePatches": { "termctx@^1.2.0": { "declarations":
  *       { "Terminal.columns()": "| undefined" } } } }
  *
- * The origin is found for three kinds of slots: a value a package function
+ * The origin is found for four kinds of slots: a value a package function
  * returns under a written return type, a property of an object literal
- * typed by a package-declared type, and a declaration-boundary cast (a
+ * typed by a package-declared type, a declaration-boundary cast (a
  * value user code receives from a package; decl-projection.ts records
- * those with originAt). Generic declarations get none: their types come
- * from how the program instantiates them. Checks in
+ * those with originAt), and a value a Node island hands over, typed by the
+ * island package's declarations (islandValueOrigin). Generic declarations
+ * get none: their types come from how the program instantiates them. Checks in
  * code that names no package declaration carry no origin, so programs
  * without npm packages lower exactly as before.
  *
@@ -251,7 +252,7 @@ export function slotOrigin(checker: ts.TypeChecker, node: ts.Node): string | nul
     if (file === null) return null;
     return encode(
       file,
-      `${typeName}.${name}`,
+      `${namespacesOf(typeSymbol?.declarations[0])}${typeName}.${name}`,
       `${file.rel}:${lineOf(decl)}`,
       typeText(checker, checker.getTypeOfSymbol(symbol)),
     );
@@ -281,6 +282,9 @@ export function slotOrigin(checker: ts.TypeChecker, node: ts.Node): string | nul
 export interface RecordOrigin {
   type: ts.Type;
   name: string;
+  /** The type's patch selector: its name with the namespaces it is
+   * declared in. */
+  selector: string;
   /** The declaration's identity (package, version, file, line and name):
    * records of the same shape and name declared by two packages differ. */
   key: string;
@@ -297,7 +301,7 @@ export function recordOrigin(checker: ts.TypeChecker, node: ts.Node): RecordOrig
   const file = packageFileOf(ts.getSourceFileOfNode(decl).fileName);
   if (file === null) return null;
   const key = [file.pkg, file.version, file.rel, lineOf(decl), name].join(ORIGIN_SEPARATOR);
-  return { type: contextual, name, key };
+  return { type: contextual, name, selector: `${namespacesOf(decl)}${name}`, key };
 }
 
 /** The origin of one field of a package-declared record type. */
@@ -313,7 +317,7 @@ export function fieldOrigin(
   if (file === null) return null;
   return encode(
     file,
-    `${record.name}.${field}`,
+    `${record.selector}.${field}`,
     `${file.rel}:${lineOf(decl)}`,
     typeText(checker, checker.getTypeOfSymbol(symbol)),
   );
@@ -523,20 +527,13 @@ export function islandValueOrigin(
     suffix = `(${parameterName})`;
   }
   const where = declaredAt(decl, file);
-  // The names of the namespaces a declaration is in: `scriptc types patch`
-  // reaches a member of `declare namespace debug` as `debug.<member>`.
-  let namespaces = "";
-  for (let p = decl.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
-    if (ts.isModuleDeclaration(p) && ts.isIdentifier(p.name))
-      namespaces = `${p.name.text}.${namespaces}`;
-  }
   const selector = declarationSelector(decl);
   if (selector !== null) {
     return [
       file.pkg,
       file.version,
       viaMember ? "" : file.version === "" ? "*" : `^${file.version}`,
-      `${namespaces}${selector}${suffix}${"[]".repeat(elements)}`,
+      `${selector}${suffix}${"[]".repeat(elements)}`,
       where,
       declared.replace(/\s+/g, " "),
     ].join(ORIGIN_SEPARATOR);
@@ -575,14 +572,29 @@ function genericDeclaration(decl: ts.Node): boolean {
   return false;
 }
 
+/** The names of the namespaces a declaration is in, each followed by a
+ * dot: a type patch selector reaches a member of `declare namespace debug`
+ * as `debug.<member>` (type-patches/selector.ts). `declare module "name"`
+ * and `declare global` are not part of a selector. */
+function namespacesOf(decl: ts.Node | undefined): string {
+  let namespaces = "";
+  for (let p = decl?.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+    if (ts.isModuleDeclaration(p) && ts.isIdentifier(p.name) && p.name.text !== "global")
+      namespaces = `${p.name.text}.${namespaces}`;
+  }
+  return namespaces;
+}
+
 /** The selector of a declaration in a declaration file: a function, a
- * member of a class, interface or named object type, or null (also for
- * generic declarations, whose types the program supplies). */
+ * member of a class, interface or named object type, with the namespaces
+ * it is declared in, or null (also for generic declarations, whose types
+ * the program supplies). */
 export function declarationSelector(decl: ts.Node): string | null {
   if (genericDeclaration(decl)) return null;
   const own = nameOf((decl as ts.FunctionDeclaration).name);
   if (own === null) return null;
-  if (ts.isFunctionDeclaration(decl) || ts.isVariableDeclaration(decl)) return own;
+  if (ts.isFunctionDeclaration(decl) || ts.isVariableDeclaration(decl))
+    return `${namespacesOf(decl)}${own}`;
   let holder = decl.parent;
   if (holder !== undefined && ts.isTypeLiteralNode(holder)) holder = holder.parent;
   if (
@@ -592,7 +604,7 @@ export function declarationSelector(decl: ts.Node): string | null {
       ts.isTypeAliasDeclaration(holder))
   ) {
     const owner = nameOf(holder.name);
-    return owner === null ? null : `${owner}.${own}`;
+    return owner === null ? null : `${namespacesOf(holder)}${owner}.${own}`;
   }
   return null;
 }

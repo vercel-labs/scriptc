@@ -42,6 +42,13 @@ export interface CanonMapNotes {
    * did (`string | {}`): the result holds a dynamic part the form did not
    * spell as `unknown`. */
   collapsedToDynamic: boolean;
+  /** The form holds an array whose elements are generators (iterators map
+   * to the same kind), which have no array storage. */
+  generatorArray?: boolean;
+  /** Set by the caller: such an array maps to an array type all the same.
+   * No value of that type can be built, so every use of one is refused
+   * (generator-arrays.ts). */
+  generatorArraysMap?: boolean;
 }
 
 /** The structural mappings one walk has finished: by object node, then by
@@ -103,11 +110,14 @@ function mapCanonicalAt(
       return viaChecker();
     case "array": {
       const elem = mapCanonicalAt(c.elem, ctx, depth + 1, notes, walk);
+      if (elem === null || elem.kind === "void") return null;
+      if (elem.kind === "generator" && notes !== undefined) {
+        notes.generatorArray = true;
+        if (notes.generatorArraysMap === true) return { kind: "array", elem };
+      }
       // The storage contract mapType's array rule applies: an element kind
       // without array storage (a generator, an opaque handle) has no array.
-      return elem === null || elem.kind === "void" || !isSupportedArrayElem(elem)
-        ? null
-        : { kind: "array", elem };
+      return isSupportedArrayElem(elem) ? { kind: "array", elem } : null;
     }
     case "union": {
       const byKey = new Map<string, IrType>();

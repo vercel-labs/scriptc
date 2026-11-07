@@ -1225,6 +1225,16 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // exception escaping top-level code prints and exits 1 (Node).
   // The exception epilogue is emitted when the entry may throw.
   const stamps: string[] = [...errorViews];
+  // An identity root is a thread-local symbol of its own, which no static
+  // initializer may name: the entry points each thread's adopting closures
+  // at that thread's root. It runs in every context that holds its own
+  // copies (each worker, each thread-instanced library instance), before
+  // any program code can compare functions.
+  for (const [name, root] of emitter.threadLocalIdentityRoots) {
+    stamps.push(
+      `  store ptr @${mangleFnClosure(root)}, ptr getelementptr inbounds (%ScrClosure, ptr @${mangleFnClosure(name)}, i64 0, i32 6) ; ${name}.identity`,
+    );
+  }
   for (const iv of emitter.errorIntervals) {
     const fields: [number, number][] = [
       [0, iv.pre],

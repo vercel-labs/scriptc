@@ -1655,6 +1655,12 @@ export class LlEmitter {
   /** Declared functions referenced as values: each needs an env-signature
    * wrapper + an interned immortal closure (so `f === f` holds). */
   readonly fnValues = new Set<string>();
+  /** The emitted instance closures that adopt another function's identity
+   * root in a build whose closure globals are thread-local, mapped to that
+   * root. A thread-local global's address is no static initializer's
+   * constant, so each thread's entry points its own copies at its own root
+   * before any program code runs (emit-module.ts). */
+  readonly threadLocalIdentityRoots = new Map<string, string>();
   needsOom = false;
   needsBadTag = false;
   needsBadKey = false;
@@ -3216,6 +3222,9 @@ export class LlEmitter {
    * closure was never emitted (see closureWrapperNames). */
   emitFnValueDefs(): string[] {
     const out: string[] = [];
+    // Thread-instanced builds give every thread its own copy of each
+    // closure global.
+    const threadLocal = this.mod.workers === true || this.mod.lib?.threadInstances === true;
     const names = new Set(this.fnValues);
     for (const name of this.closureWrapperNames) names.add(name);
     // A closure that adopts another function's identity root (one generic
@@ -3241,15 +3250,23 @@ export class LlEmitter {
       // report their own length): field 6 is `identity_length`, field 7
       // `identity` in ScrClosure.
       const identityLength = fn.identityRoot !== undefined ? (fn.identityLength ?? 0) : 0;
+      // A thread-local global's address is a per-thread symbol that no static
+      // initializer may name (LLVM would emit a link-time constant holding
+      // the image's copy, not the running thread's). Those builds leave the
+      // field null here and point it at the thread's own root in the entry.
       const identity =
-        fn.identityRoot !== undefined ? `@${mangleFnClosure(fn.identityRoot)}` : "null";
+        fn.identityRoot !== undefined && !threadLocal
+          ? `@${mangleFnClosure(fn.identityRoot)}`
+          : "null";
+      if (threadLocal && fn.identityRoot !== undefined)
+        this.threadLocalIdentityRoots.set(name, fn.identityRoot);
       out.push(
         `define internal ${ret} @${mangleWrapper(name)}(ptr %env${params.length ? ", " + params.join(", ") : ""}) ${FN_ATTRS} { ; ${name} as a value`,
         `entry:`,
         ret === "void" ? `  ${call}` : `  %r = ${call}`,
         ret === "void" ? `  ret void` : `  ret ${ret} %r`,
         `}`,
-        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${this.closureFunctionKind(fn)}, i32 ${identityLength}, ptr ${identity}, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
+        `@${mangleFnClosure(name)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${this.closureFunctionKind(fn)}, i32 ${identityLength}, ptr ${identity}, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
         ``,
       );
       if (lending)

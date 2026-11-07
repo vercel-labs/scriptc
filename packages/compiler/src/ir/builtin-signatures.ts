@@ -4481,10 +4481,6 @@ function buildLibFnSignatures() {
 
     "dyn.objCreateNullProto": { argTypes: [], result: DYN },
     "dyn.arrayPrototype": { argTypes: [], result: DYN },
-    /** Array.prototype read as a value by the program: the same object,
-     * with its built-in methods fenced against replacement
-     * (scr_dyn_array_prototype_value). */
-    "dyn.arrayPrototypeValue": { argTypes: [], result: DYN },
     "dyn.arrayConstructor": { argTypes: [], result: DYN },
     "dyn.objectPrototype": { argTypes: [], result: DYN },
     "dyn.errorPrototype": { argTypes: [], result: DYN },

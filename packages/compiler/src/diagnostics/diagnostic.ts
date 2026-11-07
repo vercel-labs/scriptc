@@ -1293,61 +1293,22 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
   };
 }
 
-const BUILTIN_MEMBER_WRITE_HINT =
-  "existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. Adding a member the object does not have is allowed. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead";
-
 /** A write that replaces or deletes an existing member of a built-in
- * object (`Array.prototype.push = f`, `delete Math.random`), or adds a
- * member the language itself reads (`Array.prototype.toJSON = f`). Compiled
- * code calls the built-in's native entry point and never reads the member
- * from its object, so the program would keep running the built-in where
- * Node runs the replacement. `member` is the member as the program names it. */
+ * object (`Array.prototype.push = f`, `delete Math.random`). Compiled code
+ * calls the built-in's native entry point and never reads the member from
+ * its object, so the program would keep running the built-in where Node
+ * runs the replacement. `member` is the member as the program names it. */
 export function builtinMemberWriteDiag(
   member: string,
-  action: "replace" | "delete" | "add",
+  deletes: boolean,
   loc: SrcLoc,
 ): ScrDiagnostic {
-  const what =
-    action === "add"
-      ? `adding '${member}' to a built-in object is not supported: compiled code does not read this member from the object`
-      : `${action === "delete" ? "deleting" : "replacing"} the built-in '${member}' is not supported: compiled code calls built-in members directly and would not see the change`;
   return {
     code: "SC1092",
-    message: what,
+    message: `${deletes ? "deleting" : "replacing"} the built-in '${member}' is not supported: compiled code calls built-in members directly and would not see the change`,
     loc,
     milestone: "later",
-    hint: BUILTIN_MEMBER_WRITE_HINT,
-    reason: "builtin-write",
-  };
-}
-
-/** A write that adds a member to a built-in prototype whose instances never
- * read members from the prototype object (`Map.prototype.added = 7` leaves
- * `new Map().added` undefined in compiled code; only arrays consult their
- * prototype object). Unlike a replacement it defers to a run-time fence in
- * a JavaScript source, like every other refusal there: nothing compiled
- * keeps working differently when the statement never runs. */
-export function builtinPrototypeAddDiag(member: string, loc: SrcLoc): ScrDiagnostic {
-  return {
-    code: "SC1093",
-    message: `adding '${member}' to a built-in prototype is not supported: values of that built-in do not read members from its prototype object`,
-    loc,
-    milestone: "later",
-    hint: "a member added to Array.prototype is read by untyped arrays, and members can be added to constructors and to namespace objects such as Math; for other built-ins, call a function of your own instead. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead",
-    reason: "builtin-write",
-  };
-}
-
-/** `Object.assign` or `Object.defineProperties` onto a built-in object from
- * a source the build cannot read member by member: it may replace any of
- * the object's members. */
-export function builtinMemberCopyDiag(owner: string, loc: SrcLoc): ScrDiagnostic {
-  return {
-    code: "SC1092",
-    message: `copying members onto the built-in '${owner}' from a value the build cannot read is not supported: it may replace built-in members, which compiled code calls directly`,
-    loc,
-    milestone: "later",
-    hint: `${BUILTIN_MEMBER_WRITE_HINT}. Spell the new members in an object literal`,
+    hint: "existing members of built-in objects are read-only in a compiled executable. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead",
     reason: "builtin-write",
   };
 }

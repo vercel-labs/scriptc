@@ -16,9 +16,6 @@ Number.isInteger = function () {
 delete Array.prototype.pop;
 delete String.prototype.trim;
 Object.assign(Array.prototype, { shift() {} });
-Array.prototype.toJSON = function () {
-  return "array";
-};
 // Every writer of a prototype object the dynamic tier holds as a value.
 Object.defineProperties(Date.prototype, { getTime: { value: () => 42 } });
 Object.defineProperty(Date.prototype, "getTime", { value: () => 42 });

@@ -150,8 +150,6 @@ ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name) {
   }
   if (!dyn_stdlib_prototype_date) {
     dyn_stdlib_prototype_date = dyn_stdlib_prototype_build_date(name);
-    /* The program holds the object now: its built-in members are fenced. */
-    scr_dyn_fence_builtin_members(dyn_stdlib_prototype_date);
     scr_atexit(dyn_stdlib_prototype_cleanup);
   }
   return scr_dyn_retain(dyn_stdlib_prototype_date);

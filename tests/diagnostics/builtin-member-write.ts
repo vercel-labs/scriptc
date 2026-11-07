@@ -1,17 +1,6 @@
 // Replacing or deleting an existing member of a built-in object is refused
 // by name: compiled code calls the built-in directly and would never run
 // the replacement. Each statement below is one spelling of such a write.
-declare global {
-  interface BigInt {
-    toJSON(): string;
-  }
-  interface Map<K, V> {
-    added: number;
-  }
-  interface String {
-    shout(): string;
-  }
-}
 let calls = 0;
 
 // A prototype method, by assignment.
@@ -38,8 +27,6 @@ Array.prototype[Symbol.iterator] = function <T>(this: T[]): ArrayIterator<T> {
 Object.defineProperty(Array.prototype, "shift", { value: (): number => 0 });
 Object.defineProperties(Math, { max: { value: (): number => 0 } });
 Object.assign(String.prototype, { trim: (): string => "" });
-const extras: Record<string, unknown> = {};
-Object.assign(Map.prototype, extras);
 Reflect.set(Set.prototype, "add", (): number => 0);
 Reflect.defineProperty(Math, "min", { value: (): number => 0 });
 Reflect.deleteProperty(Math, "abs");
@@ -68,23 +55,11 @@ Object.getPrototypeOf([]).reverse = function (): unknown[] {
 Uint8Array.prototype.fill = function (this: Uint8Array): Uint8Array {
   return this;
 };
-// A member the language reads itself, even where the object has none yet.
-BigInt.prototype.toJSON = function (this: bigint): string {
-  return this.toString();
-};
-// A new member on a prototype whose values never read it (SC1093): compiled
-// Maps and strings do not look at their prototype object. Array.prototype,
-// constructors and namespace objects take new members.
-Map.prototype.added = 7;
-String.prototype.shout = function (this: string): string {
-  return this.toUpperCase();
-};
-Object.defineProperty(Set.prototype, "extra", { value: 1 });
 // In expression position, and behind a test the build cannot decide.
 const kept = (Math.sign = (): number => 1);
 if (calls > 0) Math.sqrt = (): number => 0;
 // A logical assignment that does assign.
 Math.cos &&= (): number => 0;
 
-console.log(kept, extras);
+console.log(kept);
 export {};

@@ -1898,7 +1898,6 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.assignAll": "scr_dyn_assign_all",
   "dyn.objCreateNullProto": "scr_dyn_new_obj_null_proto",
   "dyn.arrayPrototype": "scr_dyn_array_prototype",
-  "dyn.arrayPrototypeValue": "scr_dyn_array_prototype_value",
   "dyn.arrayConstructor": "scr_dyn_array_constructor",
   "dyn.objectPrototype": "scr_dyn_object_prototype",
   "dyn.errorPrototype": "scr_dyn_error_prototype",

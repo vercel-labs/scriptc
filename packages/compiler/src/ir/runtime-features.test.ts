@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
 import {
+  BOOL,
   DYN,
   STRING,
   VOID,
@@ -638,6 +639,77 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(own).fnMemberProps).toBe(false);
     own.functions.push(sibling("other"));
     expect(moduleRuntimeFeatures(own).fnMemberProps).toBe(false);
+  });
+
+  test("selects the function-property build for a spelled read of an inherited member", () => {
+    // A function inherits `call`, `bind` and `toString`; the default build of
+    // scr_json.c reads the member itself as undefined, and only the
+    // SCR_FN_MEMBER_PROPS build has a value for it. A dynamic read that
+    // spells `call` or `bind` selects that build. `apply` has a value in
+    // every build, a key computed at run time proves nothing, and a read of
+    // `toString` is what `String(value)` lowers to, so it selects nothing:
+    // a delete of `toString`, which reveals the inherited member, does.
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const receiver: IrExpr = { kind: "varRef", localId: "o", type: DYN, loc };
+    const reads = (key: IrExpr): boolean => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "dynKeyGet", value: receiver, key, type: DYN, loc },
+      });
+      return moduleRuntimeFeatures(mod).fnMemberProps;
+    };
+    expect(reads(str("call"))).toBe(true);
+    expect(reads(str("bind"))).toBe(true);
+    expect(reads(str("toString"))).toBe(false);
+    expect(reads(str("apply"))).toBe(false);
+    expect(reads(str("valueOf"))).toBe(false);
+    expect(reads(str("extra"))).toBe(false);
+    expect(reads({ kind: "varRef", localId: "k", type: DYN, loc })).toBe(false);
+    // A literal bracket key is boxed into the dynamic tier (`fn["call"]`).
+    const boxedKey = (value: string): IrExpr => ({
+      kind: "dynFrom",
+      value: str(value),
+      type: DYN,
+      loc,
+    });
+    expect(reads(boxedKey("call"))).toBe(true);
+    expect(reads(boxedKey("bind"))).toBe(true);
+    expect(reads(boxedKey("toString"))).toBe(false);
+    // The read counts wherever the function holds it.
+    const nested = module();
+    nested.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "libCall",
+        fn: "dyn.typeof",
+        args: [{ kind: "dynKeyGet", value: receiver, key: str("call"), type: DYN, loc }],
+        type: STRING,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(nested).fnMemberProps).toBe(true);
+    const keyed = (fn: IrLibFn, name: string): boolean => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn,
+          args: [receiver, str(name), { kind: "boolLit", value: true, type: BOOL, loc }],
+          type: VOID,
+          loc,
+        },
+      });
+      return moduleRuntimeFeatures(mod).fnMemberProps;
+    };
+    expect(keyed("dyn.keyDelete", "toString")).toBe(true);
+    // An own `toString` is an ordinary property in the default build.
+    expect(keyed("dyn.keySet", "toString")).toBe(false);
+    expect(keyed("dyn.keyDelete", "extra")).toBe(false);
   });
 
   test("arms the host-global check for a computed global read and `in`", () => {

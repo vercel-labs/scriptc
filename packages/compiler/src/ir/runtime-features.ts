@@ -1327,11 +1327,56 @@ function mayHoldCallable(expr: IrExpr | undefined): boolean {
   return typeHoldsCallable(expr.kind === "dynFrom" ? expr.value.type : expr.type);
 }
 
+/** The inherited members only the SCR_FN_MEMBER_PROPS build of scr_json.c
+ * has a VALUE for (scr_fn_inherited_value), which a read that spells them
+ * selects: the default build answers their member calls through the native
+ * lowering and reads the member itself as undefined, where a function
+ * inherits it. `apply` has a value in every build. `toString` has one only
+ * in that build too, but a spelled read of it cannot select the build: the
+ * string conversion of a dynamic value (`String(value)`) lowers to that
+ * very read, in programs that never name the member. */
+const FN_INHERITED_VALUE_NAMES: ReadonlySet<string> = new Set(["bind", "call"]);
+
+/** Members whose DELETE selects the build: the default build stores an own
+ * `toString` on a function like any expando, and a delete then reveals the
+ * inherited member, which only that build has a value for. */
+const FN_REVEALED_BY_DELETE: ReadonlySet<string> = new Set(["toString"]);
+
+/** The literal a read's key spells: bare for a dotted read, boxed for a
+ * literal bracket (`fn["call"]` evaluates its key into the dynamic tier). */
+function spelledReadKey(key: IrExpr): string | undefined {
+  if (key.kind === "strLit") return key.value;
+  return key.kind === "dynFrom" && key.value.kind === "strLit" ? key.value.value : undefined;
+}
+
+/** Whether the function reads one of those members as a value through the
+ * checked-dynamic tier (`typeof fn.call`, `const c = fn.bind`, `fn["call"]`
+ * on a value that may be a function): a keyed read whose key the source
+ * spells. A key computed at run time cannot be proven one of the names, so
+ * it keeps the build the rest of the program selects. */
+function functionReadsInheritedMember(fn: IrFunction): boolean {
+  let found = false;
+  everyStmtList(fn.body, {
+    expr: (node) => {
+      if (!found && node.kind === "dynKeyGet") {
+        const name = spelledReadKey(node.key);
+        if (name !== undefined && FN_INHERITED_VALUE_NAMES.has(name)) found = true;
+      }
+      return !found;
+    },
+    stmt: () => !found,
+  });
+  return found;
+}
+
 /** Whether the module creates or removes an own property on a function:
  * `fn.call = f`, `Object.defineProperty(fn, "bind", …)`, `delete fn.apply`,
  * which JS answers with an own data property that shadows the inherited
- * member. Such a program links the SCR_FN_MEMBER_PROPS builds of scr_json.c
- * (the member write/define/delete and own-valueOf paths) and scr_dyn_invoke.c
+ * member, or reads as a value an inherited member only that build
+ * materializes (functionReadsInheritedMember), or deletes a `toString`
+ * (FN_REVEALED_BY_DELETE). Such a program links the
+ * SCR_FN_MEMBER_PROPS builds of scr_json.c (the member write/define/delete,
+ * own-valueOf and inherited-value paths) and scr_dyn_invoke.c
  * (the own call/apply/bind dispatch), selected by the fnMemberProps rule;
  * every other program keeps those units' default objects, byte for byte. A
  * keyed write whose key spells one of the names counts even on a
@@ -1342,7 +1387,7 @@ function mayHoldCallable(expr: IrExpr | undefined): boolean {
  * bytes, a handle) proves the definition never reaches the function path, so
  * a definition on one of those selects the default objects. */
 function moduleShadowsFunctionMember(mod: IrModule): boolean {
-  return mod.functions.some(functionShadowsMember);
+  return mod.functions.some((fn) => functionShadowsMember(fn) || functionReadsInheritedMember(fn));
 }
 
 /** One function's nodes: its hidden key locals are function-scope, and the
@@ -1376,6 +1421,12 @@ function functionShadowsMember(fn: IrFunction): boolean {
       const op = ownMemberOp(node);
       if (op === undefined) return true;
       const name = op.key === undefined ? undefined : spelledMemberName(op.key, definitions);
+      if (name !== undefined && FN_REVEALED_BY_DELETE.has(name)) {
+        found =
+          node.kind === "libCall" &&
+          (node.fn === "dyn.keyDelete" || node.fn === "dyn.keyDeleteComputed");
+        return !found;
+      }
       if (name === undefined || !FN_OWN_MEMBER_NAMES.has(name)) return true;
       // A definition also has to name a receiver that can be a function. A
       // typed record, bytes value, handle or collection boxes to an object,
@@ -2058,8 +2109,11 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** A program that writes, defines or deletes one of a function's
    * inherited member names (`fn.call = f`, `Object.defineProperty(fn,
-   * "bind", …)`, `delete fn.apply`): the SCR_FN_MEMBER_PROPS builds of
-   * scr_json.c (the member write/define/delete and own-valueOf paths) and
+   * "bind", …)`, `delete fn.apply`), reads `call` or `bind` as a value
+   * through a spelled dynamic key (`typeof fn.call`), or deletes a
+   * `toString`: the
+   * SCR_FN_MEMBER_PROPS builds of scr_json.c (the member
+   * write/define/delete, own-valueOf and inherited-value paths) and
    * scr_dyn_invoke.c (own call/apply/bind dispatch before the native
    * lowering). Every other program keeps both units' default objects, byte
    * for byte. */

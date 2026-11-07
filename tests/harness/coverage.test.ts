@@ -1160,7 +1160,7 @@ test("unknown scriptc settings warn in a build and make the island report unavai
 test("Node island policy from the command line: native, forced, off", () => {
   const entry = fixture("node-islands/main.ts");
   const forcedCoverage = analyze(entry, {
-    nodeIslands: { native: ["ni-eval"], islands: ["ni-typed", "not-a-dependency"] },
+    nodeIslands: { native: ["ni-eval", "not-a-dependency"], islands: ["ni-typed"] },
   }).coverage;
   const forced = forcedCoverage.nodeIslands!;
   // A forced package's implementation is not part of the program a build
@@ -1182,7 +1182,19 @@ test("Node island policy from the command line: native, forced, off", () => {
   // ni-eval compiles natively, so marking it native refuses nothing.
   expect(forcedCoverage.diagnostics).toEqual([]);
   expect(forced.violations).toEqual([]);
+  // A name given to --native that the program does not import is a note.
   expect(forced.unknownPackages).toEqual(["not-a-dependency"]);
+  // The same name given to --node-island stops a build (SC8006: there is
+  // nothing to run in Node), so the analysis reports that refusal, as the
+  // build does, instead of an island report.
+  const unloaded = analyze(entry, {
+    nodeIslands: { islands: ["ni-typed", "not-a-dependency"] },
+  }).coverage;
+  expect(unloaded.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([
+    "SC8006: --node-island=not-a-dependency names no package this program loads from node_modules",
+  ]);
+  expect(unloaded.nodeIslands).toBeUndefined();
+  expect(coveragePasses(unloaded, "blockers")).toBe(false);
   // With islands off the refused package is the build's error and no
   // island is left; the native packages keep their reasons.
   const off = analyze(entry, { nodeIslands: { mode: "off" } }).coverage;

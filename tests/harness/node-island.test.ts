@@ -1246,7 +1246,9 @@ test("a reached runtime fence islands its package or is reported", async () => {
 // program per way a set is decided: a package refused before lowering, a
 // fence in module code, a require() of an island from a CommonJS entry
 // (bound only by the island reload), a nested require, a module that runs
-// in Node, a refusal no island can place, and an island build that fails.
+// in Node, a refusal no island can place, an island build that fails, a
+// TypeScript module the project marks to run in Node, and two marks the
+// build refuses (the entry module, a module Node cannot strip).
 // IR output needs no libnode pack.
 test("coverage names the islands a build runs", async () => {
   const entries = [
@@ -1257,6 +1259,9 @@ test("coverage names the islands a build runs", async () => {
     "tests/corpus/8731-node-island-implicit-global/main.cjs",
     "tests/fixtures/npm/cases/self-name/main.ts",
     "tests/fixtures/npm/cases/create-require/main.ts",
+    "tests/corpus/8874-node-island-marked-ts-module/main.ts",
+    "tests/diagnostics/node-island-marked-entry/main.ts",
+    "tests/diagnostics/node-island-marked-strip/main.ts",
   ];
   const dir = mkdtempSync(join(tmpdir(), "scriptc-island-agree-"));
   try {

@@ -207,7 +207,7 @@ import {
   bufferNamespaceMember,
   stdlibGlobalNameOf,
 } from "./surfaces.js";
-import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import { isNativeBuiltinValueInitializer, reflectMemberValueRead } from "./lower-builtin-values.js";
 import {
   fenceConsoleMemberValue,
   fenceConsoleMutation,
@@ -1538,6 +1538,18 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
   if (
     ts.isVariableDeclaration(nameNode.parent) &&
     isNativeProxyInitializer(lowerer, nameNode.parent.initializer)
+  )
+    return DYN;
+  // A Reflect member read as a value is a checked-dynamic closure that sees
+  // the arity of its call, exactly like Node's own member: `Reflect.get(t,
+  // k)` defaults the receiver to the target only when the receiver argument
+  // is ABSENT. Narrowing the binding to the lib signature's fixed parameters
+  // would pad that omitted optional receiver with undefined, erasing the
+  // distinction, so the binding keeps the value the namespace answers.
+  if (
+    ts.isVariableDeclaration(nameNode.parent) &&
+    nameNode.parent.name === nameNode &&
+    reflectMemberValueRead(lowerer, nameNode.parent.initializer)
   )
     return DYN;
   if (
@@ -7225,6 +7237,14 @@ export function lowerVarDecl(
     !hasJsTypeAnnotation(decl) &&
     isDataViewPrototypeRead(lowerer, decl.initializer)
   )
+    type = DYN;
+  // A Reflect member read as a value is a checked-dynamic closure that sees
+  // the arity of its call, exactly like Node's own member: `Reflect.get(t,
+  // k)` defaults the receiver to the target only when the receiver argument
+  // is ABSENT. Narrowing the binding to the lib signature's fixed parameters
+  // would pad that omitted optional receiver with undefined, erasing the
+  // distinction, so the binding keeps the value the namespace answers.
+  if (!decl.type && !hasJsTypeAnnotation(decl) && reflectMemberValueRead(lowerer, decl.initializer))
     type = DYN;
   // A web stream value in JavaScript keeps its checked-dynamic identity.
   if (

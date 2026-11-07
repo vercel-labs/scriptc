@@ -152,7 +152,7 @@ import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
-import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import { isNativeBuiltinValueInitializer, reflectMemberValueRead } from "./lower-builtin-values.js";
 import { isDataViewPrototypeRead, isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
   collectNamespaceStmt,
@@ -2362,7 +2362,11 @@ export function collectGlobals(
           // callable ABI. Preserve checked-native values in shared storage;
           // adapting the loader to (string) would replace its validation.
           // An inferred Promise.prototype binding holds an ordinary object
-          // (isPromisePrototypeRead), in TypeScript as well.
+          // (isPromisePrototypeRead), in TypeScript as well. A Reflect member
+          // value reads the arity of its call (`Reflect.get(t, k)` defaults
+          // the receiver to the target only when it is ABSENT), which the
+          // lib signature's fixed parameters cannot express: the binding
+          // keeps the checked-dynamic callable the namespace answers.
           const initializer = decl.initializer
             ? withoutParenthesesAssertionsNonNull(decl.initializer)
             : undefined;
@@ -2370,7 +2374,8 @@ export function collectGlobals(
             (nameNode === decl.name &&
               !decl.type &&
               (isPromisePrototypeRead(lowerer, decl.initializer) ||
-                isDataViewPrototypeRead(lowerer, decl.initializer))) ||
+                isDataViewPrototypeRead(lowerer, decl.initializer) ||
+                reflectMemberValueRead(lowerer, decl.initializer))) ||
             (isJsSourceFile(sf) &&
               nameNode === decl.name &&
               initializer &&

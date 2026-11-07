@@ -1630,13 +1630,22 @@ export function lowerStaticFetchCompanionCall(
           source.type.elem,
           (id) => lowerer.shapes.get(id),
           (id) => lowerer.unions.get(id),
-        )) ||
-      source.type.kind === "dyn";
+        ));
     if (!preserve) {
-      lowerer.noLowering(
-        `ReadableStream.from() over ${lowerer.checker.typeToString(lowerer.typeOf(call.arguments.nodes[0]!))} iterables`,
-        call.arguments.nodes[0]!,
-        "arrays, Uint8Array, and strings are supported — spread other synchronous iterables into an array first: [...iterable]",
+      // Any other iterable, a compiled generator among them, steps through
+      // the web stream classes' own from (scr_webstreams.c), which reads
+      // the iterator protocol rather than the native streams' index walk.
+      return staticCallWithSurplusArgs(
+        lowerer,
+        call,
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN),
+        (first) => ({
+          kind: "libCall",
+          fn: "webstream.from",
+          args: [first],
+          type: DYN,
+          loc,
+        }),
       );
     }
     return staticCallWithSurplusArgs(lowerer, call, source, (first) => ({
@@ -1644,8 +1653,7 @@ export function lowerStaticFetchCompanionCall(
       fn: "fetch.streamFrom",
       // Arrays and bytes must cross by reference: their iterators read each
       // entry at pull time, so mutations after ReadableStream.from() remain
-      // observable just as they are in Node. Other supported iterable
-      // shapes retain the checked-dynamic fallback.
+      // observable just as they are in Node.
       args: [first],
       type: DYN,
       loc,

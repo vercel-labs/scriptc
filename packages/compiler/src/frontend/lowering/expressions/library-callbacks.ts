@@ -24,7 +24,7 @@
 import * as ts from "../../ts7/adapter.js";
 import { BOOL, type IrExpr, type IrStmt, type IrType, type SrcLoc, VOID } from "../../../ir/ir.js";
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import { identifierReadSymbol, sideEffectFreeOptionValue } from "../surfaces.js";
 
@@ -193,9 +193,11 @@ const deferring = new WeakSet<ts.Node>();
 
 /** Whether `node` has the same value wherever in the call it is evaluated,
  * and evaluating it cannot be observed: a literal, a function expression,
- * `this`, a name that is never assigned (a `const`, a function, a class, an
- * import, a library global), or a literal built from these. A `let`, `var`
- * or parameter is not one: an argument evaluated in between can assign it. */
+ * `this`, a name that is not a variable (a function, a class, an enum, a
+ * namespace, a library global), or a literal built from these. A variable is
+ * not one, whatever declares it: an argument evaluated in between can assign
+ * a `let`, a `var`, a parameter or another module's exported binding, and a
+ * `const` read before its declaration throws where it is read. */
 function isConstantOperand(lowerer: Lowerer, node: ts.Expression): boolean {
   let e = node;
   while (
@@ -219,23 +221,22 @@ function isConstantOperand(lowerer: Lowerer, node: ts.Expression): boolean {
   )
     return true;
   if (ts.isIdentifier(e)) {
-    const declarations = identifierReadSymbol(lowerer, e)?.declarations ?? [];
+    let symbol = identifierReadSymbol(lowerer, e);
+    // An import names what the other module declares.
+    if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+      symbol = lowerer.checker.getAliasedSymbol(symbol);
+    const declarations = symbol?.declarations ?? [];
     return (
       declarations.length > 0 &&
-      declarations.every(
-        (d) =>
-          ts.getSourceFileOfNode(d).isDeclarationFile ||
-          ts.isFunctionDeclaration(d) ||
-          ts.isClassDeclaration(d) ||
-          ts.isEnumDeclaration(d) ||
-          ts.isModuleDeclaration(d) ||
-          ts.isImportSpecifier(d) ||
-          ts.isImportClause(d) ||
-          ts.isNamespaceImport(d) ||
-          ts.isImportEqualsDeclaration(d) ||
-          (ts.isVariableDeclaration(d) &&
-            (ts.getCombinedNodeFlags(d) & (ts.NodeFlags.Const | ts.NodeFlags.Using)) !== 0),
-      )
+      declarations.every((d) => {
+        const file = ts.getSourceFileOfNode(d);
+        if (file.isDeclarationFile || ts.isSourceFile(d) || ts.isModuleDeclaration(d)) return true;
+        // JavaScript lets a program assign a function's or a class's name.
+        return (
+          !isJsSourceFile(file) &&
+          (ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d) || ts.isEnumDeclaration(d))
+        );
+      })
     );
   }
   if (ts.isPrefixUnaryExpression(e))

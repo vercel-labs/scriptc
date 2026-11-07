@@ -4,10 +4,6 @@
 // functions among them as functions that refuse when they are called, and
 // is refused the other values by name where it reads them.
 import { snapshot } from "node:test";
-import { SHARE_ENV } from "node:worker_threads";
-
-// worker_threads: the environment-sharing marker.
-console.log(typeof SHARE_ENV);
 
 // test: snapshot configuration.
 snapshot.setDefaultSnapshotSerializers([]);

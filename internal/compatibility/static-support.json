@@ -551,7 +551,6 @@
     { "chapter": "fs", "parent": "Callback API", "signatures": ["`fs.openAsBlob(path[, options])`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
     { "chapter": "fs", "parent": "Callback API", "signatures": ["`fs.exists(path, callback)`"], "status": "partial", "evidence": ["tests/corpus/2595-fs-arg-ladders.cjs"] },
     { "chapter": "dns", "parent": "DNS", "signatures": ["Class: `dns.Resolver`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
-    { "chapter": "worker_threads", "parent": "Worker threads", "signatures": ["`SHARE_ENV` Type: {symbol}"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-values.ts"] },
     { "chapter": "test", "parent": "Test runner", "signatures": ["`snapshot`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-values.ts"] },
     { "chapter": "test", "parent": "`snapshot`", "signatures": ["`snapshot.setDefaultSnapshotSerializers(serializers)`", "`snapshot.setResolveSnapshotPath(fn)`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-values.ts"] },
     { "chapter": "process", "parent": "Process", "signatures": ["`mainModule` Type: {Object}", "`process.finalization.registerBeforeExit(ref, callback)`", "`process.finalization.unregister(ref)`", "`process.abort()`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-values.ts"] },

@@ -118026,8 +118026,7 @@
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
           "tests/corpus/worker-env-option.ts",
-          "tests/corpus/worker-share-env.ts",
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/corpus/worker-share-env.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -119602,10 +119601,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:worker_threads.SHARE_ENV",
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.worker_threads.SHARE_ENV",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/corpus/worker-share-env.ts",
+          "tests/corpus/worker-env-option.ts"
         ]
       },
       "anchorSource": "chapter"

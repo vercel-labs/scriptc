@@ -205,10 +205,6 @@ console.log(typeof process.abort, typeof process.finalization);
 
   test("refuses the read of any other value by name", () => {
     for (const [source, surface] of [
-      [
-        `import { SHARE_ENV } from "node:worker_threads";\nconsole.log(String(SHARE_ENV));\n`,
-        "worker_threads.SHARE_ENV",
-      ],
       [`console.log(process.finalization);\n`, "process.finalization"],
       [`import { snapshot } from "node:test";\nconsole.log(snapshot);\n`, "test.snapshot"],
       [

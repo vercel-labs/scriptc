@@ -732,7 +732,9 @@ void scr_exc_print_uncaught(void) {
   case SCR_EXC_OBJ:
     /* Error instances (builtin or user subclass) render like Node's first
      * line: "name: message" (toString rules for the empty halves). Node
-     * appends a stack trace; scriptc has none (documented divergence). */
+     * appends a stack trace; scriptc appends the frames the error captured
+     * when it was created, which only builds that keep source frames have
+     * (the compiler's observesStacks). */
     if (scr_error_is(scr_exc_payload)) {
       const ScrError *error = (const ScrError *)scr_exc_payload;
       ScrStr *s = scr_error_to_string((ScrError *)scr_exc_payload);
@@ -743,6 +745,7 @@ void scr_exc_print_uncaught(void) {
       if (scr_uncaught_unnamed_sc_code(error->code, s))
         fprintf(stderr, " [%.*s]", (int)error->code->len, error->code->data);
       scr_str_release(s);
+      scr_error_report_frames(error);
       break;
     }
     /* fall through: non-Error hierarchy objects render like other refs */

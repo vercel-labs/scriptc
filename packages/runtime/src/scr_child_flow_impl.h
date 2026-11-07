@@ -125,11 +125,21 @@ static void scr_child_flow_teardown(void) {
   scr_child_flow_ticks_tail = NULL;
 }
 
+/* Node's endReadable: with the pipe at EOF and nothing held back any more,
+ * 'end' follows on a further tick. Node decides this in the read that takes
+ * the last chunk (and in the read(0) that starts a drain), before that
+ * chunk's listeners run and whatever they do to the flowing state. */
+static void scr_child_flow_owe_end(ScrChildStream *s) {
+  if (!s->flow.ended || s->flow.head != NULL || s->eof || s->flow.end_tick) return;
+  s->flow.end_tick = true;
+  scr_child_flow_tick(s, SCR_CHILD_FLOW_TICK_END);
+}
+
 /* Node's resume_ and flow(): the chunks held back, in order, while the
- * stream stays flowing. With every chunk delivered and the pipe at EOF,
- * 'end' follows on a further tick (endReadable). */
+ * stream stays flowing. */
 static void scr_child_flow_drain(ScrChildStream *s) {
   s->flow.drain_tick = false;
+  scr_child_flow_owe_end(s);
   while (s->flow.state == SCR_CHILD_FLOW_FLOWING && s->flow.head != NULL) {
     ScrChildFlowChunk *chunk = s->flow.head;
     bool was = scr_child_stream_watching(s);
@@ -137,14 +147,10 @@ static void scr_child_flow_drain(ScrChildStream *s) {
     if (s->flow.head == NULL) s->flow.tail = NULL;
     s->flow.len -= chunk->len;
     scr_child_flow_rewatch(s, was);
+    scr_child_flow_owe_end(s);
     SCR_CHILD_FLOW_EMIT(s, chunk->bytes, chunk->text);
     scr_child_flow_chunk_free(chunk);
     if (scr_exc_pending()) return;
-  }
-  if (s->flow.state == SCR_CHILD_FLOW_FLOWING && s->flow.head == NULL && s->flow.ended &&
-      !s->eof && !s->flow.end_tick) {
-    s->flow.end_tick = true;
-    scr_child_flow_tick(s, SCR_CHILD_FLOW_TICK_END);
   }
 }
 
@@ -208,23 +214,26 @@ static bool scr_child_flow_take(ScrChildStream *s, const char *data, size_t len)
   return true;
 }
 
-/* EOF, before the arm fires 'end'. True: 'end' is owed instead (the stream
- * is paused, or flowing with chunks still to drain). The pipe closes and
- * the stream leaves the watch count, but `eof` stays false, so listeners
- * still register and the child's 'close' waits; the decoder's tail joins
- * the queue as Node pushes it. False: nothing is held back and the arm
- * fires 'end' as for any stream, which is also how the owed 'end' is
- * delivered later. */
+/* EOF, before the arm fires 'end'. True: 'end' is owed instead, because
+ * the stream holds chunks back (it is paused, or flowing with a drain still
+ * to run); the decoder's tail joins them as Node pushes it. The pipe
+ * closes and the stream leaves the watch count, but `eof` stays false, so
+ * listeners still register and the child's 'close' waits. False: nothing
+ * is held back, paused or not, and the arm fires 'end' as for any stream
+ * (Node's read(0) after the EOF push ends such a stream at once), which is
+ * also how the owed 'end' is delivered later. */
 static bool scr_child_flow_defer_end(ScrChildStream *s) {
   if (s->flow.ended || s->flow.state == SCR_CHILD_FLOW_NONE) return false;
   if (s->flow.state == SCR_CHILD_FLOW_FLOWING && s->flow.head == NULL) return false;
-  if (scr_child_stream_watching(s)) scr_child_streams_watching--;
+  bool was = scr_child_stream_watching(s);
   if (s->encoding != NULL) {
     ScrStr *tail = scr_strdec_end(s->encoding, s->dec_pending);
     s->dec_pending = 0;
     if (tail->len > 0) scr_child_flow_push(s, NULL, tail, tail->len);
     scr_str_release(tail);
   }
+  if (s->flow.head == NULL) return false;
+  if (was) scr_child_streams_watching--;
 #ifdef _WIN32
   if (s->h != NULL) {
     CloseHandle(s->h);

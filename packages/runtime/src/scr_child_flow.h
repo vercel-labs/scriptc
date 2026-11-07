@@ -19,9 +19,10 @@
  *   stays flowing (a listener that pauses stops the drain). A flowing
  *   stream reads and emits with or without listeners.
  * - on("data") does not resume a stream that was paused explicitly.
- * - EOF on a stream that holds chunks back or is paused owes 'end': it
- *   fires on the tick after the buffer drained, and the child's 'close'
- *   waits for it.
+ * - EOF on a stream that still holds chunks owes 'end': it fires one tick
+ *   after the read that takes the last of them, even if that chunk's
+ *   listener pauses again, and the child's 'close' waits for it. A paused
+ *   stream that holds nothing at EOF ends at once.
  * - When the child exits, Node resumes each of its stdio streams on the
  *   tick after the 'exit' listeners (flushStdio), so a pause() does not
  *   outlive the child unless it is made later.

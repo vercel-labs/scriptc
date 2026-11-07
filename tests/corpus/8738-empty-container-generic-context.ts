@@ -102,3 +102,16 @@ function remember<T>(v: T, into: T[]): T {
 const first: string[] = remember([], kept);
 first.push("shared");
 console.log(kept, kept[0] === first);
+
+// An empty container beside an element that can be missing: each type
+// parameter takes its own binding in the one instance the call names.
+const noticed: boolean[] = [];
+function noting<A, B>(a: A, b: B): A {
+  noticed.push(b === undefined);
+  return a;
+}
+const lookups: number[] = [1, 2];
+const noted: string[] = noting([], lookups[20]);
+noted.push("n");
+const inRange: string[] = noting([], lookups[1]);
+console.log(noted, inRange, noticed);

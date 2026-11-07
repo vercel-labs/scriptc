@@ -142,6 +142,10 @@ export interface GenericFnInfo {
    * checker types key an instantiation, exactly the generic machinery —
    * the untyped params ARE the type parameters (see implicitCallInstance). */
   implicitParams?: (ts.Symbol | null)[];
+  /** Structural instances: parallel to decl.parameters, whether the body
+   * writes through the parameter or compares it by identity
+   * (usesParameterIdentity). Computed on first use. */
+  identityParams?: boolean[];
   /** Implicit-any monomorphization of destructured object parameters
    * (implicitPatternsOf): parallel to decl.parameters, the destructured
    * names where the slot binds the call site's object type. Computed on
@@ -438,8 +442,8 @@ export function genericCallInstance(
   if (!rsig || rsig.getParameters().length !== info.decl.parameters.nodes.length) {
     lowerer.unsupported("SC1090", expr, "this call form");
   }
-  const contextual = emptyArgumentInstance(lowerer, expr, info, rsig);
-  if (contextual) return contextual;
+  const chosen = chosenBindingsInstance(lowerer, expr, info, rsig);
+  if (chosen) return chosen;
   // Per-param shapes from the RESOLVED signature (types substituted) plus
   // the declaration's modes: rest stays the resolved array, a default's
   // ABI union is synthesized over the resolved body type — exactly the
@@ -500,36 +504,70 @@ export function genericCallInstance(
   );
 }
 
-/** The instance of a call that passes a FRESH EMPTY container (`[]`,
- * `new Map()`, `new Set()`) where the call itself has a destination
- * (`const out: string[] = id([])`, a typed argument, a return). The
- * checker infers a type argument from the argument before it consults the
- * destination, and an empty container says nothing about its elements:
- * `[]` is `never[]` and `new Map()` selects `Map<any, any>`, so the
- * resolved signature is `id<never[]>` and its result is refused by the
- * `string[]` slot. A fresh empty container has no element and no alias
- * yet, so it can be built for any element type (emptyArrayLiteralArm,
- * emptyCollectionFor): a type parameter the checker bound to such a
- * type takes the binding the destination gives the declared result
- * instead. The instance is the one `id<string[]>([])` names, its
- * parameters and result are the declaration's under those bindings, and
- * each argument is built for its parameter. Null when no binding changes,
- * which leaves the resolved signature's instance. */
-function emptyArgumentInstance(
+/** The instance of a call whose type parameters take bindings other than
+ * the resolved signature's. Two things choose one: a fresh empty container
+ * with a destination (fillEmptyContainerBindings) and an argument that can
+ * be a missing element (widenMissingArgumentBindings). One call can have
+ * both (`const out: string[] = keep([], values[20])`), so both adjust the
+ * same bindings and the call names one instance. Null when no binding
+ * changes, which leaves the resolved signature's instance. */
+function chosenBindingsInstance(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   info: GenericFnInfo,
   rsig: ts.Signature,
 ): GenericInstance | null {
-  if ((expr.typeArguments?.nodes.length ?? 0) > 0) return null;
-  if (!expr.arguments.nodes.some((arg) => lowerer.freshEmptyContainer(arg) !== null)) return null;
-  if (keyofConstrainedTypeParams(info).size > 0 || returnedLocalClass(lowerer, info)) return null;
-  const destination = lowerer.checker.getContextualType(expr);
-  if (!destination) return null;
+  const destination = emptyArgumentDestination(lowerer, expr, info);
+  const missing = lowerer.runtimeOptionalGenericArguments.get(expr);
+  if ((!destination && !missing) || returnedLocalClass(lowerer, info)) return null;
   const declSig = lowerer.checker.getSignatureFromDeclaration(info.decl);
   if (!declSig) return null;
   const tsBindings = new Map<ts.Symbol, ts.Type>();
   const bindings = inferTypeParamBindings(lowerer, expr, info, rsig, tsBindings);
+  const filled =
+    destination !== null &&
+    fillEmptyContainerBindings(lowerer, info, declSig, destination, bindings, tsBindings);
+  const widened = missing !== undefined && widenMissingArgumentBindings(lowerer, missing, bindings);
+  if (!filled && !widened) return null;
+  return instanceForBindings(lowerer, expr, info, declSig, bindings, tsBindings);
+}
+
+/** The destination of a call that passes a FRESH EMPTY container (`[]`,
+ * `new Map()`, `new Set()`) where the call itself has one
+ * (`const out: string[] = id([])`, a typed argument, a return). Null when
+ * the call passes none, names its type arguments, or has no destination. */
+function emptyArgumentDestination(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  info: GenericFnInfo,
+): ts.Type | null {
+  if ((expr.typeArguments?.nodes.length ?? 0) > 0) return null;
+  if (!expr.arguments.nodes.some((arg) => lowerer.freshEmptyContainer(arg) !== null)) return null;
+  if (keyofConstrainedTypeParams(info).size > 0) return null;
+  return lowerer.checker.getContextualType(expr) ?? null;
+}
+
+/** Binds the type parameters of a call that passes a fresh empty container
+ * by the call's destination. The checker infers a type argument from the
+ * argument before it consults the destination, and an empty container says
+ * nothing about its elements: `[]` is `never[]` and `new Map()` selects
+ * `Map<any, any>`, so the resolved signature is `id<never[]>` and its
+ * result is refused by the `string[]` slot. A fresh empty container has no
+ * element and no alias yet, so it can be built for any element type
+ * (emptyArrayLiteralArm, emptyCollectionFor): a type parameter the checker
+ * bound to such a type takes the binding the destination gives the
+ * declared result instead. The instance is the one `id<string[]>([])`
+ * names, its parameters and result are the declaration's under those
+ * bindings, and each argument is built for its parameter. False when no
+ * binding changes. */
+function fillEmptyContainerBindings(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  declSig: ts.Signature,
+  destination: ts.Type,
+  bindings: Map<ts.Symbol, IrType>,
+  tsBindings: Map<ts.Symbol, ts.Type>,
+): boolean {
   const wanted = new Map<ts.Symbol, ts.Type>();
   typeParamUnifier(
     lowerer,
@@ -554,8 +592,32 @@ function emptyArgumentInstance(
     tsBindings.set(tp, filled);
     changed = true;
   }
-  if (!changed) return null;
-  return instanceForBindings(lowerer, expr, info, declSig, bindings, tsBindings);
+  return changed;
+}
+
+/** Widens the bindings of a call whose argument at a bare type-parameter
+ * slot can be a missing element (`id(values[20])` into `v: T`; the
+ * analysis in analyzeRuntimeOptionalArrayReads names the type parameters).
+ * The checker binds T to the element type, which has no value for the
+ * `undefined` Node passes there, so the instance binds T to that type with
+ * undefined: the parameter holds what the caller passes and a result
+ * declared `T` answers it, as a declared function's widened parameter and
+ * result do. False when no binding changes. */
+function widenMissingArgumentBindings(
+  lowerer: Lowerer,
+  missing: Iterable<ts.Symbol>,
+  bindings: Map<ts.Symbol, IrType>,
+): boolean {
+  let changed = false;
+  for (const tp of missing) {
+    const bound = bindings.get(tp);
+    if (!bound) continue;
+    const widened = lowerer.runtimeOptionalType(bound);
+    if (typeEquals(widened, bound)) continue;
+    bindings.set(tp, widened);
+    changed = true;
+  }
+  return changed;
 }
 
 /** The part of `target` that says what an empty container of the

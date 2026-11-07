@@ -37,7 +37,10 @@ export function helperInputPrograms({ tscTs, extra = [] } = {}) {
   for (const file of readdirSync(join(suite, "workloads"))
     .filter((f) => f.endsWith(".json"))
     .sort()) {
-    const { entry } = JSON.parse(readFileSync(join(suite, "workloads", file), "utf8"));
+    const { entry, requires } = JSON.parse(readFileSync(join(suite, "workloads", file), "utf8"));
+    // A workload that needs more than the compiler (a program with Node
+    // islands needs a libnode pack) is not a helper input.
+    if (requires !== undefined) continue;
     // Variants of a workload share its entry and differ only in arguments.
     if (!programs.some((program) => program.cwd === suite && program.entry === entry))
       programs.push({ name: `wl-${file.slice(0, -5)}`, cwd: suite, entry });

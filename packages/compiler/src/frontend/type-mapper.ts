@@ -1506,6 +1506,12 @@ export interface TypeMapperCtx {
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
    * primitive. Absent or false: every mapping is unchanged. */
   primitiveWrappers?: () => boolean;
+  /** Whether a compiled source names the lib `ArrayBufferView` interface
+   * (programNamesArrayBufferView): then a value of that type maps to the
+   * checked-dynamic one, whose three view reads stay dynamic. Absent or
+   * false: every mapping is unchanged, so a program that never names the
+   * type keeps the standard library's own paths. */
+  arrayBufferViewReads?: () => boolean;
   /** Node islands (scope-B NI-4): whether a type's values are island
    * handles, which map to the `foreign` type (a dyn value). Absent in
    * programs without islands. */
@@ -2870,11 +2876,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Primitive and container types retain their structural mappings; types
   // owned by the standard library or explicit host mappings are handled
   // by their dedicated native rules. Pure type shapes — interfaces, type
-  // aliases, and object or mapped type literals with no value declaration
-  // merged in — describe data, not an implementation: a program value of
-  // such a type is one the program built itself (`import type` from a
-  // types-only package), so it maps structurally like a local declaration.
-  // Values the package itself would produce stay refused at their import.
+  // aliases, object or mapped type literals with no value declaration
+  // merged in, and the CALLING-CONVENTION shapes they spell (a function type
+  // node, a method signature) — describe data and call signatures, not an
+  // implementation: a program value of such a type is one the program built
+  // itself (`import type` from a types-only package), so it maps structurally
+  // like a local declaration. A callback or method slot is the common case:
+  // an SDK config type declares `requestHandler?: (url: string) => void` or
+  // `logger?: Logger` with `info(message: string): void`, and the program
+  // fills the slot with its own closure. Values the package itself would
+  // produce stay refused at their import.
   {
     const aliasDecls = packageDeclarations(widened.getAliasSymbol(), ctx);
     const ownDecls = packageDeclarations(widened.getSymbol(), ctx);
@@ -3293,8 +3304,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // typings declare an interface named AsyncIterator too — the native handle
   // timers/promises.setInterval answers, which that builtin's lowering
   // builds — so only the ES lib's declarations take the protocol mapping.
-  const isLibAsyncInterface = (name: string): boolean =>
+  const isLibInterface = (name: string): boolean =>
     provenance !== null && name === psymName && provenance.libInterface;
+  const isLibAsyncInterface = (name: string): boolean => isLibInterface(name);
   const isAsyncIterationProtocol = (): boolean =>
     isLibAsyncInterface("AsyncIterable") ||
     isLibAsyncInterface("AsyncIterator") ||
@@ -3951,6 +3963,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return DYN;
   if (Object.values(BYTES_ELEMENT_NAME).some((name) => isStdlibInterface(`${name}Constructor`)))
     return DYN;
+  // The ES lib's `ArrayBufferView` is the common supertype of every typed
+  // array and DataView, so no single byte-view representation is honest:
+  // `ArrayBuffer.isView` narrowing admits a Float64Array. The value stays
+  // the checked dynamic one; its `buffer`, `byteOffset` and `byteLength`
+  // reads come from the native view the dynamic value holds (a buffer by
+  // identity) or from the dynamic tier, and every other member reads
+  // dynamically (narrowing.ts). @types/node's `NodeJS.ArrayBufferView` is its
+  // own interface with its own mapping and keeps it.
+  //
+  // Only a program that names the type takes this mapping. The name is also
+  // the third arm of the builtin declarations' `BinaryLike`
+  // (packages/compiler/ambient/node-fallback), so mapping it unconditionally
+  // makes whole ambient signature types statically representable and
+  // reshapes calls the program never wrote — the standard library keeps
+  // those paths. A program that never mentions `ArrayBufferView` lowers
+  // exactly as before.
+  if (ctx.arrayBufferViewReads?.() === true && isLibInterface("ArrayBufferView")) return DYN;
   if (isStdlibInterface("Uint8Array")) return bytesOf("u8");
   if (isStdlibInterface("Uint32Array")) return bytesOf("u32");
   if (isStdlibInterface("Uint8ClampedArray")) return bytesOf("u8c");
@@ -8591,8 +8620,11 @@ function packageDataPart(
 
 /** True when EVERY declaration `type` is spelled by is a pure data
  * declaration (interface, type alias, object or mapped type literal,
- * declared data class, type-only namespace) in a package declaration file —
- * no value declaration merged in, no class implementation. */
+ * function type, method signature, declared data class, type-only
+ * namespace) in a package declaration file — no value declaration merged
+ * in, no class implementation. A member's type is spelled by a function
+ * type node or a method signature, and a callback or method slot declares
+ * no implementation either: the program fills it with its own closure. */
 function purePackageDeclarations(
   decls: readonly ts.Node[] | null,
   ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
@@ -8605,6 +8637,8 @@ function purePackageDeclarations(
         (ts.isInterfaceDeclaration(d) ||
           ts.isTypeAliasDeclaration(d) ||
           ts.isTypeLiteralNode(d) ||
+          ts.isFunctionTypeNode(d) ||
+          ts.isMethodSignatureDeclaration(d) ||
           ts.isMappedTypeNode(d) ||
           isDeclaredDataClass(d) ||
           (decls.some(isDeclaredDataClass) && isTypeOnlyNamespace(d))),
@@ -9938,7 +9972,7 @@ function maybePromiseUnionOk(
  * Null keeps the whole union fenced: a promise-of-a-promise payload, a
  * payload with no union home (regex, generator), or a dyn payload beside an
  * arm whose semantics would degrade. */
-function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
+export function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
   let promiseArms = 0;
   for (const arm of arms) if (arm.kind === "promise") promiseArms++;
   if (promiseArms < 2) return arms;

@@ -21,6 +21,9 @@ export type FrontendInputProbe =
   | { op: "entries"; path: string; files: string[]; directories: string[] }
   | { op: "entries-error"; path: string }
   | { op: "realpath"; path: string; target: string | null }
+  /** A fact about the compiler process that is not on the filesystem
+   * (hostFact): `path` is the fact's name. */
+  | { op: "host"; path: string; value: string | null }
   /** The frontend's output depends on the file's raw text or line
    * positions, not only on its tokens (observeSourceText). */
   | { op: "text"; path: string };
@@ -29,6 +32,8 @@ export interface FrontendInputSnapshot {
   version: 1;
   probes: FrontendInputProbe[];
   stable: boolean;
+  /** Why the snapshot is not stable, in words, for the build's timing line. */
+  unstable?: string;
 }
 
 export interface FrontendSemanticChange {
@@ -117,6 +122,19 @@ interface CachedListing {
   directories: string[];
 }
 
+/** The value of a host fact by name: `env:<NAME>` is that environment
+ * variable, and `prefix` is the installation prefix Node's legacy module
+ * lookup uses (the directory of the compiler's executable on Windows, the
+ * one above it elsewhere). Null when the fact has no value or the name is
+ * not one of these. */
+export function hostFact(name: string): string | null {
+  if (name === "prefix") {
+    const directory = dirname(process.execPath);
+    return process.platform === "win32" ? directory : dirname(directory);
+  }
+  return name.startsWith("env:") ? (process.env[name.slice(4)] ?? null) : null;
+}
+
 function pathKind(path: string): FrontendPathKind {
   try {
     const info = statSync(path);
@@ -142,6 +160,8 @@ let synchronousTracker: FrontendInputTracker | undefined;
 export class FrontendInputTracker {
   private readonly probes = new Map<string, FrontendInputProbe>();
   private stable = true;
+  /** Why `stable` is false: the first cause. */
+  private unstable: string | undefined;
   /** The digests `previous` recorded for files read with a settled identity. */
   private readonly known = new Map<string, { identity: string; digest: string }>();
 
@@ -266,6 +286,8 @@ export class FrontendInputTracker {
       if (parent !== undefined && parent !== this) {
         for (const probe of this.probes.values()) parent.record(probe);
         if (!this.stable) parent.markUnstable();
+        // The cause goes to the parent with it.
+        if (this.unstable !== undefined) parent.markUnstable(this.unstable);
       }
     }
   }
@@ -292,7 +314,7 @@ export class FrontendInputTracker {
     ) {
       // An input changed while this frontend was running.  The build may
       // still finish normally, but it is not safe to publish as a cache key.
-      this.stable = false;
+      this.markUnstable(`${probe.path} changed while the frontend ran`);
     }
     this.probes.set(key, merged ?? probe);
     if (probe.op === "file") {
@@ -301,17 +323,20 @@ export class FrontendInputTracker {
       // answer followed by a successful read means the input changed during
       // the frontend and the mixed observation must never be published.
       const previousKind = this.probes.get(`kind\0${probe.path}`);
-      if (previousKind?.op === "kind" && previousKind.kind !== "file") this.stable = false;
+      if (previousKind?.op === "kind" && previousKind.kind !== "file")
+        this.markUnstable(`${probe.path} appeared while the frontend ran`);
       this.probes.delete(`kind\0${probe.path}`);
       const failedRead = this.probes.get(`read-error\0${probe.path}`);
-      if (failedRead !== undefined) this.stable = false;
+      if (failedRead !== undefined)
+        this.markUnstable(`${probe.path} became readable while the frontend ran`);
       this.probes.delete(`read-error\0${probe.path}`);
     } else if (probe.op === "read-error") {
       // A path can remain a regular file while its readability changes.
       // Keep the failed operation itself, rather than reducing it to a kind
       // probe, so a permission/ACL repair invalidates the cached frontend.
       const successfulRead = this.probes.get(`file\0${probe.path}`);
-      if (successfulRead !== undefined) this.stable = false;
+      if (successfulRead !== undefined)
+        this.markUnstable(`${probe.path} became unreadable while the frontend ran`);
       this.probes.delete(`file\0${probe.path}`);
     }
   }
@@ -321,9 +346,11 @@ export class FrontendInputTracker {
    * Some host APIs perform semantic filesystem discovery internally and do
    * not expose the candidates they inspected. Callers may still use their
    * exact answer for the current build, but must decline cache publication
-   * rather than pretend the observation set is complete. */
-  markUnstable(): void {
+   * rather than pretend the observation set is complete. `reason` says
+   * what was not observed; the first one given is kept. */
+  markUnstable(reason?: string): void {
     this.stable = false;
+    this.unstable ??= reason;
   }
 
   snapshot(): FrontendInputSnapshot {
@@ -333,6 +360,7 @@ export class FrontendInputTracker {
         a.path === b.path ? a.op.localeCompare(b.op) : a.path.localeCompare(b.path),
       ),
       stable: this.stable,
+      ...(this.stable || this.unstable === undefined ? {} : { unstable: this.unstable }),
     };
   }
 }
@@ -381,9 +409,22 @@ observeSourceText((fileName) => {
 });
 
 /** Mark the active frontend as unsafe to persist because an exact host query
- * bypassed the tracked filesystem wrappers. No-op outside a frontend run. */
-export function markFrontendInputsUnstable(): void {
-  (synchronousTracker ?? activeTracker.getStore())?.markUnstable();
+ * bypassed the tracked filesystem wrappers; `reason` names the query. No-op
+ * outside a frontend run. */
+export function markFrontendInputsUnstable(reason?: string): void {
+  (synchronousTracker ?? activeTracker.getStore())?.markUnstable(reason);
+}
+
+/** The value of host fact `name` (hostFact), recorded as an input of the
+ * running frontend: a cache entry is reused only while the fact has the
+ * value it had. `value` is the value the caller already read, when it read
+ * the fact earlier than now. */
+export function trackedHostFact(
+  name: string,
+  value: string | null = hostFact(name),
+): string | null {
+  record({ op: "host", path: name, value });
+  return value;
 }
 
 /** Compiler-synthesized module sources (a bundle's CommonJS chunks split
@@ -545,8 +586,17 @@ export function frontendInputsStillMatch(
   snapshot: FrontendInputSnapshot,
   exclusions: FrontendInputExclusions = {},
 ): boolean {
+  return frontendInputMismatch(snapshot, exclusions) === null;
+}
+
+/** The first recorded probe that no longer has its answer, null when every
+ * probe does, and "invalid" for a snapshot that is unstable or malformed. */
+export function frontendInputMismatch(
+  snapshot: FrontendInputSnapshot,
+  exclusions: FrontendInputExclusions = {},
+): FrontendInputProbe | "invalid" | null {
   if (snapshot.version !== 1 || snapshot.stable !== true || !Array.isArray(snapshot.probes)) {
-    return false;
+    return "invalid";
   }
   const outputPaths = new Set([...(exclusions.outputPaths ?? [])].map((path) => resolve(path)));
   const outputDirectories = new Set(
@@ -573,7 +623,9 @@ export function frontendInputsStillMatch(
       return false;
     }
   };
-  return snapshot.probes.every((probe) => {
+  const matches = (probe: FrontendInputProbe): boolean => {
+    // A host fact's name is not a path.
+    if (probe.op === "host") return hostFact(probe.path) === probe.value;
     if (outputPaths.has(probe.path)) return true;
     if (outputDirectories.has(probe.path)) {
       // A fresh output directory can be absent while the frontend runs and
@@ -687,7 +739,8 @@ export function frontendInputsStillMatch(
         // The file probe of the same path checks its content.
         return true;
     }
-  });
+  };
+  return snapshot.probes.find((probe) => !matches(probe)) ?? null;
 }
 
 /**
@@ -797,6 +850,8 @@ export function validFrontendInputSnapshot(snapshot: unknown): snapshot is Front
         return true;
       case "realpath":
         return value.target === null || typeof value.target === "string";
+      case "host":
+        return value.value === null || typeof value.value === "string";
       case "text":
         return true;
       default:

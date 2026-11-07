@@ -7123,10 +7123,15 @@ export function lowerVarDecl(
         ? [inferredObjectType]
         : [];
   const expandsObject = jsDeclarationExpandsObject(lowerer, decl, inferredObjectType);
+  // The binding a Proxy initializes holds the Proxy itself, as a module
+  // binding and a `var` do (varBindingType): a slot of the declared record
+  // type would hold a copy read through the traps once.
+  const proxyBinding = isNativeProxyInitializer(lowerer, decl.initializer);
   let init: IrExpr;
   try {
     init =
       expandsObject ||
+      proxyBinding ||
       (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
         !decl.type &&
         isNativeBuiltinValueInitializer(lowerer, decl.initializer))
@@ -7305,6 +7310,7 @@ export function lowerVarDecl(
     isJsPromiseStaticCall(init);
   if (
     expandsObject ||
+    proxyBinding ||
     preservesObjectIdentity ||
     keepsAssertedObject ||
     keepsPromiseStaticValue ||

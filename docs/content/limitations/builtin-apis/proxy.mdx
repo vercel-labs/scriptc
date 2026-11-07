@@ -1,0 +1,12 @@
+- **Proxy:** `new Proxy(target, handler)` builds a Proxy for untyped code and for the binding it initializes: reads, writes, `in`, and key listing through that binding go through the handler's traps.
+  A Proxy cannot stand in for a class instance.
+  A binding, field, parameter, return value, or array element typed as a class holds native instances only, so a Proxy that the build sees entering one, or asserted to the class, is refused at compile time with `SC1090`.
+  For a value that forwards to the current instance, export a binding that is reassigned or a function that returns the instance.
+  A Proxy passed, returned, stored in a field, or asserted where an interface or object type is expected is refused at compile time with `SC1090`, because that slot would hold a copy of the properties, read through the traps once.
+  A Proxy whose handler is the empty object literal is converted there as its target is.
+  A Proxy that reaches a typed slot through a parameter or property typed `any` is converted when the statement runs: a class slot throws a `TypeError`, and an interface or object type takes the copy.
+  A class method that a trap returns is called with the Proxy as `this` and throws a `TypeError`; return the method bound to the instance.
+  The handler is an untyped object when each trap declares its parameters and result as `any`; a handler whose traps take their types from `ProxyHandler<T>` is refused at compile time with `SC1090`.
+  A target that is a class instance or an array is refused at compile time with `SC1090`.
+  A target written as an asserted object literal, such as `{} as Config`, is an untyped object.
+  Traps over a target that is a typed record throw an `Error` when the Proxy is used.

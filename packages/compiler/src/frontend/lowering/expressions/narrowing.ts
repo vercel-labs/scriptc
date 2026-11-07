@@ -62,6 +62,7 @@ import { assertsGlobalObject, extractionCopiesReference } from "../assertion-ide
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
 import { isMessageListenerCall } from "./message-listeners.js";
+import { nativeProxyEntering, refuseProxyInTypedSlot } from "./native-proxy.js";
 import { assertedProbeAccessOf, deferredMemberReadTarget } from "./asserted-receiver.js";
 
 /** `c ? a : b`. An explicit destination constructs each branch at that
@@ -1914,6 +1915,8 @@ function checkedDynCast(
   inner: IrExpr,
   target: IrType,
 ): IrExpr {
+  const proxy = nativeProxyEntering(lowerer, expr.expression, inner);
+  if (proxy) refuseProxyInTypedSlot(lowerer, locOf(expr.expression), target, proxy.trapless);
   if (
     holdsReference(lowerer, target) &&
     !freshDynSource(lowerer, expr, inner) &&

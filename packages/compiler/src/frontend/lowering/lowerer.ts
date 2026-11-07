@@ -525,6 +525,7 @@ import {
   mixinIntersectionInstanceType,
 } from "./lower-mixins.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { nativeProxyEntering, refuseProxyInTypedSlot } from "./expressions/native-proxy.js";
 import {
   type ParamShape,
   type FnSig,
@@ -14034,6 +14035,8 @@ export class Lowerer {
     // everything else keeps requireExactShape's SC1100 fence.
     if (expr.type.kind === "dyn" && expected.kind !== "dyn") {
       noteUntypedStreamFlow(this, expected);
+      const proxy = nativeProxyEntering(this, null, expr);
+      if (proxy) refuseProxyInTypedSlot(this, expr.loc, expected, proxy.trapless);
       // `[EventEmitter]` in JavaScript builds an untyped array of the
       // untyped constructor, which a typed array of the class cannot
       // hold: no class check admits that constructor.
@@ -14722,6 +14725,8 @@ export class Lowerer {
 
   private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
+    const proxy = expected.kind === "dyn" ? null : nativeProxyEntering(this, node, expr);
+    if (proxy) refuseProxyInTypedSlot(this, locOf(node), expected, proxy.trapless);
     // A union into one of its record arms extracts that arm, trusting the
     // checker to have excluded the others. A built-in object arm the checker
     // still types the site with (`c ?? new Map()` into an interface the

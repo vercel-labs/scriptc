@@ -1,0 +1,8 @@
+proxy-as-class-export/palette.ts:15:33 - error SC1090: a Proxy where an instance of class 'Palette' is expected is not supported yet
+
+  14 | // One live palette for every importer, as a Proxy typed as the class.
+  15 | export const palette: Palette = new Proxy({} as Palette, {
+     |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 |   get(_target: any, key: string | symbol): any {
+
+  hint: a Proxy is not an instance of 'Palette', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance

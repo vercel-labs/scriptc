@@ -1,0 +1,35 @@
+proxy-into-record.ts:28:10 - error SC1090: a Proxy where a value of an object type is expected is not supported yet
+
+  27 | function make(): Config {
+  28 |   return new Proxy(store, handler);
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~
+  29 | }
+
+  hint: the slot would hold a copy of the properties, read through the traps once, and not the Proxy. Use the Proxy through the binding it initializes, or type the slot 'any'
+
+proxy-into-record.ts:32:27 - error SC1090: a Proxy where a value of an object type is expected is not supported yet
+
+  31 | const view: Config = new Proxy(store, handler);
+  32 | const holder = new Holder(new Proxy(store, handler));
+     |                           ^~~~~~~~~~~~~~~~~~~~~~~~~
+  33 | const asserted = new Proxy(store, handler) as Config;
+
+  hint: the slot would hold a copy of the properties, read through the traps once, and not the Proxy. Use the Proxy through the binding it initializes, or type the slot 'any'
+
+proxy-into-record.ts:33:18 - error SC1090: a Proxy where a value of an object type is expected is not supported yet
+
+  32 | const holder = new Holder(new Proxy(store, handler));
+  33 | const asserted = new Proxy(store, handler) as Config;
+     |                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+  34 | store.depth = 5;
+
+  hint: the slot would hold a copy of the properties, read through the traps once, and not the Proxy. Use the Proxy through the binding it initializes, or type the slot 'any'
+
+proxy-into-record.ts:35:30 - error SC1090: a Proxy where a value of an object type is expected is not supported yet
+
+  34 | store.depth = 5;
+  35 | console.log(view.depth, show(view));
+     |                              ^~~~
+  36 | console.log(make().label, holder.config.depth, asserted.depth);
+
+  hint: the slot would hold a copy of the properties, read through the traps once, and not the Proxy. Use the Proxy through the binding it initializes, or type the slot 'any'

@@ -429,8 +429,8 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "tier policy (default: auto). static-only keeps every",
           "construct without a static lowering a compile error, so",
-          "the program has no dynamic-tier demotions. Both modes",
-          "currently compile identically",
+          "the program has no dynamic-tier demotions; auto compiles",
+          "such a construct in the dynamic tier where it can",
         ],
       },
     ],

@@ -48,8 +48,13 @@ export function lowerPrototypeReflectionCall(
 ): IrExpr | null {
   let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
   if (object.type.kind === "func") {
+    // A function value's name and count come from the value it holds: the
+    // static type names one of several functions here, so the box records
+    // that the count is read at run time.
+    const identity = lowerer.functionIdentityOfValue(object, call.arguments.nodes[0]!);
     const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
     object = {
+      ...identity,
       kind: "dynFrom",
       value: object,
       type: DYN,

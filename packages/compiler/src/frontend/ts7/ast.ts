@@ -49,6 +49,7 @@ import type { Ts7DiagnosticData as Diagnostic } from "./session-schema.generated
 import { ModifierFlags, SyntaxKind } from "./enums.js";
 import { AstKind, KIND_NODE_LIST } from "./ast-schema.generated.js";
 import { PREORDER_LIST } from "./ast-wire.js";
+import { isTargetWrapper } from "./ast-node.js";
 import { tokenStartOfNode } from "./node-functions.js";
 
 /* ---- everything 7 kept under the same name ---- */
@@ -92,6 +93,28 @@ export function isFunctionLike(node: Node | undefined): node is SignatureDeclara
 /** 5.9.3's isExternalModule: 7 exposes the indicator on the SourceFile. */
 export function isExternalModule(file: SourceFile): boolean {
   return file.externalModuleIndicator !== undefined;
+}
+
+/** Whether the writeTargets view (AstFileOptions.writeTargets) dropped
+ * PARENTHESES around `node` on the way to its writer, so that the source
+ * spelled `(f) = …` rather than `f = …` and `node` alone cannot answer what
+ * the source said. The wrappers are still in the wire tree, so the syntax
+ * parent chain has them: walk it as writerOf does, and stop at the writer.
+ * A non-null assertion is dropped too, but it is not a parenthesis: a
+ * TypeScript-only wrapper around an identifier reference keeps whatever the
+ * reference itself earns. */
+export function isParenthesizedWriteTarget(node: Node | undefined): boolean {
+  if (node === undefined) return false;
+  const writer = node.parent;
+  if (writer === undefined) return false;
+  let outer = node.syntacticParent;
+  let parenthesized = false;
+  for (;;) {
+    if (outer === undefined || outer === writer) return parenthesized;
+    if (!isTargetWrapper(outer)) return false;
+    if (outer.kind === SyntaxKind.ParenthesizedExpression) parenthesized = true;
+    outer = outer.syntacticParent;
+  }
 }
 
 /* ---- free-function forms 7 moved onto the nodes ---- */

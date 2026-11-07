@@ -467,7 +467,7 @@ export class AstFile {
  * nodes into structural records. */
 /* Write targets without their wrappers (AstFileOptions.writeTargets). */
 
-function isTargetWrapper(node: AstNode): boolean {
+export function isTargetWrapper(node: AstNode): boolean {
   return node.kind === AstKind.ParenthesizedExpression || node.kind === AstKind.NonNullExpression;
 }
 
@@ -576,6 +576,12 @@ export class AstNode {
       this.parentResolved = true;
     }
     return this.parentCache;
+  }
+  /** The parent the tree spells, before the writeTargets view hands a
+   * wrapped target's reader the writer instead (see writerOf). */
+  get syntacticParent(): AstNode | undefined {
+    const index = this.file.wire.semanticParent(this.index);
+    return index === 0 || index === this.index ? undefined : this.file.node(index);
   }
   get text(): string | undefined {
     // A source file's text read as a string: the reader may depend on any

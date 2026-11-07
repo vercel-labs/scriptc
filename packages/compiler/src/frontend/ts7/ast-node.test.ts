@@ -16,7 +16,7 @@ import {
   NODE_OFFSET_PARENT,
   NODE_OFFSET_DATA,
 } from "./ast-schema.generated.js";
-import { walkPreorder } from "./ast.js";
+import { isParenthesizedWriteTarget, walkPreorder } from "./ast.js";
 import { ts7Executable } from "./rpc-api.js";
 import { Ts7RpcClient } from "./rpc-client.js";
 import { spawnTs7Wire } from "./rpc-process.js";
@@ -211,6 +211,13 @@ test("the writeTargets option answers write targets without their wrappers", () 
   for (const [index, target] of targets.entries())
     expect(target!.parent, `target ${index}`).toBe(writes[index + 2]);
   expect(writes[7]!.initializer!.parent).toBe(writes[7]);
+  // The dropped wrappers stay readable: a parenthesized target says so, a
+  // non-null assertion or a bare reference does not.
+  expect(isParenthesizedWriteTarget(writes[2]!.left)).toBe(true);
+  expect(isParenthesizedWriteTarget(writes[3]!.left)).toBe(false);
+  expect(isParenthesizedWriteTarget(writes[4]!.left)).toBe(false);
+  expect(isParenthesizedWriteTarget(writes[6]!.operand)).toBe(true);
+  expect(isParenthesizedWriteTarget(writes[7]!.initializer)).toBe(true);
   // The reference keeps its own source span.
   expect(writes[4]!.left!.getStart()).toBe(raw[4]!.left!.getStart());
   expect(writes[4]!.left!.end).toBe(raw[4]!.left!.end - 1);
@@ -219,6 +226,8 @@ test("the writeTargets option answers write targets without their wrappers", () 
     .nodes[0]!.initializer!;
   expect(text(init.left)).toBe("(x!)");
   expect(init.left!.kind).toBe(SyntaxKind.ParenthesizedExpression);
+  // A wrapper outside a write target is not a write target.
+  expect(isParenthesizedWriteTarget(init.left)).toBe(false);
   // Without the option, the file is TypeScript's exact tree.
   expect(raw[3]!.left!.kind).toBe(SyntaxKind.NonNullExpression);
   expect(raw[2]!.left!.kind).toBe(SyntaxKind.ParenthesizedExpression);

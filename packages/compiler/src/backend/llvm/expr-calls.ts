@@ -797,6 +797,14 @@ export function emitCallExpr(
         B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
         B.line(`store i32 ${functionKind}, ptr ${kindPtr}`);
       }
+      if (target.jsLength !== undefined) {
+        // The function's JavaScript `length` (ExpectedArgumentCount), so a
+        // box that cannot name this declaration reads the VALUE's own
+        // (dynFrom.fnLengthFromValue): recorded as length + 1, 0 = unknown.
+        const jsLengthPtr = B.tmp();
+        B.line(`${jsLengthPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 5`);
+        B.line(`store i32 ${target.jsLength + 1}, ptr ${jsLengthPtr}`);
+      }
       if (host.lendsEveryArgument(e.fnName)) {
         // The body that borrows its reference arguments, for callers that
         // keep them alive across the call (the runtime's comparator sort).

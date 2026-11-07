@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8796-function-value-length-typed-slots/slots.ts",
+  "<repo>/tests/corpus/8796-function-value-length-typed-slots/main.mjs"
+ ],
+ "diags": []
+}

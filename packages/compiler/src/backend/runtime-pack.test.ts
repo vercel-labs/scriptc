@@ -431,7 +431,7 @@ describe("runtime pack manifests", () => {
     expect((await createNativeLinkPlan({ ...options, hugeText: false })).hugeText).toBeUndefined();
   });
 
-  test("selection chooses the most-specific variant and feature archive", async () => {
+  test("selection chooses the variant that names the program's features and the feature archive", async () => {
     const { packagePath } = await fixture();
     const resolver = () => packagePath;
     const legacy = await loadRuntimePack({
@@ -453,6 +453,23 @@ describe("runtime pack manifests", () => {
       "fileHandle.o",
     ]);
     expect(fileHandle.archives.map((path) => path.split("/").at(-1))).toEqual(["zlib.a"]);
+  });
+
+  test("a feature combination the pack has no build for fails by name", async () => {
+    // The fixture builds scr_bytes.c for each feature alone. A program with
+    // two of them needs a build that carries both defines, so neither
+    // single-feature build is linked in its place.
+    const { packagePath } = await fixture();
+    await expect(
+      loadRuntimePack({
+        target: MACOS_ARM64_TARGET,
+        features: { ...BASE, textDecoderLegacy: true, fileHandle: true },
+        optimization: "release",
+        resolver: () => packagePath,
+      }),
+    ).rejects.toThrow(
+      "runtime pack has no build of scr_bytes.c for this program's features: the unit's builds are keyed on fileHandle, staticLink, textDecoderLegacy, the program has fileHandle, textDecoderLegacy, and exactly one variant must name exactly those (the pack builds default, legacy, fileHandle, static)",
+    );
   });
 
   test("a static link selects the static executable's unit variant", async () => {

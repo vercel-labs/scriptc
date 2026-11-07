@@ -281,6 +281,13 @@ function withJsObjectModel(variants) {
   return variants;
 }
 
+/** The builds of one unit. A program links the variant whose conditions
+ * name exactly the features it has among those the unit's builds are keyed
+ * on (selectRuntimeVariant in the compiler's runtime-pack-core.ts), and the
+ * build fails when the pack has no such variant. So a unit keyed on several
+ * features lists a variant for every combination of them, each carrying the
+ * defines of the features it names: tests/harness/runtime-variants.test.ts
+ * checks that for every unit of every flavor. */
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
   // scr_json.c builds one object per flavor (and workers mode): its paths
@@ -433,8 +440,8 @@ export function variantsFor(source) {
       defines: ["SCR_NATIVE_REACTIONS"],
     });
     // A program with both web streams and Node islands needs both builds:
-    // the island slot carries the hosted loop, and the variant with the
-    // most conditions is the one selected.
+    // the island slot carries the hosted loop, and a program links the one
+    // variant that names exactly its features.
     variants.push({
       id: "native-reactions-node-island",
       when: { webStreams: true, nodeIsland: true },
@@ -490,8 +497,8 @@ export function variantsFor(source) {
       defines: ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
     });
     // processExtras adds the prepend registrations and stdin's raw-mode
-    // flag; the combinations above then need their own builds, since the
-    // variant with the most conditions is the one selected.
+    // flag; the combinations above then need their own builds, since a
+    // program links the one variant that names exactly its features.
     variants.push({
       id: "process-extras",
       when: { processExtras: true },
@@ -572,8 +579,8 @@ export function variantsFor(source) {
     // A checked-dynamic promise whose executor takes a reject parameter
     // builds its reject closure with scr_make_reject_dyn, the reason being
     // the program's own value; every other program keeps the default
-    // object, byte for byte. The selector takes the variant with the most
-    // conditions, so each build above needs its counterpart.
+    // object, byte for byte. A program links the one variant that names
+    // exactly its features, so each build above needs its counterpart.
     for (const [id, when, defines] of [
       ["promise-reject-dyn", { promiseRejectDyn: true }, ["SCR_PROMISE_REJECT_DYN"]],
       [

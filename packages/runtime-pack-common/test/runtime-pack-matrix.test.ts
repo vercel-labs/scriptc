@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { selectRuntimeVariant } from "../../compiler/src/backend/runtime-pack-core.js";
 import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
 
 const matrix = createRuntimePackMatrix({
@@ -7,21 +8,13 @@ const matrix = createRuntimePackMatrix({
   systemLibraries: [],
 });
 
-/** The runtime pack's variant selection: the matching variant with the
- * most conditions, ties by id. */
+/** The build the compiler selects for a program with `features`. */
 function selected(
   source: string,
   features: Record<string, boolean>,
 ): { id: string; defines: string[] } {
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === source);
-  const matches = unit.variants.filter((variant: { when: Record<string, boolean> }) =>
-    Object.entries(variant.when).every(([name, expected]) => features[name] === expected),
-  );
-  matches.sort(
-    (a: { when: object; id: string }, b: { when: object; id: string }) =>
-      Object.keys(b.when).length - Object.keys(a.when).length || a.id.localeCompare(b.id),
-  );
-  return matches[0];
+  return selectRuntimeVariant(unit, features);
 }
 
 test("the typed stdio write slot selects the events build that carries it", () => {

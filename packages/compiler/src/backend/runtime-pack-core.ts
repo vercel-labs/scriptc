@@ -417,20 +417,45 @@ export function evaluateRuntimePredicate(predicate: RuntimePredicate, features: 
   );
 }
 
-function selectVariant(unit: RuntimePackUnit, features: RuntimeFeatureSet): RuntimePackVariant {
+/** The features a unit's builds are keyed on: every name one of its variants
+ * tests, sorted. */
+function variantFeatures(variants: RuntimePackVariant[]): string[] {
+  const names: string[] = [];
+  for (const variant of variants) {
+    for (const name of Object.keys(variant.when)) {
+      if (!names.includes(name)) names.push(name);
+    }
+  }
+  return names.sort();
+}
+
+/** The build of a unit a program links: the one variant whose conditions
+ * state the program's value for every feature the unit's builds are keyed
+ * on, a feature a variant does not name counting as off. A variant carries
+ * the defines of exactly the features it names, so any other choice would
+ * link a build that lacks one of the program's defines or carries one the
+ * program must not have. A pack with no such build, or with more than one,
+ * fails the build here by name: selection never settles for a near match. */
+export function selectRuntimeVariant(unit: RuntimePackUnit, features: object): RuntimePackVariant {
+  const values = features as Record<string, boolean>;
+  const keyed = variantFeatures(unit.variants);
   const matches = unit.variants.filter((variant) =>
-    Object.entries(variant.when).every(
-      ([name, expected]) => features[name as keyof RuntimeFeatureSet] === expected,
-    ),
-  );
-  matches.sort(
-    (a, b) => Object.keys(b.when).length - Object.keys(a.when).length || a.id.localeCompare(b.id),
+    keyed.every((name) => (variant.when[name] === true) === (values[name] === true)),
   );
   const selected = matches[0];
-  if (selected === undefined) {
-    throw new RuntimePackError(`runtime pack has no variant for ${unit.source}`, "invalid");
+  if (selected === undefined || matches.length > 1) {
+    const on = keyed.filter((name) => values[name] === true);
+    const program = on.length === 0 ? "none of them" : on.join(", ");
+    const found =
+      selected === undefined
+        ? "no build"
+        : `${matches.length} builds (${matches.map((variant) => variant.id).join(", ")})`;
+    throw new RuntimePackError(
+      `runtime pack has ${found} of ${unit.source} for this program's features: the unit's builds are keyed on ${keyed.join(", ")}, the program has ${program}, and exactly one variant must name exactly those (the pack builds ${unit.variants.map((variant) => variant.id).join(", ")}); reinstall the matching runtime package`,
+      "invalid",
+    );
   }
-  if ((features.workers === true) !== selected.defines.includes("SCR_WORKERS")) {
+  if ((values["workers"] === true) !== selected.defines.includes("SCR_WORKERS")) {
     throw new RuntimePackError(
       `runtime pack has an incompatible thread-state variant for ${unit.source}; reinstall the matching runtime package`,
       "invalid",
@@ -505,7 +530,7 @@ export function selectedRuntimeUnits(
 ): { source: string; variant: RuntimePackVariant }[] {
   return flavor.runtime_units
     .filter((unit) => evaluateRuntimePredicate(unit.predicate, features))
-    .map((unit) => ({ source: unit.source, variant: selectVariant(unit, features) }));
+    .map((unit) => ({ source: unit.source, variant: selectRuntimeVariant(unit, features) }));
 }
 
 /** Selection is deterministic and independent of installation paths. Both

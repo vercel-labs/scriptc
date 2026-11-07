@@ -8434,13 +8434,20 @@ ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
   return r ? r : scr_dyn_retain(scr_dyn_undefined());
 }
 
-/* `key in handle`: the class's methods, and the properties its get models. */
+/* `key in handle`: the class's methods and getters, and the properties its
+ * get models. */
 static bool scr_dyn_handle_in(const ScrDyn *d, const ScrStr *k) {
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(d->v.handle.tag);
   const ScrDynHandleMethod *methods = ops->invoke ? ops->methods : NULL;
+  const ScrDynHandleAccessor *accessors =
+      scr_dyn_handle_class_ops && scr_dyn_handle_class_ops->accessors
+          ? scr_dyn_handle_class_ops->accessors(d)
+          : NULL;
+  if (!methods && !accessors) return false;
   for (size_t i = 0; methods && methods[i].name; i++)
     if (strlen(methods[i].name) == k->len && memcmp(methods[i].name, k->data, k->len) == 0) return true;
-  if (!methods) return false;
+  for (size_t i = 0; accessors && accessors[i].name; i++)
+    if (strlen(accessors[i].name) == k->len && memcmp(accessors[i].name, k->data, k->len) == 0) return true;
   ScrDyn *value = ops->get(d->v.handle.ptr, k->data, k->len);
   if (!value) return scr_dyn_object_proto_name(k);
   scr_dyn_release(value);

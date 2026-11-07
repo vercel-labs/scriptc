@@ -233,6 +233,44 @@ static bool ni_export_is_error(uint32_t id) { return (ni_exports[id].flags & SCR
 
 static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key);
 
+/* The properties every error keeps in slots of its own, which typed code
+ * reads and writes: message, name and cause. An error's view holds them as
+ * of the last time it was built or written through, so the export answers
+ * them, and whether they are own properties, from the error itself. */
+enum { NI_SLOT_NONE, NI_SLOT_MESSAGE, NI_SLOT_NAME, NI_SLOT_CAUSE };
+
+static int ni_error_slot(const ScrStr *name) {
+  if (name->len == 7 && memcmp(name->data, "message", 7) == 0) return NI_SLOT_MESSAGE;
+  if (name->len == 4 && memcmp(name->data, "name", 4) == 0) return NI_SLOT_NAME;
+  if (name->len == 5 && memcmp(name->data, "cause", 5) == 0) return NI_SLOT_CAUSE;
+  return NI_SLOT_NONE;
+}
+
+/* Whether slot `slot` of `e` is an own property, and its attribute bits
+ * (SCR_NODE_EXPORT_OWN's): writable and configurable, enumerable when an
+ * assignment made it. */
+static bool ni_error_slot_own(const ScrError *e, int slot, int *bits) {
+  bool own = slot == NI_SLOT_MESSAGE ? e->message_present
+             : slot == NI_SLOT_NAME  ? e->name_present
+                                     : e->error_cause != NULL;
+  bool enumerable = slot == NI_SLOT_MESSAGE ? e->message_enumerable
+                    : slot == NI_SLOT_NAME  ? e->name_enumerable
+                                            : e->cause_enumerable;
+  *bits = 1 | 4 | (enumerable ? 2 : 0);
+  return own;
+}
+
+/* Whether the view itself holds `name` as an accessor (an error whose
+ * message is computed on demand): the slot has no value then, and the
+ * view's getter answers. */
+static bool ni_view_accessor(const ScrDyn *target, const ScrStr *name) {
+  if (target->kind != SCR_DYN_OBJ) return false;
+  ScrDyn *getter = scr_dyn_obj_accessor_fn(target, name->data, name->len, false);
+  bool accessor = getter != NULL && getter->kind == SCR_DYN_FUNC;
+  scr_dyn_release(getter);
+  return accessor;
+}
+
 /* Member `key` of native error `target` as its export answers it (+1), or
  * NULL when V8's own Error answers (or an exception is pending): a field,
  * an accessor or a method of the error's class, and its class as
@@ -242,25 +280,22 @@ static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key);
 static ScrDyn *ni_error_member(ScrDyn *target, ScrDyn *key) {
   if (key->kind != SCR_DYN_STR) return NULL;
   const ScrStr *name = key->v.str;
-  if (target->kind == SCR_DYN_TYPED_REF) {
-    /* An instance of a program class: the slots every error has are read
-     * from the error itself. Its view holds them as of the last time it was
-     * built or written through, and typed code writes the slots. */
+  int slot = ni_error_slot(name);
+  if (slot != NI_SLOT_NONE && !ni_view_accessor(target, name)) {
     ScrError *e = scr_errdyn_err_of(target);
-    ScrDyn *slot = NULL;
-    bool answered = false;
-    if (e != NULL && name->len == 7 && memcmp(name->data, "message", 7) == 0) {
-      answered = true;
-      if (e->message_present) slot = scr_dyn_new_str(e->message);
-    } else if (e != NULL && name->len == 4 && memcmp(name->data, "name", 4) == 0) {
-      answered = true;
-      if (e->name_present) slot = scr_dyn_new_str(e->name);
-    } else if (e != NULL && name->len == 5 && memcmp(name->data, "cause", 5) == 0) {
-      answered = true;
-      if (e->error_cause != NULL) slot = scr_dyn_retain(e->error_cause);
+    if (e != NULL) {
+      int bits;
+      ScrDyn *value = NULL;
+      if (ni_error_slot_own(e, slot, &bits)) {
+        value = slot == NI_SLOT_MESSAGE ? scr_dyn_new_str(e->message)
+                : slot == NI_SLOT_NAME  ? scr_dyn_new_str(e->name)
+                                        : scr_dyn_retain(e->error_cause);
+      }
+      scr_error_release(e);
+      if (value != NULL) return value;
+      /* Not in the slot: the view answers (a DOMException's name and
+       * message are its view's own). */
     }
-    if (e != NULL) scr_error_release(e);
-    if (answered) return slot;
   }
   bool own = scr_dyn_has_key(target, name);
   if (scr_exc_pending()) return NULL;
@@ -418,47 +453,82 @@ static int ni_returned(ScrDyn *result, ScrNodeValue *out) {
   return 0;
 }
 
-/* SCR_NODE_EXPORT_OWN: the own string-keyed data properties of native
- * error `target`, in order, each followed by its attribute bits (1
- * writable, 2 enumerable, 4 configurable), then the state word (1: not
- * extensible), as a JSON copy. `stack` is every error's accessor and V8
- * has its own; any other accessor is one the error's class declares, which
- * the view holds as its own and Node keeps on the prototype: the export
- * answers those from behind the error. */
+/* SCR_NODE_EXPORT_OWN: the own string-keyed properties of native error
+ * `target`, in order, each followed by its attribute bits (1 writable, 2
+ * enumerable, 4 configurable), then the state word (1: not extensible), as
+ * a JSON copy. The bridge installs each as a property whose value lives
+ * here, so an accessor of the view (a message computed on demand) is listed
+ * like a data property. Not listed: `stack`, every error's accessor, which
+ * V8 has too; and the accessors of a class instance's view, which are its
+ * class's (Node keeps them on the prototype, and the export answers them
+ * from behind the error). message, name and cause are listed from the
+ * error's own slots. */
 static int ni_export_own(ScrDyn *target, ScrNodeValue *out) {
   ScrDyn *names = scr_dyn_get_own_property_names(target);
   if (names == NULL || scr_exc_pending()) {
     scr_dyn_release(names);
     return ni_threw(out);
   }
+  ScrError *e = scr_errdyn_err_of(target);
+  bool listed[NI_SLOT_CAUSE + 1] = {false};
   ScrDyn *list = scr_dyn_new_arr();
   for (size_t i = 0; i < names->v.arr.len; i++) {
     ScrDyn *key = names->v.arr.items[i];
     if (key->kind != SCR_DYN_STR) continue;
     if (key->v.str->len == 5 && memcmp(key->v.str->data, "stack", 5) == 0) continue;
+    int slot = ni_error_slot(key->v.str);
+    int slot_bits;
+    if (e != NULL && slot != NI_SLOT_NONE && !ni_view_accessor(target, key->v.str) &&
+        ni_error_slot_own(e, slot, &slot_bits)) {
+      listed[slot] = true;
+      scr_dyn_arr_push(list, scr_dyn_retain(key));
+      scr_dyn_arr_push(list, scr_dyn_new_num(slot_bits));
+      continue;
+    }
     ScrDyn *descriptor = scr_dyn_get_own_property_descriptor(target, key);
     if (descriptor == NULL || scr_exc_pending()) {
       scr_dyn_release(descriptor);
       scr_dyn_release(list);
       scr_dyn_release(names);
+      if (e != NULL) scr_error_release(e);
       return ni_threw(out);
     }
-    if (descriptor->kind == SCR_DYN_OBJ && scr_dyn_obj_get(descriptor, "value", 5) != NULL) {
-      static const struct {
-        const char *name;
-        size_t len;
-        int bit;
-      } attributes[] = {{"writable", 8, 1}, {"enumerable", 10, 2}, {"configurable", 12, 4}};
-      int bits = 0;
-      for (size_t a = 0; a < 3; a++) {
-        const ScrDyn *flag = scr_dyn_obj_get(descriptor, attributes[a].name, attributes[a].len);
-        if (flag != NULL && flag->kind == SCR_DYN_BOOL && flag->v.b) bits |= attributes[a].bit;
+    if (descriptor->kind == SCR_DYN_OBJ) {
+      bool data = scr_dyn_obj_get(descriptor, "value", 5) != NULL;
+      const ScrDyn *setter = scr_dyn_obj_get(descriptor, "set", 3);
+      if (data || target->kind == SCR_DYN_OBJ) {
+        static const struct {
+          const char *name;
+          size_t len;
+          int bit;
+        } attributes[] = {{"writable", 8, 1}, {"enumerable", 10, 2}, {"configurable", 12, 4}};
+        int bits = !data && setter != NULL && setter->kind == SCR_DYN_FUNC ? 1 : 0;
+        for (size_t a = 0; a < 3; a++) {
+          const ScrDyn *flag = scr_dyn_obj_get(descriptor, attributes[a].name, attributes[a].len);
+          if (flag != NULL && flag->kind == SCR_DYN_BOOL && flag->v.b) bits |= attributes[a].bit;
+        }
+        if (slot != NI_SLOT_NONE) listed[slot] = true;
+        scr_dyn_arr_push(list, scr_dyn_retain(key));
+        scr_dyn_arr_push(list, scr_dyn_new_num(bits));
       }
-      scr_dyn_arr_push(list, scr_dyn_retain(key));
-      scr_dyn_arr_push(list, scr_dyn_new_num(bits));
     }
     scr_dyn_release(descriptor);
   }
+  /* A slot typed code filled after the view was built. */
+  static const struct {
+    int slot;
+    const char *name;
+    size_t len;
+  } slots[] = {{NI_SLOT_MESSAGE, "message", 7}, {NI_SLOT_NAME, "name", 4}, {NI_SLOT_CAUSE, "cause", 5}};
+  for (size_t i = 0; e != NULL && i < 3; i++) {
+    int bits;
+    if (listed[slots[i].slot] || !ni_error_slot_own(e, slots[i].slot, &bits)) continue;
+    ScrStr *name = scr_str_new(slots[i].name, slots[i].len);
+    scr_dyn_arr_push(list, scr_dyn_new_str(name));
+    scr_str_release(name);
+    scr_dyn_arr_push(list, scr_dyn_new_num(bits));
+  }
+  if (e != NULL) scr_error_release(e);
   scr_dyn_release(names);
   bool extensible = scr_dyn_is_extensible(target);
   if (scr_exc_pending()) {
@@ -775,23 +845,6 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
   return ni_returned(result, out);
 }
 
-/* Island code wrote or deleted a property of native error `target` through
- * its view: the slots typed code reads (name, message, stack, cause, code)
- * take the view's values, as after Object.assign onto an error. */
-static void ni_error_commit(ScrDyn *target) {
-  if (target->kind != SCR_DYN_OBJ || scr_exc_pending()) return;
-  ScrError *e = scr_errdyn_err_of(target);
-  if (e == NULL) return;
-  scr_error_commit_dyn(e, target);
-  if (!scr_exc_pending()) {
-    const ScrDyn *code = scr_dyn_obj_get(target, "code", 4);
-    ScrStr *next = code != NULL && code->kind == SCR_DYN_STR ? scr_str_retain(code->v.str) : NULL;
-    scr_str_release(e->code);
-    e->code = next;
-  }
-  scr_error_release(e);
-}
-
 int scr_ni_host_export_set(uint32_t id, const ScrNodeValue *key, const ScrNodeValue *value,
                            ScrNodeValue *out) {
   ni_keep_set(NULL);
@@ -799,10 +852,16 @@ int scr_ni_host_export_set(uint32_t id, const ScrNodeValue *key, const ScrNodeVa
   if (target == NULL) return 2;
   ScrDyn *k = scr_ni_value_in(key);
   ScrDyn *v = scr_ni_value_in(value);
-  bool ok = scr_dyn_reflect_set(target, k, v, target);
+  bool ok = true;
+  if (ni_export_is_error(id) && k->kind == SCR_DYN_STR) {
+    /* A native error: the dynamic write, which also stores name, message,
+     * stack, cause and code in the slots typed code reads. */
+    scr_dyn_key_set(target, k->v.str, v);
+  } else {
+    ok = scr_dyn_reflect_set(target, k, v, target);
+  }
   scr_dyn_release(v);
   scr_dyn_release(k);
-  if (ni_export_is_error(id)) ni_error_commit(target);
   scr_ni_shared_refresh();
   if (scr_exc_pending()) return ni_threw(out);
   (void)ok; /* a refused write is silent outside strict mode; Node's setter
@@ -859,7 +918,6 @@ int scr_ni_host_export_delete(uint32_t id, const ScrNodeValue *key, ScrNodeValue
   ScrDyn *k = scr_ni_value_in(key);
   scr_dyn_key_delete_computed(target, k, false);
   scr_dyn_release(k);
-  if (ni_export_is_error(id)) ni_error_commit(target);
   if (scr_exc_pending()) return ni_threw(out);
   memset(out, 0, sizeof *out);
   return 0;

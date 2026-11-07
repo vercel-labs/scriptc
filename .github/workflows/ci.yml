@@ -1025,16 +1025,22 @@ jobs:
           SCRIPTC_TEST_WORKERS: "4"
         run: pnpm test tests/harness/llvm-differential.test.ts
 
-  llvm_artifacts_macos_arm64_contracts:
+  # The packed npm installation smoke installs the darwin-arm64 CLI, which has
+  # to be built from source first. That seed build lowers and emits the whole
+  # compiler: 16 to 22 minutes on a quiet hosted runner, and up to 59 minutes
+  # when the runner fleet is saturated, which is longer than the contracts job's
+  # whole budget. It runs here, with its own budget and its own command
+  # timeout. The LLVM differential shards do not depend on it, so they still
+  # start as soon as native_macos finishes.
+  native_cli_macos_arm64:
     needs: [validation_scope, lanes, native_macos]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
-    name: test (macOS arm64 LLVM artifacts, no clang, contracts)
+    name: build (macOS arm64 native CLI)
     runs-on: macos-15
-    # The no-clang object, helper parity, packaged helper and packed npm
-    # installation contracts: about 12 minutes, which used to run in front
-    # of shard 1's differential slice and took that job to 45-50 minutes.
-    # Its native CLI build alone can pass 30 minutes on a busy runner.
-    timeout-minutes: 50
+    # Measured at 16 to 22 minutes on nightly hosts, 35 minutes when the build
+    # was first cut off, and 59:24 on a saturated one. The step's own 90-minute
+    # limit fails first, naming the command that hung.
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -1051,6 +1057,60 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      - name: Build the darwin arm64 native CLI seed
+        env:
+          # Release optimization is covered by the compiler bootstrap jobs.
+          # This seed only has to run the packed npm installation smoke.
+          SCRIPTC_NATIVE_OPTIMIZATION: dev
+        run: >-
+          node scripts/ci-run-with-timeout.mjs --timeout=5400
+          --label="native CLI seed build"
+          -- pnpm --filter @scriptc/cli-darwin-arm64 build:native
+      - name: Archive the built CLI
+        run: >-
+          tar -C packages/cli-darwin-arm64 -czf
+          "$RUNNER_TEMP/native-cli-darwin-arm64.tar.gz" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-cli-darwin-arm64
+          path: ${{ runner.temp }}/native-cli-darwin-arm64.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+  llvm_artifacts_macos_arm64_contracts:
+    needs: [validation_scope, lanes, native_macos, native_cli_macos_arm64]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
+    name: test (macOS arm64 LLVM artifacts, no clang, contracts)
+    runs-on: macos-15
+    # The no-clang object, helper parity, packaged helper and packed npm
+    # installation contracts: a few minutes now that native_cli_macos_arm64
+    # builds the CLI they install. They used to run in front of shard 1's
+    # differential slice and took that job to 45-50 minutes.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-arm64
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
+      - run: pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-cli-darwin-arm64
+          path: ${{ runner.temp }}
+      - name: Restore the built CLI
+        run: >-
+          tar -C packages/cli-darwin-arm64 -xzf
+          "$RUNNER_TEMP/native-cli-darwin-arm64.tar.gz"
       - name: No-clang assembly/object contract
         run: pnpm test packages/cli/test/native-output.test.ts
       - name: Helper diagnostics and object/link parity
@@ -1066,34 +1126,39 @@ jobs:
           TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
           node scripts/verify-llvm-package.mjs "$RUNNER_TEMP/$(basename "$TARBALL")"
       - name: Packed npm installation smoke
-        env:
-          # Release optimization is covered by the compiler bootstrap jobs.
-          # This lane verifies packaging and installation with a faster seed.
-          SCRIPTC_NATIVE_OPTIMIZATION: dev
         run: |
-          pnpm --filter @scriptc/cli-darwin-arm64 build:native
-          pnpm --dir packages/runtime pack --pack-destination "$RUNNER_TEMP" --silent
-          pnpm --dir packages/runtime-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent
-          pnpm --dir packages/compiler pack --pack-destination "$RUNNER_TEMP" --silent
-          pnpm --dir packages/cli-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent
-          pnpm --dir packages/cli pack --pack-destination "$RUNNER_TEMP" --silent
+          # Every command has a hard limit, so one that hangs fails this step
+          # with its own name and elapsed time instead of silently consuming
+          # the job's budget until GitHub cancels the job.
+          run() {
+            node scripts/ci-run-with-timeout.mjs --timeout="$1" --label="$2" -- "${@:3}"
+          }
+          run 600 "pack the runtime package" pnpm --dir packages/runtime pack --pack-destination "$RUNNER_TEMP" --silent
+          run 600 "pack the darwin runtime package" pnpm --dir packages/runtime-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent
+          run 600 "pack the compiler package" pnpm --dir packages/compiler pack --pack-destination "$RUNNER_TEMP" --silent
+          run 600 "pack the darwin CLI package" pnpm --dir packages/cli-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent
+          run 600 "pack the CLI package" pnpm --dir packages/cli pack --pack-destination "$RUNNER_TEMP" --silent
           PREFIX="$RUNNER_TEMP/installed-scriptc"
-          npm install --prefix "$PREFIX" --no-audit --no-fund \
+          run 900 "install the packed npm packages" npm install --prefix "$PREFIX" --no-audit --no-fund \
             "$RUNNER_TEMP/scriptc-runtime-$(node -p "require('./packages/runtime/package.json').version").tgz" \
             "$RUNNER_TEMP/scriptc-runtime-darwin-arm64-$(node -p "require('./packages/runtime-darwin-arm64/package.json').version").tgz" \
             "$RUNNER_TEMP/scriptc-llvm-darwin-arm64-$(node -p "require('./packages/llvm-darwin-arm64/package.json').version").tgz" \
             "$RUNNER_TEMP/scriptc-compiler-$(node -p "require('./packages/compiler/package.json').version").tgz" \
             "$RUNNER_TEMP/scriptc-cli-darwin-arm64-$(node -p "require('./packages/cli-darwin-arm64/package.json').version").tgz" \
             "$RUNNER_TEMP/scriptc-$(node -p "require('./packages/cli/package.json').version").tgz"
-          PATH="" "$PREFIX/node_modules/.bin/scriptc" build tests/corpus/001-hello.ts \
+          run 300 "emit an object with the installed compiler" env PATH= \
+            "$PREFIX/node_modules/.bin/scriptc" build tests/corpus/001-hello.ts \
             --emit=obj -o "$RUNNER_TEMP/installed.o"
-          file "$RUNNER_TEMP/installed.o" | grep 'Mach-O 64-bit object arm64'
-          PATH="" "$PREFIX/node_modules/.bin/scriptc" build tests/corpus/001-hello.ts \
+          run 60 "identify the installed object" file "$RUNNER_TEMP/installed.o" |
+            grep 'Mach-O 64-bit object arm64'
+          run 300 "print the installed native link info" env PATH= \
+            "$PREFIX/node_modules/.bin/scriptc" build tests/corpus/001-hello.ts \
             --print=native-link-info -o "$RUNNER_TEMP/installed-link.o" \
             > "$RUNNER_TEMP/installed-link.json"
-          node examples/native-object/link.mjs cc \
+          run 300 "link the installed program" node examples/native-object/link.mjs cc \
             "$RUNNER_TEMP/installed-link.json" "$RUNNER_TEMP/installed-program"
-          test "$("$RUNNER_TEMP/installed-program")" = 'hello world'
+          program_output=$(run 120 "run the installed program" "$RUNNER_TEMP/installed-program")
+          test "$program_output" = 'hello world'
 
   llvm_artifacts_macos_x64:
     needs: [validation_scope, lanes]
@@ -1353,6 +1418,7 @@ jobs:
         llvm_artifacts_linux_x64_musl,
         llvm_artifacts_linux_x64_wasi,
         llvm_artifacts_macos_arm64,
+        native_cli_macos_arm64,
         llvm_artifacts_macos_arm64_contracts,
         llvm_artifacts_macos_x64,
         windows_cli,
@@ -1392,6 +1458,7 @@ jobs:
               lane llvm_artifacts_linux_x64_musl "${{ needs.llvm_artifacts_linux_x64_musl.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_linux_x64_wasi "${{ needs.llvm_artifacts_linux_x64_wasi.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_macos_arm64 "${{ needs.llvm_artifacts_macos_arm64.result }}" "${{ needs.lanes.outputs.macos }}"
+              lane native_cli_macos_arm64 "${{ needs.native_cli_macos_arm64.result }}" "${{ needs.lanes.outputs.macos }}"
               lane llvm_artifacts_macos_arm64_contracts "${{ needs.llvm_artifacts_macos_arm64_contracts.result }}" "${{ needs.lanes.outputs.macos }}"
               lane llvm_artifacts_macos_x64 "${{ needs.llvm_artifacts_macos_x64.result }}" "${{ needs.lanes.outputs.macos }}"
               lane windows_cli "${{ needs.windows_cli.result }}" "${{ needs.lanes.outputs.linux }}"

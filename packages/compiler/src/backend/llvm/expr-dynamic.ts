@@ -160,6 +160,10 @@ export function emitDynamicExpr(
           // declaration reads it back. Without a record the box keeps what
           // scr_dyn_new_func answered — the adapted original's length for a
           // signature adapter, the signature's parameter count otherwise.
+          // A root that names itself as its identity is not such a record:
+          // it is a function lowered at its slot's signature (IrExpr
+          // closure.length), which keeps its own length there as it is, and
+          // every closure that stands for it carries a copy.
           host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);
           const idPtr = B.tmp();
           const identity = B.tmp();
@@ -173,6 +177,10 @@ export function emitDynamicExpr(
           const fallback = B.tmp();
           const known = B.tmp();
           const encoded = B.tmp();
+          const recorded = B.tmp();
+          const rootIdPtr = B.tmp();
+          const rootId = B.tmp();
+          const selfRooted = B.tmp();
           const length = B.tmp();
           B.line(`${idPtr} = getelementptr inbounds %ScrClosure, ptr ${v.name}, i64 0, i32 6`);
           B.line(`${identity} = load ptr, ptr ${idPtr}`);
@@ -185,7 +193,11 @@ export function emitDynamicExpr(
           B.line(`${fallback} = select i1 ${isRoot}, i32 ${arity}, i32 ${own}`);
           B.line(`${known} = icmp ne i32 ${stored}, 0 ; the length is recorded as length + 1`);
           B.line(`${encoded} = sub i32 ${stored}, 1`);
-          B.line(`${length} = select i1 ${known}, i32 ${encoded}, i32 ${fallback}`);
+          B.line(`${recorded} = select i1 ${known}, i32 ${encoded}, i32 ${fallback}`);
+          B.line(`${rootIdPtr} = getelementptr inbounds %ScrClosure, ptr ${root}, i64 0, i32 6`);
+          B.line(`${rootId} = load ptr, ptr ${rootIdPtr}`);
+          B.line(`${selfRooted} = icmp ne ptr ${rootId}, null ; its length is kept as it is`);
+          B.line(`${length} = select i1 ${selfRooted}, i32 ${own}, i32 ${recorded}`);
           B.line(`call void @scr_dyn_function_set_length(ptr ${t}, i32 ${length})`);
         }
         return host.own({ name: t, type: e.type });

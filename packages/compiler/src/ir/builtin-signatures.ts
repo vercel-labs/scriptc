@@ -227,8 +227,11 @@ function buildLibFnSignatures() {
     /** Whether `this.m(...)` with the member read into args[0] is a call
      * nodeIsland.applyTo makes: an island receiver's, or one whose member is
      * a function value. A native receiver's other members are called by the
-     * ordinary checked-dynamic method call. */
-    "nodeIsland.calls": { argTypes: [DYN, DYN], result: BOOL },
+     * ordinary checked-dynamic method call, which reads the member args[2]
+     * again: when the arguments made it a function, this throws the
+     * TypeError JavaScript throws for the value it read before them, naming
+     * the callee args[3]. */
+    "nodeIsland.calls": { argTypes: [DYN, DYN, STRING, STRING], result: BOOL },
     "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
     "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
     /** Array.isArray of a dyn value in a program with Node islands: island
@@ -293,6 +296,9 @@ function buildLibFnSignatures() {
     "dyn.reflectDeleteProperty": { argTypes: [DYN, DYN], result: BOOL },
     /** Reflect.has's target check: Node's TypeError for a primitive. */
     "dyn.reflectHasTarget": { argTypes: [DYN], result: VOID },
+    /** Reflect.getPrototypeOf's target check: Node's TypeError for any
+     * primitive (Object.getPrototypeOf boxes instead). */
+    "dyn.reflectGetPrototypeTarget": { argTypes: [DYN], result: VOID },
     "dyn.hasKeyComputed": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.hasOwnComputed": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.propertyIsEnumerableComputed": { argTypes: [DYN, DYN], result: BOOL },
@@ -3351,6 +3357,10 @@ function buildLibFnSignatures() {
     "child.ref": { argTypes: [CHILD_T], result: VOID },
     "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
     "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
+    /* The Buffer captures (spawnSync without an encoding option): the same
+     * stored bytes as a bytes<u8> value, branded under fsBufferBrand. */
+    "spawnRes.stdoutBytes": { argTypes: [SPAWNRES_T], result: BYTES_U8 },
+    "spawnRes.stderrBytes": { argTypes: [SPAWNRES_T], result: BYTES_U8 },
     /** fs/promises (scr_lib.c over scr_async.c's settled minting): the SAME
      * sync syscalls, wrapped in an ALREADY-SETTLED promise — failure
      * REJECTS (catchable at the await) instead of throwing, so none of
@@ -4115,7 +4125,11 @@ function buildLibFnSignatures() {
      * super(message) call of an `extends Error` constructor — borrowed
      * receiver (already allocated by the derived class's new) + borrowed
      * message, void; the receiver's type names the builtin class whose name
-     * field to stamp. error.toString: borrowed `%Error`-typed receiver, +1
+     * field to stamp. Both may omit the message: `new Error()` and `super()`
+     * create no own message property. Source constructions take these typed
+     * entries when the message is a native string or absent and no options
+     * argument is passed; every other form takes error.newOptions and
+     * error.ctorOptions. error.toString: borrowed `%Error`-typed receiver, +1
      * string in Node's "name: message" shape. Formatting can invoke a user
      * message accessor, which can throw. */
     "error.new": { argTypes: [STRING], result: VOID },

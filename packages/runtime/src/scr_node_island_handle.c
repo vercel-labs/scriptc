@@ -1390,6 +1390,17 @@ static ScrDyn *nh_call_native(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, si
   return result;
 }
 
+/* A member read that answered something not callable, called: Node's
+ * TypeError names the call site's text as the compiler passes it. */
+static void nh_throw_not_fn(const char *name, size_t length) {
+  ScrStr *member = scr_str_new(name, length);
+  ScrStr *suffix = scr_str_new(" is not a function", 18);
+  ScrStr *message = scr_str_concat(member, suffix);
+  scr_str_release(member);
+  scr_str_release(suffix);
+  if (message != NULL) scr_throw_error(SCR_ERR_TYPE, message);
+}
+
 /* obj.m(...) from dynamic code: the member read, then the call with obj
  * as the receiver; a member that is not a function throws Node's TypeError
  * with the call site's text (`what`), as V8 words it. */
@@ -1405,9 +1416,8 @@ static ScrDyn *nh_op_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *c
   }
   if (!scr_ni_is_function(fn)) {
     scr_dyn_release(fn);
-    char message[512];
-    snprintf(message, sizeof message, "%s is not a function", what != NULL ? what : method);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    const char *shown = what != NULL ? what : method;
+    nh_throw_not_fn(shown, strlen(shown));
     return NULL;
   }
   ScrDyn *result = scr_ni_call(fn, self, args, argc);
@@ -1502,6 +1512,46 @@ static ScrDyn *nh_op_iter_pack(void *h) {
   return out;
 }
 
+/* The host's structuredClone, loaded once. */
+static ScrDyn *nh_clone_fn = NULL;
+
+/* structuredClone of an island object: Node's own, so the copy is the
+ * fresh island object Node makes (a handle of it), and a value Node cannot
+ * clone throws Node's DataCloneError. +1, or NULL with the exception
+ * pending. */
+static ScrDyn *nh_op_clone(void *h) {
+  if (nh_clone_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:clone", 13);
+    nh_clone_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_clone_fn == NULL) return NULL;
+  }
+  ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_NODE_ISLAND);
+  ScrDyn *copy = scr_ni_call(nh_clone_fn, scr_dyn_undefined(), &box, 1);
+  scr_dyn_release(box);
+  return copy;
+}
+
+/* The host's Object.prototype.toString, loaded once. */
+static ScrDyn *nh_object_tag_fn = NULL;
+
+/* Object.prototype.toString.call of an island object, by Node. +1, or NULL
+ * with the exception pending. */
+static ScrStr *nh_object_tag(const ScrDyn *value) {
+  if (nh_object_tag_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:objectTag", 17);
+    nh_object_tag_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_object_tag_fn == NULL) return NULL;
+  }
+  ScrDyn *args[1] = {(ScrDyn *)value};
+  ScrDyn *tag = scr_ni_call(nh_object_tag_fn, scr_dyn_undefined(), args, 1);
+  if (tag == NULL) return NULL;
+  ScrStr *out = tag->kind == SCR_DYN_STR ? scr_str_retain(tag->v.str) : scr_str_new("[object Object]", 15);
+  scr_dyn_release(tag);
+  return out;
+}
+
 static const ScrDynHandleOps nh_ops = {
     .cls = "Object",
     .retain = nh_ref_retain_v,
@@ -1511,6 +1561,7 @@ static const ScrDynHandleOps nh_ops = {
     .set = nh_op_set,
     .symbol_get = nh_op_symbol_get,
     .iter_pack = nh_op_iter_pack,
+    .clone = nh_op_clone,
 };
 
 /* At exit: what the unit itself still holds (pins, unsettled waiters,
@@ -1529,6 +1580,14 @@ static void nh_cleanup(void) {
   if (nh_to_primitive_fn != NULL) {
     scr_dyn_release(nh_to_primitive_fn);
     nh_to_primitive_fn = NULL;
+  }
+  if (nh_clone_fn != NULL) {
+    scr_dyn_release(nh_clone_fn);
+    nh_clone_fn = NULL;
+  }
+  if (nh_object_tag_fn != NULL) {
+    scr_dyn_release(nh_object_tag_fn);
+    nh_object_tag_fn = NULL;
   }
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
@@ -1691,12 +1750,30 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
  * method) has no function value, so its read answered something that is
  * not callable, and the call is the ordinary checked-dynamic method call
  * by name, as scr_node_island_invoke makes it for the same receiver. That
- * call throws Node's TypeError when the member is not a function. */
+ * call throws Node's TypeError when the member is not a function.
+ *
+ * The by-name call reads the member again, so it answers the value the
+ * read held only while the member still is not callable: an argument that
+ * ran code may have stored a function there, and V8 calls the value read
+ * before the arguments — a non-callable one, Node's TypeError. */
 ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   if (nh_is_native_function(fn)) return nh_call_native(fn, this_, items, argc, "value");
-  if (!ni_lc_island(fn) && !ni_lc_island(this_)) return ni_lc_native_invoke(this_, key, items, argc);
+  if (!ni_lc_island(fn) && !ni_lc_island(this_)) {
+    ScrDyn *member = scr_node_island_get(this_, key);
+    if (member == NULL) {
+      if (!scr_exc_pending()) nh_throw_not_fn(key->data, key->len);
+      return NULL;
+    }
+    bool callable = scr_dyn_is_callable(member);
+    scr_dyn_release(member);
+    if (callable) {
+      nh_throw_not_fn(key->data, key->len);
+      return NULL;
+    }
+    return ni_lc_native_invoke(this_, key, items, argc);
+  }
   return scr_ni_call(fn, this_, items, argc);
 }
 
@@ -1706,9 +1783,19 @@ ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn 
  * closure, or an island function a native object holds) is called as it
  * was read. A native receiver's other members (a builtin, a class method,
  * a generator step) have no function value: compiled code calls them
- * through the ordinary checked-dynamic method call instead. */
-bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_) {
-  return ni_lc_island(this_) || ni_lc_island(fn) || nh_is_native_function(fn);
+ * through the ordinary checked-dynamic method call instead. That call
+ * reads the member `key` again, after the arguments ran, as the by-name
+ * call of scr_node_island_apply_to does: when they stored a function
+ * there, this answers false with Node's TypeError pending, for the value
+ * read before them (`what`, the callee as V8 words it, is not a
+ * function). */
+bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrStr *what) {
+  if (ni_lc_island(this_) || ni_lc_island(fn) || nh_is_native_function(fn)) return true;
+  ScrDyn *member = scr_node_island_get(this_, key);
+  bool callable = member != NULL && scr_dyn_is_callable(member);
+  scr_dyn_release(member);
+  if (callable) nh_throw_not_fn(what->data, what->len);
+  return false;
 }
 
 bool scr_node_island_is_capsule(ScrDyn *value) {
@@ -1745,6 +1832,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .to_primitive = scr_ni_to_primitive,
     .is_function = scr_ni_is_function,
     .error_constructor = nh_error_constructor,
+    .object_tag = nh_object_tag,
     .is_array = scr_ni_is_array,
     .json_query = nh_json_query,
 };

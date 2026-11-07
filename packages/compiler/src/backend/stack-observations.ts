@@ -252,6 +252,7 @@ const CAPTURE_FREE_EXPRS: ReadonlySet<IrExpr["kind"]> = new Set([
   "boolLit",
   "strLit",
   "unitLit",
+  "constCell",
   "varRef",
   "incDec",
   "assignExpr",

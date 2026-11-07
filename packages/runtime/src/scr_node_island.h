@@ -148,6 +148,9 @@ typedef struct ScrNiDynOps {
    * `e.constructor === TypeError` holds with the island's TypeError. 1 for
    * an island error, 0 for any other. */
   int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+  /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
+   * the exception pending). */
+  ScrStr *(*object_tag)(const ScrDyn *value);
   /* JSON.stringify's questions about an island object (scr_json.c walks
    * it member by member): IsArray, and what V8 alone can answer about it
    * (SCR_NI_JSON_*; +1, NULL with the exception pending). */
@@ -270,8 +273,10 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
 /* fn called with `this` (the member `key`, read before its arguments ran). */
 ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrDyn *args);
 /* Whether scr_node_island_apply_to makes the call of the member `fn` read
- * from `this_`; otherwise compiled code calls the native member by name. */
-bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_);
+ * from `this_`; otherwise compiled code calls the native member `key` by
+ * name, unless the arguments made it a function (a TypeError naming `what`
+ * is pending then). */
+bool scr_node_island_calls(ScrDyn *fn, ScrDyn *this_, ScrStr *key, ScrStr *what);
 /* Whether a native value's members are dispatched by compiled code (a
  * typed reference: a class instance, a generator), which the runtime's
  * by-name call has no table for. */

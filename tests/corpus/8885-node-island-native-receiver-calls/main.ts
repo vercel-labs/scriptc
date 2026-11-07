@@ -101,3 +101,47 @@ try {
 } catch (e) {
   console.log(e instanceof TypeError, calls);
 }
+
+// 7. An argument that runs code replaces the member: the call is the one
+// the read before the arguments answered, so the replacement never runs.
+const blank: { name: string; take?: unknown } = { name: "k" };
+function replaceTake(target: { take?: unknown }): [number] {
+  target.take = (n: number) => n * 100;
+  return [2];
+}
+try {
+  (blank as unknown as Sink).take(...replaceTake(blank));
+} catch (e) {
+  console.log(e instanceof TypeError, typeof blank.take);
+}
+
+// 8. The same without a spread, where the call that follows the arguments
+// is compiled code's own by-name call: a member that is a function when it
+// is read is the one called, whatever the arguments store in its place, and
+// a member that is not a function when it is read is not called even when
+// the arguments store one there. The TypeError names the callee.
+function swap(target: Sink, take: (n: number) => number, value: number): number {
+  target.take = take;
+  return value;
+}
+const first: Sink = { name: "first", take: (n: number) => n + 100 };
+console.log(first.take(swap(first, (n) => n - 100, 1)), first.take(1));
+// (An untyped object: a literal typed by its own members is a record whose
+// `take` is a number for good.)
+const lateFields: any = { name: "late", take: 5 };
+const late: Sink = lateFields;
+try {
+  console.log(late.take(swap(late, (n) => n * 2, 3)));
+} catch (e) {
+  console.log(e instanceof TypeError, (e as Error).message, late.take(4));
+}
+const absent = { name: "absent" } as unknown as Sink;
+try {
+  console.log(absent.take(swap(absent, (n) => n + 1, 3)));
+} catch (e) {
+  console.log(e instanceof TypeError, (e as Error).message, absent.take(4));
+}
+// Arguments that leave the member alone change nothing: a class method and
+// an array's builtin still take the by-name call.
+const kept: Sink = new Counter();
+console.log(kept.take(swap(sink, (n) => n * 11, 2)), sink.take(2), names.push(next()) > 0);

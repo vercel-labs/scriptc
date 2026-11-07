@@ -4627,19 +4627,22 @@
   "U.clone": "message"
  },
  "weakmap.p": {
-  "n2i/I.inspect": "throws",
-  "n2i/I.read": "throws",
-  "n2i/I.keep": "throws",
-  "n2i/I.same": "throws",
+  "n2i/I.inspect": "refused:SC8010",
+  "n2i/I.read": "refused:SC8010",
+  "n2i/I.keep": "refused:SC8010",
+  "n2i/I.same": "refused:SC8010",
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
-  "n2i2n/S.back": "exit",
-  "clo-n2i/I.keep": "throws",
+  "i2n/I.same@param": "refused:SC8010",
+  "i2n/I.same@field": "refused:SC8010",
+  "i2n/I.same@element": "refused:SC8010",
+  "n2i2n/S.back": "refused:SC8010",
+  "clo-n2i/I.keep": "refused:SC8010",
   "clo-n2i/I.thunk": "throws",
   "clo-i2n/U.json": "unsupported",
   "clo-i2n/U.forin": "unsupported",
-  "clo-i2n/I.taker": "throws"
+  "clo-i2n/I.taker": "refused:SC8010"
  },
  "weakmap.u": {
   "n2i/I.inspect": "throws",
@@ -4649,6 +4652,7 @@
   "i2n/T.json": "unsupported",
   "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
+  "i2n/I.same@cast": "refused:SC8010",
   "n2i2n/S.back": "exit",
   "clo-n2i/I.keep": "throws",
   "clo-n2i/I.thunk": "throws",

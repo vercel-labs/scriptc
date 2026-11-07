@@ -1338,6 +1338,19 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       // arm through its dyn box. The runtime exports objects by reference
       // and copies primitives, so the representation is already exact.
       const mapped = lowerer.mapTypeOf(type);
+      // What the export table does not hold is refused first: a WeakMap is a
+      // checked-dynamic value natively, so its representation alone would
+      // let it through to the runtime's own refusal. A value the island
+      // made is its handle and goes back as one.
+      const unexported = islandMade(lowerer, inner) ? null : unexportedNative(lowerer, type);
+      if (unexported !== null)
+        return boundaryFail(
+          lowerer,
+          unexported === type
+            ? `a '${lowerer.checker.typeToString(type)}' value (its native representation has no island export)`
+            : `a '${lowerer.checker.typeToString(type)}' value (its '${lowerer.checker.typeToString(unexported)}' arm has no island export)`,
+          node,
+        );
       if (mapped !== null && crossesByRepresentation(lowerer, mapped)) return crossByReference();
       // NI-5: closures, promises, records and class instances cross by
       // reference (scr_node_island_export.c): their dyn boxes keep the
@@ -1531,6 +1544,40 @@ function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
   const name = type.getSymbol()?.escapedName;
   if (name === "WeakMap" || name === "WeakSet") return false;
   return true;
+}
+
+/** Whether `node` is visibly a value an island made: an island read, call
+ * or construction, or a `const` initialized with one. A slot whose native
+ * type is checked-dynamic (a WeakMap's) holds such a value as the island's
+ * handle. */
+function islandMade(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (islandRooted(lowerer, node)) return true;
+  if (!ts.isIdentifier(node)) return false;
+  const declaration = lowerer.resolveValueSymbol(node)?.valueDeclaration;
+  return (
+    declaration !== undefined &&
+    ts.isVariableDeclaration(declaration) &&
+    declaration.initializer !== undefined &&
+    (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 &&
+    islandRooted(lowerer, declaration.initializer)
+  );
+}
+
+/** The part of `type` whose native value the island export table does not
+ * hold, or null: a WeakMap or WeakSet, alone or as an arm of a union. Weak
+ * storage has no export, and the runtime refuses it when it crosses (`this
+ * native object cannot cross into a Node island yet`); a statically typed
+ * one is refused here, by name. */
+function unexportedNative(lowerer: Lowerer, type: ts.Type): ts.Type | null {
+  if (type.isUnionType()) {
+    for (const part of ts.constituentTypes(type)) {
+      const found = unexportedNative(lowerer, part);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if ((type.flags & ts.TypeFlags.Object) === 0) return null;
+  return lowerer.weakCollectionNamesOf(type) !== null ? type : null;
 }
 
 /** Whether a value of native IR type `t` crosses INTO an island by

@@ -66,3 +66,17 @@ const shown = (...args: unknown[]): void => console.log("each", args.length, typ
 const each: (v: object) => void = shown;
 Object.values(table).forEach(each);
 console.log(Object.values(table).some(keep), Object.values(table).every(keep));
+
+// A record that holds a stored variadic function may go through a container
+// that only keeps it: the container calls no member, and the member read
+// back is called with what its type names.
+interface Lock {
+  name: string;
+  release: () => void;
+}
+const locks: Lock[] = [{ name: "a", release: quiet() }];
+const byName = new Map(locks.map((lock) => [lock.name, lock]));
+byName.get("a")?.release();
+const unique = new Set(locks);
+for (const lock of unique) lock.release();
+for (const lock of Array.from(locks)) lock.release();

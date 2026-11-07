@@ -51,6 +51,10 @@
  * the slot's type takes one of those paths, not whether the stored one
  * does. A function the program writes in place, or names by its
  * declaration, is not such a value: it is a function, not a slot's content.
+ * A value with function members that a library function only keeps is not
+ * handed to a caller either: a container whose declaration types the
+ * parameter by its own type parameters alone (`new Map(entries)`,
+ * `new Set(values)`) cannot call a member of what it holds (onlyKeeps).
  *
  * Three older conversions store a variadic function under a fixed
  * signature without that adapter, and are held to the same rule where the
@@ -521,7 +525,69 @@ function libraryCalls(
     }
     return callable ? answer : "possible";
   };
-  const handed = (node: ts.Expression, declared: ts.Type | undefined, what: string): void => {
+  /** Whether `type`, a library parameter's type as its declaration writes
+   * it, names what it is handed only as the declaration's own type
+   * parameters, bare or as the elements of what a library reads without
+   * calling its elements: an iterable, an array-like, an array, a tuple
+   * (`new Map<K, V>(entries?: Iterable<readonly [K, V]> | null)`). */
+  const onlyTypeParameters = (type: ts.Type, depth: number): boolean => {
+    if (depth > 6) return false;
+    if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0) return true;
+    if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) {
+      // A constraint could name a member for the library to call.
+      const declarations = type.getSymbol()?.declarations ?? [];
+      return (
+        declarations.length > 0 &&
+        declarations.every(
+          (declaration) =>
+            ts.isTypeParameterDeclaration(declaration) && declaration.constraint === undefined,
+        )
+      );
+    }
+    if (type.isUnionType())
+      return ts.constituentTypes(type).every((part) => onlyTypeParameters(part, depth + 1));
+    const tuple = checker.isTupleType(type);
+    const symbol = type.getSymbol();
+    const name = ts.symbolNameOf(symbol);
+    if (
+      !tuple &&
+      !checker.isArrayType(type) &&
+      !((name === "Iterable" || name === "ArrayLike") && lowerer.isStdlibSymbol(symbol))
+    )
+      return false;
+    const args = attempt(() => checker.getTypeArguments(type as ts.TypeReference)) ?? [];
+    // An iterable's other type arguments are what its iterator returns and
+    // is sent, not what the library is handed.
+    const elements = tuple ? args : args.slice(0, 1);
+    return elements.length > 0 && elements.every((arg) => onlyTypeParameters(arg, depth + 1));
+  };
+  /** Whether the library function `node` calls only keeps its argument at
+   * `index`: its declaration types the parameter by its own type
+   * parameters alone (above). A function declared for every such type
+   * cannot call a member of the value; it stores the value and hands it
+   * back under the same type, where the program's own calls pass what the
+   * member's type names. */
+  const onlyKeeps = (node: ts.CallExpression | ts.NewExpression, index: number): boolean => {
+    const declaration = attempt(() => checker.getResolvedSignature(node))?.declaration;
+    const params = (declaration?.parameters?.nodes ?? []).filter(
+      (param): param is ts.ParameterDeclaration => ts.isParameter(param) && !isThisParameter(param),
+    );
+    const param = params[index];
+    if (param === undefined || param.dotDotDotToken !== undefined) return false;
+    const symbol = attempt(() => checker.getSymbolAtLocation(param.name));
+    const type =
+      symbol === undefined || symbol === null
+        ? undefined
+        : attempt(() => checker.getTypeOfSymbol(symbol));
+    return type !== undefined && onlyTypeParameters(type, 0);
+  };
+  const handed = (
+    node: ts.Expression,
+    declared: ts.Type | undefined,
+    what: string,
+    /** The library function only keeps the value (onlyKeeps). */
+    kept = false,
+  ): void => {
     const expr = withoutParenthesesTypeWrappers(node);
     if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) return;
     if (ts.isObjectLiteralExpression(expr)) {
@@ -573,6 +639,8 @@ function libraryCalls(
     const slot =
       declared === undefined ? null : (attempt(() => lowerer.mapTypeOf(declared)) ?? null);
     if (slot !== null && typeEquals(slot, type)) return;
+    // Nor does a container that is generic in the value call its members.
+    if (kept) return;
     for (const func of heldFunctionTypes(lowerer, type))
       callsLonger(func, locOf(expr), what, "possible");
   };
@@ -587,14 +655,19 @@ function libraryCalls(
             : ts.isIdentifier(node.expression)
               ? `'${node.expression.text}'`
               : "a library function";
-          for (const arg of args) {
-            if (ts.isSpreadElement(arg)) continue;
+          let spread = false;
+          args.forEach((arg, index) => {
+            if (ts.isSpreadElement(arg)) {
+              spread = true;
+              return;
+            }
             handed(
               arg,
               attempt(() => checker.getContextualType(arg)),
               callee,
+              !spread && onlyKeeps(node, index),
             );
-          }
+          });
         }
       }
     } else if (

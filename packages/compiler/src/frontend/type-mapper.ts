@@ -6061,6 +6061,26 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
             byKey.delete(typeKey(mapped));
         }
       }
+      // A class arm beside an interface it implements, where that interface
+      // is held as the checked view of its objects (a class-backed protocol:
+      // the view holds the instance itself): the class arm is contained in
+      // the interface's, as the subclass arm above is in its ancestor's. The
+      // checker folds such a class into the interface by itself, except
+      // when the interface has optional members the class leaves out
+      // (`swap ? new Label() : item` over `Piece` with `press?()` is typed
+      // `Label | Piece`). Kept as an arm of its own, the class would make
+      // the interface's arm a record, and an instance of ANOTHER class of
+      // the interface would enter the union as a record copy: not the
+      // object, and no instance of its class.
+      if (classParts.length > 0 && byKey.has(typeKey(DYN)) && ctx.classImplementedProtocol) {
+        const views = parts.filter((part) => ctx.classImplementedProtocol!(part));
+        if (views.length > 0) {
+          for (const { source, mapped } of classParts) {
+            if (views.some((view) => checker.isTypeAssignableTo(source, view)))
+              byKey.delete(typeKey(mapped));
+          }
+        }
+      }
       const arms = [...byKey.values()];
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
       // `Cond<T> | undefined` whose conditional selects never for the

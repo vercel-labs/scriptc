@@ -1402,6 +1402,7 @@
           "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/corpus/7391-als-response-end-and-finished.mjs",
           "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -1760,7 +1761,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_context.name",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -19762,6 +19764,7 @@
           "tests/corpus/7157-crypto-cipher-info-typed.ts",
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -23814,7 +23817,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.symmetricKeySize",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -23840,7 +23844,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.type",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24413,7 +24418,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.ca",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24439,7 +24445,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.fingerprint",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24465,7 +24472,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.fingerprint256",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24491,7 +24499,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.fingerprint512",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24540,7 +24549,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.issuer",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24642,7 +24652,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.raw",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24668,7 +24679,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.serialNumber",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24694,7 +24706,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.subject",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24720,7 +24733,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.subjectAltName",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24746,7 +24760,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.validFrom",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24772,7 +24787,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.validFromDate",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24798,7 +24814,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.validTo",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24824,7 +24841,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.validToDate",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24850,7 +24868,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.signatureAlgorithm",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24876,7 +24895,8 @@
         "status": "partial",
         "evidence": "compiler-feature:crypto.signatureAlgorithmOid",
         "tests": [
-          "tests/corpus/compat-x509-keyobject.mjs"
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -33297,6 +33317,7 @@
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
@@ -33411,7 +33432,8 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.code",
         "tests": [
-          "tests/corpus/compat-error-properties.mjs"
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -33475,7 +33497,8 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.AssertionError",
         "tests": [
-          "tests/corpus/compat-error-properties.mjs"
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -33580,7 +33603,8 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.SystemError",
         "tests": [
-          "tests/corpus/compat-error-properties.mjs"
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -33730,7 +33754,8 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.message",
         "tests": [
-          "tests/corpus/compat-error-properties.mjs"
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-error-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -45224,6 +45249,7 @@
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
           "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-fs-dirent-realpath.ts",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-native-realpath.ts",
@@ -48187,7 +48213,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fs.rm",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -53452,8 +53479,10 @@
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts",
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
           "tests/corpus/headers-static-accessors.ts",
@@ -55096,7 +55125,8 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.WritableStreamDefaultController",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -55513,7 +55543,8 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.console",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -55948,7 +55979,8 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.process",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -56029,6 +56061,7 @@
           "tests/corpus/2988-http-static-client-abort.ts",
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -57990,7 +58023,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http.'checkExpectation'",
         "tests": [
-          "tests/corpus/compat-http-server-tail.mjs"
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60007,7 +60041,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http.outgoingMessage.setTimeout",
         "tests": [
-          "tests/corpus/compat-http-server-tail.mjs"
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60086,7 +60121,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http.outgoingMessage.connection",
         "tests": [
-          "tests/corpus/compat-http-server-tail.mjs"
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60757,6 +60793,7 @@
         "tests": [
           "tests/corpus/compat-http2-abort.mjs",
           "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts",
           "tests/corpus/compat-http2-compat-members.mjs",
           "tests/corpus/compat-http2-event-order.mjs",
           "tests/corpus/compat-http2-headers.mjs",
@@ -61134,7 +61171,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.http2session.close",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61587,7 +61625,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.socket",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -61636,7 +61675,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.type",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -61662,7 +61702,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.'close'",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61688,7 +61729,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.'connect'",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61714,7 +61756,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.'error'",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61864,7 +61907,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.'stream'",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62569,7 +62613,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.session",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -63772,7 +63817,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.http2.createServer",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -63824,7 +63870,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.http2.connect",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64256,7 +64303,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.complete",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -64582,7 +64630,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.'close'",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64755,7 +64804,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.response.getHeaderNames",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64781,7 +64831,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.response.getHeaders",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64885,7 +64936,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http2.response.setTimeout",
         "tests": [
-          "tests/corpus/compat-http2-basics.mjs"
+          "tests/corpus/compat-http2-basics.mjs",
+          "tests/corpus/compat-http2-basics.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65388,6 +65440,7 @@
           "tests/corpus/2689-http-server-timeout-properties.ts",
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -65547,7 +65600,8 @@
         "status": "partial",
         "evidence": "compiler-feature:https.server.closeAllConnections",
         "tests": [
-          "tests/corpus/compat-http-server-tail.mjs"
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65573,7 +65627,8 @@
         "status": "partial",
         "evidence": "compiler-feature:https.server.closeIdleConnections",
         "tests": [
-          "tests/corpus/compat-http-server-tail.mjs"
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65632,7 +65687,8 @@
         "status": "partial",
         "evidence": "compiler-feature:https.server.setTimeout",
         "tests": [
-          "tests/corpus/compat-http-server-tail.mjs"
+          "tests/corpus/compat-http-server-tail.mjs",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -73625,6 +73681,7 @@
           "tests/corpus/5659-net-blocklist-socketaddress.ts",
           "tests/corpus/compat-net-server-socket.ts",
           "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -74068,7 +74125,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.rules",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -74089,7 +74147,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.size",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -74154,7 +74213,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.address",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -74175,7 +74235,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.family",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -74196,7 +74257,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.flowlabel",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -74217,7 +74279,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.port",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -74638,7 +74701,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.'error'",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74870,7 +74934,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.socket.destroySoon",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74968,7 +75033,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.socket.resetAndDestroy",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75364,7 +75430,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.localAddress",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -75406,7 +75473,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.localFamily",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -75427,7 +75495,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.pending",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -75469,7 +75538,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.remoteFamily",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -75690,7 +75760,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.'drain'",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75771,7 +75842,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.'ready'",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75792,7 +75864,8 @@
         "status": "partial",
         "evidence": "compiler-feature:net.'timeout'",
         "tests": [
-          "tests/corpus/compat-net-socket-members.mjs"
+          "tests/corpus/compat-net-socket-members.mjs",
+          "tests/corpus/compat-net-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -81609,6 +81682,7 @@
           "tests/corpus/8830-process-report-island/main.ts",
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -82376,7 +82450,8 @@
         "status": "partial",
         "evidence": "compiler-feature:process.process.getActiveResourcesInfo",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88967,6 +89042,7 @@
           "tests/corpus/5619-pipeline-function-ends.cjs",
           "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/writable-error-callbacks.ts",
@@ -90692,7 +90768,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.closed",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90718,7 +90795,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.destroyed",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90820,7 +90898,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.writableCorked",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90898,7 +90977,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.writableHighWaterMark",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90950,7 +91030,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.writableNeedDrain",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90976,7 +91057,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.writableObjectMode",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -91002,7 +91084,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.'close'",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91702,7 +91785,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable.compose",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92074,7 +92158,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.closed",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92126,7 +92211,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92299,7 +92385,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readableHighWaterMark",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92351,7 +92438,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readableObjectMode",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92507,7 +92595,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.'readable'",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92660,7 +92749,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.transform.destroy",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92847,7 +92937,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.writable._construct",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92899,7 +92990,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.writable._writev",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92925,7 +93017,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.writable._destroy",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93023,7 +93116,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable._construct",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93075,7 +93169,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable._destroy",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93334,7 +93429,8 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.'finish'",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs"
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -97529,6 +97625,7 @@
           "tests/corpus/5839-timers-promises-scheduler.ts",
           "tests/corpus/5889-timers-scheduler-signal.ts",
           "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -97948,7 +98045,8 @@
         "status": "partial",
         "evidence": "compiler-feature:timers.Immediate",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98090,7 +98188,8 @@
         "status": "partial",
         "evidence": "compiler-feature:timers.Timeout",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98333,6 +98432,7 @@
           "tests/corpus/7441-tls-client-error.ts",
           "tests/corpus/7442-tls-server-contexts.mjs",
           "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -98916,7 +99016,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.'connection'",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99034,7 +99135,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.'secureConnection'",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99117,7 +99219,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.tlsSocket.address",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99240,7 +99343,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.tlsSocket.getCipher",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99537,7 +99641,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.tlsSocket.isSessionReused",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99716,7 +99821,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.tlsSocket.encrypted",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99742,7 +99848,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.localAddress",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -99768,7 +99875,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.localPort",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -99794,7 +99902,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.remoteAddress",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -99820,7 +99929,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.remoteFamily",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -99846,7 +99956,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.remotePort",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -99969,7 +100080,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.'secureConnect'",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs"
+          "tests/corpus/compat-tls-socket-members.mjs",
+          "tests/corpus/compat-tls-socket-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101105,7 +101217,8 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2597-dgram-send-ladders.cjs",
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -101229,7 +101342,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.addMembership",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101500,7 +101614,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.dropMembership",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101549,7 +101664,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.getRecvBufferSize",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101575,7 +101691,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.getSendBufferSize",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101601,7 +101718,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.getSendQueueSize",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101627,7 +101745,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.getSendQueueCount",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101754,7 +101873,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.setBroadcast",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101780,7 +101900,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.setMulticastInterface",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101829,7 +101950,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.setMulticastLoopback",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101855,7 +101977,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.setMulticastTTL",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101881,7 +102004,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.setRecvBufferSize",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101907,7 +102031,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.setSendBufferSize",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101933,7 +102058,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.socket.setTTL",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -101985,7 +102111,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.'close'",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102057,7 +102184,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.'listening'",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102083,7 +102211,8 @@
         "status": "partial",
         "evidence": "compiler-feature:dgram.'message'",
         "tests": [
-          "tests/corpus/compat-dgram-socket.mjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -104144,6 +104273,7 @@
           "tests/corpus/7712-util-debounce-throttle.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts",
           "tests/corpus/inspect-getters-dyn.cjs",
           "tests/corpus/inspect-getters.ts",
           "tests/corpus/inspect-hidden-properties.cjs",
@@ -104403,7 +104533,8 @@
         "status": "partial",
         "evidence": "compiler-feature:util.type",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -104429,7 +104560,8 @@
         "status": "partial",
         "evidence": "compiler-feature:util.subtype",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -104455,7 +104587,8 @@
         "status": "partial",
         "evidence": "compiler-feature:util.essence",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -104481,7 +104614,8 @@
         "status": "partial",
         "evidence": "compiler-feature:util.params",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110011,6 +110145,7 @@
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -110503,7 +110638,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.Algorithm",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -110529,7 +110665,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110555,7 +110692,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.AeadParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -110581,7 +110719,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.additionalData",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110607,7 +110746,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.iv",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110633,7 +110773,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110659,7 +110800,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.tagLength",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110685,7 +110827,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.AesDerivedKeyParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -110711,7 +110854,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110737,7 +110881,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110763,7 +110908,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.AesCbcParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -110789,7 +110935,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.iv",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110815,7 +110962,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110841,7 +110989,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.AesCtrParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -110867,7 +111016,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.counter",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110893,7 +111043,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110919,7 +111070,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110945,7 +111097,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.AesKeyAlgorithm",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -110971,7 +111124,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -110997,7 +111151,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111023,7 +111178,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.AesKeyGenParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -111049,7 +111205,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111075,7 +111232,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111561,7 +111719,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.EcdsaParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -111621,7 +111780,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111647,7 +111807,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.EcKeyAlgorithm",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -111673,7 +111834,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111699,7 +111861,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.namedCurve",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111725,7 +111888,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.EcKeyGenParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -111751,7 +111915,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111777,7 +111942,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.namedCurve",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111803,7 +111969,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.EcKeyImportParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -111829,7 +111996,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -111855,7 +112023,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.namedCurve",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112019,7 +112188,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.HkdfParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -112079,7 +112249,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.info",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112105,7 +112276,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112131,7 +112303,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.salt",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112157,7 +112330,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.HmacImportParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -112217,7 +112391,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112243,7 +112418,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112269,7 +112445,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.HmacKeyAlgorithm",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -112329,7 +112506,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112355,7 +112533,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112381,7 +112560,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.HmacKeyGenParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -112441,7 +112621,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112467,7 +112648,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112493,7 +112675,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.KeyAlgorithm",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -112519,7 +112702,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -112936,7 +113120,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.Pbkdf2Params",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -112996,7 +113181,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.iterations",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113022,7 +113208,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113048,7 +113235,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.salt",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113154,7 +113342,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.RsaHashedKeyAlgorithm",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113214,7 +113403,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.modulusLength",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113240,7 +113430,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113266,7 +113457,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.publicExponent",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113292,7 +113484,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.RsaHashedKeyGenParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113352,7 +113545,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.modulusLength",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113378,7 +113572,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113404,7 +113599,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.publicExponent",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113499,7 +113695,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.RsaPssParams",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113525,7 +113722,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113551,7 +113749,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.saltLength",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113930,7 +114129,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.CryptoKeyPair",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113956,7 +114156,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.privateKey",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -113982,7 +114183,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.publicKey",
         "tests": [
-          "tests/corpus/compat-webcrypto-algorithms.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -114688,6 +114890,7 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
           "tests/corpus/web-stream-readable-untyped.mjs",
@@ -115040,7 +115243,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStream.cancel",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115066,7 +115270,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStream.getReader",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115092,7 +115297,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStream.pipeThrough",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115118,7 +115324,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStream.pipeTo",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115144,7 +115351,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStream.tee",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115196,7 +115404,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.locked",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115251,7 +115460,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStreamDefaultReader.cancel",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115277,7 +115487,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStreamDefaultReader.read",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115303,7 +115514,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStreamDefaultReader.releaseLock",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115329,7 +115541,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.closed",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115499,7 +115712,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStreamDefaultController.close",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115525,7 +115739,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStreamDefaultController.enqueue",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115551,7 +115766,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readableStreamDefaultController.error",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115577,7 +115793,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.desiredSize",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115882,7 +116099,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writableStream.abort",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115908,7 +116126,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writableStream.close",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115934,7 +116153,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writableStream.getWriter",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -115960,7 +116180,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.locked",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116015,7 +116236,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writableStreamDefaultWriter.abort",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116041,7 +116263,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writableStreamDefaultWriter.close",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116067,7 +116290,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writableStreamDefaultWriter.releaseLock",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116093,7 +116317,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writableStreamDefaultWriter.write",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116119,7 +116344,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.closed",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116145,7 +116371,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.desiredSize",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116171,7 +116398,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.ready",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116197,7 +116425,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.WritableStreamDefaultController",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116223,7 +116452,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writableStreamDefaultController.error",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116249,7 +116479,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.signal",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116325,7 +116556,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.readable",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116351,7 +116583,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.writable",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116406,7 +116639,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.transformStreamDefaultController.enqueue",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116432,7 +116666,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.transformStreamDefaultController.error",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116458,7 +116693,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.transformStreamDefaultController.terminate",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116484,7 +116720,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.desiredSize",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"

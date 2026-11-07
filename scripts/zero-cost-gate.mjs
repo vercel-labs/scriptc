@@ -711,6 +711,13 @@ if (recordPath === undefined && values["baseline-cache"] !== undefined) {
     );
 }
 
+/** Write `text` to `stream` and exit with `status` once it is written. A pipe
+ * can take a write asynchronously, and `process.exit` drops what is still
+ * queued, so a driver that captures the output would read part of it. The
+ * promise never settles: awaiting it holds the script here until the exit. */
+const writeAndExit = (stream, text, status) =>
+  new Promise(() => stream.write(text, () => process.exit(status)));
+
 const goodCode = goodCodeSet();
 if (allowPrograms !== null) {
   // A list that names a program the good-code set does not have is stale:
@@ -718,13 +725,14 @@ if (allowPrograms !== null) {
   const known = new Set(goodCode.map((p) => p.id));
   const unknown = allowPrograms.filter((id) => !known.has(id));
   if (unknown.length > 0) {
-    console.error(
-      `--allow-programs ${values["allow-programs"]}: ${unknown.length} of ${allowPrograms.length} ` +
-        `listed ids name no program of the good-code set in ${programsRoot}:`,
-    );
-    for (const id of unknown) console.error(`  ${id}`);
     rmSync(work, { recursive: true, force: true });
-    process.exit(2);
+    await writeAndExit(
+      process.stderr,
+      `--allow-programs ${values["allow-programs"]}: ${unknown.length} of ${allowPrograms.length} ` +
+        `listed ids name no program of the good-code set in ${programsRoot}:\n` +
+        unknown.map((id) => `  ${id}\n`).join(""),
+      2,
+    );
   }
 }
 const listedPrograms = new Set(allowPrograms ?? []);
@@ -733,9 +741,8 @@ const programs = selectedPrograms(goodCode).filter(
 );
 assert.ok(programs.length > 0, "the selected good-code set is empty");
 if (values.list) {
-  for (const program of programs) console.log(program.id);
   rmSync(work, { recursive: true, force: true });
-  process.exit(0);
+  await writeAndExit(process.stdout, programs.map((program) => `${program.id}\n`).join(""), 0);
 }
 const runtime = recordPath === undefined ? runtimeChanges() : null;
 const report = {

@@ -363,19 +363,16 @@ test("the zero-cost gate allows listed programs and refuses a stale list", () =>
     write(join(root, tree, "packages/cli/dist/bootstrap.js"), compiler(changed));
   write(join(root, "baseline/tests/corpus/date-basic.ts"), "console.log(1);\n");
   write(join(root, "baseline/tests/corpus/legacy/main.js"), "console.log(1);\n");
+  const command = [
+    process.execPath,
+    fileURLToPath(new URL("../../scripts/zero-cost-gate.mjs", import.meta.url)),
+    `--baseline=${join(root, "baseline")}`,
+    `--candidate=${join(root, "candidate")}`,
+  ];
   const gate = (...args: string[]) =>
-    spawnSync(
-      process.execPath,
-      [
-        fileURLToPath(new URL("../../scripts/zero-cost-gate.mjs", import.meta.url)),
-        `--baseline=${join(root, "baseline")}`,
-        `--candidate=${join(root, "candidate")}`,
-        "--set=self",
-        "--timing-runs=0",
-        ...args,
-      ],
-      { encoding: "utf8" },
-    );
+    spawnSync(command[0]!, [...command.slice(1), "--set=self", "--timing-runs=0", ...args], {
+      encoding: "utf8",
+    });
   const list = (name: string, ids: string[]) => {
     write(join(root, name), ["# emitter fixtures", ...ids, ""].join("\n"));
     return `--allow-programs=${join(root, name)}`;
@@ -425,6 +422,18 @@ test("the zero-cost gate allows listed programs and refuses a stale list", () =>
     );
     expect(stale.stdout).toBe("");
     expect(stale.status).toBe(2);
+
+    // A driver reads the list through a pipe, and may read it late. The list
+    // of a real corpus is larger than a pipe holds, and all of it arrives.
+    const programs = 2500;
+    for (let index = 0; index < programs; index++)
+      write(join(root, `baseline/tests/corpus/a-program-with-a-long-name-${index}.ts`), "");
+    const piped = spawnSync(
+      "sh",
+      ["-c", '"$@" | (sleep 1; wc -l)', "sh", ...command, "--set=corpus", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(Number(piped.stdout.trim())).toBe(programs + 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

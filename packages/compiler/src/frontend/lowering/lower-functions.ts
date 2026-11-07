@@ -36,8 +36,8 @@ import {
   resolveInferredReturn,
   appendImplicitUndefinedReturn,
   blockBodyOf,
+  checkedUndefinedResult,
   returnsDeclaredUndefined,
-  undefinedResultCheck,
 } from "./function-returns.js";
 import {
   generatorMeta,
@@ -607,8 +607,12 @@ export function lowerLambda(
                 if ((lowerer.typeOf(arm).flags & ts.TypeFlags.Any) === 0) return null;
                 const value = lowerer.lowerExpr(arm);
                 const loc = locOf(arm);
-                return value.type.kind === "dyn"
-                  ? { kind: "block", body: undefinedResultCheck(lowerer, value, loc), loc }
+                const check = checkedUndefinedResult(lowerer, value, loc);
+                if (check !== null) return { kind: "block", body: check, loc };
+                // As an unchecked body lowers: a bare unit literal is a
+                // no-op, anything else runs for its effect.
+                return value.kind === "unitLit"
+                  ? { kind: "block", body: [], loc }
                   : { kind: "exprStmt", expr: value, loc };
               }),
             ];

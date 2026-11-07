@@ -1401,6 +1401,11 @@ console.log(typeof read(), read() === undefined);
       const effect = (): void => { effects++; };
       const conciseVoidArm = (): undefined => (flag ? five() : void effect());
       const conciseVoidTaken = (): undefined => (flag ? void effect() : five());
+      const castNumber = (): undefined => 5 as any;
+      const castNull = (): undefined => null as any;
+      const castUndefined = (): undefined => undefined as any;
+      function returnsCastNumber(): undefined { return 5 as any; }
+      function returnsCastUndefined(): undefined { return undefined as any; }
       class Holder {
         method(): undefined { return five(); }
         static make(): undefined { return five(); }
@@ -1418,6 +1423,11 @@ console.log(typeof read(), read() === undefined);
       run("conciseVoidArm", () => conciseVoidArm());
       run("conciseVoidTaken", () => conciseVoidTaken());
       console.log("effects", effects);
+      run("castNumber", () => castNumber());
+      run("castNull", () => castNull());
+      run("castUndefined", () => castUndefined());
+      run("returnsCastNumber", () => returnsCastNumber());
+      run("returnsCastUndefined", () => returnsCastUndefined());
       run("method", () => new Holder().method());
       run("static", () => Holder.make());
       declared();
@@ -1433,6 +1443,11 @@ console.log(typeof read(), read() === undefined);
         `conciseVoidArm ${message}`,
         "conciseVoidTaken undefined",
         "effects 1",
+        `castNumber ${message}`,
+        `castNull ${message}`,
+        "castUndefined undefined",
+        `returnsCastNumber ${message}`,
+        "returnsCastUndefined undefined",
         ...["method", "static"].map((label) => `${label} ${message}`),
         "",
       ].join("\n"),

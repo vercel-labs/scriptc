@@ -568,8 +568,8 @@ import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-argument
 import {
   bodyReturnType,
   declaredReturnType,
+  checkedUndefinedResult,
   returnsDeclaredUndefined,
-  undefinedResultCheck,
   widensReducedRecords,
 } from "./function-returns.js";
 import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
@@ -16529,12 +16529,14 @@ export class Lowerer {
       // A result declared `undefined` has the void representation: an
       // untyped value returned into it is checked, as it is in a binding
       // declared `undefined`, instead of being dropped unseen.
-      if (e.type.kind === "dyn" && !this.ctx.isAsync && returnsDeclaredUndefined(this, node)) {
-        return {
-          kind: "block",
-          body: [...undefinedResultCheck(this, e, loc), { kind: "return", value: null, loc }],
-          loc,
-        };
+      if (
+        !this.ctx.isAsync &&
+        (e.type.kind === "dyn" || (this.typeOf(node).flags & ts.TypeFlags.Any) !== 0) &&
+        returnsDeclaredUndefined(this, node)
+      ) {
+        const check = checkedUndefinedResult(this, e, loc);
+        if (check !== null)
+          return { kind: "block", body: [...check, { kind: "return", value: null, loc }], loc };
       }
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;

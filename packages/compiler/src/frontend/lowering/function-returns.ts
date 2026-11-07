@@ -56,10 +56,27 @@ export function returnsDeclaredUndefined(lowerer: Lowerer, node: ts.Node): boole
   return (result.flags & ts.TypeFlags.Undefined) !== 0;
 }
 
+/** The check of `value`, which the checker types `any`, where it is the
+ * result of a function declared `undefined` (returnsDeclaredUndefined);
+ * null when the value needs none and lowers as it always has: the literal
+ * `undefined` behind a cast (`undefined as any`), and a value with no
+ * checked-dynamic form (a void call behind a cast). A typed value behind a
+ * cast (`5 as any`) is boxed and checked like an untyped one. */
+export function checkedUndefinedResult(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrStmt[] | null {
+  if (value.kind === "unitLit" && value.unit === "undefined") return null;
+  if (value.type.kind === "dyn") return undefinedResultCheck(lowerer, value, loc);
+  if (value.type.kind === "void" || !lowerer.dynConvertible(value.type)) return null;
+  return undefinedResultCheck(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+}
+
 /** The statements that evaluate `value`, an untyped value returned where
  * the result is declared `undefined`, and throw a TypeError unless it is
  * undefined (returnsDeclaredUndefined). */
-export function undefinedResultCheck(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrStmt[] {
+function undefinedResultCheck(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrStmt[] {
   const held = lowerer.declareHiddenLocal("%undefinedResult", DYN);
   return [
     { kind: "varDecl", localId: held.id, init: value, loc },

@@ -1,7 +1,9 @@
 /* The declaration-typed boundary's checks (decl-projection.ts): a value
  * zod's declarations type wrongly fails the boundary cast with a TypeError
  * naming the path, and a value the native record cannot represent (a
- * frozen object) fails with the reason. Node does not check, so this is a
+ * frozen object, a read-only key, an accessor, a non-enumerable key of an
+ * index-signature record) fails with the reason, while a non-enumerable key
+ * of a declared-field record crosses. Node does not check, so this is a
  * native-only test; npm.test.ts runs the differential cases
  * (zod3-boundary, zod3-adoption, zod3-infer, zod4-boundary,
  * hono-zod-validator). The hono test checks that `c.req.valid()` is such a
@@ -36,7 +38,11 @@ test(
     const { stdout } = await pending;
     expect(stdout).toBe(
       "liar threw true expected number at $.n, got string\n" +
-        "frozen threw expected a plain object (this value is frozen, sealed or not extensible) at $, got object\n",
+        "frozen threw expected a plain object (this value is frozen, sealed or not extensible) at $, got object\n" +
+        'hidden a n {"n":1}\n' +
+        "read-only threw expected a plain object (this value has read-only or non-configurable properties) at $, got object\n" +
+        "accessor threw expected a plain object (this value has accessor properties) at $, got object\n" +
+        "index threw expected a plain object (this value has a non-enumerable key its record type cannot keep) at $, got object\n",
     );
   },
 );

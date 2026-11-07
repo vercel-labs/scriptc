@@ -31,8 +31,15 @@ function dropRequired(params: Params | undefined): void {
   delete (params as { model?: string })!.model;
 }
 
+// An optional chain answers `true` for a nullish value; the in-place delete
+// narrows the value with a check instead, so the combination is refused.
+function dropThroughChain(params: { model?: string } | undefined): boolean {
+  return delete (params as { model?: string; extra?: number })?.model;
+}
+
 dropUnderNonNull({ model: "m" });
 console.log(dropUnderSatisfies({ model: "m" }));
 dropThroughAny({ model: "m" });
 dropFromOptional({ model: "m" });
 dropRequired({ model: "m" });
+console.log(dropThroughChain(undefined));

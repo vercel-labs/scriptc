@@ -32,3 +32,10 @@ delete-erased-wrappers.ts:31:3 - error SC1090: 'delete' of required record field
   31 |   delete (params as { model?: string })!.model;
      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   32 | }
+
+delete-erased-wrappers.ts:37:10 - error SC1090: 'delete' through an optional chain on an asserted value that may be undefined or null (the chain answers true for a nullish value, and the assertion's conversion would build a copy of a present one — narrow the value first, or delete through the value's own type) is not supported yet
+
+  36 | function dropThroughChain(params: { model?: string } | undefined): boolean {
+  37 |   return delete (params as { model?: string; extra?: number })?.model;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  38 | }

@@ -99,6 +99,9 @@ const MISSING_ASSERTED_MEMBER = (member: string): string =>
 const UNKNOWN_ASSERTED_LAYOUT =
   "'delete' through a type assertion whose value has no statically known record layout (the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear)";
 
+const OPTIONAL_CHAIN_ASSERTED =
+  "'delete' through an optional chain on an asserted value that may be undefined or null (the chain answers true for a nullish value, and the assertion's conversion would build a copy of a present one — narrow the value first, or delete through the value's own type)";
+
 /** The TypeError Node's ToObject gives a `delete` whose receiver is
  * `undefined` or `null`; it names neither the receiver nor the key. */
 export const DELETE_NULLISH_RECEIVER = "Cannot convert undefined or null to object";
@@ -125,6 +128,10 @@ export function erasedDeletePlan(
   const erased = erasedRecordOperand(lowerer, target.expression);
   if (erased === null) return null;
   const { operand, layout } = erased;
+  // `delete (maybe as View)?.k`: the chain answers `true` for a nullish
+  // value without deleting, where the narrowing below throws.
+  if (target.questionDotToken && lowerer.mapTypeOf(lowerer.typeOf(operand))?.kind !== "record")
+    return { refuse: OPTIONAL_CHAIN_ASSERTED };
   const shape = lowerer.shapes.get(layout.shapeId);
   if (!shape) return { refuse: UNKNOWN_ASSERTED_LAYOUT };
   const member = constantDeleteKey(lowerer, target);

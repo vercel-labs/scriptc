@@ -1342,6 +1342,45 @@ export function lowerPropertyAccessExpr(
       };
     }
   }
+  // `f.caller` / `f.arguments` on a FUNCTION-typed JavaScript value: the
+  // spec's restricted function properties. Compiled functions are
+  // strict-mode function objects, so the own-property lookup misses and
+  // Function.prototype's %ThrowTypeError% accessor answers, exactly as in
+  // Node. (V8 additionally gives a SLOPPY function own caller/arguments
+  // data properties with the value null; that reflection belongs to the
+  // engine, not to the strict function objects a compiled function is.)
+  if (
+    (expr.name.text === "caller" || expr.name.text === "arguments") &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    expr.questionDotToken === undefined
+  ) {
+    const restricted = tryLowerExpression(lowerer, expr.expression);
+    // Every compiled function is a strict-mode function object, so the
+    // answer does not depend on whether its value boxes into the dynamic
+    // tier: a shape method, a class method, or a generator function throws
+    // here exactly like a declared function.
+    if (restricted?.type.kind === "func") {
+      const thrown = nodeThrowExpr(
+        1,
+        "",
+        "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them",
+        DYN,
+        loc,
+      );
+      // The receiver is evaluated before the property is read: its effects
+      // and its own exception come first (`(step(), f).caller`).
+      const read: IrExpr = isSafeToDiscard(restricted)
+        ? thrown
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: restricted, loc: restricted.loc }],
+            result: thrown,
+            type: DYN,
+            loc,
+          };
+      return lowerer.maybeNarrow(read, expr);
+    }
+  }
   // A client function chosen at run time (`const requestFn = c ?
   // https.request : http.request`): both arms are Node's `request` (the
   // .get pair both are `get`), and the length follows the arm the program

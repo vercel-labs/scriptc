@@ -10,13 +10,24 @@
  * resolver as workspace links are discovered and reset per load. */
 
 const workspacePackageDirs = new Map<string, string>();
+const workspaceSourceDirs = new Set<string>();
 
 export function registerWorkspacePackage(name: string, realDir: string): void {
   workspacePackageDirs.set(realDir.split("\\").join("/"), name);
 }
 
+/** Records a workspace package whose bare import resolves to the package's
+ * own TypeScript source (resolveWorkspaceSourceModule). Such a package
+ * compiles from source, so its JavaScript modules are program modules like
+ * its TypeScript ones. Keyed by the real package directory, so two links
+ * that share a package name stay separate. */
+export function registerWorkspaceSourcePackage(realDir: string): void {
+  workspaceSourceDirs.add(realDir.split("\\").join("/"));
+}
+
 export function clearWorkspacePackages(): void {
   workspacePackageDirs.clear();
+  workspaceSourceDirs.clear();
 }
 
 /** True when `name` is a registered workspace package — the NAME-keyed
@@ -38,6 +49,24 @@ export function workspacePackageOfPath(path: string): string | null {
     if (norm === dir || (norm.startsWith(dir) && norm[dir.length] === "/")) return name;
   }
   return null;
+}
+
+/** True when the innermost registered workspace package containing `path`
+ * compiles from its TypeScript source (registerWorkspaceSourcePackage). A
+ * workspace package nested in a source package's directory answers for
+ * itself. */
+export function isWorkspaceSourcePath(path: string): boolean {
+  if (workspaceSourceDirs.size === 0) return false;
+  const norm = path.split("\\").join("/");
+  let innermost: string | null = null;
+  for (const dir of workspacePackageDirs.keys()) {
+    if (
+      (norm === dir || (norm.startsWith(dir) && norm[dir.length] === "/")) &&
+      (innermost === null || dir.length > innermost.length)
+    )
+      innermost = dir;
+  }
+  return innermost !== null && workspaceSourceDirs.has(innermost);
 }
 
 /** Node's relative-specifier family: './x', '../x', and the bare '.' /

@@ -5,6 +5,7 @@ import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
 import { staticString } from "./builtins/module-resolution.js";
 import { resolveImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
 import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
@@ -84,25 +85,8 @@ function requestInitLiteralKey(lowerer: Lowerer, prop: ts.ObjectLiteralElementLi
   return null;
 }
 
-/** Unwrap assertions and parentheses when checking RequestInit values.
- * Computed runtime keys and non-literal objects are also validated by the
- * native runtime. */
-function requestInitValueExpr(expr: ts.Expression): ts.Expression {
-  let current = expr;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isSatisfiesExpression(current) ||
-    ts.isTypeAssertion(current) ||
-    ts.isNonNullExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
 function requestInitStaticBoolean(lowerer: Lowerer, value: ts.Expression): boolean | null {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (expr.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (expr.kind === ts.SyntaxKind.FalseKeyword) return false;
   const text = lowerer.checker.typeToString(lowerer.typeOf(expr));
@@ -119,9 +103,9 @@ function requestInitPropMutatedSymbols(lowerer: Lowerer): Set<ts.Symbol> {
   }
   const symbols = new Set<ts.Symbol>();
   const noteBase = (target: ts.Expression): void => {
-    let base = requestInitValueExpr(target);
+    let base = withoutParenthesesTypeWrappers(target);
     while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base)) {
-      base = requestInitValueExpr(base.expression);
+      base = withoutParenthesesTypeWrappers(base.expression);
     }
     if (!ts.isIdentifier(base)) return;
     try {
@@ -164,7 +148,7 @@ function requestInitConstBacked(
   value: ts.Expression,
   seen: Set<ts.Symbol>,
 ): boolean {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (ts.isObjectLiteralExpression(expr)) return true;
   if (ts.isConditionalExpression(expr)) {
     const selected = requestInitStaticBoolean(lowerer, expr.condition);
@@ -214,7 +198,7 @@ function visitRequestInitConstSelectedValues(
   seen: Set<ts.Symbol>,
   visit: (value: ts.Expression) => void,
 ): boolean {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (selector.kind === "property" && ts.isObjectLiteralExpression(expr)) {
     // Last contributor wins. A definite later property (including one from
     // a statically traced spread) hides earlier values exactly as it does at
@@ -469,9 +453,9 @@ function fenceRequestInitObject(
         .map((arm) => lowerer.checker.getPropertyOfType(arm, row.member))
         .find((member) => member !== undefined);
     if (value !== null) {
-      const type = lowerer.typeOf(requestInitValueExpr(value));
+      const type = lowerer.typeOf(withoutParenthesesTypeWrappers(value));
       if (
-        ts.isVoidExpression(requestInitValueExpr(value)) ||
+        ts.isVoidExpression(withoutParenthesesTypeWrappers(value)) ||
         (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0
       ) {
         return;
@@ -545,7 +529,7 @@ function fenceRequestInitValueInner(
   value: ts.Expression,
   seen: Set<ts.Symbol>,
 ): void {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (ts.isObjectLiteralExpression(expr)) {
     fenceRequestInitObject(lowerer, expr, seen);
     return;
@@ -1237,7 +1221,7 @@ export function fenceStaticHeadersIteration(lowerer: Lowerer, node: ts.Node): vo
     node.parent.initializer
       ? node.parent.initializer
       : node;
-  const value = ts.isExpression(source) ? requestInitValueExpr(source) : source;
+  const value = ts.isExpression(source) ? withoutParenthesesTypeWrappers(source) : source;
   const sym = isStdlibFetchInterface(lowerer, value, "Headers");
   if (!sym) return;
   lowerer.noLowering(

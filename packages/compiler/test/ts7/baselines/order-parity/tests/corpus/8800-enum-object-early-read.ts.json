@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8800-enum-object-early-read.ts"
+ ],
+ "diags": []
+}

@@ -151,14 +151,15 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     const large = await run(["100000"], {}, result.binaryPath);
     // Requests, aborts the island's listeners saw, and the signals the
     // island holds that aborted: the two that follow a kept controller.
-    expect(small.stdout).toBe("10000 20 2/6\n");
-    expect(large.stdout).toBe("100000 110 2/6\n");
+    expect(small.stdout).toBe("10000 20 2/6 0\n");
+    expect(large.stdout).toBe("100000 110 2/6 0\n");
     for (const r of [small, large]) expect(r.totals["analyzed"]).toBe(r.totals["major"]);
-    // Two exports per request, the options record and the signal. What is
-    // left at the end is what the requests since the last major collection
-    // made, which V8 schedules by the exports' size and not by their count
-    // so far: bounded, where a leak would hold all 200,000.
-    expect(large.totals["freed exports"]).toBeGreaterThan(2 * 100_000 - 40_000);
+    // Three exports per iteration: the options record and the signal the
+    // program made, and the native signal that stands for the island's.
+    // What is left at the end is what the iterations since the last major
+    // collection made, which V8 schedules by the exports' size and not by
+    // their count so far: bounded, where a leak would hold all 300,000.
+    expect(large.totals["freed exports"]).toBeGreaterThan(3 * 100_000 - 40_000);
     expect(large.totals["held exports"]).toBeLessThan(40_000);
     expect(large.totals["representatives"]).toBeLessThan(40_000);
   }, 600_000);

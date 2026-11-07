@@ -15,3 +15,5 @@ exports.request = (options) => {
 exports.forget = (signal) => signal.addEventListener("abort", () => aborts++);
 exports.hold = (signal) => held.push(signal);
 exports.counts = () => `${requests} ${aborts} ${held.filter((s) => s.aborted).length}/${held.length}`;
+// A signal the island makes per request and hands to the program.
+exports.own = () => new AbortController().signal;

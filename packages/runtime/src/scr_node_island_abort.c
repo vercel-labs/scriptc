@@ -24,7 +24,14 @@
  *
  * An AbortController is the same native object as its signal under another
  * handle tag. Its twin is the controller of its signal's twin, whose abort()
- * aborts the native signal (scr_node_island_host.cjs). */
+ * aborts the native signal (scr_node_island_host.cjs).
+ *
+ * The other way, an AbortSignal the island made that reaches native code
+ * meets receivers that test the native handle: fetch, AbortSignal.any,
+ * events.once, timers/promises, a listener's `signal` option. It is adopted
+ * by a native signal of its own, which the island's signal aborts through a
+ * signal that follows it there (so the island's listener list stays as it
+ * is). Native listeners run after the island's, as in the first direction. */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
 #include "scr_runtime.h"
@@ -33,8 +40,11 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #if !defined(_WIN32) && !defined(__wasi__)
+
+const ScrDynHandleOps *scr_dyn_handle_ops_of(const ScrDyn *d); /* scr_json.c */
 
 /* The native signal aborted: its twin hears the reason. */
 static void nia_fire(SfSignalWatch *w, SfSignal *signal) {
@@ -77,11 +87,32 @@ static void nia_detach(void *attachment) {
   free(w);
 }
 
+/* A native signal for an island signal: a controller's signal, which only
+ * nia_hear aborts. */
+static ScrDyn *nia_adopt(void) {
+  ScrDyn *controller = scr_fetch_abort_controller_new();
+  ScrDyn *signal = scr_dyn_new_handle(controller->v.handle.ptr, SCR_DYNH_ABORT_SIGNAL);
+  scr_dyn_release(controller);
+  return signal;
+}
+
+/* The island signal aborted: its native signal aborts with the reason. */
+static void nia_hear(void *object, const char *event, ScrDyn *value) {
+  if (strcmp(event, "abort") != 0) return;
+  ScrDyn *controller = scr_dyn_new_handle(object, SCR_DYNH_ABORT_CONTROLLER);
+  ScrDyn *args[1] = {value};
+  ScrDyn *answer = scr_dyn_handle_ops_of(controller)->invoke(object, controller, "abort", args, 1, "abort");
+  scr_dyn_release(answer);
+  scr_dyn_release(controller);
+}
+
 static ScrNiTwinClass nia_signal = {
     .tag = SCR_DYNH_ABORT_SIGNAL,
     .name = "AbortSignal",
     .attach = nia_attach,
     .detach = nia_detach,
+    .adopt = nia_adopt,
+    .hear = nia_hear,
 };
 
 static ScrNiTwinClass nia_controller = {

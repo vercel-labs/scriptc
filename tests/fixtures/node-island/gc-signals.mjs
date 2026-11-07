@@ -1,6 +1,7 @@
 // AbortSignal twins are collected with their requests (node-island-gc.test.ts):
 // each iteration makes a controller, hands its signal to the island in a
-// record, and drops both. Ten controllers stay with the program and four
+// record, and drops both; then the island makes a signal per iteration and
+// the program reads it and drops it. Ten controllers stay with the program and four
 // signals with the island whatever the count, so what a run holds at its
 // end does not grow with it. Usage: gc-signals <n>
 import { requireModule } from "@scriptc/node";
@@ -22,7 +23,18 @@ for (let i = 0; i < n; i++) {
     lib.hold(AbortSignal.any([controller.signal, kept[0].signal]));
   }
 }
+// The other way: a signal the island makes per request, which a native
+// signal stands for while the program uses it.
+// The island's signal is collected like any object a WeakRef names: not
+// before the current job ends, so the requests come in separate turns, as
+// a program's do.
+let islandAborted = 0;
+for (let i = 0; i < n; i++) {
+  const signal = lib.own();
+  if (signal.aborted) islandAborted++;
+  if (i % 500 === 499) await new Promise((resolve) => setImmediate(() => resolve(undefined)));
+}
 // The program's controllers still reach the island's listeners and the
 // signals that follow them.
 for (const controller of kept) controller.abort("late");
-console.log(lib.counts());
+console.log(lib.counts(), islandAborted);

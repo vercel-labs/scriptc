@@ -469,10 +469,22 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
     return d;
   }
   case SCR_NV_HANDLE: {
-    ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
+    /* `v` is the bridge's until the next entry, and an adoption enters. */
+    uint32_t handle = v->u.handle;
+    bool twin = (v->flags & SCR_NVF_TWIN) != 0;
+    ScrNodeRef *ref = nh_ref(handle, v->flags);
     ScrDyn *d = (ref->flags & SCR_NVF_PROMISE) ? nh_promise_box(ref)
                                                 : scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
     nh_ref_release(ref);
+    /* An island object of a twin class (an AbortSignal the island made):
+     * the native object that adopts it, when a class does. */
+    if (twin) {
+      ScrDyn *native = scr_ni_twin_adopt(d, handle);
+      if (native != NULL) {
+        scr_dyn_release(d);
+        return native;
+      }
+    }
     return d;
   }
   case SCR_NV_BYTES: return nh_bytes_box(v);

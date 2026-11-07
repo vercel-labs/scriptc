@@ -36,10 +36,13 @@ enum {
  * object asks its native object. GET: args[0] names a property, the answer
  * is its value. INVOKE: args[0] names a method, the rest are its arguments,
  * the answer is its result. Both are the native handle's own property read
- * and method call. */
+ * and method call. TELL: the island object changed; args[0] names the
+ * event and args[1] is its value (an island signal aborted: "abort" and
+ * the reason). */
 enum {
   SCR_NODE_TWIN_GET = 16,
   SCR_NODE_TWIN_INVOKE = 17,
+  SCR_NODE_TWIN_TELL = 18,
 };
 
 /* Kinds of runtime jobs the bridge schedules on Node's queues (`run`). */
@@ -123,9 +126,13 @@ enum {
   SCR_NVF_SET = 512, /* EXPORT: a native Set (NI-5b) */
   /* EXPORT: a native object of a platform class whose island receivers
    * brand-check it (an AbortSignal). Its representative is a real object of
-   * the island's own class, made by the bootstrap's makeTwin from the class
-   * name in exp.name: the twin. The runtime keeps the twin's state in step
-   * with the native object's. */
+   * the island's own class, the twin: made by the bootstrap's makeTwin from
+   * the class name in exp.name, or, when exp.length names an import, that
+   * island object, which the export adopts (adoptTwin). The runtime keeps
+   * the two objects' state in step.
+   * HANDLE: an island object of a class the bootstrap lists in
+   * twinPrototypes: the runtime may answer it with a native object that
+   * adopts it. */
   SCR_NVF_TWIN = 1024,
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
@@ -154,7 +161,7 @@ typedef struct ScrNodeValue {
     } error;
     struct {
       uint32_t id;     /* the runtime's export-table id */
-      uint32_t length; /* functions: their `length` */
+      uint32_t length; /* functions: their `length`; twins: the import the export adopts (0: none) */
       const char *name; /* functions: their `name` (NULL: anonymous); twins: their class */
       size_t name_len;
     } exp;

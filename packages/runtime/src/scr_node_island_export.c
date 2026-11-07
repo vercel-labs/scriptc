@@ -52,6 +52,8 @@ typedef struct {
   uint32_t flags;
   const ScrNiTwinClass *twin; /* the value's twin class, or NULL */
   void *attachment;           /* what the twin class's attach answered */
+  uint32_t adopts;            /* the import this export is adopting (while it does) */
+  bool adopted;               /* its representative is an island object it adopted */
 } NiExport;
 
 static NiExport *ni_exports = NULL; /* index = id; id 0 unused */
@@ -143,6 +145,14 @@ static void ni_ids_del(const void *key) {
  * The twin asks its native object through the handle's own property read
  * and method call (ni_twin_op), and the class's unit tells the twin what
  * changes natively afterwards (scr_ni_twin_tell).
+ *
+ * The other way, an island object of a twin class that reaches native code
+ * meets native receivers that test the handle's tag (fetch, AbortSignal.any,
+ * events.once, timers/promises). It is adopted (scr_ni_twin_adopt): the
+ * class makes a native object, and that object's export takes the island
+ * object as its representative. From then on the pair is an export like
+ * any other twin, with the same identity and lifetime, and the island
+ * object tells its native object what changes (the class's `hear`).
  *
  * The classes register from their own units, which link only into programs
  * that have both islands and the class's native objects. */
@@ -301,6 +311,8 @@ uint32_t scr_ni_export_id(ScrDyn *v) {
   ni_exports[id].flags = scr_ni_export_flags(v);
   ni_exports[id].twin = ni_twin_class(v);
   ni_exports[id].attachment = NULL;
+  ni_exports[id].adopts = 0;
+  ni_exports[id].adopted = false;
   ni_ids_put(identity, id);
   const ScrNiTwinClass *twin = ni_exports[id].twin;
   if (twin != NULL && twin->attach != NULL) {
@@ -332,6 +344,7 @@ void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
   } else if (ni_exports[id].twin != NULL) {
     out->u.exp.name = ni_exports[id].twin->name;
     out->u.exp.name_len = strlen(ni_exports[id].twin->name);
+    out->u.exp.length = ni_exports[id].adopts;
   }
 }
 
@@ -783,8 +796,8 @@ int scr_ni_host_export_keys(uint32_t id, ScrNodeValue *out) {
 
 /* A twin asks its native object (SCR_NODE_TWIN_*): the handle's own
  * property read or method call, named by the first argument. */
-static int ni_twin_op(ScrDyn *target, uint32_t op, const ScrNodeValue *args, size_t argc,
-                      ScrNodeValue *out) {
+static int ni_twin_op(const ScrNiTwinClass *twin, ScrDyn *target, uint32_t op,
+                      const ScrNodeValue *args, size_t argc, ScrNodeValue *out) {
   const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(target);
   ScrDyn *small[4];
   ScrDyn **in = ni_args_in(args, argc, small, 4);
@@ -802,6 +815,13 @@ static int ni_twin_op(ScrDyn *target, uint32_t op, const ScrNodeValue *args, siz
       method[len] = '\0';
       result = ops->invoke(object, target, method, in + 1, argc - 1, method);
       scr_ni_shared_refresh();
+    } else if (op == SCR_NODE_TWIN_TELL && twin->hear != NULL) {
+      char event[64];
+      size_t len = name->len < sizeof event ? name->len : sizeof event - 1;
+      memcpy(event, name->data, len);
+      event[len] = '\0';
+      twin->hear(object, event, argc > 1 ? in[1] : scr_dyn_undefined());
+      scr_ni_shared_refresh();
     }
   }
   ni_args_free(in, argc, small);
@@ -818,7 +838,8 @@ int scr_ni_host_export_op(uint32_t id, uint32_t op, const ScrNodeValue *args, si
                           ScrNodeValue *out) {
   ni_keep_set(NULL);
   ScrDyn *target = scr_ni_export_value(id);
-  if (target != NULL && ni_exports[id].twin != NULL) return ni_twin_op(target, op, args, argc, out);
+  if (target != NULL && ni_exports[id].twin != NULL)
+    return ni_twin_op(ni_exports[id].twin, target, op, args, argc, out);
   bool set = false;
   ScrDyn *view = target != NULL ? ni_collection(target, &set) : NULL;
   if (view == NULL) {
@@ -1286,6 +1307,8 @@ static ScrDyn *ni_helper(const char *name, ScrDyn *const *args, size_t argc) {
 void scr_ni_twin_tell(uint32_t id, const char *event, ScrDyn *value) {
   ScrDyn *target = scr_ni_export_value(id);
   if (target == NULL || ni_exports[id].twin == NULL || scr_ni_bridge_loaded() == NULL) return;
+  /* An adopted island object is where the change came from. */
+  if (ni_exports[id].adopted) return;
   ScrCaught *saved = scr_exc_pending() ? scr_exc_take() : NULL;
   const char *name = ni_exports[id].twin->name;
   ScrStr *cs = scr_str_new(name, strlen(name)), *es = scr_str_new(event, strlen(event));
@@ -1313,6 +1336,48 @@ void scr_ni_twin_tell(uint32_t id, const char *event, ScrDyn *value) {
     scr_rethrow(saved);
     scr_caught_release(saved);
   }
+}
+
+/* An island object of a twin class reached native code (the bridge flagged
+ * its handle). The class that adopts it makes a native object, whose export
+ * takes the island object as its representative when it first crosses, here:
+ * the island object is then that export for good, and crosses in as the
+ * native object from now on. +1, or NULL: no class adopts it. */
+ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle) {
+  bool adopting = false;
+  for (const ScrNiTwinClass *c = ni_twin_classes; c != NULL; c = c->next) adopting |= c->adopt != NULL;
+  if (!adopting) return NULL;
+  ScrCaught *saved = scr_exc_pending() ? scr_exc_take() : NULL;
+  ScrDyn *native = NULL;
+  ScrDyn *name = ni_helper("twinClassOf", &island, 1);
+  const ScrNiTwinClass *cls = NULL;
+  if (name != NULL && name->kind == SCR_DYN_STR)
+    for (const ScrNiTwinClass *c = ni_twin_classes; c != NULL && cls == NULL; c = c->next)
+      if (c->adopt != NULL && strlen(c->name) == name->v.str->len &&
+          memcmp(c->name, name->v.str->data, name->v.str->len) == 0)
+        cls = c;
+  scr_dyn_release(name);
+  if (cls != NULL) native = cls->adopt();
+  if (native != NULL) {
+    uint32_t id = scr_ni_export_id(native);
+    ni_exports[id].adopts = handle;
+    ni_exports[id].adopted = true;
+    ScrDyn *ready = ni_helper("twinReady", &native, 1);
+    bool ok = ready != NULL && ready->kind == SCR_DYN_BOOL && ready->v.b;
+    scr_dyn_release(ready);
+    if (ni_exports[id].value == native) ni_exports[id].adopts = 0;
+    if (!ok) { /* the island object stays a handle */
+      if (ni_exports[id].value == native) scr_ni_host_export_release(id);
+      scr_dyn_release(native);
+      native = NULL;
+    }
+  }
+  if (scr_exc_pending()) scr_exc_clear();
+  if (saved != NULL) {
+    scr_rethrow(saved);
+    scr_caught_release(saved);
+  }
+  return native;
 }
 
 /* args: a dyn array whose items cross one by one (never as a copy). */

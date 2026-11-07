@@ -43,7 +43,10 @@ function isBuiltinHandle(lowerer: Lowerer, type: IrType): boolean {
 }
 
 /** The record's methods when every field is one whose arguments box into
- * the dynamic tier and whose result checks back out of it, else null. */
+ * the dynamic tier and whose result checks back out of it, else null. A
+ * variadic method is outside the projection: the invoker calls the member
+ * through the dynamic tier, which has no spread form, and the closure's
+ * declared type would carry a rest ABI the invoker does not implement. */
 function methodFields(
   lowerer: Lowerer,
   shapeId: string,
@@ -54,6 +57,7 @@ function methodFields(
   for (const field of shape.fields) {
     if (field.name.startsWith("%") || field.type.kind !== "func") return null;
     const fn = field.type;
+    if (fn.rest === true) return null;
     if (!fn.params.every((p) => lowerer.dynConvertible(p))) return null;
     if (
       fn.ret.kind !== "void" &&

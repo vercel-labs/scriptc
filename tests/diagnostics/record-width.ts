@@ -48,6 +48,12 @@ type TtySink = { write(text: string): boolean; isTTY: boolean };
 const tty: TtySink = process.stdout;
 console.log(tty.isTTY);
 
+// A variadic method stays outside the projection too: the projection calls
+// the member through the dynamic tier, which has no spread form.
+type RestSink = { write(text: string, ...rest: any[]): boolean };
+const restSink: RestSink = process.stdout;
+console.log(restSink.write("one", "two"));
+
 import { Writable } from "node:stream";
 
 // An instance of a runtime stream class is not a builtin handle and keeps

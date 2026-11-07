@@ -304,10 +304,12 @@ export function analyzeWithFrontend(
             ),
             policy,
           );
+    const imports =
+      recorded === null ? undefined : fe.islandImports?.(new Set(recorded.packages.keys()));
     let replayed: ReadonlyMap<string, IslandPackage> =
-      recorded === null || scan === undefined
+      recorded === null || imports === undefined
         ? new Map()
-        : admitRecorded(recorded, scan, new Map()).packages;
+        : admitRecorded(recorded, imports, new Map()).packages;
     let lowered = lowerFrom(withRecorded(replayed));
     if (recorded !== null) {
       const stale = staleByOutcome(

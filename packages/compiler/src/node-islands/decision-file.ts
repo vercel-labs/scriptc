@@ -9,9 +9,11 @@
  * their answer rarely changes.
  *
  * The file keeps that answer, one section per entry and set of options: the
- * islands the last round started from — the island packages with the rule
- * that grew each, its class and first reason, and the island modules. A
- * build that finds its section starts its first round there. The section
+ * islands the last round started from — the island packages in the order
+ * the rounds grew them, each with its rule, its class and first reason, and
+ * the island modules. A build that finds its section starts its first round
+ * there, and so runs that round again: the same islands in the same order,
+ * the same notes. The section
  * also lists, under the rule `load`, the islands that round's first decision
  * made from the load, so the file names every island of the program; a
  * replay does not start from those. Nothing else
@@ -66,7 +68,7 @@ import {
   type NodeIslandOptions,
   type NodeIslandPolicy,
 } from "./policy.js";
-import type { NodeIslandScan } from "./scan.js";
+import type { ProgramImports } from "./scan.js";
 
 /** The islands one island round starts from, and so what a build's last
  * round leaves for the next build. Whether that round could still run a
@@ -303,6 +305,11 @@ function sectionOf(
   all: IslandRoundState | null,
 ): Section {
   const base = dirname(resolve(file));
+  // The islands the round started from keep the order the rounds grew them
+  // in: a round emits its SC8001 notes in that order, so a replay that
+  // started from another order would print the notes of the same build in
+  // another order. The islands the load decides follow, by name; a replay
+  // does not start from those, so their order is only the file's.
   const listed = new Map<string, SectionPackage>();
   for (const p of state.packages.values())
     listed.set(p.name, {
@@ -314,10 +321,11 @@ function sectionOf(
       class: p.class,
       reason: p.reason,
     });
+  const fromLoad: SectionPackage[] = [];
   if (all !== null) {
     for (const p of all.packages.values()) {
       if (listed.has(p.name)) continue;
-      listed.set(p.name, {
+      fromLoad.push({
         name: p.name,
         version: p.version,
         dir: recorded(base, p.dir),
@@ -328,7 +336,8 @@ function sectionOf(
       });
     }
   }
-  const packages = [...listed.values()].sort((a, b) => byText(a.name, b.name));
+  fromLoad.sort((a, b) => byText(a.name, b.name));
+  const packages = [...listed.values(), ...fromLoad];
   const listedModules = new Map<string, SectionModule>();
   for (const m of state.modules.values())
     listedModules.set(m.file, {
@@ -661,23 +670,34 @@ export function readIslandDecision(
 }
 
 /** The recorded islands the program as it is now still has a use for, by
- * the first load's scan: a package some module still imports, and a module
- * the program still loads. An island nothing imports would otherwise stay
- * one for good, with a note for an island no code calls and its files in the
- * executable. A build from scratch can only island what it loads, so this
- * drops nothing such a build would keep. `gone` receives what left. */
+ * the first load: a package some file of the program still imports, and a
+ * module the program still holds. An island nothing imports would otherwise
+ * stay one for good, with a note for an island no code calls and its files
+ * in the executable. A build from scratch can only island what it loads, so
+ * this drops nothing such a build would keep. `gone` receives what left.
+ *
+ * `imports` covers every implementation file of the loaded program
+ * (Frontend.islandImports), not the island scan's files: the scan follows
+ * the startup module order and literal import() calls, and holds no edge at
+ * all for a program whose first load compiles no package, while the lowering
+ * also compiles a module it reaches another way. An island whose only import
+ * is in such a module, or in a program of the second kind, is one the
+ * lowering finds again, so dropping it here costs the round the record
+ * exists to save. A file the program holds and never lowers can keep an
+ * island this way that a build from scratch would not have; the check
+ * reports it, like any island the program no longer needs. */
 export function admitRecorded(
   recordedState: IslandRoundState,
-  scan: NodeIslandScan,
+  imports: ProgramImports,
   gone: Map<string, string>,
 ): IslandRoundState {
   const leaving = new Map<string, string>();
   for (const [name, island] of recordedState.packages) {
     let imported = false;
-    for (const edge of scan.edges) {
+    for (const edge of imports.edges) {
       if (edge.shim || edge.to !== name) continue;
-      // An import the scan could not resolve to installed JavaScript (a
-      // package only `require` conditions export) still names the package.
+      // An import that does not resolve to installed JavaScript (a package
+      // only `require` conditions export) still names the package.
       if (edge.toDir === null || samePlace(edge.toDir, island.dir)) {
         imported = true;
         break;
@@ -687,9 +707,14 @@ export function admitRecorded(
   }
   const packages = withoutPackages(recordedState.packages, leaving, gone);
   const modules = new Map<string, IslandModule>();
-  for (const [file, island] of recordedState.modules) {
-    if (scan.modules.some((m) => samePlace(m.file, file))) modules.set(file, island);
-    else gone.set(file, "the program no longer loads it");
+  if (recordedState.modules.size > 0) {
+    const held = new Set<string>();
+    for (const file of imports.files) held.add(slashed(file));
+    for (const [file, island] of recordedState.modules) {
+      if (held.has(slashed(file)) || imports.files.some((other) => samePlace(other, file)))
+        modules.set(file, island);
+      else gone.set(file, "the program no longer loads it");
+    }
   }
   return { packages, modules };
 }

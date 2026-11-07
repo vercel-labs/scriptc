@@ -55,7 +55,7 @@ import {
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
-import type { NodeIslandScan } from "../node-islands/scan.js";
+import type { NodeIslandScan, ProgramImports } from "../node-islands/scan.js";
 import {
   foldFenceGrowth,
   growIslandSet,
@@ -120,7 +120,7 @@ interface RoundState {
   round: number;
   /** A replayed build's question to its first load, asked once: which of
    * the recorded islands the program still has a use for (IslandRounds). */
-  admit: ((scan: NodeIslandScan) => IslandRoundState | null) | null;
+  admit: ((imports: ProgramImports) => IslandRoundState | null) | null;
 }
 
 /** SCRIPTC_ISLAND_ROUNDS_TRACE=1 at build time prints each island round's
@@ -279,10 +279,11 @@ type RoundOutcome =
 /** What the island rounds ask and tell a recorded decision
  * (node-islands/decision-file.ts). */
 export interface IslandRounds {
-  /** Asked once, by the first round, with the first load's scan: the
-   * islands the round starts from that the program still has a use for, or
-   * null when all of them stand. Null for a build that replays nothing. */
-  admit: ((scan: NodeIslandScan) => IslandRoundState | null) | null;
+  /** Asked once, by the first round, with what the first load says about
+   * the packages the round starts from (Frontend.islandImports): the islands
+   * among them that the program still has a use for, or null when all of
+   * them stand. Null for a build that replays nothing. */
+  admit: ((imports: ProgramImports) => IslandRoundState | null) | null;
   /** Told the islands the round whose result the call returns started
    * from, whether that round reached its lowering (a round that stopped
    * before it, at a type error or a refused package, decided nothing about
@@ -421,8 +422,8 @@ export function prepareExecutableBuild(
     started,
     started.packages.size === 0 && started.modules.size === 0
       ? null
-      : (scan) => {
-          const admitted = admitRecorded(started, scan, gone);
+      : (imports) => {
+          const admitted = admitRecorded(started, imports, gone);
           if (
             admitted.packages.size === started.packages.size &&
             admitted.modules.size === started.modules.size
@@ -720,13 +721,18 @@ function prepareRound(
       // load shows which recorded islands the program still imports. When
       // some are gone the round ends here and the next one starts from the
       // rest; it decides from this load's capture, so nothing loads twice.
-      // The scan is the one the decision below asks for (a replay runs
-      // under the automatic policy only), so the capture holds it.
+      // The question goes to every file the program holds, not to the
+      // island scan: the lowering compiles modules the scan does not follow.
       const admit = state.admit;
       state.admit = null;
-      const scan = captured.inputs.nodeIslandScan?.({ userJs: true });
-      const admitted = scan === undefined ? null : admit(scan);
+      const imports = first.islandImports?.(new Set(lowerIslands.keys()));
+      const admitted = imports === undefined ? null : admit(imports);
       if (admitted !== null) {
+        // The next round decides from this load's capture: it must hold the
+        // scan that decision asks for before the load is released.
+        captured.inputs.nodeIslandScan?.(
+          decisionScan(nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands)),
+        );
         captured.seal();
         if (firstLoadReusable(state)) state.firstLoad = captured.inputs;
         first.dispose();
@@ -1262,6 +1268,20 @@ function moduleIslands(
   return { modules, markProblems, entryPatch, stripProblems };
 }
 
+/** The scan the island decision asks a load for. The pre-scan's
+ * user-JavaScript markers exist only where a build may act on them. */
+function decisionScan(policy: NodeIslandPolicy): {
+  userJs: boolean;
+  marked?: (file: string) => boolean;
+} {
+  return {
+    userJs: policy.mode === "auto",
+    ...(policy.userModules.length > 0
+      ? { marked: (file: string) => isMarkedUserModule(policy, file) !== null }
+      : {}),
+  };
+}
+
 /** The packages and modules a build runs in Node islands, or null for none:
  * under `--node-islands=auto` (the default) every npm package the native
  * pipeline refused plus the user modules the pre-scan found a sloppy
@@ -1287,14 +1307,7 @@ function decideNodeIslands(
       : [],
   );
   for (const name of lowerIslands.keys()) refused.add(name);
-  // The pre-scan's user-JavaScript markers exist only where a build may act
-  // on them.
-  const scan = fe.nodeIslandScan({
-    userJs: policy.mode === "auto",
-    ...(policy.userModules.length > 0
-      ? { marked: (file: string) => isMarkedUserModule(policy, file) !== null }
-      : {}),
-  });
+  const scan = fe.nodeIslandScan(decisionScan(policy));
   const moduleDecision = moduleIslands(entryPath, policy, scan);
   const modules = moduleDecision.modules;
   // A sloppy write to an undeclared name creates a global — a sloppy-only

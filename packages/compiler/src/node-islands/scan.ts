@@ -249,36 +249,86 @@ export function scanFiles(
           : null,
       dropped: opts.dropped,
     });
-    if (!opts.edges) continue;
-    for (const { spec, node, loads } of specifiersOf(program, sf)) {
-      if (isRelativeSpecifier(spec) || spec.startsWith("/") || spec.startsWith("#")) continue;
-      // scriptc's own packages lower at their use sites.
-      if (spec.startsWith("@scriptc/")) continue;
-      const alias = npmBuiltinAliasOf(spec);
-      if (alias === null && (spec.startsWith("node:") || canonicalBuiltinModule(spec) !== null))
-        continue;
-      const name = packageNameOfSpecifier(spec);
-      const shim = alias !== null || isShimmedImport(sf.fileName, spec);
-      let toDir: string | null = null;
-      if (!shim) {
-        const resolved = resolveBareModule(sf.fileName, spec, "js-only");
-        if (resolved !== null) {
-          const target = packageDirOf(resolved.typesFile);
-          // A workspace package compiled from source is user code.
-          if (target === null) continue;
-          toDir = target.dir;
-        }
-      }
-      edges.push({
-        fromDir: at === null ? null : at.dir,
-        fromFile: sf.fileName,
-        to: name,
-        toDir,
-        shim,
-        loads,
-        loc: locOfNode(node),
-      });
-    }
+    if (opts.edges) pushEdgesOf(program, sf, at === null ? null : at.dir, null, edges);
   }
   return { modules, edges };
+}
+
+/** Appends the npm package imports of `sf` to `edges`: one edge per literal
+ * specifier that names a package (`only` narrows them to the packages it
+ * holds, before anything is resolved). */
+function pushEdgesOf(
+  program: ts.Program,
+  sf: ts.SourceFile,
+  fromDir: string | null,
+  only: ReadonlySet<string> | null,
+  edges: PackageEdge[],
+): void {
+  for (const { spec, node, loads } of specifiersOf(program, sf)) {
+    if (isRelativeSpecifier(spec) || spec.startsWith("/") || spec.startsWith("#")) continue;
+    // scriptc's own packages lower at their use sites.
+    if (spec.startsWith("@scriptc/")) continue;
+    const alias = npmBuiltinAliasOf(spec);
+    if (alias === null && (spec.startsWith("node:") || canonicalBuiltinModule(spec) !== null))
+      continue;
+    const name = packageNameOfSpecifier(spec);
+    if (only !== null && !only.has(name)) continue;
+    const shim = alias !== null || isShimmedImport(sf.fileName, spec);
+    let toDir: string | null = null;
+    if (!shim) {
+      const resolved = resolveBareModule(sf.fileName, spec, "js-only");
+      if (resolved !== null) {
+        const target = packageDirOf(resolved.typesFile);
+        // A workspace package compiled from source is user code.
+        if (target === null) continue;
+        toDir = target.dir;
+      }
+    }
+    edges.push({
+      fromDir,
+      fromFile: sf.fileName,
+      to: name,
+      toDir,
+      shim,
+      loads,
+      loc: locOfNode(node),
+    });
+  }
+}
+
+/** What a loaded program says about a set of packages and about its own
+ * files, for a recorded island decision (decision-file.ts's
+ * `admitRecorded`): every import of one of the packages in any file the
+ * program holds, and those files. */
+export interface ProgramImports {
+  edges: PackageEdge[];
+  /** Every implementation file of the program. */
+  files: string[];
+}
+
+/** The imports of `packages` in `files`, which are every implementation file
+ * of a program rather than the files a scan follows. A scan reads the
+ * startup module order and what literal import() calls reach; the lowering
+ * also compiles modules it reaches another way (a module behind a computed
+ * import, a package file a function requires), and their imports are
+ * imports of the program all the same. */
+export function importsOfPackages(
+  program: ts.Program,
+  files: readonly ts.SourceFile[],
+  packages: ReadonlySet<string>,
+): ProgramImports {
+  const edges: PackageEdge[] = [];
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const sf of files) {
+    if (seen.has(sf.fileName)) continue;
+    seen.add(sf.fileName);
+    const origin = originOf(sf.fileName);
+    if (origin === "builtin" || origin === "shim") continue;
+    names.push(sf.fileName);
+    if (packages.size === 0) continue;
+    const at = origin === "npm" ? packageDirOf(sf.fileName) : null;
+    pushEdgesOf(program, sf, at === null ? null : at.dir, packages, edges);
+  }
+  return { edges, files: names };
 }

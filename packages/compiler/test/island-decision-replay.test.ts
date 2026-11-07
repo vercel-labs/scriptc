@@ -244,7 +244,8 @@ console.log(addedProbe());
   expect(scratchBuild.ok).toBe(true);
   const replay = build(dir, file);
   expect(replay.result).toBe(scratchBuild.result);
-  expect(recorded(file).packages.map((p) => p.name)).toEqual(["argprobe", "esmisland"]);
+  // The island the record held, then the one this build grew.
+  expect(recorded(file).packages.map((p) => p.name)).toEqual(["esmisland", "argprobe"]);
   expect(check(dir, file)).toEqual([]);
   // And from then on one round.
   const settled = build(dir, file);
@@ -442,6 +443,175 @@ test("a recorded package the program no longer imports leaves the set", () => {
   expect(replay.rounds).toBe(1);
   expect(replay.result).toBe(scratchBuild.result);
   expect(recorded(file).packages).toEqual([]);
+  expect(check(dir, file)).toEqual([]);
+}, 600_000);
+
+/** A program whose packages only `await import()` loads: the first load
+ * compiles no package (so its island scan holds no package edge at all),
+ * and the lowering refuses each use (SC2013), which islands the packages. */
+function dynamicImportProgram(source: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-island-decision-"));
+  scratch.push(dir);
+  for (const name of ["greeter", "cjszoo"])
+    cpSync(
+      join(repoRoot, "tests/fixtures/npm/node_modules", name),
+      join(dir, "node_modules", name),
+      { recursive: true },
+    );
+  writeFileSync(join(dir, "main.ts"), source);
+  return dir;
+}
+
+const DYNAMIC_IMPORTS = `async function run(): Promise<void> {
+  const g = await import("greeter");
+  const line: string = g.greet("island");
+  console.log(line);
+  const z = await import("cjszoo");
+  console.log(z.alpha);
+}
+void run();
+`;
+
+test("islands only an import() loads are replayed in one round", () => {
+  // The replay asks its first load whether the program still imports each
+  // recorded island. The island scan is not the place to ask: it holds no
+  // edge for these two, and dropping them costs the round the record saves
+  // (the lowering finds them again, so nothing else shows it).
+  const dir = dynamicImportProgram(DYNAMIC_IMPORTS);
+  const file = join(dir, "islands.json");
+  const scratchBuild = build(dir, null);
+  expect(scratchBuild.ok).toBe(true);
+  expect(scratchBuild.rounds).toBe(2);
+  const recording = build(dir, file);
+  expect(recording.result).toBe(scratchBuild.result);
+  // In the order the lowering met them: the replayed round emits its notes
+  // in the order it starts from, and they are the recording build's.
+  expect(recorded(file).packages.map((p) => [p.name, p.rule])).toEqual([
+    ["greeter", "lowering"],
+    ["cjszoo", "lowering"],
+  ]);
+  const text = readFileSync(file, "utf8");
+  const replay = build(dir, file);
+  expect(replay.rounds).toBe(1);
+  expect(replay.result).toBe(scratchBuild.result);
+  expect(readFileSync(file, "utf8")).toBe(text);
+  expect(check(dir, file)).toEqual([]);
+  // One import() goes: that island leaves with the first load, the other
+  // stays, and the replay is still one lowering.
+  writeFileSync(
+    join(dir, "main.ts"),
+    DYNAMIC_IMPORTS.replace('  const z = await import("cjszoo");\n  console.log(z.alpha);\n', ""),
+  );
+  const without = build(dir, null);
+  expect(without.result).toContain('"packages":["greeter"]');
+  expect(check(dir, file)).toEqual(["- cjszoo@1.0.0"]);
+  const edited = build(dir, file);
+  expect(edited.rounds).toBe(1);
+  expect(edited.result).toBe(without.result);
+  expect(recorded(file).packages.map((p) => p.name)).toEqual(["greeter"]);
+  expect(check(dir, file)).toEqual([]);
+}, 600_000);
+
+test("the islands a patched builtin decides at the load are listed, decided again and checked", () => {
+  // A module that patches fs runs in Node; so do a user module and a package
+  // that read through the patched object. The first decision makes all
+  // three from the load in every build, so a replay never starts from them
+  // and they cost it no round; a lowering refusal's island beside them is
+  // what the record saves.
+  const dir = fixture("tests/corpus/6897-node-island-builtin-patch");
+  cpSync(
+    join(repoRoot, "tests/corpus/8840-node-island-patched-reader/read.ts"),
+    join(dir, "read.ts"),
+  );
+  cpSync(
+    join(repoRoot, "tests/corpus/8809-node-island-asserted-receivers/node_modules/sdk-pkg"),
+    join(dir, "node_modules/sdk-pkg"),
+    { recursive: true },
+  );
+  const reader = join(dir, "node_modules", "direct-reader");
+  mkdirSync(reader, { recursive: true });
+  writeFileSync(
+    join(reader, "package.json"),
+    '{ "name": "direct-reader", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+  );
+  writeFileSync(
+    join(reader, "index.js"),
+    `"use strict";
+const fs = require("fs");
+exports.size = function (path) {
+  return fs.readFileSync(path, "utf8").length;
+};
+`,
+  );
+  writeFileSync(
+    join(reader, "index.d.ts"),
+    "export declare function size(path: string): number;\n",
+  );
+  const main = join(dir, "main.ts");
+  writeFileSync(
+    main,
+    `${readFileSync(main, "utf8")}
+import { readThroughRequire } from "./read.ts";
+import { assistant } from "sdk-pkg";
+import { size } from "direct-reader";
+console.log("user reader:", typeof readThroughRequire());
+console.log("sdk:", typeof assistant());
+console.log("package reader:", size(join(here, "fallback", "payload.txt")) > 0);
+`,
+  );
+  const file = join(dir, "islands.json");
+  const scratchBuild = build(dir, null);
+  expect(scratchBuild.ok).toBe(true);
+  expect(scratchBuild.rounds).toBe(2);
+  const recording = build(dir, file);
+  expect(recording.result).toBe(scratchBuild.result);
+  const section = recorded(file);
+  expect(section.packages.map((p) => [p.name, p.rule])).toEqual([
+    ["sdk-pkg", "lowering"],
+    ["direct-reader", "load"],
+  ]);
+  expect(
+    (section.modules as { file: string; rule: string }[]).map((m) => [m.file, m.rule]),
+  ).toEqual([
+    ["loader.ts", "load"],
+    ["read.ts", "load"],
+  ]);
+  const text = readFileSync(file, "utf8");
+  const replay = build(dir, file);
+  expect(replay.rounds).toBe(1);
+  expect(replay.result).toBe(scratchBuild.result);
+  expect(readFileSync(file, "utf8")).toBe(text);
+  expect(check(dir, file)).toEqual([]);
+  // The patch goes. Nothing reads through a patched object any more, so the
+  // next load decides none of the three: the check names each, the replay
+  // is the build from scratch in one lowering, and the file follows.
+  writeFileSync(
+    join(dir, "loader.ts"),
+    `export interface LoadResult {
+  text: string;
+  patchedCalls: number;
+  restored: boolean;
+}
+
+export async function loadPayload(): Promise<LoadResult> {
+  return { text: "unpatched", patchedCalls: 0, restored: true };
+}
+`,
+  );
+  const unpatched = build(dir, null);
+  expect(unpatched.ok).toBe(true);
+  expect(unpatched.result).toContain('"packages":["sdk-pkg"]');
+  expect(unpatched.result).toContain('"modules":[]');
+  expect(check(dir, file)).toEqual([
+    "- direct-reader@1.0.0",
+    "- module loader.ts",
+    "- module read.ts",
+  ]);
+  const settled = build(dir, file);
+  expect(settled.rounds).toBe(1);
+  expect(settled.result).toBe(unpatched.result);
+  expect(recorded(file).packages.map((p) => [p.name, p.rule])).toEqual([["sdk-pkg", "lowering"]]);
+  expect(recorded(file).modules).toEqual([]);
   expect(check(dir, file)).toEqual([]);
 }, 600_000);
 

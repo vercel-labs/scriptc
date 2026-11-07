@@ -26,7 +26,7 @@ import {
   type IslandRoundState,
 } from "./decision-file.js";
 import { nodeIslandOptionsKey, nodeIslandPolicy, type NodeIslandOptions } from "./policy.js";
-import type { NodeIslandScan, PackageEdge } from "./scan.js";
+import type { PackageEdge, ProgramImports } from "./scan.js";
 
 const scratch: string[] = [];
 afterEach(() => {
@@ -119,8 +119,9 @@ function fileJson(file: string): FileJson {
   return JSON.parse(readFileSync(file, "utf8")) as FileJson;
 }
 
-/** A scan with one user import of each named package. */
-function scanOf(p: Project, imports: IslandPackage[], files: string[] = []): NodeIslandScan {
+/** What a load says of a program with one user import of each named
+ * package. */
+function scanOf(p: Project, imports: IslandPackage[], files: string[] = []): ProgramImports {
   const edges: PackageEdge[] = imports.map((island) => ({
     fromDir: null,
     fromFile: p.entry,
@@ -130,21 +131,7 @@ function scanOf(p: Project, imports: IslandPackage[], files: string[] = []): Nod
     loads: true,
     loc: { file: p.entry, start: 0, end: 0 },
   }));
-  return {
-    modules: [p.entry, ...files].map((file) => ({
-      file,
-      origin: "user" as const,
-      packageDir: null,
-      packageName: null,
-      markers: [],
-      cjsReads: [],
-      globalReads: [],
-      stripProblem: null,
-      dropped: false,
-    })),
-    edges,
-    refusals: [],
-  };
+  return { edges, files: [p.entry, ...files] };
 }
 
 test("a decision is written with paths relative to the file and read back", () => {
@@ -163,15 +150,9 @@ test("a decision is written with paths relative to the file and read back", () =
   expect(section.options).toBeUndefined();
   // No island here depends on how the build ended.
   expect(section.outcome).toBeUndefined();
+  // In the order the round held them, which is the order a replay starts
+  // from and emits its notes in; not by name.
   expect(section.packages).toEqual([
-    {
-      name: "@scope/cfg",
-      version: "0.1.0",
-      dir: "node_modules/@scope/cfg",
-      rule: "preflight",
-      class: "gap",
-      reason: "SC1090: @scope/cfg refused",
-    },
     {
       name: "sdk",
       version: "1.2.3",
@@ -179,6 +160,14 @@ test("a decision is written with paths relative to the file and read back", () =
       rule: "lowering",
       class: "gap",
       reason: "SC1090: sdk refused",
+    },
+    {
+      name: "@scope/cfg",
+      version: "0.1.0",
+      dir: "node_modules/@scope/cfg",
+      rule: "preflight",
+      class: "gap",
+      reason: "SC1090: @scope/cfg refused",
     },
   ]);
   expect(section.modules).toEqual([
@@ -192,14 +181,36 @@ test("a decision is written with paths relative to the file and read back", () =
   ]);
   const read = readIslandDecision(p.file, key, auto);
   expect(read).not.toBeNull();
-  expect([...read!.packages.values()]).toEqual([cfg, sdk]);
+  expect([...read!.packages.values()]).toEqual([sdk, cfg]);
   expect([...read!.modules.values()]).toEqual([p.legacy]);
   expect(read!.outcome).toBeNull();
   expect(read!.gone.size).toBe(0);
   // The same decision is the same bytes: nothing is written again.
   const text = readFileSync(p.file, "utf8");
-  expect(writeIslandDecision(p.file, key, auto, state([cfg, sdk], [p.legacy]), "fails")).toBeNull();
+  expect(writeIslandDecision(p.file, key, auto, state([sdk, cfg], [p.legacy]), "fails")).toBeNull();
   expect(readFileSync(p.file, "utf8")).toBe(text);
+  // The islands the load decides follow the ones a replay starts from, by
+  // name: a replay does not start from them.
+  const marked = p.install("marked-pkg", "1.0.0");
+  const early = p.install("early-pkg", "1.0.0");
+  writeIslandDecision(
+    p.file,
+    key,
+    auto,
+    state([sdk, cfg], [p.legacy]),
+    "compiles",
+    state([marked, sdk, early, cfg], [p.legacy]),
+  );
+  expect(fileJson(p.file).decisions[0]!.packages.map((entry) => [entry.name, entry.rule])).toEqual([
+    ["sdk", "lowering"],
+    ["@scope/cfg", "preflight"],
+    ["early-pkg", "load"],
+    ["marked-pkg", "load"],
+  ]);
+  expect([...readIslandDecision(p.file, key, auto)!.packages.keys()]).toEqual([
+    "sdk",
+    "@scope/cfg",
+  ]);
 });
 
 test("each entry, target and set of options has its own section", () => {
@@ -278,8 +289,8 @@ test("an entry whose package changed leaves, with the islands that follow it", (
   const read = readIslandDecision(p.file, key, auto)!;
   expect([...read.packages.keys()]).toEqual(["cfg"]);
   expect([...read.gone]).toEqual([
-    ["gone", "its directory is gone"],
     ["sdk", "its version changed from 1.2.3 to 1.3.0"],
+    ["gone", "its directory is gone"],
     ["wrapper", "it is an island only with 'sdk'"],
     ["outer", "it is an island only with 'wrapper'"],
   ]);
@@ -327,6 +338,15 @@ test("a recorded island the program no longer imports is not admitted", () => {
   const shimmed = scanOf(p, [cfg]);
   shimmed.edges[0]!.shim = true;
   expect(admitRecorded(state([cfg]), shimmed, new Map()).packages.size).toBe(0);
+  // An import inside a function loads the package only when that code runs
+  // (`await import("cfg")`): it is an import of the program all the same.
+  const deferred = scanOf(p, [cfg]);
+  deferred.edges[0]!.loads = false;
+  expect([...admitRecorded(state([cfg]), deferred, new Map()).packages.keys()]).toEqual(["cfg"]);
+  // And one that does not resolve to installed JavaScript still names it.
+  const unresolved = scanOf(p, [cfg]);
+  unresolved.edges[0]!.toDir = null;
+  expect([...admitRecorded(state([cfg]), unresolved, new Map()).packages.keys()]).toEqual(["cfg"]);
 });
 
 test("the islands a fence rule added for one outcome are stale under the other", () => {
@@ -413,8 +433,8 @@ test("a build says what it changed in the file", () => {
   const first = writeIslandDecision(p.file, key, auto, state([sdk, cfg]), "compiles")!;
   expect(describeIslandDecisionChange(first, p.dir)).toBe(
     "scriptc: recorded the Node island decision in scriptc-islands.json (2 packages)\n" +
-      "  + cfg@0.1.0 (lowering): SC1090: cfg refused\n" +
-      "  + sdk@1.2.3 (lowering): SC1090: sdk refused\n",
+      "  + sdk@1.2.3 (lowering): SC1090: sdk refused\n" +
+      "  + cfg@0.1.0 (lowering): SC1090: cfg refused\n",
   );
   const gone = new Map([["cfg", "the program no longer imports it"]]);
   const second = writeIslandDecision(p.file, key, auto, state([sdk]), "compiles", null, gone)!;

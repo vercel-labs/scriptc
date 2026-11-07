@@ -4,6 +4,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { typeEquals } from "../../ir/ir.js";
 import type { IrType } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
+import { isValueIdentifier } from "./binding-analysis.js";
 
 /** Whether TypeScript's control-flow narrowing of a mutable reference still
  * holds when the narrowed read executes.
@@ -1148,23 +1149,6 @@ function memberName(name: ts.Node): string | null {
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
   if (ts.isPrivateIdentifier(name)) return name.text;
   return null;
-}
-
-/** An identifier that reads or declares a binding (not a member name). */
-function isValueIdentifier(node: ts.Identifier): boolean {
-  const parent = node.parent;
-  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
-  if (
-    (ts.isPropertyAssignment(parent) ||
-      ts.isPropertyDeclaration(parent) ||
-      ts.isMethodDeclaration(parent) ||
-      ts.isPropertySignature(parent) ||
-      ts.isGetAccessorDeclaration(parent) ||
-      ts.isSetAccessorDeclaration(parent)) &&
-    parent.name === node
-  )
-    return false;
-  return true;
 }
 
 /** The store target expression of an assignment-like node. */

@@ -56,6 +56,35 @@ declare module "dns" {
   export function getServers(): string[];
   export function getDefaultResultOrder(): "ipv4first" | "ipv6first" | "verbatim";
   export function setDefaultResultOrder(order: "ipv4first" | "ipv6first" | "verbatim"): void;
+  /* Supported getaddrinfo hints for dns.lookup's options.hints. */
+  export const ADDRCONFIG: number;
+  export const ALL: number;
+  export const V4MAPPED: number;
+  /* The `code` a resolver failure carries. */
+  export const NODATA: "ENODATA";
+  export const FORMERR: "EFORMERR";
+  export const SERVFAIL: "ESERVFAIL";
+  export const NOTFOUND: "ENOTFOUND";
+  export const NOTIMP: "ENOTIMP";
+  export const REFUSED: "EREFUSED";
+  export const BADQUERY: "EBADQUERY";
+  export const BADNAME: "EBADNAME";
+  export const BADFAMILY: "EBADFAMILY";
+  export const BADRESP: "EBADRESP";
+  export const CONNREFUSED: "ECONNREFUSED";
+  export const TIMEOUT: "ETIMEOUT";
+  export const EOF: "EOF";
+  export const FILE: "EFILE";
+  export const NOMEM: "ENOMEM";
+  export const DESTRUCTION: "EDESTRUCTION";
+  export const BADSTR: "EBADSTR";
+  export const BADFLAGS: "EBADFLAGS";
+  export const NONAME: "ENONAME";
+  export const BADHINTS: "EBADHINTS";
+  export const NOTINITIALIZED: "ENOTINITIALIZED";
+  export const LOADIPHLPAPI: "ELOADIPHLPAPI";
+  export const ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS";
+  export const CANCELLED: "ECANCELLED";
   /* The promise forms (node:dns/promises). */
   export const promises: typeof import("dns/promises");
 }

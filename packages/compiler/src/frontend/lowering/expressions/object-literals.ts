@@ -1598,7 +1598,7 @@ export function lowerObjectLiteral(
     if (accessorNames.size > 0) {
       const narrowed = shape.fields.filter((f) => !accessorNames.has(f.name));
       const narrowedId = lowerer.shapes.intern(
-        narrowed.map((f) => ({ name: f.name, type: f.type })),
+        narrowed.map((f) => ({ ...f })),
         false,
         shape.indexValue,
       );
@@ -1607,6 +1607,13 @@ export function lowerObjectLiteral(
     }
   }
   const fieldTypes = new Map(shape.fields.map((f) => [f.name, f.type]));
+  // The destination slot for absence purposes: the target shape's matching
+  // field carries the optional-dyn flag even when a promotion changed the
+  // slot's type.
+  const targetSlot = (name: string, type: IrType): { type: IrType; optional?: true } => {
+    const field = shape.fields.find((candidate) => candidate.name === name);
+    return field?.optional === true ? { type, optional: true } : { type };
+  };
   // File-scope JavaScript object bindings live in the checked-dynamic tree
   // to preserve open writes and identity. The checker can infer fields
   // from later writes; those fields must remain absent when the literal
@@ -1970,7 +1977,12 @@ export function lowerObjectLiteral(
     const split = (v: IrExpr): { value: IrExpr; present: IrExpr } => {
       if (v.kind === "fieldAbsent") {
         return {
-          value: lowerer.wrappedUndefined(v.type, v.loc)!,
+          // An optional checked-dynamic slot's absent marker has no union
+          // wrapper: its ordinary value is the checked-dynamic undefined.
+          value:
+            v.type.kind === "dyn"
+              ? dynUndefinedExpr(v.loc)
+              : lowerer.wrappedUndefined(v.type, v.loc)!,
           present: { kind: "boolLit", value: false, type: BOOL, loc: v.loc },
         };
       }
@@ -2004,7 +2016,8 @@ export function lowerObjectLiteral(
       then: ref,
       else_: {
         kind: "fieldAbsent",
-        unionId: (value.type as IrType & { kind: "union" }).unionId,
+        // An optional checked-dynamic slot's state carries no union.
+        ...(value.type.kind === "union" ? { unionId: value.type.unionId } : {}),
         type: value.type,
         loc: value.loc,
       },
@@ -2075,7 +2088,7 @@ export function lowerObjectLiteral(
           // An 'unknown' slot holds the checked-dynamic undefined for the
           // empty arm, the absent-property read the width copy uses too.
           const absent =
-            lowerer.absentFieldValue(fieldType, locOf(prop)) ??
+            lowerer.absentFieldValue(targetSlot(name, fieldType), locOf(prop)) ??
             (fieldType.kind === "dyn" ? dynUndefinedExpr(locOf(prop)) : null);
           if (!absent) {
             const conditionalDyn = conditionalFallback();
@@ -2320,7 +2333,8 @@ export function lowerObjectLiteral(
               loc: locOf(prop),
             });
             const canBeAbsent =
-              f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0;
+              (f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+              (f.optional === true && f.type.kind === "dyn");
             if (typeEquals(f.type, targetType)) {
               thenVal = fRead();
               if (canBeAbsent) cond = fieldPresent();
@@ -2421,7 +2435,9 @@ export function lowerObjectLiteral(
             }
             const at = fields.findIndex((x) => x.name === f.name);
             const elseVal =
-              at >= 0 ? fields[at]!.value : lowerer.absentFieldValue(targetType, locOf(prop));
+              at >= 0
+                ? fields[at]!.value
+                : lowerer.absentFieldValue(targetSlot(f.name, targetType), locOf(prop));
             if (!elseVal) {
               if (canBeAbsent) {
                 // The FIELD itself can be missing from a present source:
@@ -2642,7 +2658,8 @@ export function lowerObjectLiteral(
         // absent one keeps the earlier contributor's value, or leaves the
         // target field absent.
         const canBeAbsent =
-          f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0;
+          (f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0) ||
+          (f.optional === true && f.type.kind === "dyn");
         if (canBeAbsent) {
           const present: IrExpr =
             obj.type.kind === "dyn"
@@ -2655,7 +2672,9 @@ export function lowerObjectLiteral(
                 }
               : lowerer.recordFieldPresent(obj, srcType.shapeId, f.name, locOf(prop));
           const otherwise =
-            at >= 0 ? fields[at]!.value : lowerer.absentFieldValue(targetType, locOf(prop));
+            at >= 0
+              ? fields[at]!.value
+              : lowerer.absentFieldValue(targetSlot(f.name, targetType), locOf(prop));
           if (otherwise) {
             value = {
               kind: "ternary",
@@ -2865,7 +2884,7 @@ export function lowerObjectLiteral(
   if (droppedNames.size > 0) {
     const narrowed = shape.fields.filter((f) => !droppedNames.has(f.name));
     const narrowedId = lowerer.shapes.intern(
-      narrowed.map((f) => ({ name: f.name, type: f.type })),
+      narrowed.map((f) => ({ ...f })),
       false,
       shape.indexValue,
     );
@@ -2878,7 +2897,7 @@ export function lowerObjectLiteral(
       if (provided.has(f.name)) continue;
       const absentHandle: IrExpr | null = null;
       const absent =
-        lowerer.absentFieldValue(f.type, loc) ??
+        lowerer.absentFieldValue(f, loc) ??
         (f.type.kind === "dyn" ? dynUndefinedExpr(loc) : null) ??
         absentHandle;
       if (!absent) shapeMismatch(expr); // only optional and 'unknown' fields may be omitted
@@ -4048,7 +4067,7 @@ function lowerDeclaredSpreadMerge(
         kind: "recordLit",
         fields: shape.fields.map((f) => ({
           name: f.name,
-          value: lowerer.absentFieldValue(f.type, loc)!,
+          value: lowerer.absentFieldValue(f, loc)!,
         })),
         type,
         loc,

@@ -26,6 +26,7 @@ node_modules/
 !tests/fixtures/fetch/node_modules/
 !tests/fixtures/gateway-e2e/node_modules/
 !tests/fixtures/node-types/node_modules/
+!tests/fixtures/island-conformance/node_modules/
 dist/
 output/
 /packages/llvm-darwin-arm64/bin/
@@ -52,6 +53,7 @@ output/
 !tests/fixtures/provenance/node_modules/*/dist/
 !tests/fixtures/npm-static/node_modules/*/dist/
 !tests/corpus/*/node_modules/*/dist/
+!tests/fixtures/island-conformance/node_modules/*/dist/
 .scriptc/
 *.log
 .DS_Store
@@ -68,3 +70,6 @@ tmp-*/
 # the vendored fs-extra corpus package: its lib/output module and jsonfile's own universalify
 !tests/corpus/fs-extra-package/node_modules/fs-extra/lib/output/
 !tests/corpus/fs-extra-package/node_modules/jsonfile/node_modules/
+
+# the island start-up benchmark's fixture packages are committed on purpose
+!benchmarks/startup/islands/node_modules/

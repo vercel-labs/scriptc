@@ -485,7 +485,7 @@ function helperBody(lowerer: Lowerer, fn: IrFunction, spec: HelperSpec, refuse: 
   const own: { has: IrExpr; read: () => IrExpr } | null = !replaced.own
     ? null
     : info.fields.has(DYN_CLASS_PROPERTIES)
-      ? (() => {
+      ? ((): { has: IrExpr; read: () => IrExpr } => {
           const bag = (): IrExpr => ({
             kind: "fieldGet",
             obj: self,

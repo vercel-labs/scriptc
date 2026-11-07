@@ -16,6 +16,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
@@ -65,6 +66,7 @@ import {
 import { markRequireEarlyBindings } from "./require-initialization.js";
 import {
   cjsHasLiveMemberExports,
+  cjsNamespaceModule,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   nestedCjsExportAssignmentsOf,
@@ -121,7 +123,6 @@ import {
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { customInspectRegistrations } from "./lower-inspect.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
-import { stripTypeCasts } from "./builtins/arguments.js";
 import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
 import {
   bindingContextualGenericFnNodeOf,
@@ -140,6 +141,7 @@ import { funcTypeFromParamShapes, registerOverloadedCallableAlias } from "./call
 import {
   jsBindingHasOpenWrites,
   hasJsTypeAnnotation,
+  hasShapeOverlayType,
   inferredEvolvingLetType,
   isVarDeclared,
   numericIteratorSourceOf,
@@ -150,7 +152,7 @@ import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
-import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import { isNativeBuiltinValueInitializer, reflectMemberValueRead } from "./lower-builtin-values.js";
 import { isDataViewPrototypeRead, isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
   collectNamespaceStmt,
@@ -158,6 +160,7 @@ import {
   nsPathPrefix,
   trapDeclRootOf,
 } from "./lower-namespaces.js";
+import { collectEnumObjects, registerEnumObjectGlobals } from "./enum-objects.js";
 import { collectExpandoMembers } from "./lower-expando.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
@@ -545,6 +548,9 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
         expanded = true;
       }
   }
+  // Enums some code uses as a value: their object's globals register with
+  // the others below, and a static field holding one keeps its storage.
+  collectEnumObjects(lowerer, parts);
   lowerer.collecting = true;
   try {
     collectVirtualJsMethods(
@@ -1511,6 +1517,12 @@ function withoutRejectedClassMembers(
  * storage all resolve through alias plumbing (lowerCjsSingleValueExport). */
 function cjsIdentExportSnapshotType(lowerer: Lowerer, id: ts.Identifier): IrType | null {
   if (splitRequireBindingOfIdent(lowerer, id) !== null) return null;
+  // A require or import binding of a single-value module names that
+  // module's own export value, which the export statement neither
+  // evaluates nor stores (lowerCjsSingleValueExport): registering a slot
+  // here would leave requirers reading a global nothing ever writes.
+  const dep = lowerer.cjsModuleBindingDepOf(id);
+  if (dep !== null && !cjsNamespaceModule(lowerer, dep)) return null;
   const sym = lowerer.resolveValueSymbol(id);
   if (sym === null) return null;
   if (
@@ -1548,6 +1560,10 @@ export function collectGlobals(
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
   for (const stmt of topStmts) {
+    if (ts.isEnumDeclaration(stmt)) {
+      registerEnumObjectGlobals(lowerer, stmt, tag);
+      continue;
+    }
     if (ts.isClassDeclaration(stmt) && stmt.name && isIslandSubclassDecl(stmt)) {
       const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
       const g: IrGlobal = {
@@ -1841,6 +1857,32 @@ export function collectGlobals(
             !hasMemberExports
           ) &&
           cjsExportTargetLiteral(rhs, sf) === null;
+        // A source binding that owns module storage and is REASSIGNED
+        // somewhere in its module (`var $gOPD = …; …; module.exports = $gOPD`
+        // — gopd's shape): Node copies the VALUE at this statement, so
+        // requirers must not read the live binding, which may change
+        // afterwards. Register one snapshot slot keyed by the statement,
+        // like the scalar and factory forms; the statement lowering assigns
+        // it and requirer aliases resolve to it
+        // (requireWholeExportSlotSymbolOf). A module that also attaches
+        // member exports to that object keeps the statement-level fence:
+        // those writes would have to reach the SAME object the snapshot
+        // holds.
+        if (ts.isIdentifier(rhs) && splitWholeBinding === null && !hasMemberExports) {
+          const vSym = lowerer.checker.getSymbolAtLocation(rhs);
+          const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
+          const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
+          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+            const g: IrGlobal = {
+              id: `%g.${tag}exports`,
+              name: "exports",
+              type: vG.type,
+              mutable: false,
+            };
+            lowerer.globalsByDeclNode.set(cjs.expr, g);
+            lowerer.globalsList.push(g);
+          }
+        }
         // An identifier whose binding owns no module storage and has no
         // alias target (`var $defineProperty = Object.defineProperty ||
         // false` — an inferred union the type mapping does not carry):
@@ -2250,8 +2292,8 @@ export function collectGlobals(
       // other instance is refused where its declaration lowers.
       if (
         decl.initializer !== undefined &&
-        ts.isNewExpression(stripTypeCasts(decl.initializer)) &&
-        isAssertClassNew(lowerer, stripTypeCasts(decl.initializer))
+        ts.isNewExpression(withoutParenthesesAssertionsNonNull(decl.initializer)) &&
+        isAssertClassNew(lowerer, withoutParenthesesAssertionsNonNull(decl.initializer))
       )
         continue;
       // `const process = globalThis.process` at file scope: a stdlib-
@@ -2320,13 +2362,20 @@ export function collectGlobals(
           // callable ABI. Preserve checked-native values in shared storage;
           // adapting the loader to (string) would replace its validation.
           // An inferred Promise.prototype binding holds an ordinary object
-          // (isPromisePrototypeRead), in TypeScript as well.
-          const initializer = decl.initializer ? stripTypeCasts(decl.initializer) : undefined;
+          // (isPromisePrototypeRead), in TypeScript as well. A Reflect member
+          // value reads the arity of its call (`Reflect.get(t, k)` defaults
+          // the receiver to the target only when it is ABSENT), which the
+          // lib signature's fixed parameters cannot express: the binding
+          // keeps the checked-dynamic callable the namespace answers.
+          const initializer = decl.initializer
+            ? withoutParenthesesAssertionsNonNull(decl.initializer)
+            : undefined;
           if (
             (nameNode === decl.name &&
               !decl.type &&
               (isPromisePrototypeRead(lowerer, decl.initializer) ||
-                isDataViewPrototypeRead(lowerer, decl.initializer))) ||
+                isDataViewPrototypeRead(lowerer, decl.initializer) ||
+                reflectMemberValueRead(lowerer, decl.initializer))) ||
             (isJsSourceFile(sf) &&
               nameNode === decl.name &&
               initializer &&
@@ -2482,12 +2531,16 @@ export function collectGlobals(
           // values (a Map member) keep their static/alias stories.
           // Spreads from an existing checked dictionary stay checked too;
           // copying its entries must not extract nested callable records.
+          // A literal shape inference typed (hasShapeOverlayType) is a
+          // record global: the analysis proved its object never reaches
+          // untyped code.
           if (
             isJsSourceFile(sf) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
             decl.initializer !== undefined &&
             ts.isObjectLiteralExpression(decl.initializer) &&
+            !hasShapeOverlayType(decl) &&
             decl.initializer.properties.nodes.every((p) => {
               if (ts.isSpreadAssignment(p)) {
                 return (

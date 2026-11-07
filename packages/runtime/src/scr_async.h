@@ -155,6 +155,11 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value);
  * until the value's promise settled, or taken the non-promise hop. */
 ScrDyn *scr_coro_await_dyn_value(ScrDyn *value);
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
+/* `new Promise(executor)` of a checked-dynamic value whose resolve function
+ * adopts a promise it is given (scr_async_dyn.c). */
+ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject);
+void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve,
+                                  ScrClosure *reject);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);

@@ -6,7 +6,7 @@
  * SCRIPTC_TARGET_CPU=<level> builds for that `--target-cpu` level. */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { globSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { globSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -14,7 +14,8 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
-import { runStep, type Track } from "./step-timeout.js";
+import { spawnFailure } from "./spawn-failure.js";
+import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
@@ -48,6 +49,16 @@ if (requestedMode !== undefined && requestedMode !== "release" && requestedMode 
 // packaged-artifact runs retain both modes unless one is explicitly selected.
 const optimizationModes: readonly ("release" | "dev")[] =
   requestedMode === undefined ? ["release", "dev"] : [requestedMode];
+
+// A case is a sequence of steps, and every step already carries its own
+// deadline (step-timeout.ts): the Node oracle, then one compile and one run
+// per optimization mode per CPU level. The test timeout is the case's hang
+// detector, so it has to cover the whole sequence — with the 240 s step
+// deadline and two modes, the five steps together can outlast the shared
+// 300 s default while every one of them is still inside its own deadline
+// (5015-lifetime-region-publish, arm64, 2026-11-04). A stalled step still
+// reports itself at the step deadline, with the processes it left behind.
+const CASE_TIMEOUT_MS = STEP_TIMEOUT_MS * (1 + optimizationModes.length * (1 + cpuLevels.length));
 
 // Same known-env contract as the main differential suite.
 process.env["SCRIPTC_TEST_ENV"] = "from-harness";
@@ -131,7 +142,7 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw err;
+        throw spawnFailure(err);
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }
@@ -223,11 +234,14 @@ function nodeOracleArgs(file: string): string[] {
 
 function programInputs(file: string): string[] {
   if (!/\/main\.(ts|js|mjs|cjs)$/.test(file)) return [file];
+  // Files only: a package directory may be named like one (node_modules/widget.js).
   return [
     ...[...ENTRY_EXTS, "tsx", "jsx"].flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
     ...globSync(join(file, "../**/tsconfig.json")),
     ...globSync(join(file, "../**/package.json")),
-  ].sort();
+  ]
+    .filter((f) => statSync(f).isFile())
+    .sort();
 }
 
 async function build(file: string, optimization: "release" | "dev") {
@@ -258,6 +272,7 @@ async function build(file: string, optimization: "release" | "dev") {
 describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${cpuDispatch ? ", CPU dispatch" : ""}${targetCpu === undefined ? "" : `, ${targetCpu}`}${shardSuffix()})`, () => {
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
+    { timeout: CASE_TIMEOUT_MS },
     async ([rel, file], { skip }) => {
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();

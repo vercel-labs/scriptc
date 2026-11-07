@@ -66,11 +66,17 @@ jobs:
           import { appendFileSync } from 'node:fs';
           const api = (path) => JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }));
           const repo = process.env.GITHUB_REPOSITORY;
+          // Every payload the release publishes from a build artifact: the
+          // platform helper/runtime/CLI packages and the four libnode packs
+          // (libnode-packs job, named libnode-<platform>).
           const expected = [
             'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64',
             'linux-x64-musl', 'linux-arm64-musl', 'windows-x64', 'wasm32-wasi',
             'runtime-ios-arm64', 'runtime-ios-simulator-arm64', 'runtime-android-arm64',
-          ].map((platform) => `native-${platform}`);
+          ].map((platform) => `native-${platform}`).concat([
+            'libnode-linux-x64-gnu', 'libnode-linux-arm64-gnu',
+            'libnode-darwin-arm64', 'libnode-darwin-x64',
+          ]);
           const runs = api(`repos/${repo}/actions/workflows/release.yml/runs?branch=main&status=completed&per_page=100`).workflow_runs;
           let artifactRun;
           let receiptRun;
@@ -434,13 +440,25 @@ jobs:
           path: ${{ runner.temp }}/mobile-pack
           retention-days: 7
 
+  # The four @scriptc/libnode-<platform> packs ship with the release as
+  # opt-in packages: scriptc does not depend on them, and a program that
+  # calls into Node.js installs its host's pack. libnode-packs builds and
+  # smoke-tests each one (it is also its own workflow, so a pin or bridge
+  # change can rebuild them without a release).
+  build-libnode-packs:
+    name: Build libnode packs
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
+    uses: ./.github/workflows/libnode-packs.yml
+
   publish:
     name: Publish to npm
-    needs: [check-release, build-native-packages, build-mobile-runtime-packs]
+    needs: [check-release, build-native-packages, build-mobile-runtime-packs, build-libnode-packs]
     if: >-
       !cancelled() && needs.check-release.outputs.should_release == 'true' &&
       (needs.check-release.outputs.reuse_artifacts == 'true' ||
-      (needs.build-native-packages.result == 'success' && needs.build-mobile-runtime-packs.result == 'success'))
+      (needs.build-native-packages.result == 'success' && needs.build-mobile-runtime-packs.result == 'success' &&
+      needs.build-libnode-packs.result == 'success'))
     runs-on: ubuntu-latest
     # Two waits for npm availability of at most 25 minutes each.
     timeout-minutes: 70
@@ -461,6 +479,18 @@ jobs:
           pattern: native-*
           path: native-artifacts
           merge-multiple: true
+          run-id: ${{ needs.check-release.outputs.artifact_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # One artifact per pack, each holding the contents of its package
+      # directory. Downloaded one directory per artifact (no merge) so the
+      # four packs keep their own files, and the packs' compressed-library
+      # artifacts (libnode-<platform>-zst) stay out of the packages.
+      - name: Download libnode packs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: libnode-*
+          path: libnode-artifacts
           run-id: ${{ needs.check-release.outputs.artifact_run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -507,6 +537,12 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           cp -R native-artifacts/. packages/
+          # The packs publish from their package directories, beside the
+          # package.json that lists the files they carry.
+          for platform in linux-x64-gnu linux-arm64-gnu darwin-arm64 darwin-x64; do
+            test -f "libnode-artifacts/libnode-$platform/manifest.json"
+            cp -R "libnode-artifacts/libnode-$platform/." "packages/libnode-$platform/"
+          done
           # upload-artifact does not preserve executable bits. Restore the
           # helper mode before pnpm runs its prepack checks.
           find packages -type f -path '*/bin/scriptc-llvm-codegen' -exec chmod 755 {} +
@@ -516,7 +552,7 @@ jobs:
       - name: Check version sync
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          for pkg in packages/runtime packages/runtime-* packages/llvm-* packages/compiler packages/experimental packages/node packages/threads packages/types packages/cli packages/cli-*; do
+          for pkg in packages/runtime packages/runtime-* packages/llvm-* packages/compiler packages/experimental packages/node packages/threads packages/types packages/cli packages/cli-* packages/libnode-*; do
             if [ "$(node -p "require('./$pkg/package.json').private === true")" = "true" ]; then
               continue
             fi
@@ -617,6 +653,13 @@ jobs:
           publish_dir packages/runtime-wasm32-wasi
           publish_dir packages/runtime-win32-x64-msvc
           publish_dir packages/llvm-win32-x64-msvc
+          # The libnode packs are opt-in: nothing in this release depends on
+          # them, and a program that calls into Node.js installs its host's
+          # pack, so they publish with the platform payload above.
+          publish_dir packages/libnode-darwin-arm64
+          publish_dir packages/libnode-darwin-x64
+          publish_dir packages/libnode-linux-x64-gnu
+          publish_dir packages/libnode-linux-arm64-gnu
           # A native CLI package depends on its platform's LLVM helper and
           # runtime pack packages, and scriptc on the native CLI packages.
           # Each group publishes only once the packages it depends on

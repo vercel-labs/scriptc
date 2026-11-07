@@ -60,6 +60,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
+import { requiredLibraryCallbackRead } from "./library-callbacks.js";
 import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
@@ -95,16 +96,21 @@ import {
   identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
-import { builtinConstantsObject, pathModuleValue } from "../lower-builtin-values.js";
+import {
+  builtinConstantsEsmNamespace,
+  builtinConstantsObject,
+  pathModuleValue,
+} from "../lower-builtin-values.js";
 import { lowerTlsRootCertificates } from "../lower-server.js";
 import { builtinFunctionFenceValue } from "../builtin-function-fences.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
-import { fenceEnumObjectValue } from "../lower-enums.js";
+import { lowerEnumObjectValue } from "../enum-objects.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
 import { envSnapshotHelper, heldEnvValueType } from "../builtins/environment.js";
+import { processDataMemberValue } from "../builtins/process.js";
 
 /** Whether this identifier is the RECEIVER of a member access — the dotted
  * or bracketed `held.X` / `held[k]`, read or written, through any erasure
@@ -378,6 +384,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         }
         return runtimeOptionalReceiverRead(lowerer, expr, local, null, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, local, loc);
+      if (callback) return callback;
       if (runtimeOptionalObjectWalkerArg(lowerer, expr)) {
         const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
         if (local.type.kind === "union" && narrowed) {
@@ -494,6 +502,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         const helper = lowerer.narrowedArmHelper(g.type.unionId, narrowed, loc);
         if (helper) return lowerer.checkedNarrowCall(helper, ref, narrowed, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, g, loc);
+      if (callback) return callback;
       const use = runtimeOptionalUseOf(expr);
       // The enclosing logical/conditional expression consumes the union
       // before any member operation runs (`(value ?? fallback).length`).
@@ -738,6 +748,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // node:crypto's webcrypto is the WebCrypto global's object.
       if (bi.module === "crypto" && bi.member === "webcrypto")
         return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+      // `import { argv, execArgv } from "node:process"`: a data member of
+      // the process module reads what `process.<member>` reads. `env` stays
+      // out: the spelled read answers a snapshot record, and a write through
+      // the import (`env.NAME = value`) must reach the environment.
+      if (bi.module === "process" && bi.member !== "env") {
+        const value = processDataMemberValue(lowerer, bi.member, expr, loc);
+        if (value !== null) return value;
+      }
       // url.Url is Node's legacy Url constructor (JavaScript sources;
       // @types/node declares Url as a type only), the class of url.parse()
       // results.
@@ -756,6 +774,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         // A function member is a function value that fences when called.
         if (builtinModuleFnOf(lowerer, bi.module, bi.member))
           return builtinFunctionFenceValue(lowerer, bi, expr, loc);
+        // A member that holds data (a string, a number, an array) is not an
+        // identity. A token in its place would be read as that data: its
+        // text printed, its length taken, array operations validated against
+        // a string. The read is refused by name instead.
+        if (isDataValueType(lowerer, lowerer.typeOf(expr))) {
+          lowerer.noLowering(
+            `${bi.module}.${bi.member}`,
+            expr,
+            builtinFenceHintOf(bi.module, bi.member),
+            lowerer.resolveValueSymbol(expr),
+          );
+        }
         return {
           kind: "strLit",
           value: `[builtin ${bi.module}.${bi.member}]`,
@@ -782,10 +812,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // the namespace object has no representation — members lower at
   // their access sites only. The CommonJS namespace binding
   // (`const lib = require("./lib.js")`) gets the same fence.
-  const builtinNamespace = lowerer.builtinNamespaceModuleOf(expr);
-  if (builtinNamespace === "constants") return builtinConstantsObject(lowerer, loc);
-  if (builtinNamespace !== null) {
-    const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNamespace}` };
+  const builtinShape = lowerer.builtinNamespaceShapeOf(expr);
+  if (builtinShape !== null) {
+    // node:constants has a value on each side of the import: the CommonJS
+    // object a require and a default import bind, and the ES module
+    // namespace an `import * as` binding binds (sorted names plus "default",
+    // null prototype).
+    if (builtinShape.module === "constants")
+      return builtinShape.flavor === "esm"
+        ? builtinConstantsEsmNamespace(lowerer, loc)
+        : builtinConstantsObject(lowerer, loc);
+    const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinShape.module}` };
     return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
   }
   // A binding of a SINGLE-VALUE module used as a bare value: Node's
@@ -1091,9 +1128,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       return lowerer.classValueRef(classInfo, expr);
     }
     // The enum OBJECT as a value (member reads never reach here — the
-    // access hooks fold them): iteration, storage, reverse lookups
-    // through variables all land on this pointed fence.
-    if (sym) fenceEnumObjectValue(lowerer, expr, sym);
+    // access hooks fold them): the record its declaration built, or a
+    // pointed fence for an enum that has no object (enum-objects.ts).
+    if (sym) {
+      const enumObject = lowerEnumObjectValue(lowerer, expr, sym);
+      if (enumObject) return enumObject;
+    }
     // A MIXIN function as a first-class value: no runtime function
     // exists — calls instantiate a class per call site
     // (lower-mixins.ts). Generic mixins took the generic-fn value
@@ -1311,7 +1351,7 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
 export function uriFunctionValue(lowerer: Lowerer, which: string, loc: SrcLoc): IrExpr {
   const name = `%builtin.${which}`;
   const type = funcOf([DYN], STRING);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value: IrExpr = {
       kind: "libCall",
       fn: "dyn.toStringCoerce",
@@ -1400,4 +1440,29 @@ function closureDynRead(
     type: DYN,
     loc,
   };
+}
+
+/** A checker type whose values are data the program reads: primitives,
+ * arrays and tuples, and unions of those with the nullish units. */
+function isDataValueType(lowerer: Lowerer, type: ts.Type): boolean {
+  const data = (part: ts.Type): boolean =>
+    (part.flags &
+      (ts.TypeFlags.StringLike |
+        ts.TypeFlags.NumberLike |
+        ts.TypeFlags.BooleanLike |
+        ts.TypeFlags.BigIntLike)) !==
+      0 ||
+    lowerer.checker.isArrayType(part) ||
+    lowerer.checker.isTupleType(part);
+  const unit = (part: ts.Type): boolean =>
+    (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0;
+  if (!type.isUnionType()) return data(type);
+  try {
+    const parts = ts.constituentTypes(type);
+    return parts.some(data) && parts.every((part) => data(part) || unit(part));
+  } catch (e) {
+    // A union typescript-go cannot describe is not proven data.
+    if (ts.isUnreadableConstituentsPanic(e)) return false;
+    throw e;
+  }
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-exists-warning-throws.ts"
+ ],
+ "diags": []
+}

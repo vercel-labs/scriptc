@@ -4,6 +4,7 @@
 import {
   exprFunctionReference,
   FUNCTION_REFERENCE_KINDS,
+  isClassMemberName,
   moduleFunctionReferences,
 } from "../ir/function-references.js";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../ir/node-index.js";
 import { MAY_THROW_LIB_FNS } from "../ir/builtin-effects.js";
 import type { IrExpr, IrFunction, IrModule, IrStmt, IrType } from "../ir/ir.js";
+import type { IrLibFn } from "../ir/builtin-signatures.js";
 import { MAY_THROW_ARR_METHODS } from "../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
 import { unreachableStatements } from "./may-throw.js";
@@ -28,7 +30,7 @@ const CENSUS_KINDS: readonly IrNodeKind[] = ["call", ...FUNCTION_REFERENCE_KINDS
 const DECLARATION_KINDS: readonly IrNodeKind[] = ["varDecl"];
 
 /** Lib calls that read a captured stack trace. */
-const STACK_READS: ReadonlySet<string> = new Set(["error.stack"]);
+const STACK_READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["error.stack"]);
 
 /** Key types whose property names are never `stack`: a number, bigint or
  * boolean key names its decimal or `true`/`false` property. */
@@ -78,7 +80,7 @@ class StackKeys {
     const classNames = new Set((mod.classes ?? []).map((cls) => cls.name));
     const scan = this.nodes?.scan(CENSUS_KINDS);
     for (const fn of mod.functions) {
-      if (isClassMember(fn.name, classNames)) named.add(fn.name);
+      if (isClassMemberName(fn.name, classNames)) named.add(fn.name);
       eachNodeOfKinds(fn, scan, (node) => {
         if (node.kind === "call") {
           const sites = calls.get(node.callee) ?? [];
@@ -155,16 +157,6 @@ class StackKeys {
   }
 }
 
-/** Whether `name` follows the `%<class>.<member>` convention of class
- * methods, accessors and constructors for one of `classNames`. */
-function isClassMember(name: string, classNames: ReadonlySet<string>): boolean {
-  if (!name.startsWith("%")) return false;
-  for (let dot = name.indexOf("."); dot !== -1; dot = name.indexOf(".", dot + 1)) {
-    if (classNames.has(name.slice(1, dot))) return true;
-  }
-  return false;
-}
-
 /** A typed `error.stack` read, or a read on a checked-dynamic value that
  * can reach an error's own `stack` accessor: one whose key can be "stack"
  * (StackKeys). */
@@ -226,7 +218,7 @@ export function observesStacks(mod: IrModule, nodes?: IrNodeIndex): boolean {
   const pending: string[] = [...moduleFunctionReferences(mod)];
   // Class methods, accessors and constructors are reachable through
   // dispatch the IR does not name per site: all of them are roots.
-  for (const fn of mod.functions) if (isClassMember(fn.name, classNames)) pending.push(fn.name);
+  for (const fn of mod.functions) if (isClassMemberName(fn.name, classNames)) pending.push(fn.name);
   const reached = new Set<string>();
   let observed = false;
   while (pending.length > 0 && !observed) {
@@ -252,6 +244,7 @@ const CAPTURE_FREE_EXPRS: ReadonlySet<IrExpr["kind"]> = new Set([
   "boolLit",
   "strLit",
   "unitLit",
+  "constCell",
   "varRef",
   "incDec",
   "assignExpr",

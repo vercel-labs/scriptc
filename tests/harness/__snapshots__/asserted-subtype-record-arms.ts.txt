@@ -1,0 +1,42 @@
+asserted-subtype-record-arms.ts:17:15 - error SC2003: union conversion has no unambiguous layout mapping: expected '{ handled: boolean; origin: { x: number } }', got '{ capture: boolean | undefined } | { handled: boolean | undefined } | undefined' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)
+
+  16 | function eitherArm(value: Base | Other | undefined): number {
+  17 |   const sub = value as Sub;
+     |               ^~~~~~~~~~~~
+  18 |   return sub.origin.x;
+
+  hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's
+
+asserted-subtype-record-arms.ts:18:10 - error SC2004: uses of 'sub' inherit the blocker on its declaration
+
+  17 |   const sub = value as Sub;
+  18 |   return sub.origin.x;
+     |          ^~~
+  19 | }
+
+  hint: the declaration of 'sub' did not compile — fix the diagnostic reported there and these sites clear with it
+
+asserted-subtype-record-arms.ts:22:9 - error SC1090: writing 'sub.handled' through 'sub', a copy of the 'Base' value the assertion views as 'Sub' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+
+  21 | function writeThrough(value: Base | undefined): number {
+  22 |   const sub = value as Sub;
+     |         ^~~~~~~~~~~~~~~~~~
+  23 |   sub.handled = true;
+
+asserted-subtype-record-arms.ts:23:3 - error SC2004: uses of 'sub' inherit the blocker on its declaration
+
+  22 |   const sub = value as Sub;
+  23 |   sub.handled = true;
+     |   ^~~
+  24 |   return sub.origin.x;
+
+  hint: the declaration of 'sub' did not compile — fix the diagnostic reported there and these sites clear with it
+
+asserted-subtype-record-arms.ts:24:10 - error SC2004: uses of 'sub' inherit the blocker on its declaration
+
+  23 |   sub.handled = true;
+  24 |   return sub.origin.x;
+     |          ^~~
+  25 | }
+
+  hint: the declaration of 'sub' did not compile — fix the diagnostic reported there and these sites clear with it

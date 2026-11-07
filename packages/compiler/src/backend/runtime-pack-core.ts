@@ -96,13 +96,19 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   handleProps: boolean;
   childLifecycle: boolean;
   childOptionExt: boolean;
+  spawnCaptureBytes: boolean;
   childErrorFields: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
+  conversionTrace: boolean;
   dynForAwait: boolean;
   dynCollections: boolean;
   dynIntegrityQueries: boolean;
+  reflectProtoTarget: boolean;
+  recordSourceDelete: boolean;
+  recordViewFrozen: boolean;
   genBind: boolean;
+  genReceiver: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -111,6 +117,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   abortSignal: boolean;
   utilTiming: boolean;
   dynBuffer: boolean;
+  fsPathValue: boolean;
   builtinValues: boolean;
   /** A standard library prototype object read as a value in a JavaScript
    * source (scr_dyn_stdlib_prototype.c). */
@@ -138,13 +145,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
    * JavaScript source resizes, grows or detaches an ArrayBuffer. */
   mutableBuffers?: boolean;
-  stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
-  /** The program reaches the process output streams' write slot: the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -343,6 +346,12 @@ export function effectiveRuntimeFeatures(
   // their migrations share one build of each unit they touch instead of one
   // build column per feature.
   const jsObjectModel = jsObjectModelFact(features);
+  // A Node island can hand its own AbortSignal to any native receiver of
+  // one, and a native signal then stands for it (scr_node_island_abort.c):
+  // a program with islands and a receiver links the signal unit too.
+  const abortSignal =
+    features.abortSignal === true ||
+    (features.nodeIsland === true && features.eventTarget === true);
   return {
     ...features,
     workers: features.workers === true,
@@ -357,21 +366,28 @@ export function effectiveRuntimeFeatures(
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
     childOptionExt: features.childOptionExt === true,
+    spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
+    conversionTrace: features.conversionTrace === true,
     dynForAwait: features.dynForAwait === true,
     dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
+    reflectProtoTarget: features.reflectProtoTarget === true,
+    recordSourceDelete: features.recordSourceDelete === true,
+    recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
+    genReceiver: features.genReceiver === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
     webBodies: features.webBodies === true,
-    abortSignal: features.abortSignal === true,
+    abortSignal,
     utilTiming: features.utilTiming === true,
     dynBuffer: features.dynBuffer === true,
+    fsPathValue: features.fsPathValue === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
@@ -384,9 +400,7 @@ export function effectiveRuntimeFeatures(
     jsObjectModel,
     mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
-    stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
-    stdioWriteSlot: features.stdioWriteSlot === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,
@@ -397,7 +411,7 @@ export function effectiveRuntimeFeatures(
     nativeFetch,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
-    abortSignalOnly: features.abortSignal === true && !nativeFetch,
+    abortSignalOnly: abortSignal && !nativeFetch,
     netEffective,
     httpEffective,
     tlsEffective,
@@ -493,6 +507,41 @@ export function runtimePackFlavorKey(
     return optimized === "release" ? "library-thread-release" : "library-thread-dev";
   if (optimization === "speed" && manifest.flavors.speed !== undefined) return "speed";
   return optimized;
+}
+
+/** The warning for a build that asks for the speed posture from a pack that
+ * ships no `speed` flavor: it links the release runtime objects instead
+ * (runtimePackFlavorKey), which costs run time. Null when the pack has the
+ * flavor or the build is a library one, where speed is not a posture. The
+ * pack gains the flavor when it is built on a host that has the LLVM codegen
+ * helper (runtime-pack-common/scripts/build.mjs). */
+export function speedFlavorFallbackWarning(
+  manifest: RuntimePackManifest,
+  optimization: NativeOptimization,
+  mode: RuntimePackMode = "executable",
+): string | null {
+  if (mode !== "executable" || optimization !== "speed" || manifest.flavors.speed !== undefined)
+    return null;
+  return (
+    `scriptc: warning: --optimization=speed, but runtime pack ${manifest.package}@${manifest.version} ` +
+    `has no "speed" flavor; linking its release runtime objects instead, which costs run time. ` +
+    `Build the pack on a host with the LLVM codegen helper ` +
+    `(packages/llvm-linux-x64-gnu/bin/scriptc-llvm-codegen, or name one with SCRIPTC_LLVM_CODEGEN) ` +
+    `to include the flavor.\n`
+  );
+}
+
+/** Pack directories whose speed-flavor fallback has been reported, so a build
+ * that selects more than once prints it once. */
+const reportedSpeedFallbacks = new Set<string>();
+
+/** Print the speed-flavor fallback warning for one selection, once per pack
+ * directory. The caller passes the warning it computed (or read from a stored
+ * selection), so a build that skips the manifest still reports it. */
+export function reportSpeedFlavorFallback(root: string, warning: string | null): void {
+  if (warning === null || reportedSpeedFallbacks.has(root)) return;
+  reportedSpeedFallbacks.add(root);
+  process.stderr.write(warning);
 }
 
 /** The units a flavor links for `features`, each with its selected

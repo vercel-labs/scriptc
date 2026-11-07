@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8962-asserted-subtype-record-beside-undefined.ts"
+ ],
+ "diags": []
+}

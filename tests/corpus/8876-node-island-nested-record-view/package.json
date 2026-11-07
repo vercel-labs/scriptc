@@ -1,0 +1,6 @@
+{
+  "name": "node-island-nested-record-view",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "nest-pkg": "node" } }
+}

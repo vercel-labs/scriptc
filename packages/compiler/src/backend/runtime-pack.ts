@@ -13,7 +13,9 @@ import type { NativeTargetSpec } from "./targets.js";
 import {
   RuntimePackError,
   parseRuntimePackManifest,
+  reportSpeedFlavorFallback,
   selectRuntimePackArtifacts,
+  speedFlavorFallbackWarning,
   validateRuntimePackIdentity,
   type RuntimePackArtifact,
   type RuntimePackManifest,
@@ -206,6 +208,7 @@ export async function loadRuntimePack(options: {
     compilerReleaseVersion(),
   );
   const flavor = options.optimization;
+  reportSpeedFlavorFallback(root, speedFlavorFallbackWarning(manifest, flavor, options.mode));
   const selected = selectRuntimePackArtifacts(
     manifest,
     options.features,

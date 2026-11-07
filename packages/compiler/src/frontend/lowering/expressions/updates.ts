@@ -51,6 +51,7 @@ import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
+import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
 import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
@@ -289,6 +290,7 @@ export function lowerIncDec(
       lowerer.unsupported("SC1045", expr, "increment/decrement of this target");
     }
     fenceNodeModuleMutation(lowerer, access, "assignment");
+    if (ts.isElementAccessExpression(access)) fenceCopiedKeyedWrite(lowerer, access);
     if (ts.isPropertyAccessExpression(access)) {
       // `this.#x++` on a static private field (private-statics.ts): the
       // brand check, then the field's native global.
@@ -1181,12 +1183,50 @@ export function lowerFieldCompoundValue(
         });
         return { kind: "seqExpr", stmts: body, result: value, type: DYN, loc };
       }
+      // A member the checker types as a string (`detail.text += chunk`,
+      // where the program holds values of the record type as checked-dynamic
+      // values): the member validates as a string, as it validates as a
+      // number below, and the right side appends as it does to a string
+      // field.
+      if (
+        op === "+" &&
+        rhsNode !== null &&
+        lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "string"
+      ) {
+        const old: IrExpr = { kind: "dynCheck", value: read, type: STRING, loc };
+        const appended = concatOperand(lowerer, rhs, rhsNode);
+        const value = save(
+          { kind: "strConcat", left: old, right: appended, type: STRING, loc },
+          "%compoundResult",
+        );
+        const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
+        body.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [receiver, { ...key }, boxed],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+        return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
+      }
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
           : lowerOperatorNumber(lowerer, rhs, loc);
-      if (numericRhs.type.kind !== "f64")
-        compoundUnsupported(lowerer, access, op, F64, numericRhs.type);
+      if (numericRhs.type.kind !== "f64") {
+        // Name the member as the checker types it: this path reads it as a
+        // number, which is its own assumption, not the member's type.
+        const memberTs = lowerer.typeOf(access);
+        const member =
+          (memberTs.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+            ? DYN
+            : (lowerer.mapTypeOf(memberTs) ?? F64);
+        compoundUnsupported(lowerer, access, op, member, numericRhs.type);
+      }
       const value = save(
         { kind: "bin", op, left: cur, right: numericRhs, type: F64, loc },
         "%compoundResult",

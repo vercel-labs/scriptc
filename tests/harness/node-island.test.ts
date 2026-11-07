@@ -1422,6 +1422,127 @@ test("a host-global fence inside a function body keeps its package native", asyn
   else expect(islanded.diagnostics.map((d) => d.code)).toContain("SC8005");
 }, 300_000);
 
+// Compiling a package natively leaves every other package typed as it is
+// without it. plugboard runs in a Node island and declares its plugin
+// subpaths from an ambient block, while the plugin's own JSDoc requires the
+// parameter that block leaves optional. Were the plugin typed from its
+// JavaScript because padleft compiles, the program would stop typechecking
+// and padleft, whose removal clears the error, would become an island too.
+// A module of the island that no declaration covers is untyped in both
+// programs, not an error in one and inferred in the other. IR output needs
+// no libnode pack.
+test("a compiled package does not change how an island package is typed", async () => {
+  const dir = join(outDir, "compiled-beside-island");
+  rmSync(dir, { recursive: true, force: true });
+  const write = (file: string, text: string): void => {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), text);
+  };
+  write("package.json", JSON.stringify({ name: "compiled-beside-island", type: "module" }));
+  write(
+    "node_modules/plugboard/package.json",
+    JSON.stringify({
+      name: "plugboard",
+      version: "1.0.0",
+      type: "module",
+      main: "index.js",
+      types: "index.d.ts",
+    }),
+  );
+  write(
+    "node_modules/plugboard/index.d.ts",
+    [
+      "interface PlugApi { id: string }",
+      "interface Plug { name: string }",
+      "type PlugFn = (api?: PlugApi) => Plug;",
+      'declare module "plugboard" {',
+      "  export function register(name: string, plug: PlugFn): string;",
+      "}",
+      'declare module "plugboard/plugs/*" {',
+      "  const plug: PlugFn;",
+      "  export default plug;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  write(
+    "node_modules/plugboard/index.js",
+    'export function register(name, plug) {\n  return name + ":" + plug({ id: "x" }).name;\n}\n',
+  );
+  write(
+    "node_modules/plugboard/plugs/alpha.js",
+    [
+      "/**",
+      " * @param {PlugApi} api",
+      " * @returns {Plug}",
+      " */",
+      "export default function alpha(api) {",
+      '  return { name: "alpha-" + (api ? api.id : "none") };',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  // A module of the island no declaration covers: its import is untyped
+  // either way.
+  write("node_modules/plugboard/extra.js", 'export const label = "extra";\n');
+  write(
+    "node_modules/padleft/package.json",
+    JSON.stringify({
+      name: "padleft",
+      version: "1.0.0",
+      type: "module",
+      main: "index.js",
+      types: "index.d.ts",
+    }),
+  );
+  write(
+    "node_modules/padleft/index.d.ts",
+    "export function pad(text: string, width: number): string;\n",
+  );
+  write(
+    "node_modules/padleft/index.js",
+    [
+      "/**",
+      " * @param {string} text",
+      " * @param {number} width",
+      " * @returns {string}",
+      " */",
+      "export function pad(text, width) {",
+      '  return text.padStart(width, " ");',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const island = [
+    'import { register } from "plugboard";',
+    'import alpha from "plugboard/plugs/alpha.js";',
+    'import * as extra from "plugboard/extra.js";',
+    'console.log(register("alpha", alpha));',
+    "console.log(String(extra.label));",
+  ];
+  write("alone.ts", [...island, ""].join("\n"));
+  write(
+    "beside.ts",
+    ['import { pad } from "padleft";', ...island, 'console.log(pad("z", 3));', ""].join("\n"),
+  );
+  for (const name of ["alone", "beside"]) {
+    const result = await compile(join(dir, `${name}.ts`), {
+      outPath: join(dir, `${name}.ir.json`),
+      outDir: dir,
+      outputKind: "ir",
+      nodeIslands: { islands: ["plugboard"] },
+    });
+    expect(result.ok ? [] : result.diagnostics.map((d) => `${d.code}: ${d.message}`), name).toEqual(
+      [],
+    );
+    if (!result.ok) continue;
+    expect(
+      (result.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message),
+      name,
+    ).toEqual([expect.stringContaining("'plugboard@1.0.0' runs in a Node island")]);
+  }
+}, 300_000);
+
 // Lowering checks every argument and result type for JSON data; IR output
 // needs no libnode pack.
 test("recursive JSON types cross into Node", async () => {

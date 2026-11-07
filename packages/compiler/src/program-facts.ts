@@ -145,21 +145,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
-    name: "typeof-tested-name",
-    file: `${SRC}/frontend/program.ts`,
-    symbol: "typeofTestedNameSuppressed",
-    source: "text",
-    scope: "file",
-    setBy:
-      "a regular expression over a JavaScript file's raw text that finds `typeof name`; it matches in comments and strings",
-    gates:
-      "the checker's unresolved-name errors (TS2304, TS2552, TS2584) for that name in the file",
-    narrower:
-      "the diagnostic's own site: an unresolved name is a run-time ReferenceError in JavaScript",
-    tracked: null,
-    lowererFields: [],
-  },
-  {
     name: "declares-array-class",
     file: `${SRC}/frontend/lowering/builtins/array-classes.ts`,
     symbol: "programDeclaresArrayClass",
@@ -739,7 +724,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the module graph, the evaluation order and the dynamic imports it covers",
   ),
-  decides("frontend/program.ts#preflightGate7", 1, "typeof-tested-name"),
   scan(
     "frontend/shape-inference/analyze.ts#Analyzer",
     1,

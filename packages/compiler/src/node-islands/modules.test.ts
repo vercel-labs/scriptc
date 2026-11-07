@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { clearVirtualSources, setVirtualSource } from "../frontend/input-tracker.js";
 import {
   NodeIslandModuleCollector,
   namedDataPaths,
@@ -293,6 +294,34 @@ describe("the collected module tree", () => {
       "node_modules/pkg/lib/extra.json",
       "node_modules/pkg/package.json",
     ]);
+  });
+
+  test("a source the compiler synthesized beside a package's files is not shipped", () => {
+    // A package compiled natively gets generated declarations in the
+    // compiler's file shadow; an island that depends on the package ships
+    // its directory, which lists them, and they are on no disk.
+    const root = project({
+      "main.ts": "",
+      "node_modules/pkg/package.json": JSON.stringify({ dependencies: { dep: "1" } }),
+      "node_modules/pkg/index.js": "module.exports = require('dep');",
+      "node_modules/dep/package.json": "{}",
+      "node_modules/dep/index.js": "module.exports = 1;",
+    });
+    setVirtualSource(join(root, "node_modules/dep/index.scriptc-types.d.ts"), "export type T = 1;");
+    try {
+      const collector = new NodeIslandModuleCollector();
+      expect(collector.add(join(root, "main.ts"), "pkg")).toBeNull();
+      const tree = collector.tree()!;
+      expect(tree.files.map((f) => f.path)).toEqual([
+        "node_modules/dep/index.js",
+        "node_modules/dep/package.json",
+        "node_modules/pkg/index.js",
+        "node_modules/pkg/package.json",
+      ]);
+      expect(readNodeIslandModules(tree)).toBeInstanceOf(Uint8Array);
+    } finally {
+      clearVirtualSources();
+    }
   });
 
   test("packages a package loads without declaring them ship too", () => {

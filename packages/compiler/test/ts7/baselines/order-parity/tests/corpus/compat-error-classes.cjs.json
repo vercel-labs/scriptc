@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compat-error-classes.cjs"
+ ],
+ "diags": []
+}

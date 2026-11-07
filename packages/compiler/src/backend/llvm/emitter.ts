@@ -172,6 +172,7 @@ import {
   type FfiCallbackAdapter,
 } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../may-throw.js";
+import { deferClosedInitializers } from "../lazy-initializers.js";
 import {
   UNWIND_PERSONALITY,
   UNWIND_RAISE,
@@ -804,7 +805,7 @@ function prepareModule(input: IrModule, options: LlvmTargetOptions): PreparedMod
   // lowered in memory or read back from its serialized form.
   // Large literals build their rows in loops first: every later pass and
   // the emitter then see the loop, not thousands of row expressions.
-  const mod = rollLiteralTables(unshareNodes(input));
+  const rolled = rollLiteralTables(unshareNodes(input));
   // Each proof selectInt32Arrays asks for analyzes a marked module; the
   // emitter of the module it returns reuses the last one. A proof that
   // revised functions analyzed the module of the functions it ended with.
@@ -841,13 +842,18 @@ function prepareModule(input: IrModule, options: LlvmTargetOptions): PreparedMod
     return { kept: keptInt32Arrays(rounds.last), functions: rounds.functions };
   };
   // Keep source storage intact for debugger inspection in dev builds.
-  if (options.debugSources !== undefined) return { mod, analysis: null, nodes: undefined };
+  if (options.debugSources !== undefined) return { mod: rolled, analysis: null, nodes: undefined };
   const timing = options.timing ?? (() => {});
+  // Module initializers that only compute run at the first use of what
+  // they make; every pass after this one sees their guards as ordinary
+  // statements.
+  const rolledNodes = new IrNodeIndex(rolled);
+  const mod = deferClosedInitializers(rolled, rolledNodes);
   // One index of the module the passes start from. Each pass skips the
   // functions the index records without the node kinds it rewrites, and
   // reads its scans of whole bodies from the index; it walks the functions
   // an earlier pass rewrote, which the index does not record.
-  const nodes = new IrNodeIndex(mod);
+  const nodes = mod === rolled ? rolledNodes : new IrNodeIndex(mod, rolledNodes);
   rounds.nodes = nodes;
   const passed = versionUnionArmLoops(
     versionParameters(

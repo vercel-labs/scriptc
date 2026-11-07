@@ -292,6 +292,49 @@ stale();
   expect(returnValue(module, "stale")).toBe("absent");
 });
 
+test("a conditional assignment before the copy's reset does not reach its return", async () => {
+  // `if (flag) copy = start` may not run, and `copy = undefined` after it
+  // overwrites it when it does: the return still holds nothing.
+  const module = await lower(`
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+let flag = true;
+function stale() {
+  start = undefined;
+  set();
+  let copy = start;
+  if (flag) copy = start;
+  copy = undefined;
+  return copy;
+}
+stale();
+`);
+  expect(returnValue(module, "stale")).toBe("absent");
+});
+
+test("a reset in the right operand of a logical operator does not end the copy's type", async () => {
+  // `flag && (...)`: the reset may be skipped, so the copy may still hold the
+  // stored value and the optional argument reads it.
+  const module = await lower(`
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+let flag = true;
+function stale(): string {
+  start = undefined;
+  set();
+  let copy = start;
+  flag && (copy = undefined);
+  return "abcd".slice(copy);
+}
+console.log(stale());
+`);
+  expect(readsLocal(module, "stale", "copy")).toBe(true);
+});
+
 test("an untyped copy assigned the stale read again after a reset is refused", async () => {
   await expect(
     lower(`

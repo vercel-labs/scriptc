@@ -285,9 +285,13 @@ export class NarrowingStability {
       }
       // A write in a branch, loop body or another function that the read
       // does not share may still have run since a call: it widens the
-      // inherited type, but only a restored read gives it one.
+      // inherited type, but only a restored read gives it one. In this
+      // function, a write before the latest definite one is overwritten by
+      // it and cannot reach the read.
+      const definitePos = latest?.pos ?? -1;
       for (const { source, definite } of sources) {
         if (definite) continue;
+        if (flowBoundary(source) === flowBoundary(node) && source.pos < definitePos) continue;
         const read = this.restoredNothingRead(source);
         const restored = read === null ? null : this.widenedType(read);
         if (restored === null) continue;
@@ -1232,6 +1236,16 @@ function holds(node: ts.Node | undefined, inner: ts.Node): boolean {
   return false;
 }
 
+/** Whether an operator evaluates its right operand only when the left one
+ * does not answer. */
+function shortCircuits(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+    kind === ts.SyntaxKind.BarBarToken ||
+    kind === ts.SyntaxKind.QuestionQuestionToken
+  );
+}
+
 /** Whether `write` certainly runs before `read` on every path that reaches
  * it: both in one function, the write earlier in the text, and every
  * conditional construct in between one the read is inside too. */
@@ -1262,6 +1276,11 @@ function sharesBranch(node: ts.Node, write: ts.Node, read: ts.Node): boolean {
     if (holds(node.whenTrue, write)) return holds(node.whenTrue, read);
     if (holds(node.whenFalse, write)) return holds(node.whenFalse, read);
     return holds(node.whenTrue, read) || holds(node.whenFalse, read);
+  }
+  if (ts.isBinaryExpression(node) && shortCircuits(node.operatorToken.kind)) {
+    // The left operand always evaluates; the right one is skipped whenever
+    // the left answers, so a write there runs only together with the read.
+    return !holds(node.right, write) || holds(node.right, read);
   }
   if (ts.isForStatement(node)) {
     // The initializer and the condition run before the body is entered.

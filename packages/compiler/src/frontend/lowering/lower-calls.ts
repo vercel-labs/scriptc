@@ -178,6 +178,7 @@ import {
   lowerChildWriterMethodCall,
 } from "./builtins/child-process-methods.js";
 import {
+  isDirectOnlyResolveCallee,
   lowerCreateRequireCall,
   lowerImportMetaResolveCall,
   lowerRequireResolveCall,
@@ -221,6 +222,7 @@ import {
 import { lowerPrototypeReflectionCall, lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
+  nullishBranches,
   v8CalleeText,
   lowerPromiseAllTupleCall,
   lowerPromiseRejectCall,
@@ -691,6 +693,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const resolved =
       lowerImportMetaResolveCall(lowerer, expr) ?? lowerRequireResolveCall(lowerer, expr);
     if (resolved) return resolved;
+  }
+  {
+    const chosen = lowerDirectOnlyChoiceCall(lowerer, expr, loc);
+    if (chosen) return chosen;
   }
   // Any other require() call of the CommonJS global: MODULE_NOT_FOUND for
   // packages nothing installed resolves, a named refusal otherwise.
@@ -2254,6 +2260,74 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (callee.type.kind === "record" || callee.type.kind === "object")
     callee = lowerer.hybridCallUnwrap(callee);
   return lowerCallThroughValue(lowerer, expr, callee, loc);
+}
+
+/** A call whose callee chooses between a function value and a library
+ * function only its direct call lowers: `(options.resolve ??
+ * loader.resolve)("pkg")`, or the same choice spelled `||`. JavaScript
+ * evaluates the choice, then the arguments, and calls the chosen function
+ * with an undefined `this`. The call is therefore the choice between two
+ * calls: through the value when the left operand holds one, and the library
+ * function's own direct call when it does not. The direct call passes a
+ * receiver where the chosen value has none, so the library function must not
+ * read `this` (isDirectOnlyResolveCallee names the ones that qualify).
+ *
+ * Null when the callee is not such a choice. A choice between two function
+ * values keeps its one union value and the call through it, and the library
+ * function read into a binding first keeps its refusal: only here is the
+ * call's own argument list at hand for the direct call to lower. */
+function lowerDirectOnlyChoiceCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (call.questionDotToken) return null;
+  let choice: ts.Expression = call.expression;
+  while (ts.isParenthesizedExpression(choice)) choice = choice.expression;
+  if (!ts.isBinaryExpression(choice)) return null;
+  const op = choice.operatorToken.kind;
+  if (op !== ts.SyntaxKind.QuestionQuestionToken && op !== ts.SyntaxKind.BarBarToken) return null;
+  let library: ts.Expression = choice.right;
+  while (ts.isParenthesizedExpression(library)) library = library.expression;
+  if (!isDirectOnlyResolveCallee(lowerer, library)) return null;
+  // The left operand: one function value, or nothing. A function is truthy,
+  // so `||` and `??` choose alike over these arms.
+  const chosen = lowerer.lowerExpr(choice.left);
+  if (chosen.type.kind !== "union") return null;
+  const chosenT = chosen.type;
+  const arms = lowerer.unions.get(chosenT.unionId)?.arms ?? [];
+  const present = arms.filter((arm) => !isUnitType(arm));
+  const fn = present[0];
+  if (present.length !== 1 || fn === undefined || fn.kind !== "func" || arms.length === 1)
+    return null;
+  const type = lowerer.irTypeOf(call);
+  return nullishBranches(
+    lowerer,
+    chosen,
+    chosenT,
+    arms,
+    type,
+    loc,
+    () => lowerer.coerceInto(call, lowerRequireResolveCall(lowerer, call, library)!, type),
+    (held) =>
+      lowerer.coerceInto(
+        call,
+        lowerCallThroughValue(
+          lowerer,
+          call,
+          {
+            kind: "unionNarrow",
+            unionId: chosenT.unionId,
+            tag: arms.indexOf(fn),
+            value: held,
+            type: fn,
+            loc,
+          },
+          loc,
+        ),
+        type,
+      ),
+  );
 }
 
 /** A callable class instance called with one string: its `%call1` method

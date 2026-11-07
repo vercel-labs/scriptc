@@ -287,8 +287,10 @@ export class NarrowingStability {
   }
 
   /** Every write of a variable declared by one plain declaration
-   * statement: the declaration (`value` is its initializer, or null for
-   * none, which stores `undefined`), each `=` assignment (`value` is its
+   * statement: the declaration (`value` is its initializer; a `let`
+   * without one stores `undefined`, a `var` without one is no write: it
+   * holds `undefined` from the function's entry), each `=` assignment
+   * (`value` is its
    * right side), and every other write (destructuring, `+=`, `++`, a
    * `for...of` target), whose stored value is unknown. `stale` says the
    * value can be a read whose narrowing may be stale. Null for any other
@@ -325,16 +327,20 @@ export class NarrowingStability {
           const found = this.mayBeStale(value) || this.restoredNothingRead(value) !== null;
           return found || this.selfReferences !== selfReferences;
         };
-        found.push(
-          decl.initializer === undefined
-            ? { at: decl, value: null, kind: "declared", stale: false }
-            : {
-                at: decl,
-                value: decl.initializer,
-                kind: "assigned",
-                stale: stale(decl.initializer),
-              },
-        );
+        // A `var` binding is initialized to `undefined` when the function is
+        // entered, not when its declaration statement runs: a declaration
+        // without a value stores nothing there, and a loop around it does
+        // not reset the binding on later iterations. A block-scoped
+        // declaration does initialize its binding each time it runs.
+        const blockScoped = (list.flags & ts.NodeFlags.BlockScoped) !== 0;
+        if (decl.initializer !== undefined)
+          found.push({
+            at: decl,
+            value: decl.initializer,
+            kind: "assigned",
+            stale: stale(decl.initializer),
+          });
+        else if (blockScoped) found.push({ at: decl, value: null, kind: "declared", stale: false });
         for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(
           ts.symbolName(symbol),
         ) ?? []) {
@@ -394,8 +400,7 @@ export class NarrowingStability {
     // `undefined` keeps that type after `y = null` or `y = "text"`, which
     // the checker does not report there: those do not count.
     // A `var` is hoisted: it holds `undefined` from the function's entry,
-    // and its declaration without a value stores nothing when it runs
-    // (in a loop it keeps what an earlier iteration stored). A `let`
+    // and its declaration without a value is no write (writesOf). A `let`
     // without a value is a fresh `undefined` each time it runs.
     const list = decl.parent;
     const hoisted =
@@ -404,7 +409,7 @@ export class NarrowingStability {
       (list.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const | ts.NodeFlags.Using)) === 0;
     const holdsUndefined = (undefinedFlag & ~expected) === 0;
     const settles = (write: BindingWrite): boolean => {
-      if (write.kind === "declared") return !hoisted && holdsUndefined;
+      if (write.kind === "declared") return holdsUndefined;
       if (write.kind === "unknown" || write.stale || write.value === null) return false;
       // Only a value that is nothing by its own spelling: any other
       // expression the checker types as nothing (a call, a conditional, a
@@ -450,8 +455,7 @@ export class NarrowingStability {
         return may;
       }
       const own = writeOf(statement);
-      // A hoisted declaration without a value changes nothing.
-      if (own !== null) return own.kind === "declared" && hoisted ? may : !settles(own);
+      if (own !== null) return !settles(own);
       if (ts.isIfStatement(statement)) {
         const entered = may || raises(statement.expression);
         const then = after(statement.thenStatement, entered);

@@ -380,6 +380,34 @@ console.log(stale());
   expect(readsLocal(module, "stale", "copy")).toBe(true);
 });
 
+test("an uninitialized var declaration in a loop does not reset the copy on later iterations", async () => {
+  // A `var` binding is initialized when the function is entered, not each
+  // time its declaration statement runs: on the second iteration the copy
+  // still holds the value the first one stored, so the argument reads it.
+  const loop = (declaration: string): string => `
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+function stale(): string {
+  start = undefined;
+  set();
+  for (let i = 0; i < 2; i++) {
+    ${declaration}
+    if (i === 1) return "abcd".slice(copy);
+    copy = start;
+  }
+  return "none";
+}
+console.log(stale());
+`;
+  const stored = await lower(loop("var copy;"));
+  expect(readsLocal(stored, "stale", "copy")).toBe(true);
+  // A block-scoped declaration does initialize its binding each time.
+  const fresh = await lower(loop("let copy;"));
+  expect(readsLocal(fresh, "stale", "copy")).toBe(false);
+});
+
 test("a copy written from itself in a conditional keeps the type it held before the write", async () => {
   // `keep ? copy : undefined` stores the value `copy` already held when
   // `keep` is true, so the argument still reads the binding.

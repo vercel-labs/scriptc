@@ -1476,6 +1476,10 @@ const RUNTIME_FEATURE_RULES = {
   /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
    * a unit of its own so scr_json.c keeps its layout). */
   reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** `delete` of a key a record's type does not declare, removed from the
+   * record's kept source (scr_record_source_delete.c, a unit of its own so
+   * scr_json.c keeps its layout). */
+  recordSourceDelete: rule({ fns: ["record.sourceDelete"] }),
   /** A partial record assertion to a type whose values may be frozen
    * (scr_record_view_frozen.c): a view of such a type shares the frozen bit
    * with frozen records, and the unit tells the two apart. The frontend
@@ -1494,6 +1498,12 @@ const RUNTIME_FEATURE_RULES = {
   genBind: rule({
     initial: (mod) => mod.functions.some((fn) => fn.generator?.bindAtCall === true),
   }),
+  /** A generator function reads `this` (dyn.generatorThis): its body runs
+   * on the generator's fiber after the call returned, so the program's
+   * spawn wrappers record the call's receiver (scr_gen_capture_receiver).
+   * A program without the read records none: its generators take no
+   * dynamic value. */
+  genReceiver: rule({ fns: ["dyn.generatorThis"] }),
   /** Buffer.prototype methods called on checked-dynamic values
    * (scr_bytes_dyn.c). */
   dynBuffer: rule({
@@ -2050,9 +2060,11 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynCollections: false,
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
+    recordSourceDelete: false,
     recordViewFrozen: false,
     dynBuffer: false,
     dynBufferMembers: false,
+    genReceiver: false,
     bufferPrototypeObject: false,
     builtinValues: false,
     computedRequire: false,

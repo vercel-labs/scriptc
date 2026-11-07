@@ -413,7 +413,7 @@ import {
   recordViewFieldPtr,
   recordViewTest,
 } from "./record-views.js";
-import { LlvmUnsupportedError } from "./unsupported.js";
+import { LlvmUnsupportedError, anchorRefusal } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
   isObjectArm,
@@ -2876,6 +2876,7 @@ export class LlEmitter {
           new LlvmUnsupportedError(
             `partialRecordAssertion:${site.reason}`,
             site.loc,
+            undefined,
             "this object literal leaves required properties of the asserted type unwritten, and " +
               `${PARTIAL_DECLINE_TEXT[site.reason]}, so the object cannot be completed in place: ` +
               "write every required property in the literal, or collect the properties in a " +
@@ -2884,7 +2885,13 @@ export class LlEmitter {
       );
       if (refused.length > 0) {
         const first = refused[0]!;
-        throw new LlvmUnsupportedError(first.kind, first.loc, first.hint, refused.slice(1));
+        throw new LlvmUnsupportedError(
+          first.kind,
+          first.loc,
+          undefined,
+          first.hint,
+          refused.slice(1),
+        );
       }
     }
     // Integer clones signal a stack overflow through their result. Worker
@@ -2923,7 +2930,11 @@ export class LlEmitter {
         this.llType(g.type); // refuses out-of-tier kinds
       } catch (err) {
         if (err instanceof LlvmUnsupportedError)
-          throw new LlvmUnsupportedError(`global:${g.type.kind}`);
+          throw new LlvmUnsupportedError(
+            `global:${g.type.kind}`,
+            g.source?.loc,
+            `global ${g.name} of type ${typeKey(g.type)}`,
+          );
         throw err;
       }
       this.globalTypes.set(g.id, g.type);
@@ -3180,7 +3191,7 @@ export class LlEmitter {
       case "void":
         return "void";
       default:
-        throw new LlvmUnsupportedError(`type:${t.kind}`);
+        throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
     }
   }
 
@@ -5214,7 +5225,11 @@ export class LlEmitter {
       case "jsval":
         return jsTruthy(this, valueName);
       default:
-        throw new LlvmUnsupportedError(`truthy:${unionArm ? "union:" : ""}${kind}`);
+        throw new LlvmUnsupportedError(
+          `truthy:${unionArm ? "union:" : ""}${kind}`,
+          undefined,
+          `a truth test of a ${kind} value`,
+        );
     }
   }
 
@@ -6552,7 +6567,13 @@ export class LlEmitter {
     return copies;
   }
   emitFunction(fn: IrFunction): string {
-    return emitFunction(this, fn);
+    try {
+      return emitFunction(this, fn);
+    } catch (error) {
+      // A refusal raised outside the function's statements (its signature,
+      // locals and frame) takes the function's span.
+      throw anchorRefusal(error, fn.loc, fn.name);
+    }
   }
 
   /** What this range emitter (chunkEmitter) hands the merging emitter, as
@@ -7503,6 +7524,9 @@ export class LlEmitter {
     this.int32KindResume = this.int32Kinds?.resume.get(s) ?? null;
     try {
       this.emitStmtBody(s);
+    } catch (error) {
+      // A refusal raised without a source span takes this statement's.
+      throw anchorRefusal(error, s.loc);
     } finally {
       this.B.debugLocation = previous;
       this.int32KindResume = kindResume;

@@ -66,20 +66,6 @@ const SRC = "packages/compiler/src";
 
 export const PROGRAM_FACTS: readonly ProgramFact[] = [
   {
-    name: "thenables-may-be-defined",
-    file: `${SRC}/frontend/lowering/thenables.ts`,
-    symbol: "programMayDefineThenables",
-    source: "text",
-    scope: "program",
-    setBy:
-      "a regular expression over each file's raw text that looks for a `then` definition; it matches in comments and strings",
-    gates:
-      "every `await` of a checked-dynamic value: PromiseResolve and adoption instead of the plain dynamic await",
-    narrower: "the awaited value, at run time",
-    tracked: null,
-    lowererFields: ["thenablesMayBeDefined"],
-  },
-  {
     name: "creates-wrappers",
     file: `${SRC}/frontend/lowering/primitive-wrappers.ts`,
     symbol: "programCreatesWrappers",
@@ -658,11 +644,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     2,
     "closed-world",
     "whether one property of one export table is written",
-  ),
-  decides(
-    "frontend/lowering/thenables.ts#programMayDefineThenables",
-    2,
-    "thenables-may-be-defined",
   ),
   scan(
     "frontend/lowering/unit-reuse.ts#UnitReuse",

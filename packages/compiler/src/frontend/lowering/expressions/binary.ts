@@ -1,7 +1,10 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
 import {
   fenceConsoleMutation,
+  isConsoleExpression,
+  isConsoleObjectRead,
   refuseConsoleRecordComparison,
+  soleRecordArm,
 } from "../coercions/console-records.js";
 import { lowerStaticPrivateAssignment } from "../private-statics.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -458,6 +461,13 @@ export function lowerNullishPair(
   // arm that has no first-class union representation.
   const fresh = rest.length === 1 ? lowerer.emptyCollectionFor(expr.right, rest[0]!) : null;
   if (fresh) return { kind: "nullish", left, right: fresh, type: fresh.type, loc };
+  // `logger ?? console` over an optional record: console flows into that
+  // record (console-records.ts), so the result keeps the record's layout.
+  if (rest.length === 1 && rest[0]!.kind === "record" && isConsoleExpression(lowerer, expr.right)) {
+    const right = lowerer.lowerExprExpecting(expr.right, rest[0]!);
+    if (typeEquals(right.type, rest[0]!))
+      return { kind: "nullish", left, right, type: rest[0]!, loc };
+  }
   // `optionalRecord ?? { a: 1, items: new Map() }`: a fresh fallback literal
   // whose untyped empty collections (`new Map()`, `new Set()` without type
   // arguments, which the checker types `Map<any, any>`) leave the checker's
@@ -3038,7 +3048,14 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   }
   if (left.kind === "unitLit" && op === ts.SyntaxKind.AmpersandAmpersandToken) return left;
   if (op === ts.SyntaxKind.BarBarToken && REF_TRUTHY_KINDS.has(left.type.kind)) return left;
-  const right = lowerer.lowerExpr(expr.right);
+  let right = lowerer.lowerExpr(expr.right);
+  // `logger || console` over an optional record: console flows into the
+  // record the left operand holds (console-records.ts), so the pair stays
+  // typed, as the checker's own result type is.
+  if (op === ts.SyntaxKind.BarBarToken && isConsoleObjectRead(right)) {
+    const record = soleRecordArm(lowerer, left.type);
+    if (record) right = lowerer.coerceToExpected(right, record);
+  }
   // A LITERAL-unit left operand (a compile-time undefined/null — the
   // capability-probe members: `process.features.inspector ||
   // !flag.startsWith('--inspect')` reads undefined in a compiled

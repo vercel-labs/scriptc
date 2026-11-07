@@ -34,3 +34,8 @@ const level: "log" | "error" = process.argv.length > 99 ? "error" : "log";
 console[level]("computed member");
 console.log(typeof console.table, typeof console.profile === "function", !console.time);
 
+
+// Membership follows the keys Node's console has.
+const names = ["log", "table", "missing", "_stdout"];
+console.log("log" in console, "nope" in console, "toString" in console);
+console.log(names.map((name) => name in console).join(","));

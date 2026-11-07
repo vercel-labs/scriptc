@@ -88,3 +88,10 @@ named.get("default")!.log("from a map");
 const first: Logger = console;
 const second: Logger = console;
 console.log(first.log === second.log, first.log === first.error);
+
+// An optional logger defaulted with `||` and `??` in an inferred position.
+const orDefault = (logger?: Logger) => logger || console;
+const nullishDefault = (logger?: Logger) => logger ?? console;
+orDefault().log("or default");
+nullishDefault().error("nullish default");
+orDefault({ log: () => console.log("given"), error: () => {} }).log();

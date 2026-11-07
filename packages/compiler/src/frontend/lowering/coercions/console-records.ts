@@ -24,7 +24,7 @@
  *   through an assertion: tsc rejects the plain flow).
  * No shape reaches the run-time "expected object, got console" check. */
 import * as ts from "../../ts7/adapter.js";
-import { DYN, STRING, UNDEFINED_T, typeEquals } from "../../../ir/ir.js";
+import { BOOL, DYN, STRING, UNDEFINED_T, typeEquals } from "../../../ir/ir.js";
 import type { IrExpr, IrRecordField, IrType, SrcLoc } from "../../../ir/ir.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
@@ -82,6 +82,30 @@ export function isConsoleObjectRead(expr: IrExpr): boolean {
   return expr.kind === "libCall" && expr.fn === "console.native";
 }
 
+/** Whether `node`, with its wrappers peeled, spells the global console. */
+export function isConsoleExpression(lowerer: Lowerer, node: ts.Expression): boolean {
+  let source = node;
+  while (
+    ts.isParenthesizedExpression(source) ||
+    ts.isAsExpression(source) ||
+    ts.isTypeAssertion(source) ||
+    ts.isSatisfiesExpression(source) ||
+    ts.isNonNullExpression(source)
+  )
+    source = source.expression;
+  return ts.isIdentifier(source) && lowerer.isStdlibGlobal(source, "console");
+}
+
+/** The record type a slot of type `t` holds when it holds exactly one,
+ * beside `undefined` and `null` (`Logger`, `Logger | undefined`). */
+export function soleRecordArm(lowerer: Lowerer, t: IrType): IrType | null {
+  if (t.kind === "record") return t;
+  if (t.kind !== "union") return null;
+  const arms = lowerer.unions.get(t.unionId)?.arms ?? [];
+  const values = arms.filter((arm) => arm.kind !== "undefinedT" && arm.kind !== "nullT");
+  return values.length === 1 && values[0]!.kind === "record" ? values[0]! : null;
+}
+
 /** Whether `node`, with its assertions peeled, is typed as the standard
  * library's console object: @types/node's global `interface Console`, or
  * the object type the fallback declarations give `console`. A binding of
@@ -110,6 +134,69 @@ export function isConsoleTyped(lowerer: Lowerer, node: ts.Node): boolean {
       holder.name.text === "console"
     );
   });
+}
+
+/** console's own keys that are not enumerable (Node's internal slots). */
+const CONSOLE_HIDDEN_KEYS: readonly string[] = [
+  "_stdout",
+  "_stderr",
+  "_stdoutErrorHandler",
+  "_stderrErrorHandler",
+  "_ignoreErrors",
+  "_times",
+];
+
+/** The members console inherits from Object.prototype. */
+const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "toLocaleString",
+  "toString",
+  "valueOf",
+  "__proto__",
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+]);
+
+/** `key in console`: a key known at build time folds to Node's answer; a
+ * string computed at run time is tested against console's own keys. Null
+ * for a key of another type, which keeps the ordinary lowering. */
+export function consoleHasKey(
+  lowerer: Lowerer,
+  keyNode: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const folded = lowerer.foldedStringKeyOf(keyNode);
+  if (folded !== null) {
+    const value =
+      CONSOLE_KEYS.has(folded) ||
+      CONSOLE_HIDDEN_KEYS.includes(folded) ||
+      OBJECT_PROTOTYPE_KEYS.has(folded);
+    return { kind: "boolLit", value, type: BOOL, loc };
+  }
+  const key = lowerer.lowerExpr(keyNode);
+  if (key.type.kind !== "string") return null;
+  const own: IrExpr = {
+    kind: "dynObjLit",
+    fields: [...CONSOLE_KEY_ORDER, ...CONSOLE_HIDDEN_KEYS].map((name) => ({
+      key: { kind: "strLit", value: name, type: STRING, loc },
+      value: lowerer.coerceToExpected({ kind: "boolLit", value: true, type: BOOL, loc }, DYN),
+    })),
+    type: DYN,
+    loc,
+  };
+  return {
+    kind: "dynTest",
+    test: "undefined",
+    negated: true,
+    value: { kind: "dynKeyGet", value: own, key, type: DYN, loc },
+    type: BOOL,
+    loc,
+  };
 }
 
 /** Whether the value `node` reads is only tested, never kept: the operand

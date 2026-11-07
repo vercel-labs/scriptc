@@ -119,6 +119,30 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
+  test("an Extract member pattern assertion checks the member the literal selects", async () => {
+    const r = await compileAndRun(
+      "extract-member-pattern-assertion",
+      `
+      type Circle = { kind: "circle"; radius: number };
+      type Square = { kind: "square"; side: number };
+      type Shape = Circle | Square;
+      function pick<K extends Shape["kind"]>(shape: Shape, kind: K): string {
+        const picked = shape as Extract<Shape, { kind: K }>;
+        return JSON.stringify(picked);
+      }
+      console.log(pick({ kind: "circle", radius: 1 }, "circle"));
+      try { console.log(pick({ kind: "square", side: 2 }, "circle")); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"kind":"circle","radius":1}\n' +
+        "true a '{ kind: string; side: number }' value is not representable in the target union (a value narrowed or asserted past it still held it)\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("assertions narrowing record members or union arms check the value", async () => {
     const r = await compileAndRun(
       "narrowing-record-assertions",

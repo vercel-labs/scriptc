@@ -3071,6 +3071,15 @@ export class Lowerer {
     ts.Type,
     { tsBindings: Map<ts.Symbol, ts.Type>; instance: ts.Type }[]
   >();
+  /** The ts bindings of each call-keyed instance whose key names bound
+   * literals beyond the keyof ones (generic-functions.ts memberPatternKey),
+   * with the type parameters it names them for. No call that binds those
+   * parameters otherwise shares the instance, so its body may map a type by
+   * them (pinnedTypeParamTsResolver). */
+  readonly pinnedTypeParams: {
+    tsBindings: Map<ts.Symbol, ts.Type>;
+    pinned: ReadonlySet<ts.Symbol>;
+  }[] = [];
   /** Values an erased type assertion produced, with the asserted type
    * (`x as T` keeps x's representation): a slot that no ordinary
    * conversion reaches converts them as asserted (assertedConversion). */
@@ -5097,6 +5106,7 @@ export class Lowerer {
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
       checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
+      checkedTable("pinnedTypeParams", () => this.pinnedTypeParams.length),
       checkedTable("castGlobalAliases", () => this.castGlobalAliases.size),
       checkedTable("methodAccessSites", () => this.methodAccessSites.size),
       checkedTable("checkedJsOverrideMethods", () => this.checkedJsOverrideMethods.size),
@@ -5801,6 +5811,7 @@ export class Lowerer {
       classNamer: (decl) => this.classNamer(decl),
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
+      resolvePinnedTypeParamTs: this.pinnedTypeParamTsResolver,
       resolveBoundAliasTs: this.boundAliasTsResolver,
       degradedType: (type) => {
         const id = (type as { id?: number }).id;
@@ -13443,6 +13454,21 @@ export class Lowerer {
     if (!this.typeParamTsBindings) return null;
     const sym: ts.Symbol | undefined = t.getSymbol();
     return (sym && this.typeParamTsBindings.get(sym)) ?? null;
+  };
+
+  /** typeParamTsResolver for the parameters the current instance is keyed
+   * on by their bound literals (pinnedTypeParams): the instance serves no
+   * other binding of them, so a mapping may follow the literal. Null for
+   * every other parameter, whose instance other bindings share. */
+  readonly pinnedTypeParamTsResolver = (t: ts.Type): ts.Type | null => {
+    if (!(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    noteScopeSensitiveMapping();
+    const bindings = this.typeParamTsBindings;
+    if (!bindings) return null;
+    const sym: ts.Symbol | undefined = t.getSymbol();
+    if (!sym) return null;
+    const keyed = this.pinnedTypeParams.find((entry) => entry.tsBindings === bindings);
+    return keyed?.pinned.has(sym) ? (bindings.get(sym) ?? null) : null;
   };
 
   /** The concrete instantiation of a generic alias reference (`Catalog<G,

@@ -252,15 +252,34 @@ function copied(clear: boolean) {
 }
 copied(true);
 `;
-  // Every path to the return runs the reset: the copy is undefined there,
-  // and the function returns nothing, as the checker infers.
-  await lower(source("copy = undefined;"));
-  // One path keeps the initializer's value, and so does a reset followed
-  // by the read again.
+  // Every path to the return stores undefined last: the copy is undefined
+  // there, and the function returns nothing, as the checker infers.
+  for (const reset of [
+    "copy = undefined;",
+    "if (clear) copy = start; copy = undefined;",
+    "if (clear) { copy = undefined; } else { copy = undefined; }",
+    "for (let i = 0; i < 2; i++) { copy = start; } copy = undefined;",
+    "try { copy = start; } finally { set(); } copy = undefined;",
+  ])
+    await lower(source(reset));
+  // Some path keeps the initializer's value, or stores the read again.
   const refusal = /SC1090: returning 'copy' from a function whose return type TypeScript infers/;
-  await expect(lower(source("if (clear) copy = undefined;"))).rejects.toThrow(refusal);
-  await expect(lower(source("copy = undefined; copy = start;"))).rejects.toThrow(refusal);
-  await expect(lower(source(""))).rejects.toThrow(refusal);
+  for (const reset of [
+    "",
+    "if (clear) copy = undefined;",
+    "copy = undefined; copy = start;",
+    "clear && (copy = undefined);",
+    "clear || (copy = undefined);",
+    "clear ? (copy = undefined) : 0;",
+    "for (let i = 0; i < 1; i++) { if (clear) break; copy = undefined; }",
+    "while (clear) { copy = undefined; break; }",
+    "try { if (clear) throw new Error(); copy = undefined; } catch {}",
+    "try { set(); } catch { copy = undefined; }",
+    "block: { if (clear) break block; copy = undefined; }",
+    "switch (clear) { case true: copy = undefined; }",
+    "copy = undefined; if (clear) copy = start;",
+  ])
+    await expect(lower(source(reset)), reset).rejects.toThrow(refusal);
 });
 
 test("a function inferred to return undefined from a stale narrowing is refused", async () => {
@@ -281,4 +300,59 @@ console.log(result());
   );
   const module = await lower(source(": string | undefined"));
   expect(readsGlobal(module, "result", "found")).toBe(true);
+});
+
+/** The value a function's `return` statement carries: `"absent"` for a
+ * bare return, `"present"` otherwise. */
+function returnValue(module: IrModule, fn: string): string {
+  const found = module.functions.find((f) => f.name === fn || f.name.endsWith(`.${fn}`));
+  if (!found) throw new Error(`no function ${fn}`);
+  let value = "none";
+  JSON.stringify(found.body, (_key, node: unknown) => {
+    const stmt = node as { kind?: string; value?: unknown };
+    if (stmt?.kind === "return") value = stmt.value === null ? "absent" : "present";
+    return node;
+  });
+  return value;
+}
+
+test("an untyped copy the function resets to undefined reads as absent", async () => {
+  // The checker infers `copy: undefined` from the narrowing of `start`, but
+  // `copy = undefined` is the write the return sees: there is nothing stale
+  // left to carry, so the return is absent rather than refused.
+  const module = await lower(`
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+function stale() {
+  start = undefined;
+  set();
+  let copy = start;
+  copy = undefined;
+  return copy;
+}
+stale();
+`);
+  expect(returnValue(module, "stale")).toBe("absent");
+});
+
+test("an untyped copy assigned the stale read again after a reset is refused", async () => {
+  await expect(
+    lower(`
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+function stale() {
+  start = undefined;
+  set();
+  let copy = start;
+  copy = undefined;
+  copy = start;
+  return copy;
+}
+stale();
+`),
+  ).rejects.toThrow(/SC1090: returning 'copy'/);
 });

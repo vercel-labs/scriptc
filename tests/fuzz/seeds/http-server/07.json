@@ -1,0 +1,1 @@
+["0","0","GET http://a/abs HTTP/1.0\r\nUser-Agent: x\r\nCookie: a=b; c=d\r\nCookie: e=f\r\n\r\n"]

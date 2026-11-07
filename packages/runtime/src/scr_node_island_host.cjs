@@ -138,8 +138,29 @@ function isThenable(value) {
   );
 }
 
+// Errors by which Node says it did not find a file, thrown while a call's
+// module loaded, before its function ran. The runtime may put back files
+// the installed module tree lost and repeat such a call (scr_node_island.c,
+// "What a start does"); once the function has run, a call is never
+// repeated.
+const loadFailures = new WeakSet();
+const MISSING_FILE_CODES = new Set(["MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND", "ENOENT"]);
+
+function loadedFunction(file, specifier, name) {
+  try {
+    return exportedFunction(file, specifier, name);
+  } catch (error) {
+    try {
+      if (error instanceof Error && MISSING_FILE_CODES.has(error.code)) loadFailures.add(error);
+    } catch {
+      // An error whose code cannot be read is not one of Node's.
+    }
+    throw error;
+  }
+}
+
 function invokeSync(file, specifier, name, args) {
-  const { fn, namespace } = exportedFunction(file, specifier, name);
+  const { fn, namespace } = loadedFunction(file, specifier, name);
   const result = Reflect.apply(fn, namespace, args);
   if (isThenable(result)) {
     // The promise is dropped: its rejection must not end the process.
@@ -152,7 +173,7 @@ function invokeSync(file, specifier, name, args) {
 }
 
 async function invokeAsync(file, specifier, name, args) {
-  const { fn, namespace } = exportedFunction(file, specifier, name);
+  const { fn, namespace } = loadedFunction(file, specifier, name);
   return await Reflect.apply(fn, namespace, args);
 }
 
@@ -177,6 +198,7 @@ function thrownCopy(error) {
   if (error instanceof Error) {
     const copy = { kind: errorKind(error), message: String(error.message) };
     if (typeof error.code === "string") copy.code = error.code;
+    if (loadFailures.has(error)) copy.load = true;
     return `T${JSON.stringify({ error: copy })}`;
   }
   let text;

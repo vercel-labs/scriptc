@@ -43,42 +43,50 @@ test("a hoisted node condition leaves no types claim behind", () => {
   });
 });
 
-test("a typed package's undeclared subpath keeps the flagless any surface", async () => {
+test("the shadow leaves a package that is not opted in as it is", async () => {
   const dir = await mkdtemp("/tmp/scriptc-npm-static-shadow-");
   try {
     const hidden = join(dir, "node_modules", "hiddenlang");
     await mkdir(join(hidden, "lib", "languages"), { recursive: true });
     await mkdir(join(hidden, "types"), { recursive: true });
+    const manifest = join(hidden, "package.json");
     await writeFile(
-      join(hidden, "package.json"),
+      manifest,
       '{"name":"hiddenlang","types":"types/index.d.ts","main":"lib/core.js"}',
     );
     // highlight.js 10 ships ONE package .d.ts and types the language
-    // subpaths from an ambient block inside it. That block never answers a
-    // specifier the resolver answered with the JavaScript file itself.
+    // subpaths from an ambient block inside it. That block answers a
+    // specifier only while the JavaScript file itself stays out of the
+    // program, which it does: no file of a package that is not opted in is
+    // a program root.
+    const declarations = join(hidden, "types", "index.d.ts");
     await writeFile(
-      join(hidden, "types", "index.d.ts"),
+      declarations,
       'declare module "hiddenlang/lib/languages/*" { export default function(hljs?: Api): Lang; }\n',
     );
-    await writeFile(join(hidden, "lib", "core.js"), "module.exports = { register() {} };\n");
+    const core = join(hidden, "lib", "core.js");
+    await writeFile(core, "module.exports = { register() {} };\n");
     const php = join(hidden, "lib", "languages", "php.js");
     await writeFile(
       php,
       "/** @param {Api} hljs */\nfunction php(hljs) { return {}; }\nmodule.exports = php;\n",
     );
+    // An ES module package, the same way.
+    const esm = join(dir, "node_modules", "esmkit");
+    await mkdir(join(esm, "lib"), { recursive: true });
+    await writeFile(
+      join(esm, "package.json"),
+      '{"name":"esmkit","type":"module","types":"index.d.ts","main":"lib/core.js"}',
+    );
+    const esmCore = join(esm, "lib", "core.js");
+    await writeFile(esmCore, "export function register() {}\n");
     setNpmStaticPackages(["opted"]);
     try {
       const shadow = npmStaticFsShadow({} as FrontendServices)!;
-      // Inferred, the JSDoc-required `hljs` disagrees with the declaration's
-      // optional one — a program-level SC0001 no package caused. The
-      // flagless build never types this file, so the import is `any`.
-      expect(shadow.readFile(php)).toContain("module.exports = (() => { let u; return u; })();");
-      // A sibling declaration types this very file: it keeps its own text.
-      await writeFile(
-        join(hidden, "lib", "core.d.ts"),
-        "export declare function register(): void;\n",
-      );
-      expect(shadow.readFile(join(hidden, "lib", "core.js"))).toBeUndefined();
+      for (const file of [php, core, manifest, declarations, esmCore]) {
+        expect(shadow.readFile(file)).toBeUndefined();
+        expect(shadow.hideFile(file)).toBe(false);
+      }
     } finally {
       setNpmStaticPackages([]);
     }
@@ -122,31 +130,6 @@ test("an island package is typed by its declarations, not by its JavaScript", as
     setNpmStaticPackages(["islandlang"]);
     try {
       expect(npmStaticFsShadow({} as FrontendServices)!.readFile(php)).toBeUndefined();
-    } finally {
-      setNpmStaticPackages([]);
-    }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("an ES module package's JavaScript keeps its own text", async () => {
-  const dir = await mkdtemp("/tmp/scriptc-npm-static-shadow-esm-");
-  try {
-    const esm = join(dir, "node_modules", "esmkit");
-    await mkdir(join(esm, "lib"), { recursive: true });
-    await writeFile(
-      join(esm, "package.json"),
-      '{"name":"esmkit","type":"module","types":"index.d.ts","main":"lib/core.js"}',
-    );
-    await writeFile(join(esm, "index.d.ts"), "export declare function register(): void;\n");
-    const core = join(esm, "lib", "core.js");
-    await writeFile(core, "export function register() {}\n");
-    setNpmStaticPackages(["opted"]);
-    try {
-      // The any-surface stub is CommonJS-shaped, so an ES module file must
-      // keep its text: a stubbed `module.exports` would erase its exports.
-      expect(npmStaticFsShadow({} as FrontendServices)!.readFile(core)).toBeUndefined();
     } finally {
       setNpmStaticPackages([]);
     }

@@ -1647,6 +1647,9 @@ export class LlEmitter {
   private readonly stackGuardTsd: "aarch64" | "x86_64" | null;
   readonly emitLibraryIdentity: boolean;
   readonly runtimeAbiMarker: boolean;
+  /** Whether the object format takes ELF section names, so a definition can
+   * be given a section of its own for the linker's section GC to drop. */
+  readonly elfSections: boolean;
   readonly detachedExit: boolean;
   readonly stdoutBuffering: boolean;
   readonly nodeIslandModuleData: Uint8Array | null;
@@ -2457,11 +2460,12 @@ export class LlEmitter {
         ? /^(x86_64|amd64)\b/i.test(options.targetTriple)
         : process.arch === "x64");
     this.compactRefBase = options.lowRegion === true ? compactRefBaseOf(options.targetTriple) : 0n;
-    this.executableTls =
-      mod.workers === true &&
-      mod.lib === undefined &&
+    // ELF, by exclusion: neither WebAssembly, Mach-O nor COFF.
+    const elf =
       !this.wasi &&
       !/apple|darwin|windows|mingw|cygwin|win32/.test(options.targetTriple || process.platform);
+    this.elfSections = elf;
+    this.executableTls = mod.workers === true && mod.lib === undefined && elf;
     const host = options.targetTriple || `${process.arch}-${process.platform}`;
     this.stackGuardTsd =
       mod.workers === true && mod.lib === undefined && !this.wasi && /apple|darwin/.test(host)

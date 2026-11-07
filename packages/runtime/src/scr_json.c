@@ -11970,28 +11970,11 @@ static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
   }
 }
 
-typedef struct {
-  const ScrVt *vt;
-  ScrDyn *(*box)(void *);
-} ScrErrorDynType;
-static SCR_TL ScrErrorDynType *scr_error_dyn_types = NULL;
-static SCR_TL size_t scr_error_dyn_type_count = 0;
-
-static void scr_error_dyn_types_drop(void) {
-  free(scr_error_dyn_types);
-  scr_error_dyn_types = NULL;
-  scr_error_dyn_type_count = 0;
-}
-
-void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *)) {
-  for (size_t i = 0; i < scr_error_dyn_type_count; i++) {
-    if (scr_error_dyn_types[i].vt == vt) return;
-  }
-  if (!scr_error_dyn_type_count) scr_atexit(scr_error_dyn_types_drop);
-  scr_error_dyn_types = realloc(scr_error_dyn_types, (scr_error_dyn_type_count + 1) * sizeof *scr_error_dyn_types);
-  if (!scr_error_dyn_types) scr_json_oom();
-  scr_error_dyn_types[scr_error_dyn_type_count++] = (ScrErrorDynType){vt, box};
-}
+/* The program's table of error class views (scr_dyn.h). A program without
+ * classes that extend Error defines none and reads this null default, which
+ * is zero-filled storage rather than a constant so it adds no bytes to the
+ * executable; the program's definition is a constant. */
+__attribute__((weak)) const ScrErrorDynType *scr_error_dyn_types = NULL;
 
 static void scr_errdyn_teardown(void) {
   /* Detach the storage first: no release below sees a half-torn cache. */
@@ -12375,9 +12358,9 @@ ScrDyn *scr_dyn_from_error(const ScrError *e) {
   size_t hit = scr_errdyn_find(e, true);
   if (hit != SIZE_MAX) return scr_dyn_retain(scr_errdyn_cache[hit].dyn);
   ScrDyn *d = NULL;
-  for (size_t i = 0; i < scr_error_dyn_type_count; i++) {
-    if (scr_error_dyn_types[i].vt == e->vt) {
-      d = scr_error_dyn_types[i].box((void *)e);
+  for (const ScrErrorDynType *type = scr_error_dyn_types; type && type->vt; type++) {
+    if (type->vt == e->vt) {
+      d = type->box((void *)e);
       break;
     }
   }

@@ -453,19 +453,16 @@ export function nodeIslandSymbols(names) {
  * through worker messages:
  * node:worker_threads values are dyn objects. bench/json-unions, added
  * later too, decodes JSON.parse trees. bench/throw-chains, also added
- * later, tests caught values with `instanceof`, as bench/validate-errors
- * does. bench/dynamic-methods and
+ * later, reads caught values as checked-dynamic values. bench/dynamic-methods and
  * bench/dynamic-properties are untyped JavaScript. bench/regex-replacers,
  * also added later, passes checked-dynamic values to replace callbacks
  * whose parameters the lib types `any`: captures a match can leave unset
  * and results the checker types `any`. bench/record-untyped-writes, also
  * added later, writes typed records through `unknown` and `Object.assign`
- * views. bench/layered-errors, also added later, constructs and throws
- * Error subclass instances, as bench/validate-errors does: the root in both
- * is the dynamic view registered at start-up for every program class that
- * extends Error (scr_error_register_dyn), whose snapshot reaches
- * scr_error_dyn_fields. Their constructors are not a root: `super(message)`
- * with a string message takes the typed entry.
+ * views. bench/layered-errors and bench/validate-errors construct, throw
+ * and catch Error subclass instances and are fully typed: a class that
+ * extends Error links its dynamic view only when the program links
+ * something that can box an error (scr_error_dyn_types, scr_dyn.h).
  * bench/stream-buffered-drain, also added later, drains an object-mode
  * Readable, whose chunks are checked-dynamic values. Every other bench
  * workload is fully typed and must link none. The gate and
@@ -476,7 +473,6 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/json-records",
   "bench/cli-config",
   "bench/http-api",
-  "bench/validate-errors",
   "bench/regex-logs",
   "bench/atomics-contended",
   "bench/intern-table",
@@ -494,7 +490,6 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/throw-chains",
   "bench/regex-replacers",
   "bench/record-untyped-writes",
-  "bench/layered-errors",
   "bench/stream-buffered-drain",
   "bench/untyped-validate",
 ]);

@@ -2054,7 +2054,17 @@ extern SCR_TL size_t scr_uncloneable_count;
 /* An %Error as the boundary's dyn shape ({name, message[, code]}).
  * Borrows; +1. */
 ScrDyn *scr_dyn_from_error(const ScrError *e);
-void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
+/* The checked-dynamic view of each program class that extends Error: its
+ * vtable and the function that boxes an instance, in rows ended by a null
+ * vtable. The program object defines scr_error_dyn_types to point at its
+ * table, overriding the runtime's weak null. Only scr_dyn_from_error reads
+ * it, so the linker keeps the table, and the views it names, only in a
+ * program that can view an error dynamically. */
+typedef struct ScrErrorDynType {
+  const ScrVt *vt;
+  ScrDyn *(*box)(void *);
+} ScrErrorDynType;
+extern const ScrErrorDynType *scr_error_dyn_types;
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
 /* The `stack` member an error view reads as a non-empty string, for
  * util.inspect's stack rendering (Node's getStackString). Borrows the view;

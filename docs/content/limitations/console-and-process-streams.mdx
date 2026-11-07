@@ -1,5 +1,6 @@
 `console.log`, `info`, and `debug` write to stdout; `error` and `warn` write to stderr.
 They accept `unknown`, printing strings verbatim and other values through native `util.inspect`.
+Console methods never color their output on their own: where Node colors numbers, booleans and the values inside objects and arrays, on a color terminal or with `FORCE_COLOR` set, the executable prints them plain.
 Direct calls support global `console` and `node:console` imports.
 Console output, `util.format`, and `util.formatWithOptions` with a format string known only at run time, spread arguments, or an options object format their arguments at run time.
 There, `%s` of a function or of a class instance whose class defines `toString` throws `SC2020`.

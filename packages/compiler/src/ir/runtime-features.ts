@@ -1397,6 +1397,9 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.ecdhNew",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
+      // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
+      // this unit's warning queue.
+      "fs.existsSyncValue",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -1998,6 +2001,10 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.writeFileFlags",
     ],
   }),
+  /** existsSync over a path value that is not statically a string:
+   * scr_fs_exists_dyn.c, which reports DEP0187 through the warning queue the
+   * dynAsync rule brings in. */
+  fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
   /** The BYTE-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -2074,6 +2081,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsFlags: false,
+    fsExistsValue: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,

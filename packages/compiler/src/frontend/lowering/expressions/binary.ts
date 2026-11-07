@@ -249,13 +249,21 @@ function narrowedUnion(lowerer: Lowerer, e: IrExpr): IrExpr | null {
 function decidedAfter(lowerer: Lowerer, other: IrExpr, value: boolean, loc: SrcLoc): IrExpr {
   const answer: IrExpr = { kind: "boolLit", value, type: BOOL, loc };
   if (isSafeToDiscard(narrowedUnion(lowerer, other) ?? other)) return answer;
-  return {
-    kind: "seqExpr",
-    stmts: [{ kind: "exprStmt", expr: other, loc }],
-    result: answer,
-    type: BOOL,
-    loc,
+  // A sequence keeps its own statements and the answer takes the result
+  // position. Its result runs only when that is observable: a unit result
+  // has no value to evaluate, so `(f(), undefined) === null` runs `f`, and
+  // `(first(), last()) !== null` runs both.
+  const stmts: IrStmt[] = [];
+  const run = (e: IrExpr): void => {
+    if (e.kind === "seqExpr") {
+      stmts.push(...e.stmts);
+      run(e.result);
+    } else if (!isSafeToDiscard(e)) {
+      stmts.push({ kind: "exprStmt", expr: e, loc });
+    }
   };
+  run(other);
+  return { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
 }
 
 /** The union-typed process.envGet read inside a checker-narrowed operand,

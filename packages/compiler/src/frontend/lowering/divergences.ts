@@ -16,6 +16,7 @@ import { isNodeModulesPath } from "../resolve.js";
 import {
   keyOrderDivergenceDiag,
   keyOrderFallbackDiag,
+  keyOrderHybridDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
   widthCopyDivergenceDiag,
@@ -353,6 +354,10 @@ export function scanDivergences(
       const keys = (shape?.declaredOrder ?? []).filter((name) => !name.startsWith("%"));
       once(keyOrderFallbackDiag(keys.join(", "), cause, loc));
     }
+    // An index-signature record with declared properties lists those first:
+    // where the program creates its keys in another order and walks them.
+    for (const { loc, key, cause } of lowerer.keyOrder.hybridOrders)
+      if (!isNodeModulesPath(loc.file)) once(keyOrderHybridDiag(key, cause, loc));
   }
 
   // ── one-argument localeCompare over text outside the collation table ─

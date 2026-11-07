@@ -1591,8 +1591,15 @@ void scr_record_source_spread(void *dst, const void *src, const char *const *nam
  * in the order the record serializes them. Both borrow. */
 void scr_record_order_append(void *rec, ScrDyn *capsule, const char *const *names,
                              const size_t *lens, size_t count, const char *key, size_t key_len);
+void scr_record_order_append_key(void *rec, ScrDyn *capsule, const char *const *names,
+                                 const size_t *lens, size_t count, const ScrStr *key);
 void scr_record_order_copy(void *rec, const ScrDyn *keys, const char *const *names,
                            const size_t *lens, size_t count);
+/* `carry`: the same for a copy built from the record `src`, read from the
+ * source's own kept key list. A source that keeps none is in its type's
+ * table order, and the copy is left as it is. Borrows both. */
+void scr_record_order_carry(void *rec, const void *src, const char *const *names,
+                            const size_t *lens, size_t count);
 /* `delete rec.key` of a key the record's declared layout does not hold
  * (scr_record_source_delete.c, a gated unit): removes the own property
  * from the record's kept source (a record view deletes from the record it

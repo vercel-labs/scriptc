@@ -27,3 +27,22 @@ for (const r of rests) {
   r.d ??= 9;
   show("each", r);
 }
+// A record checked from a dynamic value and then converted to a wider record
+// type keeps the order of the value it was checked from.
+interface Item { id: string; tags: string[]; ready: boolean }
+type Wide = { id: string; tags: string[]; ready: boolean; opts?: { a?: number } };
+const data = { id: "a", ready: true, tags: ["x"] };
+const loose: object = data;
+const item = loose as Item;
+console.log("checked:", Object.keys(item).join(","), JSON.stringify(item));
+const wide: Wide = item;
+console.log("widened:", Object.keys(wide).join(","), JSON.stringify(wide));
+const list: Wide[] = [item];
+console.log("in array:", Object.keys(list[0]!).join(","), JSON.stringify(list));
+function take(w: Wide): string {
+  return Object.keys(w).join(",");
+}
+console.log("argument:", take(item));
+const items: Item[] = [item];
+const wides: readonly Wide[] = [...items];
+console.log("spread:", Object.keys(wides[0]!).join(","));

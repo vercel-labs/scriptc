@@ -99,3 +99,27 @@ const inOrder = JSON.parse('{"a":2}') as Parsed;
 inOrder.d = 3;
 inOrder.b = "late";
 showParsed("plain-d-b", inOrder);
+
+// Keys created by keyed writes come in the order of the writes, and the
+// copies made of the record keep it.
+type Slot = "zeta" | "alpha" | "mid" | "beta";
+const slots: Slot[] = ["zeta", "alpha", "mid", "beta"];
+function fillSlots(order: Slot[]): Partial<Record<Slot, number>> {
+  const out: Partial<Record<Slot, number>> = {};
+  let n = 0;
+  for (const slot of order) out[slot] = ++n;
+  return out;
+}
+const filled = fillSlots(["zeta", "alpha", "mid", "beta"]);
+console.log(Object.keys(filled).join(","), JSON.stringify(filled));
+const refilled = { ...filled };
+refilled.mid = 9;
+console.log(Object.keys(refilled).join(","), JSON.stringify(refilled));
+console.log(Object.keys(fillSlots(["alpha", "beta"])).join(","), Object.keys(fillSlots(["beta", "alpha", "zeta"])).join(","));
+const completed = { ...fillSlots(["mid", "zeta"]) };
+for (const slot of slots) if (completed[slot] === undefined) completed[slot] = 0;
+console.log(
+  Object.entries(completed as Record<Slot, number>)
+    .map(([key, value]) => key + "=" + value)
+    .join(","),
+);

@@ -5423,6 +5423,9 @@ function buildLibFnSignatures() {
     /** `record.linkIs(copy, pair)`: whether the record links to a source
      * through the pair (a numLit). Never throws. */
     "record.linkIs": { argTypes: [null, F64], result: BOOL },
+    /** `record.linked(copy)`: whether the record links to a source through
+     * any pair. Never throws. */
+    "record.linked": { argTypes: [null], result: BOOL },
     /** `record.linkSource(copy, pair)`: the source a record links to
      * through the pair, which the caller has tested (record.linkIs); its
      * type is the pair's source type. Never throws. */
@@ -5439,11 +5442,21 @@ function buildLibFnSignatures() {
      * key-order-witness.ts tracked shapes). `view` is the record's live
      * checked view (dyn, borrowed). Never throws. */
     "record.orderAppend": { argTypes: [null, DYN, STRING], result: VOID },
+    /** `record.orderAppendKey(record, view, key)`: the same for a keyed
+     * write, whose key is a string value (borrowed). A name the record's
+     * type does not declare is left alone. Never throws. */
+    "record.orderAppendKey": { argTypes: [null, DYN, STRING], result: VOID },
     /** `record.orderCopy(built, keys)`: the record a copy just built from
      * the fields of another keeps the order `keys` (a snapshot of the
      * source's own keys; dyn, borrowed) lists the keys it declares in.
      * Never throws. */
     "record.orderCopy": { argTypes: [null, DYN], result: VOID },
+    /** `record.orderCarry(built, source)`: the record a copy just built from
+     * the fields of the record `source` keeps the source's kept key list
+     * over the keys it declares, when the source has one. A source without
+     * one is in its type's table order and leaves the copy as it is. Both
+     * are record types (borrowed). Never throws. */
+    "record.orderCarry": { argTypes: [null, null], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

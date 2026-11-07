@@ -103,3 +103,13 @@ function inner(flip: boolean, n: number): Inner {
 const outer: Outer = { name: "o", inner: inner(true, 1), list: [inner(false, 2), inner(true, 3)] };
 console.log(JSON.stringify(outer), outer);
 console.log(new Map<string, Inner>([["k", inner(true, 4)]]));
+
+// A spread value whose own type nothing enumerates, built in another order
+// than its type declares: the literal takes the order the value was built in.
+interface Unseen { north: number; south: number }
+interface Seen { north: number; south: number; east: number }
+const unseen: Unseen = { south: 2, north: 1 };
+const seenBefore: Seen = { east: 0, ...unseen };
+const seenAfter: Seen = { ...unseen, east: 0 };
+console.log(Object.keys(seenBefore).join(","), JSON.stringify(seenBefore));
+console.log(Object.keys(seenAfter).join(","), JSON.stringify(seenAfter));

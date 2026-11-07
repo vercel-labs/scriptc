@@ -41,6 +41,18 @@ function sizeOf(s: Shape): number {
 }
 console.log(sizeOf(new Circle()));
 
+// A record with declared properties and an index signature lists the
+// declared ones first: a declared key written after another key differs.
+interface Counts {
+  total: number;
+  note?: string;
+  [name: string]: number | string | undefined;
+}
+const counts: Counts = { total: 1 };
+counts["extra"] = 2;
+counts.note = "late";
+console.log(Object.keys(counts).join(","));
+
 // Date strings parse with V8's grammar natively, so none of these diverge.
 console.log(Date.parse("Jan 2, 2024"), new Date("2024/01/02").getTime(), Date.parse("2024-01-02T03:04:05Z"));
 const stamps = ["2024-03-04T05:06:07Z", "March 4, 2024"];

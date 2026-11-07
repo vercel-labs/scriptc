@@ -83,6 +83,7 @@ test("divergences report as warnings, never as blockers", async () => {
   expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
     "SC6001",
     "SC6001",
+    "SC6002",
     "SC6003",
     "SC6004",
   ]);
@@ -372,11 +373,11 @@ test("CLI: build --print=diagnostics reports failures and divergence warnings as
     };
     expect(envelope.success).toBe(true);
     expect(envelope.artifact).toBe(join(outDir, "out.ir.json"));
-    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(4).fill("warning"));
+    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(5).fill("warning"));
     const human = build(fixture("divergences.ts"));
     expect(human.status).toBe(0);
     expect(human.stderr).toContain("warning SC6001");
-    expect(human.stderr).toContain("4 warnings: the program compiled");
+    expect(human.stderr).toContain("5 warnings: the program compiled");
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -1252,11 +1253,23 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // (the deferred-fence corpus) — it still passes the differential
     // oracle because the fences never execute.
     const deferred = /^\/\/ @deferred-fences:\s*(\d+)\s*$/.exec(firstLine);
+    // `// @divergence-warnings: SC6002` on the first line: a program that
+    // DELIBERATELY does what the named warnings report and prints nothing
+    // the difference shows in (a record whose keys Node orders differently,
+    // of which it prints only the serialized length), so it still passes
+    // the differential oracle.
+    const warned = /^\/\/ @divergence-warnings:\s*(SC\d+(?:,\s*SC\d+)*)\s*$/.exec(firstLine);
     const { coverage } = analyze(file, {});
     expect.soft(coverage.diagnostics, file).toEqual([]);
     // Corpus programs match Node by definition: a divergence warning on one
-    // is a false positive.
-    expect.soft(coverage.divergences ?? [], file).toEqual([]);
+    // is a false positive, unless the program names it.
+    const allowed = new Set(warned ? warned[1]!.split(/,\s*/) : []);
+    expect
+      .soft(
+        (coverage.divergences ?? []).filter((d) => !allowed.has(d.code)),
+        file,
+      )
+      .toEqual([]);
     expect.soft(coverage.stats.statementsFailed, file).toBe(deferred ? Number(deferred[1]) : 0);
     if (++n % 10 === 0) await new Promise((r) => setImmediate(r));
   }

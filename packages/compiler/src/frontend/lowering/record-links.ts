@@ -557,7 +557,9 @@ function scanModule(
           (e.fn === "record.sourceSpread" ||
             e.fn === "record.sourceNote" ||
             e.fn === "record.orderCopy" ||
-            e.fn === "record.orderAppend")
+            e.fn === "record.orderCarry" ||
+            e.fn === "record.orderAppend" ||
+            e.fn === "record.orderAppendKey")
         ) {
           const built = e.args[0]?.type;
           if (built?.kind === "record" && recordMayKeepSource(lowerer, built))

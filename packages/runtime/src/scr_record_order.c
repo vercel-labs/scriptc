@@ -14,12 +14,17 @@
  *  - a copy of the fields a narrower type declares (a rest binding, a record
  *    conversion) keeps its source's order over those fields.
  *
- * Both are written against the table's public entry points. A unit of its
- * own, selected only by programs with such a type (record.orderAppend /
- * record.orderCopy): scr_json.c keeps its layout, and a program whose
- * records are created in their declared order links none of this.
+ * A copy reads its source's order from the source's own table entry
+ * (scr_record_order_carry): a source without one is in its type's table
+ * order, so the copy needs nothing and no view of the source is built.
+ *
+ * A unit of its own, selected only by programs with such a type
+ * (record.orderAppend / record.orderCopy / record.orderCarry): scr_json.c
+ * keeps its layout, and a program whose records are created in their
+ * declared order links none of this.
  */
 #include "scr_runtime.h"
+#include "scr_record_source_private.h"
 
 static void scr_record_order_placeholder(ScrDyn *keys, const char *key, size_t key_len) {
   scr_dyn_obj_set(keys, key, key_len, scr_dyn_retain(scr_dyn_undefined()));
@@ -74,6 +79,19 @@ void scr_record_order_append(void *rec, ScrDyn *capsule, const char *const *name
   scr_str_release(name);
 }
 
+/* The same for a key named at run time (`rec[key] = value`). A name the
+ * shape does not declare is no declared key and is left to the write. */
+void scr_record_order_append_key(void *rec, ScrDyn *capsule, const char *const *names,
+                                 const size_t *lens, size_t count, const ScrStr *key) {
+  if (!rec || !key) return;
+  for (size_t i = 0; i < count; i++) {
+    if (lens[i] != key->len || memcmp(names[i], key->data, key->len)) continue;
+    if (key->len && key->data[0] == '%') return;
+    scr_record_order_append(rec, capsule, names, lens, count, key->data, key->len);
+    return;
+  }
+}
+
 /* `rec` was just built from the fields of a record whose own keys `keys`
  * lists in order (a snapshot object, borrowed): it keeps that order over
  * the keys its shape declares, when it is not the table's. The other keys
@@ -94,4 +112,23 @@ void scr_record_order_copy(void *rec, const ScrDyn *keys, const char *const *nam
   }
   scr_record_source_note(rec, declared, names, lens, count);
   scr_dyn_release(declared);
+}
+
+/* `rec` was just built from the fields of the record `src`. A record that
+ * keeps no table entry holds exactly its declared keys in its type's table
+ * order, which the compiler has already accounted for, so only a source
+ * with an entry has an order to hand on: its kept key list, or, for a
+ * record view, the keys of the record it views. */
+void scr_record_order_carry(void *rec, const void *src, const char *const *names,
+                            const size_t *lens, size_t count) {
+  if (!rec || !src) return;
+  ScrRecordSource *entry = scr_record_source_entry(src);
+  if (!entry) return;
+  if (entry->capsule) {
+    ScrDyn *snapshot = scr_dyn_typed_ref_peek(entry->capsule);
+    if (!scr_exc_pending()) scr_record_order_copy(rec, snapshot, names, lens, count);
+    scr_dyn_release(snapshot);
+    return;
+  }
+  if (entry->view) scr_record_order_copy(rec, entry->view, names, lens, count);
 }

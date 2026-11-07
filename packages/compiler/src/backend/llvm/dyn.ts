@@ -2125,6 +2125,26 @@ export class LlDyn {
     );
   }
 
+  /** `record.orderAppendKey(record, view, key)`: the same for a key that is
+   * a string value. */
+  emitRecordOrderAppendKey(
+    B: BlockBuilder,
+    record: string,
+    view: string,
+    key: string,
+    shapeId: string,
+  ): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    const S = host.sizeType;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(`declare void @scr_record_order_append_key(ptr, ptr, ptr, ptr, ${S}, ptr)`);
+    B.line(
+      `call void @scr_record_order_append_key(ptr ${record}, ptr ${view}, ptr ${names.names}, ptr ${names.lens}, ${S} ${shape.fields.length}, ptr ${key})`,
+    );
+  }
+
   /** `record.orderCopy(built, keys)`: the built record keeps the order
    * `keys` lists its declared names in. */
   emitRecordOrderCopy(B: BlockBuilder, built: string, keys: string, shapeId: string): void {
@@ -2135,6 +2155,19 @@ export class LlDyn {
     host.declare(`declare void @scr_record_order_copy(ptr, ptr, ptr, ptr, ${host.sizeType})`);
     B.line(
       `call void @scr_record_order_copy(ptr ${built}, ptr ${keys}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
+    );
+  }
+
+  /** `record.orderCarry(built, source)`: the built record keeps the kept
+   * key list of the record it was copied from, over its declared names. */
+  emitRecordOrderCarry(B: BlockBuilder, built: string, source: string, shapeId: string): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(`declare void @scr_record_order_carry(ptr, ptr, ptr, ptr, ${host.sizeType})`);
+    B.line(
+      `call void @scr_record_order_carry(ptr ${built}, ptr ${source}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
     );
   }
 

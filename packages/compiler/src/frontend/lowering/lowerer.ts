@@ -12569,9 +12569,9 @@ export class Lowerer {
     }
     applyKeyOrderWitnesses(this, keyOrderFunctions);
     // A kept width spread builds a record that holds undeclared keys, and a
-    // record of a tracked shape keeps its own key order, so the captures
-    // that consult a kept source must be active for them too.
-    if (this.keyOrder.keptWidthSpreads > 0 || this.keyOrder.tracked.size > 0)
+    // record of a tracked or carried shape keeps its own key order, so the
+    // captures that consult a kept source must be active for them too.
+    if (this.keyOrder.keptWidthSpreads > 0 || this.keyOrder.keptSourceShapes.size > 0)
       this.recordSourcesPossible = true;
     observeRecordLiteralRebuilds(null);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();

@@ -17,7 +17,8 @@ Dense array literals created directly in checked storage preserve identity, and 
 `Object.keys`, `Object.values`, `Object.entries`, `for...in`, `JSON.stringify`, and `util.inspect` enumerate a record's keys in the order the object created them, as in Node.js.
 scriptc chooses one order per record type from the order in which the program's object literals create the keys, follows object spread, rest destructuring, and record conversions back to the values they copy, and places an optional key that the program assigns after construction after the keys the object was built with.
 When the object literals of one record type create its keys in different orders, including literals of two types with the same properties and property types, each value records the order its literal used: copies made by object spread, rest destructuring, and record conversions keep their source's order, and assigning an optional key the object lacks, including after `delete`, moves the key last.
-When scriptc cannot count the orders a type's values take, such as when its literals spread values at different positions or spread a value whose own order is only known at run time, or when the values can take more than 16 orders, each value keeps its own list of keys in creation order, which costs a table lookup where the program enumerates the value.
+When scriptc cannot count the orders a type's values take, such as when its literals spread values at different positions or spread a value whose own order is only known at run time, or when the values can take more than 16 orders, a value whose keys were created in another order than the type's keeps its own list of keys, and a value in the type's order keeps nothing.
+A record converted from a checked value keeps the order of that value's keys, and so do the copies made of it by object spread, rest destructuring, and record conversions.
 `Object.assign` creates the keys its target lacks in the source's key order.
 A type keeps the declaration order of its first type, and `SC6002` reports it where the program observes the order, when one of its values is built from a spread or a copy of a value whose keys scriptc cannot read.
 
@@ -30,6 +31,7 @@ Calling `valueOf` or `isPrototypeOf` by name on a record type that such an objec
 For a record converted from an object with more properties, these surfaces read the object's other properties when they run, so later writes to those properties are visible; the declared fields are a copy taken at the conversion.
 Copies of such a record made by object spread, `Object.assign` or rest destructuring contain only the declared fields; a conversion to another record type keeps the properties too.
 Index-signature records list declared fields before the other keys.
+`SC6002` reports a write or an object literal that creates a declared property after another key, and an integer-like key written by name, on such a record when the program enumerates its type.
 A rest binding over an index-signature source copies its source's key order, so it lists the remaining declared fields before the other keys even when the source object created the other keys first.
 
 Optional fields and properties added through a record's `unknown` view can be deleted.

@@ -1061,7 +1061,10 @@ test("spreads at different positions make each value keep its own key list", () 
   // The table stays as it was: a value in its order keeps no list.
   expect(f.order(out)).toEqual(["a", "b", "c"]);
   expect(f.shapes.get(out.shapeId)?.orderVariants).toBeUndefined();
-  expect(countOf(fn, "record.sourceNote")).toBe(2);
+  // `{ c, ...s }` notes its order. `{ ...s, c }` is in the table's order
+  // for a value in its own table's order, and no value of `src` keeps a
+  // key list of its own, so it notes nothing.
+  expect(countOf(fn, "record.sourceNote")).toBe(1);
 });
 
 test("a write that creates a key of a tracked shape moves the key last", () => {
@@ -1141,4 +1144,234 @@ test("a spread with no binding to read leaves the shape in one order, and says s
   expect(f.notes.unordered.get(out.shapeId)?.cause).toBe("spread");
   expect(countOf(fn, "record.sourceNote")).toBe(0);
   expect(f.order(out)).toEqual(["a", "b", "c"]);
+});
+
+/** A copy of `source`'s fields `keys` into `out`, as a rest binding or a
+ * record conversion builds it. */
+const copyOf = (
+  f: Fixture,
+  out: IrType & { kind: "record" },
+  source: IrExpr,
+  keys: string[],
+): IrExpr =>
+  f.notes.copy(
+    {
+      kind: "recordLit",
+      fields: keys.map((name) => ({
+        name,
+        value: {
+          kind: "recordGet",
+          obj: source,
+          shapeId: (source.type as IrType & { kind: "record" }).shapeId,
+          field: name,
+          type: F64,
+          loc,
+        },
+      })),
+      type: out,
+      loc,
+    },
+    (source.type as IrType & { kind: "record" }).shapeId,
+  );
+const parsedInto = (type: IrType): IrExpr => ({
+  kind: "dynCheck",
+  value: ref("j", { kind: "dyn" }),
+  type,
+  loc,
+});
+
+test("a copy of a converted value keeps one table and takes the value's key list", () => {
+  const f = fixture();
+  const src = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+    ],
+    ["a", "b", "c"],
+  );
+  const out = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const fn = f.run([
+    decl("s", parsedInto(src)),
+    observe(copyOf(f, out, ref("s", src), ["a", "b"])),
+  ]);
+  // One table, and nothing for the values in its order to keep.
+  expect(f.notes.tracked.size).toBe(0);
+  expect(f.notes.unordered.size).toBe(0);
+  expect(f.order(out)).toEqual(["a", "b"]);
+  // A source that keeps its own key list hands it on in one call, without
+  // a view of the source.
+  expect(countOf(fn, "record.orderCarry")).toBe(1);
+  expect(countOf(fn, "dyn.assign")).toBe(0);
+  expect(countOf(fn, "record.sourceNote")).toBe(0);
+  expect(f.notes.keptSourceShapes.has(out.shapeId)).toBe(true);
+});
+
+test("a copy of a value no conversion builds notes nothing", () => {
+  const f = fixture();
+  const src = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+    ],
+    ["a", "b", "c"],
+  );
+  const out = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const body = [
+    decl("s", f.literal(src, ["a", "b", "c"])),
+    observe(copyOf(f, out, ref("s", src), ["a", "b"])),
+  ];
+  const before = JSON.stringify(body);
+  const fn = f.run(body);
+  expect(JSON.stringify(fn.body)).toBe(before);
+  expect(f.notes.keptSourceShapes.size).toBe(0);
+});
+
+test("a converted and cloned shape takes its literals' order and is not tracked", () => {
+  const f = fixture();
+  const t = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const clone: IrExpr = f.notes.clone({
+    kind: "recordClone",
+    source: ref("p", t),
+    overrides: [{ name: "b", value: num(3) }],
+    type: t,
+    loc,
+  });
+  f.run([
+    decl("p", parsedInto(t)),
+    observe(clone),
+    observe(f.literal(t, ["b", "a"])),
+    observe(f.literal(t, ["b", "a"])),
+  ]);
+  expect(f.notes.tracked.size).toBe(0);
+  expect(f.notes.unordered.size).toBe(0);
+  expect(f.order(t)).toEqual(["b", "a"]);
+});
+
+test("a spread of a converted value is snapshot only when the value keeps a key list", () => {
+  const f = fixture();
+  const src = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const out = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+    ],
+    ["a", "b", "c"],
+  );
+  const c: KeyOrderSegment = { kind: "key", name: "c", definite: true };
+  const fn = f.run([
+    observe(
+      spreadLiteral(f, out, ["a", "b", "c"], "s", parsedInto(src), (s) => [
+        c,
+        { kind: "spread", shapeId: src.shapeId, maybeAbsent: false, value: s },
+      ]),
+    ),
+  ]);
+  expect(f.notes.tracked.size).toBe(0);
+  expect(f.order(out)).toEqual(["c", "a", "b"]);
+  // The literal is in the table's order for a value in its table's order:
+  // the note, and the snapshot it reads, run behind record.sourceHas.
+  const text = JSON.stringify(fn.body);
+  expect(countOf(fn, "record.sourceHas")).toBe(1);
+  expect(countOf(fn, "record.sourceNote")).toBe(1);
+  expect(text).toMatch(/"kind":"if","cond":\{"kind":"varRef","localId":"%orderOwn/);
+  expect(text).toContain('"then":{"kind":"libCall","fn":"dyn.assign"');
+});
+
+test("a tracked literal of values that keep no key list notes placeholders, not a snapshot", () => {
+  const f = fixture();
+  const src = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  const out = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+      ["c", F64],
+    ],
+    ["a", "b", "c"],
+  );
+  const c: KeyOrderSegment = { kind: "key", name: "c", definite: true };
+  const spread = (value: IrExpr & { kind: "varRef" }): KeyOrderSegment => ({
+    kind: "spread",
+    shapeId: src.shapeId,
+    maybeAbsent: false,
+    value,
+  });
+  const fn = f.run([
+    observe(
+      spreadLiteral(f, out, ["a", "b", "c"], "s1", f.literal(src, ["a", "b"]), (s) => [
+        c,
+        spread(s),
+      ]),
+    ),
+    observe(
+      spreadLiteral(f, out, ["a", "b", "c"], "s2", f.literal(src, ["a", "b"]), (s) => [
+        spread(s),
+        c,
+      ]),
+    ),
+  ]);
+  expect(f.notes.tracked.has(out.shapeId)).toBe(true);
+  // No value of `src` can keep a key list, so its order is its table's:
+  // `{ c, ...s }` notes c, a, b and `{ ...s, c }` is in the table's order.
+  expect(countOf(fn, "record.sourceNote")).toBe(1);
+  expect(countOf(fn, "record.sourceHas")).toBe(0);
+  expect(countOf(fn, "dyn.assign")).toBe(0);
+  expect(JSON.stringify(fn.body)).toContain('"fields":[{"key":{"kind":"strLit","value":"c"');
+});
+
+test("a type with many keys that writes create has its table chosen in one sort", () => {
+  // Two bindings filled in opposite orders: no one order, so the type is
+  // tracked and its table lists the keys the writes create last. Choosing
+  // that table sorts the keys once; sorting once per created key took
+  // minutes on a type this size.
+  const f = fixture();
+  const names = Array.from({ length: 1500 }, (_, i) => `k${String(i).padStart(4, "0")}`);
+  const t = f.record(
+    [["id", F64], ...names.map((name): [string, IrType] => [name, OPT])],
+    ["id", ...names],
+  );
+  const started = performance.now();
+  f.run([
+    decl("r", f.literal(t, ["id"])),
+    decl("s", f.literal(t, ["id"])),
+    ...names.map((name) => set(ref("r", t), name)),
+    ...[...names].reverse().map((name) => set(ref("s", t), name)),
+    observe(ref("r", t)),
+    observe(ref("s", t)),
+  ]);
+  expect(f.notes.tracked.has(t.shapeId)).toBe(true);
+  expect(f.order(t)?.[0]).toBe("id");
+  expect(performance.now() - started).toBeLessThan(30_000);
 });

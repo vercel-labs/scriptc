@@ -1,7 +1,10 @@
+// @divergence-warnings: SC6002
 // Records with an index signature passed to a parameter of the
 // index-signature type they extend: the callee's writes reach the caller's
 // record, and its keyed reads and enumerations see the whole object, as in
-// Node.
+// Node. The callee creates declared keys on records that already hold other
+// keys, which Node lists in creation order and such a record lists declared
+// keys first (SC6002), so this program prints serialized lengths, not keys.
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 type Common = Record<string, Json> & { id?: string | null; format?: string; index?: number };

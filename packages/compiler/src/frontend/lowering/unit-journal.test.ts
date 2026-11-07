@@ -60,6 +60,7 @@ const sized: Record<string, readonly string[]> = {
     "orderedAssigns",
     "converted",
     "unordered",
+    "hybridOrders",
   ],
 };
 

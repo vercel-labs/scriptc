@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { globSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -1229,15 +1229,6 @@ test("island packages: package data types and callable handles cross the boundar
   }
 });
 
-/** The corpus programs that carry SC6001 warnings, with how many. */
-const corpusWidthCopiesPath = join(import.meta.dirname, "corpus-width-copies.json");
-const corpusWidthCopies = JSON.parse(readFileSync(corpusWidthCopiesPath, "utf8")) as Record<
-  string,
-  number
->;
-const updateCopyBaseline = process.env["SCRIPTC_UPDATE_COPY_BASELINE"] === "1";
-const measuredCopies = new Map<string, number>();
-
 test(`every corpus program is 100% static (corpus and coverage agree${shardSuffix()})`, async () => {
   // The differential corpus compiles by definition; coverage must agree.
 
@@ -1265,36 +1256,16 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // warning on one is a false positive, except SC6001. That warning is
     // sound rather than exact: it names every conversion that copies a value
     // the program could tell from the original (lowering/width-copies.ts),
-    // and a corpus program can hold one on a path it does not take.
-    // corpus-width-copies.json lists those programs with their SC6001
-    // counts. A program not listed must have none, so a new entry is a new
-    // copy or lost precision; an entry leaves when its conversion keeps the
-    // object. SCRIPTC_UPDATE_COPY_BASELINE=1 rewrites the entries of the
-    // programs this run covers.
-    const divergences = coverage.divergences ?? [];
+    // and a corpus program can hold one on a path it does not take. What
+    // keeps it honest is tests/harness/copy-soundness.test.ts, which counts
+    // the conversions that copy and the warnings that were not needed.
     expect
       .soft(
-        divergences.filter((d) => d.code !== "SC6001"),
+        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001"),
         file,
       )
       .toEqual([]);
-    const name = file.slice(repoRoot.length + 1);
-    const copies = divergences.filter((d) => d.code === "SC6001").length;
-    if (updateCopyBaseline) measuredCopies.set(name, copies);
-    else
-      expect
-        .soft(copies, `${name}: SC6001 warnings (tests/harness/corpus-width-copies.json)`)
-        .toBe(corpusWidthCopies[name] ?? 0);
     expect.soft(coverage.stats.statementsFailed, file).toBe(deferred ? Number(deferred[1]) : 0);
     if (++n % 10 === 0) await new Promise((r) => setImmediate(r));
-  }
-  if (updateCopyBaseline) {
-    const next: Record<string, number> = { ...corpusWidthCopies };
-    for (const [name, copies] of measuredCopies) {
-      if (copies > 0) next[name] = copies;
-      else delete next[name];
-    }
-    const sorted = Object.fromEntries(Object.entries(next).sort(([a], [b]) => (a < b ? -1 : 1)));
-    writeFileSync(corpusWidthCopiesPath, JSON.stringify(sorted, null, 2) + "\n");
   }
 }, 600_000);

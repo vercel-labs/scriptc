@@ -302,55 +302,6 @@ function selectByClass(
   return select(root);
 }
 
-/** Whether some source file writes a property it spells `constructor`: an
- * assignment, update or delete of a `.constructor` member, or the string
- * as a call argument or an element key. Decided once per program. */
-function constructorKeyWritten(lowerer: Lowerer): boolean {
-  let known = constructorKeyWrites.get(lowerer.program);
-  if (known !== undefined) return known;
-  known = false;
-  for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (known) break;
-    if (
-      !/\.\s*constructor\b\s*(?:=(?!=)|[-+*/%&|^?<>]+=|\+\+|--)|["'`]constructor["'`]|\bdelete\b/.test(
-        sf.text,
-      )
-    )
-      continue;
-    ts.walkPreorder(sf, (node) => {
-      if (known) return "stop";
-      if (ts.isPropertyAccessExpression(node) && node.name.text === "constructor") {
-        const parent = node.parent;
-        if (
-          parent &&
-          ((ts.isBinaryExpression(parent) &&
-            parent.left === node &&
-            parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-            parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
-            ts.isDeleteExpression(parent) ||
-            ((ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
-              (parent.operator === ts.SyntaxKind.PlusPlusToken ||
-                parent.operator === ts.SyntaxKind.MinusMinusToken)))
-        )
-          known = true;
-      }
-      if (
-        (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
-        node.text === "constructor"
-      ) {
-        const parent = node.parent;
-        if (parent && (ts.isCallExpression(parent) || ts.isElementAccessExpression(parent)))
-          known = true;
-      }
-      return undefined;
-    });
-  }
-  constructorKeyWrites.set(lowerer.program, known);
-  return known;
-}
-
-const constructorKeyWrites = new WeakMap<object, boolean>();
-
 /** How the program can have replaced the `constructor` an instance of
  * `info` reads: as an own property of the instance (`own`), or on a
  * prototype object of its chain (`prototype`).
@@ -358,10 +309,9 @@ const constructorKeyWrites = new WeakMap<object, boolean>();
  * An own property lives in the hidden property bag of a program hierarchy,
  * which exists once the program gives its instances dynamic properties,
  * and in an error's own properties, which always exist. A prototype is an
- * object once the program reads or writes it as data. A function-local
- * class's prototype is one per evaluation, so there a source write of the
- * key decides. */
-function replaceable(lowerer: Lowerer, info: ClassInfo): { own: boolean; prototype: boolean } {
+ * object once the program reads or writes it as data; a function-local
+ * class that extends another builds its prototype object with the class. */
+function replaceable(info: ClassInfo): { own: boolean; prototype: boolean } {
   const chain: ClassInfo[] = [];
   let errorRooted = false;
   for (let c: ClassInfo | null = info.base; c; c = c.base) {
@@ -374,9 +324,9 @@ function replaceable(lowerer: Lowerer, info: ClassInfo): { own: boolean; prototy
   const classes = [...chain, ...subtreeOf(info)];
   return {
     own: errorRooted || classes.some((c) => c.fields.has(DYN_CLASS_PROPERTIES)),
-    prototype:
-      classes.some((c) => c.def.prototypeDataHelper !== undefined) ||
-      (classes.some((c) => c.localClass) && constructorKeyWritten(lowerer)),
+    prototype: classes.some(
+      (c) => c.def.prototypeDataHelper !== undefined || c.localPrototypeData === true,
+    ),
   };
 }
 
@@ -497,7 +447,7 @@ function helperBody(lowerer: Lowerer, fn: IrFunction, spec: HelperSpec, refuse: 
       refuse(
         `reading 'constructor' of a '${displayName(info)}' instance (the subclass '${displayName(c)}' declares a member of that name)`,
       );
-  const replaced = replaceable(lowerer, info);
+  const replaced = replaceable(info);
   // The property as the dynamic view reads it: exact wherever the
   // program can have written a prototype. The view answers for classes
   // with one class object only.
@@ -763,7 +713,7 @@ function helperFor(
   fn.body = helperBody(lowerer, fn, spec, (feature) =>
     lowerer.unsupported("SC1090", site, feature),
   );
-  builtBodies.set(fn, JSON.stringify(fn.body));
+  lowerer.classIdentityBuilt.set(name, JSON.stringify(fn.body));
   lowerer.liftedFns.push(fn);
   return fn;
 }
@@ -800,18 +750,14 @@ export function settleClassIdentityHelpers(
     // dynamic dispatch pass resolves its checked-dynamic reads), and that
     // rewritten body stays until the class graph gives a different answer.
     const built = JSON.stringify(body);
-    if (builtBodies.get(fn) === built) continue;
-    builtBodies.set(fn, built);
+    if (lowerer.classIdentityBuilt.get(fn.name) === built) continue;
+    lowerer.classIdentityBuilt.set(fn.name, built);
     fn.body = body;
     forget(fn);
     changed = true;
   }
   return changed;
 }
-
-/** Each helper's body as helperBody last built it, before any later pass
- * rewrote it. A cache: a helper it does not hold is rebuilt once. */
-const builtBodies = new WeakMap<IrFunction, string>();
 
 /* ── the sites ─────────────────────────────────────────────────────────── */
 

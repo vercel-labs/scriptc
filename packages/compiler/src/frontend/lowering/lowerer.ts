@@ -4498,6 +4498,11 @@ export class Lowerer {
    * the scr_js_buffers views registry in %main. */
   buffersMutable = false;
   readonly liftedFns: IrFunction[] = [];
+  /** Each `x.constructor` helper's body as it was last built from the class
+   * graph, by helper name (class-instance-constructor.ts): later passes
+   * rewrite a helper in place, so the settle step compares what it builds
+   * with this. A cache: a helper it lacks is built again once. */
+  readonly classIdentityBuilt = new Map<string, string>();
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
    * own generators there on the typed path). Local ids repeat across
@@ -5139,6 +5144,9 @@ export class Lowerer {
    * unwinds before the unit ends, and state that applying the unit's events
    * rebuilds. */
   static readonly unjournaled: readonly string[] = [
+    // What the class-identity helpers were last built as: rebuilt from the
+    // class graph whenever an entry is missing.
+    "classIdentityBuilt",
     // settings
     "frontendServices",
     "nodeIslands",

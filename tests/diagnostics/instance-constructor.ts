@@ -53,3 +53,17 @@ class Settings {
 }
 Settings.level += 1;
 Settings.level++;
+
+// A function-local class that extends another function-local class builds
+// its prototype object with the class, one per evaluation, so the program
+// can write it and `constructor` has no compiled answer there. A
+// function-local class that extends a module-level class compiles.
+function local(n: number): string {
+  class Local {
+    v = n;
+  }
+  class Inner extends Local {}
+  const value: Local = new Inner();
+  return value.constructor.name;
+}
+console.log(local(1));

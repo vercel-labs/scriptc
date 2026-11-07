@@ -77,7 +77,7 @@ class Box<T> {
 class NumberBox extends Box<number> {}
 console.log("generic", new Box<string>().tag(), new Box<number>().tag(), new NumberBox().tag());
 
-// Classes that join a hierarchy while bodies lower: a class expression, a
+// Classes that join a hierarchy while bodies lower: class expressions, a
 // function-local class and a mixin application.
 class Base {
   tag(): string {

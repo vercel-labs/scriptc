@@ -32,3 +32,10 @@ instance-constructor.ts:55:1 - error SC1090: updating the static accessor 'level
   55 | Settings.level++;
      | ^~~~~~~~~~~~~~
   56 | 
+
+instance-constructor.ts:67:10 - error SC1090: reading 'constructor' of a 'Local' instance whose class prototypes the program holds as objects, in a hierarchy that includes the function-local class 'Local' is not supported yet
+
+  66 |   const value: Local = new Inner();
+  67 |   return value.constructor.name;
+     |          ^~~~~~~~~~~~~~~~~~~~~~
+  68 | }

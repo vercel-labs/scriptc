@@ -166,6 +166,28 @@ function loopBody(times) {
   return seen.join(", ") + " then " + holder.show(c) + " / " + "abcd".slice(n);
 }
 
+function declaredInLoop(times) {
+  var text, size;
+  function fill() {
+    text = "filled";
+    size = 2;
+  }
+  fill();
+  var seen = [];
+  for (var i = 0; i < times; i++) {
+    var c;
+    var n;
+    let fresh;
+    let freshSize;
+    seen.push(holder.show(c) + " " + "abcd".slice(n) + " " + holder.show(fresh) + " " + "abcd".slice(freshSize));
+    c = text;
+    n = size;
+    fresh = text;
+    freshSize = size;
+  }
+  return seen.join(", ");
+}
+
 function inTry(fail) {
   var text, size;
   function fill() {
@@ -386,6 +408,7 @@ console.log("reset after an early exit:", earlyExit(true), "|", earlyExit(false)
 console.log("reset after an early return:", afterReturn(true), "|", afterReturn(false));
 console.log("reset after a throw:", afterThrow(true), "|", afterThrow(false));
 console.log("reset in a loop body:", loopBody(0), "|", loopBody(2));
+console.log("declared in a loop body:", declaredInLoop(1), "|", declaredInLoop(3));
 console.log("reset in try:", inTry(true), "|", inTry(false));
 console.log("reset in catch:", inCatch(true), "|", inCatch(false));
 console.log("reset in finally:", inFinally(true), "|", inFinally(false));

@@ -441,3 +441,28 @@ console.log(stale(true), stale(false));
 `);
   expect(readsLocal(module, "stale", "copy")).toBe(true);
 });
+
+test("a var declared without a value in a loop keeps what an earlier iteration stored", async () => {
+  // `var copy;` stores nothing when it runs: on the second iteration the
+  // copy holds the first one's value. A `let` is a fresh undefined.
+  const source = (declaration: string): string => `
+let start: number | undefined = undefined;
+const set = (): void => {
+  start = 2;
+};
+function stale(): string {
+  start = undefined;
+  set();
+  let out = "";
+  for (let i = 0; i < 2; i++) {
+    ${declaration}
+    out += "abcd".slice(copy);
+    copy = start;
+  }
+  return out;
+}
+console.log(stale());
+`;
+  expect(readsLocal(await lower(source("var copy;")), "stale", "copy")).toBe(true);
+  expect(readsLocal(await lower(source("let copy;")), "stale", "copy")).toBe(false);
+});

@@ -393,8 +393,18 @@ export class NarrowingStability {
     // expects at the read. A JavaScript binding whose inferred type is
     // `undefined` keeps that type after `y = null` or `y = "text"`, which
     // the checker does not report there: those do not count.
+    // A `var` is hoisted: it holds `undefined` from the function's entry,
+    // and its declaration without a value stores nothing when it runs
+    // (in a loop it keeps what an earlier iteration stored). A `let`
+    // without a value is a fresh `undefined` each time it runs.
+    const list = decl.parent;
+    const hoisted =
+      list !== undefined &&
+      ts.isVariableDeclarationList(list) &&
+      (list.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const | ts.NodeFlags.Using)) === 0;
+    const holdsUndefined = (undefinedFlag & ~expected) === 0;
     const settles = (write: BindingWrite): boolean => {
-      if (write.kind === "declared") return (undefinedFlag & ~expected) === 0;
+      if (write.kind === "declared") return !hoisted && holdsUndefined;
       if (write.kind === "unknown" || write.stale || write.value === null) return false;
       // Only a value that is nothing by its own spelling: any other
       // expression the checker types as nothing (a call, a conditional, a
@@ -402,6 +412,13 @@ export class NarrowingStability {
       // without, the copy's own included (`y = keep ? y : undefined`,
       // `y = same(y)`).
       if (!spellsNothing(write.value)) return false;
+      const spelled = skipOuter(write.value);
+      if (ts.isIdentifier(spelled)) {
+        // `undefined` the global, not a binding of the program's.
+        const declaration = checker.getSymbolAtLocation(spelled)?.valueDeclaration;
+        if (declaration !== undefined && !ts.getSourceFileOfNode(declaration).isDeclarationFile)
+          return false;
+      }
       const stored = checker.getTypeAtLocation(write.value);
       return isNothing(stored) && (nothingFlags(stored) & ~expected) === 0;
     };
@@ -433,7 +450,8 @@ export class NarrowingStability {
         return may;
       }
       const own = writeOf(statement);
-      if (own !== null) return !settles(own);
+      // A hoisted declaration without a value changes nothing.
+      if (own !== null) return own.kind === "declared" && hoisted ? may : !settles(own);
       if (ts.isIfStatement(statement)) {
         const entered = may || raises(statement.expression);
         const then = after(statement.thenStatement, entered);
@@ -480,9 +498,9 @@ export class NarrowingStability {
         ? (boundary as ts.FunctionLikeDeclaration).body
         : undefined;
     if (body === undefined || !contains(body, read)) return false;
-    // Before its declaration statement the binding is taken to hold
-    // anything.
-    return !before(body, true);
+    // On entry a hoisted binding holds `undefined`; a block-scoped one is
+    // not readable before its declaration and is taken to hold anything.
+    return !before(body, hoisted ? !holdsUndefined : true);
   }
 
   /** A read in a call or construction argument (directly or inside a literal

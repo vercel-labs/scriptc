@@ -9504,15 +9504,6 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
   return out;
 }
 
-/** PARAMETER-PROPERTY assignments (`this.x = x`, synthesized): run AFTER
- * the field initializers — Node's transform defines the fields at the
- * top of the class body (undefined until assigned) and injects the
- * assignments at the start of the constructor body, i.e. after super()
- * and after the (native) field initializers ran (probed: a field
- * initializer reading `this.x` sees undefined; the body sees the value).
- * Each assignment reads the parameter's BODY local (defaults already
- * applied by the declareParams prologue), whose type the collection made
- * the field's type — slot-exact by construction. */
 /** A class's own field initializers and parameter-property assignments, in
  * the order its file is compiled for. ES2022 class fields run the
  * initializers first, so one that reads a parameter property sees
@@ -9524,12 +9515,7 @@ function ownFieldAndParamPropInitStmts(
   info: ClassInfo,
   thisLocal: IrLocal,
 ): IrStmt[] {
-  const declaration = info.ctor ?? info.decl;
-  if (
-    lowerer.parameterPropertiesFirst !== null &&
-    declaration !== null &&
-    lowerer.parameterPropertiesFirst.has(ts.getSourceFileOfNode(declaration).fileName)
-  ) {
+  if (parameterPropertiesFirst(lowerer, info)) {
     const assigned = paramPropInitStmts(lowerer, info, thisLocal);
     return [...assigned, ...lowerer.fieldInitStmts(info, thisLocal)];
   }
@@ -9537,6 +9523,27 @@ function ownFieldAndParamPropInitStmts(
   return [...initialized, ...paramPropInitStmts(lowerer, info, thisLocal)];
 }
 
+/** Whether the class's file is compiled with class fields initialized in
+ * the constructor, after its parameter properties
+ * (LoadResult.parameterPropertiesFirst). */
+export function parameterPropertiesFirst(lowerer: Lowerer, info: ClassInfo): boolean {
+  const declaration = info.ctor ?? info.decl;
+  return (
+    lowerer.parameterPropertiesFirst !== null &&
+    declaration !== null &&
+    lowerer.parameterPropertiesFirst.has(ts.getSourceFileOfNode(declaration).fileName)
+  );
+}
+
+/** PARAMETER-PROPERTY assignments (`this.x = x`, synthesized): run AFTER
+ * the field initializers — Node's transform defines the fields at the
+ * top of the class body (undefined until assigned) and injects the
+ * assignments at the start of the constructor body, i.e. after super()
+ * and after the (native) field initializers ran (probed: a field
+ * initializer reading `this.x` sees undefined; the body sees the value).
+ * Each assignment reads the parameter's BODY local (defaults already
+ * applied by the declareParams prologue), whose type the collection made
+ * the field's type — slot-exact by construction. */
 function paramPropInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
   const out: IrStmt[] = [];
   const thisType: IrType = { kind: "object", className: info.def.name };

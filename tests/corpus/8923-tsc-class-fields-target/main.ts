@@ -46,6 +46,31 @@ class Derived extends Base {
   }
 }
 
+// A membership test in a field initializer sees the parameter properties,
+// which are already assigned, and the fields initialized before it.
+class Probe {
+  private hasId = "id" in this;
+  private hasLater = "later" in this;
+  private later = 1;
+  constructor(readonly id: number) {}
+  report(): string {
+    return `${this.hasId} ${this.hasLater} ${this.later} ${this.id}`;
+  }
+}
+
+class TaggedProbe extends Probe {
+  private hasTag = "tag" in this;
+  private hasBaseId = "id" in this;
+  constructor(private tag: string) {
+    super(2);
+  }
+  summary(): string {
+    return `${this.report()} ${this.hasTag} ${this.hasBaseId} ${this.tag}`;
+  }
+}
+
 console.log(new Tokens(["alpha", "be"]).describe());
 console.log(new Tokens(["x"], "L").describe());
 console.log(new Derived([1, 2, 3], "pp").report());
+console.log(new Probe(7).report());
+console.log(new TaggedProbe("t").summary());

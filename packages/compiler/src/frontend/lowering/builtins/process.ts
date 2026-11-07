@@ -654,6 +654,35 @@ export function processDataMemberValue(
   }
 }
 
+/** The function members of the process object that have a function value:
+ * what `process.<member>` read as a value answers, and what the same member
+ * of a stored process object answers (node-value-reads.ts), so the two are
+ * one function. Null for the members that are call-only or have no
+ * lowering. `js` is whether the read is in a JavaScript source. */
+export function processFunctionMemberValue(
+  lowerer: Lowerer,
+  member: string,
+  loc: SrcLoc,
+  js: boolean,
+): IrExpr | null {
+  if (member === "hrtime") {
+    return { kind: "libCall", fn: "process.hrtimeValue", args: [], type: DYN, loc };
+  }
+  // A stored process.nextTick in JavaScript (`cond ? setImmediate :
+  // process.nextTick`): the interned builtin function value.
+  if (member === "nextTick" && js) return builtinFunctionValue("process.nextTick", loc);
+  if (member === "getBuiltinModule") {
+    // Keep the native loader's argument validation when the function is
+    // stored. The declaration's string signature must not insert a checked
+    // adapter before the loader gets to report Node's invalid-id error.
+    return { kind: "dynFrom", value: lowerBuiltinLoaderValue(lowerer, loc), type: DYN, loc };
+  }
+  // process.cwd as a value: the process module's member (surfaces.ts).
+  if (member === "cwd")
+    return lowerer.lowerBuiltinCallableValue({ module: "process", member }, loc);
+  return null;
+}
+
 export function lowerProcessProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -817,24 +846,23 @@ export function lowerProcessProperty(
     // SCR_NODE_COMPAT_VERSION) with Node's leading "v".
     return strLit(`v${NODE_COMPAT_VERSION}`, loc);
   }
-  if (member === "hrtime") {
-    return { kind: "libCall", fn: "process.hrtimeValue", args: [], type: DYN, loc };
-  }
-  // A stored process.nextTick in JavaScript (`cond ? setImmediate :
-  // process.nextTick`): the interned builtin function value.
-  if (member === "nextTick" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-    return builtinFunctionValue("process.nextTick", loc);
-  }
-  if (member === "getBuiltinModule") {
-    // Keep the native loader's argument validation when the function is
-    // stored. The declaration's string signature must not insert a checked
-    // adapter before the loader gets to report Node's invalid-id error.
-    return { kind: "dynFrom", value: lowerBuiltinLoaderValue(lowerer, loc), type: DYN, loc };
+  {
+    const value = processFunctionMemberValue(
+      lowerer,
+      member,
+      loc,
+      isJsSourceFile(ts.getSourceFileOfNode(expr)),
+    );
+    if (value !== null) return value;
   }
   if (member === "argv") {
     return { kind: "libCall", fn: "process.argv", args: [], type: arrayOf(STRING), loc };
   }
   if (member === "connected") {
+    // The channel's state, false without a channel. A JavaScript source
+    // reads undefined there, as Node does (node-value-reads.ts
+    // untypedNodeMemberRead); a TypeScript read is typed boolean by its
+    // declaration.
     return { kind: "libCall", fn: "process.connected", args: [], type: BOOL, loc };
   }
   // process.execArgv: the Node runtime flags kept out of process.argv —
@@ -918,11 +946,6 @@ export function lowerProcessProperty(
       expr,
       "process.env as a value of this type (read one variable: process.env.NAME or process.env[name])",
     );
-  }
-  // process.cwd as a value: the process module's member (surfaces.ts).
-  if (member === "cwd") {
-    const value = lowerer.lowerBuiltinCallableValue({ module: "process", member }, loc);
-    if (value) return value;
   }
   if (member === "exit" || member === "cwd" || member === "getuid" || member === "kill") {
     lowerer.unsupported("SC1090", expr, `process methods as values (call '${member}' directly)`);

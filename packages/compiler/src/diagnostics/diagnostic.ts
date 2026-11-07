@@ -1355,6 +1355,39 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
   };
 }
 
+/** A JavaScript source used a Node value native code has no value for
+ * (node-values.ts): it read a value that is not a function, or it called or
+ * constructed the function value such a read answers. Node defines the
+ * value, so answering undefined or a stand-in would diverge silently.
+ * `surface` names it as the program does (`worker_threads.SHARE_ENV`,
+ * `process.finalization`, `URL`). */
+export function nodeValueDiag(surface: string, loc: SrcLoc, hint?: string): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${surface}' is a Node value that native code does not provide as a value`,
+    loc,
+    milestone: "later",
+    hint:
+      hint ??
+      "Node defines this value, and native code has no value to answer with: a function reads as a function that refuses when it is called or constructed, and any other value is refused where it is read. Uses the compiler lowers where they are spelled (a direct call, `new`, a member read) are not affected",
+  };
+}
+
+/** A JavaScript source assigned a member of a Node global object through
+ * the object held as a value (`const held = process; held.exitCode = 1`).
+ * The held object answers reads (node-value-reads.ts); the state behind the
+ * member lives in the runtime and is written where the member is spelled,
+ * so a write accepted here would leave `process.exitCode` unchanged. */
+export function nodeObjectMemberWriteDiag(object: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `assigning a member of '${object}' through a stored value is not supported yet`,
+    loc,
+    milestone: "later",
+    hint: `Assign the member where it is spelled (\`${object}.<member> = value\`): the stored object has Node's members to read, and a write through it would not reach the runtime's state`,
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's

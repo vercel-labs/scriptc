@@ -95,6 +95,7 @@ import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
+import { unloweredModuleMemberValue } from "./node-value-reads.js";
 import { functionKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
@@ -309,6 +310,7 @@ import {
   isCheckerPanic,
   genericSignatureTypeDiag,
   hostGlobalDiag,
+  nodeValueDiag,
   indexSignatureTypeDiag,
   intersectionTypeDiag,
   noLoweringDiag,
@@ -4641,6 +4643,9 @@ export class Lowerer {
   /** global-values.ts's answer: the names the program's global lookup
    * answers; undefined until asked. */
   globalLookupNames: readonly string[] | undefined = undefined;
+  /** node-value-reads.ts's answer per global object (`process`,
+   * `performance`): whether a JavaScript source reads it as a value. */
+  readonly nodeObjectValueReads = new Map<string, boolean>();
   /** web-streams-dyn.ts's answer: whether a JavaScript source names a web
    * stream class; undefined until asked. */
   namesWebStreamClass: boolean | undefined = undefined;
@@ -5362,6 +5367,7 @@ export class Lowerer {
     "computedGlobalReads",
     "sloppyThisGlobalReads",
     "globalLookupNames",
+    "nodeObjectValueReads",
     "namesWebStreamClass",
     "typedWebStreams",
     "timeValueDateDecisions",
@@ -13813,6 +13819,13 @@ export class Lowerer {
     throw new PoisonError();
   }
 
+  /** A JavaScript read of a Node value native code has no value for
+   * (node-values.ts): Node defines it, so the read is refused by name. */
+  nodeValueFence(surface: string, node: ts.Node, hint?: string): never {
+    this.pushDiag(nodeValueDiag(surface, locOf(node), hint));
+    throw new PoisonError();
+  }
+
   /** A read of a Node 24 global the native runtime does not implement
    * (host-globals.ts): refusing is the honest answer, and the reason id
    * lets a Node island run the module instead. */
@@ -20061,7 +20074,7 @@ export class Lowerer {
     // === globalThis.ReadableStream`) read in JavaScript sources as their
     // global spelling does.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      const global = globalMemberValue(this, bi, loc);
+      const global = globalMemberValue(this, bi, expr, loc);
       if (global) return global;
     }
     // A bare `fs.constants` read (not one of the baked bits above).
@@ -20072,7 +20085,8 @@ export class Lowerer {
       const classKind = builtinMemberClassKind(bi.module, bi.member);
       if (classKind !== null) return builtinClassValue(classKind, loc);
     }
-    if (builtinModuleFnOf(this, bi.module, bi.member)) {
+    const js = isJsSourceFile(ts.getSourceFileOfNode(expr));
+    if (!js && builtinModuleFnOf(this, bi.module, bi.member)) {
       this.unsupported(
         "SC1090",
         expr,
@@ -20088,6 +20102,11 @@ export class Lowerer {
         return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
       }
     }
+    // A JavaScript source reads what Node's kind of value calls for
+    // (node-value-reads.ts): a function is a function value that refuses
+    // when it is called, a name the module does not have reads undefined,
+    // any other value is refused by name.
+    if (js) return unloweredModuleMemberValue(this, bi, expr, loc, false);
     this.noLowering(
       `${bi.module}.${bi.member}`,
       expr,

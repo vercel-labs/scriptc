@@ -11,6 +11,8 @@ import { recordSourceTest } from "./record-sources.js";
 import { keyedHelperName } from "./stable-names.js";
 import { OBJECT_PROTOTYPE_KEYS } from "./expressions/relational.js";
 import { jsGlobalValueByName } from "./global-values.js";
+import { unloweredGlobalObjectMember, unloweredGlobalValue } from "./node-value-reads.js";
+import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
 import { lowerTupleAliasDecl } from "./typed-arguments.js";
 import {
   islandHandleBinding,
@@ -174,11 +176,7 @@ import {
   staticImportNamespaceType,
 } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
-import {
-  isBuiltinIdentityToken,
-  isPrimitiveValueType,
-  lowerPrimitiveBaseDelete,
-} from "./primitive-throws.js";
+import { isPrimitiveValueType, lowerPrimitiveBaseDelete } from "./primitive-throws.js";
 import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
@@ -220,6 +218,7 @@ import {
   nsUndefRead,
   nsWritableTarget,
   trapDeclRootOf,
+  nodeUndefinedGlobalName,
 } from "./lower-namespaces.js";
 import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
 import {
@@ -2762,12 +2761,12 @@ export function lowerDestructuringDecl(
   // globalThis.crypto`, `const { Console } = console` — the suite's
   // webcrypto/console prologues): each element binds a member IDENTITY
   // TOKEN, the identifier chokepoint's rule one member deep — see
-  // stdlibGlobalTokenDestructure. Checked before the initializer
+  // stdlibGlobalMemberDestructure. Checked before the initializer
   // lowers: the whole-global spelling would answer the global's own
   // token (a string), and the pattern would meet the string fences
   // below blaming the token's carrier type instead of the global.
   {
-    const tokenBound = stdlibGlobalTokenDestructure(lowerer, decl, isLet);
+    const tokenBound = stdlibGlobalMemberDestructure(lowerer, decl, isLet);
     if (tokenBound !== null) return tokenBound;
   }
   let init =
@@ -2801,13 +2800,10 @@ export function lowerDestructuringDecl(
   ) {
     lowerer.anyOpFence("destructuring", decl);
   }
-  // An IR-string source the CHECKER does not type as a string is a
-  // builtin identity token that leaked through a JS local (`const c =
-  // globalThis.crypto; const { x } = c` — the local adopted the token's
-  // carrier type): the value is a token, not a string — the string
-  // lowerings below would read the CARRIER (its length, its code
-  // points), numbers and characters Node never sees. The fence names
-  // the checker's own type instead of the carrier.
+  // An IR-string source the CHECKER does not type as a string: the
+  // string lowerings below would read a value (its length, its code
+  // points) the program's own types do not describe. The fence names
+  // the checker's type.
   if (
     init.type.kind === "string" &&
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
@@ -3302,9 +3298,8 @@ export function lowerBindingPattern(
     // means a position past the LAST code point inherits the array
     // divergence (the read traps where JS binds undefined; a DEFAULTED
     // position carries its bounds test and fires exactly there).
-    // Callers vetted the source as a checker-typed string: builtin
-    // identity tokens (IR strings the checker types otherwise) fence
-    // before reaching here.
+    // Callers vetted the source as a checker-typed string: an IR string
+    // the checker types otherwise fences before reaching here.
     if (srcType.kind === "string") {
       const loc = locOf(pattern);
       const charsT = arrayOf(STRING);
@@ -3867,8 +3862,7 @@ export function lowerBindingPattern(
   // read is undefined, which the binding's type cannot hold) — named
   // fences either way; rest packs the wrapper's own INDICES (JS's
   // CopyDataProperties copies one property per code UNIT) and fences
-  // naming that. Callers vetted the source as a checker-typed string —
-  // builtin identity tokens fence before reaching here.
+  // naming that. Callers vetted the source as a checker-typed string.
   if (srcType.kind === "string") {
     for (const el of pattern.elements.nodes) {
       if (el.name === undefined) continue;
@@ -5158,18 +5152,15 @@ function staticStringPattern(
   });
 }
 
-/** The stdlib globals whose members destructure to MEMBER identity
- * tokens: the OPAQUE globals — no member of theirs has a lowered
- * surface, so a token binding trades the eager pattern fence for the
- * per-site token rules and loses nothing. Globals with REAL member
- * surfaces (Math.max, JSON.stringify, process.env, console.log) stay
- * OUT: their detached members would ride the token's quiet
- * own-property-undefined reads where the property spelling works, so
- * those patterns keep an eager fence naming the global. `console` is
- * the one split surface: its five CALL members fence by name, while
- * the rest (`Console` — the suite's constructor-identity probe) have
- * no surface to lose and bind tokens. */
-const TOKEN_OPAQUE_GLOBALS: ReadonlySet<string> = new Set(["crypto"]);
+/** The stdlib globals whose members destructure to their MEMBER VALUES:
+ * the globals no member of which has a call lowering keyed on the global's
+ * spelling, so a detached member is the value the property spelling reads
+ * and loses nothing. Globals with member surfaces keyed on the receiver
+ * (Math.max, JSON.stringify, process.env, console.log) stay OUT: those
+ * patterns keep an eager fence naming the global. `console` is the one
+ * split surface: its five CALL members fence by name, while the rest
+ * (`Console` — the suite's constructor-identity probe) bind their values. */
+const MEMBER_VALUE_GLOBALS: ReadonlySet<string> = new Set(["crypto"]);
 const CONSOLE_CALL_MEMBERS: ReadonlySet<string> = new Set([
   "log",
   "info",
@@ -5181,35 +5172,29 @@ const CONSOLE_CALL_MEMBERS: ReadonlySet<string> = new Set([
 /** `const { subtle } = globalThis.crypto`, `const { Console } = console`,
  * `const { crypto } = globalThis` — an object pattern over a STDLIB
  * GLOBAL in a JavaScript file (the suite's webcrypto/console
- * prologues): the identifier chokepoint's identity-token rule, one
- * member deep. The global taken as a value is an opaque token, and a
- * member taken off an OPAQUE global is the same kind of value — one
- * global, one member, one interned string — so plain elements bind
- * MEMBER tokens (`[builtin crypto.subtle]`), and identity flows agree
- * across destructures of the same member. A member of GLOBALTHIS that
- * is itself a canonical global (`const { crypto } = globalThis` —
- * `declare var` globals are properties of `typeof globalThis`,
- * stdlib-provenance-checked so user script globals stay out) binds the
- * global's OWN token, byte-equal to the bare and property spellings'
- * answers, AND registers in stdlibGlobalAliases — the destructured
- * twin of stdlibGlobalAliasDecl — so receiver-position uses resolve
- * through every surface exactly like the bare global (`const { Math }
- * = globalThis; Math.max(...)` is Math.max). What a token cannot do
- * meets the per-site rules lazily at each USE — member reads answer
- * the wrapper's own-property undefined, calls throw Node-shaped
- * is-not-a-function TypeErrors — at the use's own line, where the
- * pattern-level fence killed the program at the destructure.
+ * prologues): each plain element binds the value the property spelling
+ * of the same member reads, so identity flows agree across destructures
+ * and with `global.member`. A member of GLOBALTHIS that is itself a
+ * canonical global (`const { crypto } = globalThis` — `declare var`
+ * globals are properties of `typeof globalThis`, stdlib-provenance-checked
+ * so user script globals stay out) binds the global's own value AND
+ * registers in stdlibGlobalAliases — the destructured twin of
+ * stdlibGlobalAliasDecl — so receiver-position uses resolve through every
+ * surface exactly like the bare global (`const { Math } = globalThis;
+ * Math.max(...)` is Math.max). A member with no native value binds what
+ * Node's kind of value calls for (node-value-reads.ts): a function that
+ * refuses when it is called, undefined for a name Node does not have, or
+ * the pattern is refused by name. A binding is never a stand-in string.
  *
  * Everything this rule does NOT claim over a stdlib-global source
- * fences HERE, naming the global — never the token's carrier string
- * type: rest (the member set is not statically enumerable), defaults
- * (member presence is not statically testable), nested patterns,
- * computed keys, members of the SURFACED globals (detached members
- * lose their receiver-keyed lowerings), and `var`/TDZ-predeclared/
- * pre-registered bindings whose slots no token can inhabit. Null only
- * when the source is not a stdlib global at all, or in TypeScript
- * files (the identifier chokepoint fences the global there first). */
-function stdlibGlobalTokenDestructure(
+ * fences HERE, naming the global: rest (the member set is not statically
+ * enumerable), defaults (member presence is not statically testable),
+ * nested patterns, computed keys, members of the SURFACED globals
+ * (detached members lose their receiver-keyed lowerings), and
+ * `var`/TDZ-predeclared bindings. Null only when the source is not a
+ * stdlib global at all, or in TypeScript files (the identifier chokepoint
+ * fences the global there first). */
+function stdlibGlobalMemberDestructure(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
   isLet: boolean,
@@ -5237,12 +5222,10 @@ function stdlibGlobalTokenDestructure(
   const srcT = lowerer.typeOf(decl.initializer);
   const binds: {
     name: ts.Identifier;
-    token: string;
     alias: string | null;
     g: IrGlobal | undefined;
-    /** A data member's value (`const { env } = process`), bound instead
-     * of a token. */
-    value?: IrExpr;
+    /** The value the member read binds. */
+    value: IrExpr;
   }[] = [];
   for (const el of decl.name.elements.nodes) {
     if (el.name === undefined) continue;
@@ -5278,7 +5261,6 @@ function stdlibGlobalTokenDestructure(
         "destructuring with computed keys that do not fold to one property name",
       );
     }
-    let token = "";
     let alias: string | null = null;
     let value: IrExpr | null = null;
     if (globalName === "globalThis") {
@@ -5294,15 +5276,42 @@ function stdlibGlobalTokenDestructure(
         );
       }
       const canonical = ts.symbolName(member) === "global" ? "globalThis" : ts.symbolName(member);
-      token = `[builtin ${canonical}]`;
       alias = canonical;
-      // The values the bare and `globalThis.X` spellings read
-      // (jsGlobalValueByName).
-      value = jsGlobalValueByName(lowerer, canonical, locOf(el));
-    } else if (globalName === "console" && !CONSOLE_CALL_MEMBERS.has(propName)) {
-      token = `[builtin console.${propName}]`;
-    } else if (TOKEN_OPAQUE_GLOBALS.has(globalName)) {
-      token = `[builtin ${globalName}.${propName}]`;
+      // The values the bare and `globalThis.X` spellings read: the
+      // global's own value (jsGlobalValueByName), undefined for a name the
+      // global object does not hold in Node 24, and for the rest what
+      // Node's kind of value calls for (node-value-reads.ts).
+      value =
+        jsGlobalValueByName(lowerer, canonical, locOf(el)) ??
+        (nodeUndefinedGlobalName(canonical) || COMMONJS_MODULE_BINDINGS.has(canonical)
+          ? dynUndefinedExpr(locOf(el))
+          : unloweredGlobalValue(lowerer, canonical, el, locOf(el)));
+    } else if (globalName === "crypto" && propName === "subtle") {
+      // `const { subtle } = crypto`: the SubtleCrypto object. The binding
+      // names it for the member lowerings (`subtle.digest(...)` is
+      // `crypto.subtle.digest(...)`, webcrypto.ts) and holds the object the
+      // property spelling reads.
+      alias = "crypto.subtle";
+      value = {
+        kind: "dynKeyGet",
+        value: { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc: locOf(el) },
+        key: { kind: "strLit", value: "subtle", type: STRING, loc: locOf(el) },
+        type: DYN,
+        loc: locOf(el),
+      };
+    } else if (
+      (globalName === "console" && !CONSOLE_CALL_MEMBERS.has(propName)) ||
+      MEMBER_VALUE_GLOBALS.has(globalName)
+    ) {
+      // A member no call lowering is keyed on: what Node has under the
+      // name decides, as for the property spelling (node-value-reads.ts).
+      value = unloweredGlobalObjectMember(lowerer, globalName, propName, el, locOf(el));
+      if (value === null)
+        lowerer.unsupported(
+          "SC1031",
+          el,
+          `destructuring the member '${propName}' of the builtin global '${globalName}'`,
+        );
     } else if (
       globalName === "process" &&
       ts.isIdentifier(el.name) &&
@@ -5336,42 +5345,12 @@ function stdlibGlobalTokenDestructure(
       );
     }
     const g = lowerer.globalsBySymbol.get(symbol);
-    if (value !== null) {
-      binds.push({ name: el.name, token, alias, g, value });
-      continue;
-    }
-    if (g !== undefined && g.type.kind !== "string" && g.type.kind !== "dyn") {
-      lowerer.unsupported(
-        "SC1031",
-        el,
-        `bindings with '${lowerer.fmt(g.type)}' storage over the builtin global '${globalName}'`,
-      );
-    }
-    binds.push({ name: el.name, token, alias, g });
+    if (value === null) lowerer.noLowering(`${globalName}.${propName}`, el);
+    binds.push({ name: el.name, alias, g, value });
   }
   const out: IrStmt[] = [];
   for (const b of binds) {
     const loc = locOf(b.name);
-    if (b.value !== undefined && b.alias !== null) {
-      const symbol = lowerer.checker.getSymbolAtLocation(b.name);
-      if (symbol) lowerer.stdlibGlobalAliases.set(symbol, b.alias);
-    }
-    if (b.value !== undefined) {
-      if (b.g !== undefined) {
-        out.push({
-          kind: "assign",
-          localId: b.g.id,
-          value: lowerer.coerceInto(b.name, b.value, b.g.type),
-          ...(b.g.tdz ? { initializes: true as const } : {}),
-          loc,
-        });
-      } else {
-        const local = lowerer.declareLocal(b.name, b.name.text, b.value.type, isLet);
-        out.push({ kind: "varDecl", localId: local.id, init: b.value, loc });
-      }
-      continue;
-    }
-    const token: IrExpr = { kind: "strLit", value: b.token, type: STRING, loc };
     if (b.alias !== null) {
       const symbol = lowerer.checker.getSymbolAtLocation(b.name);
       if (symbol) lowerer.stdlibGlobalAliases.set(symbol, b.alias);
@@ -5380,13 +5359,13 @@ function stdlibGlobalTokenDestructure(
       out.push({
         kind: "assign",
         localId: b.g.id,
-        value: lowerer.coerceInto(b.name, token, b.g.type),
+        value: lowerer.coerceInto(b.name, b.value, b.g.type),
         ...(b.g.tdz ? { initializes: true as const } : {}),
         loc,
       });
     } else {
-      const local = lowerer.declareLocal(b.name, b.name.text, STRING, isLet);
-      out.push({ kind: "varDecl", localId: local.id, init: token, loc });
+      const local = lowerer.declareLocal(b.name, b.name.text, b.value.type, isLet);
+      out.push({ kind: "varDecl", localId: local.id, init: b.value, loc });
     }
   }
   return out;
@@ -8704,7 +8683,7 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
   // Node's TypeError, `?.` on a nullish base short-circuits to `true`
   // without evaluating the key, and every other primitive deletes from its
   // ToObject wrapper (a String's indexes and `length` refuse the delete).
-  if (isPrimitiveValueType(obj.type) && !isBuiltinIdentityToken(lowerer, target.expression, obj)) {
+  if (isPrimitiveValueType(obj.type)) {
     return {
       kind: "exprStmt",
       expr: lowerPrimitiveBaseDelete(lowerer, expr, target, obj, VOID),
@@ -10945,13 +10924,12 @@ function destructuringAssignInto(
       return { stmts: [...out, ...sub.stmts], value };
     }
   }
-  // IR-string sources in JS files split two ways the carrier type
-  // cannot: a STDLIB GLOBAL (`({ subtle } = globalThis.crypto)`) — the
-  // declaration path binds member identity tokens into FRESH bindings,
-  // but assignment targets carry their own checker-typed slots no token
-  // can honestly inhabit — and a LEAKED token (a local that adopted a
-  // global's carrier type), where the string lowerings below would read
-  // the carrier itself. Both keep fences naming the truth; empty
+  // Two sources in JS files keep fences naming the truth: a STDLIB
+  // GLOBAL (`({ subtle } = globalThis.crypto)`) — the declaration path
+  // binds member values into FRESH bindings, but assignment targets
+  // carry their own checker-typed slots — and an IR string the checker
+  // does not type as a string, which the string lowerings below would
+  // read as text. Empty
   // patterns stay pure (RequireObjectCoercible/GetIterator hold for
   // globals and strings alike).
   {

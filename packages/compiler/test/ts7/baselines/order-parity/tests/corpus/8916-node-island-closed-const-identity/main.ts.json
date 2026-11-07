@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8916-node-island-closed-const-identity/shapes.ts",
+  "<repo>/tests/corpus/8916-node-island-closed-const-identity/left.ts",
+  "<repo>/tests/corpus/8916-node-island-closed-const-identity/right.ts",
+  "<repo>/tests/corpus/8916-node-island-closed-const-identity/main.ts"
+ ],
+ "diags": []
+}

@@ -8431,20 +8431,44 @@ export function cjsExportDeclaratorOf(assign: ts.BinaryExpression): ts.VariableD
   return decl;
 }
 
-/** `var x = module.exports = <value>`: the value the declarator is
- * initialized with. Node assigns the export object and the binding the same
- * value, so the declaration's own storage takes the export value's type and
- * initialization. Null when the statement is not a chained whole-export
- * declaration. */
+/** `var x = module.exports = <value>` and `var x = exports.name = <value>`
+ * (also through `module.exports.name`, and through several members:
+ * `var x = exports.a = exports.b = <value>`): the value the declarator is
+ * initialized with. Node assigns the export and the binding the same value,
+ * so the declaration's own storage takes that value's type and
+ * initialization, not the type of the assignment expression around it (the
+ * checker types `exports.name = []` as `never[]`, where the value alone is
+ * the array every later write grows). Null when the declaration is not a
+ * chained export declaration at the top level of its file. */
 export function cjsChainedExportValueOf(decl: ts.VariableDeclaration): ts.Expression | null {
   const stmt = decl.parent?.parent;
   if (stmt === undefined || !ts.isVariableStatement(stmt)) return null;
   const cjs = cjsExportAssignmentOf(stmt);
-  if (cjs?.kind !== "table" || cjs.obj !== null) return null;
-  if (cjsExportDeclaratorOf(cjs.expr) !== decl) return null;
-  let rhs: ts.Expression = cjs.expr.right;
-  while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
-  return rhs;
+  if (cjs?.kind === "table" && cjs.obj === null && cjsExportDeclaratorOf(cjs.expr) === decl) {
+    let rhs: ts.Expression = cjs.expr.right;
+    while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+    return rhs;
+  }
+  if (!ts.isSourceFile(stmt.parent) || !ts.isIdentifier(decl.name)) return null;
+  let value: ts.Expression | undefined = decl.initializer;
+  let chained = false;
+  for (;;) {
+    while (value !== undefined && ts.isParenthesizedExpression(value)) value = value.expression;
+    if (
+      value === undefined ||
+      !ts.isBinaryExpression(value) ||
+      value.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      !ts.isPropertyAccessExpression(value.left) ||
+      value.left.questionDotToken ||
+      !ts.isIdentifier(value.left.name)
+    )
+      break;
+    const recv = value.left.expression;
+    if (!(ts.isIdentifier(recv) && recv.text === "exports") && !isModuleExportsAccess(recv)) break;
+    chained = true;
+    value = value.right;
+  }
+  return chained && value !== undefined ? value : null;
 }
 
 /** The tsc VOID-INIT PREAMBLE (`exports.a = exports.b = void 0;` with the

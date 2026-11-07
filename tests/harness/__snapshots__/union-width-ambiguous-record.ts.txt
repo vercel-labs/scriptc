@@ -1,0 +1,8 @@
+union-width-ambiguous-record.ts:28:19 - error SC2003: union conversion has no unambiguous layout mapping: expected '{ affinity: string | undefined; allowEmptySignature: boolean | undefined; supportsMidConvo: boolean | undefined } | { maxTokensField: string | undefined; supportsMidConvo: boolean | undefined; supportsStore: boolean | undefined } | { supportsMidConvo: boolean | undefined } | undefined', got '{ affinity: string | undefined; allowEmptySignature: boolean | undefined; imageInput: string | undefined; maxTokensField: string | undefined; supportsMidConvo: boolean | undefined; supportsStore: boolean | undefined } | undefined' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts) — the record fits 3 arms by width and the union has no discriminant member to choose one; 'affinity', 'allowEmptySignature', 'maxTokensField', 'supportsStore' belong to some of those arms and not to others; no arm declares 'imageInput'
+
+  27 | function compose(provider: { compat?: ProviderCompat }): string {
+  28 |   return describe(provider.compat);
+     |                   ^~~~~~~~~~~~~~~
+  29 | }
+
+  hint: a union value is one arm at run time, and nothing in this record says which: type the slot with the record type itself (one record that declares every member), or give each arm a member with its own literal value

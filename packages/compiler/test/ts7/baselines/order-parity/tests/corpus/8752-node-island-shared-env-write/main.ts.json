@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8752-node-island-shared-env-write/set-level.ts",
+  "<repo>/tests/corpus/8752-node-island-shared-env-write/main.ts"
+ ],
+ "diags": []
+}

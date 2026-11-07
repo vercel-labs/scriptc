@@ -102,6 +102,14 @@ function mapCanonicalAt(
       return viaChecker();
     case "array": {
       const elem = mapCanonicalAt(c.elem, ctx, depth + 1, notes, walk);
+      // An array of checked-dynamic elements is the checked-dynamic value,
+      // as mapType maps `unknown[]`: an `any[]` value is held that way
+      // wherever it comes from, so a native array of untyped elements here
+      // would make every slot of the type a copy of the value it receives.
+      if (elem?.kind === "dyn") {
+        if (notes !== undefined) notes.collapsedToDynamic = true;
+        return DYN;
+      }
       return elem === null ? null : { kind: "array", elem };
     }
     case "union": {

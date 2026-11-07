@@ -135,6 +135,12 @@
       "signature": "SC8006"
     }
   },
+  "corpus/js-package-tuple-reflection": {
+    "island:enum-kit": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught Error: JSON.stringify of a runtime handle is not supported yet"
+    }
+  },
   "corpus/npm-record-union-returns": {
     "island:rpc-replies": {
       "category": "exit",
@@ -234,8 +240,8 @@
   },
   "npm/hono-zod-default-hook": {
     "island:@hono/zod-validator": {
-      "category": "build",
-      "signature": "SC8006"
+      "category": "stdout",
+      "signature": "ok 500 Internal Server Error"
     },
     "island:hono": {
       "category": "build",
@@ -248,8 +254,8 @@
   },
   "npm/hono-zod-validator": {
     "island:@hono/zod-validator": {
-      "category": "build",
-      "signature": "SC8006"
+      "category": "exit",
+      "signature": "exit 1, Node 0: Error: Malformed JSON in request body"
     },
     "island:hono": {
       "category": "build",
@@ -257,7 +263,7 @@
     },
     "island:zod": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+      "signature": "exit 1, Node 0: TypeError: expected object at $, got Object from a Node island (an island object stays an island value: declare the island's type or 'unknown' for it, or copy i"
     }
   },
   "npm/hot-shots-buffered": {

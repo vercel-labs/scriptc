@@ -66,7 +66,7 @@ import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
   findGenericMethodOn,
-  hostGlobalBaseOf,
+  hostGlobalBaseOfClassValue,
   type ClassInfo,
   storedClassValueType,
 } from "../lower-classes.js";
@@ -183,13 +183,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     // A class extending such a global is a Function instance too, as every
     // class is. Its value's prototype chain ends at the global's value, which
     // the generic walk cannot follow to Function.prototype, so the answer
-    // folds the same way. Only a program that declares such a class asks.
-    if ([...lowerer.classes.values()].some((info) => info.callableBase?.hostGlobal !== undefined)) {
-      const type = storedClassValueType(lowerer, expr.left);
-      const info = type?.kind === "classval" ? lowerer.classes.get(type.className) : undefined;
-      if (info && hostGlobalBaseOf(info) !== undefined)
-        return hostGlobalInstanceOfAnswer(lowerer, expr, true, loc);
-    }
+    // folds the same way. The fold holds because the prototype of these
+    // values cannot be replaced: Object.setPrototypeOf on one refuses
+    // (lowerObjectStaticCall).
+    if (hostGlobalBaseOfClassValue(lowerer, expr.left) !== null)
+      return hostGlobalInstanceOfAnswer(lowerer, expr, true, loc);
   }
   const arrayClassTest = lowerArrayClassInstanceOf(lowerer, expr, loc);
   if (arrayClassTest !== null) return arrayClassTest;

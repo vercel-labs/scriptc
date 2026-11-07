@@ -1,0 +1,26 @@
+host-global-set-prototype.ts:15:1 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  14 | console.log(Sock instanceof Function, Retrying instanceof Function, Held instanceof Function);
+  15 | Object.setPrototypeOf(Sock, null);
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | Object.setPrototypeOf(Retrying, Function.prototype);
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use
+
+host-global-set-prototype.ts:16:1 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  15 | Object.setPrototypeOf(Sock, null);
+  16 | Object.setPrototypeOf(Retrying, Function.prototype);
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | Object.setPrototypeOf(Held, null);
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use
+
+host-global-set-prototype.ts:17:1 - error SC2020: 'WebSocket' is a Node global that native code does not provide
+
+  16 | Object.setPrototypeOf(Retrying, Function.prototype);
+  17 | Object.setPrototypeOf(Held, null);
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  18 | 
+
+  hint: the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use

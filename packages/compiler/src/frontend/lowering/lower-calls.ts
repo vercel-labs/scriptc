@@ -260,6 +260,7 @@ import {
   findGenericMethodOn,
   lowerClassGenericMethodCall,
   lowerStaticMethodCall,
+  hostGlobalBaseOfClassValue,
   lowerStaticFieldRead,
   returnsOnlyThis,
   storedClassValueType,
@@ -8854,6 +8855,17 @@ function lowerObjectStaticCall(
     call.arguments.nodes.length === (member === "getPrototypeOf" ? 1 : 2) &&
     !call.arguments.nodes.some(ts.isSpreadElement)
   ) {
+    // The value of a Node global native code does not provide, and a class
+    // extending one, have no prototype chain native code can replace, and
+    // `value instanceof Function` is answered for them by a fold that a
+    // replaced prototype would falsify (lowerInstanceOf). Replacing it is a
+    // use of the global's surface and refuses (SC2020, host-global).
+    if (member === "setPrototypeOf") {
+      const target = call.arguments.nodes[0]!;
+      const hostGlobal =
+        hostGlobalNameOfRead(lowerer, target) ?? hostGlobalBaseOfClassValue(lowerer, target);
+      if (hostGlobal !== null) lowerer.hostGlobalFence(hostGlobal, call);
+    }
     let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (object.type.kind === "func") {
       const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);

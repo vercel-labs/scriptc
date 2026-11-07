@@ -170,11 +170,9 @@ export function unsupportedModuleFeatureOf(spec: string): string {
 }
 
 /** The ESNext temporal global's name. Node 24 does not define it: programs
- * that name it type-check against TS 7's lib slice (program.ts adds it only
- * for them) and lower to Node's answers. Spelled in two pieces so the
- * compiler's own sources never trip program.ts's scan when scriptc
- * compiles itself. */
-export const TEMPORAL_GLOBAL = "Tempo" + "ral";
+ * that refer to it type-check against TS 7's lib slice (program.ts adds it
+ * only for them) and lower to Node's answers. */
+export const TEMPORAL_GLOBAL = "Temporal";
 
 /** The CommonJS module-scope bindings @types/node declares as globals. Node
  * passes them to each CommonJS module's wrapper function, so the global

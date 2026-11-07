@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 /** Every binding written after its declaration: plain, compound and
  * destructuring assignments, `++`/`--`, for-in/for-of targets, a redeclared
@@ -16,7 +17,7 @@ export function reassignedBindings(
     if (symbol) reassigned.add(symbol);
   };
   const markTarget = (target: ts.Expression): void => {
-    const e = peel(target);
+    const e = withoutParenthesesTypeWrappers(target);
     if (ts.isIdentifier(e)) mark(e);
     else if (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e)) {
       const walk = (n: ts.Node): void => {
@@ -170,21 +171,8 @@ function isStatementList(node: ts.Node): boolean {
   );
 }
 
-function peel(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
-}
-
 function isBinding(node: ts.Expression, bindings: PresenceBindings): boolean {
-  const e = peel(node);
+  const e = withoutParenthesesTypeWrappers(node);
   return ts.isIdentifier(e) && bindings.sameBinding(e);
 }
 
@@ -192,7 +180,7 @@ function isAbsentValue(
   node: ts.Expression,
   bindings: PresenceBindings,
 ): "undefined" | "null" | null {
-  const e = peel(node);
+  const e = withoutParenthesesTypeWrappers(node);
   if (ts.isIdentifier(e) && bindings.isUndefined(e)) return "undefined";
   if (ts.isVoidExpression(e)) return "undefined";
   if (e.kind === ts.SyntaxKind.NullKeyword) return "null";
@@ -201,7 +189,7 @@ function isAbsentValue(
 
 /** A literal that is never `undefined` and never loosely equal to it. */
 function isPresentLiteral(node: ts.Expression): boolean {
-  const e = peel(node);
+  const e = withoutParenthesesTypeWrappers(node);
   return (
     ts.isStringLiteral(e) ||
     ts.isNumericLiteral(e) ||
@@ -221,7 +209,7 @@ export function implies(
   outcome: boolean,
   bindings: PresenceBindings,
 ): boolean {
-  const e = peel(condition);
+  const e = withoutParenthesesTypeWrappers(condition);
   if (dereferences(e, bindings)) return true;
   if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken)
     return implies(e.operand, !outcome, bindings);
@@ -250,13 +238,13 @@ export function implies(
     [e.left, e.right],
     [e.right, e.left],
   ] as const) {
-    const typeofOperand = peel(side);
+    const typeofOperand = withoutParenthesesTypeWrappers(side);
     if (
       ts.isTypeOfExpression(typeofOperand) &&
       isBinding(typeofOperand.expression, bindings) &&
-      ts.isStringLiteral(peel(other))
+      ts.isStringLiteral(withoutParenthesesTypeWrappers(other))
     ) {
-      const tag = (peel(other) as ts.StringLiteral).text;
+      const tag = (withoutParenthesesTypeWrappers(other) as ts.StringLiteral).text;
       return equal ? tag !== "undefined" : tag === "undefined";
     }
     if (!isBinding(side, bindings)) continue;
@@ -357,7 +345,9 @@ function isOptionalChainMember(node: ts.Node): boolean {
  * conditional branches, optional-chain continuations, and function bodies
  * do not. */
 export function dereferences(expression: ts.Expression, bindings: PresenceBindings): boolean {
-  const e = ts.isParenthesizedExpression(expression) ? peel(expression) : expression;
+  const e = ts.isParenthesizedExpression(expression)
+    ? withoutParenthesesTypeWrappers(expression)
+    : expression;
   if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
     if (!e.questionDotToken && isBinding(e.expression, bindings)) return true;
     if (dereferences(e.expression, bindings)) return true;

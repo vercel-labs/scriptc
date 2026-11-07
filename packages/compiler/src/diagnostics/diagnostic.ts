@@ -1215,11 +1215,35 @@ export function invalidJsonModuleDiag(
   };
 }
 
-export function strictNullChecksFloorDiag(configFile: string): ScrDiagnostic {
+/** SC0016 — a tsconfig setting whose meaning scriptc does not follow, at the
+ * first place of the program that depends on it. One diagnostic per setting
+ * stands in for the TypeScript errors the difference would otherwise produce
+ * one by one. */
+export function unfollowedSettingDiag(
+  setting: string,
+  meaning: string,
+  loc: SrcLoc,
+  sites: number,
+  hint: string,
+): ScrDiagnostic {
+  return {
+    code: "SC0016",
+    message: `this project's tsconfig sets ${setting}, which scriptc does not follow: ${meaning}${sites > 1 ? ` (${sites} places in this program)` : ""}`,
+    loc,
+    hint,
+  };
+}
+
+/** `mentioned`: the tsconfig sets `strict` or `strictNullChecks` (to false);
+ * otherwise it is silent about both, which TypeScript 5 and earlier read as
+ * off. */
+export function strictNullChecksFloorDiag(configFile: string, mentioned = true): ScrDiagnostic {
   return {
     code: "SC0002",
     message:
-      "this project's tsconfig disables strictNullChecks, which scriptc requires " +
+      (mentioned
+        ? "this project's tsconfig disables strictNullChecks, which scriptc requires "
+        : "this project's tsconfig does not enable strict or strictNullChecks, which scriptc requires ") +
       "(null and undefined are modeled as distinct static types; without the knob " +
       "every type implicitly includes them)",
     loc: { file: configFile, start: 0, end: 0 },

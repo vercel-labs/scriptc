@@ -715,9 +715,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/program.ts#loadProgram7",
-    2,
+    3,
     "discovery",
-    "fork and worker targets, which become program roots",
+    "fork and worker targets, which become program roots; and, file by file from the tsconfig above each, the files that compile class fields in the constructor and the legacy decorators refused by name",
   ),
   scan(
     "frontend/program.ts#declBoundaryUserFiles",

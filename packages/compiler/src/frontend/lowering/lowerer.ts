@@ -1148,6 +1148,8 @@ export interface LowerOptions {
   unitStore?: UnitStore | null;
   /** The project's tsconfig sets `checkJs` (see isCheckedJsSourceFile). */
   projectCheckJs?: boolean;
+  /** LoadResult.parameterPropertiesFirst. */
+  parameterPropertiesFirst?: ReadonlySet<string> | undefined;
   /** Coverage: additionally lower the unreached remainder (bodies nothing
    * on the entry path reaches) in a throwaway pass and report its
    * diagnostics and stats under `unreached` — the whole-program analysis
@@ -1324,6 +1326,8 @@ export interface LowererMode {
   /** LowerOptions.libraryCallbacks (see there). */
   libraryCallbacks?: boolean;
   projectCheckJs?: boolean;
+  /** LoadResult.parameterPropertiesFirst. */
+  parameterPropertiesFirst?: ReadonlySet<string> | undefined;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
   /** Coverage remainder: lower ONLY bodies outside `reachable`, skip the
@@ -1571,6 +1575,7 @@ function lowerToIrWithIslands(
     facts,
     frontendServices: options.frontendServices,
     projectCheckJs: options.projectCheckJs ?? false,
+    parameterPropertiesFirst: options.parameterPropertiesFirst,
     targetPlatform,
     startupCrash,
     admittedOpinions: options.admittedOpinions,
@@ -1600,6 +1605,7 @@ function lowerToIrWithIslands(
           facts,
           frontendServices: options.frontendServices,
           projectCheckJs: options.projectCheckJs ?? false,
+          parameterPropertiesFirst: options.parameterPropertiesFirst,
           targetPlatform,
           startupCrash,
           admittedOpinions: options.admittedOpinions,
@@ -1667,6 +1673,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
@@ -1712,6 +1719,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
@@ -1751,6 +1759,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
@@ -1830,6 +1839,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
@@ -1870,6 +1880,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       generalNodeStreams: true,
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       targetPlatform,
@@ -2033,6 +2044,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
       ...(dynAsyncProtocol ? { dynAsyncProtocol: true } : {}),
@@ -5305,6 +5317,7 @@ export class Lowerer {
     "targetPlatform",
     "startupCrash",
     "projectCheckJs",
+    "parameterPropertiesFirst",
     "libraryCallbacks",
     "ffiBindingSymbols",
     "priorRetriedSymbols",
@@ -5681,6 +5694,9 @@ export class Lowerer {
   readonly startupCrash: StartupCrash | null;
   /** The project's tsconfig sets `checkJs`. */
   readonly projectCheckJs: boolean;
+  /** The files whose classes assign parameter properties before their
+   * field initializers run (LoadResult.parameterPropertiesFirst). */
+  readonly parameterPropertiesFirst: ReadonlySet<string> | null;
   private readonly checkedJsFiles = new Map<ts.SourceFile, boolean>();
   /** Outbound native bindings by their source-level ambient name. */
   readonly ffiImports: readonly IrFfiImport[];
@@ -6133,6 +6149,7 @@ export class Lowerer {
     this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
     this.projectCheckJs = mode.projectCheckJs ?? false;
+    this.parameterPropertiesFirst = mode.parameterPropertiesFirst ?? null;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
     this.startupCrash = mode.startupCrash ?? null;

@@ -163,6 +163,22 @@ function builtinModuleName(spec: string): string | null {
   return null;
 }
 
+/** Subpath modules Node serves as objects of their own rather than as a
+ * member of the module the spec starts with. */
+const STANDALONE_SUBPATH_MODULES = new Set(["stream/web", "stream/consumers"]);
+
+/** The member object a builtin's subpath spec names: `require("fs/promises")`
+ * is `require("fs").promises`, and every other subpath of a supported
+ * builtin is a member object too. Null for the module itself and for a
+ * standalone subpath module, whose members belong to no object of the
+ * module the spec starts with. */
+function memberBaseOf(module: string): string | null {
+  const slash = module.indexOf("/");
+  if (slash < 0) return module;
+  if (STANDALONE_SUBPATH_MODULES.has(module)) return null;
+  return `${module.slice(0, slash)}.${module.slice(slash + 1)}`;
+}
+
 /** Parentheses and the TypeScript wrappers Node erases (`as`,
  * `satisfies`, `!` and the angle-bracket assertion). */
 function stripWrappers(node: ts.Node): ts.Node {
@@ -684,6 +700,23 @@ class ModuleScanner {
     );
   }
 
+  /** A member object of a builtin module's CommonJS object
+   * (`require("fs").promises`, `fs.promises`): its own properties are read
+   * through the same object, so `const { readFile } = fs.promises` reads
+   * `fs.promises.readFile`. A namespace import is still not that object. */
+  private isCjsObjectMember(value: ts.Node): boolean {
+    const node = stripWrappers(value);
+    if (!ts.isPropertyAccessExpression(node)) return false;
+    const root = chainRoot(node);
+    if (root !== null) return this.isCjsObjectValue(root);
+    // A chain that starts at the require() call itself
+    // (`require("fs").promises`).
+    let base = stripWrappers(node.expression);
+    while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base))
+      base = stripWrappers(base.expression);
+    return this.isCjsObjectValue(base);
+  }
+
   /** `require("fs")`, `require("node:util").inherits` → "fs", "util.inherits". */
   private builtinOf(node: ts.Node): string | null {
     const value = stripWrappers(node);
@@ -984,11 +1017,24 @@ class ModuleScanner {
    * so it is recorded as the whole module ("fs.*"). */
   private recordCjsRead(node: ts.PropertyAccessExpression | ts.ElementAccessExpression): void {
     const root = chainRoot(node);
-    if (root === null) return;
-    const binding = this.bindingAt(root.text, root);
-    if (binding === undefined || !binding.cjs || binding.builtin === null) return;
-    const module = binding.builtin;
     const text = chainText(node);
+    let member: string;
+    if (root === null) {
+      // A require() of the builtin read directly
+      // (`require("fs").readFileSync`): the chain starts at the call.
+      let base = stripWrappers(node.expression);
+      while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base))
+        base = stripWrappers(base.expression);
+      if (!this.isCjsObjectValue(base)) return;
+      const module = this.builtinOf(base);
+      if (module === null) return;
+      member = this.builtinOf(node) ?? `${module.split(".")[0]}.*`;
+    } else {
+      const binding = this.bindingAt(root.text, root);
+      if (binding === undefined || !binding.cjs || binding.builtin === null) return;
+      const module = binding.builtin;
+      member = text === null ? `${module}.*` : module + text.slice(root.text.length);
+    }
     const parent = node.parent;
     if (parent !== undefined) {
       if (
@@ -1004,7 +1050,7 @@ class ModuleScanner {
       )
         return;
     }
-    this.pushCjsRead(text === null ? `${module}.*` : module + text.slice(root.text.length), node);
+    this.pushCjsRead(member, node);
   }
 
   private pushCjsRead(member: string, node: ts.Node): void {
@@ -1018,14 +1064,22 @@ class ModuleScanner {
    * CommonJS object (`const { readFileSync } = require("fs")`,
    * `({ readFileSync } = fs)`): each property it takes is read when the
    * destructuring runs, so it sees a patch installed before. A rest element
-   * or a computed key reads members the scan cannot name ("fs.*"). */
+   * or a computed key reads members the scan cannot name ("fs.*"). The
+   * source may be one of the module's member objects
+   * (`const { readFile } = require("fs/promises")`, `= fs.promises`): the
+   * pattern then names the member below it. */
   private recordCjsPatternReads(pattern: ts.Node, source: ts.Node | undefined): void {
     if (source === undefined) return;
     const value = stripWrappers(source);
-    if (!this.isCjsObjectValue(value)) return;
+    if (!this.isCjsObjectValue(value) && !this.isCjsObjectMember(value)) return;
     const module = this.builtinOf(value);
-    if (module === null || module.includes(".")) return;
-    this.recordPatternReads(pattern, module);
+    if (module === null) return;
+    // A subpath spec names the member object Node hangs off the module
+    // (`require("fs/promises")` is `require("fs").promises`), so the reads
+    // are spelled through the module the object belongs to.
+    const base = memberBaseOf(module);
+    if (base === null) return;
+    this.recordPatternReads(pattern, base);
   }
 
   private recordPatternReads(pattern: ts.Node, base: string): void {

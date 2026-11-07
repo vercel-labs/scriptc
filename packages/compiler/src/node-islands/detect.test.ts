@@ -399,6 +399,8 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
   expect(reads("const fs = require('fs'); fs['readFileSync'](p);")).toEqual(["fs.readFileSync"]);
   expect(reads("const fs = require('fs'); fs[name](p);")).toEqual(["fs.*"]);
   expect(reads("const fs = require('fs'); fs['readFileSync'] = f;")).toEqual([]);
+  // A require() read directly is a read through the object too.
+  expect(reads("require('fs').readFileSync(p);")).toEqual(["fs.readFileSync"]);
   // Destructuring reads each property it takes when it runs.
   expect(reads("const { readFileSync } = require('node:fs');")).toEqual(["fs.readFileSync"]);
   expect(reads("const fs = require('fs'); const { readFileSync: read, ...rest } = fs;")).toEqual([
@@ -409,11 +411,38 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
     "fs.promises",
     "fs.promises.readFile",
   ]);
+  // A destructuring may start at a member object of the module, spelled as a
+  // subpath spec or through the CommonJS object.
+  expect(reads("const { readFile } = require('fs/promises');")).toEqual(["fs.promises.readFile"]);
+  expect(reads("const { readFile } = require('node:fs/promises');")).toEqual([
+    "fs.promises.readFile",
+  ]);
+  expect(reads("const { readFile } = require('fs').promises;")).toEqual([
+    "fs.promises.readFile",
+    "fs.promises",
+  ]);
+  expect(reads("const fs = require('fs'); const { readFile } = fs.promises;")).toEqual([
+    "fs.promises.readFile",
+    "fs.promises",
+  ]);
+  expect(reads("const fs = require('fs'); const { readFile, ...rest } = fs.promises;")).toEqual([
+    "fs.promises.readFile",
+    "fs.*",
+    "fs.promises",
+  ]);
+  // A require() the scan cannot resolve to a module is not one, and a
+  // subpath module that is not a member object reads nothing of the module
+  // its spec starts with.
+  expect(reads("const { readFile } = require(name);")).toEqual([]);
+  expect(reads("const { ReadableStream } = require('stream/web');")).toEqual([]);
   expect(
     reads("import fs from 'node:fs'; let readFileSync; ({ readFileSync } = fs);", "mjs"),
   ).toEqual(["fs.readFileSync"]);
   // A namespace import is not the CommonJS object.
   expect(reads("import * as fs from 'node:fs'; const { readFileSync } = fs;", "mjs")).toEqual([]);
+  expect(reads("import * as fs from 'node:fs'; const { readFile } = fs.promises;", "mjs")).toEqual(
+    [],
+  );
 });
 
 test("global reads are recorded for the implicit-global check (H3.4)", () => {

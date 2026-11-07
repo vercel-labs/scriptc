@@ -8,8 +8,8 @@ scriptc coverage tests/coverage-fixtures/node-islands-fenced-sdk-values/main.ts
     ni-sdk  static
 
   Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
-    gap  ni-sdk@2.0.0
-          tests/coverage-fixtures/node-islands-fenced-sdk-values/node_modules/ni-sdk/index.js:7:26: SC1090: extending classes not declared in the program ('Promise') is not supported yet
+    runtime  ni-sdk@2.0.0
+          tests/coverage-fixtures/node-islands-fenced-sdk-values/node_modules/ni-sdk/index.js:7:26: R1.6 host-class-base: it extends a class only the JavaScript runtime has, and native code cannot inherit it (…
     hint: scriptc coverage --explain-island=<package> lists every reason
 
   fully static — all analyzed statements compile to native code.

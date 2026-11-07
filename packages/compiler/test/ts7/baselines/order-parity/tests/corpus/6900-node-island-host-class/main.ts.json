@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6900-node-island-host-class/socket.ts",
+  "<repo>/tests/corpus/6900-node-island-host-class/main.ts"
+ ],
+ "diags": []
+}

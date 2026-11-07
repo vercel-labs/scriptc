@@ -195,7 +195,9 @@ function sloppyParsable(program: ts.Program, sf: ts.SourceFile): boolean {
 
 /** Scans `files`: markers for npm JavaScript (and for user JavaScript when
  * `userJs`), and package edges for every file when `edges` (a program with
- * no npm package has none to find). */
+ * no npm package has none to find). `stripFor` names user TypeScript modules
+ * a build is considering for an island: their `stripProblem` is computed so
+ * the build can refuse a file Node cannot run as written. */
 export function scanFiles(
   program: ts.Program,
   files: readonly ts.SourceFile[],
@@ -203,6 +205,7 @@ export function scanFiles(
     userJs: boolean;
     dropped: boolean;
     edges: boolean;
+    stripFor?: ReadonlySet<string> | undefined;
     /** Whether the policy marks a user module to run in a Node island
      * (`--node-island=<path>`, `scriptc.nodeIslands.modules`). */
     marked?: (file: string) => boolean;
@@ -222,6 +225,10 @@ export function scanFiles(
     // (H3.2): its other markers are JavaScript semantics, and sloppy
     // parsing is never required of TypeScript.
     const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
+    // A module a build asks about for an island (H3.5's check, before it
+    // decides): the cost stays with the modules under consideration.
+    const forRun =
+      !js && origin === "user" && !sf.isDeclarationFile && opts.stripFor?.has(sf.fileName) === true;
     // A TypeScript module the policy marks runs in Node with its types
     // stripped, like one that islands for a builtin patch.
     const markedTs =
@@ -242,9 +249,10 @@ export function scanFiles(
       globalReads: facts.globalReads,
       // A TypeScript module can island for a builtin patch (H3.2) and for a
       // read of a member another island's patch changes (H3.4): both need
-      // Node to run the file with type stripping only.
+      // Node to run the file with type stripping only. A module a build is
+      // considering for an island (H3.5) needs the answer before it decides.
       stripProblem:
-        (userTs && (markers.length > 0 || facts.cjsReads.length > 0)) || markedTs
+        forRun || (userTs && (markers.length > 0 || facts.cjsReads.length > 0)) || markedTs
           ? stripProblem(program, sf)
           : null,
       dropped: opts.dropped,

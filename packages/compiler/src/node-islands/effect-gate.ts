@@ -181,8 +181,8 @@ export type EffectGateResult =
   | { ok: false; reason: string; file: string };
 
 function isEsm(file: string): boolean {
-  if (file.endsWith(".mjs")) return true;
-  if (file.endsWith(".cjs")) return false;
+  if (file.endsWith(".mjs") || file.endsWith(".mts")) return true;
+  if (file.endsWith(".cjs") || file.endsWith(".cts")) return false;
   for (let dir = dirname(file); ;) {
     try {
       const pkg = JSON.parse(readFileSync(resolve(dir, "package.json"), "utf8")) as {

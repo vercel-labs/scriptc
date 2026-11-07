@@ -1105,8 +1105,12 @@ test("a package a build islands by its module-init fence is the same island here
   const { coverage } = analyze(entry);
   expect(coverage.diagnostics).toEqual([]);
   expect(coverage.stats.statementsFailed).toBe(0);
+  // A Promise subclass needs the JavaScript runtime, and the reason now
+  // carries the rule that says so (R1.6 host-class-base), so the island is
+  // classed "runtime" rather than the unnamed "gap" a refusal without a
+  // reason id falls back to.
   expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
-    ["ni-sdk", "gap"],
+    ["ni-sdk", "runtime"],
   ]);
   // The build decides the same island: its SC8001 note names the package the
   // report lists.

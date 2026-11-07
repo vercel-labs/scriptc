@@ -121,7 +121,10 @@ const KNOWN: Record<string, Known> = {
   "node24-url-factories": { run: "SC2020" },
   "node24-url-mutation": { run: "SC1090" },
   "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
-  "node24-util-types": { run: "SC1090" },
+  // The fixture builds a function from a string, so the package runs in a
+  // Node island: with a libnode pack the program is compared against Node,
+  // and without one the build stops with SC8005.
+  "node24-util-types": { island: true },
   "late-island-refusal": { island: true },
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
@@ -129,8 +132,11 @@ const KNOWN: Record<string, Known> = {
   "util-shims": { run: "SC2020" },
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },
-  // `class Upper extends TransformStream`: extending a builtin class from JavaScript.
-  "web-streams": { run: "SC1090" },
+  // `class Upper extends TransformStream`: extending a builtin class from
+  // JavaScript. The package is an island, and the worker-entry scan ships the
+  // modules it starts, so the program builds and runs: with a libnode pack it
+  // is compared against Node, and without one the build stops with SC8005.
+  "web-streams": { island: true },
   "workspace-copied": { island: true },
   // The SYMLINKED twin of workspace-copied: the automatic island policy
   // places the refused package from its workspace realpath.

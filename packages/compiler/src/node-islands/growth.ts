@@ -39,7 +39,7 @@ import { dirname, relative } from "node:path";
 import type { SrcLoc } from "../ir/ir.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import type { IslandModule, IslandPackage } from "./boundary.js";
-import { classifyDiagnostic, isIslandReasonCode } from "./classify.js";
+import { classifyDiagnostic, isIslandReasonCode, unboundExportMessage } from "./classify.js";
 import { growEsmImporters } from "./graph-islands.js";
 import { packageDirOf, packageKeyOf, packageVersionOf } from "./origin.js";
 import type { NodeIslandPolicy } from "./policy.js";
@@ -255,7 +255,7 @@ function growFromLowering(
       version: packageVersionOf(dir),
       dir,
       class: "gap",
-      reason: `its export '${d.exportOf.name}' has no native binding form (used at ${siteOf(ctx, d.loc)})`,
+      reason: `${unboundExportMessage(d.exportOf.name)} (used at ${siteOf(ctx, d.loc)})`,
       named: true,
     });
   }

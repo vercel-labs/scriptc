@@ -23,6 +23,7 @@ import {
   classifyDiagnostic,
   classifyMarker,
   classifyRefusal,
+  classifyUnboundExport,
   isIslandReasonCode,
 } from "./classify.js";
 import {
@@ -165,10 +166,23 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     if (out === undefined) imports.set(from, (out = new Set<string>()));
     out.add(s.key);
   }
-  // Lowering refusals and fences inside npm modules.
+  // Lowering refusals and fences inside npm modules. A use of an export
+  // that a compiled package does not provide as a binding is that package's
+  // refusal, wherever the use is (ScrDiagnostic.exportOf): a build islands
+  // the exporting package for it (growth.ts), so the reason is that
+  // package's here too, and not the reason of the module the use is in.
+  const compiled = new Set<string>();
+  for (const outcome of input.npm) if (outcome.status === "static") compiled.add(outcome.package);
   const addDiagnostics = (diags: readonly ScrDiagnostic[], source: NodeIslandReasonSource) => {
     for (const d of diags) {
       if (!isIslandReasonCode(d.code)) continue;
+      const exported = d.exportOf;
+      if (exported !== undefined && compiled.has(exported.package)) {
+        if (ignored(exported.package)) continue;
+        const reason = classifyUnboundExport(d, exported.name);
+        for (const key of byName.get(exported.package) ?? []) addReason(states.get(key)!, reason);
+        continue;
+      }
       const at = packageDirOf(d.loc.file);
       if (at === null || ignored(at.name)) continue;
       addReason(state(at.name, at.dir), classifyDiagnostic(d, source));
@@ -410,8 +424,18 @@ function markedReason(decision: IslandDecision): string {
 /** Decisive class first; within a class, refusals before pre-scan markers
  * (the lowering is authoritative), then source order. */
 function sortReasons(reasons: NodeIslandReason[]): void {
+  // A use of the package's export elsewhere comes after what its own
+  // modules report, and before what the pre-scan only suspects.
   const sourceRank = (r: NodeIslandReason): number =>
-    r.source === "package" ? 0 : r.source === "refusal" ? 1 : r.source === "fence" ? 2 : 3;
+    r.exported === true
+      ? 5
+      : r.source === "package"
+        ? 0
+        : r.source === "refusal"
+          ? 2
+          : r.source === "fence"
+            ? 4
+            : 6;
   reasons.sort(
     (a, b) =>
       classRank(a.class) - classRank(b.class) ||

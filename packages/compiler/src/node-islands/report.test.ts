@@ -114,6 +114,71 @@ describe("decisions", () => {
     ]);
   });
 
+  test("a use of an export a compiled package cannot bind is that package's reason", () => {
+    const { scan, fences } = program();
+    const use = (file: string, exporter: string): ScrDiagnostic => ({
+      code: "SC1090",
+      message: "the reference to 'counter' (a binding form with no lowering)",
+      loc: { file, start: 40, end: 47 },
+      exportOf: { package: exporter, name: "counter" },
+    });
+    const compiled: NpmOutcome[] = ["a", "b", "c", "d"].map((p) => ({
+      package: p,
+      status: "static",
+    }));
+    const build = (
+      diagnostics: ScrDiagnostic[],
+      npm: NpmOutcome[],
+      options: NodeIslandOptions = {},
+    ) =>
+      buildNodeIslandReport({
+        entry: "/app/main.ts",
+        scan,
+        npm,
+        diagnostics,
+        fences,
+        policy: nodeIslandPolicy(emptyProjectConfig(), options),
+      });
+    // The use is in the program, the reason is the exporting package's: c,
+    // which has no reason of its own, is the island a build makes of it.
+    const r = build([use("/app/main.ts", "c")], compiled);
+    const c = r.islands.find((i) => i.package === "c")!;
+    expect([c.class, c.reason, c.diagnostic, c.decision]).toEqual([
+      "gap",
+      "SC1090: its export 'counter' has no native binding form",
+      "SC1090",
+      "auto",
+    ]);
+    // A use inside another package is still the exporter's reason, not the
+    // reason of the package the use is in: d is the island, c stays native.
+    const inside = build([use(`${NM}/c/index.js`, "d")], compiled);
+    expect(inside.islands.map((i) => [i.package, i.class])).toEqual([
+      ["b", "gap"],
+      ["d", "gap"],
+      ["a", "object-model"],
+    ]);
+    expect(inside.islands.find((i) => i.package === "d")!.reason).toBe(
+      "SC1090: its export 'counter' has no native binding form",
+    );
+    // What the package's own modules report comes first.
+    const own = build([use("/app/main.ts", "b")], compiled);
+    const b = own.islands.find((i) => i.package === "b")!;
+    expect(b.reason).toBe("SC1090: a builtin function alias as an escaping value");
+    expect(b.reasons.map((x) => x.message)).toEqual([
+      "a builtin function alias as an escaping value",
+      "its export 'counter' has no native binding form",
+    ]);
+    // A package that is not compiled has nothing to bind: the diagnostic is
+    // an ordinary one of the module it is in.
+    expect(build([use("/app/main.ts", "c")], []).islands.map((i) => i.package)).toEqual(["b", "a"]);
+    // Marked native, the package cannot meet its mark.
+    const marked = build([use("/app/main.ts", "c")], compiled, { native: ["c"] });
+    expect(marked.islands.map((i) => i.package)).toEqual(["b", "a"]);
+    expect(
+      marked.violations.map((v) => [v.code, v.message.includes("'c' is marked native")]),
+    ).toEqual([["SC8003", true]]);
+  });
+
   test("forced native turns reasons into SC8003; forced node islands a clean package", () => {
     const r = report({ native: ["a"], islands: ["c"] });
     expect(r.islands.map((i) => [i.package, i.class, i.decision])).toEqual([

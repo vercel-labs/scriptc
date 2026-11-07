@@ -1122,6 +1122,54 @@ test("a package a build islands by its module-init fence is the same island here
   }
 });
 
+test("a package a build islands for an export it cannot bind is the same island here", async () => {
+  // Nothing in ni-metrics' own modules refuses: its only island reason is
+  // the program's read of two member exports the compiled package has no
+  // binding for. A build runs it in a Node island for that
+  // (ScrDiagnostic.exportOf, node-islands/growth.ts), so the report names
+  // the island with that reason and both island gates fail. Reported as
+  // native, the package would pass a gate the build does not meet.
+  const entry = fixture("node-islands-unbound-export/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-node-islands-unbound-export.txt",
+  );
+  const { coverage } = analyze(entry);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class, i.reason])).toEqual([
+    ["ni-metrics", "gap", "SC1090: its export 'counter' has no native binding form"],
+  ]);
+  expect(coverage.nodeIslands?.packages.map((p) => p.package)).toEqual([]);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "node-islands")).toBe(false);
+  expect(coveragePasses(coverage, "eager-node-islands")).toBe(false);
+  expect(coveragePasses(coverage, "island-gaps")).toBe(false);
+  // The build decides the same island, and says what moved it.
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-unbound-export-"));
+  try {
+    const built = await compile(entry, {
+      outputKind: "ir",
+      outPath: join(outDir, "main.ir.json"),
+      outDir,
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const islands = (built.warnings ?? []).filter((d) => d.code === "SC8001");
+    expect(islands.map((d) => d.message)).toEqual([
+      "package 'ni-metrics@1.0.0' runs in a Node island: gap: its export 'counter' has no native binding form (used at main.ts:9:13)",
+    ]);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+  // Marked native, the package keeps its refusal, and the report says the
+  // mark cannot be met.
+  const marked = analyze(entry, { nodeIslands: { native: ["ni-metrics"] } }).coverage;
+  expect(marked.diagnostics.map((d) => [d.code, d.exportOf])).toEqual([
+    ["SC1090", { package: "ni-metrics", name: "counter" }],
+  ]);
+  expect(marked.nodeIslands?.islands).toEqual([]);
+  expect(marked.nodeIslands?.violations.map((v) => v.code)).toEqual(["SC8003"]);
+});
+
 test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
   const entry = fixture("node-islands-config/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-config-"));

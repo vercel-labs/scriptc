@@ -532,6 +532,61 @@ export class LlDyn {
     });
   }
 
+  /** The arms of `def`, in the match order `order`, that a typed capsule of
+   * the arm's own type takes before any arm is tested (capsuleArmFirst):
+   * those whose values box as capsules. Empty when that test would repeat
+   * the first arm's own: the union's only such arm is tested first and has
+   * no literal guard to read before it (`R | undefined`). */
+  private capsuleArms(def: IrUnionDef, order: readonly number[]): number[] {
+    const arms = order.filter((tag) => {
+      const arm = def.arms[tag]!;
+      return arm.kind === "record" || arm.kind === "array" || isDynTypedRefType(arm);
+    });
+    const first = order[0];
+    const guarded = def.discriminant?.cases.some((candidate) => candidate.tag === first) === true;
+    return arms.length === 1 && arms[0] === first && !guarded ? [] : arms;
+  }
+
+  /** A typed capsule whose type is one of `arms` is that arm: branch to
+   * `hits[tag]` for the first arm whose own capsule test `%d` passes
+   * (typedRefMatches, the test the arm's matcher and builder start with),
+   * before any arm reads a member. The capsule holds a native value of the
+   * arm's type, as a statically converted one does, so its literal guard
+   * holds by its type, and the arm's builder unboxes it: one object, no
+   * copy. Without this, each literal guard tested first copied the record
+   * into its dyn view to read one member, and a wider record arm tried
+   * first accepted a copy of it. Every other value, and a capsule of no
+   * arm's type, continues after the test. With `build`, the hit blocks are
+   * emitted here and `build(tag)` ends each. */
+  private capsuleArmFirst(
+    B: BlockBuilder,
+    def: IrUnionDef,
+    arms: readonly number[],
+    hits: readonly string[],
+    build?: (tag: number) => void,
+  ): void {
+    if (arms.length === 0) return;
+    const capsule = B.tmp();
+    B.line(`${capsule} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.TYPED_REF}`);
+    const own = B.newLabel("du.own");
+    const other = B.newLabel("du.other");
+    B.condBr(capsule, own, other);
+    B.startBlock(own);
+    for (const tag of arms) {
+      const next = B.newLabel("du.own.n");
+      B.condBr(this.typedRefMatches(B, def.arms[tag]!), hits[tag]!, next);
+      B.startBlock(next);
+    }
+    B.br(other);
+    if (build) {
+      for (const tag of arms) {
+        B.startBlock(hits[tag]!);
+        build(tag);
+      }
+    }
+    B.startBlock(other);
+  }
+
   /** The order a dyn value tries a union's arms in: the canonical order,
    * except that among the record arms, those with more required fields go
    * first, then those with more fields. Records are width-tolerant, so an
@@ -588,8 +643,8 @@ export class LlDyn {
    * discriminant, so it is read again after each one; when its case
    * changed, the tests continue arm by arm after the failed arm, as they
    * would have run from the first arm. A value the runtime cannot classify
-   * that way (a typed capsule, an accessor, an inherited discriminant) takes
-   * the tests arm by arm. */
+   * that way (an accessor, an inherited discriminant) takes the tests arm by
+   * arm. */
   private unionArmsByDiscriminant(
     B: BlockBuilder,
     def: IrUnionDef,
@@ -1712,6 +1767,13 @@ export class LlDyn {
           );
         // Arms in canonical order; any full match answers true.
         const yes = B.newLabel("dm.y");
+        const canonical = def.arms.map((_, tag) => tag);
+        this.capsuleArmFirst(
+          B,
+          def,
+          this.capsuleArms(def, canonical),
+          def.arms.map(() => yes),
+        );
         const values = this.dispatchValues(def);
         if (values !== null) {
           const no = B.newLabel("dm.n");
@@ -1719,7 +1781,7 @@ export class LlDyn {
             B,
             def,
             values,
-            def.arms.map((_, tag) => tag),
+            canonical,
             def.arms.map(() => yes),
             no,
             preserveRefs,
@@ -3205,6 +3267,14 @@ export class LlDyn {
           }
         };
         const order = this.unionArmOrder(def);
+        const own = this.capsuleArms(def, order);
+        this.capsuleArmFirst(
+          B,
+          def,
+          own,
+          def.arms.map((_, tag) => (own.includes(tag) ? B.newLabel("dcu.own") : "")),
+          build,
+        );
         const values = this.dispatchValues(def);
         if (values !== null) {
           const hits = def.arms.map(() => B.newLabel("dcu.h"));

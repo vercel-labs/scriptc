@@ -1931,7 +1931,17 @@ bool scr_dyn_field_eq_num(const ScrDyn *d, const ScrStr *key, double value) {
 int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
                                   size_t count) {
   if (!d) return -1;
-  if (d->kind == SCR_DYN_TYPED_REF) return -2;
+  if (d->kind == SCR_DYN_TYPED_REF) {
+    /* One read answers what each literal test would (scr_dyn_field_eq_str):
+     * a capsule whose member is absent or not a string passes none. */
+    ScrDyn *member = scr_dyn_discriminant(d, key);
+    int32_t found = -1;
+    if (member && member->kind == SCR_DYN_STR)
+      for (size_t k = 0; k < count && found < 0; k++)
+        if (scr_str_eq(member->v.str, values[k])) found = (int32_t)k;
+    scr_dyn_release(member);
+    return found;
+  }
   if (d->kind != SCR_DYN_OBJ) return -1;
   if (d->v.obj.layout) {
     ScrDyn **slot = scr_dyn_layout_slot(d, key->data, key->len);

@@ -2129,6 +2129,46 @@ for (const name of RUNTIME_FEATURE_NAMES) {
   if (rule.expr) FEATURE_EXPR_TESTS.push(name);
 }
 
+/** The features every program with `name` also has, read off the rule
+ * table: those whose rule fires on each libCall name, prefix and type kind
+ * that `name`'s rule fires on. A rule with a predicate implies nothing here,
+ * since what it fires on is not listed. The runtime pack builds a unit for
+ * the feature combinations a program can have, so a combination this rules
+ * out needs no build (tests/harness/runtime-variants.test.ts). */
+export function runtimeFeaturesImpliedBy(name: string): string[] {
+  const implied: string[] = [];
+  let from: RuntimeFeatureRule | undefined;
+  for (const known of RUNTIME_FEATURE_NAMES) {
+    if (known === name) from = ruleOf(known);
+  }
+  if (from === undefined || from.initial || from.scan || from.libCall || from.expr) return implied;
+  const fns: readonly string[] = from.fns ?? [];
+  const prefixes: readonly string[] = from.prefixes ?? [];
+  const types: readonly string[] = from.types ?? [];
+  if (fns.length + prefixes.length + types.length === 0) return implied;
+  for (const other of RUNTIME_FEATURE_NAMES) {
+    if (other === name) continue;
+    const to = ruleOf(other);
+    const toFns: readonly string[] = to.fns ?? [];
+    const toPrefixes: readonly string[] = to.prefixes ?? [];
+    const toTypes: readonly string[] = to.types ?? [];
+    let always = true;
+    // A libCall name fires a rule that lists it or a prefix of it.
+    for (const fn of [...fns, ...prefixes]) {
+      let fires = fns.includes(fn) && toFns.includes(fn);
+      for (const prefix of toPrefixes) {
+        if (fn.startsWith(prefix)) fires = true;
+      }
+      if (!fires) always = false;
+    }
+    for (const kind of types) {
+      if (!toTypes.includes(kind)) always = false;
+    }
+    if (always) implied.push(other);
+  }
+  return implied;
+}
+
 function scanRuntimeFeatures(
   mod: IrModule,
   stopAt?: RuntimeFeatureName,

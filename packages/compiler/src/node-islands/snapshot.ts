@@ -287,6 +287,13 @@ interface LoadReads {
   inputs: string[];
   volatile: string[];
   effects: string[];
+  /** Variables outside publicEnv that a load of the group read with a
+   * value, whatever another load of the group read for the same key. */
+  privateEnv: string[];
+  /** Variables and stdio descriptors the group's loads read differently:
+   * the environment changed between two of them, and no single guard
+   * describes both reads. */
+  conflicts: string[];
 }
 
 /** The reads each probed module's snapshot depends on, and the effects
@@ -301,7 +308,10 @@ interface LoadReads {
  * that shares files carry each other's reads and effects: their guards,
  * and the reasons that keep one of them eager. A module's own come
  * first. */
-function loadReads(results: ProbeResult[]): Map<ProbeResult, LoadReads> {
+function loadReads(
+  results: ProbeResult[],
+  publicEnv: ReadonlySet<string>,
+): Map<ProbeResult, LoadReads> {
   const parent = results.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
   const owner = new Map<string, number>();
@@ -317,9 +327,18 @@ function loadReads(results: ProbeResult[]): Map<ProbeResult, LoadReads> {
     const group = [r, ...results.filter((other, j) => j !== i && find(j) === find(i))];
     const env = new Map<string, string | null>();
     const tty = new Map<number, boolean>();
+    const privateEnv = new Set<string>();
+    const conflicts = new Set<string>();
     for (const m of group) {
-      for (const [k, v] of m.env) if (!env.has(k)) env.set(k, v);
-      for (const [fd, isTty] of m.tty) if (!tty.has(fd)) tty.set(fd, isTty);
+      for (const [k, v] of m.env) {
+        if (v !== null && !publicEnv.has(k)) privateEnv.add(k);
+        if (!env.has(k)) env.set(k, v);
+        else if (env.get(k) !== v) conflicts.add(`the environment variable ${k}`);
+      }
+      for (const [fd, isTty] of m.tty) {
+        if (!tty.has(fd)) tty.set(fd, isTty);
+        else if (tty.get(fd) !== isTty) conflicts.add(`isatty(${fd})`);
+      }
     }
     reads.set(r, {
       env: [...env],
@@ -327,6 +346,8 @@ function loadReads(results: ProbeResult[]): Map<ProbeResult, LoadReads> {
       inputs: [...new Set(group.flatMap((m) => m.inputs))],
       volatile: [...new Set(group.flatMap((m) => m.volatile))],
       effects: [...new Set(group.flatMap((m) => m.effects))],
+      privateEnv: [...privateEnv],
+      conflicts: [...conflicts],
     });
   });
   return reads;
@@ -480,7 +501,7 @@ export function finalizeDeferredIslands(
   // The probe's copy of a generated module stands for the tree's file.
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
   for (const copy of scratch?.copies.values() ?? []) shipped.add(copy);
-  const reads = loadReads(probe.results);
+  const reads = loadReads(probe.results, publicEnv);
   const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === probed(c.path));
@@ -495,10 +516,13 @@ export function finalizeDeferredIslands(
       )
         return "its exports hold a path of the build machine";
       // A variable that was unset is guarded as unset: no value to record.
-      const { env, inputs, volatile, effects } = reads.get(result)!;
-      const privateEnv = env.filter(([k, v]) => v !== null && !publicEnv.has(k)).map(([k]) => k);
+      // One that any load of the group read with a value keeps it eager,
+      // even where another load of the group saw it unset.
+      const { inputs, volatile, effects, privateEnv, conflicts } = reads.get(result)!;
       if (privateEnv.length > 0)
         return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, set at build time, whose value${privateEnv.length === 1 ? "" : "s"} its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
+      if (conflicts.length > 0)
+        return `the loads that share its files read ${conflicts.join(", ")} with different values`;
       if (c.lazy) return null;
       // Its own, or those of a load it shares a file with.
       const whose = (own: string[]): string =>

@@ -6,7 +6,7 @@
  * fixtures are in tests/fixtures/node-island/deferral. Needs a libnode pack
  * in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
@@ -39,9 +39,14 @@ const corpus = join(repoRoot, "tests/corpus");
 const outDir = join(repoRoot, "node_modules/.cache/scriptc-tests/node-island-deferral");
 const skip = libnodePack() === null;
 
-/** Builds a fixture (or a program of `root`) with the deferral trace on;
- * answers the binary and the build's trace lines. */
-async function build(name: string, root = fixtures): Promise<{ binary: string; trace: string[] }> {
+/** Builds a fixture (or a program of `root`) with the deferral trace on and
+ * `set` in the build's environment; answers the binary and the build's
+ * trace lines. */
+async function build(
+  name: string,
+  root = fixtures,
+  set: Record<string, string> = {},
+): Promise<{ binary: string; trace: string[] }> {
   const dir = join(outDir, name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
@@ -50,6 +55,7 @@ async function build(name: string, root = fixtures): Promise<{ binary: string; t
     ...process.env,
     SCRIPTC_NODE_ISLANDS_TRACE: "defer",
     SCRIPTC_CACHE_DIR: join(dir, "build-cache"),
+    ...set,
   };
   const { stderr } = await execFileAsync(
     process.execPath,
@@ -157,9 +163,10 @@ describe.skipIf(skip)("when deferred island modules evaluate", () => {
     expect(trace.every((l) => l.endsWith("evaluated when Node starts"))).toBe(true);
     const ran = await runTraced(binary);
     expect(ran.stdout).toBe(await underNode(name));
-    // The first run of an executable also installs its module tree.
-    const boot = ran.trace.filter((l) => l !== "[node-islands] installing the module tree");
-    expect(boot.map((l) => l.replace(/ \S*node_modules\//, " "))).toEqual([
+    // The module tree's install is traced where Node starts, by its own
+    // unit; this test is about which deferred modules evaluate and when.
+    const evaluation = ran.trace.filter((l) => l !== "[node-islands] installing the module tree");
+    expect(evaluation.map((l) => l.replace(/ \S*node_modules\//, " "))).toEqual([
       "[node-islands] deferred patch-pkg/index.js",
       "[node-islands] deferred reader-pkg/index.js",
       "[node-islands] starting Node",
@@ -171,6 +178,19 @@ describe.skipIf(skip)("when deferred island modules evaluate", () => {
 });
 
 describe.skipIf(skip)("deferred Node island modules", () => {
+  test("a build-time value another package's load cleared stays out of the program", async () => {
+    const secret = "sk-build-only-7f3a9c";
+    const { binary, trace } = await build("shared-secret", fixtures, {
+      SCRIPTC_BUILD_SECRET: secret,
+    });
+    for (const pkg of ["first-pkg", "second-pkg"]) {
+      const decision = trace.find((l) => l.includes(pkg));
+      expect(decision).toMatch(/^\[node-islands\] eager /);
+      expect(decision).toContain("SCRIPTC_BUILD_SECRET");
+    }
+    expect(readFileSync(binary).includes(secret)).toBe(false);
+  }, 300_000);
+
   test("a load that changes another island module's exports defers neither", async () => {
     const { binary, trace } = await build("mutate");
     expect(trace.some((l) => /eager .*pkg-a.*a later island module's load changes/.test(l))).toBe(

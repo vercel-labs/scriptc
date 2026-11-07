@@ -316,12 +316,17 @@ test("a literal an IR rewrite rebuilds keeps its witness", () => {
     ],
     ["a", "b"],
   );
-  const identity = { expr: (e: IrExpr): IrExpr => e, stmt: (st: IrStmt): IrStmt => st };
+  // A rewrite that changes a field value rebuilds the literal; a rewrite that
+  // changes nothing keeps its identity and its note (traverse.test.ts).
+  const rewrite = {
+    expr: (e: IrExpr): IrExpr => (e.kind === "numLit" ? num(2) : e),
+    stmt: (st: IrStmt): IrStmt => st,
+  };
   const original = f.literal(ab, ["b", "a"]);
   observeRecordLiteralRebuilds((from, to) => f.notes.follow(from, to));
   let rebuilt: IrExpr;
   try {
-    rebuilt = transformExpr(original, identity);
+    rebuilt = transformExpr(original, rewrite);
   } finally {
     observeRecordLiteralRebuilds(null);
   }
@@ -806,10 +811,14 @@ test("a replaceable method's result keeps its witness through an IR rewrite", ()
         },
         "load",
       );
-      const identity = { expr: (e: IrExpr): IrExpr => e, stmt: (st: IrStmt): IrStmt => st };
+      // A rewrite that replaces the checked value rebuilds the conversion.
+      const rewrite = {
+        expr: (e: IrExpr): IrExpr => (e.kind === "varRef" ? ref("s", { kind: "dyn" }) : e),
+        stmt: (st: IrStmt): IrStmt => st,
+      };
       observeRecordLiteralRebuilds((from, to) => f.notes.follow(from, to));
       try {
-        const rebuilt = transformExpr(result, identity);
+        const rebuilt = transformExpr(result, rewrite);
         expect(rebuilt).not.toBe(result);
         return [observe(rebuilt)];
       } finally {

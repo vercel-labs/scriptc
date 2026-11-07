@@ -182,6 +182,18 @@ function buildSeed(): Promise<IrModule> {
   return seed;
 }
 
+// The emitted emitter recurses deeply over the compiler's own module, and an
+// instrumented build's frames are several times larger than the plain build's,
+// which leaves the sanitized emitter close to the default 8 MiB stack limit;
+// the runtime's stack guard then reports an overflow where the plain build has
+// room to spare. Raise the soft limit to the hard limit for each sanitized
+// emitter process, as a shell's ulimit would.
+function nativeCommand(file: string, args: string[]): [string, string[]] {
+  return sanitize && process.platform !== "win32"
+    ? ["/bin/sh", ["-c", 'ulimit -s "$(ulimit -H -s)" && exec "$0" "$@"', file, ...args]]
+    : [file, args];
+}
+
 const emit = async (
   mod: IrModule,
   name: string,
@@ -189,7 +201,8 @@ const emit = async (
 ): Promise<string> => {
   writeFileSync(input, serializeModule(mod, true));
   writeFileSync(config, JSON.stringify(request));
-  const result = await execFileAsync(stage, [input, output, config], {
+  const [command, args] = nativeCommand(stage, [input, output, config]);
+  const result = await execFileAsync(command, args, {
     ...runOptions,
     timeout: emitTimeout,
   }).catch((cause: unknown) => {
@@ -320,7 +333,8 @@ describe(title, () => {
       });
       const again = join(dir, "again.ll");
       progress("second generation emits own IR");
-      const second = await execFileAsync(secondStage, [input, again, config], {
+      const [secondCommand, secondArgs] = nativeCommand(secondStage, [input, again, config]);
+      const second = await execFileAsync(secondCommand, secondArgs, {
         ...runOptions,
         timeout: emitTimeout,
       });

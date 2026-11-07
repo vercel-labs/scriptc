@@ -1,8 +1,20 @@
-import { expect, test, vi } from "vitest";
+import { afterAll, expect, test, vi } from "vitest";
 import { F64, VOID, type IrFunction, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import * as traversal from "../../ir/traverse.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import type { Lowerer } from "./lowerer.js";
+
+// These cases count the walks the cache performs. The CI audit walks each
+// body once more to compare it against the reused scan, so it is off here.
+const audit = vi.hoisted(() => {
+  const prior = process.env["SCRIPTC_CHECK_DEFERRED_SCANS"];
+  process.env["SCRIPTC_CHECK_DEFERRED_SCANS"] = "0";
+  return prior;
+});
+afterAll(() => {
+  if (audit === undefined) delete process.env["SCRIPTC_CHECK_DEFERRED_SCANS"];
+  else process.env["SCRIPTC_CHECK_DEFERRED_SCANS"] = audit;
+});
 
 const loc: SrcLoc = { file: "registry.ts", start: 0, end: 1 };
 const block = (where: SrcLoc): Extract<IrStmt, { kind: "block" }> => ({
@@ -81,10 +93,13 @@ test("finds replaced blocks and references appended to an existing body in a lat
   const functions = [fn("init", [original]), fn("use", [])];
   pending.set("registry", [{ loc, lower: () => [value(7)] }]);
   expect(initializers.process(lowerer, functions)).toBe(false);
-  functions[0]!.body = traversal.transformStmtList(functions[0]!.body, {
-    stmt: (s) => s,
-    expr: (e) => e,
-  });
+  // A later wave's pass rebuilds the placeholder inside a replaced list; the
+  // scan must find the rebuilt block, not the detached one. (A transform that
+  // changes nothing keeps the list and the node it was given, which the test
+  // below covers.)
+  functions[0]!.body = functions[0]!.body.map((statement) =>
+    statement.kind === "block" ? { ...statement, body: [...statement.body] } : statement,
+  );
   functions[1]!.body.push(read("registry"));
   expect(initializers.process(lowerer, functions)).toBe(true);
   expect(original.body).toEqual([]);

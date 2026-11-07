@@ -1,7 +1,19 @@
-import { expect, test, vi } from "vitest";
+import { afterAll, expect, test, vi } from "vitest";
 import { DYN, F64, VOID, type IrFunction, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import * as traversal from "../../ir/traverse.js";
 import { DispatchSites } from "./dispatch-sites.js";
+
+// These cases count the walks the cache performs. The CI audit walks each
+// body once more to compare it against the reused summary, so it is off here.
+const audit = vi.hoisted(() => {
+  const prior = process.env["SCRIPTC_CHECK_DISPATCH_SCANS"];
+  process.env["SCRIPTC_CHECK_DISPATCH_SCANS"] = "0";
+  return prior;
+});
+afterAll(() => {
+  if (audit === undefined) delete process.env["SCRIPTC_CHECK_DISPATCH_SCANS"];
+  else process.env["SCRIPTC_CHECK_DISPATCH_SCANS"] = audit;
+});
 
 const loc: SrcLoc = { file: "sites.ts", start: 0, end: 1 };
 const keyRead = (key: string): IrStmt => ({

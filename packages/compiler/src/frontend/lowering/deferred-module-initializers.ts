@@ -281,11 +281,14 @@ export class DeferredModuleInitializers {
    * function's scan is reused while its statement list is the same array
    * with the same length and the same first and last statements: passes that
    * change a body either replace its list or add statements to it, and this
-   * pass forgets the scan of a function whose placeholder it fills. */
+   * pass forgets the scan of a function whose placeholder it fills. Prototype
+   * data helpers gain method slots inside their initialization block, which
+   * changes neither the list nor its ends, so their scans are not reused. */
   private scanOf(lowerer: Lowerer, fn: IrFunction, reuse: boolean): FunctionScan {
     const cached = this.scans.get(fn);
     if (
       reuse &&
+      !fn.name.startsWith(PROTOTYPE_DATA_PREFIX) &&
       cached !== undefined &&
       cached.statements === fn.body &&
       cached.length === fn.body.length &&
@@ -325,6 +328,10 @@ interface FunctionScan {
 
 /** Class data helpers (classStaticData, classPrototypeData). */
 const CLASS_HELPER_PREFIXES = ["%static.data.", "%prototype.data."];
+
+/** Prototype data helpers (classPrototypeData, reflectClassPrototype, the
+ * toJSON slot) gain members inside their initialization block. */
+const PROTOTYPE_DATA_PREFIX = "%prototype.data.";
 
 /** SCRIPTC_CHECK_DEFERRED_SCANS=1 checks each pass that reuses scans against fresh scans. */
 const CHECK_SCANS = process.env["SCRIPTC_CHECK_DEFERRED_SCANS"] === "1";

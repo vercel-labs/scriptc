@@ -82,6 +82,11 @@ export default defineConfig({
       // that session; cc.test.ts removes this flag to keep exercising
       // production's fresh-probe invalidation guarantees.
       SCRIPTC_TEST_STABLE_TOOLCHAIN: process.env["SCRIPTC_TEST_STABLE_TOOLCHAIN"] ?? "1",
+      // TEMPORARY debug (drop before merge): audit the identity-preserving
+      // walkers' caches against fresh scans.
+      SCRIPTC_CHECK_DEFERRED_SCANS: "1",
+      SCRIPTC_CHECK_DISPATCH_SCANS: "1",
+      SCRIPTC_CHECK_DISPATCH_CANDIDATES: "1",
     },
     ...(workers !== undefined && workers !== ""
       ? { maxWorkers: Number(workers), minWorkers: 1 }

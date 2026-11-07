@@ -1547,20 +1547,30 @@ function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
 }
 
 /** Whether `node` is visibly a value an island made: an island read, call
- * or construction, or a `const` initialized with one. A slot whose native
- * type is checked-dynamic (a WeakMap's) holds such a value as the island's
- * handle. */
+ * or construction, a name imported from an island module (`import {
+ * registry } from "pkg"`: the island's own export), or a `const`
+ * initialized with one of those. A slot whose native type is
+ * checked-dynamic (a WeakMap's) holds such a value as the island's handle. */
 function islandMade(lowerer: Lowerer, node: ts.Expression): boolean {
-  if (islandRooted(lowerer, node)) return true;
-  if (!ts.isIdentifier(node)) return false;
-  const declaration = lowerer.resolveValueSymbol(node)?.valueDeclaration;
+  if (islandValue(lowerer, node)) return true;
+  const name = stripTypeWrappers(node);
+  if (!ts.isIdentifier(name)) return false;
+  const declaration = lowerer.resolveValueSymbol(name)?.valueDeclaration;
   return (
     declaration !== undefined &&
     ts.isVariableDeclaration(declaration) &&
     declaration.initializer !== undefined &&
     (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 &&
-    islandRooted(lowerer, declaration.initializer)
+    islandValue(lowerer, declaration.initializer)
   );
+}
+
+/** Whether `node` reads a value out of an island where it stands: an island
+ * read, call or construction, or a name an island module exports. */
+function islandValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (islandRooted(lowerer, node)) return true;
+  const name = stripTypeWrappers(node);
+  return ts.isIdentifier(name) && islandBindingOf(lowerer, name) !== null;
 }
 
 /** The part of `type` whose native value the island export table does not

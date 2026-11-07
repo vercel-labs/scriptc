@@ -4,4 +4,4 @@ node-island-marked-strip/levels.ts:1:1 - error SC8006: scriptc.nodeIslands.modul
     | ^~~~~~~~~~~~~~~~~~~
   2 |   Low,
 
-  hint: Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a .js module can run in a Node island as it is
+  hint: Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is

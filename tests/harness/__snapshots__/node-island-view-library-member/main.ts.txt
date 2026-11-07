@@ -1,0 +1,8 @@
+node-island-view-library-member/main.ts:12:11 - error SC8010: an island object typed as the program record 'Url', whose member 'query' is declared 'ParsedUrlQuery' (an island array, tuple, Map, Set or library object has no native counterpart yet; declare the member with the island's type or 'unknown') cannot cross into or out of a Node island yet
+
+  11 | 
+  12 | const u = parseLink("/path?k=v&k=w", true);
+     |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | console.log(u.host, u.query);
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on

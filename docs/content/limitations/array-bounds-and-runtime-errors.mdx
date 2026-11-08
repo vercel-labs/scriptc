@@ -6,6 +6,7 @@ Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can
 
 Keyed reads of a `Record` or an index signature return `undefined` for a missing key, as in Node.js, with or without `noUncheckedIndexedAccess`.
 A missing array element or key that reaches storage that cannot hold `undefined`, such as a class field typed `number`, throws a `TypeError`.
+An array converted to an array of another element type, such as an array of narrower records, is copied element by element, and a hole or stored `undefined` that the new element type cannot hold throws a `TypeError`.
 
 Runtime traps cannot be caught.
 User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.

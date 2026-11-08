@@ -33,6 +33,7 @@ import { checkedClassAssertion } from "../class-assertions.js";
 import { buildArrayConversion } from "../coercions/builders.js";
 import type { Lowerer } from "../lowerer.js";
 import { keyedHelperName } from "../stable-names.js";
+import { PREDICATE_HELPER } from "../width-lift.js";
 import { typeKey } from "../../type-mapper.js";
 
 /** The interned helper converting a `from[]` filter result to `to[]`, or
@@ -118,7 +119,7 @@ function elementHelper(
     lowerer.coercions.planning.delete(key);
   }
   if (body === null) return null;
-  const name = keyedHelperName(lowerer, "%narrow.checked", key);
+  const name = keyedHelperName(lowerer, PREDICATE_HELPER, key);
   lowerer.valueHelpers.set(key, name);
   lowerer.liftedFns.push({
     name,

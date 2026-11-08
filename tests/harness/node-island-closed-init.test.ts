@@ -208,6 +208,8 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
     expect(said).toEqual([
       "[node-islands] not closed main.ts:10 bounded: its initializer holds a constant the island does not evaluate (`limit`)",
       "[node-islands] closed main.ts:11 tags",
+      // The change of the island's array is the island's to make too.
+      "[node-islands] closed main.ts:12 (statement)",
       "[node-islands] closed main.ts:13 tagged",
       "[node-islands] closed main.ts:14 closed",
     ]);
@@ -246,17 +248,240 @@ describe.skipIf(skip)("island-closed module-level constants", () => {
     ).toBe(true);
   }, 300_000);
 
-  test("a constant declared after Node started evaluates there, not from its snapshot", async () => {
+  test("constants and statements before the first native use all wait, and the use finds them evaluated", async () => {
     const { binary, trace } = await build("8939-node-island-closed-const-after-call");
+    // The package, three constants and the two statements between them.
+    expect(trace).toHaveLength(6);
+    expect(trace.every((l) => l.startsWith("[node-islands] defer "))).toBe(true);
+    const { stdout, boot } = await run(binary);
+    // The constants are the values the probe computed after the statements
+    // before them; the call in the last line starts Node.
+    expect(stdout).toBe("empty 0\n1 x,y 2\n");
+    expect(boot.filter((l) => l.includes("deferred ./.scriptc/closed/"))).toHaveLength(10);
+    expect(boot.filter((l) => l.includes("eagerly"))).toHaveLength(0);
+    expect(boot.filter((l) => l.includes("starting Node"))).toHaveLength(1);
+  }, 300_000);
+
+  test("a constant declared after Node started evaluates there, not from its snapshot", async () => {
+    const { binary, trace } = await build("9349-node-island-closed-stmt-after-use");
     // Every module is deferred by the build; a load reached while Node runs
     // evaluates at its position.
     expect(trace.every((l) => l.startsWith("[node-islands] defer "))).toBe(true);
     const { stdout, boot } = await run(binary);
-    expect(stdout).toBe("empty 0\n1 x,y 2\n");
+    expect(stdout).toBe("before 2 0\nafter 4 1\n");
     expect(
       boot.filter((l) =>
         /evaluating \.\/\.scriptc\/closed\/.* eagerly: Node is already running/.test(l),
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
+  }, 300_000);
+});
+
+describe.skipIf(skip)("island-closed module-level statements", () => {
+  const statements = (closed: string[]): string[] =>
+    closed.map((l) => l.replace(/ \S*\/main\.ts:/, " main.ts:"));
+
+  test("statements nothing reads are deferred island modules, and Node never starts", async () => {
+    const { binary, trace, closed } = await build("9340-node-island-closed-stmt-unused");
+    expect(statements(closed)).toEqual([
+      "[node-islands] closed main.ts:16 (statement)",
+      "[node-islands] closed main.ts:17 (statement)",
+      "[node-islands] closed main.ts:18 (statement)",
+    ]);
+    const modules = trace.filter(generated);
+    // One generated module per statement.
+    expect(modules).toHaveLength(3);
+    for (const module of modules)
+      expect(module).toMatch(/^\[node-islands\] defer .*recorded evaluation is deterministic/);
+    const { stdout, boot, code } = await run(binary);
+    expect(code).toBe(0);
+    expect(stdout).toBe("start\nobject object object\nlibnode mapped: false\nend\n");
+    expect(boot.filter((l) => l.includes("deferred ./.scriptc/closed/"))).toHaveLength(3);
+    expect(startsNode(boot)).toBe(false);
+  }, 300_000);
+
+  test("statements and constants wait together, and the first use finds them in the program's order", async () => {
+    const { binary, trace } = await build("9342-node-island-closed-stmt-order");
+    const modules = trace.filter(generated);
+    // early.ts: a statement and a constant; main.ts: three statements and
+    // two constants.
+    expect(modules).toHaveLength(7);
+    for (const module of modules) expect(module).toMatch(/^\[node-islands\] defer /);
+    const { stdout, boot } = await run(binary);
+    expect(stdout).toBe(
+      "constants 1 2 early=alpha,one=beta,two=alpha\nlibnode mapped: false\n" +
+        "first use early=alpha,one=beta,two=alpha 3 2\n",
+    );
+    // Node starts once, at the call in the last line, and evaluates the
+    // deferred modules in the order they were registered.
+    expect(boot.filter((l) => l.includes("starting Node"))).toHaveLength(1);
+    const evaluated = boot
+      .filter((l) => l.includes("evaluating deferred ./.scriptc/closed/"))
+      .map((l) => /closed\/(\w+)\.\w+\.(\d+)\.mjs/.exec(l)!.slice(1, 3).join("."));
+    expect(evaluated).toEqual([
+      "early.0",
+      "early.1",
+      "main.0",
+      "main.1",
+      "main.2",
+      "main.3",
+      "main.4",
+    ]);
+    expect(boot.filter((l) => l.includes("eagerly"))).toHaveLength(0);
+  }, 300_000);
+
+  test("a statement with effects evaluates where it stands", async () => {
+    const { binary, trace } = await build("9343-node-island-closed-stmt-prints");
+    const modules = trace.filter(generated);
+    expect(modules).toHaveLength(3);
+    // The build does not print for the program: the two statements that
+    // print keep their place. The quiet one between them is deferred by the
+    // build and evaluates in place in the run, because Node is running.
+    expect(modules.filter((l) => /^\[node-islands\] eager .*process\.stdout/.test(l))).toHaveLength(
+      2,
+    );
+    expect(modules.filter((l) => l.startsWith("[node-islands] defer "))).toHaveLength(1);
+    const { stdout, boot } = await run(binary);
+    expect(stdout).toBe(
+      "before\nplug-kit: registering one\nbetween\nplug-kit: registering three\n" +
+        "after one=one,two=alpha,three=three\n",
+    );
+    expect(boot.filter((l) => /closed\/.* eagerly: Node is already running/.test(l))).toHaveLength(
+      1,
+    );
+  }, 300_000);
+
+  test("a statement that changes what a snapshot answers keeps itself and that module eager", async () => {
+    const { binary, trace } = await build("9344-node-island-closed-stmt-member");
+    // The package's snapshot holds `registry.size`; the first statement's
+    // evaluation changes it, so neither is deferred, and the later ones
+    // have nothing deferred left to change.
+    expect(trace.filter((l) => !generated(l))).toEqual([
+      expect.stringMatching(
+        /^\[node-islands\] eager .*plug-kit\/index\.js: a later island module's load changes its exports$/,
+      ),
+    ]);
+    const modules = trace.filter(generated);
+    expect(modules).toHaveLength(3);
+    expect(modules[0]).toMatch(
+      /^\[node-islands\] eager .*: its load changes another island module's exports$/,
+    );
+    const { stdout } = await run(binary);
+    expect(stdout).toBe("size 0\nsize 1\nsize 3\n");
+  }, 300_000);
+
+  test("a native operand, a function of the program and a used value keep a statement native", async () => {
+    const callback = await build("9345-node-island-closed-stmt-callback");
+    expect(statements(callback.closed)).toEqual([
+      "[node-islands] not closed main.ts:9 (statement): it holds an expression the island cannot take as written (`(name: string) => {`)",
+      "[node-islands] closed main.ts:13 (statement)",
+      "[node-islands] closed main.ts:15 (statement)",
+    ]);
+    const ran = await run(callback.binary);
+    expect(ran.stdout).toBe(
+      "registered alpha 1\nbetween alpha\nregistered beta 2\nafter alpha+beta 2\n",
+    );
+    const forms = await build("9347-node-island-closed-stmt-forms");
+    expect(statements(forms.closed)).toEqual([
+      "[node-islands] closed main.ts:9 made",
+      "[node-islands] closed main.ts:10 (statement)",
+      "[node-islands] closed main.ts:11 (statement)",
+      "[node-islands] closed main.ts:12 (statement)",
+      "[node-islands] closed main.ts:13 (statement)",
+      "[node-islands] closed main.ts:14 (statement)",
+      "[node-islands] not closed main.ts:17 (statement): it holds a constant the island does not evaluate (`label`)",
+    ]);
+    const { stdout } = await run(forms.binary);
+    expect(stdout).toBe(
+      "gamma=gamma,solo=solo,inline=nested,tag:a=a,tag:b=b,cast=gamma,native=gamma\n7 4\n",
+    );
+  }, 300_000);
+
+  test("a statement that leaves a rejected promise stays where the program has it", async () => {
+    const { trace } = await build(
+      "rejected",
+      join(repoRoot, "tests/fixtures/node-island/closed-init/rejected/main.ts"),
+    );
+    const modules = trace.filter(generated);
+    expect(modules).toHaveLength(2);
+    // The registration before it still waits; in the run it evaluates when
+    // the second statement starts Node, ahead of it.
+    expect(modules.filter((l) => l.startsWith("[node-islands] defer "))).toHaveLength(1);
+    expect(modules.filter((l) => l.startsWith("[node-islands] eager "))).toEqual([
+      expect.stringMatching(
+        /main\.\w+\.1\.mjs: its load has effects: a promise the load leaves rejected$/,
+      ),
+    ]);
+  }, 300_000);
+});
+
+describe.skipIf(skip)("island-closed loops over tables", () => {
+  const said = (closed: string[]): string[] =>
+    closed.map((l) => l.replace(/ \S*\/main\.ts:/, " main.ts:"));
+
+  test("a loop and the table only it names wait together, and the first use finds every entry", async () => {
+    const { binary, trace, closed } = await build("9350-node-island-closed-loop-table");
+    expect(said(closed)).toEqual([
+      "[node-islands] closed main.ts:16 plugins",
+      "[node-islands] closed main.ts:18 (statement)",
+    ]);
+    const modules = trace.filter(generated);
+    // The table and the loop: a generated module each.
+    expect(modules).toHaveLength(2);
+    for (const module of modules) expect(module).toMatch(/^\[node-islands\] defer /);
+    const { stdout, boot } = await run(binary);
+    expect(stdout).toBe(
+      "start\nlibnode mapped: false\nfirst use alpha=alpha,beta=beta,gamma=gamma 3\n",
+    );
+    expect(boot.filter((l) => l.includes("starting Node"))).toHaveLength(1);
+    expect(boot.filter((l) => l.includes("eagerly"))).toHaveLength(0);
+  }, 300_000);
+
+  test("loops over names, pairs, keys and values are each one statement of the island", async () => {
+    const { binary, trace, closed } = await build("9351-node-island-closed-loop-forms");
+    expect(said(closed)).toEqual([
+      "[node-islands] closed main.ts:8 names",
+      "[node-islands] closed main.ts:9 (statement)",
+      "[node-islands] closed main.ts:11 pairs",
+      "[node-islands] closed main.ts:15 (statement)",
+      "[node-islands] closed main.ts:17 table",
+      "[node-islands] closed main.ts:18 (statement)",
+      "[node-islands] closed main.ts:19 (statement)",
+    ]);
+    expect(trace.filter(generated)).toHaveLength(7);
+    expect(trace.every((l) => l.startsWith("[node-islands] defer "))).toBe(true);
+    const { stdout } = await run(binary);
+    expect(stdout).toBe(
+      "one=alpha,two=alpha,three=alpha,four=beta,five=alpha,six=alpha,again=beta,again=alpha\n8 6\n",
+    );
+  }, 300_000);
+
+  test("a table the program reads, a body that calls the program, and a `let` binding stay native", async () => {
+    const { binary, trace, closed } = await build("9352-node-island-closed-loop-native");
+    expect(said(closed)).toEqual([
+      "[node-islands] not closed main.ts:9 names: line 11 names it outside the statements the island evaluates",
+      "[node-islands] not closed main.ts:10 (statement): it holds a constant the island does not evaluate (`names`)",
+      "[node-islands] not closed main.ts:13 more: line 14 names it outside the statements the island evaluates",
+      "[node-islands] not closed main.ts:14 (statement): it holds a constant the island does not evaluate (`more`)",
+    ]);
+    expect(trace.filter(generated)).toHaveLength(0);
+    const { stdout } = await run(binary);
+    expect(stdout).toBe(
+      "names 2\nregistered three\none=alpha,two=alpha,three=alpha,four=alpha 4\n",
+    );
+  }, 300_000);
+
+  test("a loop with effects runs where it stands; its table still waits for it", async () => {
+    const { binary, trace } = await build("9353-node-island-closed-loop-prints");
+    const modules = trace.filter(generated);
+    expect(modules).toHaveLength(2);
+    expect(
+      modules.filter((l) => /^\[node-islands\] eager .*\.1\.mjs: .*process\.stdout/.test(l)),
+    ).toHaveLength(1);
+    expect(modules.filter((l) => /^\[node-islands\] defer .*\.0\.mjs: /.test(l))).toHaveLength(1);
+    const { stdout } = await run(binary);
+    expect(stdout).toBe(
+      "before\nplug-kit: registering one\nplug-kit: registering two\nafter one=one,two=two 2\n",
+    );
   }, 300_000);
 });

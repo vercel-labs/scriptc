@@ -1,7 +1,16 @@
 A record converted to a record type with a different set of properties, such as a narrower shape or one that adds optional properties, is copied.
 Mutations through the converted reference do not affect the original, and the copy is not `===` to it.
 Empty record layouts are also snapshots because they have no property storage.
-`scriptc coverage` and `scriptc build` report `SC6001` where a copied value is then written or compared, whether the record was passed as an argument, stored in a typed binding, asserted with `as`, assigned to a typed binding later, or stored as an element of a typed array literal.
+`scriptc coverage` and `scriptc build` report `SC6001` at each conversion that copies a value something else can still reach, in any position: an argument, a return value, a field, an array element, a collection value, a callback parameter.
+The report is made when the program writes a field or element of either type, compares values of the converted type by identity (including `includes`, `indexOf`, and Set or Map keys), or passes either type to code scriptc cannot follow.
+It is made from the compiled program, so a program that builds without it does not lose such a write or comparison.
+It judges types rather than the path one value takes, so it can name a conversion whose copy the program never tells from the original.
+A conversion of a new value, such as an object literal, a spread, or the result of a function that returns one, is not reported, because nothing else can reach that value.
+The same holds for an array converted to an array of another element type and for a tuple converted to an array.
+A record that something else can still reach is refused with `SC1090` where it is converted to a class instance and the program writes either type, because the conversion constructs a new instance where Node.js has the one plain object.
+Two conversions are not covered and copy without a report.
+A promise used as a promise of another record type, such as a `Promise<Wide>` stored as a `Promise<Narrow>`, copies its payload when it settles.
+A class stored in a record type, such as `const counter: { count: number } = Counter`, holds copies of the class's static fields.
 An `as` assertion that only adds optional members to the properties a record type declares is not such a copy: it is erased, so the value keeps its identity and reading an added member answers what the object carries, as in Node.js.
 `scriptc build` reports `SC1031` where such a member is assigned, because a record's layout has no storage for it.
 Declaring a record value with a record type that names the same properties, where every declared field fits the value's storage, keeps the value's own layout instead: both names are the same object, as in Node.js.
@@ -12,6 +21,8 @@ A member of another binding that kept its initializer's layout carries that layo
 Bracket writes such as `alias["k"] = v` write the field in the kept layout, like their dotted spelling.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.
+An empty array literal with no element type of its own, such as the `files` of `{ files: [] }` or `const NONE = [] as const`, takes its element type from the declared types its value reaches and is the same array under every name.
+`scriptc build` reports `SC2015` where one such array is used at two element types or reaches a typed array through a computed key; writing the type at the literal (`[] as string[]`) compiles.
 A record or class instance converted to a string-keyed dictionary type such as `Record<string, string>`, directly, through a `{}`, `object` or `unknown` binding or parameter, or as an element of a constant `unknown[]` array that holds such records, keeps its identity when the program writes through, compares or inspects values of that dictionary type.
 Every dictionary type with the same value type then uses checked dynamic storage, which is slower than a native dictionary.
 Class instances retain identity at their exact type or a base class, and at any interface or object type that a class instance is passed, stored, returned, or asserted as when the program could tell a copy from the instance: values of such a type are checked views of the original object, so writes, identity comparisons, Set and Map keys, `util.inspect`, and `JSON.stringify` through them reach the instance, as in Node.js.

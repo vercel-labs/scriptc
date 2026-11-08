@@ -132,6 +132,10 @@ export interface NativeLinkFeatures {
   /** process.features read as a value links scr_process_features.c (the
    * stable flags object); absent (false) otherwise. */
   processFeatures?: boolean;
+  /** A program with both Node islands and child_process links
+   * scr_node_island_child.c (a child process an island made, in a native
+   * ChildProcess slot); absent (false) otherwise. */
+  islandChild?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */

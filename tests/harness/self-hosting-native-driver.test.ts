@@ -368,6 +368,43 @@ test(
         expect(
           await invoke(probe, ["run", comptime, "-o", executable("comptime"), "--strip"]),
         ).toBe("42\n");
+        // The evaluator this compiler starts is the Node host's: it holds no
+        // host object and bakes the values Node computes.
+        const isolated = join(directory, "comptime-isolated.ts");
+        writeFileSync(
+          isolated,
+          `const reached = comptime(() => {
+  const g: any = globalThis;
+  return String(g.constructor.constructor("return typeof process === 'object' ? 'host process' : 'no host'")());
+});
+const table = comptime(() => [Math.sin(0.5), Math.cbrt(2), Math.hypot(1, 2, 3)]);
+console.log(reached, table[0] === Math.sin(0.5), table[1] === Math.cbrt(2), table[2] === Math.hypot(1, 2, 3));
+`,
+        );
+        expect(
+          await invoke(probe, ["run", isolated, "-o", executable("comptime-isolated"), "--strip"]),
+        ).toBe("no host true true true\n");
+        for (const program of [
+          "1050-comptime-tables.ts",
+          "1051-comptime-strings.ts",
+          "1052-comptime-records.ts",
+          "1053-comptime-json.ts",
+          "1054-comptime-modules/main.ts",
+          "8961-comptime-node-values.ts",
+          "8962-comptime-result-data.ts",
+        ]) {
+          const source = join(root, "tests/corpus", program);
+          const oracle = spawnSync(
+            process.execPath,
+            ["--import", join(root, "tests/harness/comptime-shim.mjs"), source],
+            options,
+          );
+          expect(oracle.status, oracle.stderr.toString()).toBe(0);
+          expect(
+            await invoke(probe, ["run", source, "-o", executable("comptime-corpus"), "--strip"]),
+            program,
+          ).toBe(oracle.stdout.toString());
+        }
 
         // A rebuild answers as a cold build does, whatever was edited.
         await checkBuildCacheContracts({

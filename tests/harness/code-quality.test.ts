@@ -113,7 +113,6 @@ test("IR imports and the explicit parser islands remain usable", () => {
   for (const name of [
     "frontend/npm.ts",
     "frontend/cjs-lexer.ts",
-    "frontend/comptime-node.ts",
     "frontend/ts7/world-check.ts",
     "frontend/ts7/source-parser.test.ts",
     "frontend/npm-static-rewrite.ts",

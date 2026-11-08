@@ -4662,6 +4662,50 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
 ]);
 
+/** How a Node island's own instance of a native platform class comes to sit in
+ * a native slot of the class's kind.
+ *
+ * `at: "conversion"`: where a dynamic value enters the slot (the checked
+ * conversion). The value stays the island's object everywhere else, and
+ * converting the slot's value back to a dynamic one answers that object. The
+ * runtime functions named here do the three conversions in a program with
+ * Node islands; they link only into programs that have both islands and the
+ * kind's unit.
+ *
+ * `at: "import"`: where the island's object enters native code. It is the
+ * native object from then on, also in untyped code. */
+export type IslandAdoption =
+  | {
+      at: "conversion";
+      /** `ptr (ptr dyn, ptr path, ptr want)`: the slot's value (+1), or the conversion's TypeError. */
+      unbox: string;
+      /** `ptr (ptr value)`: the dynamic value (+1). */
+      box: string;
+      /** `i1 (ptr dyn)`: the value is one (a union's arm test). */
+      is: string;
+    }
+  | { at: "import" };
+
+/** The IR kinds whose instances made by a Node island a native slot of that
+ * kind holds, and how. Every other kind in DYN_HANDLE_KINDS, and Date, RegExp,
+ * URL and the other native objects with their own state, hold only native
+ * instances: an island's is a handle where it is used through its members and
+ * the conversion's TypeError (or a build-time refusal) in a native slot. */
+export const ISLAND_ADOPTED_KINDS: ReadonlyMap<IrType["kind"], IslandAdoption> = new Map<
+  IrType["kind"],
+  IslandAdoption
+>([
+  [
+    "child",
+    {
+      at: "conversion",
+      unbox: "scr_ni_child_unbox",
+      box: "scr_ni_child_box",
+      is: "scr_ni_child_is",
+    },
+  ],
+]);
+
 /** A class value that crosses an `unknown` slot as a compiler-owned typed
  * reference. %Error keeps its dedicated error encoding; every other class
  * preserves the original object identity and exposes a materialized own-field

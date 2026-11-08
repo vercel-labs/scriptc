@@ -335,7 +335,6 @@
       "files": [
         "packages/compiler/src/frontend/npm.ts",
         "packages/compiler/src/frontend/cjs-lexer.ts",
-        "packages/compiler/src/frontend/comptime-node.ts",
         "packages/compiler/src/frontend/ts7/world-check.ts",
         "packages/compiler/src/frontend/ts7/source-parser.test.ts",
         "packages/compiler/src/frontend/jsx-source.test.ts",

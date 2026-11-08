@@ -1,0 +1,20 @@
+# SHA-256 digests of the toolchain archives that CI, the release jobs and the Sandbox image download.
+#
+# Every script and workflow that downloads one of these files checks it with scripts/verify-toolchain.sh
+# before unpacking or running it, and fails when the digest differs or the file has no line here. The format is
+# sha256sum's: a digest, two spaces and the file name. To move to a new version, change the version where it is
+# set (the workflow or script, .node-version, Dockerfile.sandbox) and add the new file's digest here, taken from
+# the publisher's signed checksum list and checked against a download.
+#
+# https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/
+df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384  LLVM-22.1.8-Linux-X64.tar.xz
+805efad2bb91cb4967fa569e0881d10c0f69c04461cf671cccbae19f547acc34  LLVM-22.1.8-Linux-ARM64.tar.xz
+d96c2cc1736f4eb7fa43cb9bbdf56d93551a9ae0a9aadb9c99c3c3b2b712a234  clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
+922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888  llvm-project-22.1.8.src.tar.xz
+# https://nodejs.org/dist/v24.22.1/
+6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6  node-v24.22.1-linux-x64.tar.xz
+# https://ziglang.org/download/0.16.0/
+70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  zig-x86_64-linux-0.16.0.tar.xz
+ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17  zig-aarch64-linux-0.16.0.tar.xz
+# https://apt.llvm.org/llvm-snapshot.gpg.key, the key that signs the LLVM apt packages of the Sandbox image
+8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d  llvm-snapshot.gpg.key

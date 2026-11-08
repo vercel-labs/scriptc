@@ -148,6 +148,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_module_namespace.c", "moduleNamespace"],
   // The same namespace as the frozen null-prototype object typed code sees.
   ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
+  // A CommonJS module's exports object as a value.
+  ["scr_cjs_exports.c", "cjsExports"],
   // Primitive wrapper objects.
   ["scr_js_wrapper.c", "primitiveWrapper"],
   // %Iterator% and %Iterator.prototype% as values.

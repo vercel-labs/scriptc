@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-es-module-stamp/transpiled.cjs",
+  "<repo>/tests/corpus/cjs-exports-es-module-stamp/index.cjs",
+  "<repo>/tests/corpus/cjs-exports-es-module-stamp/main.cjs"
+ ],
+ "diags": []
+}

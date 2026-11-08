@@ -53,6 +53,7 @@ const features = {
   zstd: false,
   moduleNamespace: false,
   moduleNamespaceDyn: false,
+  cjsExports: false,
   primitiveWrapper: false,
   iteratorProto: false,
   regex: true,

@@ -4,7 +4,6 @@ import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import { dynFallbackType } from "./lowerer.js";
 import { isGenericCallableMemberType } from "../type-mapper.js";
-import { stripValueWrappers } from "../binding-writes.js";
 export {
   bindingNeverReassigned,
   fileWritesBinding,

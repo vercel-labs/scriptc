@@ -200,6 +200,7 @@ export class KeyOrderNotes {
       this.observed.size,
       this.changed.size,
       this.keptSourceShapes.size,
+      this.warnings.length,
     ];
   }
 

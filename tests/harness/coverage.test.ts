@@ -1526,7 +1526,8 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // on a path the corpus does not take
     // (9523-promise-intersection-plain.ts). SC6015 names a TypeScript
     // statement that throws when it runs, and a corpus program that has one
-    // does not reach it.
+    // does not reach it (`new` through a held constructor, or a member read
+    // on a held loader, on a path the corpus does not take).
     expect
       .soft(
         (coverage.divergences ?? []).filter(

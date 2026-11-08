@@ -29,6 +29,7 @@ import {
   FOREIGN,
   F64,
   funcOf,
+  primitiveConstructorType,
   isSupportedArrayElem,
   isSupportedIndexValue,
   isSupportedMapKey,
@@ -1604,6 +1605,26 @@ export interface TypeMapperCtx {
    * checker type its signature instantiates, or null. Consulted only when
    * the symbolic form does not map. */
   resolveBoundAliasTs?: TypeParamTsResolver;
+  /** How a standard-library primitive constructor held as a value is typed
+   * (lowerToIr decides it per program). Off (the default): `typeof String`
+   * is the constructor's own function type (primitiveConstructorType) and a
+   * union of several constructors is one function arm. On: a primitive
+   * constructor type, a union that holds one, and a list or a table of them
+   * (an array, a tuple, an index signature) is the checked-dynamic value,
+   * as `unknown` is; a declared member that holds one is an untyped member,
+   * and a Map or a Set of them keeps its collection with untyped values
+   * (`new Map` builds a typed collection). That is the tier that held a
+   * table of constructors before the function form existed. The value in
+   * it is the same function. */
+  untypedConstructors?: boolean;
+  /** Called each time a primitive constructor type maps to the
+   * constructor's own function type (never under untypedConstructors). */
+  onConstructorFunctionType?: () => void;
+  /** The memo keys (mapType) of the types whose mapping reached
+   * onConstructorFunctionType: an answer taken from the memo calls it again,
+   * so a type that holds a constructor's function type reports it wherever
+   * it is mapped, not only where it was mapped first. */
+  constructorFunctionMemo?: Set<number>;
   /** Localized failure: the lenient mapping of a type whose strict mapping
    * failed at a committed slot (Lowerer.degradedTypes), or null. Consulted
    * only after the strict mapping (and its bound-alias retry) returns null,
@@ -3055,6 +3076,7 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // is scope-specific too: without this the parent could enter the shared
       // memo and serve this instance's representation to every later one.
       if (ctx.typeMemoShared?.get(memoKey) !== own) noteScopeSensitiveMapping();
+      noteConstructorFunctionMemo(ctx, memoKey);
       return own;
     }
     const shared = ctx.typeMemoShared;
@@ -3062,12 +3084,14 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const hit = shared.get(memoKey);
       if (hit !== undefined) {
         if (verifySharedTypeMemo && topLevel) verifySharedMapping(type, ctx, hit);
+        noteConstructorFunctionMemo(ctx, memoKey);
         return hit;
       }
     }
   }
   const sensitivityAtEntry = contextResolutions;
   const scopeReadsAtEntry = scopeSensitivity;
+  const constructorMappingsAtEntry = constructorFunctionMappings;
   const depth = mapTypeDepth;
   // The walk this frame belongs to: a top-level frame outside a withTypeWalk
   // scope starts one, and has no entry to look for or to leave.
@@ -3265,6 +3289,8 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // own has ended it) computed its entries without this answer.
       if (activeWalk !== null) activeWalk.staleBefore = activeWalk.clock;
       liveMemo?.set(memoKey, mapped);
+      if (constructorFunctionMappings !== constructorMappingsAtEntry)
+        ctx.constructorFunctionMemo?.add(memoKey);
       // An answer that read no scope state is every scope's answer, so it
       // also serves the shared memo — including the scopes entered later.
       const shared = ctx.typeMemoShared;
@@ -3298,6 +3324,25 @@ function verifyWalkEntry(
       `(context ${served.movedContext}, scope ${served.movedScope}) and ${key(fresh.result)} ` +
       `when mapped again (context ${fresh.movedContext}, scope ${fresh.movedScope})`,
   );
+}
+
+/** How many mappings reached a primitive constructor's own function type
+ * (noteConstructorFunctionType): a frame that moved it holds such a type. */
+let constructorFunctionMappings = 0;
+
+/** A primitive constructor type mapped to the constructor's own function
+ * type (TypeMapperCtx.onConstructorFunctionType). */
+function noteConstructorFunctionType(ctx: TypeMapperCtx): void {
+  constructorFunctionMappings++;
+  ctx.onConstructorFunctionType?.();
+}
+
+/** An answer taken from the memo reports the constructor function type its
+ * mapping reached (TypeMapperCtx.constructorFunctionMemo). */
+function noteConstructorFunctionMemo(ctx: TypeMapperCtx, memoKey: number): void {
+  const reached = ctx.constructorFunctionMemo;
+  if (reached !== undefined && reached.size > 0 && reached.has(memoKey))
+    noteConstructorFunctionType(ctx);
 }
 
 /** SCRIPTC_TYPE_MEMO_VERIFY: recomputes a shared memo entry in the scope
@@ -3666,32 +3711,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   // The lib's PRIMITIVE-CONSTRUCTOR interfaces as TYPES (`typeof String`,
   // a `type: StringConstructor` record field — the CLI option-table
-  // idiom): the VALUE is the interned coercion closure (lower-exprs mints
-  // one per program), so the type maps to that closure's one concrete
-  // signature — the string-coercion form `(value: string) => primitive`.
-  // String(s) is identity on strings, Number(s) the ECMA StringToNumber,
-  // Boolean(s) emptiness — the parsed-token shape every stored-constructor
-  // call feeds. Calls passing other argument types fence at their site
-  // (the func param coercion), exactly like any other typed closure slot.
-  // Provenance-gated like the boxed wrappers above: a user's own
-  // `interface StringConstructor` maps as a record.
+  // idiom): the VALUE is the program's one function for the constructor
+  // (lower-exprs.ts primitiveCtorClosure), so the type is that function's:
+  // it takes whatever arguments its caller passes and answers the
+  // constructor's primitive. The result differs per constructor; a union
+  // of several of them is one function arm whose result joins theirs (the
+  // union rule below). Provenance-gated like the boxed wrappers above: a
+  // user's own `interface StringConstructor` maps as a record. Under
+  // untypedConstructors the type, and a collection of such values, is the
+  // checked-dynamic value.
+  if (ctx.untypedConstructors === true && holdsUntypedConstructor(widened, ctx, 4)) return DYN;
   {
-    const ctorSym = widened.getSymbol();
-    if (
-      ctorSym &&
-      (ts.symbolName(ctorSym) === "StringConstructor" ||
-        ts.symbolName(ctorSym) === "NumberConstructor" ||
-        ts.symbolName(ctorSym) === "BooleanConstructor") &&
-      ctorSym.declarations.some((d) => ctx.isStdlibFile(ts.getSourceFileOfNode(d)))
-    ) {
-      return funcOf(
-        [STRING],
-        ts.symbolName(ctorSym) === "StringConstructor"
-          ? STRING
-          : ts.symbolName(ctorSym) === "NumberConstructor"
-            ? F64
-            : BOOL,
-      );
+    const ctorResult = primitiveConstructorResult(widened, ctx);
+    if (ctorResult !== null) {
+      noteConstructorFunctionType(ctx);
+      return primitiveConstructorType(ctorResult);
     }
   }
   // `symbol` and `unique symbol` (the type of `const k = Symbol(...)` —
@@ -5253,8 +5287,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (d) =>
           (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
           ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-          (isDeclaredInAmbientModule(d, "tty") ||
-            (isDeclaredInAmbientModule(d, "process") && isDeclaredInAmbientNamespace(d, "NodeJS"))),
+          // NodeJS.WriteStream is the type of process.stdout itself, in
+          // @types/node (inside its "process" module) and in the fallback
+          // declarations (at the top level).
+          (isDeclaredInAmbientModule(d, "tty") || isDeclaredInAmbientNamespace(d, "NodeJS")),
       )) ||
     nodeWritableInterface
   ) {
@@ -6573,7 +6609,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const hybrid = mapUniformHybridUnion(widened, ctx);
     if (hybrid) return hybrid;
   }
-  const callSigs = checker.getCallSignatures(widened);
+  // A union whose callable members are all primitive constructors (a table
+  // member that is one of several constructors, beside the union's strings
+  // and arrays) is held by the union rule below,
+  // which joins them into one function arm: the single signature the
+  // checker joins such a union into has fixed parameters (and Boolean's
+  // type parameter), and a constructor reads the arguments its caller
+  // actually passed (`String()` is "", `String(undefined)` is "undefined").
+  const constructorUnion = widened.isUnionType() ? constructorMembers(widened, ctx) : "none";
+  const callSigs = constructorUnion === "only-callable" ? [] : checker.getCallSignatures(widened);
   // AsyncLocalStorage.snapshot()'s generic runner is a dyn function value
   // (als.snapshot), called through the dyn call path.
   if (callSigs.length === 1 && isAsyncLocalStorageSnapshot(callSigs[0]!, ctx)) return DYN;
@@ -6913,6 +6957,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         );
       let neverConditionalPart = false;
       let undefinedPart: ts.Type | undefined;
+      const constructorResults = new Map<string, IrType>();
       for (const part of parts) {
         if (hasArrayPart && emptyTuple(part)) continue;
         // TypeScript's client can retain impossible intersections in a
@@ -6942,6 +6987,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
         if (part.flags & ts.TypeFlags.Null) {
           byKey.set(typeKey(NULL_T), NULL_T);
+          continue;
+        }
+        // Primitive constructors join into ONE function arm (below): which
+        // constructor a value is stays its identity, as for any function.
+        const constructed =
+          constructorUnion === "none" ? null : primitiveConstructorResult(part, ctx);
+        if (constructed !== null) {
+          constructorResults.set(typeKey(constructed), constructed);
           continue;
         }
         let mapped: IrType | null;
@@ -6989,6 +7042,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           if (programClassBases(source, ctx).some((base) => byKey.has(typeKey(base))))
             byKey.delete(typeKey(mapped));
         }
+      }
+      // The primitive constructors among the parts are one function arm,
+      // whose result is the join of theirs (`typeof String | typeof Number`
+      // answers `string | number`): a slot of the union holds a function,
+      // and a second function arm would make its tag a fact about the
+      // static type that an untyped round trip could not restore.
+      if (constructorResults.size > 0) {
+        noteConstructorFunctionType(ctx);
+        const results = [...constructorResults.values()];
+        sortArms(results);
+        const joined = primitiveConstructorType(
+          results.length === 1 ? results[0]! : { kind: "union", unionId: unions.intern(results) },
+        );
+        byKey.set(typeKey(joined), joined);
       }
       // A class arm beside an interface it implements, where that interface
       // is held as the checked view of its objects (a class-backed protocol:
@@ -7127,6 +7194,80 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   return null;
+}
+
+/** Whether every value of `type` is a primitive constructor: the type is
+ * one (`typeof String`) or a union of several. */
+export function holdsPrimitiveConstructors(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): boolean {
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  return parts.length > 0 && parts.every((part) => primitiveConstructorResult(part, ctx) !== null);
+}
+
+/** TypeMapperCtx.untypedConstructors: whether `type` is a primitive
+ * constructor's type, a union that holds one, or a list or table of such
+ * values (an array, a tuple, an index signature), to `depth` levels. A
+ * declared member and a Map's or Set's argument are not looked into: the
+ * record or collection keeps its shape and the member maps by this rule
+ * itself. */
+function holdsUntypedConstructor(type: ts.Type, ctx: TypeMapperCtx, depth: number): boolean {
+  if (depth === 0) return false;
+  if (primitiveConstructorResult(type, ctx) !== null) return true;
+  const inner = (t: ts.Type): boolean => holdsUntypedConstructor(t, ctx, depth - 1);
+  if (type.isUnionType()) return ts.constituentTypes(type).some(inner);
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  const checker = ctx.checker;
+  if (checker.isArrayType(type) || checker.isTupleType(type))
+    return checker.getTypeArguments(type as ts.TypeReference).some(inner);
+  return checker.getIndexInfosOfType(type).some((info) => inner(info.type));
+}
+
+/** The primitive constructors among the members of the union `type`:
+ * "none"; "only-callable" when it holds one and none of its other members
+ * is callable; "some" when another member is callable too. A union without
+ * a constructor is answered from its members' symbols alone: the checker is
+ * asked for call signatures only when a constructor is among them. */
+function constructorMembers(type: ts.Type, ctx: TypeMapperCtx): "none" | "only-callable" | "some" {
+  const parts = ts.constituentTypes(type);
+  let others: ts.Type[] | null = null;
+  let constructors = false;
+  for (const part of parts) {
+    if (primitiveConstructorResult(part, ctx) !== null) constructors = true;
+    else (others ??= []).push(part);
+  }
+  if (!constructors) return "none";
+  if (others !== null)
+    for (const part of others) if (ctx.checker.getCallSignatures(part).length > 0) return "some";
+  return "only-callable";
+}
+
+/** The primitive a standard-library primitive-constructor interface
+ * answers when called (`typeof String` is `StringConstructor`: string), or
+ * null for any other type. A program's own interface of the same name is
+ * not one. */
+export function primitiveConstructorResult(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): IrType | null {
+  const symbol = type.getSymbol();
+  if (!symbol) return null;
+  const name = ts.symbolName(symbol);
+  const result =
+    name === "StringConstructor"
+      ? STRING
+      : name === "NumberConstructor"
+        ? F64
+        : name === "BooleanConstructor"
+          ? BOOL
+          : name === "BigIntConstructor"
+            ? BIGINT_T
+            : null;
+  if (result === null) return null;
+  return symbol.declarations.some((d) => ctx.isStdlibFile(ts.getSourceFileOfNode(d)))
+    ? result
+    : null;
 }
 
 /** The classes a non-generic program class extends, nearest first, as
@@ -7329,6 +7470,7 @@ function sameTypeUpToUnionOrder(a: IrType, b: IrType, ctx: TypeMapperCtx, depth:
         (a.rest ?? false) === (b.rest ?? false) &&
         (a.restAbi ?? null) === (b.restAbi ?? null) &&
         (a.argumentsAll ?? false) === (b.argumentsAll ?? false) &&
+        (a.argumentsPresence ?? false) === (b.argumentsPresence ?? false) &&
         a.params.every((p, i) => sameTypeUpToUnionOrder(p, b.params[i]!, ctx, depth + 1)) &&
         sameTypeUpToUnionOrder(a.ret, b.ret, ctx, depth + 1)
       );
@@ -8300,6 +8442,8 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   // (`Record<string, unknown>` maps to the checked-dynamic value, see
   // mapRecordType): every member reads as unknown.
   if (bound?.kind === "dyn" && idx.isIndexType() && idx.getTarget() === obj) return DYN;
+  // `T[number]` over a T bound to an array: the array's element.
+  if (bound?.kind === "array" && (idx.flags & ts.TypeFlags.Number) !== 0) return bound.elem;
   if (!bound || bound.kind !== "record") return null;
   const shape = shapes.get(bound.shapeId);
   if (!shape || shape.tuple) return null;

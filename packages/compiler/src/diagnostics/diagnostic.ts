@@ -158,6 +158,13 @@ export interface ScrDiagnostic {
    * deferred declaration's diagnostics, and on the diagnostics of a
    * declaration statement whose bindings were blocked. */
   rejects?: string;
+  /** Report-only: the diagnostic was made after the statement being lowered
+   * met a value or a type that holds a primitive constructor by the
+   * constructor's own function type, or before the program wrote its first
+   * constructor value (lowering/held-constructors.ts). It means something
+   * only for a program that holds a constructor. Never part of the rendered
+   * message. */
+  heldConstructor?: true;
   /** Localized failure, report-only: the failure groups (rejected
    * declarations, blocked statements) that the statement committing this
    * diagnostic used. A cascade clears when every one of them would
@@ -373,9 +380,12 @@ export function guardedDeferredFenceDiag(
 }
 
 /** SC6015 — a TypeScript statement that compiles to a throw: its refusal is
- * deferred to run time. A TypeScript construct that does not compile is a
- * build error; where the statement's refusal waits for the statement to run
- * instead, so that a program which never reaches it builds and runs as
+ * deferred to run time (`new` through a held built-in constructor, a member
+ * read on a held `createRequire` loader), or it hands a function value to an
+ * operation the runtime refuses for every function (`%o`,
+ * `Object.getPrototypeOf`). A TypeScript construct that does not compile is
+ * a build error; where the statement's refusal waits for the statement to
+ * run instead, so that a program which never reaches it builds and runs as
  * under Node, this warning is where the build names it. (A JavaScript
  * source has SC6012 and the report at run time.) */
 export function deferredRefusalDiag(refusal: string, loc: SrcLoc, hint: string): ScrDiagnostic {

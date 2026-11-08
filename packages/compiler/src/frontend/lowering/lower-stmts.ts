@@ -119,6 +119,7 @@ import {
   type TypeFailureSlot,
 } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
+import { reportUncompiledImportsOf } from "./lower-stdlib.js";
 import {
   accessorExportIsExact,
   cjsExportEvaluations,
@@ -381,6 +382,7 @@ import {
   isUnitOnlyTsType,
   jsOpenObjectType,
   unitOnlyUnion,
+  holdsPrimitiveConstructors,
   isAnyArrayType,
 } from "../type-mapper.js";
 import { canonicalBuiltinModule } from "../builtin-modules.js";
@@ -909,6 +911,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const sinkMark = lowerer.diagSinkMark();
       const touched = new Set<string>();
       lowerer.failureTouches.push(touched);
+      // A refusal of this statement involves a held constructor when the
+      // statement meets one before it (held-constructors.ts).
+      const touchMark = lowerer.constructorTouchMark;
+      lowerer.constructorTouchMark = lowerer.constructorTouches;
       const pendingSlots: DynamicSlot[] = [];
       // A declarator that initializes a forward-captured TDZ box takes it
       // out of tdzPredeclared; a retry after a later declarator degrades
@@ -1041,6 +1047,18 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             if (d.typeFailure === undefined && d.rejects === undefined) d.cause ??= cause;
         }
         lowerer.noteBlockedBindings(stmt, committed);
+        // A statement abandoned over a package the program does not compile
+        // names every such package its import() calls load, so one build
+        // round decides their islands (reportUncompiledImportsOf). A
+        // JavaScript statement keeps its fence, which the island rules read.
+        if (!deferFences)
+          reportUncompiledImportsOf(
+            lowerer,
+            stmt,
+            lowerer.diagSink !== null
+              ? lowerer.diagSink.slice(sinkMark)
+              : lowerer.diags.slice(diagsBefore),
+          );
         // The runtime-fence conversion (JS sources, direct diagnostics
         // only — a capture wrapper in force means collection owns the
         // report). The statement's diagnostics move OFF the build and
@@ -1067,6 +1085,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       } finally {
         if (typedRetry !== null && typedRetry.running) lowerer.setBindingTypedRetry(false);
         lowerer.failureTouches.pop();
+        lowerer.constructorTouchMark = touchMark;
       }
     }
     // Each acquisition protects the remainder of its lexical statement
@@ -7839,7 +7858,8 @@ export function lowerVarDecl(
       (!decl.type &&
         !hasJsTypeAnnotation(decl) &&
         type.rest === true &&
-        type.restAbi === undefined))
+        type.restAbi === undefined &&
+        !holdsPrimitiveConstructors(lowerer.typeOf(decl.name), lowerer.typeCtx)))
   ) {
     type = DYN;
   }

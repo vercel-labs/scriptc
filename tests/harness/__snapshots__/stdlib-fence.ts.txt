@@ -12,24 +12,24 @@ stdlib-fence.ts:19:18 - error SC2020: 'Date.parse' is part of the standard libra
   18 | const refl = Reflect.has({ a: 1 }, "a");
   19 | const parsedMs = Date.parse;
      |                  ^~~~~~~~~~
-  20 | const fmt = new Intl.NumberFormat();
+  20 | const fmt = new Intl.PluralRules();
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-stdlib-fence.ts:20:7 - error SC2020: 'NumberFormat' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:20:7 - error SC2020: 'PluralRules' is part of the standard library types but has no scriptc lowering yet
 
   19 | const parsedMs = Date.parse;
-  20 | const fmt = new Intl.NumberFormat();
+  20 | const fmt = new Intl.PluralRules();
      |       ^~~
   21 | 
 
-  hint: Intl formatter values have no representation — the COMPOSED forms lower: new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and x.toLocaleString() with default options, d.toLocaleString(), d.toLocaleTimeString(), and Intl.Segmenter with grapheme or word granularity; the formatter objects themselves (locale negotiation, resolvedOptions, options bags) remain unsupported
+  hint: values of this Intl type have no representation — what compiles: Intl.NumberFormat and Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, and Intl.Segmenter with grapheme or word granularity; locale negotiation, resolvedOptions and the other Intl constructors remain unsupported
 
-stdlib-fence.ts:20:13 - error SC2020: 'new Intl.NumberFormat' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:20:13 - error SC2020: 'new Intl.PluralRules' is part of the standard library types but has no scriptc lowering yet
 
   19 | const parsedMs = Date.parse;
-  20 | const fmt = new Intl.NumberFormat();
-     |             ^~~~~~~~~~~~~~~~~~~~~~~
+  20 | const fmt = new Intl.PluralRules();
+     |             ^~~~~~~~~~~~~~~~~~~~~~
   21 | 
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
@@ -75,4 +75,4 @@ stdlib-fence.ts:41:43 - error SC2020: 'Number.prototype.toLocaleString at locale
      |                                           ^~~~~~~
   42 | // Unlowered call FORMS of lowered members. (push is fully variadic now —
 
-  hint: what lowers is the default locale (no argument) and the composed en-US form — other locales are ICU data the binary does not negotiate yet
+  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile

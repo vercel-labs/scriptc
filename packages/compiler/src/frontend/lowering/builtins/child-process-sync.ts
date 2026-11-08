@@ -4,6 +4,7 @@ import {
   armedMaxBuffer,
   type ChildEvalStep,
   lowerChildArgsArg,
+  windowsOnlyOption,
   withChildArgsCheck,
 } from "./child-process.js";
 import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -11,6 +12,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
   F64,
@@ -106,6 +108,14 @@ export function lowerExecSyncCall(
   // A conditional env spread (`...(c ? { env: ... } : {})`): the call
   // itself splits into a ternary of the two env-nesses at the tail.
   let condEnvSpread: { cond: IrExpr; pairs: IrExpr; whenTrue: boolean } | null = null;
+  // The value of a member the launch does not read (`windowsHide`,
+  // execSync's `shell`) whose evaluation can be observed (a call, a
+  // getter) is a step of its own: with one, the command, the arguments
+  // and every member are evaluated where they sit, as Node does; without
+  // one the call is built as before.
+  const evaluated = (value: IrExpr): void => {
+    if (!isSafeToDiscard(value)) optionSteps.push({ effect: value });
+  };
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -367,11 +377,20 @@ export function lowerExecSyncCall(
           break;
         }
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+          // Node reads it on Windows only; the value is still evaluated
+          // where the member sits.
+          windowsOnlyOption(
+            lowerer,
+            shell ? "execSync" : "execFileSync",
+            member,
+            p,
+            m.value,
+            (value) => optionSteps.push({ effect: value }),
+          );
           break;
         case "shell":
           if (shell) {
-            lowerer.lowerExpr(m.value);
+            evaluated(lowerer.lowerExpr(m.value));
           } else {
             const t = lowerer.typeOf(m.value);
             if (
@@ -426,6 +445,15 @@ export function lowerExecSyncCall(
       loc,
       [0, 1, ...optionSteps],
     );
+  if (condEnvSpread !== null && optionSteps.some((step) => typeof step === "object")) {
+    // The spread's condition is evaluated ahead of both copies of the
+    // call, so a value that only runs has no place among the members.
+    lowerer.noLowering(
+      `${shell ? "execSync" : "execFileSync"} with a conditional env spread beside an option value that must be evaluated`,
+      optsNode!,
+      "bind the computed option value to a constant before the call",
+    );
+  }
   if (condEnvSpread !== null) {
     // The conditional env spread: ONE cond evaluation picks between two
     // copies of the call — every other argument expression is shared

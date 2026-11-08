@@ -694,6 +694,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "closed-world",
     "the names the program assigns on the global object; only reads of those names change",
   ),
+  scan(
+    "frontend/lowering/global-object-writes.ts#globalObjectWrites",
+    2,
+    "closed-world",
+    "every write of the global object by any spelling; only calls and reads of a built-in through the global object change",
+  ),
   decides("frontend/lowering/handle-properties.ts#childAdditions", 2, "child-additions"),
   decides("frontend/lowering/handle-properties.ts#handleAdditions", 1, "handle-additions"),
   scan(

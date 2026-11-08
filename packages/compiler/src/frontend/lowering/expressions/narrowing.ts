@@ -38,8 +38,8 @@ import {
   isOptionalProcessVersionsRead,
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
-import { dynamicArrayOperand } from "./array-literals.js";
 import { builtRecordResultType } from "../built-record-results.js";
+import { dynamicArrayOperand } from "./array-literals.js";
 import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";

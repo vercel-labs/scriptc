@@ -52,6 +52,7 @@ const features = {
   streamWriteErrors: false,
   stdioObject: false,
   streamPipeEvents: false,
+  fsStreamSignal: false,
   nodeIsland: false,
   brotli: false,
   zstd: false,

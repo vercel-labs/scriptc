@@ -1078,7 +1078,20 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         loc,
       };
     }
-    if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
+    // A JavaScript binding that names a global and owns no storage (`const
+    // p = process`, `import process from "node:process"`, `var Buffer =
+    // buffer.Buffer`): its member reads resolve through to the global, and
+    // its value is the value the global's own name reads. A TypeScript
+    // binding of this kind is reported at its declaration
+    // (rejectUnresolvedSymbol).
+    const aliasedGlobal =
+      sym !== undefined &&
+      !lowerer.isStdlibSymbol(sym) &&
+      expr.text !== "globalThis" &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? stdlibGlobalNameOf(lowerer, expr)
+        : null;
+    if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis" || aliasedGlobal !== null) {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
       // %Iterator% in JavaScript: the live constructor (scr_js_iterator.c).
       if (canonical === "Iterator" && isJsIteratorGlobal(lowerer, expr))
@@ -1107,7 +1120,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "Proxy constructor values have no native lowering; use a direct new Proxy with checked-native plain objects",
         Reflect:
           "reflective property access has no static lowering — read and call members directly",
-        Intl: 'native Intl supports Intl.Segmenter with grapheme or word granularity and the composed new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and x.toLocaleString(); formatter objects, locale negotiation and the other Intl constructors remain unsupported',
+        Intl: 'native Intl supports Intl.NumberFormat and Intl.DateTimeFormat objects with format() (the default locale, "en-US" or "en"), the toLocaleString() forms that construct them, and Intl.Segmenter with grapheme or word granularity; locale negotiation and the other Intl constructors remain unsupported',
         SharedArrayBuffer: "use direct new SharedArrayBuffer(length) for fixed shared storage",
         ArrayBuffer:
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",

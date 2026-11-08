@@ -144,7 +144,15 @@ function mapCanonicalAt(
       }
       const arms = [...byKey.values()];
       if (arms.length === 1) return arms[0]!;
-      if (arms.some((a) => a.kind === "dyn")) {
+      // An arm of a union that is the type itself is that type for the array
+      // rule above: `any[] | undefined` holds the value `any[]` holds, so it
+      // is the checked-dynamic value too, as `unknown[] | undefined` is. An
+      // array arm of a union inside a shape keeps its layout, as there.
+      if (
+        arms.some(
+          (a) => a.kind === "dyn" || (depth === 0 && a.kind === "array" && a.elem.kind === "dyn"),
+        )
+      ) {
         if (notes !== undefined) notes.collapsedToDynamic = true;
         return DYN;
       }

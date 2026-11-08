@@ -135,6 +135,14 @@ for (const [name, title] of [
     "process-stream-member-writes",
     "write assigned through a stored NodeJS.WriteStream is seen by every writer and put back, under @types/node",
   ],
+  [
+    "child-windows-only-options",
+    "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
+  ],
+  [
+    "child-sync-option-evaluation",
+    "option values a synchronous child launch does not read are evaluated in place under @types/node",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);

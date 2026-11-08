@@ -109,7 +109,10 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { withInheritedMethods } from "../record-inherited.js";
-import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
+import {
+  isCompiledPrototypeMember,
+  lowerClassPrototypeComputedAssignment,
+} from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
 import {
   isKeyedFieldAccess,
@@ -2863,6 +2866,31 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
             ),
             loc: locOf(expr),
           };
+        }
+        // `instance["name"] = v` with a literal key the class does not
+        // declare is the bracket spelling of the dot write `instance.name =
+        // v` (which a class with an index signature admits): the same own
+        // property of the instance, through its checked-dynamic view.
+        if (isDynTypedRefType(receiver.type)) {
+          const info = lowerer.classes.get(receiver.type.className);
+          if (
+            info &&
+            !info.def.runtime &&
+            !info.builtinError &&
+            !info.builtinEmitter &&
+            !info.builtinStream &&
+            !isCompiledPrototypeMember(lowerer, info, key)
+          ) {
+            return {
+              kind: "exprStmt",
+              expr: lowerDynMemberAssignment(
+                lowerer,
+                expr,
+                lowerer.coerceInto(target.expression, receiver, DYN),
+              ),
+              loc: locOf(expr),
+            };
+          }
         }
         lowerer.unsupported(
           "SC1090",

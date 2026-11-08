@@ -1720,8 +1720,8 @@ function declaresOwnMember(info: ClassInfo, key: string): boolean {
 
 /** `classInstanceIn`'s answer: a static boolean, "the declaration lacks the
  * key but a subclass may declare it" (the caller resolves it with class
- * tests), or "the declaration cannot answer" (runtime-provided root, index
- * signature, unknown class). */
+ * tests), or "the declaration cannot answer" (runtime-provided root,
+ * unknown class). */
 type ClassInAnswer = boolean | "below" | "unknown";
 
 /** `classInstanceIn`'s subclass guard: a subclass whose values land in THIS
@@ -1752,15 +1752,6 @@ function declaringSubclasses(info: ClassInfo, key: string, out: string[] = []): 
   return out;
 }
 
-/** A class body spelling an index signature: `'k' in instance` then answers
- * per VALUE (the overflow map), not from the declaration. */
-function declaresIndexSignature(info: ClassInfo): boolean {
-  if (!info.decl) return false;
-  for (const member of info.decl.members.nodes)
-    if (ts.isIndexSignatureDeclaration(member)) return true;
-  return false;
-}
-
 /** `'k' in instance` for a compiled class: every declared member is present
  * on every instance (a class field is defined at construction whether or
  * not it holds `undefined`, and a method lives on the prototype), so
@@ -1768,7 +1759,10 @@ function declaresIndexSignature(info: ClassInfo): boolean {
  * answer. `"unknown"` when the declaration cannot answer for the value:
  * runtime-provided roots (`decl === null`, the Error/EventEmitter/stream/
  * EventTarget/Date/Array families) expose members their declaration does
- * not spell, and an index signature answers per value. `armNames` are the
+ * not spell. A class with an index signature answers the same way: its
+ * declared members are on every instance, and a name it does not declare
+ * is not declared, so the caller asks the instance (classAnswersAtRuntime).
+ * `armNames` are the
  * class arms of the union whose arm this is (null for a single-class
  * receiver): a subclass that is itself an arm is tagged with that arm, so
  * only the other subclasses can lie about this arm's `false`. */
@@ -1794,7 +1788,6 @@ function classInstanceIn(
       c.extendsArray
     )
       return "unknown";
-    if (declaresIndexSignature(c)) return "unknown";
   }
   if (declaresInstanceMember(lowerer, info, key)) return true;
   if (subclassDeclares(info, key, armNames)) return "below";

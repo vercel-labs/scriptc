@@ -352,6 +352,42 @@ function perInstanceMember(node: ts.Node): boolean {
   return !ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword);
 }
 
+/** An index signature of the class's instances (`static [key: string]: T`
+ * describes the class value instead). */
+function isInstanceIndexSignature(member: ts.ClassElement): member is ts.IndexSignatureDeclaration {
+  return (
+    ts.isIndexSignatureDeclaration(member) &&
+    !ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)
+  );
+}
+
+/** Whether the class or a base declares an instance index signature, so a
+ * name no class on the chain declares may be an own property of the
+ * instance (it lives in the instance's checked-dynamic view). */
+export function classHasIndexSignature(info: ClassInfo): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base)
+    if (c.decl?.members.nodes.some(isInstanceIndexSignature)) return true;
+  return false;
+}
+
+/** Whether an instance index signature is `[key: string]: any` or
+ * `[key: string]: unknown`: a string key, and a value the checked-dynamic
+ * read answers as it is, an absent property included. */
+function indexSignatureReadsDynamic(
+  lowerer: Lowerer,
+  member: ts.IndexSignatureDeclaration,
+): boolean {
+  if (!isInstanceIndexSignature(member)) return false;
+  const parameter = member.parameters.nodes.length === 1 ? member.parameters.nodes[0] : undefined;
+  if (!parameter?.type || !member.type) return false;
+  const key = lowerer.checker.getTypeFromTypeNode(parameter.type);
+  const value = lowerer.checker.getTypeFromTypeNode(member.type);
+  return (
+    (key.flags & ts.TypeFlags.String) !== 0 &&
+    (value.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+  );
+}
+
 /** `Symbol.hasInstance` over the standard global. */
 export function isSymbolHasInstanceKey(lowerer: Lowerer, key: ts.Expression): boolean {
   let e = key;
@@ -4255,7 +4291,22 @@ export function collectClassShapeInner(
         // below reasons about accessors that EXIST on the instance.
         if (!abstractAccessor) accessorNodes.set(mName, member);
       } else if (ts.isIndexSignatureDeclaration(member)) {
-        lowerer.unsupported("SC1090", member, "index signatures");
+        // An index signature declares no storage: JavaScript emits nothing
+        // for it, like a `declare` field. It only tells the checker that a
+        // name the class does not declare may be on the instance, and such
+        // a name is read and written where every undeclared property of a
+        // class instance already lives, the instance's checked-dynamic view
+        // (the member read's and write's own fallbacks; `(x as any).name`
+        // reaches the same property). The value type must be `any` or
+        // `unknown`: a read through any other type would have to convert an
+        // absent property into a type that has no `undefined`.
+        if (!indexSignatureReadsDynamic(lowerer, member)) {
+          lowerer.unsupported(
+            "SC1090",
+            member,
+            "a class index signature other than '[key: string]: any' or '[key: string]: unknown' (a string key, and a value type that admits an absent property)",
+          );
+        }
       } else if (!ts.isSemicolonClassElement(member)) {
         lowerer.unsupported("SC1090", member, `syntax '${ts.syntaxKindName(member.kind)}'`);
       }
@@ -4276,6 +4327,26 @@ export function collectClassShapeInner(
           initializer: undefined,
         })),
       );
+    }
+
+    // A field of a class below one with an index signature: Node creates it
+    // when the base constructor returns, so it follows every property that
+    // constructor added under an undeclared name (`Object.keys`,
+    // `JSON.stringify` and `for...in` list `added` before the field). A
+    // native instance lists its declared fields first, whichever class
+    // declares them, so the order would differ without a diagnostic.
+    if (fieldOrder.some((field) => field.redeclared !== true)) {
+      for (let ancestor = base; ancestor; ancestor = ancestor.base) {
+        // A generic instance's base is its own family: the same declaration.
+        if (ancestor.decl === decl) continue;
+        if (ancestor.decl?.members.nodes.some(isInstanceIndexSignature)) {
+          lowerer.unsupported(
+            "SC1090",
+            decl.name ?? decl,
+            `declaring instance fields in a class that extends '${ancestor.decl.name?.text ?? "a class"}', a class with an index signature (Node creates a subclass's fields after the properties the base constructor added, and a compiled instance lists declared fields first; declare the fields in the class that has the index signature)`,
+          );
+        }
+      }
     }
 
     // Fields read before their first assignment. Construction that exposes

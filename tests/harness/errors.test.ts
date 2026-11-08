@@ -1123,6 +1123,65 @@ console.log(cells.join(","));
     );
   });
 
+  test("a member assigned to a promise the program made is a named runtime fence", async () => {
+    // A promise typed with extra members is held as a checked-dynamic
+    // value. Node adds the member to the promise object; a compiled promise
+    // holds no members of its own, so the statement throws by name when it
+    // runs, after the output before it.
+    const r = await compileAndRun(
+      "promise-member-write",
+      `import type { Ticket } from "./ticket.ts";
+function issue<T>(): Ticket<T> {
+  let accept: (value: T) => void = () => {};
+  const ticket = new Promise<T>((resolve) => {
+    accept = resolve;
+  }) as Ticket<T>;
+  console.log("issued");
+  ticket.redeem = accept;
+  return ticket;
+}
+const stub = issue<string>();
+stub.redeem("seat 4");
+console.log(await stub);
+`,
+      "ts",
+      { "ticket.ts": `export type Ticket<T> = Promise<T> & { redeem: (value: T) => void };\n` },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("issued\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: writing 'redeem' on a promise the program made \(.*\) is not supported yet \[SC1090 at .*promise-member-write\.ts:8\]\n$/,
+    );
+  });
+
+  test("the promise member fence evaluates the assigned value first and can be caught", async () => {
+    const r = await compileAndRun(
+      "promise-member-write-caught",
+      `import type { Numbered } from "./numbered.ts";
+let drawn = 0;
+function draw(): number {
+  drawn += 1;
+  return drawn;
+}
+function number<T>(work: Promise<T>): Numbered<T> {
+  const numbered = work as Numbered<T>;
+  try {
+    numbered.place = draw();
+  } catch (error) {
+    console.log((error as Error).message.includes("[SC1090 at"), drawn);
+  }
+  return numbered;
+}
+console.log(await number(Promise.resolve("served")));
+`,
+      "ts",
+      { "numbered.ts": `export type Numbered<T> = Promise<T> & { place: number };\n` },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true 1\nserved\n");
+    expect(r.stderr).toBe("");
+  });
+
   test("a split require closing a CommonJS cycle keeps the const form's SC1016", async () => {
     // Node answers the closing require with the dependency's partial exports
     // ({ fromA: 1 } at this point), which the static export model cannot

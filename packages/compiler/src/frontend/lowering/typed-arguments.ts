@@ -10,7 +10,9 @@ import {
   type IrParam,
   type IrStmt,
   type IrType,
+  type SrcLoc,
   arrayOf,
+  typeEquals,
 } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { captureContextArguments } from "./function-context.js";
@@ -280,6 +282,43 @@ function pureSlotsOf(lowerer: Lowerer, node: ts.Expression): IrLocal[] | null {
   const local =
     operand.text === "arguments" ? lowerer.ctx.argumentsLocal : lowerer.peekLocal(operand);
   return local ? (lowerer.ctx.pureTuples.get(local.id) ?? null) : null;
+}
+
+/** The value of a forwarded-only tuple that is read as a value after all,
+ * or null when `node` reads no such binding.
+ *
+ * onlyForwarded judges by syntax that every read forwards (`g(...args)`
+ * into a program function), and declareRestTupleParam then never builds
+ * the tuple. Which lowering a call takes is decided later and by more
+ * than syntax: a call of a method some code replaces on an instance, for
+ * one, takes its spread operand as an iterable. Such a read builds the
+ * tuple here from the slots, which is what the prologue builds for a
+ * tuple that is read; no read can observe which of the two happened,
+ * because every read of this binding is a forward.
+ *
+ * A tuple with optional positions has no value type of its own (its
+ * length varies per call, and the slots always hold every position), so
+ * there is no faithful tuple to build: that read is refused. The typed
+ * `arguments` of a function expression is the same case with a tuple that
+ * always has a value type (lowerIdentifierExpr builds it). */
+export function forwardedOnlyTupleValue(
+  lowerer: Lowerer,
+  node: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (lowerer.ctx.pureTuples.size === 0) return null;
+  const local = lowerer.peekLocal(node);
+  const slots = local ? lowerer.ctx.pureTuples.get(local.id) : undefined;
+  if (!local || !slots) return null;
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (declared === null || !typeEquals(declared, local.type)) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `rest tuple '${node.text}' with optional positions used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on)`,
+    );
+  }
+  return lowerer.tupleOfSlots(slots, local.type, node, loc);
 }
 
 /** The positional values `node` forwards when it is a pure-forwarded tuple

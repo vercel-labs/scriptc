@@ -2643,12 +2643,15 @@ export function collectClassShapeInner(
         base = instBase;
         continue;
       }
-      // An EventEmitter base's type argument is the listener MAP — a pure
-      // typing aid (the runtime base is one emitter class whatever the map
-      // says, and Node erases it too), so `extends EventEmitter<Events>`
-      // adopts the same base. Every other generic base still refuses:
-      // its argument can carry a layout.
-      if (t.typeArguments?.nodes && lowerer.builtinEmitterInfoOf(symbol) === null)
+      // A runtime-provided base's type arguments are a pure typing aid: the
+      // base is one runtime class whatever they say, as in Node (an
+      // EventEmitter's listener map, `extends EventEmitter<Events>`), so the
+      // heritage adopts the same base as the spelling without arguments. A
+      // built-in class with no base here (`extends Map<string, number>`)
+      // takes the refusal below, which names it. A program class that
+      // reaches this line with arguments still refuses: its arguments can
+      // carry a layout.
+      if (t.typeArguments?.nodes && named !== null && named.def.runtime !== true)
         lowerer.unsupported("SC1090", t, "extending generic classes");
       if (named?.extendsArray)
         lowerer.unsupported(
@@ -2658,6 +2661,13 @@ export function collectClassShapeInner(
         );
       base = named;
       if (!base) {
+        // A built-in class without a subclass layout, with or without type
+        // arguments: the refusal names it and what compiles instead.
+        const builtinBase = lowerer.isStdlibSymbol(symbol ?? undefined)
+          ? `extending the built-in class '${t.expression.text}' (its instances have no subclass layout: keep the ${t.expression.text} in a field of the class and forward the members you need; program classes can extend Error and its subclasses, EventEmitter, EventTarget, Event, Date, Array and the node:stream classes)`
+          : null;
+        if (t.typeArguments?.nodes)
+          lowerer.unsupported("SC1090", t, builtinBase ?? "extending generic classes");
         if (adoptCallableBase(t.expression)) continue;
         // A base whose own collection deferred can still register later
         // (a flush retry with dynamic slots): the derived class retries
@@ -2665,7 +2675,7 @@ export function collectClassShapeInner(
         const diag = unsupportedDiag(
           "SC1090",
           locOf(t),
-          `extending classes not declared in the program ('${t.expression.text}')`,
+          builtinBase ?? `extending classes not declared in the program ('${t.expression.text}')`,
         );
         lowerer.retriableDiags.add(diag);
         // A base the program declares but rejected: this rejection is its

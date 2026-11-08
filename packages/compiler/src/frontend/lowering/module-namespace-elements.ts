@@ -196,6 +196,26 @@ export function moduleNamespaceObject(
   };
 }
 
+/** The value of an export that is itself a module namespace (`export * as
+ * Shapes from "./shapes"`, or `import * as Shapes from "./shapes"; export
+ * default Shapes`): that module's own namespace object, the one a typed
+ * reference boxed into an untyped slot answers (moduleNamespaceDyn). Null
+ * when the export's target is not a compiled module of the program. */
+function namespaceExportValue(lowerer: Lowerer, target: ts.Symbol, loc: SrcLoc): IrExpr | null {
+  if ((target.flags & ts.SymbolFlags.ValueModule) === 0) return null;
+  if (!target.declarations.some((declaration) => ts.isSourceFile(declaration))) return null;
+  const type = lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(target));
+  if (type?.kind !== "moduleNs") return null;
+  return lowerer.moduleNamespaceDyn({ kind: "moduleNsRef", moduleId: type.moduleId, type, loc });
+}
+
+/** The getters under construction, by name: a module whose namespace
+ * reaches itself through namespace exports (`a` exports `* as b`, `b`
+ * exports `* as a`) names the getter being built instead of building it
+ * again. Lowering is synchronous, so an entry lives only while its getter's
+ * body is being lowered. */
+const gettersInProgress = new Set<string>();
+
 /** The compiled getter behind a namespace object: one lifted function per
  * module that answers an export's current value by name, plus the module's
  * sorted export names. An export whose value has no checked-dynamic form
@@ -225,11 +245,12 @@ function moduleNamespaceGetter(
   exports.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const name = `%module.namespace:${ns.type.moduleId}`;
   const loc = ns.loc;
-  if (lowerer.liftedFnNamed(name) === undefined) {
+  if (!gettersInProgress.has(name) && lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, DYN);
     const previousClass = lowerer.currentClass;
     lowerer.currentClass = null;
     lowerer.fnStack.push(context);
+    gettersInProgress.add(name);
     try {
       const body: IrStmt[] = [];
       for (const { key, declaration, symbol: exportSymbol } of exports) {
@@ -250,14 +271,18 @@ function moduleNamespaceGetter(
             // fencing. A default whose type has no checked-dynamic form
             // still fails the coercion below and keeps its fence.
             const storage = lowerer.globalsBySymbol.get(exportSymbol);
-            if (!storage) {
+            // An export that is another module's namespace has no binding
+            // either: its value is that module's namespace object.
+            const nested = storage ? null : namespaceExportValue(lowerer, exportSymbol, loc);
+            if (!storage && !nested) {
               lowerer.unsupported(
                 "SC1090",
                 node,
                 `reading the unnamed export '${key}' through a module namespace object`,
               );
             }
-            value = lowerer.coerceToExpected(varRef(storage.id, storage.type, loc), DYN);
+            value =
+              nested ?? lowerer.coerceToExpected(varRef(storage!.id, storage!.type, loc), DYN);
           }
           if (value.type.kind !== "dyn") {
             lowerer.unsupported(
@@ -298,6 +323,7 @@ function moduleNamespaceGetter(
         loc,
       });
     } finally {
+      gettersInProgress.delete(name);
       lowerer.fnStack.pop();
       lowerer.currentClass = previousClass;
     }

@@ -200,6 +200,9 @@ export interface NativeLinkFeatures {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c; absent (false) otherwise. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic links
+   * scr_deferred_fence.c, its stderr reporter; absent (false) otherwise. */
+  deferredFence?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

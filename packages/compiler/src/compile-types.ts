@@ -6,8 +6,10 @@ import type { NativeProfileMatch } from "./backend/native-profile.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
 import type { LowerStats } from "./frontend/lowering/lowerer.js";
+import type { WidthCopyFact } from "./frontend/lowering/width-copies.js";
 import type { TierMode } from "./frontend/tier-analysis.js";
 import type { NodeIslandOptions } from "./node-islands/policy.js";
+import type { Defines } from "./frontend/defines.js";
 
 export type CompileOutputKind = "ir" | "llvm" | "asm" | "obj" | "exe";
 
@@ -115,6 +117,11 @@ export interface CompileBaseOptions {
 
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
+  /** `--define`: the executable sets each defined `process.env.NAME` when
+   * it starts, whatever its environment holds, and JavaScript `if`
+   * statements the values decide compile only their taken branches (the
+   * untaken branches' modules never load). */
+  define?: Defines;
   /** Shape inference's typed overlay for opted-in packages' JavaScript.
    * True enables it, false disables it (`--no-shape-overlay`); unset
    * follows SCRIPTC_SHAPE_OVERLAY. A package opts out with
@@ -255,6 +262,8 @@ export interface AnalyzeOptions {
    * opted-in packages' JS as program modules and the coverage report
    * carries each package's native/refused status. */
   npmStatic?: readonly string[] | "auto";
+  /** `--define` (see CompileBaseOptions.define). */
+  define?: Defines;
   /** Analyze with the outbound native bindings from this FFI manifest. */
   ffiProfilePath?: string;
   /** Coverage-only external host type surfaces: exact bare module
@@ -278,4 +287,7 @@ export interface AnalyzeOptions {
 export interface AnalyzeResult {
   coverage: CoverageInput;
   sourceTexts: Map<string, string>;
+  /** The conversions of the lowered program that build a new object
+   * (frontend/lowering/width-copies.ts), present when it has any. */
+  widthCopies?: WidthCopyFact[];
 }

@@ -14085,7 +14085,7 @@ function isObjectHasOwnProperty(lowerer: Lowerer, expr: ts.Expression): boolean 
       decl.initializer !== undefined &&
       !ts.isIdentifier(decl.initializer) &&
       isObjectHasOwnProperty(lowerer, decl.initializer) &&
-      bindingNeverReassigned(lowerer, symbol!, decl)
+      bindingNeverReassigned(lowerer.bindingScope(), symbol!, decl)
     );
   }
   return (

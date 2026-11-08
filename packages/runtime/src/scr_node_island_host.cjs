@@ -14,11 +14,32 @@
  * them in-process under Node: both must produce the same results, errors
  * and messages. Outcomes are "R<json>" (returned; "R" alone is undefined)
  * or "T<json>" (threw), the encoding of scr_node_bridge.h. */
-const { createRequire, isBuiltin, registerHooks } = require("node:module");
+const {
+  createRequire,
+  enableCompileCache,
+  flushCompileCache,
+  getCompileCacheDir,
+  isBuiltin,
+  registerHooks,
+} = require("node:module");
 const { constants: osConstants } = require("node:os");
 const timers = require("node:timers");
 
 const nativeHost = globalThis.__scriptcNodeIslandHost;
+
+// Node's module compile cache, before any module of the program loads. The
+// directory is one the runtime made and vouches for (scr_node_island.c,
+// "Node's compile cache"); it passes none when NODE_COMPILE_CACHE names the
+// user's own, which Node has enabled by now, or when there is to be no
+// cache. Node writes the entries of the modules a run compiled when it
+// stops, and the runtime writes them when native code calls process.exit();
+// a program that is only ever ended by a signal reaches neither, so they are
+// also written once, a second after the start, when a program that is still
+// running has its start behind it, by a timer that keeps no program alive.
+const compileCache = globalThis.__scriptcNodeIslandCompileCache;
+delete globalThis.__scriptcNodeIslandCompileCache;
+if (typeof compileCache === "string") enableCompileCache(compileCache);
+if (getCompileCacheDir() !== undefined) timers.setTimeout(() => flushCompileCache(), 1000).unref();
 
 // The process state the program already has (scr_node_island.c prefixes
 // this script with it): process.argv is the program's own, so island code
@@ -418,6 +439,25 @@ const twinClasses = {
   },
 };
 
+// Values the bridge pairs one to one with runtime objects (byte views and
+// symbols), answered by intrinsics captured before island code runs. A
+// symbol is [kind, text]: 0 unique (its description), 1 unique without a
+// description, 2 registered (its Symbol.for key), 3 well-known (its name on
+// Symbol), the numbering of SCR_NODE_SYMBOL_*.
+const symbolFor = Symbol.for;
+const symbolKeyFor = Symbol.keyFor;
+// Own-property probes of an island object: the intrinsics, never the
+// object's own methods, which may be shadowed or absent (a null-prototype
+// object).
+const objectHasOwn = Object.hasOwn;
+const propertyIsEnumerable = Object.prototype.propertyIsEnumerable;
+const wellKnownNames = new Map();
+const wellKnownSymbols = new Map();
+for (const name of Object.getOwnPropertyNames(Symbol)) {
+  if (typeof Symbol[name] !== "symbol") continue;
+  wellKnownNames.set(Symbol[name], name);
+  wellKnownSymbols.set(name, Symbol[name]);
+}
 const islandHelpers = {
   makeTwin(name, op) {
     const cls = twinClasses[name];
@@ -455,6 +495,18 @@ const islandHelpers = {
   },
   tellTwin(name, event, twin, value) {
     twinClasses[name].tell[event](twin, value);
+  },
+  bufferPrototype: Buffer.prototype,
+  symbolInfo(symbol) {
+    const key = symbolKeyFor(symbol);
+    if (key !== undefined) return [2, key];
+    const name = wellKnownNames.get(symbol);
+    if (name !== undefined) return [3, name];
+    const description = symbol.description;
+    return description === undefined ? [1, ""] : [0, description];
+  },
+  symbolOf(kind, text) {
+    return kind === 2 ? symbolFor(text) : wellKnownSymbols.get(text);
   },
   isInstance(value, name) {
     // The error classes by their intrinsics; any other standard class by
@@ -687,7 +739,12 @@ function load(path, esm) {
   if (path === "scriptc:spread") return (value) => [...value];
   if (path === "scriptc:clone") return (value) => structuredClone(value);
   if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
+  if (path === "scriptc:hasOwn") return (object, key) => objectHasOwn(object, key);
+  if (path === "scriptc:isEnumerable")
+    return (object, key) => propertyIsEnumerable.call(object, key);
   if (path === "scriptc:island-helpers") return islandHelpers;
+  // The runtime's process.exit(): the compile cache's new entries.
+  if (path === "scriptc:flushCompileCache") return flushCompileCache();
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);
   if (sharedModules === null) sharedModules = scriptcSharedModules(nativeHost);

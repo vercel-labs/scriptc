@@ -1,7 +1,7 @@
 import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import { canonicalBuiltinModule, isJsSourceFile, isNodeEsmFile, locOf } from "../../program.js";
 import { isRelativeSpecifier } from "../../workspace-registry.js";
@@ -441,7 +441,7 @@ function createRequireFenceFunctionValue(
  * so side effects and throws happen there. A spread argument consumes its
  * iterator, which throws for an operand that is not iterable. */
 function createRequireBaseEffectStmts(lowerer: Lowerer, creator: ts.Expression): IrStmt[] {
-  const e = withoutParenthesesAssertionsNonNull(creator);
+  const e = withoutParenthesesTypeWrappers(creator);
   if (!ts.isCallExpression(e) || e.questionDotToken) return [];
   // An optional chain that hoisted this call into a local already ran the
   // base: the guarded read re-lowers the receiver, and must not repeat it.
@@ -512,7 +512,7 @@ export function lowerCreateRequireCall(
     // A createRequire-made require with no build-time base: its use is a
     // run-time require over a base the compiled graph cannot anchor.
     if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
-    const callee = withoutParenthesesAssertionsNonNull(call.expression);
+    const callee = withoutParenthesesTypeWrappers(call.expression);
     // The factory call itself over a run-time base — `createRequire(base)`
     // or a destructured `cr(base)`: Node evaluates the base arguments,
     // then the factory returns the loader. The compiled loader is the
@@ -693,7 +693,7 @@ export function staticString(
   depth = 0,
 ): string | null {
   if (node === undefined || depth > 8) return null;
-  const value = withoutParenthesesAssertionsNonNull(node);
+  const value = withoutParenthesesTypeWrappers(node);
   if (ts.isStringLiteralLike(value)) return value.text;
   if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const left = staticString(lowerer, value.left, depth + 1);
@@ -786,7 +786,7 @@ function staticResolveOptionPaths(
   node: ts.Expression | undefined,
 ): readonly string[] | undefined | null {
   if (node === undefined) return undefined;
-  const value = withoutParenthesesAssertionsNonNull(node);
+  const value = withoutParenthesesTypeWrappers(node);
   if (ts.isIdentifier(value) && value.text === "undefined") return undefined;
   if (!ts.isObjectLiteralExpression(value)) return null;
   let paths: readonly string[] | undefined;
@@ -795,7 +795,7 @@ function staticResolveOptionPaths(
     const name =
       ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : null;
     if (name !== "paths" || paths !== undefined) return null;
-    const init = withoutParenthesesAssertionsNonNull(prop.initializer);
+    const init = withoutParenthesesTypeWrappers(prop.initializer);
     if (!ts.isArrayLiteralExpression(init)) return null;
     const entries: string[] = [];
     for (const item of init.elements.nodes) {

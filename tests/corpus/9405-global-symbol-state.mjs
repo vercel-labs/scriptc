@@ -1,26 +1,33 @@
-// A JavaScript module that keeps process-wide state on the global object
-// under a symbol, the way packages share a singleton between copies of
-// themselves and a launcher shares marks with the program it starts. The
-// bindings are read from functions declared beside them, so each has to be
-// the module's own storage, not a value the module's start alone can see.
-const STARTUP = Symbol.for('corpus.9405.startup');
-const launched = STARTUP in globalThis;
-const startup = launched
-  ? globalThis[STARTUP]
-  : process.env.CORPUS_9405_DISABLED
-    ? undefined
-    : { marks: [{ phase: 'first', at: 1 }] };
-if (!launched) Reflect.set(globalThis, STARTUP, startup);
-function mark(phase) {
-  startup?.marks.push({ phase, at: startup.marks.length + 1 });
+// File-scope bindings of a JavaScript module whose value comes out of the
+// global object's symbol store (`globalThis[KEY]`, beside `in` and Reflect),
+// read by functions the module declares. A function declaration is lowered
+// apart from the module's start, so it reaches such a binding only when the
+// binding is storage of the module; a local of the start is out of its reach.
+
+// A kiln log: taken from the global object when one is registered there,
+// started here otherwise, and registered with Reflect.set either way.
+const KILN = Symbol.for('corpus.9405.kiln');
+const kiln = !(KILN in globalThis) ? { firings: ['bisque'], peak: 600 } : globalThis[KILN];
+console.log(KILN in globalThis, Reflect.set(globalThis, KILN, kiln), KILN in globalThis);
+function fire(glaze, degrees) {
+  kiln.firings.push(glaze);
+  if (degrees > kiln.peak) kiln.peak = degrees;
+  return kiln.firings.length;
 }
-mark('second');
-mark('third');
-console.log(
-  launched,
-  startup.marks.map((m) => m.phase + m.at).join(','),
-  globalThis[STARTUP] === startup,
-);
+function kilnReport() {
+  return kiln.firings.join('>') + ' peak ' + kiln.peak;
+}
+console.log(fire('celadon', 1240), fire('raku', 980), kilnReport(), Reflect.get(globalThis, KILN) === kiln);
+
+// The registered log read back through a nested logical expression, and a
+// literal whose other arm is `undefined`.
+const sameKiln = (KILN in globalThis && globalThis[KILN]) || { firings: [], peak: 0 };
+const spareShelf = kiln.peak > 5000 ? undefined : { cones: [6, 10] };
+function shelfReport() {
+  const cones = spareShelf === undefined ? 'no shelf' : spareShelf.cones.join('/');
+  return cones + ' ' + sameKiln.firings.length + ' ' + (sameKiln === kiln);
+}
+console.log(shelfReport());
 
 // A conditional with a literal arm, and one with an `undefined` arm.
 const STATE = Symbol.for('corpus.9405.state');
@@ -29,7 +36,7 @@ function addName(name) {
   state.names.push(name);
   return state.names.length;
 }
-const absent = process.env.CORPUS_9405_DISABLED ? undefined : globalThis[Symbol.for('corpus.9405.none')];
+const absent = process.argv.length > 99 ? undefined : globalThis[Symbol.for('corpus.9405.none')];
 function describeAbsent() {
   return absent === undefined ? 'none' : typeof absent;
 }

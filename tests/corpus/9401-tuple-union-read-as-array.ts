@@ -1,118 +1,119 @@
-// The values of an `as const` table are tuples of different lengths, so a
-// value picked from it is a union of tuple types. Read through an
-// assertion to one array type, the value is the receiver of array methods,
-// of `.length` and an index, of a loop and of a spread, without a binding
-// of the array type in between. Each read is of the value itself (9403
-// shows that with writes); the methods a tuple cannot run in place are in
-// the diagnostics fixture tuple-union-array-in-place.
-const GROUPS = {
-  'Fruit and Nuts': ['apple', 'pear', 'walnut'],
-  Vegetables: ['kale'],
-  Grains: ['rye', 'oat', 'rice', 'millet'],
+// A row picked from an `as const` table whose rows differ in length has a
+// union of tuple types. An assertion to one array type leaves the value as
+// it is, so whatever consumes the assertion reads the tuple in place: the
+// receiver of an array method, `.length`, an index, a `for…of`, a spread.
+// No binding of the array type stands in between. (9403 pins that such a
+// read sees writes; the methods that would write a tuple are refused in the
+// diagnostics fixture tuple-union-array-in-place.)
+const LINES = {
+  harbour: ['pier', 'mill', 'depot'],
+  hill: ['mast'],
+  loop: ['gate', 'park', 'mill', 'quay'],
 } as const;
+type Line = keyof typeof LINES;
+const lineNames = Object.keys(LINES) as Line[];
 
-function groupOf(name: string, fallback = 'Everything Else'): string {
-  return (
-    Object.entries(GROUPS).find(([, names]) =>
-      (names as readonly string[]).includes(name)
-    )?.[0] ?? fallback
-  );
+// Membership, with the row picked by its key.
+function serves(line: Line, stop: string): boolean {
+  return (LINES[line] as readonly string[]).includes(stop);
 }
-console.log(groupOf('kale'), '|', groupOf('millet'), '|', groupOf('fig'));
+function linesThrough(stop: string): string {
+  const hits = lineNames.filter((line) => serves(line, stop));
+  return hits.length > 0 ? hits.join('+') : 'no line';
+}
+console.log(linesThrough('mill'), linesThrough('mast'), linesThrough('zoo'));
 
-function searches(name: string): string {
+// Searches, with the row taken from the table's entries.
+function locate(stop: string): string {
+  const found: string[] = [];
+  for (const [line, stops] of Object.entries(LINES)) {
+    const at = (stops as readonly string[]).indexOf(stop);
+    const fromEnd = (stops as readonly string[]).lastIndexOf(stop);
+    const tested = (stops as readonly string[]).findIndex((s) => s === stop);
+    const alike = (stops as readonly string[]).find((s) => s.charAt(0) === stop.charAt(0));
+    const sameLength = (stops as readonly string[]).some((s) => s.length === stop.length);
+    const allBefore = (stops as readonly string[]).every((s) => s < stop);
+    found.push(`${line} ${at} ${fromEnd} ${tested} ${alike ?? '-'} ${sameLength} ${allBefore}`);
+  }
+  return found.join('; ');
+}
+console.log(locate('park'));
+console.log(locate('mill'));
+console.log(locate('zoo'));
+
+// What a timetable prints of a row: its size, its ends, and copies of it.
+function timetable(): void {
+  for (const [line, stops] of Object.entries(LINES)) {
+    const size = (stops as readonly string[]).length;
+    console.log(
+      line.toUpperCase(),
+      size,
+      (stops as readonly string[])[0],
+      String((stops as readonly string[])[size - 1]),
+      String((stops as readonly string[])[3]),
+      (stops as readonly string[]).join(' > '),
+      '|',
+      (stops as readonly string[]).slice(1).join(' > '),
+      '|',
+      (stops as readonly string[]).map((s) => s.length * 2).join(''),
+      (stops as readonly string[]).filter((s) => s.length > 4).join(','),
+      (stops as readonly string[]).flatMap((s) => [s, s.toUpperCase()]).length,
+      JSON.stringify(stops as readonly string[]),
+      Array.isArray(stops as readonly string[]),
+    );
+  }
+}
+timetable();
+
+// A loop and two spreads over the row.
+function ride(line: Line, from: string): string {
+  const passed: string[] = [];
+  let aboard = false;
+  for (const stop of LINES[line] as readonly string[]) {
+    if (stop === from) aboard = true;
+    if (aboard) passed.push(stop);
+  }
+  const withYard = [...(LINES[line] as readonly string[]), 'yard'];
+  const sorted = [...(LINES[line] as unknown as string[])].sort();
+  return `${passed.join('>')} (${withYard.length}) ${sorted.join('<')}`;
+}
+console.log(ride('loop', 'park'));
+console.log(ride('hill', 'mast'));
+console.log(ride('harbour', 'zoo'));
+
+// Rows of numbers take the same path.
+const FARES = { single: [3], day: [7, 11], week: [24, 30, 36] } as const;
+function fareKinds(price: number): string {
   const out: string[] = [];
-  for (const [group, names] of Object.entries(GROUPS)) {
+  for (const [kind, prices] of Object.entries(FARES)) {
     out.push(
-      group.length +
-        ':' +
-        (names as readonly string[]).indexOf(name) +
-        ',' +
-        (names as readonly string[]).lastIndexOf(name) +
-        ',' +
-        (names as readonly string[]).findIndex((x) => x === name) +
-        ',' +
-        String((names as readonly string[]).find((x) => x.startsWith(name.slice(0, 2)))) +
-        ',' +
-        (names as readonly string[]).some((x) => x === name) +
-        ',' +
-        (names as readonly string[]).every((x) => x !== name),
+      kind + ((prices as readonly number[]).includes(price) ? '*' : '') + (prices as readonly number[]).indexOf(price),
+      (prices as readonly number[]).join('/') + '#' + (prices as readonly number[]).length,
     );
   }
   return out.join(' ');
 }
-console.log(searches('oat'));
-console.log(searches('pear'));
-console.log(searches('fig'));
+console.log(fareKinds(11), '|', fareKinds(36), '|', fareKinds(5), '|', fareKinds(NaN));
 
-function shapes(): string {
+// So do rows that mix strings, numbers and booleans.
+const SIGNS = { door: ['push', 2], lift: [false], exit: ['left', 'up', 9] } as const;
+function signsWith(mark: string | number | boolean): string {
   const out: string[] = [];
-  Object.entries(GROUPS).forEach(([, names]) => {
+  for (const [place, sign] of Object.entries(SIGNS)) {
+    if ((sign as readonly (string | number | boolean)[]).includes(mark)) out.push('@' + place);
     out.push(
-      [
-        (names as readonly string[]).length,
-        (names as readonly string[])[0],
-        String((names as readonly string[])[3]),
-        (names as readonly string[]).join('+'),
-        (names as readonly string[]).slice(1).join('+'),
-        (names as readonly string[]).map((x) => x.length).join(''),
-        (names as readonly string[]).filter((x) => x.length > 3).join('+'),
-        (names as readonly string[]).flatMap((x) => [x, x]).length,
-        JSON.stringify(names as readonly string[]),
-        Array.isArray(names as readonly string[]),
-      ].join(' '),
+      String((sign as readonly (string | number | boolean)[]).indexOf(mark)),
+      (sign as readonly (string | number | boolean)[]).join('·'),
     );
-  });
-  return out.join('\n');
-}
-console.log(shapes());
-
-function walks(name: string): string {
-  const out: string[] = [];
-  for (const [group, names] of Object.entries(GROUPS)) {
-    for (const x of names as readonly string[]) if (x === name) out.push(x + '@' + group);
-    out.push([...(names as readonly string[]), 'end'].length.toString());
-    out.push([...(names as unknown as string[])].sort().join('<'));
   }
   return out.join(' ');
 }
-console.log(walks('rice'));
-console.log(walks('kale'));
+console.log(signsWith('up'), '|', signsWith(9), '|', signsWith(false), '|', signsWith('pull'));
 
-// Tables of numbers and of mixed values take the same path.
-const SIZES = { small: [1, 2], large: [10, 20, 30], one: [7] } as const;
-function sized(n: number): string {
-  const out: string[] = [];
-  for (const [key, values] of Object.entries(SIZES)) {
-    if ((values as readonly number[]).includes(n)) out.push(key);
-    out.push(
-      String((values as readonly number[]).indexOf(n)),
-      (values as readonly number[]).join('-'),
-      String((values as readonly number[]).length),
-    );
-  }
-  return out.join(',');
+// A row that may be missing keeps its `undefined`.
+function maybeServes(line: string, stop: string): string {
+  const rows = LINES as Record<string, (typeof LINES)[Line] | undefined>;
+  const stops = rows[line];
+  return String((stops as readonly string[] | undefined)?.includes(stop));
 }
-console.log(sized(2), '|', sized(30), '|', sized(5), '|', sized(NaN));
-
-const ROWS = { a: ['x', 1], b: [true], c: ['y', 'z', 2] } as const;
-function scan(v: string | number | boolean): string {
-  const out: string[] = [];
-  for (const [key, row] of Object.entries(ROWS)) {
-    if ((row as readonly (string | number | boolean)[]).includes(v)) out.push(key);
-    out.push(
-      String((row as readonly (string | number | boolean)[]).indexOf(v)),
-      (row as readonly (string | number | boolean)[]).join('/'),
-    );
-  }
-  return out.join(',');
-}
-console.log(scan('x'), '|', scan(2), '|', scan(true), '|', scan('q'));
-
-// An optional value of the table keeps its `undefined`.
-function has(key: string, name: string): string {
-  const table = GROUPS as Record<string, (typeof GROUPS)[keyof typeof GROUPS] | undefined>;
-  const names = table[key];
-  return String((names as readonly string[] | undefined)?.includes(name));
-}
-console.log(has('Grains', 'oat'), has('Grains', 'fig'), has('Nope', 'oat'));
+console.log(maybeServes('loop', 'quay'), maybeServes('loop', 'pier'), maybeServes('ring', 'quay'));

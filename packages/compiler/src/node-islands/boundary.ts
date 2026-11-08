@@ -336,13 +336,15 @@ const COPIED =
   ts.TypeFlags.StringLike |
   ts.TypeFlags.BooleanLike |
   ts.TypeFlags.BigIntLike |
+  ts.TypeFlags.ESSymbolLike |
   ts.TypeFlags.Null |
   ts.TypeFlags.Undefined |
   ts.TypeFlags.Void;
 
 /** Whether a checker type is a primitive the boundary copies: a number,
  * string, boolean or bigint (literal types included), null, undefined or
- * void. */
+ * void. A symbol counts: it has no state to share, and the runtime pairs
+ * each one with one symbol of the other side, so its identity crosses. */
 export function isCopiedTsType(type: ts.Type): boolean {
   return (type.flags & COPIED) !== 0;
 }

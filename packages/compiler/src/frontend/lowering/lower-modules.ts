@@ -4,7 +4,7 @@ import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
-import { closedIslandInitLoad } from "./closed-island-init.js";
+import { closedIslandInitLoad, isClosedIslandStatement } from "./closed-island-init.js";
 import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
@@ -17,7 +17,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
@@ -2034,7 +2034,13 @@ export function collectGlobals(
           const vSym = lowerer.checker.getSymbolAtLocation(rhs);
           const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
           const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
-          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+          if (
+            vSym &&
+            vDecl &&
+            vG &&
+            vG.mutable &&
+            !bindingNeverReassigned(lowerer.bindingScope(), vSym, vDecl)
+          ) {
             const g: IrGlobal = {
               id: `%g.${tag}exports`,
               name: "exports",
@@ -2454,8 +2460,8 @@ export function collectGlobals(
       // other instance is refused where its declaration lowers.
       if (
         decl.initializer !== undefined &&
-        ts.isNewExpression(withoutParenthesesAssertionsNonNull(decl.initializer)) &&
-        isAssertClassNew(lowerer, withoutParenthesesAssertionsNonNull(decl.initializer))
+        ts.isNewExpression(withoutParenthesesTypeWrappers(decl.initializer)) &&
+        isAssertClassNew(lowerer, withoutParenthesesTypeWrappers(decl.initializer))
       )
         continue;
       // `const process = globalThis.process` at file scope: a stdlib-
@@ -2470,7 +2476,9 @@ export function collectGlobals(
           stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
           (() => {
             const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
-            return symbol !== undefined && bindingNeverReassigned(lowerer, symbol, decl);
+            return (
+              symbol !== undefined && bindingNeverReassigned(lowerer.bindingScope(), symbol, decl)
+            );
           })());
       if (stableStdlibAlias && stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer))
         continue;
@@ -2530,7 +2538,7 @@ export function collectGlobals(
           // lib signature's fixed parameters cannot express: the binding
           // keeps the checked-dynamic callable the namespace answers.
           const initializer = decl.initializer
-            ? withoutParenthesesAssertionsNonNull(decl.initializer)
+            ? withoutParenthesesTypeWrappers(decl.initializer)
             : undefined;
           if (
             (nameNode === decl.name &&
@@ -3846,9 +3854,13 @@ export function lowerFileInit(
         body.push(...lowerStaticsAt(statics[at]!));
         at++;
       }
-      // A run of constants the island evaluates loads its generated module
-      // where the run begins (closed-island-init.ts).
-      if (lowerer.nodeIslands !== null) body.push(...closedIslandInitLoad(lowerer, sf, stmt));
+      // A constant the island evaluates loads its generated module where
+      // it is declared, and a statement the island evaluates is that load
+      // and nothing else (closed-island-init.ts).
+      if (lowerer.nodeIslands !== null) {
+        body.push(...closedIslandInitLoad(lowerer, sf, stmt));
+        if (isClosedIslandStatement(lowerer, sf, stmt)) continue;
+      }
       // A cycle binding's declaration stays at its position: its
       // initialization flag must be set where the declaration runs.
       const deferred = lowerer.cycleInitDeclarations.has(stmt)
@@ -4115,6 +4127,28 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       else_: workerBranch,
       loc,
     });
+  }
+  // `--define`: the program runs as if started with the defined variables
+  // set, so every read of the environment, and each child process, agrees
+  // with the `if` statements the values decided at build time. Set on the
+  // main thread before any module runs, so no thread reads the environment meanwhile.
+  if (lowerer.define !== undefined) {
+    body.unshift(
+      ...Object.entries(lowerer.define).map(([key, value]): IrStmt => ({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "process.envSet",
+          args: [
+            { kind: "strLit", value: key.slice("process.env.".length), type: STRING, loc },
+            { kind: "strLit", value, type: STRING, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      })),
+    );
   }
   if (lowerer.workerTargets.length > 0) {
     const mainBody = body.splice(0);

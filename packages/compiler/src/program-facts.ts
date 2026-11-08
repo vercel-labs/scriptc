@@ -549,6 +549,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "web-stream-only-members",
   ),
   scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsExportEvaluations",
+    1,
+    "closed-world",
+    "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",
     1,
     "prefilter",

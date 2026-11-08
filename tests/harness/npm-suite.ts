@@ -48,6 +48,10 @@ const KNOWN: Record<string, Known> = {
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
   "bytes-exit": { island: true },
+  // chalk 4 compiles natively; the colour models convert through
+  // color-convert, required inside a function of ansi-styles and shipped
+  // without declarations: that package runs in a Node island.
+  chalk4: { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
@@ -139,6 +143,17 @@ const KNOWN: Record<string, Known> = {
 /** Where the overlay changes how a case KNOWN refuses (none today). */
 const OVERLAY_KNOWN: Record<string, Known> = {};
 
+/** Packages a case compiles natively and must keep compiling so
+ * (`--native=<pkg>`). A package that falls back to a Node island would
+ * still match Node, from inside the island: with the package named here the
+ * build stops instead. */
+const NATIVE: Record<string, readonly string[]> = {
+  chalk4: ["ansi-styles", "chalk"],
+  "cjs-exports-accessor": ["painter", "palette"],
+  "cjs-exports-accessor-twice": ["marker", "painter", "palette"],
+  "prototype-accessor-dial": ["dial"],
+};
+
 /** Per-case timeouts past the default 120 s: the undici cases compile the
  * built-in undici implementation's module graph, the zod 3 cases (zod3,
  * zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's 3,700-line
@@ -204,7 +219,11 @@ type Built = { ok: true; binary: string } | { ok: false; codes: string[]; text: 
 
 /** Compile once per (entry, lane); the cache key hashes the program and the
  * fixture packages so edits to either rebuild. */
-async function build(entry: string, shapeOverlay: boolean | undefined): Promise<Built> {
+async function build(
+  entry: string,
+  shapeOverlay: boolean | undefined,
+  native: readonly string[] | undefined,
+): Promise<Built> {
   const hash = createHash("sha256");
   const inputs = [
     entry,
@@ -215,6 +234,7 @@ async function build(entry: string, shapeOverlay: boolean | undefined): Promise<
   const key = hash
     .update(sanitize ? "san" : "plain")
     .update(shapeOverlay === undefined ? "" : `overlay=${shapeOverlay}`)
+    .update(native === undefined ? "" : `native=${native.join(",")}`)
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, `npm-${key}`);
@@ -224,6 +244,7 @@ async function build(entry: string, shapeOverlay: boolean | undefined): Promise<
     outDir,
     sanitize,
     ...(shapeOverlay === undefined ? {} : { shapeOverlay }),
+    ...(native === undefined ? {} : { nodeIslands: { native } }),
   });
   if (result.ok) return { ok: true, binary: result.binaryPath };
   return {
@@ -315,6 +336,7 @@ export function defineNpmSuite(options: { label: string; shapeOverlay?: boolean 
   test("every KNOWN entry names a case", () => {
     const names = new Set(npmCases(fixturesRoot).map((c) => c.name));
     expect(Object.keys(KNOWN).filter((name) => !names.has(name))).toEqual([]);
+    expect(Object.keys(NATIVE).filter((name) => !names.has(name))).toEqual([]);
   });
 
   describe(`${label} (${cases.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
@@ -324,7 +346,7 @@ export function defineNpmSuite(options: { label: string; shapeOverlay?: boolean 
       const known = (shapeOverlay === true ? OVERLAY_KNOWN[c.name] : undefined) ?? KNOWN[c.name];
       if (known !== undefined && "divergence" in known) {
         test.fails(`${c.name} (diverges: ${known.divergence})`, async () => {
-          const built = await build(c.entry, shapeOverlay);
+          const built = await build(c.entry, shapeOverlay, NATIVE[c.name]);
           if (!built.ok) throw new Error(built.text);
           await expectMatchesNode(c, built.binary);
         }, 120_000);
@@ -332,7 +354,7 @@ export function defineNpmSuite(options: { label: string; shapeOverlay?: boolean 
       }
       if (known !== undefined && "island" in known) {
         test(`${c.name} (Node island)`, async () => {
-          const built = await build(c.entry, shapeOverlay);
+          const built = await build(c.entry, shapeOverlay, NATIVE[c.name]);
           if (libnodePack() === null) {
             expect(built.ok, "no libnode pack: the compile stops").toBe(false);
             if (!built.ok) expect(built.codes, built.text).toContain("SC8005");
@@ -346,7 +368,7 @@ export function defineNpmSuite(options: { label: string; shapeOverlay?: boolean 
       test(
         c.name,
         async () => {
-          const built = await build(c.entry, shapeOverlay);
+          const built = await build(c.entry, shapeOverlay, NATIVE[c.name]);
           if (known !== undefined && "build" in known) {
             // The overlay may type code the default build refuses: such a
             // program must then match Node.

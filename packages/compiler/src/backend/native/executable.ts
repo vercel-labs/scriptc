@@ -558,12 +558,14 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
-  // The wave's prepend registrations and stdin.isRaw (scr_async_dyn.c),
-  // server.off (scr_net.c) and copyFile's mode form (scr_fs_cp.c). The source
-  // build compiles these units from source, so the defines must name the same
-  // builds runtime-pack-matrix.mjs selects.
+  // The wave's prepend registrations and stdin.isRaw (scr_async_dyn.c), the
+  // server event registry's extras (scr_net.c, scr_http.c) and copyFile's
+  // mode form (scr_fs_cp.c). The source build compiles these units from
+  // source, so the defines must name the same builds runtime-pack-matrix.mjs
+  // selects.
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
+  { define: "SCR_HTTP_SERVER_META", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
   // scr_json.c's function-property write/define/delete paths and
   // scr_dyn_invoke.c's own call/apply/bind dispatch: the source build must

@@ -110,6 +110,22 @@ void scr_http1_ctx_on_connect(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgrad
                               ScrNetOnce *shared_once /*moves, nullable*/);
 void scr_http1_ctx_on_upgrade(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
 void scr_http1_ctx_settle(void *ctx);
+/* server.off(event, cb) / removeListener and server.listeners(event) for
+ * the HTTP request-side events: the LAST listener standing for the same
+ * function leaves the event's list (Node's removal order), and listeners
+ * answers a +1 closure array in registration order. `kind` selects the
+ * list (SCR_HTTP_OFF_*); a server with no HTTP/1 parser has none of these
+ * lists, so both are no-ops there (an empty array for listeners). */
+enum {
+  SCR_HTTP_OFF_REQUEST = 1,
+  SCR_HTTP_OFF_CHECK_CONTINUE = 2,
+  SCR_HTTP_OFF_CHECK_EXPECTATION = 3,
+  SCR_HTTP_OFF_UPGRADE = 4,
+  SCR_HTTP_OFF_CONNECT = 5,
+  SCR_HTTP_OFF_CLIENT_ERROR = 6,
+};
+void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
+ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind);
 ScrStr *scr_http_req_url(ScrHttpReq *r);      /* +1 */
 ScrStr *scr_http_req_method(ScrHttpReq *r);   /* +1 */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL (undefined arm) */

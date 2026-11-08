@@ -1,4 +1,5 @@
 import type { TypePatchCommandRequest } from "../frontend/type-patches/command.js";
+import type { CoverageMode } from "../compile-types.js";
 import { rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -391,6 +392,23 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (explainDynamic !== undefined && command !== "coverage") {
     fail(`--explain-dynamic is a coverage option\n\n${USAGE}`);
   }
+  const coverageModeRaw = values.coverage;
+  if (
+    coverageModeRaw !== undefined &&
+    coverageModeRaw !== "full" &&
+    coverageModeRaw !== "reached"
+  ) {
+    fail(`unknown --coverage value "${coverageModeRaw}" (supported: full, reached)\n\n${USAGE}`);
+  }
+  const coverageMode = coverageModeRaw as CoverageMode | undefined;
+  if (coverageMode !== undefined && command !== "coverage") {
+    fail(`--coverage is a coverage option\n\n${USAGE}`);
+  }
+  if (coverageMode === "reached" && explainDynamic !== undefined) {
+    fail(
+      `--coverage=reached cannot be combined with --explain-dynamic: the explanation needs the unreached remainder\n\n${USAGE}`,
+    );
+  }
   const explainIsland = values["explain-island"];
   if (explainIsland !== undefined && command !== "coverage") {
     fail(`--explain-island is a coverage option\n\n${USAGE}`);
@@ -587,6 +605,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(explainDynamic !== undefined ? { explainDynamic: true } : {}),
       ...(wasmFiles.length > 0 ? { wasm: wasmFiles } : {}),
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
+      ...(coverageMode === "reached" ? { coverage: "reached" as const } : {}),
     });
     if (!dynamicTierWarning) delete coverage.performance;
     if (!copyWarning && coverage.divergences !== undefined)

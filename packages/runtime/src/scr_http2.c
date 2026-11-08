@@ -3045,6 +3045,11 @@ void scr_http2_server_on_stream(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH2
     scr_closure_release(cb);
     return;
   }
+  scr_net_server_notify_new_listener(s, "stream");
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return;
+  }
   scr_net_ls_add(&ctx->stream_ls, cb, (void *)fn, once);
 }
 
@@ -3052,6 +3057,11 @@ void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH
                                   bool once) {
   ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
   if (ctx == NULL || scr_net_server_settled(s)) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_server_notify_new_listener(s, "session");
+  if (scr_exc_pending()) {
     scr_closure_release(cb);
     return;
   }
@@ -3223,6 +3233,11 @@ void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/
                                         ScrH2SessionErrorFn fn, bool once) {
   ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
   if (ctx == NULL || scr_net_server_settled(s)) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_server_notify_new_listener(s, "sessionError");
+  if (scr_exc_pending()) {
     scr_closure_release(cb);
     return;
   }

@@ -263,6 +263,73 @@ test("deferred fences in a module's top-level code report as running at startup"
   ]);
 });
 
+test("--coverage=reached reports the entry path without an unreached group", () => {
+  const path = fixture("unreached.ts");
+  const full = analyze(path).coverage;
+  const { coverage, sourceTexts } = analyze(path, { coverage: "reached" });
+  expect(coverage.reachedOnly).toBe(true);
+  expect(coverage.unreached).toBeUndefined();
+  // The totals count reached statements only.
+  expect(coverage.stats).toEqual(full.stats);
+  expect(coverage.diagnostics).toEqual([]);
+  const out = renderCoverage(coverage, { root: repoRoot });
+  expect(out).toContain(
+    "note  unreached code was not analyzed; the totals count reached statements only and are not comparable with a full report",
+  );
+  expect(out).not.toContain("in unreached code");
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.coverageMode).toBe("reached");
+  expect(envelope.diagnostics.map((d) => d.scope)).not.toContain("unreached");
+});
+
+test("--coverage=reached still reports the blocked bodies it reaches", () => {
+  const { coverage } = analyze(fixture("blocked-signature-body.ts"), { coverage: "reached" });
+  const full = analyze(fixture("blocked-signature-body.ts")).coverage;
+  const sites = (diags: readonly { code: string; message: string }[]) =>
+    diags.map((d) => `${d.code} ${d.message}`).sort();
+  expect(sites(coverage.diagnostics)).toEqual(sites(full.diagnostics));
+  // measure is called, so its four statements count here; unused and
+  // described are unreached and are not analyzed.
+  expect(coverage.stats.functionsSkipped).toBe(1);
+  expect(coverage.stats.statementsTotal).toBe(4);
+  expect(coverage.stats.statementsFailed).toBe(4);
+  expect(coverage.unreached).toBeUndefined();
+});
+
+test("CLI: --coverage=reached is a coverage option with two values", () => {
+  const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", scriptcCli, ...args], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, SCRIPTC_NO_CACHE: "1" },
+    });
+  const reached = run("coverage", fixture("unreached.ts"), "--coverage=reached");
+  expect(reached.status).toBe(0);
+  expect(reached.stdout).toContain("unreached code was not analyzed");
+  expect(reached.stdout).not.toContain("in unreached code");
+  const full = run("coverage", fixture("unreached.ts"), "--coverage=full");
+  expect(full.stdout).toContain("in unreached code");
+  expect(full.stdout).not.toContain("unreached code was not analyzed");
+  const unknown = run("coverage", fixture("unreached.ts"), "--coverage=partial");
+  expect(unknown.status).toBe(1);
+  expect(unknown.stderr).toContain('unknown --coverage value "partial" (supported: full, reached)');
+  // The explanation needs the unreached remainder.
+  const explained = run(
+    "coverage",
+    fixture("unreached.ts"),
+    "--coverage=reached",
+    "--explain-dynamic",
+  );
+  expect(explained.status).toBe(1);
+  expect(explained.stderr).toContain(
+    "--coverage=reached cannot be combined with --explain-dynamic",
+  );
+  const build = run("build", fixture("unreached.ts"), "--coverage=reached");
+  expect(build.status).toBe(1);
+  expect(build.stderr).toContain("--coverage is a coverage option");
+});
+
 test("a failed unreached JavaScript statement is always explained", () => {
   const { coverage } = analyze(fixture("unreached-js-fence.js"));
   const failed =

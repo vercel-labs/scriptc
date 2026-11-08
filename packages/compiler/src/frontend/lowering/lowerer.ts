@@ -114,7 +114,7 @@ import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sourc
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { FunctionViews } from "./function-views.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
-import { checkedClassAssertion } from "./class-assertions.js";
+import { canAssertClassValue, checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import {
   isOptionalProcessStreamProperty,
@@ -17165,6 +17165,47 @@ export class Lowerer {
         narrowGenericClassValue(this, e, expected);
       if (narrowed) e = this.coerceToExpected(narrowed, expected);
     }
+    // A union the checker narrowed, at this site, to classes at or below
+    // the expected class (`v instanceof Base` on a union that also holds
+    // records or scalars): the stored value keeps its union, and the arms
+    // the site's type still names all widen to the class without a copy.
+    // The other arms are ruled out by the checker and throw if one arrives.
+    if (!typeEquals(e.type, expected) && expected.kind === "object" && e.type.kind === "union") {
+      const site = this.mapTypeOf(this.typeOf(node));
+      if (
+        site &&
+        (site.kind === "object" || site.kind === "union") &&
+        identityPreservingWidening(this, site, expected)
+      ) {
+        const view = checkedClassAssertion(this, e, expected, e.loc);
+        if (view) e = view;
+      }
+      if (
+        e.type.kind === "union" &&
+        !canAssertClassValue(this, e.type, expected) &&
+        narrowedIntoClass(this, node, expected)
+      ) {
+        // A class test narrowed a union none of whose arms can hold an
+        // instance of the class (the checker types the value `Rec & C`):
+        // the test is false for every value the union has, so the site
+        // cannot run. It is evaluated and throws, as an extraction of an
+        // impossible arm does. A structural flow of records into a class
+        // slot is not this case and keeps its refusal.
+        e = {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: e, loc: e.loc }],
+          result: nodeThrowExpr(
+            1,
+            "",
+            `Value is not an instance of '${this.fmt(expected)}'`,
+            expected,
+            e.loc,
+          ),
+          type: expected,
+          loc: e.loc,
+        };
+      }
+    }
     // Existing JavaScript arrays retain mutations and identity across checked
     // slots. Fresh literals have no prior identity and use checked storage
     // directly, so later writes can change their inferred element type.
@@ -18738,6 +18779,30 @@ export class Lowerer {
     } finally {
       this.retryDegraded = degraded;
     }
+  }
+
+  /** Whether the declaration flush retry (retryDeferred) can still act on
+   * one of `diags`: a type failure it degrades, or a collection that only
+   * waited for another declaration. A class member refusal with such a
+   * diagnostic is left to that retry (class-member-refusals.ts): the retry
+   * compiles the member where confining it would refuse it. */
+  declarationRetryMayClear(diags: readonly ScrDiagnostic[]): boolean {
+    if (this.tierMode !== "auto") return false;
+    return diags.some((diag) => {
+      if (this.retriableDiags.has(diag)) return true;
+      const failure = diag.typeFailure;
+      if (failure === undefined) return false;
+      if (failure.family === "dyn-field-policy") return true;
+      const type = this.failedTypes.get(failure);
+      const id = (type as { id?: number } | undefined)?.id;
+      return (
+        type !== undefined &&
+        id !== undefined &&
+        failure.degradable &&
+        DECLARATION_SLOTS.has(failure.slot) &&
+        this.degradedTypes.get(id)?.lenient?.kind !== "dyn"
+      );
+    });
   }
 
   private retryDeferredRounds(
@@ -22877,4 +22942,36 @@ function fsRealpathValue(lowerer: Lowerer, native: boolean, loc: SrcLoc): IrExpr
     type: DYN,
     loc,
   };
+}
+
+/** Whether the checker types `node` as an intersection with `target`'s
+ * class in every constituent (`Rec & C`, `(A & C) | (B & C)`): what a
+ * class test leaves of a value whose type names no such class. */
+function narrowedIntoClass(
+  lowerer: Lowerer,
+  node: ts.Node,
+  target: IrType & { kind: "object" },
+): boolean {
+  try {
+    const type = lowerer.typeOf(node);
+    const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+    return (
+      parts.length > 0 &&
+      parts.every(
+        (part) =>
+          part.isIntersectionType() &&
+          ts.constituentTypes(part).some((member) => {
+            const mapped = lowerer.mapTypeOf(member);
+            return (
+              mapped?.kind === "object" &&
+              (mapped.className === target.className ||
+                lowerer.isSubclassOf(mapped.className, target.className))
+            );
+          }),
+      )
+    );
+  } catch (e) {
+    if (ts.isUnreadableConstituentsPanic(e)) return false;
+    throw e;
+  }
 }

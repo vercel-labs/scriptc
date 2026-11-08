@@ -337,7 +337,9 @@ export function lowerOptionalChain(
     dotNode === expr &&
     ts.isCallExpression(expr) &&
     !alwaysPresentStdlibMethod(lowerer, recvNode) &&
-    neverNullishCallee(lowerer, recvNode) &&
+    // A process stream's terminal method is optional and has no value form
+    // either: its call tests the stream itself.
+    (neverNullishCallee(lowerer, recvNode) || isTerminalStreamMethodRead(lowerer, recvNode)) &&
     tryLowerExpression(lowerer, recvNode) === null
   ) {
     lowerer.chainHandled.add(dotNode);

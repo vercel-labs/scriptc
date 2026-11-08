@@ -36,3 +36,6 @@ attempt("stderr", () => process.stderr.hasColors(16));
 const held = process.stderr;
 attempt("held", () => held.getColorDepth({ TERM: "xterm" }));
 console.log("held optional", held.getColorDepth?.({ TERM: "xterm" }) ?? "none");
+// The answers collect in an array whose element type admits undefined.
+const collected = [held.getColorDepth?.(palette()), held.hasColors?.(16, palette())];
+console.log("collected", collected.map(String).join(" "), collected.length, evaluated);

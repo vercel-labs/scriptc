@@ -373,14 +373,6 @@ export function variantsFor(source) {
     // program keeps the default object, byte for byte.
     withJsObjectModel(variants);
   }
-  // A function's own call/apply/bind shadows the inherited member: the
-  // FUNC dispatch of a method call reads the closure's table first, which
-  // only the fnMemberProps programs can populate (scr_json.c's write path,
-  // the same variant). Every other program keeps the default object, byte
-  // for byte.
-  if (source === "scr_dyn_invoke.c") {
-    withBuildColumn(variants, "fn-member-props", "fnMemberProps", "SCR_FN_MEMBER_PROPS");
-  }
   // util.inspect and instanceof of Node island handles, Node's report for
   // an uncaught island error and an island error's constructor need no
   // build of their own: scr_inspect.c, scr_dyn_builtin_class.c,
@@ -423,6 +415,15 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+  }
+  // A function's own call/apply/bind shadows the inherited member: the
+  // FUNC dispatch of a method call reads the closure's table first, which
+  // only the fnMemberProps programs can populate (scr_json.c's write path,
+  // the same variant). The column is a twin of the builds above, so a
+  // program with it and a Node island links one build that carries both
+  // defines. Every other program keeps the default object, byte for byte.
+  if (source === "scr_dyn_invoke.c") {
+    withBuildColumn(variants, "fn-member-props", "fnMemberProps", "SCR_FN_MEMBER_PROPS");
   }
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);

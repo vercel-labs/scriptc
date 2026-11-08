@@ -7,9 +7,12 @@
 import * as ts from "./ts7/adapter.js";
 
 /** The part of a lowering context this analysis reads: the shared
- * reassignment cache and value-symbol resolution. `Lowerer` satisfies it,
- * and so does the frontend's specifier bounder (specifier-bounds.ts), which
- * also runs on the graph walks that precede lowering. */
+ * reassignment cache and value-symbol resolution. Callers pass
+ * `lowerer.bindingScope()`, a record, and never the Lowerer itself: the
+ * compiler lowers its own source, and a Lowerer handed over where this
+ * interface is declared becomes a dynamic value, which puts the Lowerer and
+ * every class its fields reach in the dynamic tier of the compiler's own
+ * build (see Lowerer.isStdlibFile). */
 export interface BindingScope {
   readonly neverReassignedCache: Map<ts.Symbol, boolean>;
   resolveValueSymbol(ident: ts.Identifier): ts.Symbol | null | undefined;

@@ -167,7 +167,7 @@ function boundVariable(
   inProgress: Set<ts.Symbol>,
 ): SpecifierBound {
   const isConst = (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0;
-  if (!isConst && !bindingNeverReassigned(lowerer, sym, decl))
+  if (!isConst && !bindingNeverReassigned(lowerer.bindingScope(), sym, decl))
     return top(expr, `'${expr.text}', which is written after its declaration`);
   const init = decl.initializer;
   if (init === undefined) return top(expr, `'${expr.text}', which has no initializer`);
@@ -196,7 +196,7 @@ function boundParameter(
   if (decl.dotDotDotToken !== undefined) return top(expr, `'${expr.text}', a rest parameter`);
   // A parameter the function assigns takes values the call arguments do not
   // show.
-  if (!bindingNeverReassigned(lowerer, sym, decl))
+  if (!bindingNeverReassigned(lowerer.bindingScope(), sym, decl))
     return top(expr, `'${expr.text}', a parameter written in its function`);
   const binding = functionBindingName(fn);
   if (binding === null)

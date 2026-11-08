@@ -8,7 +8,8 @@
  *
  *   - the package's `evaluate` setting (`scriptc.packages.<name>`):
  *     "eager" keeps the module eager; "lazy" defers it whatever else its
- *     load does (the user judged the effects benign);
+ *     load does (the user judged the effects benign, and what the load read
+ *     of the machine: its snapshot then holds no constants);
  *   - environment reads: the boot guards record every environment
  *     variable the load read. One that was unset at build time is recorded
  *     as unset (`E <key> 0`): the executable learns that the variable was
@@ -25,11 +26,16 @@
  *     from the same pack, which loads every candidate module under the
  *     load recorder (probe-recorder.ts) and takes the interface snapshot of
  *     each module's value. "auto" (the default) defers a module whose
- *     recorded load threw nothing, had no effects and read no run-time
- *     input other than public env keys and stdio TTY state, which become
- *     boot guards (the determinism argument in probe-recorder.ts). The static
- *     effect gate (effect-gate.ts) is reported alongside, as the tier that
- *     needs no recording;
+ *     recorded load threw nothing, had no effects and read nothing of the
+ *     machine or the moment other than public env keys and stdio TTY state,
+ *     which become boot guards (the determinism argument in
+ *     probe-recorder.ts). A load that read anything else stays eager: an
+ *     input no guard covers (the arguments, the working directory, a time
+ *     zone not named by TZ), a reading no run repeats (a clock, a random
+ *     number, the process id), or a source the recorder does not classify,
+ *     which the trace names with the place that read it. The static effect
+ *     gate (effect-gate.ts) is reported alongside, as the tier that needs no
+ *     recording;
  *   - when it evaluates: every deferred module evaluates when Node
  *     starts, in import order, before the operation that needed Node. No
  *     island code other than deferred loads runs before a deferred load,
@@ -377,24 +383,64 @@ interface LoadReads {
  * with its effects, in the other module's load. So the modules of a group
  * that shares files carry each other's reads and effects: their guards,
  * and the reasons that keep one of them eager. A module's own come
- * first. */
+ * first.
+ *
+ * A module the build wrote for the program (`generated`: a constant or a
+ * statement the island evaluates, by the path the probe loaded it from)
+ * loads the files of the packages it names. A file it got from an earlier
+ * load evaluated in that load, so what the generated module read or did
+ * there is its own body's: it carries the reads and effects of the loads
+ * whose files it loads and of the generated modules it imports (its value
+ * can come from theirs), and gives its own to the generated modules that
+ * import it, not to those earlier loads. A statement of the program that
+ * prints through a package's function has effects, and the package's
+ * import, which evaluated the package's files quietly, still waits.
+ *
+ * A file that no earlier load lists evaluated in the generated module's
+ * own load (`results` is in the probe's order): the package's import comes
+ * later in the probe's order, or only a call of the generated module
+ * reaches the file. What the file read is then in the generated module's
+ * record, and every other load of that file shares it both ways, as two
+ * packages do. */
 function loadReads(
   results: ProbeResult[],
   publicEnv: ReadonlySet<string>,
+  generated: ReadonlySet<string> = new Set(),
 ): Map<ProbeResult, LoadReads> {
   const parent = results.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  /** The first load, in the probe's order, that lists each file: the load
+   * the file evaluated in. */
   const owner = new Map<string, number>();
   results.forEach((r, i) => {
+    const own = generated.has(r.path);
     for (const f of r.files) {
       const j = owner.get(f);
       if (j === undefined) owner.set(f, i);
-      else parent[find(i)] = find(j);
+      else if (!own) parent[find(i)] = find(j);
     }
   });
+  /** Adds to `seen` the loads whose reads and effects load `i` answers
+   * for: the loads it shares a file with, and for a generated module the
+   * loads that evaluated the files it loads, with theirs. */
+  const collect = (i: number, seen: Set<number>): void => {
+    results.forEach((_, j) => {
+      if (find(j) === find(i)) seen.add(j);
+    });
+    if (!generated.has(results[i]!.path)) return;
+    for (const f of results[i]!.files) {
+      const from = owner.get(f);
+      if (from === undefined || seen.has(from)) continue;
+      seen.add(from);
+      collect(from, seen);
+    }
+  };
   const reads = new Map<ProbeResult, LoadReads>();
   results.forEach((r, i) => {
-    const group = [r, ...results.filter((other, j) => j !== i && find(j) === find(i))];
+    // A module's own come first.
+    const seen = new Set([i]);
+    collect(i, seen);
+    const group = [...seen].map((j) => results[j]!);
     const env = new Map<string, string | null>();
     const tty = new Map<number, boolean>();
     const privateEnv = new Set<string>();
@@ -481,10 +527,12 @@ export function finalizeDeferredIslands(
   const tree = mod.nodeIsland?.modules;
   // Modules the build wrote (generated.ts), by their place under the tree
   // root: the constants of the program whose initializers the island
-  // evaluates.
+  // evaluates, and its statements the island evaluates.
   const generated = new Set<string>();
-  for (const file of tree?.files ?? [])
-    if (file.generated !== undefined) generated.add(join(tree!.root, ...file.path.split("/")));
+  for (const file of tree?.files ?? []) {
+    if (file.generated === undefined) continue;
+    generated.add(join(tree!.root, ...file.path.split("/")));
+  }
   // Modules of the program the static gate admits (below).
   const program = new Set<string>();
   /** A module whose code is the program's own: the probe withholds what it
@@ -574,7 +622,7 @@ export function finalizeDeferredIslands(
   // The probe's copy of a generated module stands for the tree's file.
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
   for (const copy of scratch?.copies.values() ?? []) shipped.add(copy);
-  const reads = loadReads(probe.results, publicEnv);
+  const reads = loadReads(probe.results, publicEnv, new Set(scratch?.copies.values() ?? []));
   // The probe loads every candidate in one process, in the order the program
   // evaluates them, so shared state one load writes (a global, a builtin, a
   // prototype, the environment) is there for every load after it. A load
@@ -633,13 +681,18 @@ export function finalizeDeferredIslands(
         own.length > 0 ? "its load" : "a load it shares a file with";
       if (effects.length > 0) return `${whose(result.effects)} has effects: ${effects.join(", ")}`;
       if (inputs.length > 0) return `${whose(result.inputs)} reads ${inputs.join(", ")}`;
-      // A snapshot written without constants keeps an object's flags and its
-      // object links, and those answer `typeof` without evaluating a module.
-      // An export's type can come from the read as its value can, so a load
-      // that read the clock or a random source does not let the other loads
-      // of its files keep theirs.
-      if (volatile.length > 0 && result.volatile.length === 0)
-        return `${whose(result.volatile)} reads ${volatile.join(", ")}: its snapshot would keep the build's object flags and object links`;
+      // A reading no run repeats (a clock, a random number, the process id)
+      // has no boot guard, and leaving the constants out of the snapshot is
+      // not enough to wait with the load. A clock read late comes after the
+      // program's own readings that followed the import. A snapshot without
+      // constants still keeps an object's flags and its object links, which
+      // answer `typeof` and hand out members without evaluating a module, and
+      // which members are objects can come from the reading as a value can.
+      // And what the load left in shared state from the build's reading is in
+      // the constants of the loads probed after it. So the load, and every
+      // load that shares a file with it, evaluates where it is imported.
+      if (volatile.length > 0)
+        return `${whose(result.volatile)} reads ${volatile.join(", ")}: no run repeats the reading, and a load evaluated later would take it after the program's own`;
       return null;
     })();
     if (why !== null || result === undefined) {
@@ -657,7 +710,7 @@ export function finalizeDeferredIslands(
   }
   for (const d of deferred) {
     const r = d.result;
-    const { env, tty, volatile } = reads.get(r)!;
+    const { env, tty, volatile, inputs } = reads.get(r)!;
     const guards = [
       ...packGuards,
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
@@ -671,7 +724,14 @@ export function finalizeDeferredIslands(
       // at its position.
       before.get(pathOf(d.call))!,
     ];
-    const text = encodeSnapshot(probe, r.root!, guards, volatile.length === 0);
+    // Only "lazy" defers a load that read something no guard covers: the
+    // build's reading stays out of the executable.
+    const text = encodeSnapshot(
+      probe,
+      r.root!,
+      guards,
+      volatile.length === 0 && inputs.length === 0,
+    );
     const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
     const notes = [
@@ -680,6 +740,7 @@ export function finalizeDeferredIslands(
         ? [`env guards ${env.map(([k, v]) => (v === null ? `${k} (unset)` : k)).join(",")}`]
         : []),
       ...(volatile.length > 0 ? [`volatile ${volatile.join(",")}: no constants`] : []),
+      ...(inputs.length > 0 ? [`reads ${inputs.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
       "evaluated when Node starts",
     ];
@@ -774,6 +835,10 @@ export interface ProbeResult {
 export interface ProbeOutput {
   results: ProbeResult[];
   objects: Record<string, ProbeObject>;
+  /** Sources the recorder has a rule for and cannot observe in this Node
+   * (members Node makes not configurable). A load whose files name one is
+   * recorded as having read it. */
+  untrappable?: string[];
 }
 
 function encodeValue(v: ProbeValue): string | null {
@@ -786,17 +851,28 @@ function encodeValue(v: ProbeValue): string | null {
   return null;
 }
 
-/** Whether a string the snapshot holds names a path under `dir`. The
- * probe loads the modules from the build machine, and the program from the
- * module tree it ships, so such a value would not be the one the program
- * sees (a module's own `__dirname`, say). */
+/** Whether a string the snapshot holds names a path of the build machine:
+ * one under `dir`, or one of the directories above it. The probe loads the
+ * modules from the build machine, and the program from the module tree it
+ * ships, so such a value would not be the one the program sees (a module's
+ * own `__dirname`, say). The directories above come to a module as the
+ * loader's lookup paths (`module.paths`, `require.resolve.paths()`:
+ * `<above>/node_modules`), and from its own path arithmetic; a string that
+ * only mentions a top-level directory (`/tmp/...`) is not taken for one. */
 function snapshotNames(probe: ProbeOutput, root: number, dir: string): boolean {
+  const above: string[] = [];
+  for (let d = dirname(dir); d !== dirname(d); d = dirname(d)) above.push(d);
+  const deep = above.filter((d) => d.split(/[\\/]/).filter((part) => part !== "").length >= 2);
+  const names = (s: string): boolean =>
+    s.includes(dir) ||
+    above.some((d) => s.includes(join(d, "node_modules"))) ||
+    deep.some((d) => s === d || s.startsWith(join(d, "x").slice(0, -1)));
   const seen = new Set<number>();
   const visit = (oid: number): boolean => {
     if (seen.has(oid) || probe.objects[oid] === undefined) return false;
     seen.add(oid);
     for (const [, v] of probe.objects[oid]!.m) {
-      if ("s" in v && v.s.includes(dir)) return true;
+      if ("s" in v && names(v.s)) return true;
       if ("o" in v && visit(v.o)) return true;
     }
     return false;

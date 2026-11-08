@@ -283,7 +283,7 @@ export function lowerReplacerCallback(
     const symbol = lowerer.checker.getSymbolAtLocation(param.name);
     if (
       !symbol ||
-      !bindingNeverReassigned(lowerer, symbol, param) ||
+      !bindingNeverReassigned(lowerer.bindingScope(), symbol, param) ||
       !readsFit(lowerer, literal.body, symbol, type === STRING ? "string" : "f64")
     )
       return;

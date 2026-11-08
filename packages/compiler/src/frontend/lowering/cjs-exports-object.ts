@@ -29,8 +29,6 @@ import {
   isModuleExportsAccess,
   isRequireStatement,
   locOf,
-  npmStaticDepSf7,
-  resolveImport,
 } from "../program.js";
 import { cjsWholeExportValueOf, inlineProgramRequireOf } from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
@@ -401,7 +399,7 @@ function esModuleExportIgnoresThis(
       !ts.isStringLiteral(stmt.moduleSpecifier)
     )
       continue;
-    const dep = resolveImport(lowerer.program, sf, stmt.moduleSpecifier.text);
+    const dep = lowerer.facts.importedModule(sf, stmt.moduleSpecifier.text);
     if (
       dep !== null &&
       !dep.isDeclarationFile &&
@@ -506,8 +504,8 @@ export function cjsMemberAliasValueOf(lowerer: Lowerer, ref: ts.Identifier): ts.
     const spec = importDecl.moduleSpecifier.text;
     const from = ts.getSourceFileOfNode(importDecl);
     const dep =
-      resolveImport(lowerer.program, from, spec, "import") ??
-      npmStaticDepSf7(lowerer.program, from, spec, "import");
+      lowerer.facts.importedModule(from, spec, "import") ??
+      lowerer.facts.npmStaticModule(from, spec, "import");
     if (dep === null) return null;
     return memberAliasIn(lowerer, dep, (specifier.propertyName ?? specifier.name).text, 0);
   }
@@ -602,5 +600,5 @@ function rereadableMemberValue(
   // A function declaration is initialized when the module starts; any
   // other binding must be initialized before the write stores it.
   if (!ts.isFunctionDeclaration(decl) && decl.end > stmt.pos) return false;
-  return bindingNeverReassigned(lowerer, sym, decl);
+  return bindingNeverReassigned(lowerer.bindingScope(), sym, decl);
 }

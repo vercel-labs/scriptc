@@ -96,6 +96,7 @@ const SAMPLES: Record<string, Json> = {
   from_lowered_accept: ["compiler"],
   ffi: join(scratch, "ffi.json"),
   npm_static: ["auto"],
+  define: ['process.env.NODE_ENV="production"'],
   external_types: [`host-module=${declaration}`],
   tier: "auto",
   explain_dynamic: "",

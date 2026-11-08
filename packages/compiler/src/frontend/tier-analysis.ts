@@ -260,7 +260,6 @@ const TYPE_CODES = new Set([
   "SC2008",
   "SC2009",
   "SC2011",
-  "SC1063",
   "SC1100",
   "SC1101",
 ]);

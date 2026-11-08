@@ -5,29 +5,29 @@
  "diags": [
   {
    "code": "SC0001",
-   "message": "Module '\"shapes-kit/cli\"' has no exported member 'CliCommand'.",
+   "message": "Module '\"spice-rack/blends\"' has no exported member 'blend'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
-    "start": 259,
-    "end": 269
+    "start": 297,
+    "end": 302
    }
   },
   {
    "code": "SC0001",
-   "message": "Module '\"shapes-kit/cli\"' has no exported member 'commands'.",
+   "message": "Module '\"spice-rack/blends\"' has no exported member 'titles'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
-    "start": 271,
-    "end": 279
+    "start": 304,
+    "end": 310
    }
   },
   {
    "code": "SC0001",
-   "message": "Module '\"shapes-kit/cli\"' has no exported member 'run'.",
+   "message": "Module '\"spice-rack/blends\"' has no exported member 'Blend'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
-    "start": 281,
-    "end": 284
+    "start": 317,
+    "end": 322
    }
   }
  ]

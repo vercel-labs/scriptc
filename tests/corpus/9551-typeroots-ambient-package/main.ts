@@ -1,11 +1,12 @@
 // @requires-libnode
-// An untyped npm package that the project types itself, with an ambient
-// module declaration in a directory its tsconfig names in `typeRoots` and
-// `include`. The namespace import of a typed CommonJS package makes the
-// build decide an island and load the program again: every load reads the
+// A package that ships no declarations, typed by the project itself: an
+// ambient module in a directory that the tsconfig lists under `typeRoots`
+// and under `include`. The build cannot compile the namespace import of a
+// CommonJS package natively: it decides a Node island for that package in a
+// second round and loads the program again, and every load has to find the
 // project's declarations.
-import tinyLines from "tiny-lines";
-import * as termCodes from "term-codes";
+import { scale } from "pantry-units";
+import * as oven from "oven-dial";
 
-const rows = tinyLines.parse('{"a":1}\n{"a":2}\n');
-console.log(rows.length, (rows[1] as { a: number }).a, JSON.stringify(termCodes.eraseLine));
+const doubled = scale([120, 45, 2.5], 2);
+console.log(doubled.join(" / "), oven.gasMark(180), oven.gasMark(250) <= oven.hottest);

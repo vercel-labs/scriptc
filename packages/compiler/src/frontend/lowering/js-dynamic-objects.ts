@@ -13,7 +13,11 @@
  * - a class whose only member is a constructor that returns a value and
  *   never reads `this` (chalk's `class Chalk { constructor(options) {
  *   return chalkFactory(options); } }`): `new C()` answers whatever the
- *   constructor returns, so its instance type has no fixed layout.
+ *   constructor returns, so its instance type has no fixed layout. The
+ *   constructor may also use `this` as a place to keep the value it builds
+ *   (`this.fn = function () {…}; this.fn.label = …; return this.fn;`):
+ *   `this` then appears only as the receiver of a named property, so the
+ *   instance is a plain object nothing outside the constructor can reach.
  *
  * The type mapper answers the checked-dynamic type for the instance and
  * object-literal types these declarations own (TypeMapperCtx
@@ -29,7 +33,7 @@ import { BOOL, DYN, type IrExpr, type IrStmt } from "../../ir/ir.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
-import { newFnCtx } from "./function-context.js";
+import { declareContextThis, newFnCtx } from "./function-context.js";
 
 const SCANNED_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.VariableDeclaration,
@@ -50,10 +54,57 @@ function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
   return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
 }
 
+/** Property names whose answer depends on the receiver's prototype: a
+ * plain object and an instance of the class differ there. */
+const PROTOTYPE_NAMES: ReadonlySet<string> = new Set(["constructor", "__proto__"]);
+
+/** `this` as the receiver of a named property (`this.fn`, `this.fn = …`,
+ * `this.fn.label = …`): the one use under which the constructed instance
+ * stays inside the constructor. */
+function isScratchThis(node: ts.Node): boolean {
+  const parent = node.parent;
+  return (
+    parent !== undefined &&
+    ts.isPropertyAccessExpression(parent) &&
+    parent.expression === node &&
+    ts.isIdentifier(parent.name) &&
+    !PROTOTYPE_NAMES.has(parent.name.text)
+  );
+}
+
+/** Whether the constructor of a value-returning constructor class mentions
+ * `this` (as the receiver of named properties, the only form
+ * isValueReturningConstructorClass admits). */
+export function constructorKeepsScratchThis(ctor: ts.ConstructorDeclaration): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (node.kind === ts.SyntaxKind.ThisKeyword) {
+      found = true;
+      return;
+    }
+    if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) return;
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return;
+    ts.forEachChild(node, visit);
+  };
+  if (ctor.body !== undefined) ts.forEachChild(ctor.body, visit);
+  for (const parameter of ctor.parameters.nodes) ts.forEachChild(parameter, visit);
+  return found;
+}
+
 /** `class C { constructor(...) { ...; return value; } }` with nothing else:
  * no heritage, decorators or other members, a constructor body that
- * returns a value at its own level and never mentions `this`/`super`. */
-export function isValueReturningConstructorClass(decl: ts.ClassDeclaration): boolean {
+ * returns a value at its own level, never mentions `super`, and mentions
+ * `this` only as the receiver of a named property (isScratchThis). A
+ * constructor that keeps values on `this` must end in a valued return and
+ * return what is known to be an object every time (`returnsObject`): a
+ * returned primitive, a bare return and the end of the body answer the
+ * instance in JavaScript, which then is the value the program holds, so a
+ * class that may do that keeps its own representation. */
+export function isValueReturningConstructorClass(
+  decl: ts.ClassDeclaration,
+  returnsObject?: (returned: ts.Expression) => boolean,
+): boolean {
   if (decl.heritageClauses !== undefined && decl.heritageClauses.nodes.length > 0) return false;
   if (decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.Decorator))
     return false;
@@ -65,10 +116,15 @@ export function isValueReturningConstructorClass(decl: ts.ClassDeclaration): boo
   }
   if (ctor?.body === undefined) return false;
   let returnsValue = false;
+  let bareReturn = false;
   let observesThis = false;
+  const returned: ts.Expression[] = [];
   const visit = (node: ts.Node): void => {
     if (observesThis) return;
-    if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword) {
+    if (
+      node.kind === ts.SyntaxKind.SuperKeyword ||
+      (node.kind === ts.SyntaxKind.ThisKeyword && !isScratchThis(node))
+    ) {
       observesThis = true;
       return;
     }
@@ -76,13 +132,36 @@ export function isValueReturningConstructorClass(decl: ts.ClassDeclaration): boo
     // have their own `this` and their own returns.
     if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) return;
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return;
-    if (ts.isReturnStatement(node) && node.expression !== undefined && !insideArrow(node, ctor!))
-      returnsValue = true;
+    if (ts.isReturnStatement(node) && !insideArrow(node, ctor!)) {
+      if (node.expression === undefined) bareReturn = true;
+      else {
+        returnsValue = true;
+        returned.push(node.expression);
+      }
+    }
     ts.forEachChild(node, visit);
   };
   ts.forEachChild(ctor.body, visit);
   for (const parameter of ctor.parameters.nodes) ts.forEachChild(parameter, visit);
-  return returnsValue && !observesThis;
+  if (!returnsValue || observesThis) return false;
+  if (!constructorKeepsScratchThis(ctor)) return true;
+  // The instance must never be the construction's value: the body ends in
+  // a valued return, no return is bare, and every returned value is an
+  // object. A constructor that can fall off its end answers the instance
+  // on that path, and the class keeps its own representation.
+  const last = ctor.body.statements.nodes.at(-1);
+  if (last === undefined || !ts.isReturnStatement(last) || last.expression === undefined)
+    return false;
+  if (bareReturn) return false;
+  return returnsObject !== undefined && returned.every(returnsObject);
+}
+
+/** Whether an expression's type holds objects only (functions included):
+ * every part an object type, none of them `any` or a primitive. */
+function typeIsObject(checker: ts.TypeChecker, node: ts.Expression): boolean {
+  const type = checker.getTypeAtLocation(node);
+  const parts = type.isUnionType() ? type.getTypes() : [type];
+  return parts.every((part) => (part.flags & ts.TypeFlags.Object) !== 0);
 }
 
 function insideArrow(node: ts.Node, ctor: ts.ConstructorDeclaration): boolean {
@@ -132,7 +211,8 @@ export function jsDynamicDeclarations(
           return;
         }
         if (ts.isClassDeclaration(node)) {
-          if (isValueReturningConstructorClass(node)) out.add(node);
+          if (isValueReturningConstructorClass(node, (value) => typeIsObject(checker, value)))
+            out.add(node);
           return;
         }
         if (ts.isBinaryExpression(node)) {
@@ -195,13 +275,13 @@ export function lowerValueReturningConstructorNew(
   const loc = locOf(expr);
   const ctor = decl.members.nodes.find(ts.isConstructorDeclaration)!;
   const simple = ctor.parameters.nodes.every(
-    (p) => ts.isIdentifier(p.name) && p.dotDotDotToken === undefined && p.initializer === undefined,
+    (p) => ts.isIdentifier(p.name) && p.dotDotDotToken === undefined,
   );
   if (!simple || !ts.isSourceFile(decl.parent)) {
     lowerer.unsupported(
       "SC1090",
       expr,
-      "constructing a class whose constructor returns a value, with parameter defaults, rest or patterns, or declared inside a function",
+      "constructing a class whose constructor returns a value, with rest or pattern parameters, or declared inside a function",
     );
   }
   const args = expr.arguments?.nodes ?? [];
@@ -221,12 +301,29 @@ export function lowerValueReturningConstructorNew(
     lowerer.currentClass = null;
     lowerer.fnStack.push(newFnCtx(false, null, null, DYN));
     try {
-      const shapes: ParamShape[] = ctor.parameters.nodes.map(() => ({
-        type: DYN,
-        mode: "required",
-      }));
+      // A defaulted parameter takes its default when the argument is
+      // missing or undefined, as in any JavaScript function.
+      const shapes: ParamShape[] = ctor.parameters.nodes.map((p) =>
+        p.initializer === undefined
+          ? { type: DYN, mode: "required" }
+          : { type: DYN, mode: "omittable", bodyType: DYN },
+      );
+      // The constructed instance, for a constructor that keeps values on
+      // `this` while it builds the one it returns: a plain object, declared
+      // before the parameters so that a default may read it.
+      const scratch: IrStmt[] = [];
+      if (constructorKeepsScratchThis(ctor)) {
+        const self = declareContextThis(lowerer.ctx, DYN);
+        scratch.push({
+          kind: "varDecl",
+          localId: self.id,
+          init: { kind: "dynObjLit", type: DYN, loc: locOf(ctor) },
+          loc: locOf(ctor),
+        });
+      }
       const declared = lowerer.declareParams(ctor.parameters.nodes, shapes);
       const body: IrStmt[] = [
+        ...scratch,
         ...declared.prologue,
         ...lowerer.lowerStmts(ctor.body!.statements.nodes),
         {

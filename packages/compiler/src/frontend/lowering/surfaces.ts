@@ -3038,6 +3038,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the compatibility target's release metadata as one stable read-only object",
     },
     {
+      id: "node-builtin.process.features",
+      kind: "node-builtin",
+      name: "process.features",
+      fns: ["process.features"],
+      note: "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node",
+    },
+    {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",
@@ -3626,7 +3633,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   child_process: {
     execFile:
       "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; " +
-      "maxBuffer is not enforced by the growing native capture; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
+      "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
     ...Object.fromEntries(

@@ -13,6 +13,7 @@ import { emitTlsLibCall } from "./lib-tls.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
+import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { arrayOf, NETSOCKET_T, STRING } from "../../ir/ir.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
@@ -352,6 +353,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.reqOnClose" ||
     e.fn === "http.reqOnAborted" ||
     e.fn === "http.resOnClose" ||
+    e.fn === "http.resOnPrefinish" ||
     e.fn === "http.clientOnTimeout" ||
     e.fn === "http.clientOnClose" ||
     e.fn === "http.clientOnFinish" ||
@@ -373,6 +375,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.reqOnClose": "scr_http_req_on_close",
       "http.reqOnAborted": "scr_http_req_on_aborted",
       "http.resOnClose": "scr_http_res_on_close",
+      "http.resOnPrefinish": "scr_http_res_on_prefinish",
       "http.clientOnTimeout": "scr_http_client_on_timeout",
       "http.clientOnClose": "scr_http_client_on_close",
       "http.clientOnFinish": "scr_http_client_on_finish",
@@ -383,6 +386,10 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.toHeap(args[1]!);
     host.declare(`declare void @${entry}(ptr, ptr, i1 zeroext)`);
     B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, i1 ${args[2]!.name})`);
+    // A registration the runtime can refuse raises ('prefinish' on the
+    // HTTP/2 compatibility response): the caller sees it here, before the
+    // statement after the registration runs.
+    if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
@@ -676,7 +683,11 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     );
     return { name: "", type: e.type };
   }
-  if (e.fn === "http.serverOnUpgrade" || e.fn === "http.clientOnUpgrade") {
+  if (
+    e.fn === "http.serverOnUpgrade" ||
+    e.fn === "http.clientOnUpgrade" ||
+    e.fn === "http.clientOnConnect"
+  ) {
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
@@ -691,7 +702,11 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
             ? "scr_http_upgrade_thunk1"
             : "scr_http_upgrade_thunk0";
     const entry =
-      e.fn === "http.serverOnUpgrade" ? "scr_http_server_on_upgrade" : "scr_http_client_on_upgrade";
+      e.fn === "http.serverOnUpgrade"
+        ? "scr_http_server_on_upgrade"
+        : e.fn === "http.clientOnUpgrade"
+          ? "scr_http_client_on_upgrade"
+          : "scr_http_client_on_connect";
     host.declare(`declare void @${adapter}(ptr, ptr, ptr, ptr)`);
     host.declare(`declare void @${entry}(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
@@ -715,6 +730,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
   }
   if (
     e.fn === "http.clientOnResponse" ||
+    e.fn === "http.clientOnInformation" ||
     e.fn === "http.clientOnError" ||
     e.fn === "http.reqOnError"
   ) {
@@ -728,11 +744,16 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
         ? cbT.params.length === 0
           ? "scr_http_resp_thunk0"
           : "scr_http_resp_thunk_res"
-        : cbT.params.length === 0
-          ? "scr_child_err_thunk0"
-          : "scr_child_err_thunk_error";
+        : e.fn === "http.clientOnInformation"
+          ? cbT.params.length === 0
+            ? "scr_http_resp_thunk0"
+            : "scr_http_information_thunk_dyn"
+          : cbT.params.length === 0
+            ? "scr_child_err_thunk0"
+            : "scr_child_err_thunk_error";
     const entry = {
       "http.clientOnResponse": "scr_http_client_on_response",
+      "http.clientOnInformation": "scr_http_client_on_information",
       "http.clientOnError": "scr_http_client_on_error",
       "http.reqOnError": "scr_http_req_on_error",
     }[e.fn]!;

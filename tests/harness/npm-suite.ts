@@ -45,7 +45,9 @@ type Known =
   | { island: true };
 
 const KNOWN: Record<string, Known> = {
-  "assert-shims": { run: "SC1043" },
+  // `strict.strict === strict` compares the assert module's `strict` member,
+  // a function value with no lowering, with the module itself.
+  "assert-shims": { run: "SC1100" },
   "buffer-shims": { run: "SC2020" },
   "bytes-exit": { island: true },
   // chalk 4 compiles natively; the colour models convert through
@@ -80,7 +82,8 @@ const KNOWN: Record<string, Known> = {
     divergence:
       "an import() whose literal specifier resolves to nothing is fenced with SC2012 instead of rejecting like Node",
   },
-  "misc-shims": { run: "SC1090" },
+  // `new AsyncResource(...)`: the refusal names the class.
+  "misc-shims": { run: "SC2020" },
   namespace: { island: true },
   "node24-async-events": { run: "SC2020" },
   "node24-commonjs-metadata": { island: true },
@@ -93,7 +96,9 @@ const KNOWN: Record<string, Known> = {
   "node24-event-emitter": { run: "SC2020" },
   "node24-file-url-conversion": { island: true },
   "node24-fs-descriptors": { run: "SC2020" },
-  "node24-mime": { run: "SC2020" },
+  // The exports identities and every parse line match Node; the program
+  // stops at `mime.toJSON === mime.toString`, a method read as a value.
+  "node24-mime": { run: "'MIMEType.prototype.toJSON' as a value is not supported yet" },
   "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
   // The dynamic `__proto__` writes in the args loop now match Node, so the

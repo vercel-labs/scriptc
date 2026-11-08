@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compat-cjs-module-globals/dep.cjs",
+  "<repo>/tests/corpus/compat-cjs-module-globals/main.cjs"
+ ],
+ "diags": []
+}

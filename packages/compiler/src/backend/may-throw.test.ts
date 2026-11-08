@@ -11,6 +11,7 @@ import {
   type IrLocal,
   type IrModule,
   type IrStmt,
+  type IrType,
 } from "../ir/ir.js";
 import { completesNormally, computeMayThrow } from "./may-throw.js";
 
@@ -231,6 +232,63 @@ test("dynamic function adapters activate indirect calls without an IR closure ta
     fns: new Set(["caller", "indirect", "adapter"]),
     indirect: true,
   });
+});
+
+test("a checked conversion into a type that holds a function activates indirect calls", () => {
+  // The adapter is minted for the record's member, the array's element or
+  // the union's arm, as it is for a function target: a call of a function
+  // value can then reach a body outside the module's closure table.
+  const callee: IrExpr = { kind: "varRef", localId: "callback", type: funcOf([], VOID), loc };
+  const records = [
+    {
+      id: "rHolder",
+      fields: [{ name: "label", type: funcOf([], STRING) }],
+      declaredOrder: ["label"],
+    },
+    { id: "rPlain", fields: [{ name: "count", type: F64 }], declaredOrder: ["count"] },
+    {
+      id: "rSelf",
+      fields: [{ name: "next", type: { kind: "record" as const, shapeId: "rSelf" } }],
+      declaredOrder: ["next"],
+    },
+  ];
+  const check = (type: IrType): IrModule => ({
+    ...moduleWith(
+      fn("caller", [call("indirect")], []),
+      fn("indirect", [exprStmt({ kind: "callValue", callee, args: [], type: VOID, loc })], []),
+      fn(
+        "convert",
+        [
+          exprStmt({
+            kind: "dynCheck",
+            value: { kind: "varRef", localId: "unknown", type: DYN, loc },
+            type,
+            loc,
+          }),
+        ],
+        [],
+      ),
+    ),
+    records,
+  });
+  const holder: IrType = { kind: "record", shapeId: "rHolder" };
+  for (const type of [
+    holder,
+    { kind: "array", elem: holder },
+    { kind: "promise", inner: holder },
+    { kind: "map", key: STRING, value: holder },
+  ] satisfies IrType[])
+    expect(computeMayThrow(check(type))).toEqual({
+      fns: new Set(["caller", "indirect", "convert"]),
+      indirect: true,
+    });
+  // A record of data, and one that only names itself, mint no adapter: the
+  // conversion itself still throws, the indirect call does not.
+  for (const shapeId of ["rPlain", "rSelf"])
+    expect(computeMayThrow(check({ kind: "record", shapeId }))).toEqual({
+      fns: new Set(["convert"]),
+      indirect: false,
+    });
 });
 
 const construct = (className: string, direct = false): IrStmt =>

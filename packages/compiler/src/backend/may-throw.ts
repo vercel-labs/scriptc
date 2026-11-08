@@ -86,6 +86,54 @@ export function computeMayThrow(
   const explain = options.explain === true;
   const facts = new Map<string, Facts>();
   const closureTargets = new Set<string>();
+  // Whether a checked conversion into `type` can mint a function adapter: a
+  // function type, or a record, tuple, array, collection, promise or union
+  // that holds one in a member, an element or an arm.
+  const recordsById = new Map((mod.records ?? []).map((record) => [record.id, record]));
+  const unionsById = new Map((mod.unions ?? []).map((union) => [union.id, union]));
+  const holdsFunctionMemo = new Map<string, boolean>();
+  const holdsFunctionIn = (type: IrType, visiting: Set<string>): boolean => {
+    switch (type.kind) {
+      case "func":
+        return true;
+      case "array":
+      case "set":
+        return holdsFunctionIn(type.elem, visiting);
+      case "map":
+        return holdsFunctionIn(type.key, visiting) || holdsFunctionIn(type.value, visiting);
+      case "promise":
+        return holdsFunctionIn(type.inner, visiting);
+      case "record":
+      case "union": {
+        const key = type.kind === "record" ? `r:${type.shapeId}` : `u:${type.unionId}`;
+        const known = holdsFunctionMemo.get(key);
+        if (known !== undefined) return known;
+        // A type that names itself ends there.
+        if (visiting.has(key)) return false;
+        visiting.add(key);
+        let answer = false;
+        if (type.kind === "record") {
+          const shape = recordsById.get(type.shapeId);
+          answer =
+            shape !== undefined &&
+            (shape.fields.some((field) => holdsFunctionIn(field.type, visiting)) ||
+              (shape.indexValue !== undefined && holdsFunctionIn(shape.indexValue, visiting)));
+        } else {
+          answer =
+            unionsById.get(type.unionId)?.arms.some((arm) => holdsFunctionIn(arm, visiting)) ===
+            true;
+        }
+        visiting.delete(key);
+        // A "no" found while an enclosing type was still being walked may
+        // only mean the walk came back to that type: it is not kept.
+        if (answer || visiting.size === 0) holdsFunctionMemo.set(key, answer);
+        return answer;
+      }
+      default:
+        return false;
+    }
+  };
+  const holdsFunction = (type: IrType): boolean => holdsFunctionIn(type, new Set());
   // FUNC-targeted dynChecks synthesize adapter closures outside the IR's
   // closure table; any callValue may then reach a throwing body.
   let sawDynFuncAdapter = false;
@@ -173,15 +221,16 @@ export function computeMayThrow(
         case "dynCheck":
         case "caughtCheck":
           // A checked cast throws (catchably) on validation failure —
-          // seeds the fixpoint exactly like a `throw` statement. A
-          // FUNC-targeted dynCheck can also mint an ADAPTER closure whose
-          // body throws (argument/result validation inside a later
-          // callValue) — those adapters are emitter-synthesized, invisible
-          // to closureTargets, so they force the indirect answer below.
+          // seeds the fixpoint exactly like a `throw` statement. A dynCheck
+          // whose target holds a function (the target itself, or a member,
+          // an element or an arm of it) can also mint an ADAPTER closure
+          // whose body throws: argument/result validation inside a later
+          // callValue, or the function behind it, which is not one of this
+          // module's closures when a Node island made it. Those adapters are
+          // emitter-synthesized, invisible to closureTargets, so they force
+          // the indirect answer below.
           f.throws = true;
-          if (rec.type.kind === "func") {
-            sawDynFuncAdapter = true;
-          }
+          if (!sawDynFuncAdapter && holdsFunction(rec.type)) sawDynFuncAdapter = true;
           break;
         case "mapIntrinsic":
         case "setIntrinsic": {

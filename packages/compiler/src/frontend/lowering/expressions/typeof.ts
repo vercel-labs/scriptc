@@ -88,6 +88,20 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   // CommonJS takes Node's branch.
   if (commonJsBindingInEsModule(lowerer, expr.expression))
     return { kind: "strLit", value: "undefined", type: STRING, loc };
+  // `require` in an ES module of ANY file kind (the test above covers
+  // JavaScript sources only): Node defines no `require` binding there, so
+  // typeof answers "undefined" instead of throwing.
+  {
+    let operand = expr.expression;
+    while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+    if (
+      ts.isIdentifier(operand) &&
+      operand.text === "require" &&
+      lowerer.isStdlibGlobal(operand, "require") &&
+      isNodeEsmFile(ts.getSourceFileOfNode(operand), lowerer.program)
+    )
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+  }
   if (isNavigatorGlobal(lowerer, expr.expression))
     return { kind: "strLit", value: "object", type: STRING, loc };
   const performance = lowerPerfHooksTypeof(lowerer, expr.expression);

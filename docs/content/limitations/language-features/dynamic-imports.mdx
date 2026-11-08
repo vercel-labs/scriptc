@@ -1,3 +1,5 @@
-- **Dynamic imports:** Computed specifiers, import attributes, CommonJS namespace synthesis, and imports of shipped JavaScript packages are unsupported unless the target is a compiled ESM module.
+- **Dynamic imports:** A specifier the build can bound to a finite set compiles to one load per value, and values naming supported Node builtins load natively; the bound covers a string literal, a `const` or never-reassigned binding, string concatenation and template parts, `?:`/`??`/`||` branches, and a parameter of a module-local function whose every call passes one of these.
+  A specifier the build cannot bound is refused with `SC1090`, naming the source that stopped it.
+  Computed specifiers whose values name program modules, import attributes, CommonJS namespace synthesis, and imports of shipped JavaScript packages are unsupported unless the target is a compiled ESM module.
   Literal `import()` of compiled ESM and TypeScript modules and of supported Node builtins compiles.
   Evaluation is lazy and microtask-delayed, top-level `await` is honored, repeated imports share namespace identity, exported mutable bindings stay live, and namespace keys use Node's sorted order.

@@ -1,0 +1,29 @@
+tuple-union-mutable-array-slot.ts:17:17 - error SC1090: a union of tuples handed to a 'string[]' slot (the slot holds a copy of the tuple, so a later write through it, or to the tuple, would be lost for the other: declare the slot 'readonly', or narrow the value to one tuple first) is not supported yet
+
+  16 | for (const [, names] of Object.entries(GROUPS)) {
+  17 |   const alias = names as unknown as string[];
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  18 |   alias[0] = 'changed';
+
+tuple-union-mutable-array-slot.ts:18:3 - error SC2004: uses of 'alias' inherit the blocker on its declaration
+
+  17 |   const alias = names as unknown as string[];
+  18 |   alias[0] = 'changed';
+     |   ^~~~~
+  19 |   const declared: string[] = names as unknown as string[];
+
+  hint: the declaration of 'alias' did not compile — fix the diagnostic reported there and these sites clear with it
+
+tuple-union-mutable-array-slot.ts:19:30 - error SC1090: a union of tuples handed to a 'string[]' slot (the slot holds a copy of the tuple, so a later write through it, or to the tuple, would be lost for the other: declare the slot 'readonly', or narrow the value to one tuple first) is not supported yet
+
+  18 |   alias[0] = 'changed';
+  19 |   const declared: string[] = names as unknown as string[];
+     |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  20 |   count += total(names as unknown as string[]) + declared.length;
+
+tuple-union-mutable-array-slot.ts:20:18 - error SC1090: a union of tuples handed to a 'string[]' slot (the slot holds a copy of the tuple, so a later write through it, or to the tuple, would be lost for the other: declare the slot 'readonly', or narrow the value to one tuple first) is not supported yet
+
+  19 |   const declared: string[] = names as unknown as string[];
+  20 |   count += total(names as unknown as string[]) + declared.length;
+     |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 |   const kept: readonly string[] = names;

@@ -97,6 +97,19 @@ Global<Function> g_load; // the bootstrap's module loader (NI-4)
 // The prototypes of the island classes whose objects native code adopts
 // (the bootstrap's twinPrototypes): a handle of one is flagged SCR_NVF_TWIN.
 std::vector<Global<Object>> g_twin_prototypes;
+
+// The island's intrinsic constructors a native value can stand for
+// (SCR_NVF_INTRINSIC): captured on first use, so a later assignment to the
+// global does not change which function is the intrinsic.
+const char *const kIntrinsicNames[] = {
+    "String",  "Number",  "Boolean", "BigInt",      "Symbol",            "Object",   "Array",
+    "Function", "Date",   "RegExp",  "Map",         "Set",               "WeakMap",  "WeakSet",
+    "Promise", "Error",   "Proxy",   "ArrayBuffer", "SharedArrayBuffer", "DataView",
+};
+constexpr size_t kIntrinsicCount = sizeof kIntrinsicNames / sizeof kIntrinsicNames[0];
+Global<Value> g_intrinsics[kIntrinsicCount];
+bool g_intrinsics_ready = false;
+
 Global<Function> g_shared_push; // the loader hooks' binding updates (NI-6)
 void SharedTable(const FunctionCallbackInfo<Value> &info);
 void SharedGet(const FunctionCallbackInfo<Value> &info);
@@ -752,6 +765,8 @@ void Stop() {
   g_load.Reset();
   g_twin_prototypes.clear();
   ResetPairHelpers();
+  for (Global<Value> &intrinsic : g_intrinsics) intrinsic.Reset();
+  g_intrinsics_ready = false;
   StopCollector(isolate);
   DropAllHandles();
   DropAllExports();
@@ -2214,6 +2229,35 @@ void AttachReach(Isolate *isolate, Local<Context> context, uint32_t id, Local<Ob
   ReportExternal(isolate);
 }
 
+void CaptureIntrinsics(Isolate *isolate, Local<Context> context) {
+  if (g_intrinsics_ready) return;
+  g_intrinsics_ready = true;
+  for (size_t i = 0; i < kIntrinsicCount; i++) {
+    Local<Value> value;
+    if (context->Global()->Get(context, Utf8(isolate, kIntrinsicNames[i])).ToLocal(&value) &&
+        value->IsFunction())
+      g_intrinsics[i].Reset(isolate, value);
+  }
+}
+
+// The intrinsic constructor of that name, or an empty handle.
+Local<Value> IntrinsicNamed(Isolate *isolate, Local<Context> context, const char *name,
+                            size_t len) {
+  CaptureIntrinsics(isolate, context);
+  for (size_t i = 0; i < kIntrinsicCount; i++)
+    if (strlen(kIntrinsicNames[i]) == len && memcmp(kIntrinsicNames[i], name, len) == 0 &&
+        !g_intrinsics[i].IsEmpty())
+      return g_intrinsics[i].Get(isolate);
+  return Local<Value>();
+}
+
+bool IsIntrinsicConstructor(Isolate *isolate, Local<Context> context, Local<Value> v) {
+  CaptureIntrinsics(isolate, context);
+  for (size_t i = 0; i < kIntrinsicCount; i++)
+    if (!g_intrinsics[i].IsEmpty() && g_intrinsics[i].Get(isolate)->StrictEquals(v)) return true;
+  return false;
+}
+
 Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
   uint32_t id = in->u.exp.id;
   auto found = g_exports.find(id);
@@ -2226,7 +2270,15 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
   Local<Object> obj;
   bool adopted = false;
   Local<Value> data = v8::Integer::NewFromUnsigned(isolate, id);
-  if (in->flags & SCR_NVF_FUNCTION) {
+  // A built-in constructor's representative is the island's own intrinsic
+  // (unless that already stands for another export): island code compares
+  // it with its `String`, and handing it back answers this export.
+  Local<Value> intrinsic;
+  if ((in->flags & SCR_NVF_INTRINSIC) && in->u.exp.name != nullptr)
+    intrinsic = IntrinsicNamed(isolate, context, in->u.exp.name, in->u.exp.name_len);
+  if (!intrinsic.IsEmpty() && ExportIdOf(isolate, context, intrinsic) == 0) {
+    obj = intrinsic.As<Object>();
+  } else if (in->flags & SCR_NVF_FUNCTION) {
     Local<Function> fn =
         Function::New(context, ExportCall, data, static_cast<int>(in->u.exp.length))
             .ToLocalChecked();
@@ -2512,6 +2564,7 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
   if (v->IsFunction()) {
     flags |= SCR_NVF_FUNCTION;
     if (v.As<Function>()->IsConstructor()) flags |= SCR_NVF_CONSTRUCTOR;
+    if (IsIntrinsicConstructor(isolate, context, v)) flags |= SCR_NVF_INTRINSIC;
   }
   if (v->IsNativeError()) flags |= SCR_NVF_ERROR;
   // Array.isArray follows a proxy to its target; IsArray() stops at the

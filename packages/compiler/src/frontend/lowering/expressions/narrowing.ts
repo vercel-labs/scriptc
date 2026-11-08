@@ -25,6 +25,8 @@ import {
   isUnitType,
   shapeHasAccessorSlots,
   typeEquals,
+  sortArms,
+  typeKey,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
@@ -265,6 +267,33 @@ export function lowerTernary(
       }
       return lowerer.lowerExpr(e);
     };
+    // An ARRAY arm beside an array LITERAL arm under a destructuring
+    // pattern (`const [name, value] = long ? text.split("=", 2) : [text,
+    // undefined]`): the pattern's contextual type is a tuple, which the
+    // literal could be built as and the array cannot become (its length is
+    // a run-time fact, and a pattern reads a missing position as
+    // undefined). Both arms are arrays in JavaScript, so the ternary is
+    // one: the literal builds as an array whose element joins the array
+    // arm's and its own, and the pattern reads positions from it.
+    {
+      const joined = arrayBesideLiteralUnderTuple(lowerer, expr, ctxMapped, armLiteral);
+      if (joined !== null) {
+        const arm = (e: ts.Expression): IrExpr => {
+          const lit = armLiteral(e);
+          return lit
+            ? lowerer.lowerArrayLiteral(lit, joined)
+            : lowerer.coerceToExpected(lowerer.lowerExpr(e), joined);
+        };
+        const then = withRuntimeOptionalNarrowed(
+          lowerer,
+          runtimeOptionalTrueIds(lowerer, expr.condition),
+          () => arm(expr.whenTrue),
+        );
+        const else_ = arm(expr.whenFalse);
+        if (typeEquals(then.type, joined) && typeEquals(else_.type, joined))
+          return { kind: "ternary", cond, then, else_, type: joined, loc };
+      }
+    }
     // Lower the filled arm first so an empty arm can adopt its type.
     // When the checker's OWN join for the ternary maps to an ARRAY,
     // literal arms build against it directly (tsc collapses the arms'
@@ -2519,4 +2548,52 @@ function constSourceUse(assertion: ts.Expression): boolean {
     ts.isVariableDeclarationList(list) &&
     (list.flags & ts.NodeFlags.Const) !== 0
   );
+}
+
+/** lowerTernary's array-beside-literal rule: the array type both arms
+ * build as when the ternary sits under a tuple context (a destructuring
+ * pattern), one arm maps to an array, and the other is a filled array
+ * literal without spreads. The element is the join of the array arm's
+ * element and the literal's positions; null unless every one of them is a
+ * number, string, boolean, undefined or null (joins of other kinds keep
+ * the lowerings they have). */
+function arrayBesideLiteralUnderTuple(
+  lowerer: Lowerer,
+  expr: ts.ConditionalExpression,
+  context: IrType | null,
+  armLiteral: (e: ts.Expression) => ts.ArrayLiteralExpression | null,
+): (IrType & { kind: "array" }) | null {
+  if (context?.kind !== "record" || lowerer.shapes.get(context.shapeId)?.tuple !== true)
+    return null;
+  const thenLit = armLiteral(expr.whenTrue);
+  const elseLit = armLiteral(expr.whenFalse);
+  if ((thenLit === null) === (elseLit === null)) return null;
+  const literal = (thenLit ?? elseLit)!;
+  if (literal.elements.nodes.length === 0 || literal.elements.nodes.some(ts.isSpreadElement))
+    return null;
+  const other = lowerer.mapTypeOf(lowerer.typeOf(thenLit ? expr.whenFalse : expr.whenTrue));
+  if (other?.kind !== "array") return null;
+  const arms = new Map<string, IrType>();
+  const add = (t: IrType | null): boolean => {
+    if (t === null) return false;
+    if (t.kind === "union") {
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).every(add);
+    }
+    const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
+    if (part.kind !== "f64" && part.kind !== "string" && part.kind !== "bool" && !isUnitType(part))
+      return false;
+    arms.set(typeKey(part), part);
+    return true;
+  };
+  if (!add(other.elem)) return null;
+  for (const element of literal.elements.nodes) {
+    if (!add(lowerer.mapTypeOf(lowerer.typeOf(element)))) return null;
+  }
+  const parts = [...arms.values()];
+  if (parts.every(isUnitType)) return null;
+  if (parts.length > 1) sortArms(parts);
+  return {
+    kind: "array",
+    elem: parts.length === 1 ? parts[0]! : { kind: "union", unionId: lowerer.unions.intern(parts) },
+  };
 }

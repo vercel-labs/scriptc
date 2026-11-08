@@ -381,6 +381,7 @@ import {
   isUnitOnlyTsType,
   jsOpenObjectType,
   unitOnlyUnion,
+  holdsPrimitiveConstructors,
   isAnyArrayType,
 } from "../type-mapper.js";
 import { canonicalBuiltinModule } from "../builtin-modules.js";
@@ -909,6 +910,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const sinkMark = lowerer.diagSinkMark();
       const touched = new Set<string>();
       lowerer.failureTouches.push(touched);
+      // A refusal of this statement involves a held constructor when the
+      // statement meets one before it (held-constructors.ts).
+      const touchMark = lowerer.constructorTouchMark;
+      lowerer.constructorTouchMark = lowerer.constructorTouches;
       const pendingSlots: DynamicSlot[] = [];
       // A declarator that initializes a forward-captured TDZ box takes it
       // out of tdzPredeclared; a retry after a later declarator degrades
@@ -1067,6 +1072,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       } finally {
         if (typedRetry !== null && typedRetry.running) lowerer.setBindingTypedRetry(false);
         lowerer.failureTouches.pop();
+        lowerer.constructorTouchMark = touchMark;
       }
     }
     // Each acquisition protects the remainder of its lexical statement
@@ -7839,7 +7845,8 @@ export function lowerVarDecl(
       (!decl.type &&
         !hasJsTypeAnnotation(decl) &&
         type.rest === true &&
-        type.restAbi === undefined))
+        type.restAbi === undefined &&
+        !holdsPrimitiveConstructors(lowerer.typeOf(decl.name), lowerer.typeCtx)))
   ) {
     type = DYN;
   }

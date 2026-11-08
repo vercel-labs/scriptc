@@ -398,6 +398,19 @@ export function lowerPrototypeReflectionCall(
   rejectPrimitiveTarget = false,
 ): IrExpr | null {
   let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
+  // The runtime's getPrototypeOf refuses a built-in constructor's function
+  // value when it runs (another function answers once the program has set
+  // its prototype): the build names the statement (SC6015).
+  if (
+    member === "getPrototypeOf" &&
+    (object.type.kind === "func" || object.type.kind === "dyn") &&
+    lowerer.holdsBuiltinConstructor(call.arguments.nodes[0]!)
+  )
+    lowerer.noteDeferredRefusal(
+      call,
+      "Object.getPrototypeOf of a held built-in constructor is not supported yet",
+      "ask `typeof value` where the question is whether the value is a function",
+    );
   if (object.type.kind === "func") {
     const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
     object = {

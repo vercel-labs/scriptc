@@ -168,7 +168,7 @@ import { collectEnumObjects, registerEnumObjectGlobals } from "./enum-objects.js
 import { collectExpandoMembers } from "./lower-expando.js";
 import { funduleMemberOf, isFunduleMemberStatement, lowerFunduleFnStore } from "./lower-fundule.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
-import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
+import { holdsPrimitiveConstructors, isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
 import {
   builtinRequireBaseOf,
@@ -3225,12 +3225,15 @@ export function collectGlobals(
           // Runtime-arity JavaScript callables can be returned by a
           // checked factory. Keep that callable boxed instead of asking
           // a fixed-signature adapter to reconstruct its hidden rest ABI.
+          // A binding the checker types as a primitive constructor
+          // (`const convert = String`) holds that function itself.
           if (
             !decl.type &&
             !hasJsTypeAnnotation(decl) &&
             type.kind === "func" &&
             type.rest === true &&
-            type.restAbi === undefined
+            type.restAbi === undefined &&
+            !holdsPrimitiveConstructors(lowerer.typeOf(decl.name), lowerer.typeCtx)
           )
             type = DYN;
           if (

@@ -1,7 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/9945-const-table-namespace-import/birds.ts",
-  "<repo>/tests/corpus/9945-const-table-namespace-import/main.ts"
- ],
- "diags": []
-}

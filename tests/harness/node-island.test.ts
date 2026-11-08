@@ -542,6 +542,44 @@ describe.skipIf(skip)("Node islands in-process", () => {
     if (!sanitize) expect(ran).toMatchObject({ stderr: "", code: 0 });
   }, 300_000);
 
+  test("a worker thread's call is repeated after its module's lost file is put back", async () => {
+    // The worker reads the outcome of its own call, and the tree and its
+    // manifest belong to the island's thread: the repair runs there, and the
+    // worker makes the call again.
+    const dir = join(outDir, "worker-repair");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "later.cjs"), "exports.later = (n) => n + 1;\n");
+    writeFileSync(
+      join(dir, "main.ts"),
+      [
+        'import { Worker, isMainThread, parentPort } from "node:worker_threads";',
+        'import { callSync } from "@scriptc/node";',
+        "if (isMainThread) {",
+        "  const worker = new Worker(new URL(import.meta.url));",
+        '  worker.on("message", (message: string) => console.log("worker", message));',
+        '  worker.on("exit", (code: number) => console.log("exit", code));',
+        "} else {",
+        '  parentPort!.postMessage("called " + callSync<number>("./later.cjs", "later", 41));',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const program = await build("worker-repair-out", undefined, join(dir, "main.ts"));
+    const cache = join(outDir, "worker-repair-cache");
+    rmSync(cache, { recursive: true, force: true });
+    const env = { ...process.env, XDG_CACHE_HOME: cache };
+    const intact = { stdout: "worker called 42\nexit 0\n", stderr: "", code: 0 };
+    expect(await run(program, [], env)).toEqual(intact);
+    const islands = join(cache, "scriptc/node-islands");
+    const root = join(islands, readdirSync(islands)[0]!);
+    rmSync(fileBelow(root, "later.cjs"));
+    expect(await run(program, [], env)).toEqual({
+      ...intact,
+      stderr: `scriptc: reinstalled 1 Node island module file missing from ${root}\n`,
+    });
+    expect(await run(program, [], env)).toEqual(intact);
+  }, 300_000);
+
   test("full garbage collections during calls, at depth on both sides", async () => {
     const stress = await build(
       "gc-stress",

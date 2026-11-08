@@ -888,6 +888,7 @@ async function compileExecutableNative(
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.moduleCompileCache ? { moduleCompileCache: true } : {}),
+    ...(features.fnMemberProps ? { fnMemberProps: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),
@@ -931,6 +932,7 @@ async function compileExecutableNative(
     ...(features.recordViewFrozen ? { recordViewFrozen: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
     ...(features.genReceiver ? { genReceiver: true } : {}),
+    ...(features.recordSourceGet ? { recordSourceGet: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
@@ -2710,9 +2712,11 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     textDecoderLegacy: features.legacyTextDecoder,
     bigintBytes: features.bigintBytes,
     dynInvoke: features.dynInvoke,
+    ...(features.recordSourceGet ? { recordSourceGet: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     mutableBuffers: features.mutableBuffers,
+    fnMemberProps: features.fnMemberProps,
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
   };
 }
@@ -2808,9 +2812,11 @@ async function compileLibraryNative(
     textDecoderLegacy: features.textDecoderLegacy,
     bigintBytes: features.bigintBytes,
     dynInvoke: features.dynInvoke,
+    ...(features.recordSourceGet === true ? { recordSourceGet: true } : {}),
     ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(features.dynTier === true ? { dynTier: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    ...(features.fnMemberProps === true ? { fnMemberProps: true } : {}),
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

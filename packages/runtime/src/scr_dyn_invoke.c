@@ -37,6 +37,9 @@
  *     JS answer;
  *   - OBJ receivers: the own member calls (own properties shadow the
  *     prototype in JS too), otherwise "<spelling> is not a function";
+ *   - FUNC receivers: an OWN call/apply/bind (a program may shadow the
+ *     inherited member, as JS allows) calls first, then the native
+ *     call/apply/bind lowering;
  *   - undefined/null receivers: Node's "Cannot read properties of ...".
  *
  * recv/args are BORROWED; the result is owned (+1). MAY THROW (returns
@@ -795,9 +798,38 @@ static ScrDyn *dyn_live_array_method(ScrDyn *recv, int mid, ScrDyn *const *args,
   return NULL;
 }
 
+#ifdef SCR_FN_MEMBER_PROPS
+/* A function's own call, apply or bind property shadows the inherited
+ * Function.prototype member of the same name (`fn.call = f`). Answers
+ * whether `recv` has one under `method` and stores its value, owned, in
+ * *member. The table is checked only when the closure carries one, so a
+ * function that never received a property pays one pointer test and runs
+ * the native lowering. */
+static bool dyn_fn_own_protocol_member(ScrDyn *recv, const char *method, ScrDyn **member) {
+  if (recv->kind != SCR_DYN_FUNC || scr_closure_identity(recv->v.fn.clo)->props == NULL)
+    return false;
+  int mid = dyn_method_of(method);
+  if (mid != DYN_M_apply && mid != DYN_M_call && mid != DYN_M_bind) return false;
+  ScrStr *key = scr_str_new(method, strlen(method));
+  bool own = scr_dyn_has_own(recv, key);
+  scr_str_release(key);
+  if (own) *member = scr_dyn_fn_get(recv, method, strlen(method));
+  return own;
+}
+#endif
+
 ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method) {
   if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL)
     return scr_dyn_invoke(recv, method, NULL, 0, method);
+#ifdef SCR_FN_MEMBER_PROPS
+  /* JavaScript reads the callee before the arguments run: a function's own
+   * call, apply or bind is chosen here, so an argument that replaces or
+   * deletes the property, or stores one where there was none, does not
+   * change the function this call runs (scr_dyn_invoke_prepared_id runs
+   * the builtin when this answers no callee). */
+  ScrDyn *own_protocol = NULL;
+  if (dyn_fn_own_protocol_member(recv, method, &own_protocol)) return own_protocol;
+#endif
   if (recv->kind == SCR_DYN_OBJ)
     return scr_dyn_obj_read(recv, method, strlen(method));
   if (recv->kind == SCR_DYN_ARR && (recv->v.arr.properties || recv->prototype))
@@ -831,6 +863,23 @@ ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method,
                        ScrDyn *const *args, size_t argc,
                        const char *what) {
+#ifdef SCR_FN_MEMBER_PROPS
+  /* This caller read no callee before its arguments: a function's own
+   * call, apply or bind is read now. */
+  ScrDyn *member = NULL;
+  if (dyn_fn_own_protocol_member(recv, method, &member)) {
+    if (member && member->kind == SCR_DYN_FUNC) {
+      scr_dyn_this_push_dyn(recv);
+      ScrDyn *r = scr_dyn_call(member, args, argc, what);
+      scr_dyn_this_pop();
+      scr_dyn_release(member);
+      return r;
+    }
+    scr_dyn_release(member);
+    dyn_throw_not_fn(what);
+    return NULL;
+  }
+#endif
   return scr_dyn_invoke_impl(recv, method, dyn_method_of(method), args, argc, what, NULL);
 }
 
@@ -1322,6 +1371,10 @@ static ScrDyn *scr_dyn_invoke_impl(
   }
 
   if (recv->kind == SCR_DYN_FUNC) {
+    /* An own call, apply or bind property (SCR_FN_MEMBER_PROPS) is not read
+     * here: the callee is chosen before the arguments run, by
+     * scr_dyn_prepare_method for a call site and by scr_dyn_invoke for a
+     * caller that has none, so what follows is the inherited builtin. */
     if ((mid == DYN_M_apply)) {
       return scr_dyn_apply_array_like(recv, argc ? args[0] : scr_dyn_undefined(),
         argc > 1 ? args[1] : scr_dyn_undefined(), what);

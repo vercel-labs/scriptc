@@ -1165,6 +1165,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_fn_property_fence",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_define_property",
   "message": "Object.defineProperty on a numeric property of a native array is not supported yet",
   "code": "SC2020"
@@ -1234,6 +1240,18 @@
   "function": "scr_function_constructor_call",
   "message": "constructing functions from source text is not supported in static code",
   "code": "SC2010"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_receiver",
+  "message": " on a callable that is not a function value is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_to_string_call",
+  "message": "'Function.prototype.toString' on a dynamic value is not supported yet",
+  "code": "SC2020"
  },
  {
   "file": "scr_json.c",

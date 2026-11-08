@@ -105,7 +105,11 @@ import {
   type WidthCopyFact,
 } from "./width-copies.js";
 import { guardedDeferredFences } from "../../ir/deferred-fence.js";
-import { absentDefaultStopDiag, guardedDeferredFenceDiag } from "../../diagnostics/diagnostic.js";
+import {
+  absentDefaultStopDiag,
+  deferredRefusalDiag,
+  guardedDeferredFenceDiag,
+} from "../../diagnostics/diagnostic.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
@@ -2083,6 +2087,7 @@ function lowerToIrWithIslands(
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
     ...resultLowerer.islandWorkerWarnings,
+    ...resultLowerer.deferredRefusalWarnings,
     ...Array.from(resultLowerer.absentDefaultStops.values(), (site) =>
       absentDefaultStopDiag(resultLowerer.fmt(site.from), resultLowerer.fmt(site.to), site.loc),
     ),
@@ -4895,6 +4900,10 @@ export class Lowerer {
    * run load (noteIslandOnWorkerThread), one per load site. Warnings, so
    * they leave with the divergences and never fail the build. */
   readonly islandWorkerWarnings: ScrDiagnostic[] = [];
+  /** SC6015 warnings: the TypeScript statements that compile to a throw
+   * (noteDeferredRefusal), one per statement. Warnings, so they leave with
+   * the divergences and never fail the build. */
+  readonly deferredRefusalWarnings: ScrDiagnostic[] = [];
   readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
@@ -5538,6 +5547,7 @@ export class Lowerer {
       // is journaled like `diags` (the plan itself is unjournaled).
       checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
       checkedTable("islandWorkerWarnings", () => this.islandWorkerWarnings.length),
+      checkedTable("deferredRefusalWarnings", () => this.deferredRefusalWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -14727,6 +14737,20 @@ export class Lowerer {
       this.islandWorkerWarnings.push(diag);
   }
 
+  /** SC6015 for the TypeScript statement at `node`, which compiles to a
+   * throw of `refusal` (deferredRefusalDiag): once per statement. A
+   * JavaScript source has its own report (ir/deferred-fence.ts). */
+  noteDeferredRefusal(node: ts.Node, refusal: string, hint: string): void {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node))) return;
+    const diag = deferredRefusalDiag(refusal, locOf(node), hint);
+    if (
+      !this.deferredRefusalWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.deferredRefusalWarnings.push(diag);
+  }
+
   refuseIslandWorkerValue(node: ts.Node, kind: string): never {
     this.pushDiag(nodeIslandWorkerValueDiag(locOf(node), kind));
     throw new PoisonError();
@@ -14919,6 +14943,25 @@ export class Lowerer {
    * lowers again (at most MAX_DECLARATION_RETRIES times). Null when it
    * still poisons; its diagnostics are then committed as before. */
   lowerUnitDegrading<T>(lower: () => T): T | null {
+    try {
+      return this.lowerUnitRetrying(lower);
+    } catch (e) {
+      if (!(e instanceof PoisonError)) throw e;
+      return null;
+    }
+  }
+
+  /** lowerUnitDegrading for a unit whose caller answers the poison itself
+   * (a method, a constructor: the member is omitted): the same commit
+   * point, and the poison of the last attempt is thrown when the unit
+   * still poisons. The statements of a body have a commit point of their
+   * own (lowerStmts); this one serves what lowers outside every statement,
+   * the bindings and defaults of the parameters (declareParams), so a
+   * binding of a destructured parameter degrades as the same binding in a
+   * declaration statement does. Declared functions, static methods,
+   * constructors and methods lower under it; a function expression's
+   * poison reaches the statement that holds it. */
+  lowerUnitRetrying<T>(lower: () => T): T {
     const slots: DynamicSlot[] = [];
     for (let attempt = 0; ; attempt++) {
       const mark = this.diags.length;
@@ -14929,9 +14972,9 @@ export class Lowerer {
         return result;
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
-        if (attempt >= MAX_DECLARATION_RETRIES) return null;
+        if (attempt >= MAX_DECLARATION_RETRIES) throw e;
         const slot = this.degradeAtCommit(e, DECLARATION_SLOTS);
-        if (slot === null && !this.widenPartials(hits)) return null;
+        if (slot === null && !this.widenPartials(hits)) throw e;
         if (slot !== null) slots.push(slot);
         this.dropAttemptDiags(mark);
       }
@@ -20037,14 +20080,14 @@ export class Lowerer {
   }
 
   lowerClassCtor(info: ClassInfo): IrFunction {
-    return lowerClassCtor(this, info);
+    return this.lowerUnitRetrying(() => lowerClassCtor(this, info));
   }
 
   lowerClassMethodMember(
     info: ClassInfo,
     fnLike: ts.MethodDeclaration | ts.AccessorDeclaration,
   ): IrFunction | null {
-    return lowerClassMethodMember(this, info, fnLike);
+    return this.lowerUnitRetrying(() => lowerClassMethodMember(this, info, fnLike));
   }
 
   throwingSetterFn(info: ClassInfo, prop: string): IrFunction {
@@ -20070,7 +20113,9 @@ export class Lowerer {
   }
 
   lowerFunction(decl: ts.FunctionDeclaration): IrFunction | null {
-    return lowerFunction(this, decl);
+    // A TypeScript function's body-level poison is thrown to the commit
+    // point here; a JavaScript function answers its own (a runtime fence).
+    return this.lowerUnitDegrading(() => lowerFunction(this, decl));
   }
 
   collectGlobals(sf: ts.SourceFile, topStmts: ts.Statement[]): void {

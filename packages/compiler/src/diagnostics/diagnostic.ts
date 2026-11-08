@@ -372,6 +372,21 @@ export function guardedDeferredFenceDiag(
   };
 }
 
+/** SC6015 — a TypeScript statement that compiles to a throw: its refusal is
+ * deferred to run time. A TypeScript construct that does not compile is a
+ * build error; where the statement's refusal waits for the statement to run
+ * instead, so that a program which never reaches it builds and runs as
+ * under Node, this warning is where the build names it. (A JavaScript
+ * source has SC6012 and the report at run time.) */
+export function deferredRefusalDiag(refusal: string, loc: SrcLoc, hint: string): ScrDiagnostic {
+  return {
+    code: "SC6015",
+    message: `this statement throws when it runs (${refusal}), where it would have completed under Node; a program that never reaches it runs as it does under Node`,
+    loc,
+    hint,
+  };
+}
+
 /** SC6013 — a statement writes a member that the program added to the
  * library Promise type (`Promise<T> & { status?: ... }`, an interface that
  * extends Promise). Node adds the member to the promise object. A compiled

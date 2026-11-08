@@ -4,12 +4,17 @@ import { resolve } from "node:path";
 
 import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
 import { staticString } from "./builtins/module-resolution.js";
+import { resolveNpmImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  definitelyNoUndiciDispatcher,
+  fetchThroughDispatcher,
+  programHasUndiciPackage,
+} from "./fetch-dispatcher.js";
 import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
-import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   arrayOf,
   BOOL,
@@ -35,6 +40,7 @@ import {
 } from "./surfaces.js";
 import {
   unsupportedNativeApiDiag,
+  unsupportedPackageImportDiag,
   unsupportedPackageValueDiag,
 } from "../../diagnostics/diagnostic.js";
 import {
@@ -480,6 +486,20 @@ function fenceRequestInitObject(
       }
     }
     if (row.status === "static") return;
+    // A dispatcher in a program that contains the built-in undici is sent
+    // through (fetch-dispatcher.ts); one that cannot be that package's is
+    // refused here, the others where the call runs.
+    if (row.member === "dispatcher" && programHasUndiciPackage(lowerer)) {
+      if (value !== null && definitelyNoUndiciDispatcher(lowerer, value)) {
+        lowerer.noLowering(
+          "RequestInit option 'dispatcher' holding an object that is no dispatcher of the undici package",
+          blame,
+          "fetch sends a request through an Agent, Pool, Client or ProxyAgent of the undici package, or an instance of a class that extends its Dispatcher; an object that implements dispatch() itself has no lowering",
+          memberSym(),
+        );
+      }
+      return;
+    }
     const sym = memberSym();
     lowerer.noLowering(
       `RequestInit option '${row.member}'${" in a static build"}`,
@@ -693,7 +713,10 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
       type: { kind: "promise", inner: DYN },
       loc,
     };
-    return { kind: "seqExpr", stmts, result: answer, type: answer.type, loc };
+    // An init that carries a dispatcher of the built-in undici goes to
+    // that package's fetch (fetch-dispatcher.ts).
+    const routed = fetchThroughDispatcher(lowerer, initNode, dynInput ?? url, initRef, answer, loc);
+    return { kind: "seqExpr", stmts, result: routed, type: answer.type, loc };
   }
 }
 
@@ -1033,8 +1056,12 @@ export function fenceStaticHeadersMember(
     );
 
   const headersCalls = staticFetchMembers().headersCalls;
-  if (use === "call" && members.every((member) => headersCalls.has(member))) return null;
-  const member = members.find((candidate) => use !== "call" || !headersCalls.has(candidate))!;
+  // A symbol-keyed member the profile calls static is called like the named
+  // ones (`headers[Symbol.iterator]()`).
+  const callable = (member: string): boolean =>
+    headersCalls.has(member) || (member.startsWith("[Symbol.") && status(member) === "static");
+  if (use === "call" && members.every(callable)) return null;
+  const member = members.find((candidate) => use !== "call" || !callable(candidate))!;
   if (status(member) === "unsupported") {
     lowerer.noLowering(
       `Headers.${member}`,
@@ -1046,7 +1073,7 @@ export function fenceStaticHeadersMember(
   lowerer.noLowering(
     `Headers.${member} in a static build`,
     access,
-    "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach; keys()/values()/entries(), symbol-keyed iteration, and construction remain unsupported",
+    "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach, keys()/values()/entries() and iteration, each as a call; a method read as a value is unsupported",
     sym,
   );
 }
@@ -1239,6 +1266,8 @@ export function fenceStaticHeadersIteration(lowerer: Lowerer, node: ts.Node): vo
   const value = ts.isExpression(source) ? withoutParenthesesTypeWrappers(source) : source;
   const sym = isStdlibFetchInterface(lowerer, value, "Headers");
   if (!sym) return;
+  // The profile decides: a static row iterates the handle's live step.
+  if (fetchInventoryStatus("Headers", "[Symbol.iterator]", "prototype-symbol") === "static") return;
   lowerer.noLowering(
     "Headers.[Symbol.iterator] in a static build",
     node,
@@ -2323,7 +2352,20 @@ function lowerResolvedImport(
   const res = lowerer.dynImports.get(
     dynImportKey(ts.getSourceFileOfNode(call).fileName, specifier, bounded),
   );
-  if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
+  if (res === undefined) {
+    // A package nothing imports statically was never judged by the
+    // selection, so the program does not compile it. The call gets the
+    // refusal a static import of that package gets, which names the
+    // package: under the automatic policy the package then runs in a Node
+    // island (node-islands/growth.ts) and the next round loads it at this
+    // call (lower-node-island.ts, lowerIslandLoadCall).
+    const npm = resolveNpmImport(ts.getSourceFileOfNode(call).fileName, specifier);
+    if (npm !== null) {
+      lowerer.pushDiag(unsupportedPackageImportDiag(npm.packageName, locOf(call)));
+      throw new PoisonError();
+    }
+    lowerer.refuseUnsupportedApi("'import()'", call);
+  }
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
   if (res.kind === "program-module") {
     // A bounded value's entry carries the module its text named under
@@ -3034,7 +3076,6 @@ export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpres
     packageTypeIsData(lowerer.typeOf(access.expression), {
       isStdlibFile: (sf) => lowerer.isStdlibFile(sf),
       isExternalTypeFile: lowerer.isExternalTypeFile,
-      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, lowerer.experimentalFiles),
     })
   )
     return;

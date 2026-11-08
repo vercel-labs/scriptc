@@ -2906,6 +2906,9 @@ export class LlEmitter {
       retypeGuardRef: (unionId) => this.retypeGuardRef(unionId),
       fieldAbsentTestIn: (B, value, unionId) => this.fieldAbsentTestIn(B, value, unionId),
       absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
+      keepLoopLive: () => {
+        this.usesTimers = true;
+      },
       dynAbsentRef: () => this.dynAbsentRef(),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,

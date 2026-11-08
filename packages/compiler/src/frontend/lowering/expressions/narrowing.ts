@@ -1071,12 +1071,16 @@ function instanceSlotUnnarrowed(
   // The declared type itself, or a type variable (`T[number]`) read through
   // its constraint: the whole declared type is assignable to the read's
   // type exactly when that type is no narrower than the constraint.
+  // A test that only excluded null or undefined (`part === null ? … :
+  // part.id`) chose no value arm either: the comparison is with the
+  // declared type's values.
   const variable = (declared.flags & ts.TypeFlags.Instantiable) !== 0;
+  const declaredValues = variable ? declared : lowerer.checker.getNonNullableType(declared);
   if (
-    declared !== siteTs &&
+    declaredValues !== siteTs &&
     !(
-      lowerer.checker.isTypeAssignableTo(declared, siteTs) &&
-      (variable || lowerer.checker.isTypeAssignableTo(siteTs, declared))
+      lowerer.checker.isTypeAssignableTo(declaredValues, siteTs) &&
+      (variable || lowerer.checker.isTypeAssignableTo(siteTs, declaredValues))
     )
   )
     return null;

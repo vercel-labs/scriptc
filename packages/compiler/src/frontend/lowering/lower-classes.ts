@@ -2786,6 +2786,10 @@ export function collectClassShapeInner(
     // IrFunction like any other (lowerGenericInstance), calls enter
     // through the instance's own spawn wrapper, and no vtable slot is
     // ever involved — generic members always dispatch statically.
+    // GENERATOR methods collect too, sync and async: a generic generator
+    // instance is a generator IrFunction like a generic generator
+    // function's, entered through its own spawn wrapper. A field holding a
+    // generic generator function expression keeps its refusal.
     const collectGenericMember = (
       member: ts.MethodDeclaration | ts.PropertyDeclaration,
       isStatic: boolean,
@@ -2797,7 +2801,8 @@ export function collectClassShapeInner(
       if (!ts.isIdentifier(member.name) && !ts.isPrivateIdentifier(member.name)) {
         lowerer.unsupported("SC1090", member, "computed generic method names");
       }
-      if (fnNode.asteriskToken) lowerer.unsupported("SC1071", member);
+      if (fnNode.asteriskToken && ts.isPropertyDeclaration(member))
+        lowerer.unsupported("SC1071", member);
       const mName = (member.name as ts.Identifier | ts.PrivateIdentifier).text;
       const typeParams: ts.Symbol[] = [];
       for (const tp of fnNode.typeParameters!.nodes) {

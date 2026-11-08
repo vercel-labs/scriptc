@@ -103,8 +103,10 @@ import {
   foreignElementThrow,
   lowerSafeBytesRead,
   lowerSafeIndexRead,
+  presentTupleUnion,
   primitiveElement,
   unionArrayValueRead,
+  unionArrayValueType,
   unionArmsIndexRead,
   unionArmsView,
   unaffectedByIndex,
@@ -865,6 +867,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           locOf(expr),
         );
         if (element) return lowerer.maybeNarrow(element, expr);
+        // A union of tuples the stored binding still holds beside undefined
+        // or null (a value narrowed past them), and tuples of different
+        // lengths: the unit arm throws as the read does in JavaScript, and
+        // each tuple answers its position, or undefined past its end.
+        const position = presentTupleUnionRead(
+          lowerer,
+          value,
+          Number(expr.argumentExpression.text),
+          locOf(expr),
+        );
+        if (position) return lowerer.maybeNarrow(position, expr);
       }
       if (key.type.kind === "f64") {
         const optional = optionalArmIndexRead(lowerer, value, key, locOf(expr));
@@ -1895,6 +1908,50 @@ export function lowerRecordKeyRead(
   if (nanCoded) return read;
   const answered = withInheritedMethods(lowerer, read, litKey, isCalledAccess(expr));
   return includeUndefined || optionalRead ? answered : lowerer.maybeNarrow(answered, expr);
+}
+
+/** The position `index` of a union that holds at least one tuple beside
+ * other tuples or arrays, through presentTupleUnion when the union also
+ * holds a unit arm. Null, with nothing declared, for any other union (a
+ * union of arrays alone keeps the reads it has) and when a position has no
+ * common representation. */
+function presentTupleUnionRead(
+  lowerer: Lowerer,
+  value: IrExpr,
+  index: number,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "union" || !Number.isInteger(index) || index < 0) return null;
+  const arms = lowerer.unions.get(value.type.unionId)?.arms ?? [];
+  const present = arms.filter((arm) => arm.kind !== "undefinedT" && arm.kind !== "nullT");
+  const isTuple = (arm: IrType): boolean =>
+    arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.tuple === true;
+  if (
+    present.length < 2 ||
+    !present.some(isTuple) ||
+    !present.every((arm) => arm.kind === "array" || isTuple(arm))
+  )
+    return null;
+  const held: IrType =
+    present.length === arms.length
+      ? value.type
+      : { kind: "union", unionId: lowerer.unions.intern(present) };
+  if (unionArrayValueType(lowerer, held, String(index), false, false) === null) return null;
+  const stmts: IrStmt[] = [];
+  let stable: IrExpr;
+  if (present.length !== arms.length) {
+    const taken = presentTupleUnion(lowerer, value, String(index), loc);
+    if (taken === null || taken.kind !== "seqExpr") return null;
+    stmts.push(...taken.stmts);
+    stable = taken.result;
+  } else {
+    const local = lowerer.declareHiddenLocal("%tupleUnion", value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    stable = varRef(local.id, value.type, loc);
+  }
+  const read = unionArrayValueRead(lowerer, stable, numLit(index, loc), loc);
+  if (read === null) return null;
+  return { kind: "seqExpr", stmts, result: read, type: read.type, loc };
 }
 
 /** The access is the callee of a call (`o[k](…)`, `o[k]?.(…)`, `o[k]!(…)`),

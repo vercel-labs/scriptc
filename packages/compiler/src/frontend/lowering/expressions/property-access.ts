@@ -237,7 +237,13 @@ import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js
 import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
-import { arrayValueRead, arrayValueType, unionArmsLength, unionArmsView } from "../array-values.js";
+import {
+  arrayValueRead,
+  arrayValueType,
+  tupleUnionLength,
+  unionArmsLength,
+  unionArmsView,
+} from "../array-values.js";
 import { lowerClassMethodValue } from "../class-method-values.js";
 import { reflectMemberValue } from "../builtins/reflection.js";
 import {
@@ -4801,6 +4807,11 @@ function unionValueRead(
   if (indexedArms) {
     const member = lowerIndexedUnionMember(lowerer, value, indexedArms, field, locOf(expr));
     if (member) return member;
+  }
+  // A union of tuples (and arrays): each arm's own length.
+  if (field === "length") {
+    const length = tupleUnionLength(lowerer, value, locOf(expr));
+    if (length) return length;
   }
   return null;
 }

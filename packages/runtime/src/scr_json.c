@@ -20381,6 +20381,13 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     bool out;
     if (SCR_HP(v) && scr_dyn_handle_props_hooks->has_own(v, key, false, &out)) return out;
 #endif
+    /* An island object: Node answers, by its own intrinsic. */
+    if (scr_ni_dyn_handle(v)) {
+      ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+      int found = scr_ni_dyn_ops->has_own((ScrDyn *)v, k, 0);
+      scr_dyn_release(k);
+      return found == 1;
+    }
     const char *m = "Own-property checks on this checked-dynamic kind are not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, m, strlen(m), "SC1090");
     return false;
@@ -20396,6 +20403,13 @@ bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
     if (scr_dyn_handle_props_hooks->has_own(value, key, true, &out)) return out;
   }
 #endif
+  /* An island object: Node answers, by its own intrinsic. */
+  if (scr_ni_dyn_handle(value)) {
+    ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+    int found = scr_ni_dyn_ops->has_own((ScrDyn *)value, k, 1);
+    scr_dyn_release(k);
+    return found == 1;
+  }
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     bool result = !scr_exc_pending() && scr_dyn_property_is_enumerable(view, key);

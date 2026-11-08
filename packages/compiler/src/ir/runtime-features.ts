@@ -918,11 +918,18 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
-/** Whether boxing a value of type `t` hands untyped code a function with a
- * record or array parameter (itself, or through a record field, an array
- * element or a union arm): its thunk converts the caller's argument, and
- * the argument adopts the converted value. */
-function boxesSharingFunction(t: IrType, tables: TypeTables, seen: Set<string>): boolean {
+/** The record and array parameter types of the functions that boxing a
+ * value of type `t` hands untyped code (the value itself, or a function
+ * reached through a record field, an array element, a union arm, another
+ * function's parameter or result): each such function's thunk converts the
+ * caller's argument, and the argument adopts the converted value
+ * (dynFnThunk), which boxes that parameter type as a live capsule. */
+function adoptedParameters(
+  t: IrType,
+  tables: TypeTables,
+  seen: Set<string>,
+  out: IrType[],
+): IrType[] {
   const holdsReference = (p: IrType): boolean =>
     p.kind === "record" ||
     p.kind === "array" ||
@@ -930,33 +937,54 @@ function boxesSharingFunction(t: IrType, tables: TypeTables, seen: Set<string>):
       (tables.unions.get(p.unionId)?.arms.some((arm) => holdsReference(arm)) ?? false));
   switch (t.kind) {
     case "func":
-      return (
-        t.params.some(holdsReference) ||
-        t.params.some((p) => boxesSharingFunction(p, tables, seen)) ||
-        boxesSharingFunction(t.ret, tables, seen)
-      );
+      for (const p of t.params) {
+        if (holdsReference(p)) out.push(p);
+        adoptedParameters(p, tables, seen, out);
+      }
+      adoptedParameters(t.ret, tables, seen, out);
+      break;
     case "array":
-      return boxesSharingFunction(t.elem, tables, seen);
+      adoptedParameters(t.elem, tables, seen, out);
+      break;
     case "record": {
-      if (seen.has(t.shapeId)) return false;
+      if (seen.has(t.shapeId)) break;
       seen.add(t.shapeId);
-      return (
-        tables.records
-          .get(t.shapeId)
-          ?.fields.some((field) => boxesSharingFunction(field.type, tables, seen)) ?? false
-      );
+      for (const field of tables.records.get(t.shapeId)?.fields ?? [])
+        adoptedParameters(field.type, tables, seen, out);
+      break;
     }
     case "union": {
-      if (seen.has(t.unionId)) return false;
+      if (seen.has(t.unionId)) break;
       seen.add(t.unionId);
-      return (
-        tables.unions.get(t.unionId)?.arms.some((arm) => boxesSharingFunction(arm, tables, seen)) ??
-        false
-      );
+      for (const arm of tables.unions.get(t.unionId)?.arms ?? [])
+        adoptedParameters(arm, tables, seen, out);
+      break;
     }
     default:
-      return false;
+      break;
   }
+  return out;
+}
+
+/** Whether boxing a value of type `t` hands untyped code a function whose
+ * record or array parameter adopts the caller's argument
+ * (adoptedParameters). */
+function boxesSharingFunction(t: IrType, tables: TypeTables): boolean {
+  return adoptedParameters(t, tables, new Set(), []).length > 0;
+}
+
+/** The live capsule an adoption boxes a value of type `type` as, for the
+ * rules that read what a module boxes: the backend builds it where it
+ * emits the adoption (a `dynCheck` with `shared`, dynFnThunk), so no
+ * `dynFrom` in the module stands for it. */
+function adoptionCapsule(type: IrType, loc: IrExpr["loc"]): IrExpr {
+  return {
+    kind: "dynFrom",
+    value: { kind: "varRef", localId: "%adopted", type, loc },
+    liveRef: true,
+    type: { kind: "dyn" },
+    loc,
+  };
 }
 
 /** Whether the module holds a runtimeFence that stands for a deferred
@@ -1818,7 +1846,8 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["dyn.declAdopt", "dyn.adoptShared"],
     initial: (mod) => mod.declBoundary === true,
     expr: (node, tables) =>
-      node.kind === "dynFrom" && boxesSharingFunction(node.value.type, tables(), new Set()),
+      (node.kind === "dynCheck" && node.shared === true) ||
+      (node.kind === "dynFrom" && boxesSharingFunction(node.value.type, tables())),
   }),
   // Checked conversions into package-declared types name the declaration
   // in their TypeError (scr_type_origin.c).
@@ -2588,7 +2617,7 @@ function scanRuntimeFeatures(
       unions: new Map((mod.unions ?? []).map((u) => [u.id, u])),
       classes: new Map((mod.classes ?? []).map((c) => [c.name, c])),
     });
-  const expr = (node: IrExpr): boolean => {
+  const visit = (node: IrExpr): boolean => {
     for (let i = 0; i < scans.length; i++) scans[i]!.scan.expr(node);
     if (node.kind === "libCall") {
       const fn = node.fn;
@@ -2602,6 +2631,24 @@ function scanRuntimeFeatures(
         if (!features[name] && ruleOf(name).expr!(node, typeTables)) features[name] = true;
     }
     return keepGoing();
+  };
+  // The record and union types whose functions' adopted parameters this
+  // scan has already read (adoptedParameters).
+  const adoptedSeen = new Set<string>();
+  const expr = (node: IrExpr): boolean => {
+    if (!visit(node)) return false;
+    // An adoption boxes the converted value as a live capsule the module
+    // holds no `dynFrom` for: the rules read it as one. A typed slot's
+    // conversion boxes its target; a function boxed outside a declaration
+    // boundary (whose thunks adopt strictly, as before) boxes each record
+    // and array parameter of the functions it hands out.
+    if (node.kind === "dynCheck") {
+      if (node.shared === true) return visit(adoptionCapsule(node.type, node.loc));
+    } else if (node.kind === "dynFrom" && features.declAdopt && mod.declBoundary !== true) {
+      for (const p of adoptedParameters(node.value.type, typeTables(), adoptedSeen, []))
+        if (!visit(adoptionCapsule(p, node.loc))) return false;
+    }
+    return true;
   };
   const type = (node: IrType): boolean => {
     for (const name of FEATURES_BY_TYPE.get(node.kind) ?? []) features[name] = true;

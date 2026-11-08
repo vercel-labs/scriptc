@@ -4362,6 +4362,13 @@ export type IrExpr =
    * unshared source is simply consumed. Values must be plain data
    * (ordinary objects and arrays without accessors, prototypes, symbols
    * or frozen state), otherwise the cast throws the path TypeError. */
+  /** `shared`: the conversion where a typed slot takes a dynamic value
+   * without an assertion (sharedDynConversion). JavaScript keeps one
+   * object there: after the whole check succeeded, a source object or
+   * array that something else still references becomes a live capsule of
+   * the value built from it (scr_dyn_adopt_shared). A source that is not
+   * plain data keeps the copy; nothing throws. A consumer that rebuilds
+   * the node without the flag gets the plain copy. */
   /** `origin`: the target type comes from an npm package's declaration;
    * an index into `IrModule.declOrigins`. A failing check's TypeError then
    * names the declaration and the type patch that would admit the value
@@ -4371,6 +4378,7 @@ export type IrExpr =
       value: IrExpr;
       preserveRefs?: true;
       adopt?: true;
+      shared?: true;
       exact?: true;
       partialView?: true;
       /** Shape inference's overlay: this conversion checks an

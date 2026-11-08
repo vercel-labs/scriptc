@@ -5959,6 +5959,32 @@ export class LlDyn {
   /** The dyn argument spelling of one static value: dyn passes through
    * (+1), funcs box anonymously, everything else rides toDyn. `expr` is
    * BORROWED in every arm. Emits into the given builder. */
+  /** The adoption after a checked conversion at a typed slot
+   * (dynCheck.shared): `source`, where something else still holds it,
+   * becomes a live capsule of `built`, the value converted from it
+   * (scr_dyn_adopt_shared; a source that is not plain data keeps the
+   * copy). A `borrowed` source is held for the call: the binding it was
+   * read from is a holder its count does not show, as a caller's argument
+   * is in dynFnThunk. Nothing is emitted where the program does not link
+   * the adoption unit (a library) or the type has no live capsule. */
+  adoptSharedSource(
+    B: BlockBuilder,
+    t: IrType,
+    source: string,
+    built: string,
+    borrowed: boolean,
+  ): void {
+    if (this.host.declAdopt?.() !== true) return;
+    const capsule = this.liveToDyn(B, t, built);
+    if (capsule === null) return;
+    this.host.declare(`declare void @scr_dyn_adopt_shared(ptr, ptr)`);
+    this.host.declare(`declare void @scr_dyn_release(ptr)`);
+    const held = borrowed ? this.retainDyn(B, source) : null;
+    B.line(`call void @scr_dyn_adopt_shared(ptr ${source}, ptr ${capsule})`);
+    if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
+    B.line(`call void @scr_dyn_release(ptr ${capsule})`);
+  }
+
   /** A live capsule of a record or array value (+1; the value is
    * borrowed), as `dynFrom` with `liveRef` builds it; null for other
    * types. Every typed value crossing into the dynamic tier this way keeps

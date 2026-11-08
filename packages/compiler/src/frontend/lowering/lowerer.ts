@@ -17614,7 +17614,23 @@ export class Lowerer {
     );
   }
 
+  /** coerceIntoTyped, with the one exception to a typed slot keeping one
+   * object with the dynamic value it takes (sharedDynConversion): a value
+   * the program types itself and the compiler holds dynamically, such as an
+   * evolving empty array that takes another element type later, keeps the
+   * copy. Adoption would hold the source to the slot's type, a claim the
+   * program makes only for a value it left untyped. */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    const out = this.coerceIntoTyped(node, expr, expected, payloadSite);
+    if (out.kind !== "dynCheck" || out.shared !== true) return out;
+    const untyped = (ts.TypeFlags.Any | ts.TypeFlags.Unknown) as number;
+    if ((this.typeOf(node).flags & untyped) !== 0) return out;
+    const copied = { ...out };
+    delete copied.shared;
+    return copied;
+  }
+
+  coerceIntoTyped(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
     // A typed promise as the key of a weak collection: the collection reads
     // the key for its identity alone, which is the promise's own. Boxing it
     // as other checked-dynamic uses do would make an adapter promise for a

@@ -419,6 +419,7 @@ export function emitSerializationExpr(
         );
         return host.own({ name: retained, type: e.type });
       }
+      const sourceBorrowed = e.shared === true && host.canBorrowCallArgument(e.value);
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
       // A check of an analysis-proven fact (shape inference's overlay)
@@ -459,6 +460,9 @@ export function emitSerializationExpr(
       if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck(undefined, false, undefined, note);
+      // A typed slot's conversion keeps one object (dynCheck.shared): the
+      // check succeeded, so the source adopts the value built from it.
+      if (e.shared === true) host.dyn.adoptSharedSource(B, e.type, dynV.name, t, sourceBorrowed);
       return out;
     }
     default: {

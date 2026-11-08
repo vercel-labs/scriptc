@@ -22,6 +22,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.set",
   "nodeIsland.setKey",
   "nodeIsland.invoke",
+  // Reads the island value's Symbol.iterator and calls it, as dyn.iterator
+  // does for a native value.
+  "nodeIsland.iterator",
   "nodeIsland.apply",
   "nodeIsland.applyTo",
   "nodeIsland.construct",

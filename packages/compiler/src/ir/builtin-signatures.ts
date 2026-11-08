@@ -257,6 +257,13 @@ function buildLibFnSignatures() {
     /** Island arrays of copied values as copies (a result, or an awaited
      * promise's value). */
     "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
+    // Island iterators as native generators (generator-arrays.ts): a value
+    // as the generator of a type key the program holds it as (else itself),
+    // the pairing of a generator's capsule with the island iterator it
+    // steps, and the iterator an adapter steps (an island value's own).
+    "nodeIsland.iterView": { argTypes: [DYN, STRING], result: DYN },
+    "nodeIsland.iterPair": { argTypes: [DYN, DYN], result: VOID },
+    "nodeIsland.iterator": { argTypes: [DYN, STRING], result: DYN },
     "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     /** The operand of a dynamic await or PromiseResolve in a program with
      * Node islands: an island thenable as the promise V8 adopts it into,

@@ -119,6 +119,7 @@ import {
   type TypeFailureSlot,
 } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
+import { reportUncompiledImportsOf } from "./lower-stdlib.js";
 import {
   accessorExportIsExact,
   cjsExportEvaluations,
@@ -993,6 +994,18 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             if (d.typeFailure === undefined && d.rejects === undefined) d.cause ??= cause;
         }
         lowerer.noteBlockedBindings(stmt, committed);
+        // A statement abandoned over a package the program does not compile
+        // names every such package its import() calls load, so one build
+        // round decides their islands (reportUncompiledImportsOf). A
+        // JavaScript statement keeps its fence, which the island rules read.
+        if (!deferFences)
+          reportUncompiledImportsOf(
+            lowerer,
+            stmt,
+            lowerer.diagSink !== null
+              ? lowerer.diagSink.slice(sinkMark)
+              : lowerer.diags.slice(diagsBefore),
+          );
         // The runtime-fence conversion (JS sources, direct diagnostics
         // only — a capture wrapper in force means collection owns the
         // report). The statement's diagnostics move OFF the build and

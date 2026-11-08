@@ -716,20 +716,37 @@ int RunLoop(int continue_turn) {
   return code;
 }
 
-// An island listener of a process event: through MakeCallback, so a throw
-// is an uncaught exception as in Node's own emit.
+// An island listener of a process event. A signal listener runs through
+// MakeCallback: ticks and microtasks drain after it, and a throw is an
+// uncaught exception, as in Node's own emit. An 'exit' listener is a plain
+// call, as Node's own 'exit' emission is: process.exit() emits it from
+// JavaScript and ends the process, so nothing queued before or by the
+// listeners runs between them or after them (the runtime drains the
+// microtasks once after the last listener when the program ends by running
+// dry). The verbose TryCatch hands a throw to Node's uncaught-exception path.
+// Listener 0 names no listener: the runtime announces that the exit sequence
+// began (the bootstrap sets process._exiting).
 void Emit(uint32_t event, uint32_t listener, const char *name, int arg) {
   Enter e;
   Local<Value> argv[] = {Num(e, event), Num(e, listener), Utf8(e.isolate, name), Num(e, arg)};
+  if (event == SCR_NODE_EVENT_EXIT) {
+    TryCatch try_catch(e.isolate);
+    try_catch.SetVerbose(true);
+    (void)g_emit.Get(e.isolate)->Call(e.context, e.context->Global(), 4, argv);
+    return;
+  }
   node::MakeCallback(e.isolate, e.context->Global(), g_emit.Get(e.isolate), 4, argv,
                      node::async_context{0, 0});
 }
 
 void Stop() {
   if (!g_setup) return;
-  UnhostLoop();
   Isolate *isolate = g_setup->isolate();
+  // Node stops first: the loop iteration that closes the hosted loop's
+  // handles (UnhostLoop) would otherwise run the timers and immediates that
+  // are due, after the 'exit' listeners, when Node itself runs nothing more.
   node::Stop(g_setup->env());
+  UnhostLoop();
   g_call.Reset();
   g_load.Reset();
   g_twin_prototypes.clear();
@@ -1266,6 +1283,15 @@ Global<v8::ObjectTemplate> g_export_template;
 std::unordered_map<uint32_t, Global<Object>> g_exports;
 std::unordered_map<uint32_t, Global<v8::Promise::Resolver>> g_resolvers;
 std::vector<uint32_t> g_released_exports;
+// Native errors (below, "native errors in V8"): the names installed on the
+// representative of each one at its last reconciliation, by export id, and
+// the ones that crossed into V8 during the runtime's current calls into
+// the island (Op), innermost last.
+std::unordered_map<uint32_t, std::vector<std::string>> g_error_keys;
+std::vector<uint32_t> g_crossed_errors;
+int g_op_depth = 0;
+Global<Function> g_error_stack_get, g_error_stack_set;  // the shared `stack` accessor
+void SyncNativeError(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error);
 
 Local<v8::Private> ExportKey(Isolate *isolate) {
   if (g_export_key.IsEmpty())
@@ -1305,6 +1331,7 @@ void OnExportGone(const v8::WeakCallbackInfo<void> &info) {
     std::lock_guard<std::mutex> lock(g_gc_lock);
     g_export_gc.erase(id);
   }
+  g_error_keys.erase(id);
   g_gc_stats.freed_exports++;
   g_cycle_freed_exports++;
   for (auto p = g_proxy_ids.begin(); p != g_proxy_ids.end();) {
@@ -1989,6 +2016,10 @@ void DropAllExports() {
   g_resolvers.clear();
   g_released_exports.clear();
   g_proxy_ids.clear();
+  g_error_keys.clear();
+  g_crossed_errors.clear();
+  g_error_stack_get.Reset();
+  g_error_stack_set.Reset();
   g_export_template.Reset();
   g_export_key.Reset();
 }
@@ -2146,6 +2177,11 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
   }
   if (uint32_t export_id = ExportIdOf(isolate, context, v)) {
     Touch(export_id);
+    // A native error: what island code added to it or deleted from it goes
+    // with it (only inside a host call or an operation, whose scratch a
+    // nested host call leaves alone).
+    if (g_entry_depth > 0 && g_error_keys.count(export_id) != 0)
+      SyncNativeError(isolate, context, export_id, v.As<Object>());
     out->tag = SCR_NV_EXPORT;
     out->u.exp.id = export_id;
     return;
@@ -2190,10 +2226,303 @@ void FreeRuntimeBytes(void *, size_t, void *owner) {
 
 Local<Value> ErrorConstructor(Isolate *isolate, Local<Context> context, uint32_t kind) {
   static const char *const names[] = {"Error",          "TypeError", "RangeError", "SyntaxError",
-                                      "Error",          "ReferenceError", "EvalError",
-                                      "URIError"};
-  const char *name = kind < 8 ? names[kind] : "Error";
+                                      "DOMException",   "ReferenceError", "EvalError",
+                                      "URIError",       "AggregateError"};
+  const char *name = kind < 9 ? names[kind] : "Error";
   return context->Global()->Get(context, Utf8(isolate, name)).ToLocalChecked();
+}
+
+const uint32_t kDomExceptionKind = 4;
+const uint32_t kAggregateErrorKind = 8;
+
+// ── native errors in V8 ─────────────────────────────────────────────────
+// A native error crosses by reference: one V8 Error per export id, of the
+// error's intrinsic class, which is that native error again when it
+// crosses back. Each own property of the native error is an own property
+// of the V8 Error whose value lives in the native error: a native data
+// property, which JavaScript sees as a plain data property with the native
+// property's attributes, and whose reads and writes go to the runtime. So
+// the two sides read and write one set of values. Which properties exist
+// is reconciled whenever the error crosses in either direction and when the
+// runtime's call into the island returns (SyncNativeError): a property one
+// side added or deleted since is added or deleted on the other.
+
+// The runtime's attribute bits of an own property (SCR_NODE_EXPORT_OWN).
+v8::PropertyAttribute ErrorAttributes(int bits) {
+  int attrs = v8::None;
+  if (!(bits & 1)) attrs |= v8::ReadOnly;
+  if (!(bits & 2)) attrs |= v8::DontEnum;
+  if (!(bits & 4)) attrs |= v8::DontDelete;
+  return static_cast<v8::PropertyAttribute>(attrs);
+}
+
+void ErrorFieldGet(Local<v8::Name> name, const v8::PropertyCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;  // the key's text lives in the scratch this call keeps
+  ScrNodeValue key, out;
+  NameKey(isolate, context, name, &key);
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->export_get(ExportIdArg(info.Data()), &key, &out);
+  if (status == 2) return;  // deleted natively since: undefined
+  Local<Value> result;
+  ThrowOrReturn(isolate, context, status, &out, &result);
+  if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+}
+
+void ErrorFieldSet(Local<v8::Name> name, Local<Value> value,
+                   const v8::PropertyCallbackInfo<void> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue key, v, out;
+  NameKey(isolate, context, name, &key);
+  FromV8(isolate, context, value, &v);
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_set(ExportIdArg(info.Data()), &key, &v, &out) == 1)
+    isolate->ThrowException(ToV8(isolate, context, &out));
+}
+
+// `stack` is an own accessor of every V8 error, with one getter and one
+// setter function shared by all of them. A native error's representative
+// gets the same shape, with functions that read and write the native
+// error's stack: island code that rewrites `e.stack` rewrites the one the
+// program prints, and the stack is formatted only if somebody reads it.
+void ErrorStackGet(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  uint32_t id = ExportIdOf(isolate, context, info.This());
+  if (id == 0) return;  // not a native error: undefined, as V8's getter answers
+  HostCall scope;
+  ScrNodeValue key, out;
+  FromV8(isolate, context, Utf8(isolate, "stack"), &key);
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->export_get(id, &key, &out);
+  if (status == 2) return;
+  Local<Value> result;
+  ThrowOrReturn(isolate, context, status, &out, &result);
+  if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+}
+
+void ErrorStackSet(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  uint32_t id = ExportIdOf(isolate, context, info.This());
+  if (id == 0) return;
+  HostCall scope;
+  ScrNodeValue key, v, out;
+  FromV8(isolate, context, Utf8(isolate, "stack"), &key);
+  FromV8(isolate, context, info[0], &v);
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_set(id, &key, &v, &out) == 1)
+    isolate->ThrowException(ToV8(isolate, context, &out));
+}
+
+void InstallErrorStack(Isolate *isolate, Local<Context> context, Local<Object> error) {
+  if (g_error_stack_get.IsEmpty()) {
+    Local<Function> get = Function::New(context, ErrorStackGet).ToLocalChecked();
+    Local<Function> set = Function::New(context, ErrorStackSet, Local<Value>(), 1).ToLocalChecked();
+    get->SetName(Utf8(isolate, "stack"));
+    set->SetName(Utf8(isolate, "stack"));
+    g_error_stack_get.Reset(isolate, get);
+    g_error_stack_set.Reset(isolate, set);
+  }
+  error->SetAccessorProperty(Utf8(isolate, "stack"), g_error_stack_get.Get(isolate),
+                             g_error_stack_set.Get(isolate), v8::DontEnum);
+}
+
+bool InstallErrorField(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error,
+                       const std::string &name, int bits) {
+  return error
+      ->SetNativeDataProperty(context, Utf8(isolate, name.data(), name.size()), ErrorFieldGet,
+                              ErrorFieldSet, v8::Integer::NewFromUnsigned(isolate, id),
+                              ErrorAttributes(bits))
+      .FromMaybe(false);
+}
+
+// Reconciles which own properties the native error of export `id` and its
+// representative have. The runtime answers the native error's own string
+// keys in order, each with its attribute bits, then a state word (bit 0:
+// not extensible).
+//  - A native property the representative lacks is installed, unless it
+//    was installed before: then island code deleted it, and it is deleted
+//    natively.
+//  - A property of the representative the native error lacks is removed
+//    when it was installed before (deleted natively). Otherwise island code
+//    added it: a plain data property moves into the native error and
+//    becomes one of its installed properties. Anything else island code
+//    defined (an accessor, a non-enumerable or read-only property) stays the
+//    representative's own.
+// `stack` is every error's accessor (InstallErrorStack) and not part of it.
+void SyncNativeError(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error) {
+  if (!g_refreshing.insert(id).second) return;
+  struct Done {
+    uint32_t id;
+    ~Done() { g_refreshing.erase(id); }
+  } done{id};
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_op(id, SCR_NODE_EXPORT_OWN, nullptr, 0, &out) != 0) return;
+  Local<Value> answer = ToV8(isolate, context, &out);
+  if (!answer->IsArray()) return;
+  Local<v8::Array> list = answer.As<v8::Array>();
+  std::vector<std::pair<std::string, int>> native;
+  int state = 0;
+  for (uint32_t i = 0; i + 1 < list->Length(); i += 2) {
+    Local<Value> key, bits;
+    if (!list->Get(context, i).ToLocal(&key) || !list->Get(context, i + 1).ToLocal(&bits)) return;
+    native.emplace_back(ToStdString(isolate, key), bits->Int32Value(context).FromMaybe(7));
+  }
+  if (list->Length() % 2 == 1) {
+    Local<Value> word;
+    if (list->Get(context, list->Length() - 1).ToLocal(&word))
+      state = word->Int32Value(context).FromMaybe(0);
+  }
+  std::vector<std::string> &known = g_error_keys[id];
+  auto installed = [&](const std::string &name) {
+    return std::find(known.begin(), known.end(), name) != known.end();
+  };
+  auto in_native = [&](const std::string &name) {
+    for (const auto &entry : native)
+      if (entry.first == name) return true;
+    return false;
+  };
+  std::vector<std::string> next;
+  Local<v8::Array> own;
+  if (!error
+           ->GetOwnPropertyNames(context, v8::SKIP_SYMBOLS, v8::KeyConversionMode::kConvertToString)
+           .ToLocal(&own))
+    return;
+  std::unordered_set<std::string> present;
+  for (uint32_t i = 0; i < own->Length(); i++) {
+    Local<Value> key;
+    if (!own->Get(context, i).ToLocal(&key) || !key->IsString()) continue;
+    std::string name = ToStdString(isolate, key);
+    if (name == "stack") continue;
+    present.insert(name);
+    if (installed(name)) {
+      // Deleted natively since the last reconciliation.
+      if (!in_native(name)) {
+        error->Delete(context, key).FromMaybe(false);
+        present.erase(name);
+      }
+      continue;
+    }
+    // Island code added it. A plain data property becomes the native
+    // error's; its value crosses by the boundary rules.
+    Local<Value> descriptor, value;
+    if (!error->GetOwnPropertyDescriptor(context, key.As<v8::Name>()).ToLocal(&descriptor) ||
+        !descriptor->IsObject() ||
+        !descriptor.As<Object>()->Get(context, Utf8(isolate, "value")).ToLocal(&value) ||
+        !descriptor.As<Object>()
+             ->HasOwnProperty(context, Utf8(isolate, "value"))
+             .FromMaybe(false))
+      continue;
+    v8::PropertyAttribute attrs;
+    if (!error->GetRealNamedPropertyAttributes(context, key.As<v8::Name>()).To(&attrs) ||
+        attrs != v8::None)
+      continue;
+    ScrNodeValue k, v, thrown;
+    FromV8(isolate, context, key, &k);
+    FromV8(isolate, context, value, &v);
+    std::memset(&thrown, 0, sizeof thrown);
+    // A value the runtime cannot take stays the representative's own.
+    if (g_host->export_set(id, &k, &v, &thrown) != 0) continue;
+    if (!in_native(name)) native.emplace_back(name, 7);
+    if (InstallErrorField(isolate, context, id, error, name, 7)) known.push_back(name);
+  }
+  for (const auto &entry : native) {
+    const std::string &name = entry.first;
+    if (name == "stack") continue;
+    if (present.count(name) != 0) {
+      next.push_back(name);
+      continue;
+    }
+    if (installed(name)) {
+      // Island code deleted it.
+      ScrNodeValue k, thrown;
+      FromV8(isolate, context, Utf8(isolate, name.data(), name.size()), &k);
+      std::memset(&thrown, 0, sizeof thrown);
+      g_host->export_delete(id, &k, &thrown);
+      continue;
+    }
+    if (InstallErrorField(isolate, context, id, error, name, entry.second)) next.push_back(name);
+  }
+  known = std::move(next);
+  if ((state & 1) != 0) {
+    // Not extensible natively (frozen, sealed or prevented): the attributes
+    // above already say which of the three.
+    Local<Value> object, prevent;
+    if (context->Global()->Get(context, Utf8(isolate, "Object")).ToLocal(&object) &&
+        object->IsObject() &&
+        object.As<Object>()->Get(context, Utf8(isolate, "preventExtensions")).ToLocal(&prevent) &&
+        prevent->IsFunction()) {
+      Local<Value> argv[] = {error};
+      prevent.As<Function>()->Call(context, object, 1, argv).FromMaybe(Local<Value>());
+    }
+  }
+}
+
+// `error` becomes the representative of export `id`. An instance of a
+// program class also reads what its class holds (methods, accessors, the
+// class as `constructor`) from the runtime: an object with the export
+// interceptors stands where the class's prototype would, between the error
+// and its intrinsic prototype. Any other native error keeps the intrinsic
+// prototype itself, as in Node.
+void LinkNativeError(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error,
+                     bool class_instance) {
+  Local<Value> data = v8::Integer::NewFromUnsigned(isolate, id);
+  if (class_instance) {
+    Local<Object> link = ExportTemplate(isolate)->NewInstance(context).ToLocalChecked();
+    link->SetInternalField(0, data);
+    link->SetPrototypeV2(context, error->GetPrototypeV2()).FromMaybe(false);
+    error->SetPrototypeV2(context, link).FromMaybe(false);
+  }
+  error->SetPrivate(context, ExportKey(isolate), data).Check();
+  AttachReach(isolate, context, id, error);
+  Global<Object> &slot = g_exports[id];
+  slot.Reset(isolate, error);
+  slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
+               v8::WeakCallbackType::kParameter);
+}
+
+// A property of the native error of export `id`, read before its
+// representative exists.
+Local<Value> NativeErrorProperty(Isolate *isolate, Local<Context> context, uint32_t id,
+                                 const char *name) {
+  HostCall scope;
+  ScrNodeValue key, out;
+  FromV8(isolate, context, Utf8(isolate, name), &key);
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_get(id, &key, &out) != 0) return v8::Undefined(isolate);
+  return ToV8(isolate, context, &out);
+}
+
+// The new representative of the native error of export `id`.
+Local<Object> NewNativeError(Isolate *isolate, Local<Context> context, uint32_t id, uint32_t kind,
+                             bool class_instance) {
+  Local<Function> ctor = ErrorConstructor(isolate, context, kind).As<Function>();
+  Local<Object> error;
+  if (kind == kDomExceptionKind) {
+    // A DOMException holds its name, message and code in internal slots its
+    // prototype's accessors read: Node's own constructor fills them.
+    Local<Value> argv[] = {NativeErrorProperty(isolate, context, id, "message"),
+                           NativeErrorProperty(isolate, context, id, "name")};
+    error = ctor->NewInstance(context, 2, argv).ToLocalChecked();
+  } else if (kind == kAggregateErrorKind) {
+    Local<Value> argv[] = {v8::Array::New(isolate, 0)};
+    error = ctor->NewInstance(context, 1, argv).ToLocalChecked();
+    // `errors` is the native error's, installed with its other properties.
+    error->Delete(context, Utf8(isolate, "errors")).FromMaybe(false);
+  } else {
+    // No argument: an error made without a message has no own `message`.
+    error = ctor->NewInstance(context).ToLocalChecked();
+  }
+  LinkNativeError(isolate, context, id, error, class_instance);
+  InstallErrorStack(isolate, context, error);
+  if (kind != kDomExceptionKind) SyncNativeError(isolate, context, id, error);
+  return error;
 }
 
 Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
@@ -2236,20 +2565,20 @@ Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *
     }
   }
   case SCR_NV_ERROR: {
-    Local<Value> ctor = ErrorConstructor(isolate, context, in->u.error.kind);
-    Local<Value> argv[] = {FromWtf8(isolate, in->u.error.message, in->u.error.message_len)};
-    Local<Object> error = ctor.As<Function>()->NewInstance(context, 1, argv).ToLocalChecked();
-    std::string name(in->u.error.name, in->u.error.name_len);
-    Local<Value> default_name;
-    if (!error->Get(context, Utf8(isolate, "name")).ToLocal(&default_name) ||
-        ToStdString(isolate, default_name) != name)
-      error->Set(context, Utf8(isolate, "name"), FromWtf8(isolate, name.data(), name.size())).Check();
-    if (in->u.error.stack != nullptr)
-      error->Set(context, Utf8(isolate, "stack"),
-                 FromWtf8(isolate, in->u.error.stack, in->u.error.stack_len)).Check();
-    if (in->u.error.code != nullptr)
-      error->Set(context, Utf8(isolate, "code"),
-                 FromWtf8(isolate, in->u.error.code, in->u.error.code_len)).Check();
+    // Read before the runtime is entered again: `in` may be its scratch.
+    uint32_t id = in->u.error.export_id;
+    uint32_t kind = in->u.error.kind;
+    bool class_instance = in->u.error.class_instance != 0;
+    Local<Object> error;
+    auto found = g_exports.find(id);
+    if (found != g_exports.end()) {
+      Touch(id);
+      error = found->second.Get(isolate);
+      if (kind != kDomExceptionKind) SyncNativeError(isolate, context, id, error);
+    } else {
+      error = NewNativeError(isolate, context, id, kind, class_instance);
+    }
+    if (g_op_depth > 0 && kind != kDomExceptionKind) g_crossed_errors.push_back(id);
     return error;
   }
   case SCR_NV_EXPORT: return ExportValue(isolate, context, in);
@@ -2303,7 +2632,9 @@ void RecordArrow(Isolate *isolate, Local<Context> context, const TryCatch &try_c
 struct Op {
   Enter e;
   TryCatch try_catch;
+  size_t crossed = g_crossed_errors.size();
   Op() : try_catch(e.isolate) {
+    g_op_depth++;
     if (g_entry_depth++ == 0) {
       g_scratch.clear();
       // Representatives V8 collected since: the runtime drops their exports
@@ -2313,9 +2644,27 @@ struct Op {
       FlushReleasedExports();
     }
   }
-  ~Op() { g_entry_depth--; }
+  ~Op() {
+    g_entry_depth--;
+    g_op_depth--;
+    if (g_crossed_errors.size() > crossed) g_crossed_errors.resize(crossed);
+  }
+  // The native errors that crossed into V8 during this operation: what
+  // island code added to them or deleted from them is the native error's
+  // before the runtime runs again.
+  void SyncCrossedErrors() {
+    for (size_t i = crossed; i < g_crossed_errors.size(); i++) {
+      uint32_t id = g_crossed_errors[i];
+      auto found = g_exports.find(id);
+      if (found == g_exports.end() || g_error_keys.count(id) == 0) continue;
+      TryCatch quiet(e.isolate);
+      SyncNativeError(e.isolate, e.context, id, found->second.Get(e.isolate));
+    }
+    g_crossed_errors.resize(crossed);
+  }
   // The operation's outcome: 0 and the result, or 1 and the thrown value.
   int Finish(Local<Value> result, bool ok, ScrNodeValue *out) {
+    SyncCrossedErrors();
     if (ok) {
       FromV8(e.isolate, e.context, result, out);
       return 0;
@@ -2518,6 +2867,7 @@ void OnSettled(const FunctionCallbackInfo<Value> &info, int rejected) {
   Isolate *isolate = info.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
   uint32_t token = info.Data()->Uint32Value(context).FromMaybe(0);
+  HostCall scope;
   ScrNodeValue value;
   FromV8(isolate, context, info[0], &value);
   g_host->settle_value(token, rejected, &value);

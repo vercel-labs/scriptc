@@ -1896,6 +1896,34 @@ export function unionMismatchDiag(
   };
 }
 
+/** A union conversion one of whose arms fits several arms of the destination
+ * union, and so enters the arm its own discriminant names, copies its arms
+ * into the destination's layouts. Under Node the value stays one object, so
+ * the conversion compiles only where the program cannot tell the two apart
+ * (width-copies.ts, refuseObservedCopies); `observed` is what tells them
+ * apart here. The conversion then has no layout mapping that keeps the
+ * object. */
+export function unionArmCopyDiag(
+  from: string,
+  to: string,
+  observed: { how: "write" | "identity" | "untyped"; what: string; where: string },
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const effect =
+    observed.how === "write"
+      ? `the program writes ${observed.what} (${observed.where}), and such a write would reach only one of the two objects`
+      : observed.how === "identity"
+        ? `the program compares ${observed.what} by identity (${observed.where}), and the copy is never the object it was made from`
+        : `${observed.what} (${observed.where}), where a write or an identity comparison tells the copy from the object it was made from`;
+  return {
+    code: "SC2003",
+    message: `union conversion has no layout mapping that keeps the object: the arm '${from}' enters the destination as '${to}', which has another layout, so the conversion would build a new object where Node keeps one, and ${effect}`,
+    loc,
+    milestone: "later",
+    hint: `declare the value with the destination's arm type ('${to}') where it is made so that both names are one object, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too`,
+  };
+}
+
 /** A record that converts by width into several arms of a union with no
  * discriminant (`{ a?: X; b?: Y }` into `{ a?: X } | { b?: Y }`): the
  * conversion would have to pick one arm and the others' members would no

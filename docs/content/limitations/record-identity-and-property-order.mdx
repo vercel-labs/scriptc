@@ -8,6 +8,7 @@ It judges types rather than the path one value takes, so it can name a conversio
 A conversion of a new value, such as an object literal, a spread, or the result of a function that returns one, is not reported, because nothing else can reach that value.
 The same holds for an array converted to an array of another element type and for a tuple converted to an array.
 A record that something else can still reach is refused with `SC1090` where it is converted to a class instance and the program writes either type, because the conversion constructs a new instance where Node.js has the one plain object.
+A union value that something else can still reach is refused with `SC2003` under the same condition where one of its members fits several members of the destination union and enters the one its own discriminant names, because that conversion builds a new object where Node.js has one.
 Two conversions are not covered and copy without a report.
 A promise used as a promise of another record type, such as a `Promise<Wide>` stored as a `Promise<Narrow>`, copies its payload when it settles.
 A class stored in a record type, such as `const counter: { count: number } = Counter`, holds copies of the class's static fields.

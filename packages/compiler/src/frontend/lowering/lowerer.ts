@@ -99,7 +99,7 @@ import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/co
 import { scanDivergences } from "./divergences.js";
 import {
   collectWidthCopies,
-  refuseObservedClassCopies,
+  refuseObservedCopies,
   traceWidthCopies,
   widthCopyDivergences,
   type WidthCopyFact,
@@ -12732,9 +12732,10 @@ export class Lowerer {
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
     refuseSourceFieldDeletes(this, functions);
-    // A record built into a class instance where the program can tell the
-    // instance from the record is refused while a module can still fail.
-    refuseObservedClassCopies(this, functions);
+    // A record built into a class instance, or a union's arm copied into
+    // another union's arm, where the program can tell the copy from the
+    // object is refused while a module can still fail.
+    refuseObservedCopies(this, functions);
     finalizeRecordLinks(this, functions);
     finalizeGeneratorArrays(this, functions);
     // The statics lookup installs before value boxing, so the function

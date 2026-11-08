@@ -33,7 +33,12 @@ import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
 import { isThisParameter } from "../call-signatures.js";
-import { argumentCountSlot, contextualCallCount, usedAsValue } from "../argument-counts.js";
+import {
+  argumentCountSlot,
+  contextualCallCount,
+  handedWithoutCallCount,
+  usedAsValue,
+} from "../argument-counts.js";
 import {
   checkedPrivateValue,
   localPrivateBrandClass,
@@ -919,6 +924,15 @@ export function lowerPropertyAccessExpr(
             "'arguments.length' in function expressions passed where the expected function type has optional or rest parameters (the count varies per call)",
           );
         }
+        // Handed to untyped code, or where no one function type is
+        // expected, the expression is called with any number of arguments.
+        if (ts.isFunctionExpression(fn) && handedWithoutCallCount(lowerer, fn)) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'arguments.length' in a function expression handed where no function type is expected (the count each call passes is not known: name the parameters the function uses)",
+          );
+        }
         // A top-level declaration also used as a value reads the count its
         // caller stored (argument-counts.ts).
         if (ts.isFunctionDeclaration(fn) && lowerer.ctx.argumentCount !== undefined)
@@ -1615,7 +1629,7 @@ export function lowerPropertyAccessExpr(
   // os.constants members vary by platform (the declared groups list
   // every platform's names): a number member reads as `number |
   // undefined`, like an array element, and a group stays checked.
-  const osConstants = isOsConstantsType(lowerer.typeOf(expr.expression), lowerer);
+  const osConstants = isOsConstantsType(lowerer.typeOf(expr.expression), lowerer.osConstantsCtx());
   if (
     isParseArgsDynProperty(lowerer, expr) ||
     isStatFsDynProperty(lowerer, expr) ||

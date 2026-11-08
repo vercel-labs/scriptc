@@ -1009,8 +1009,9 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value);
  * index in `values` of the string `d`'s own data property `key` holds, or
  * -1 when every literal test above fails (`d` is not an object, or its own
  * data property `key` holds no string among `values`), or -2 when only the
- * tests themselves can tell (an accessor, a property `d` does not own, or a
- * typed capsule that is not a record). Borrowed args. */
+ * tests themselves can tell (an accessor, a property `d` does not own, a
+ * typed capsule that is not a record, or an island object, whose members
+ * live in Node). Borrowed args. */
 int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
                                   size_t count);
 

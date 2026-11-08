@@ -10,6 +10,7 @@ import {
   type IrStmt,
 } from "../../ir/ir.js";
 import { ClassDynamicDispatch, classPropertiesHelper } from "./class-dynamic-dispatch.js";
+import { classValueSlot } from "../../ir/class-key-index.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 
@@ -788,4 +789,157 @@ test("records a class's bag initializer only when all its class-table branches a
   ]);
   dispatch.finalize(lowerer);
   expect([...classBagInitializers.keys()]).toEqual(["Texture"]);
+});
+
+/** A helper whose body is one class branch per name on parameter `p`, then
+ * a generic tail. `test` is the builtin of the branches' key tests and
+ * `then` the body each branch runs for its class. */
+function classTable(
+  name: string,
+  keys: readonly string[],
+  test: "dyn.typedRefIs" | "dyn.classIs",
+  then: (key: string) => IrStmt[],
+): IrFunction {
+  return {
+    ...fn(name, [
+      ...keys.map((key): IrStmt => ({
+        kind: "if",
+        cond: { kind: "libCall", fn: test, args: [variable("p"), literal(key)], type: BOOL, loc },
+        then: then(key),
+        else_: null,
+        loc,
+      })),
+      { kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc },
+    ]),
+    params: [{ localId: "p", name: "p", type: DYN }],
+    returnType: BOOL,
+  };
+}
+const returnsTrue: IrStmt = {
+  kind: "return",
+  value: { kind: "boolLit", value: true, type: BOOL, loc },
+  loc,
+};
+
+test("indexes a table of class values on the constructor's key from eight classes", () => {
+  const { lowerer, liftedFns } = context();
+  const keys = Array.from({ length: 8 }, (_, i) => `classval:Class${i}`);
+  const table = classTable("%class.instanceof:dynamic", keys, "dyn.classIs", () => [returnsTrue]);
+  const short = classTable("%class.construct:0", keys.slice(0, 7), "dyn.classIs", () => [
+    returnsTrue,
+  ]);
+  liftedFns.push(table, short);
+  new ClassDynamicDispatch().finalize(lowerer);
+  // The whole run is in the switch: a value that is no compiled class, the
+  // usual operand of such a test, passes every branch with one index.
+  expect(table.body).toHaveLength(2);
+  const dispatchSwitch = table.body[0];
+  expect(dispatchSwitch).toMatchObject({
+    kind: "switch",
+    disc: {
+      kind: "libCall",
+      fn: "dyn.classValueHash",
+      // Eight classes take sixteen slots: four slot bits.
+      args: [
+        { kind: "varRef", localId: "p" },
+        { kind: "numLit", value: 4 },
+      ],
+    },
+  });
+  if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
+  // Every branch is in a case, as it was built, with its own key test, in a
+  // slot the key folds to; branches that share a slot keep their order.
+  const moved = dispatchSwitch.cases.flatMap(({ body }) => body.slice(0, -1));
+  expect(moved).toHaveLength(keys.length);
+  for (const { test, body } of dispatchSwitch.cases) {
+    expect(test).toMatchObject({ kind: "numLit" });
+    if (test?.kind !== "numLit") throw new Error("expected a slot");
+    expect(test.value).toBeGreaterThanOrEqual(0);
+    expect(test.value).toBeLessThan(16);
+    // A value the slot's guards reject leaves the table there.
+    expect(body[body.length - 1]).toMatchObject({ kind: "break" });
+    for (const branch of body.slice(0, -1)) {
+      expect(branch).toMatchObject({ kind: "if", cond: { kind: "libCall", fn: "dyn.classIs" } });
+      if (branch.kind !== "if" || branch.cond.kind !== "libCall") throw new Error("a branch");
+      const key = branch.cond.args[1];
+      expect(key?.kind === "strLit" ? classValueSlot(key.value, 4) : null).toBe(test.value);
+    }
+  }
+  expect(short.body.map((stmt) => stmt.kind)).toEqual([
+    ...keys.slice(0, 7).map(() => "if"),
+    "return",
+  ]);
+});
+
+test("does not put class values and capsules of one receiver in one switch", () => {
+  const { lowerer, liftedFns } = context();
+  const values = Array.from({ length: 8 }, (_, i) => `classval:Class${i}`);
+  const capsules = Array.from({ length: 64 }, (_, i) => `object:Class${i}`);
+  const table = classTable("%mixed", [], "dyn.classIs", () => []);
+  table.body = [
+    ...classTable("%a", values, "dyn.classIs", () => [returnsTrue]).body.slice(0, -1),
+    ...classTable("%b", capsules, "dyn.typedRefIs", () => [returnsTrue]).body,
+  ];
+  liftedFns.push(table);
+  new ClassDynamicDispatch().finalize(lowerer);
+  const switches = table.body.filter((stmt) => stmt.kind === "switch");
+  expect(switches.map((stmt) => (stmt.disc.kind === "libCall" ? stmt.disc.fn : null))).toEqual([
+    "dyn.classValueHash",
+    "dyn.classHash",
+  ]);
+  // The capsule run keeps its two leading branches in the chain.
+  expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "if", "if", "switch", "return"]);
+});
+
+test("indexes class branches that can complete, and closes each case with a break", () => {
+  const { lowerer, liftedFns } = context();
+  const keys = Array.from({ length: 64 }, (_, i) => `object:Class${i}`);
+  // A keyed read's prelude: the class's branch returns only for some keys.
+  const prelude = (): IrStmt[] => [
+    {
+      kind: "if",
+      cond: { kind: "dynTest", test: "symbol", value: variable("key"), type: BOOL, loc },
+      then: [returnsTrue],
+      else_: null,
+      loc,
+    },
+  ];
+  const table = classTable("%dyn.class.computed.0", keys, "dyn.typedRefIs", prelude);
+  const short = classTable("%dyn.class.computed.1", keys.slice(0, 63), "dyn.typedRefIs", prelude);
+  liftedFns.push(table, short);
+  new ClassDynamicDispatch().finalize(lowerer);
+  expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "return"]);
+  const dispatchSwitch = table.body[0];
+  if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
+  expect(dispatchSwitch.disc).toMatchObject({ kind: "libCall", fn: "dyn.classHash" });
+  expect(dispatchSwitch.cases).toHaveLength(keys.length);
+  for (const { body } of dispatchSwitch.cases) {
+    // No later case holds a branch of the same class, so the selected
+    // class leaves the switch instead of walking the other guards.
+    expect(body.map((stmt) => stmt.kind)).toEqual(["if", "break"]);
+    expect(branchKey(body[0])).not.toBeNull();
+  }
+  expect(short.body.filter((stmt) => stmt.kind === "switch")).toHaveLength(0);
+});
+
+test("keeps returning and completing class branches in separate runs", () => {
+  const { lowerer, liftedFns } = context();
+  const keys = Array.from({ length: 64 }, (_, i) => `object:Class${i}`);
+  const table = classTable("%split", [], "dyn.typedRefIs", () => []);
+  table.body = [
+    ...classTable("%a", keys, "dyn.typedRefIs", () => [statement(variable("key"))]).body.slice(
+      0,
+      -1,
+    ),
+    ...classTable("%b", keys, "dyn.typedRefIs", () => [returnsTrue]).body,
+  ];
+  liftedFns.push(table);
+  new ClassDynamicDispatch().finalize(lowerer);
+  // The returning run is built as it always was: two branches ahead of the
+  // switch, cases without a break.
+  expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "if", "if", "switch", "return"]);
+  const [completing, returning] = table.body.filter((stmt) => stmt.kind === "switch");
+  expect(completing!.cases.every(({ body }) => body[body.length - 1]!.kind === "break")).toBe(true);
+  expect(returning!.cases.every(({ body }) => body.every((stmt) => stmt.kind === "if"))).toBe(true);
+  expect(returning!.cases).toHaveLength(keys.length - 2);
 });

@@ -1321,7 +1321,87 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
   );
 }
 
-function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefined): boolean {
+/** Whether a function the module declares apart from its start reads the
+ * file-scope binding `name`: a function declaration, or a member of a
+ * class (their bodies lower on their own and reach the binding only
+ * through module storage), or code another module runs (an exported
+ * binding). An arrow or function expression of the module's start captures
+ * the binding where it is. */
+function sharedJsBinding(lowerer: Lowerer, sf: ts.SourceFile, name: ts.Identifier): boolean {
+  const symbol = lowerer.checker.getSymbolAtLocation(name);
+  if (symbol === undefined) return false;
+  const statement = name.parent?.parent?.parent;
+  if (
+    statement !== undefined &&
+    ts.isVariableStatement(statement) &&
+    statement.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+  )
+    return true;
+  let shared = false;
+  ts.walkPreorder(sf, (node) => {
+    if (shared) return "stop";
+    if (!ts.isIdentifier(node) || node === name || node.text !== name.text) return undefined;
+    let declared = false;
+    for (let p: ts.Node | undefined = node.parent; p !== undefined && !declared; p = p.parent)
+      declared =
+        ts.isFunctionDeclaration(p) ||
+        ts.isMethodDeclaration(p) ||
+        ts.isConstructorDeclaration(p) ||
+        ts.isGetAccessorDeclaration(p) ||
+        ts.isSetAccessorDeclaration(p) ||
+        ts.isExportSpecifier(p) ||
+        ts.isExportAssignment(p);
+    if (declared && lowerer.checker.getSymbolAtLocation(node) === symbol) shared = true;
+    return undefined;
+  });
+  return shared;
+}
+
+/** An object or array literal of plain data written inline, as one arm of
+ * an untyped conditional or logical initializer (`globalThis[KEY] ?? {
+ * marks: [] }`): beside a checked arm the literal is built as a checked
+ * object, so the binding holds a checked value whichever arm runs. Every
+ * property is a non-computed assignment and every value is itself such a
+ * literal or has a type the checked-dynamic tree can hold. */
+function jsDynDataLiteral(lowerer: Lowerer, init: ts.Expression): boolean {
+  let e: ts.Expression = init;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  const held = (value: ts.Expression): boolean => {
+    if (jsDynDataLiteral(lowerer, value)) return true;
+    const type = lowerer.mapTypeOf(lowerer.typeOf(value));
+    return (
+      type === null ||
+      type.kind === "dyn" ||
+      canConvertToDyn(
+        type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    );
+  };
+  if (ts.isObjectLiteralExpression(e))
+    return e.properties.nodes.every(
+      (p) =>
+        ts.isPropertyAssignment(p) && !ts.isComputedPropertyName(p.name) && held(p.initializer),
+    );
+  if (ts.isArrayLiteralExpression(e))
+    return e.elements.nodes.every(
+      (element) =>
+        !ts.isSpreadElement(element) && !ts.isOmittedExpression(element) && held(element),
+    );
+  return false;
+}
+
+function jsDynHoldableInitializer(
+  lowerer: Lowerer,
+  init: ts.Expression | undefined,
+  /** Also the forms a binding takes only when a separately declared
+   * function reads it (sharedJsBinding): an untyped computed read, a
+   * literal of plain data beside a checked arm, an assignment into an
+   * untyped member. A binding only its module's own start reads keeps the
+   * local it has. */
+  shared = false,
+): boolean {
   if (init === undefined) return true;
   if (isNativeProxyInitializer(lowerer, init)) return true;
   let e: ts.Expression = init;
@@ -1362,18 +1442,45 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   // strings, numbers and booleans, which box into the checked-dynamic
   // result (`const APP_NAME = config.name || "pi"`).
   const arm = (x: ts.Expression): boolean => {
-    if (jsDynHoldableInitializer(lowerer, x)) return true;
+    if (jsDynHoldableInitializer(lowerer, x, shared)) return true;
     const kind = lowerer.mapTypeOf(lowerer.typeOf(x))?.kind;
     return kind === "string" || kind === "f64" || kind === "bool";
   };
-  if (ts.isConditionalExpression(e)) return arm(e.whenTrue) && arm(e.whenFalse);
+  // A literal of plain data beside a checked arm (`globalThis[KEY] ?? {
+  // marks: [] }`): the checked arm makes the whole expression checked, and
+  // the literal is built as a checked object.
+  const arms = (a: ts.Expression, b: ts.Expression): boolean =>
+    (arm(a) && arm(b)) ||
+    (shared &&
+      ((jsDynHoldableInitializer(lowerer, a, shared) && jsDynDataLiteral(lowerer, b)) ||
+        (jsDynDataLiteral(lowerer, a) && jsDynHoldableInitializer(lowerer, b, shared))));
+  // An assignment into an untyped member (`globalThis[KEY] ??= new Map()`,
+  // the process-wide singleton idiom): the expression is the value the
+  // member holds, and an untyped member holds a checked value.
+  if (
+    shared &&
+    ts.isBinaryExpression(e) &&
+    (e.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
+      e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken ||
+      e.operatorToken.kind === ts.SyntaxKind.BarBarEqualsToken ||
+      e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken)
+  ) {
+    let target: ts.Expression = e.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (
+      (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) &&
+      (lowerer.typeOf(target).flags & ts.TypeFlags.Any) !== 0
+    )
+      return true;
+  }
+  if (ts.isConditionalExpression(e)) return arms(e.whenTrue, e.whenFalse);
   if (
     ts.isBinaryExpression(e) &&
     (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
       e.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
       e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
   ) {
-    return arm(e.left) && arm(e.right);
+    return arms(e.left, e.right);
   }
   // A member of a checked module value is itself checked, including a
   // callable whose inferred overloads cannot describe one native ABI.
@@ -1461,6 +1568,14 @@ function jsDynHoldableInitializer(lowerer: Lowerer, init: ts.Expression | undefi
   }
   if (
     (ts.isCallExpression(e) || ts.isPropertyAccessExpression(e) || ts.isIdentifier(e)) &&
+    (lowerer.typeOf(e).flags & ts.TypeFlags.Any) !== 0
+  ) {
+    return true;
+  }
+  // An untyped computed read (`globalThis[KEY]`) yields a checked value too.
+  if (
+    shared &&
+    ts.isElementAccessExpression(e) &&
     (lowerer.typeOf(e).flags & ts.TypeFlags.Any) !== 0
   ) {
     return true;
@@ -2654,7 +2769,9 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            jsDynHoldableInitializer(lowerer, declValue) &&
+            (jsDynHoldableInitializer(lowerer, declValue) ||
+              (sharedJsBinding(lowerer, sf, nameNode) &&
+                jsDynHoldableInitializer(lowerer, declValue, true))) &&
             dynFallbackType(lowerer, nameNode, lowerer.typeOf(nameNode))?.kind === "dyn"
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);

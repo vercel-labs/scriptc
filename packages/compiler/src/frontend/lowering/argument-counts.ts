@@ -158,9 +158,18 @@ export function contextualCallCount(
 ): number | "varies" | null {
   const contextual = lowerer.checker.getContextualType(node);
   if (contextual === undefined) return null;
-  const signatures = lowerer.checker.getCallSignatures(
-    lowerer.checker.getNonNullableType(contextual),
-  );
+  const expected = lowerer.checker.getNonNullableType(contextual);
+  let signatures = lowerer.checker.getCallSignatures(expected);
+  // A slot that takes a function or something else (a callback or an
+  // options object, a listener or a listener object): the function is
+  // called through the one member that is a function type.
+  if (signatures.length === 0 && expected.isUnionType()) {
+    const callable = ts
+      .constituentTypes(expected)
+      .map((member) => lowerer.checker.getCallSignatures(member))
+      .filter((member) => member.length > 0);
+    if (callable.length === 1) signatures = callable[0]!;
+  }
   if (signatures.length !== 1) return null;
   const declaration = signatures[0]!.declaration;
   if (declaration === undefined) return null;
@@ -172,6 +181,18 @@ export function contextualCallCount(
     count++;
   }
   return count;
+}
+
+/** Whether the function expression `node` is handed where a type is
+ * expected that does not say how it is called: an untyped parameter
+ * (`any`, `unknown`, a JavaScript module's function), `Function`, an
+ * object type, or a type with several call signatures. Its callers pass
+ * what they like, so no constant is the count `arguments.length` reads. */
+export function handedWithoutCallCount(lowerer: Lowerer, node: ts.Expression): boolean {
+  return (
+    lowerer.checker.getContextualType(node) !== undefined &&
+    contextualCallCount(lowerer, node) === null
+  );
 }
 
 /** Whether a program reference to the function declaration or method `fn`

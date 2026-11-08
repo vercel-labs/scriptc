@@ -27,7 +27,7 @@ import {
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
-import { CLASS_KEY_LEN_MIX } from "../../ir/class-key-index.js";
+import { CLASS_KEY_LEN_MIX, CLASS_VALUE_SLOT_MIX } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
@@ -684,6 +684,94 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         type: "i32",
         signed: true,
         range: { min: -1, max: 2147483647 },
+      },
+    };
+  }
+  if (e.fn === "dyn.classValueHash") {
+    // A class-value table's discriminant (`x instanceof C`, `new C()` and
+    // static members of an untyped constructor): the switch dispatches on
+    // a slot folded from the length and last four bytes of a function
+    // value's signature key, which for a compiled class's constructor is
+    // the class key each branch of the table tests. A value that is not a
+    // function, a function without a key, and a key shorter than four bytes
+    // answer -1, which no case matches. A function that is not a compiled
+    // class (a builtin constructor, a closure) folds its own signature: it
+    // selects a slot only by coincidence, and that slot's exact key guards
+    // are false for it, so it reaches the statements after the table as
+    // the chain would.
+    const slotBits = e.args[1]!;
+    if (slotBits.kind !== "numLit" || !(slotBits.value >= 1 && slotBits.value <= 16))
+      throw new InternalCompilerError("llvm emitter bug: dyn.classValueHash slot bits");
+    const value = host.emitReadReceiver(e.args[0]!);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i32`);
+    B.line(`store i32 -1, ptr ${slot}`);
+    const present = B.tmp();
+    const inspect = B.newLabel("ctor.hash.inspect");
+    const keyed = B.newLabel("ctor.hash.keyed");
+    const measured = B.newLabel("ctor.hash.measured");
+    const hashed = B.newLabel("ctor.hash.hashed");
+    const done = B.newLabel("ctor.hash.done");
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const kind = host.dynKind(value.name);
+    const isFn = B.tmp();
+    B.line(`${isFn} = icmp eq i32 ${kind}, ${DYN_KIND.FUNC}`);
+    B.condBr(isFn, keyed, done);
+    B.startBlock(keyed);
+    const keySlot = B.tmp(),
+      keyPtr = B.tmp(),
+      hasKey = B.tmp();
+    B.line(
+      `${keySlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(32, 24)} ; ->v.fn.sig`,
+    );
+    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    B.line(`${hasKey} = icmp ne ptr ${keyPtr}, null`);
+    B.condBr(hasKey, measured, done);
+    B.startBlock(measured);
+    const size = host.sizeType;
+    host.declare(`declare ${size} @strlen(ptr)`);
+    const length = B.tmp(),
+      long = B.tmp();
+    B.line(`${length} = call ${size} @strlen(ptr ${keyPtr})`);
+    B.line(`${long} = icmp uge ${size} ${length}, 4`);
+    B.condBr(long, hashed, done);
+    B.startBlock(hashed);
+    let len = length;
+    if (size !== "i32") {
+      len = B.tmp();
+      B.line(`${len} = trunc ${size} ${length} to i32`);
+    }
+    const tailAt = B.tmp(),
+      tailPtr = B.tmp(),
+      tail = B.tmp(),
+      folded = B.tmp(),
+      sum = B.tmp(),
+      masked = B.tmp();
+    B.line(`${tailAt} = sub ${size} ${length}, 4`);
+    B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, ${size} ${tailAt}`);
+    B.line(`${tail} = load i32, ptr ${tailPtr}, align 1`);
+    const mixed = B.tmp();
+    B.line(`${folded} = mul i32 ${len}, ${CLASS_KEY_LEN_MIX}`);
+    B.line(`${sum} = add i32 ${folded}, ${tail}`);
+    B.line(`${mixed} = mul i32 ${sum}, ${CLASS_VALUE_SLOT_MIX}`);
+    B.line(`${masked} = lshr i32 ${mixed}, ${32 - slotBits.value}`);
+    B.line(`store i32 ${masked}, ptr ${slot}`);
+    B.br(done);
+    B.startBlock(done);
+    const selector = B.tmp();
+    B.line(`${selector} = load i32, ptr ${slot}`);
+    const out = B.tmp();
+    B.line(`${out} = sitofp i32 ${selector} to double`);
+    return {
+      name: out,
+      type: e.type,
+      integer: {
+        name: selector,
+        type: "i32",
+        signed: true,
+        range: { min: -1, max: (1 << slotBits.value) - 1 },
       },
     };
   }

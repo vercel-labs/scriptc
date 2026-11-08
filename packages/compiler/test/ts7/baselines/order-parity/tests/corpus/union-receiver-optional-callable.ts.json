@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-receiver-optional-callable.ts"
+ ],
+ "diags": []
+}

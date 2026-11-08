@@ -771,6 +771,34 @@ export function lowerNullishPair(
       return { kind: "nullish", left, right, type: present, loc };
     }
   }
+  // A present value that converts into the result (`texts ?? mixed`, where
+  // the default's array holds a wider element union): the conversion a slot
+  // of the result type applies to that value, after the original nullish
+  // test, with the default lowered lazily into the result.
+  if (present !== null) {
+    const helper = lowerer.narrowedArmHelper(left.type.unionId, present, loc);
+    if (helper !== null) {
+      let converts = true;
+      const converted = nullishBranches(
+        lowerer,
+        left,
+        left.type,
+        def.arms,
+        type,
+        loc,
+        () => lowerer.lowerExprExpecting(expr.right, type),
+        (stable) => {
+          const value = lowerer.coerceToExpected(
+            { kind: "call", callee: helper, args: [stable], type: present, loc },
+            type,
+          );
+          converts = typeEquals(value.type, type);
+          return value;
+        },
+      );
+      if (converts) return converted;
+    }
+  }
   lowerer.unsupported(
     "SC1090",
     expr,

@@ -1,0 +1,15 @@
+generic-rest-asserted-member.ts:16:18 - error SC1031: rest bindings whose packed type has no static mapping (only plain record types pack) is not supported yet (instantiating 'unsided' with <{ colour: string; hidden: boolean | undefined; sides: number }>)
+
+  15 | function unsided<T extends Shape>(shape: T): number {
+  16 |   const { sides, ...others } = shape as T & { glaze?: string };
+     |                  ^~~~~~~~~
+  17 |   console.log(others);
+
+generic-rest-asserted-member.ts:17:15 - error SC2004: uses of 'others' inherit the blocker on its declaration (instantiating 'unsided' with <{ colour: string; hidden: boolean | undefined; sides: number }>)
+
+  16 |   const { sides, ...others } = shape as T & { glaze?: string };
+  17 |   console.log(others);
+     |               ^~~~~~
+  18 |   return sides;
+
+  hint: the declaration of 'others' did not compile — fix the diagnostic reported there and these sites clear with it

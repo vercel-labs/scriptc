@@ -536,6 +536,23 @@ function buildFetchCompatProfile() {
           evidence: [fixture("static"), fixture("static-coercion")],
         }),
       ),
+      // The iterators walk the sort-and-combine list live, one step per
+      // `next()`: entries, names or values, and `[Symbol.iterator]` is
+      // `entries`.
+      ...(
+        [
+          ["keys", "keys"],
+          ["values", "values"],
+          ["entries", "entries"],
+          ["symbol.iterator", "[Symbol.iterator]"],
+        ] as const
+      ).map(([id, member]): FetchCompatOperation => ({
+        id: `stdlib.headers.${id}`,
+        name: `Headers.${member}`,
+        kind: "method",
+        facets: ["liveness", "mutation", "state-machine"],
+        evidence: [fixture("static")],
+      })),
       ...["ok", "status", "statusText", "url", "redirected", "headers", "body", "bodyUsed"].map(
         (member): FetchCompatOperation => ({
           id: `stdlib.response.${member}`,
@@ -652,21 +669,14 @@ function buildFetchCompatProfile() {
           staticEntry(`stdlib.headers.${member}`, "Headers", member, "prototype"),
         ),
         ...["keys", "values", "entries"].map((member) =>
-          unsupportedEntry(
-            `stdlib.headers.${member}`,
-            "Headers",
-            member,
-            "prototype",
-            "native Headers iteration does not yet expose a static iterator handle",
-          ),
+          staticEntry(`stdlib.headers.${member}`, "Headers", member, "prototype"),
         ),
         staticEntry("stdlib.headers.forEach", "Headers", "forEach", "prototype"),
-        unsupportedEntry(
+        staticEntry(
           "stdlib.headers.symbol.iterator",
           "Headers",
           "[Symbol.iterator]",
           "prototype-symbol",
-          "native Headers iteration does not expose an engine-free iterator handle",
         ),
         outOfScopeEntry(
           "stdlib.headers.symbol.toStringTag",

@@ -1,0 +1,68 @@
+// Object.entries and Object.keys over what `typeof v === "object"` leaves of
+// a recursive JSON value: its array arm and its object arm. Node lists an
+// array's indices and an object's own keys, integer-like keys first.
+type Json = null | boolean | number | string | readonly Json[] | { [key: string]: Json };
+
+// A depth-first walk: every leaf with the path that leads to it. One loop
+// serves both arms, an array's indices and an object's keys.
+function leaves(value: Json, path: string, found: string[]): void {
+  if (value === null || typeof value !== "object") {
+    found.push(`${path}=${String(value)}`);
+    return;
+  }
+  for (const [step, below] of Object.entries(value)) leaves(below, `${path}/${step}`, found);
+}
+const found: string[] = [];
+leaves({ rack: [3, { bin: "west", 7: false }], 2: null, label: "spares", empty: [] }, "", found);
+console.log(found.join(" "));
+
+function keysOf(value: Json): string[] {
+  if (value !== null && typeof value === "object") return Object.keys(value);
+  return [];
+}
+function entriesOf(value: Json): [string, Json][] {
+  if (value !== null && typeof value === "object") return Object.entries(value);
+  return [];
+}
+const samples: Json[] = [{ b: 1, a: [true, null], 10: "ten", 2: "two" }, ["x", { y: 2 }, 3], "text", 7, null, [], {}];
+for (const sample of samples) {
+  console.log(JSON.stringify(keysOf(sample)), JSON.stringify(entriesOf(sample)));
+}
+
+// The entries hold the object's own values: a write through one is a write
+// to the object, for an object's entries and for an array's.
+const list: Json[] = [1];
+const nested: { [key: string]: Json } = { k: "v" };
+const outer: { [key: string]: Json } = { list, nested };
+const pairs = entriesOf(outer);
+const gotList = pairs[0]![1] as Json[];
+const gotNested = pairs[1]![1] as { [key: string]: Json };
+gotList.push(2);
+gotNested.added = true;
+console.log(JSON.stringify(outer), list.length, JSON.stringify(nested));
+console.log(gotList === list, gotNested === nested);
+const viaArray = entriesOf([list])[0]![1] as Json[];
+viaArray.push(3);
+console.log(list.length, viaArray === list, JSON.stringify(entriesOf(nested)));
+
+// A union of an array and a fixed record.
+function either(value: string[] | { a: number; b: string }): string {
+  return Object.keys(value).join(",") + ":" + JSON.stringify(Object.entries(value));
+}
+console.log(either(["p", "q"]), either({ a: 1, b: "two" }));
+
+// Index signatures of primitives beside an array arm.
+function ent(value: string[] | { [key: string]: number }): [string, unknown][] {
+  return Object.entries(value);
+}
+function names(value: boolean[] | { [key: string]: string }): string[] {
+  return Object.keys(value);
+}
+function flags(value: number[] | { [key: string]: boolean | string }): string {
+  return Object.entries(value)
+    .map(([k, v]) => `${k}=${String(v)}`)
+    .join(",");
+}
+console.log(JSON.stringify(ent({ a: 1, b: 2 })), JSON.stringify(ent(["x", "y"])));
+console.log(JSON.stringify(names({ k: "v" })), JSON.stringify(names([true])));
+console.log(flags({ on: true, name: "n" }), flags([1, 2]));

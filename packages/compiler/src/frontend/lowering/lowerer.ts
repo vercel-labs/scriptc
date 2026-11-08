@@ -725,7 +725,6 @@ import {
   fenceFetchObjectAssignment,
   fenceFetchObjectBinding,
   fenceStaticAbortControllerMemberRead,
-  fenceStaticHeadersIteration,
   fenceStaticHeadersMember,
   fenceStaticReadableStreamMember,
   fenceStaticResponseMember,
@@ -14822,10 +14821,6 @@ export class Lowerer {
     return fenceStaticAbortControllerMemberRead(this, access);
   }
 
-  fenceStaticHeadersIteration(node: ts.Node): void {
-    return fenceStaticHeadersIteration(this, node);
-  }
-
   fenceFetchObjectAssignment(target: ts.ObjectLiteralExpression, source: ts.Expression): void {
     return fenceFetchObjectAssignment(this, target, source);
   }
@@ -19815,6 +19810,28 @@ export class Lowerer {
           "SC1030",
           node,
           `the reference to '${name}' above its 'var' declaration (a read there would be 'undefined', which the binding's type cannot hold — annotate it '| undefined' or move the declaration up)`,
+        );
+      }
+    }
+    // The `let` twin: a function created above `let x: T;` (no initializer)
+    // reads the binding. Between the declaration and the first assignment
+    // such a read is `undefined`, and this binding's type has no slot for
+    // that value (predeclareForwardCapture declined it).
+    if (symbol) {
+      const d = symbol.valueDeclaration;
+      if (
+        d &&
+        ts.isVariableDeclaration(d) &&
+        d.initializer === undefined &&
+        (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Let) !== 0 &&
+        ts.isVariableStatement(d.parent?.parent) &&
+        ts.getSourceFileOfNode(d) === ts.getSourceFileOfNode(node) &&
+        d.pos > node.pos
+      ) {
+        this.unsupported(
+          "SC1030",
+          node,
+          `the reference to '${name}' from a function created above its 'let' declaration, which has no initializer (a read before the first assignment would be 'undefined', which the binding's type cannot hold — annotate it '| undefined', initialize it, or move the declaration up)`,
         );
       }
     }

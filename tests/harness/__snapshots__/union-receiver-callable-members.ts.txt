@@ -1,0 +1,6 @@
+union-receiver-callable-members.ts:19:33 - error SC1090: method calls like 'appliance.adjust' is not supported yet (instantiating 'cookTime' with <{ adjust: (number) => number | undefined; celsius: number } | { adjust: (numb...>)
+
+  18 | function cookTime<A extends Adjustable>(appliance: A | undefined, minutes: number): number {
+  19 |   if (appliance?.adjust) return appliance.adjust(minutes) ?? minutes;
+     |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~
+  20 |   return minutes;

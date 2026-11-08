@@ -50,12 +50,85 @@ function armedVoidPromiseOf(
   lowerer: Lowerer,
   t: IrType,
 ): { unionId: string; tag: number; promise: IrType & { kind: "promise" } } | null {
+  const armed = armedPromiseOf(lowerer, t);
+  return armed !== null && undefinedOnly(lowerer, armed.promise.inner) ? armed : null;
+}
+
+/** A promise-or-undefined entry whatever its promise carries: `Promise<T> |
+ * undefined`, the `?.` shape. A `null` arm stays out: Node would fulfill
+ * `null` for it. */
+function armedPromiseOf(
+  lowerer: Lowerer,
+  t: IrType,
+): { unionId: string; tag: number; promise: IrType & { kind: "promise" } } | null {
   if (t.kind !== "union") return null;
   const armed = promiseOrUnitUnionOf(lowerer, t);
   if (!armed) return null;
-  if (!undefinedOnly(lowerer, armed.promise.inner)) return null;
   if (armed.def.arms.some((a, i) => i !== armed.promiseTag && a.kind !== "undefinedT")) return null;
   return { unionId: armed.def.id, tag: armed.promiseTag, promise: armed.promise };
+}
+
+/** An armed entry whose promise carries a value that can itself be
+ * undefined: `Promise<T | undefined> | undefined` (an optional call such
+ * as `lookup?.then(pick)`). Its undefined side settles as a
+ * promise of the same payload type fulfilled with undefined, so a combinator
+ * reads either side's value the same way. Null for the armed entries of
+ * nothing (armedVoidPromiseOf) and for a payload with no undefined to
+ * hold: the entry's two sides would then fulfill values of two layouts. */
+function armedValuePromiseOf(
+  lowerer: Lowerer,
+  t: IrType,
+): { unionId: string; tag: number; promise: IrType & { kind: "promise" } } | null {
+  const armed = armedPromiseOf(lowerer, t);
+  if (armed === null || undefinedOnly(lowerer, armed.promise.inner)) return null;
+  const inner = armed.promise.inner;
+  if (inner.kind === "dyn") return armed;
+  return inner.kind === "union" && lowerer.armTag(inner.unionId, UNDEFINED_T) >= 0 ? armed : null;
+}
+
+/** `value` (an `armedValuePromiseOf` union) as its promise: the promise arm
+ * itself, or a promise of the same type fulfilled with undefined. Reads
+ * `value` twice, so the caller stages it in a local first. */
+function armedValuePromiseEntry(
+  lowerer: Lowerer,
+  value: IrExpr,
+  armed: { unionId: string; tag: number; promise: IrType & { kind: "promise" } },
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId: armed.unionId,
+      tag: armed.tag,
+      negated: false,
+      value,
+      type: BOOL,
+      loc,
+    },
+    then: {
+      kind: "unionNarrow",
+      unionId: armed.unionId,
+      tag: armed.tag,
+      value,
+      type: armed.promise,
+      loc,
+    },
+    else_: {
+      kind: "intrinsic",
+      name: "promise.resolve",
+      args: [
+        lowerer.coerceToExpected(
+          { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+          armed.promise.inner,
+        ),
+      ],
+      type: armed.promise,
+      loc,
+    },
+    type: armed.promise,
+    loc,
+  };
 }
 
 /** `value` (an `armedVoidPromiseOf` union) as a promise of nothing: the
@@ -102,9 +175,10 @@ function armedVoidPromiseEntry(
  * tuple overload, `Promise<[A, B, C]>`: the result type and tuple shape,
  * or null when the result type or an entry has no typed home here.
  * Entries are promises, checked-dynamic values (a JavaScript function's
- * result), `Promise<void> | undefined` values (the `?.` shape, whose
- * undefined side settles as undefined) and plain numbers, strings,
- * booleans and unit values, which are never thenable. */
+ * result), `Promise<void> | undefined` and `Promise<T | undefined> |
+ * undefined` values (the `?.` shape, whose undefined side settles as
+ * undefined) and plain numbers, strings, booleans and unit values, which
+ * are never thenable. */
 function tuplePromiseAllShape(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -120,7 +194,10 @@ function tuplePromiseAllShape(
   // promise or a plain value at run time; it joins through its promise view.
   // A promise-or-undefined entry joins through the arm its tag selects.
   const settles = (t: IrType): boolean =>
-    t.kind === "promise" || t.kind === "dyn" || armedVoidPromiseOf(lowerer, t) !== null;
+    t.kind === "promise" ||
+    t.kind === "dyn" ||
+    armedVoidPromiseOf(lowerer, t) !== null ||
+    armedValuePromiseOf(lowerer, t) !== null;
   if (!elems.some((e) => settles(e.type))) return null;
   if (!elems.every((e) => settles(e.type) || plainValue(e.type))) return null;
   return { resultT, tuple: resultT.inner };
@@ -156,7 +233,10 @@ function lowerTuplePromiseAll(
   // arm. With either, every entry evaluates into a hidden local first.
   const staged: IrStmt[] = [];
   const values = !elems.some(
-    (e) => e.type.kind === "dyn" || armedVoidPromiseOf(lowerer, e.type) !== null,
+    (e) =>
+      e.type.kind === "dyn" ||
+      armedVoidPromiseOf(lowerer, e.type) !== null ||
+      armedValuePromiseOf(lowerer, e.type) !== null,
   )
     ? elems
     : elems.map((e): IrExpr => {
@@ -177,8 +257,10 @@ function lowerTuplePromiseAll(
   const entries = values.map((e): IrExpr => {
     const armed = armedVoidPromiseOf(lowerer, e.type);
     if (armed) return armedVoidPromiseEntry(e, armed, voidPromise, loc);
+    const carried = armedValuePromiseOf(lowerer, e.type);
     let promise: IrExpr;
-    if (e.type.kind === "promise") promise = e;
+    if (carried) promise = armedValuePromiseEntry(lowerer, e, carried, loc);
+    else if (e.type.kind === "promise") promise = e;
     else if (e.type.kind === "dyn")
       promise = {
         kind: "libCall",
@@ -234,7 +316,17 @@ function lowerTuplePromiseAll(
       // An armed promise-or-undefined entry fulfills nothing either way, so
       // its position holds undefined; any other entry reads its payload.
       const armed = armedVoidPromiseOf(lowerer, type);
-      const inner = armed !== null ? UNDEFINED_T : type.kind === "promise" ? type.inner : type;
+      // An armed entry that carries a value joined as a promise of that
+      // value's type on either side (armedValuePromiseEntry).
+      const carried = armedValuePromiseOf(lowerer, type);
+      const inner =
+        armed !== null
+          ? UNDEFINED_T
+          : carried !== null
+            ? carried.promise.inner
+            : type.kind === "promise"
+              ? type.inner
+              : type;
       const value: IrExpr = undefinedOnly(lowerer, inner)
         ? { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }
         : isUnitType(inner)
@@ -608,6 +700,25 @@ export function lowerPromiseStaticCall(
             loc,
           },
           loc,
+        );
+      }
+      // An optional entry whose promise fulfills a value that cannot be
+      // undefined (`a?.load()` with `load(): Promise<Data>`): its position
+      // would hold a Data from one side and undefined from the other, and
+      // the combinator reads a position at one type.
+      const optionalValue = elems.find((entry) => {
+        const armed = armedPromiseOf(lowerer, entry.type);
+        return (
+          armed !== null &&
+          !undefinedOnly(lowerer, armed.promise.inner) &&
+          armedValuePromiseOf(lowerer, entry.type) === null
+        );
+      });
+      if (optionalValue) {
+        lowerer.noLowering(
+          `Promise.all over an optional entry of type '${lowerer.fmt(optionalValue.type)}'`,
+          argNode,
+          "an optional entry joins when its promise's value type includes undefined, as `entry?.catch(() => undefined)` has — or await the optional promise on its own",
         );
       }
       lowerer.noLowering(

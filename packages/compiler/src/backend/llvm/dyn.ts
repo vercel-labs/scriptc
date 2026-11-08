@@ -65,6 +65,8 @@ import {
   llFieldType,
   loadStructField,
   mapFlagsOffset,
+  mapKeyAccess,
+  mapKeyParamType,
   releaseSym,
   traceAdapter,
   traceArg,
@@ -207,6 +209,43 @@ export const DYN_KIND = {
   SYMBOL: 15,
 } as const;
 
+/** The fields of a Map/Set header in order (scr_map.h ScrMap; the %ScrMapIx
+ * type of emit-module.ts). A null type is the target's size type. */
+const MAP_HEADER_FIELDS: readonly { name: string; type: string | null }[] = [
+  { name: "rc", type: null },
+  { name: "key_kind", type: "i8" },
+  { name: "val_kind", type: "i8" },
+  { name: "traced", type: "i8" },
+  { name: "flags", type: "i8" },
+  { name: "iter_depth", type: "i32" },
+  { name: "ops", type: "ptr" },
+  { name: "dyn_ops", type: "ptr" },
+  { name: "nentries", type: "i32" },
+  { name: "nlive", type: "i32" },
+  { name: "filter", type: "i64" },
+  { name: "entries", type: "ptr" },
+  { name: "ecap", type: "i32" },
+  { name: "nbuckets", type: "i32" },
+  { name: "buckets", type: "ptr" },
+  { name: "dense", type: "ptr" },
+  { name: "ndense", type: "i32" },
+  { name: "head", type: "i32" },
+];
+const MAP_HEADER = {
+  rc: 0,
+  keyKind: 1,
+  valKind: 2,
+  traced: 3,
+  iterDepth: 5,
+  dynOps: 7,
+  nentries: 8,
+  nlive: 9,
+} as const;
+/** The header fields that describe a storage's layout and hold its entries:
+ * everything but the reference count, `traced`, the flags and the iteration
+ * depth, which belong to the collection object. */
+const MAP_HEADER_LAYOUT: readonly number[] = [1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+
 /** Union arm kinds whose matchers reject every plain dyn object
  * (trustedArmByLiteral). */
 const NON_OBJECT_ARM_KINDS: ReadonlySet<IrType["kind"]> = new Set<IrType["kind"]>([
@@ -242,6 +281,10 @@ export interface DynHost extends WalkerHost {
    * elements past its dense prefix, so the keyed read answers `length`
    * from the array's own length rather than the prefix field. */
   jsObjectModel?(): boolean;
+  /** The call that constructs empty storage of a typed Map or Set type
+   * (expr-containers.ts checkedCollectionNewCall), or null for a type no
+   * untyped collection converts to. */
+  checkedCollectionNew?(t: IrType & { kind: "map" | "set" }): string | null;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
   declBoundary?(): boolean;
@@ -1347,6 +1390,413 @@ export class LlDyn {
     B.startBlock(le);
   }
 
+  /* ── untyped collections into typed collection slots ──────────────────
+   * A typed Map or Set that reaches untyped code keeps one storage: untyped
+   * code works on it through the storage's dyn ops (scr_map_dyn_*). The
+   * other direction keeps one storage too. A checked conversion of a Map or
+   * Set whose storage has the untyped layout checks every entry against the
+   * target's key and value types, builds the typed layout from the checked
+   * entries and gives the SAME collection that layout and the target's dyn
+   * ops: identity holds, a write through either side is seen by both, and
+   * typed code only ever holds storage of its own layout. */
+
+  /** A pointer to field `index` of a Map/Set header (scr_map.h ScrMap, the
+   * %ScrMapIx fields of emit-module.ts). */
+  private mapHeaderField(B: BlockBuilder, map: string, index: number): string {
+    const p = B.tmp();
+    B.line(
+      `${p} = getelementptr inbounds { ${this.S}, i8, i8, i8, i8, i32, ptr, ptr, i32, i32, i64, ptr, i32, i32, ptr, ptr, i32, i32 }, ptr ${map}, i32 0, i32 ${index} ; ${MAP_HEADER_FIELDS[index]!.name}`,
+    );
+    return p;
+  }
+
+  private loadMapHeaderField(B: BlockBuilder, map: string, index: number): string {
+    const v = B.tmp();
+    B.line(
+      `${v} = load ${MAP_HEADER_FIELDS[index]!.type ?? this.S}, ptr ${this.mapHeaderField(B, map, index)}`,
+    );
+    return v;
+  }
+
+  /** i1: the storage `map` (a native Map when `isMap`, else a Set) has the
+   * untyped layout and can take a typed one in place: no dyn ops (a typed
+   * storage that reached untyped code has them), checked-value keys (and
+   * values), not published, a collector header (every untyped collection
+   * has one, and the typed layout keeps it), and no running iteration that
+   * would have to step over removed entries (the typed layout is built
+   * from the live entries, so only then do entry positions stay). */
+  private untypedCollectionLayout(B: BlockBuilder, map: string, isMap: boolean): string {
+    const tests: string[] = [];
+    const test = (text: string): void => {
+      const t = B.tmp();
+      B.line(`${t} = ${text}`);
+      tests.push(t);
+    };
+    test(`icmp ne ${this.S} ${this.loadMapHeaderField(B, map, MAP_HEADER.rc)}, -1`);
+    test(`icmp eq i8 ${this.loadMapHeaderField(B, map, MAP_HEADER.keyKind)}, 4 ; SCR_MAP_KEY_DYN`);
+    if (isMap)
+      test(
+        `icmp eq i8 ${this.loadMapHeaderField(B, map, MAP_HEADER.valKind)}, 2 ; SCR_MAP_VAL_REF`,
+      );
+    test(`icmp ne i8 ${this.loadMapHeaderField(B, map, MAP_HEADER.traced)}, 0`);
+    test(`icmp eq ptr ${this.loadMapHeaderField(B, map, MAP_HEADER.dynOps)}, null`);
+    const idle = B.tmp();
+    const dense = B.tmp();
+    const steady = B.tmp();
+    B.line(`${idle} = icmp eq i32 ${this.loadMapHeaderField(B, map, MAP_HEADER.iterDepth)}, 0`);
+    B.line(
+      `${dense} = icmp eq i32 ${this.loadMapHeaderField(B, map, MAP_HEADER.nentries)}, ${this.loadMapHeaderField(B, map, MAP_HEADER.nlive)}`,
+    );
+    B.line(`${steady} = or i1 ${idle}, ${dense}`);
+    return tests.reduce((all, next) => {
+      const both = B.tmp();
+      B.line(`${both} = and i1 ${all}, ${next}`);
+      return both;
+    }, steady);
+  }
+
+  /** Whether an entry of this type converts with `preserveRefs`: a native
+   * reference of another layout is refused instead of copied, since the
+   * collection would then hold another object than the program's. A type
+   * of values alone has nothing to preserve and keeps the plain helper,
+   * whose failure names the type. */
+  private entryKeepsReferences(type: IrType): boolean {
+    const value = (t: IrType): boolean =>
+      t.kind === "f64" ||
+      t.kind === "bool" ||
+      t.kind === "string" ||
+      t.kind === "bigint" ||
+      t.kind === "symbol" ||
+      t.kind === "nullT" ||
+      t.kind === "undefinedT" ||
+      t.kind === "dyn";
+    if (type.kind !== "union") return !value(type);
+    const arms = this.host.unionsById.get(type.unionId)?.arms;
+    return arms === undefined || !arms.every(value);
+  }
+
+  /** The entry count of `map`, removed entries included, as a size. */
+  private mapEntryCount(B: BlockBuilder, map: string): string {
+    const count = this.loadMapHeaderField(B, map, MAP_HEADER.nentries);
+    if (this.S === "i32") return count;
+    const wide = B.tmp();
+    B.line(`${wide} = zext i32 ${count} to ${this.S}`);
+    return wide;
+  }
+
+  /** dynMatchHelper's body for a typed Map or Set type an untyped
+   * collection converts to: its own storage type, or the untyped layout
+   * with entries that all match. */
+  private matchTypedCollection(B: BlockBuilder, t: IrType & { kind: "map" | "set" }): void {
+    const host = this.host;
+    const isMap = t.kind === "map";
+    const keyType = isMap ? t.key : t.elem;
+    host.declare(`declare zeroext i1 @scr_dyn_native_collection_is(ptr, i32, ptr)`);
+    host.declare(`declare ptr @scr_dyn_native_collection_check(ptr, i32, ptr, ptr)`);
+    host.declare(`declare void @scr_map_release(ptr)`);
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    host.declare(`declare zeroext i1 @scr_map_iter_live(ptr, double)`);
+    host.declare(`declare ptr @scr_map_dyn_key(ptr, double)`);
+    const exact = B.tmp();
+    B.line(
+      `${exact} = call zeroext i1 @scr_dyn_native_collection_is(ptr %d, i32 ${isMap ? 1 : 0}, ptr ${host.cstr(typeKey(t))})`,
+    );
+    const lYes = B.newLabel("dmc.yes");
+    const lOther = B.newLabel("dmc.other");
+    const lNative = B.newLabel("dmc.native");
+    const lEntries = B.newLabel("dmc.entries");
+    const lDrop = B.newLabel("dmc.drop");
+    const lNo = B.newLabel("dmc.no");
+    B.condBr(exact, lYes, lOther);
+    B.startBlock(lOther);
+    const native = B.tmp();
+    B.line(
+      `${native} = call zeroext i1 @scr_dyn_native_collection_is(ptr %d, i32 ${isMap ? 1 : 0}, ptr null)`,
+    );
+    B.condBr(native, lNative, lNo);
+    B.startBlock(lNative);
+    const s = B.tmp();
+    B.line(
+      `${s} = call ptr @scr_dyn_native_collection_check(ptr %d, i32 ${isMap ? 1 : 0}, ptr null, ptr null)`,
+    );
+    B.condBr(this.untypedCollectionLayout(B, s, isMap), lEntries, lDrop);
+    B.startBlock(lEntries);
+    const keyMatch = this.dynMatchHelper(keyType, this.entryKeepsReferences(keyType));
+    const valueMatch = isMap
+      ? this.dynMatchHelper(t.value, this.entryKeepsReferences(t.value))
+      : null;
+    this.i64Loop(B, "dmc", this.mapEntryCount(B, s), (i, brNext) => {
+      const at = B.tmp();
+      const live = B.tmp();
+      B.line(`${at} = ${sizeToDouble(this.S)} ${this.S} ${i} to double`);
+      B.line(`${live} = call zeroext i1 @scr_map_iter_live(ptr ${s}, double ${at})`);
+      const lLive = B.newLabel("dmc.live");
+      const lDead = B.newLabel("dmc.dead");
+      B.condBr(live, lLive, lDead);
+      B.startBlock(lDead);
+      brNext();
+      B.startBlock(lLive);
+      const side = (accessor: "key" | "value", match: string): void => {
+        if (accessor === "value") host.declare(`declare ptr @scr_map_dyn_value(ptr, double)`);
+        const d = B.tmp();
+        const ok = B.tmp();
+        B.line(`${d} = call ptr @scr_map_dyn_${accessor}(ptr ${s}, double ${at})`);
+        B.line(`${ok} = call zeroext i1 @${match}(ptr ${d})`);
+        B.line(`call void @scr_dyn_release(ptr ${d})`);
+        const lOk = B.newLabel("dmc.ok");
+        B.condBr(ok, lOk, lDrop);
+        B.startBlock(lOk);
+      };
+      side("key", keyMatch);
+      if (valueMatch !== null) side("value", valueMatch);
+    });
+    B.line(`call void @scr_map_release(ptr ${s})`);
+    B.br(lYes);
+    B.startBlock(lDrop);
+    B.line(`call void @scr_map_release(ptr ${s})`);
+    B.br(lNo);
+    B.startBlock(lNo);
+    B.terminate(`ret i1 false`);
+    B.startBlock(lYes);
+    B.terminate(`ret i1 true`);
+  }
+
+  /** dynCheckHelper's body for a typed Map or Set type an untyped
+   * collection converts to. `construct` builds the type's empty storage. */
+  private checkTypedCollection(
+    B: BlockBuilder,
+    t: IrType & { kind: "map" | "set" },
+    construct: string,
+  ): void {
+    const host = this.host;
+    const isMap = t.kind === "map";
+    const keyType = isMap ? t.key : t.elem;
+    const valueType: IrType | null = isMap ? t.value : null;
+    const typeArg = host.cstr(typeKey(t));
+    const kind = isMap ? 1 : 0;
+    host.declare(`declare zeroext i1 @scr_dyn_native_collection_is(ptr, i32, ptr)`);
+    host.declare(`declare ptr @scr_dyn_native_collection_check(ptr, i32, ptr, ptr)`);
+    host.declare(`declare void @scr_map_release(ptr)`);
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    host.declare(`declare zeroext i1 @scr_map_iter_live(ptr, double)`);
+    host.declare(`declare ptr @scr_map_dyn_key(ptr, double)`);
+    host.declare(`declare void @scr_map_dyn_attach(ptr, ptr)`);
+    const exact = B.tmp();
+    B.line(
+      `${exact} = call zeroext i1 @scr_dyn_native_collection_is(ptr %d, i32 ${kind}, ptr ${typeArg})`,
+    );
+    const lFail = B.newLabel("dcc.runtime");
+    const lOther = B.newLabel("dcc.other");
+    const lNative = B.newLabel("dcc.native");
+    const lBuild = B.newLabel("dcc.build");
+    const lKeep = B.newLabel("dcc.keep");
+    // The storage's own type, and every value that is not a collection of
+    // this kind: the runtime answers the storage (+1) or throws by name.
+    B.condBr(exact, lFail, lOther);
+    B.startBlock(lFail);
+    const checked = B.tmp();
+    B.line(
+      `${checked} = call ptr @scr_dyn_native_collection_check(ptr %d, i32 ${kind}, ptr ${typeArg}, ptr %path)`,
+    );
+    B.terminate(`ret ptr ${checked}`);
+    B.startBlock(lOther);
+    const native = B.tmp();
+    B.line(
+      `${native} = call zeroext i1 @scr_dyn_native_collection_is(ptr %d, i32 ${kind}, ptr null)`,
+    );
+    B.condBr(native, lNative, lFail);
+    B.startBlock(lNative);
+    const s = B.tmp();
+    B.line(
+      `${s} = call ptr @scr_dyn_native_collection_check(ptr %d, i32 ${kind}, ptr null, ptr %path)`,
+    );
+    B.condBr(this.untypedCollectionLayout(B, s, isMap), lBuild, lKeep);
+    // A storage of another typed layout (typed slots hold it), or one that
+    // cannot change now: the named failure.
+    B.startBlock(lKeep);
+    B.line(`call void @scr_map_release(ptr ${s})`);
+    B.br(lFail);
+    B.startBlock(lBuild);
+    const built = B.tmp();
+    B.line(`${built} = ${construct}`);
+    const count = this.mapEntryCount(B, s);
+    const keyCheck = this.dynCheckHelper(keyType, this.entryKeepsReferences(keyType));
+    const valueCheck =
+      valueType === null
+        ? null
+        : this.dynCheckHelper(valueType, this.entryKeepsReferences(valueType));
+    const kAcc = mapKeyAccess(keyType);
+    const vAcc = valueType === null ? "f64" : elemAccess(valueType);
+    const kTy = mapKeyParamType(kAcc);
+    const vTy = vAcc === "f64" ? "double" : vAcc === "bool" ? "i1" : "ptr";
+    host.declare(
+      `declare void @scr_map_set_${kAcc}_${vAcc}(ptr, ${kTy}, ${vTy === "i1" ? "i1 zeroext" : vTy})`,
+    );
+    // The path of an entry: its position in iteration order, then 0 for the
+    // key and 1 for the value (`[...map][2][1]`); a Set's member has the
+    // position alone.
+    const entryPath = "%dccp";
+    const sidePath = "%dccs";
+    const ordinalSlot = "%dcco";
+    B.entryAllocas.push(`${entryPath} = alloca %ScrDynPath`);
+    if (isMap) B.entryAllocas.push(`${sidePath} = alloca %ScrDynPath`);
+    B.entryAllocas.push(`${ordinalSlot} = alloca ${this.S}`);
+    B.line(`store ${this.S} 0, ptr ${ordinalSlot}`);
+    const storePath = (slot: string, parent: string, index: string): void => {
+      const pp = B.tmp();
+      const kp = B.tmp();
+      const ip = B.tmp();
+      B.line(`${pp} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 0`);
+      B.line(`store ptr ${parent}, ptr ${pp}`);
+      B.line(`${kp} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 1`);
+      B.line(`store ptr null, ptr ${kp}`);
+      B.line(`${ip} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 2`);
+      B.line(`store ${host.sizeType} ${index}, ptr ${ip}`);
+    };
+    const drop = (type: IrType, value: string): void => {
+      if (isRefCounted(type)) B.line(`call void ${releaseSym(host, type)}(ptr ${value})`);
+    };
+    const dropStorages = (): void => {
+      B.line(`call void @scr_map_release(ptr ${built})`);
+      B.line(`call void @scr_map_release(ptr ${s})`);
+    };
+    // A plain untyped object or array converts to a typed value by copy.
+    // One that something else still references would leave the collection
+    // holding another object than the program's: the named failure. (The
+    // storage holds one reference and this walk a second.)
+    const sharedPlainFails = (type: IrType, d: string, path: string, cleanup: () => void): void => {
+      if (type.kind === "dyn") return;
+      const node = this.kindOf(B, d);
+      const isArr = B.tmp();
+      const isObj = B.tmp();
+      const plain = B.tmp();
+      const rc = B.tmp();
+      const held = B.tmp();
+      const shared = B.tmp();
+      B.line(`${isArr} = icmp eq i32 ${node}, ${DYN_KIND.ARR}`);
+      B.line(`${isObj} = icmp eq i32 ${node}, ${DYN_KIND.OBJ}`);
+      B.line(`${plain} = or i1 ${isArr}, ${isObj}`);
+      B.line(`${rc} = load ${this.S}, ptr ${d}`);
+      B.line(`${held} = icmp ugt ${this.S} ${rc}, 2`);
+      B.line(`${shared} = and i1 ${plain}, ${held}`);
+      const lShared = B.newLabel("dcc.shared");
+      const lOwn = B.newLabel("dcc.own");
+      B.condBr(shared, lShared, lOwn);
+      B.startBlock(lShared);
+      const wanted = host.cstr(
+        `${dynDesc(type, host.recordsById, host.unionsById)} that nothing else references (a typed ${isMap ? "Map" : "Set"} takes its entries without copying them)`,
+      );
+      B.line(`call void @scr_dyn_check_fail(ptr ${path}, ptr ${wanted}, ptr ${d})`);
+      cleanup();
+      B.terminate(`ret ptr null`);
+      B.startBlock(lOwn);
+    };
+    this.i64Loop(B, "dcc", count, (i, brNext) => {
+      const at = B.tmp();
+      const live = B.tmp();
+      B.line(`${at} = ${sizeToDouble(this.S)} ${this.S} ${i} to double`);
+      B.line(`${live} = call zeroext i1 @scr_map_iter_live(ptr ${s}, double ${at})`);
+      const lLive = B.newLabel("dcc.live");
+      const lDead = B.newLabel("dcc.dead");
+      B.condBr(live, lLive, lDead);
+      B.startBlock(lDead);
+      brNext();
+      B.startBlock(lLive);
+      const ordinal = B.tmp();
+      const following = B.tmp();
+      B.line(`${ordinal} = load ${this.S}, ptr ${ordinalSlot}`);
+      B.line(`${following} = add ${this.S} ${ordinal}, 1`);
+      B.line(`store ${this.S} ${following}, ptr ${ordinalSlot}`);
+      storePath(entryPath, "%path", ordinal);
+      const keyPath = isMap ? sidePath : entryPath;
+      if (isMap) storePath(sidePath, entryPath, "0");
+      const kd = B.tmp();
+      const k = B.tmp();
+      B.line(`${kd} = call ptr @scr_map_dyn_key(ptr ${s}, double ${at})`);
+      B.line(`${k} = call ${this.valTy(keyType)} @${keyCheck}(ptr ${kd}, ptr ${keyPath})`);
+      const dropKeySource = (): void => {
+        B.line(`call void @scr_dyn_release(ptr ${kd})`);
+        dropStorages();
+      };
+      this.pendingBail(B, "dcc.key", dropKeySource, "ptr null", keyType, k);
+      const dropKey = (): void => {
+        drop(keyType, k);
+        dropKeySource();
+      };
+      sharedPlainFails(keyType, kd, keyPath, dropKey);
+      let v = f64Lit(0);
+      if (valueType !== null && valueCheck !== null) {
+        host.declare(`declare ptr @scr_map_dyn_value(ptr, double)`);
+        storePath(sidePath, entryPath, "1");
+        const vd = B.tmp();
+        v = B.tmp();
+        B.line(`${vd} = call ptr @scr_map_dyn_value(ptr ${s}, double ${at})`);
+        B.line(`${v} = call ${this.valTy(valueType)} @${valueCheck}(ptr ${vd}, ptr ${sidePath})`);
+        const dropValueSource = (): void => {
+          B.line(`call void @scr_dyn_release(ptr ${vd})`);
+          dropKey();
+        };
+        this.pendingBail(B, "dcc.value", dropValueSource, "ptr null", valueType, v);
+        const made = v;
+        sharedPlainFails(valueType, vd, sidePath, () => {
+          drop(valueType, made);
+          dropValueSource();
+        });
+        B.line(`call void @scr_dyn_release(ptr ${vd})`);
+      }
+      // The key is borrowed (the storage retains what it keeps); the value
+      // moves in.
+      B.line(`call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${k}, ${vTy} ${v})`);
+      drop(keyType, k);
+      B.line(`call void @scr_dyn_release(ptr ${kd})`);
+    });
+    // Two entries that became one key, or a collection that changed while
+    // its entries were checked (a getter ran): the named failure.
+    const builtLive = this.loadMapHeaderField(B, built, MAP_HEADER.nlive);
+    const sourceLive = this.loadMapHeaderField(B, s, MAP_HEADER.nlive);
+    const sourceCount = this.mapEntryCount(B, s);
+    const sameLive = B.tmp();
+    const sameCount = B.tmp();
+    const steady = B.tmp();
+    B.line(`${sameLive} = icmp eq i32 ${builtLive}, ${sourceLive}`);
+    B.line(`${sameCount} = icmp eq ${this.S} ${sourceCount}, ${count}`);
+    B.line(`${steady} = and i1 ${sameLive}, ${sameCount}`);
+    const lTake = B.newLabel("dcc.take");
+    const lChanged = B.newLabel("dcc.changed");
+    B.condBr(steady, lTake, lChanged);
+    B.startBlock(lChanged);
+    dropStorages();
+    B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${typeArg}, ptr %d)`);
+    B.terminate(`ret ptr null`);
+    B.startBlock(lTake);
+    // The collection takes the typed layout: the two headers exchange
+    // their kinds, adapters, counts and tables. The collection keeps its
+    // own reference count, flags and iteration depth, and its collector
+    // header: `traced` names the sides the typed layout traces, or 4 (a
+    // header that traces neither side) when it traces none.
+    for (const index of MAP_HEADER_LAYOUT) {
+      const type = MAP_HEADER_FIELDS[index]!.type ?? this.S;
+      const mine = this.mapHeaderField(B, s, index);
+      const theirs = this.mapHeaderField(B, built, index);
+      const a = B.tmp();
+      const b = B.tmp();
+      B.line(`${a} = load ${type}, ptr ${mine}`);
+      B.line(`${b} = load ${type}, ptr ${theirs}`);
+      B.line(`store ${type} ${b}, ptr ${mine}`);
+      B.line(`store ${type} ${a}, ptr ${theirs}`);
+    }
+    const tracedSides = this.loadMapHeaderField(B, built, MAP_HEADER.traced);
+    const noSide = B.tmp();
+    const traced = B.tmp();
+    B.line(`${noSide} = icmp eq i8 ${tracedSides}, 0`);
+    B.line(`${traced} = select i1 ${noSide}, i8 4, i8 ${tracedSides}`);
+    B.line(`store i8 ${traced}, ptr ${this.mapHeaderField(B, s, MAP_HEADER.traced)}`);
+    B.line(`call void @scr_map_dyn_attach(ptr ${s}, ptr @${this.collectionDynOps(t)})`);
+    // The built storage now holds the untyped entries: released with it.
+    B.line(`call void @scr_map_release(ptr ${built})`);
+    B.terminate(`ret ptr ${s}`);
+  }
+
   /** Emit the standard in-helper pending check: on a pending exception
    * run `cleanup` and return `dummy`. */
   /** The failure block of a union dynCheck whose value matched no arm. A
@@ -1631,10 +2081,14 @@ export class LlDyn {
       }
       case "map":
       case "set": {
-        this.host.declare(`declare zeroext i1 @scr_dyn_native_collection_is(ptr, i32, ptr)`);
-        const r = B.tmp();
         const typed =
           t.kind === "map" ? t.key.kind !== "dyn" || t.value.kind !== "dyn" : t.elem.kind !== "dyn";
+        if (typed && (this.host.checkedCollectionNew?.(t) ?? null) !== null) {
+          this.matchTypedCollection(B, t);
+          break;
+        }
+        this.host.declare(`declare zeroext i1 @scr_dyn_native_collection_is(ptr, i32, ptr)`);
+        const r = B.tmp();
         B.line(
           `${r} = call zeroext i1 @scr_dyn_native_collection_is(ptr %d, i32 ${t.kind === "map" ? 1 : 0}, ptr ${typed ? this.host.cstr(typeKey(t)) : "null"})`,
         );
@@ -2866,10 +3320,15 @@ export class LlDyn {
       }
       case "map":
       case "set": {
-        host.declare(`declare ptr @scr_dyn_native_collection_check(ptr, i32, ptr, ptr)`);
-        const r = B.tmp();
         const typed =
           t.kind === "map" ? t.key.kind !== "dyn" || t.value.kind !== "dyn" : t.elem.kind !== "dyn";
+        const construct = typed ? (host.checkedCollectionNew?.(t) ?? null) : null;
+        if (construct !== null) {
+          this.checkTypedCollection(B, t, construct);
+          break;
+        }
+        host.declare(`declare ptr @scr_dyn_native_collection_check(ptr, i32, ptr, ptr)`);
+        const r = B.tmp();
         B.line(
           `${r} = call ptr @scr_dyn_native_collection_check(ptr %d, i32 ${t.kind === "map" ? 1 : 0}, ptr ${typed ? host.cstr(typeKey(t)) : "null"}, ptr %path)`,
         );

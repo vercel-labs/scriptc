@@ -1711,6 +1711,10 @@ export class ClassDynamicDispatch {
   private serializesClasses = false;
   private descriptorHelper: IrFunction | null = null;
   private prototypeHelper: IrFunction | null = null;
+  /** Whether a read through prototypeHelper can pass it an instance. The
+   * compiler's own reads for a class's heritage pass a class value, whose
+   * prototype is never chosen by an object's class. */
+  private prototypeOfInstances = false;
   private readonly prototypeClasses = new Set<string>();
   /** The stand-in prototype object of each class without prototype data
    * (prototypeStandIn), by class name. */
@@ -1914,7 +1918,7 @@ export class ClassDynamicDispatch {
         this.prototypeClasses.add(className);
         const loc = this.prototypeHelper.loc;
         const type: IrType = { kind: "object", className };
-        const value = varRef("p.0", DYN, loc);
+        const value = varRef("value", DYN, loc);
         const prototype = reflectClassPrototype(lowerer, info, loc, {
           kind: "dynCheck",
           value,
@@ -2706,15 +2710,20 @@ export class ClassDynamicDispatch {
               loc: expr.loc,
             };
           }
+          const read = expr.args[0];
+          if (!(read?.kind === "dynFrom" && read.value.type.kind === "classval"))
+            this.prototypeOfInstances = true;
           if (!this.prototypeHelper) {
             const loc = expr.loc;
             this.prototypeHelper = {
               name: "%dyn.class.getPrototype",
-              params: [{ localId: "p.0", name: "value", type: DYN }],
-              locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
+              params: [{ localId: "value", name: "value", type: DYN }],
+              locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
               returnType: DYN,
               loc,
-              body: [{ kind: "return", value: { ...expr, args: [varRef("p.0", DYN, loc)] }, loc }],
+              body: [
+                { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
+              ],
             };
             lowerer.liftedFns.push(this.prototypeHelper);
             this.generated.add(this.prototypeHelper);
@@ -6243,7 +6252,7 @@ export class ClassDynamicDispatch {
       ...this.protocols,
       // A capsule keeps its static class while its object may be a subclass
       // instance, whose prototype is the subclass's.
-      ...(this.prototypeHelper ? [this.prototypeHelper] : []),
+      ...(this.prototypeHelper && this.prototypeOfInstances ? [this.prototypeHelper] : []),
     ];
   }
 
@@ -6372,14 +6381,17 @@ export class ClassDynamicDispatch {
       this.normalization.body.push({ kind: "return", value, loc });
     }
     for (const fn of this.normalizedDispatches()) {
-      fn.locals.find((local) => local.id === "p.0")!.mutable = true;
+      // The prototype helper keeps the name it gives its value where
+      // nothing selects a class.
+      const id = fn === this.prototypeHelper ? "value" : "p.0";
+      fn.locals.find((local) => local.id === id)!.mutable = true;
       fn.body.unshift({
         kind: "assign",
-        localId: "p.0",
+        localId: id,
         value: {
           kind: "call",
           callee: this.normalization.name,
-          args: [varRef("p.0", DYN, fn.loc)],
+          args: [varRef(id, DYN, fn.loc)],
           type: DYN,
           loc: fn.loc,
         },

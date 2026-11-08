@@ -4462,9 +4462,9 @@ export class Lowerer {
   readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
-  /** Module-level constants the island evaluates (closed-island-init.ts):
-   * what each top-level `const` statement declares (null: not closed), and
-   * each file's constants. */
+  /** Module-level constants and statements the island evaluates
+   * (closed-island-init.ts): what each top-level `const`, expression
+   * statement or `for…of` is to it (null: not closed), and each file's. */
   readonly closedIslandStatements = new Map<
     ts.Statement,
     import("./closed-island-init.js").ClosedConstant | null
@@ -4473,6 +4473,14 @@ export class Lowerer {
     ts.SourceFile,
     import("./closed-island-init.js").ClosedFile
   >();
+  /** The decisions in progress, and each file's identifiers by their text
+   * (closed-island-init.ts: a table and the statements that name it are
+   * decided together). */
+  readonly closedIslandDeciding: import("./closed-island-init.js").ClosedDeciding = {
+    active: new Set(),
+    assumed: null,
+  };
+  readonly closedIslandMentions = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
@@ -5471,11 +5479,16 @@ export class Lowerer {
     // The island names native modules re-export: a pure function of the
     // program's modules, collected before lowering begins.
     "islandReexports",
-    // Which module-level constants the island evaluates: decided from the
-    // program's syntax, types and the facts collection settled (island
-    // bindings, initialization flags), so every pass decides the same.
+    // Which module-level constants and statements the island evaluates:
+    // decided from the program's syntax, types and the facts collection
+    // settled (island bindings, initialization flags), so every pass decides
+    // the same.
     "closedIslandStatements",
     "closedIslandFiles",
+    // A file's identifiers by their text: syntax. The decisions in progress
+    // are empty whenever no decision is being taken.
+    "closedIslandMentions",
+    "closedIslandDeciding",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.

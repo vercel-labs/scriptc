@@ -38,7 +38,39 @@
  * Same program: under Node these expressions run in the same order against
  * the same island objects. Only the literal arguments differ from the
  * call-by-call lowering (JavaScript values instead of native records behind
- * a representative), and no native code holds them. */
+ * a representative), and no native code holds them.
+ *
+ * Closed expression statements. A module-level statement that is one call
+ * or `new` on island values with closed operands,
+ *
+ *   registry.register("bash", bash);
+ *
+ * has its whole effect inside the island: no native code receives its
+ * value, and none of its operands is native. It becomes a generated module
+ * of its own with no export (the statement is the module's body), loaded
+ * where the statement stands, and the statement lowers to nothing else.
+ * Deferred, it evaluates when Node starts, in the order of the loads
+ * registered, before the operation that needed Node: island objects are the
+ * only things it can change, and native code reads those through Node or
+ * through an interface snapshot the probe took after the statement
+ * evaluated (a statement that changes what an earlier module's snapshot
+ * answers keeps both where the program has them, probe-recorder.ts).
+ *
+ * A loop over a table is the same statement written once:
+ *
+ *   const languages = { bash, python };
+ *   for (const [name, language] of Object.entries(languages)) {
+ *     registry.register(name, language);
+ *   }
+ *
+ * A module-level `for…of` whose bindings are `const`, whose iterable is
+ * closed and whose body is closed calls is a closed statement. Its table is
+ * a constant the island evaluates too when it is a literal of closed parts
+ * and every mention of it in the program is in a statement the island
+ * evaluates: then no native code can read it or change it, the generated
+ * module of the table is its only definition, and the native statement
+ * lowers to that module's load and nothing else. A table any native code
+ * names stays a native constant, and the loop over it stays as it was. */
 import { isAbsolute } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import { isCjsJsFile, isJsSourceFile, locOf } from "../program.js";
@@ -57,15 +89,32 @@ import {
 } from "./lower-node-island.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
-/** A module-level constant whose initializer the island evaluates. */
+/** A top-level statement the island can evaluate: a `const`, an expression
+ * statement or a `for…of`. */
+type ClosedSource = ts.VariableStatement | ts.ExpressionStatement | ts.ForOfStatement;
+
+function isClosedSource(statement: ts.Statement): statement is ClosedSource {
+  return (
+    ts.isVariableStatement(statement) ||
+    ts.isExpressionStatement(statement) ||
+    ts.isForOfStatement(statement)
+  );
+}
+
+/** A module-level constant whose initializer the island evaluates, or a
+ * module-level statement it evaluates (`name` null: the generated module
+ * exports nothing). */
 export interface ClosedConstant {
-  name: string;
-  declaration: ts.VariableDeclaration;
-  statement: ts.VariableStatement;
+  name: string | null;
+  statement: ClosedSource;
+  /** A constant only the island's statements name (privateTable): no
+   * native binding reads its export. */
+  table: boolean;
   /** The initializer without its type wrappers: the node whose lowering
-   * reads the generated module's export. */
+   * reads the generated module's export. A statement's expression; a
+   * loop's iterable. */
   initializer: ts.Expression;
-  /** The initializer as JavaScript. */
+  /** The initializer, or the statement, as JavaScript. */
   text: string;
   /** Island exports the text names, by local name. */
   imports: Map<string, GeneratedImport>;
@@ -78,7 +127,8 @@ export interface ClosedConstant {
   key: string;
 }
 
-/** The closed constants of one source file, in source order. */
+/** The closed constants and statements of one source file, in source
+ * order. */
 export interface ClosedFile {
   constants: ClosedConstant[];
   /** By initializer node (ClosedConstant.initializer). */
@@ -152,13 +202,42 @@ const CLOSED_GLOBALS: ReadonlySet<string> = new Set(["undefined", "NaN", "Infini
 
 interface Scan {
   lowerer: Lowerer;
-  statement: ts.VariableStatement;
+  statement: ts.Statement;
   imports: Map<string, GeneratedImport>;
   operands: Map<string, ClosedConstant>;
+  /** The bindings the statement declares itself (a loop's): names of the
+   * generated module's own. */
+  locals: Set<ts.Symbol>;
   /** Calls and constructions seen. */
   calls: number;
   /** Why the expression is not closed: the first reason the scan met. */
   refusal: string | null;
+}
+
+function newScan(lowerer: Lowerer, statement: ts.Statement): Scan {
+  return {
+    lowerer,
+    statement,
+    imports: new Map(),
+    operands: new Map(),
+    locals: new Set(),
+    calls: 0,
+    refusal: null,
+  };
+}
+
+/** The decisions in progress for one lowerer (Lowerer.closedIslandDeciding). */
+export interface ClosedDeciding {
+  /** The statements being decided: one that names itself through a cycle
+   * of constants is not closed. */
+  active: Set<ts.Statement>;
+  /** The tables taken as the island's own while the statements that name
+   * them are decided (privateTable), or null. */
+  assumed: Map<ts.Statement, ClosedConstant> | null;
+}
+
+function deciding(lowerer: Lowerer): ClosedDeciding {
+  return lowerer.closedIslandDeciding;
 }
 
 /** Records that `node` keeps the expression from being closed. */
@@ -174,15 +253,27 @@ function refuse(scan: Scan, node: ts.Node, what: string): null {
 const traced = new Set<string>();
 
 /** SCRIPTC_NODE_ISLANDS_TRACE=closed at build time: one line per
- * module-level constant whose initializer is an island operation, saying
- * whether the island evaluates it and, if not, what keeps it native. */
-function traceClosed(declaration: ts.VariableDeclaration, why: string | null): void {
+ * module-level constant whose initializer is an island operation, and per
+ * module-level statement that is one, saying whether the island evaluates
+ * it and, if not, what keeps it native. */
+function traceClosed(
+  lowerer: Lowerer,
+  declaration: ts.VariableDeclaration | ts.ExpressionStatement | ts.ForOfStatement,
+  why: string | null,
+): void {
   const trace = process.env["SCRIPTC_NODE_ISLANDS_TRACE"];
   if (trace === undefined || !trace.includes("closed")) return;
+  // A decision taken while a table is only assumed the island's own is
+  // taken again once the table is decided: that one is the answer.
+  if (deciding(lowerer).assumed !== null) return;
   const file = ts.getSourceFileOfNode(declaration);
   const start = ts.tokenStartOfNode(declaration);
   const line = ts.getLineAndCharacterOfPosition(file, start).line + 1;
-  const name = ts.isIdentifier(declaration.name) ? declaration.name.text : "(pattern)";
+  const name = !ts.isVariableDeclaration(declaration)
+    ? "(statement)"
+    : ts.isIdentifier(declaration.name)
+      ? declaration.name.text
+      : "(pattern)";
   const text = `[node-islands] ${why === null ? "closed" : "not closed"} ${file.fileName}:${line} ${name}${why === null ? "" : `: ${why}`}\n`;
   // Every lowering pass decides again; the trace says it once.
   if (traced.has(text)) return;
@@ -236,23 +327,83 @@ function closedName(scan: Scan, node: ts.Identifier): string | null {
       declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile);
     return standard ? name : refuse(scan, node, "a binding that shadows a global");
   }
-  const binding = islandBindingOf(lowerer, node);
-  if (binding !== null) {
-    const path = binding.module.path;
-    if (!isAbsolute(path)) return refuse(scan, node, "a builtin module's binding");
-    let clause: string;
-    if (binding.kind === "named")
-      clause = binding.name === name ? `{ ${name} }` : `{ ${binding.name} as ${name} }`;
-    else if (binding.kind === "default") clause = name;
-    else if (binding.kind === "namespace" && binding.module.esm) clause = `* as ${name}`;
-    else return refuse(scan, node, "a CommonJS namespace or require binding");
-    scan.imports.set(name, { clause, target: path });
-    return name;
+  if (scan.locals.size > 0) {
+    const symbol = lowerer.checker.getSymbolAtLocation(node);
+    if (symbol !== undefined && scan.locals.has(symbol)) return name;
   }
+  const binding = islandBindingOf(lowerer, node);
+  if (binding !== null) return islandImport(scan, node, binding);
   const operand = operandOf(scan, node, lowerer.checker.getSymbolAtLocation(node));
   if (operand === null) return null;
   scan.operands.set(name, operand);
   return name;
+}
+
+/** The name `node` gives an island module's export in a closed expression:
+ * the generated module imports it under that name. Null for a binding an
+ * import declaration cannot name. */
+function islandImport(
+  scan: Scan,
+  node: ts.Identifier,
+  binding: NonNullable<ReturnType<typeof islandBindingOf>>,
+): string | null {
+  const name = node.text;
+  const path = binding.module.path;
+  if (!isAbsolute(path)) return refuse(scan, node, "a builtin module's binding");
+  let clause: string;
+  if (binding.kind === "named")
+    clause = binding.name === name ? `{ ${name} }` : `{ ${binding.name} as ${name} }`;
+  else if (binding.kind === "default") clause = name;
+  else if (binding.kind === "namespace" && binding.module.esm) clause = `* as ${name}`;
+  else return refuse(scan, node, "a CommonJS namespace or require binding");
+  scan.imports.set(name, { clause, target: path });
+  return name;
+}
+
+/** The name node of the import of `file` that binds `name`, or null. */
+function importNameOf(file: ts.SourceFile, name: string): ts.Identifier | null {
+  for (const statement of file.statements.nodes) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const clause = statement.importClause;
+    if (clause === undefined || clause.isTypeOnly) continue;
+    if (clause.name !== undefined && clause.name.text === name) return clause.name;
+    const bindings = clause.namedBindings;
+    if (bindings === undefined) continue;
+    if (ts.isNamespaceImport(bindings)) {
+      if (bindings.name.text === name) return bindings.name;
+      continue;
+    }
+    for (const element of bindings.elements.nodes)
+      if (!element.isTypeOnly && element.name.text === name) return element.name;
+  }
+  return null;
+}
+
+/** The members of `Object` a closed expression may call: each answers from
+ * its argument alone, and in the island it is the function Node's own
+ * program would call. */
+const CLOSED_OBJECT_STATICS: ReadonlySet<string> = new Set(["entries", "keys", "values"]);
+
+/** The JavaScript of `Object.entries(x)`, `Object.keys(x)` or
+ * `Object.values(x)` over a closed `x`; undefined when `node` is not such
+ * a call (null: it is one, and `x` is not closed). */
+function closedObjectStatic(scan: Scan, node: ts.CallExpression): string | null | undefined {
+  const callee = node.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined)
+    return undefined;
+  if (!ts.isIdentifier(callee.expression) || callee.expression.text !== "Object") return undefined;
+  if (!ts.isIdentifier(callee.name) || !CLOSED_OBJECT_STATICS.has(callee.name.text))
+    return undefined;
+  const declarations =
+    scan.lowerer.checker.getSymbolAtLocation(callee.expression)?.declarations ?? [];
+  const standard =
+    declarations.length > 0 &&
+    declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile);
+  if (!standard) return undefined;
+  const args = node.arguments.nodes;
+  if (args.length !== 1 || ts.isSpreadElement(args[0]!)) return undefined;
+  const value = closedText(scan, args[0]!);
+  return value === null ? null : `Object.${callee.name.text}(${value})`;
 }
 
 /** The JavaScript of a call's or an array literal's elements, or null. */
@@ -329,6 +480,8 @@ function closedText(scan: Scan, node: ts.Expression): string | null {
   }
   if (ts.isCallExpression(node)) {
     if (node.questionDotToken !== undefined) return refuse(scan, node, "an optional chain");
+    const listed = closedObjectStatic(scan, node);
+    if (listed !== undefined) return listed;
     const callee = closedText(scan, node.expression);
     const args = closedElements(scan, node.arguments.nodes);
     if (callee === null || args === null) return null;
@@ -360,11 +513,22 @@ function closedText(scan: Scan, node: ts.Expression): string | null {
         continue;
       }
       // `{ item }`: the member's value is the binding of that name, which
-      // the generated module imports under the same name. Only a closed
-      // constant: an island import's shorthand is not looked through.
+      // the generated module imports under the same name: an island
+      // module's export, or a closed constant.
       if (ts.isShorthandPropertyAssignment(member)) {
         if (member.objectAssignmentInitializer !== undefined || !ts.isIdentifier(member.name))
           return refuse(scan, member, "an object member");
+        // The checker answers the member for the name itself, so the
+        // import the name reads is looked up where the file declares it: a
+        // closed expression sits at the top level, where nothing shadows an
+        // import.
+        const imported = importNameOf(ts.getSourceFileOfNode(member), member.name.text);
+        const binding = imported === null ? null : islandBindingOf(scan.lowerer, imported);
+        if (binding !== null) {
+          if (islandImport(scan, member.name, binding) === null) return null;
+          members.push(member.name.text);
+          continue;
+        }
         const value = scan.lowerer.checker.getShorthandAssignmentValueSymbol(member);
         const operand = operandOf(scan, member, value);
         if (operand === null) return null;
@@ -401,6 +565,8 @@ function closedDeclaration(
 ): ClosedConstant | null {
   if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) return null;
   const initializer = withoutParenthesesTypeWrappers(declaration.initializer);
+  if (ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer))
+    return privateTable(lowerer, statement, declaration, initializer);
   // The initializer is an island operation today (islandRooted), so its
   // value meets its static type through fromIsland either way.
   if (
@@ -421,6 +587,7 @@ function closedDeclaration(
   for (const module of lowerer.nodeIslands!.modules.values())
     if (module.patchesBuiltin === true) {
       traceClosed(
+        lowerer,
         declaration,
         `${module.file} patches a builtin module, and Node would read the generated module through the patch`,
       );
@@ -428,34 +595,27 @@ function closedDeclaration(
     }
   if (!sharedWithIsland(lowerer, declaration, initializer)) {
     const type = lowerer.checker.typeToString(lowerer.typeOf(declaration.name));
-    traceClosed(declaration, `its value becomes native data of type '${type}'`);
+    traceClosed(lowerer, declaration, `its value becomes native data of type '${type}'`);
     return null;
   }
-  const scan: Scan = {
-    lowerer,
-    statement,
-    imports: new Map(),
-    operands: new Map(),
-    calls: 0,
-    refusal: null,
-  };
+  const scan = newScan(lowerer, statement);
   const text = closedText(scan, initializer);
   if (text === null) {
-    traceClosed(declaration, `its initializer holds ${scan.refusal ?? "a native value"}`);
+    traceClosed(lowerer, declaration, `its initializer holds ${scan.refusal ?? "a native value"}`);
     return null;
   }
   // Without a call there is nothing to move: member reads of an import are
   // answered by the island module's own snapshot.
   if (scan.calls === 0) return null;
   if (statement.declarationList.declarations.nodes.length > 1) {
-    traceClosed(declaration, "a statement that declares more than one constant");
+    traceClosed(lowerer, declaration, "a statement that declares more than one constant");
     return null;
   }
-  traceClosed(declaration, null);
+  traceClosed(lowerer, declaration, null);
   return {
     name: declaration.name.text,
-    declaration,
     statement,
+    table: false,
     initializer,
     text,
     imports: scan.imports,
@@ -465,17 +625,265 @@ function closedDeclaration(
   };
 }
 
-/** The closed constant a top-level `const` statement declares, or null.
- * One declarator only: the initializers of two would evaluate before
- * either binding is assigned. */
-function closedStatement(lowerer: Lowerer, statement: ts.VariableStatement): ClosedConstant | null {
-  const known = lowerer.closedIslandStatements.get(statement);
-  if (known !== undefined) return known;
-  // A statement being decided names itself through a cycle of constants:
-  // not closed.
-  lowerer.closedIslandStatements.set(statement, null);
+/** The closed statement a top-level expression statement is, or null: one
+ * call or `new` on island values whose callee and arguments are closed.
+ * Its value goes nowhere, so nothing is asked of its type; a call that
+ * awaits, negates or otherwise computes with the value natively is an
+ * operator and stays where it is. */
+function closedExpressionStatement(
+  lowerer: Lowerer,
+  statement: ts.ExpressionStatement,
+): ClosedConstant | null {
+  const expression = withoutParenthesesTypeWrappers(statement.expression);
+  if (!ts.isCallExpression(expression) && !ts.isNewExpression(expression)) return null;
+  if (!islandRooted(lowerer, expression)) return null;
+  const scan = newScan(lowerer, statement);
+  const text = closedText(scan, expression);
+  if (text === null) {
+    traceClosed(lowerer, statement, `it holds ${scan.refusal ?? "a native value"}`);
+    return null;
+  }
+  traceClosed(lowerer, statement, null);
+  return {
+    name: null,
+    statement,
+    table: false,
+    initializer: expression,
+    text,
+    imports: scan.imports,
+    operands: scan.operands,
+    index: -1,
+    key: "",
+  };
+}
+
+/** Whether `statement` declares one `const` whose initializer is an object
+ * or array literal: a table (privateTable), decided when a statement the
+ * island evaluates names it. */
+function tableShaped(statement: ts.Statement): statement is ts.VariableStatement {
+  if (!ts.isVariableStatement(statement)) return false;
+  const declarations = statement.declarationList.declarations.nodes;
+  const initializer = declarations.length === 1 ? declarations[0]!.initializer : undefined;
+  if (initializer === undefined) return false;
+  const value = withoutParenthesesTypeWrappers(initializer);
+  return ts.isObjectLiteralExpression(value) || ts.isArrayLiteralExpression(value);
+}
+
+/** The identifiers of `file` spelled `name`: where the name could be meant
+ * (Lowerer.closedIslandMentions keeps each file's identifiers by text). */
+function mentionsOf(lowerer: Lowerer, file: ts.SourceFile, name: string): ts.Identifier[] {
+  const mentions = lowerer.closedIslandMentions;
+  let byName = mentions.get(file);
+  if (byName === undefined) {
+    const found = new Map<string, ts.Identifier[]>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node)) {
+        const list = found.get(node.text);
+        if (list === undefined) found.set(node.text, [node]);
+        else list.push(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    mentions.set(file, (byName = found));
+  }
+  return byName.get(name) ?? [];
+}
+
+/** The top-level statement of its file that holds `node`, or null. */
+function topLevelStatementOf(node: ts.Node): ts.Statement | null {
+  let current: ts.Node = node;
+  while (current.parent !== undefined && !ts.isSourceFile(current.parent)) current = current.parent;
+  return current.parent === undefined ? null : (current as ts.Statement);
+}
+
+/** A table only the island's statements name: a top-level `const`, not
+ * exported, whose initializer is an object or array literal of closed
+ * parts, and whose name appears nowhere in its file but in statements the
+ * island evaluates. No native code can then read the table or change it,
+ * so the island's object is the only one there has to be: the constant is
+ * a generated module's export like any other closed constant, and the
+ * native statement lowers to that module's load alone.
+ *
+ * The statements that name the table are closed only if the table is the
+ * island's, and the table is only if they are: each of them is decided
+ * with the table taken as the island's (and with the tables already taken
+ * so while this one is decided), and none of those decisions is kept. The
+ * answer holds when every one of them is closed that way: then nothing
+ * outside those statements names any of the tables.
+ *
+ * Every identifier of the file that is spelled like the table counts as a
+ * mention, whatever it binds (a property of that name, a type query, an
+ * export clause): a mention outside a closed statement keeps the table
+ * native. */
+function privateTable(
+  lowerer: Lowerer,
+  statement: ts.VariableStatement,
+  declaration: ts.VariableDeclaration,
+  initializer: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+): ClosedConstant | null {
+  if (!ts.isIdentifier(declaration.name)) return null;
+  if (statement.declarationList.declarations.nodes.length !== 1) return null;
+  const exported = (statement.modifiers?.nodes ?? []).some(
+    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+  );
+  if (exported) return null;
+  const file = statement.parent;
+  if (file === undefined || !ts.isSourceFile(file)) return null;
+  const scan = newScan(lowerer, statement);
+  const text = closedText(scan, initializer);
+  if (text === null) return null;
+  const name = declaration.name.text;
+  const table: ClosedConstant = {
+    name,
+    statement,
+    table: true,
+    initializer,
+    text,
+    imports: scan.imports,
+    operands: scan.operands,
+    index: -1,
+    key: "",
+  };
+  const symbol = lowerer.checker.getSymbolAtLocation(declaration.name);
+  const state = deciding(lowerer);
+  const outer = { active: state.active, assumed: state.assumed };
+  state.active = new Set();
+  state.assumed = new Map(outer.assumed ?? []);
+  state.assumed.set(statement, table);
+  let users = 0;
+  let outside: ts.Identifier | null = null;
+  const closed = new Map<ts.Statement, boolean>();
+  const evaluated = (user: ts.Statement | null): boolean => {
+    if (user === null || user === statement || !isClosedSource(user)) return false;
+    let answer = closed.get(user);
+    if (answer === undefined) closed.set(user, (answer = closedStatement(lowerer, user) !== null));
+    return answer;
+  };
+  try {
+    for (const mention of mentionsOf(lowerer, file, name)) {
+      if (mention === declaration.name) continue;
+      if (!evaluated(topLevelStatementOf(mention))) {
+        outside = mention;
+        break;
+      }
+      const shorthand =
+        mention.parent !== undefined &&
+        ts.isShorthandPropertyAssignment(mention.parent) &&
+        mention.parent.name === mention
+          ? lowerer.checker.getShorthandAssignmentValueSymbol(mention.parent)
+          : undefined;
+      if ((shorthand ?? lowerer.checker.getSymbolAtLocation(mention)) === symbol) users++;
+    }
+  } finally {
+    state.active = outer.active;
+    state.assumed = outer.assumed;
+  }
+  if (outside !== null) {
+    const line = ts.getLineAndCharacterOfPosition(file, ts.tokenStartOfNode(outside)).line + 1;
+    traceClosed(
+      lowerer,
+      declaration,
+      `line ${line} names it outside the statements the island evaluates`,
+    );
+    return null;
+  }
+  // A table nothing names is left alone.
+  if (users === 0) return null;
+  traceClosed(lowerer, declaration, null);
+  return table;
+}
+
+/** The JavaScript of a loop's binding, or null: a name, or an array
+ * pattern of names (`[key, value]`), each a name of the generated module's
+ * own from here on. */
+function closedBinding(scan: Scan, name: ts.BindingName): string | null {
+  const checker = scan.lowerer.checker;
+  const local = (node: ts.Identifier): string => {
+    const symbol = checker.getSymbolAtLocation(node);
+    if (symbol !== undefined) scan.locals.add(symbol);
+    return node.text;
+  };
+  if (ts.isIdentifier(name)) return local(name);
+  if (!ts.isArrayBindingPattern(name)) return refuse(scan, name, "a binding pattern");
+  const parts: string[] = [];
+  for (const element of name.elements.nodes) {
+    if (ts.isOmittedExpression(element)) {
+      parts.push("");
+      continue;
+    }
+    if (
+      element.dotDotDotToken !== undefined ||
+      element.initializer !== undefined ||
+      element.propertyName !== undefined ||
+      !ts.isIdentifier(element.name)
+    )
+      return refuse(scan, element, "a binding pattern");
+    parts.push(local(element.name));
+  }
+  return `[${parts.join(", ")}]`;
+}
+
+/** The closed statement a top-level `for…of` is, or null: `const`
+ * bindings, a closed iterable, and a body of calls and constructions with
+ * closed operands, at least one of them on an island value. The island
+ * runs the loop: its bindings are the island's values and nothing native
+ * sees an iteration. */
+function closedLoop(lowerer: Lowerer, statement: ts.ForOfStatement): ClosedConstant | null {
+  if (statement.awaitModifier !== undefined) return null;
+  const list = statement.initializer;
+  if (!ts.isVariableDeclarationList(list)) return null;
+  if ((list.flags & ts.NodeFlags.BlockScoped) !== ts.NodeFlags.Const) return null;
+  const binding = list.declarations.nodes.length === 1 ? list.declarations.nodes[0]! : undefined;
+  if (binding === undefined) return null;
+  const body = ts.isBlock(statement.statement)
+    ? statement.statement.statements.nodes
+    : [statement.statement];
+  const calls: ts.Expression[] = [];
+  for (const part of body) {
+    if (!ts.isExpressionStatement(part)) return null;
+    const expression = withoutParenthesesTypeWrappers(part.expression);
+    if (!ts.isCallExpression(expression) && !ts.isNewExpression(expression)) return null;
+    calls.push(expression);
+  }
+  // An island operation today: some call of the body is one.
+  if (!calls.some((call) => islandRooted(lowerer, call))) return null;
+  const scan = newScan(lowerer, statement);
+  // The iterable evaluates before the bindings exist.
+  const iterable = closedText(scan, statement.expression);
+  const pattern = iterable === null ? null : closedBinding(scan, binding.name);
+  const texts: string[] = [];
+  if (pattern !== null)
+    for (const call of calls) {
+      const text = closedText(scan, call);
+      if (text === null) break;
+      texts.push(`${text};`);
+    }
+  if (iterable === null || pattern === null || texts.length !== calls.length) {
+    traceClosed(lowerer, statement, `it holds ${scan.refusal ?? "a native value"}`);
+    return null;
+  }
+  traceClosed(lowerer, statement, null);
+  return {
+    name: null,
+    statement,
+    table: false,
+    initializer: statement.expression,
+    text: `for (const ${pattern} of ${iterable}) { ${texts.join(" ")} }`,
+    imports: scan.imports,
+    operands: scan.operands,
+    index: -1,
+    key: "",
+  };
+}
+
+/** What the island evaluates of the top-level statement `statement`, or
+ * null. */
+function decideStatement(lowerer: Lowerer, statement: ClosedSource): ClosedConstant | null {
   const file = statement.parent;
   if (file === undefined || !ts.isSourceFile(file) || !movable(lowerer, file)) return null;
+  if (ts.isExpressionStatement(statement)) return closedExpressionStatement(lowerer, statement);
+  if (ts.isForOfStatement(statement)) return closedLoop(lowerer, statement);
   const declarations = statement.declarationList.declarations.nodes;
   const declaration = declarations[0];
   if (declaration === undefined || constStatementOf(declaration) !== statement) return null;
@@ -483,25 +891,58 @@ function closedStatement(lowerer: Lowerer, statement: ts.VariableStatement): Clo
   // Each declarator is looked at, so that the trace names what keeps it
   // native; only a statement's single declarator can be closed.
   for (const d of declarations) constant = closedDeclaration(lowerer, statement, d);
-  lowerer.closedIslandStatements.set(statement, constant);
   return constant;
 }
 
-/** The closed constants of `file`, numbered in source order. */
+/** The closed constant a top-level `const` statement declares, or the
+ * closed statement a top-level expression statement or `for…of` is, or
+ * null. One declarator only: the initializers of two would evaluate before
+ * either binding is assigned. */
+function closedStatement(lowerer: Lowerer, statement: ClosedSource): ClosedConstant | null {
+  const state = deciding(lowerer);
+  const assumed = state.assumed?.get(statement);
+  if (assumed !== undefined) return assumed;
+  const known = lowerer.closedIslandStatements.get(statement);
+  if (known !== undefined) return known;
+  // A statement being decided names itself through a cycle of constants:
+  // not closed.
+  if (state.active.has(statement)) return null;
+  state.active.add(statement);
+  let closed: ClosedConstant | null;
+  try {
+    closed = decideStatement(lowerer, statement);
+  } finally {
+    state.active.delete(statement);
+  }
+  // A decision taken while a table is only assumed the island's own is
+  // not kept: it is taken again once that table is decided.
+  if (state.assumed === null) lowerer.closedIslandStatements.set(statement, closed);
+  return closed;
+}
+
+/** The closed constants and statements of `file`, numbered in source
+ * order. */
 export function closedFile(lowerer: Lowerer, file: ts.SourceFile): ClosedFile {
   const known = lowerer.closedIslandFiles.get(file);
   if (known !== undefined) return known;
   const result: ClosedFile = { constants: [], initializers: new Map() };
   lowerer.closedIslandFiles.set(file, result);
   if (lowerer.nodeIslands === null || !movable(lowerer, file)) return result;
-  for (const statement of file.statements.nodes) {
-    if (!ts.isVariableStatement(statement)) continue;
-    const constant = closedStatement(lowerer, statement);
+  const sources = file.statements.nodes.filter(isClosedSource);
+  // A table is decided when a statement that names it is, so the statements
+  // come first; then everything is numbered where it stands.
+  for (const statement of sources) if (!tableShaped(statement)) closedStatement(lowerer, statement);
+  for (const statement of sources) {
+    const constant = tableShaped(statement)
+      ? (lowerer.closedIslandStatements.get(statement) ?? null)
+      : closedStatement(lowerer, statement);
     if (constant === null) continue;
     constant.index = result.constants.length;
     constant.key = `${file.fileName}.closed.${constant.index}.mjs`;
     result.constants.push(constant);
-    result.initializers.set(constant.initializer, constant);
+    // Only a constant with a native binding has an initializer to lower.
+    if (constant.name !== null && !constant.table)
+      result.initializers.set(constant.initializer, constant);
   }
   return result;
 }
@@ -512,30 +953,58 @@ function generatedModule(lowerer: Lowerer, constant: ClosedConstant): GeneratedM
   for (const [name, operand] of constant.operands) {
     // The operand's file numbers its constants on demand.
     if (operand.key === "") closedFile(lowerer, ts.getSourceFileOfNode(operand.statement));
-    const clause = operand.name === name ? `{ ${name} }` : `{ ${operand.name} as ${name} }`;
+    // An operand is a constant: a statement has no name to be named by.
+    const exported = operand.name!;
+    const clause = exported === name ? `{ ${name} }` : `{ ${exported} as ${name} }`;
     imports.set(name, { clause, target: operand.key });
   }
   return {
     source: ts.getSourceFileOfNode(constant.statement).fileName,
     index: constant.index,
     imports: [...imports.values()],
-    body: `export const ${constant.name} = ${constant.text};\n`,
+    body:
+      constant.name === null
+        ? `${constant.text};\n`
+        : `export const ${constant.name} = ${constant.text};\n`,
   };
 }
 
+/** What the island evaluates of the top-level statement `stmt` of `file`,
+ * once the file's statements are decided (closedFile). */
+function closedAt(
+  lowerer: Lowerer,
+  file: ts.SourceFile,
+  stmt: ts.Statement,
+): ClosedConstant | null {
+  if (lowerer.nodeIslands === null || !isClosedSource(stmt)) return null;
+  closedFile(lowerer, file);
+  return lowerer.closedIslandStatements.get(stmt) ?? null;
+}
+
+/** Whether the island evaluates the whole top-level statement `stmt` of
+ * `file`: a closed expression statement or loop, or a table only such
+ * statements name. The load closedIslandInitLoad answers is then all there
+ * is, and lowerFileInit lowers nothing else for it. */
+export function isClosedIslandStatement(
+  lowerer: Lowerer,
+  file: ts.SourceFile,
+  stmt: ts.Statement,
+): boolean {
+  const closed = closedAt(lowerer, file, stmt);
+  return closed !== null && (closed.name === null || closed.table);
+}
+
 /** The %init statements that run before the top-level statement `stmt` of
- * `file` (lowerFileInit): when it declares a closed constant, the load of
- * the constant's generated module, deferred like a static island import's
- * (snapshot.ts decides after lowering). */
+ * `file` (lowerFileInit): when it declares a closed constant, or is a
+ * closed statement, the load of its generated module, deferred like a
+ * static island import's (snapshot.ts decides after lowering). */
 export function closedIslandInitLoad(
   lowerer: Lowerer,
   file: ts.SourceFile,
   stmt: ts.Statement,
 ): IrStmt[] {
-  if (lowerer.nodeIslands === null || !ts.isVariableStatement(stmt)) return [];
-  const constant = closedStatement(lowerer, stmt);
+  const constant = closedAt(lowerer, file, stmt);
   if (constant === null) return [];
-  closedFile(lowerer, file);
   lowerer.usesNodeIsland = true;
   const loc = locOf(stmt);
   const module = islandModuleGlobal(lowerer, constant.key);
@@ -597,7 +1066,7 @@ function closedConstantAt(lowerer: Lowerer, expr: ts.Expression): ClosedConstant
  * for any other expression. */
 export function lowerClosedIslandInit(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
   const constant = closedConstantAt(lowerer, expr);
-  if (constant === null) return null;
+  if (constant === null || constant.name === null || constant.table) return null;
   const loc = locOf(expr);
   lowerer.usesNodeIsland = true;
   const module = islandModuleGlobal(lowerer, constant.key);

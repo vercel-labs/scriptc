@@ -98,7 +98,10 @@ export function prepareExecutableModule(
   const loadPolicy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const packageMarks = commandLinePackageMarks(loadPolicy, opts.npmStatic);
   const islandScan = loadPolicy.mode !== "off" || packageMarks.length > 0;
-  let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
+  let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
+    islandScan,
+    ...(opts.define !== undefined ? { define: opts.define } : {}),
+  });
   timing("frontend-load");
   // A mark that names nothing the build could act on is refused instead of
   // compiling as if the flag were not there. The program is the same on
@@ -140,6 +143,9 @@ export function prepareExecutableModule(
         ? { islandModules: new Set(islandDecision.modules.keys()) }
         : {}),
       islandScan,
+      // The reload re-reads the program: the define values still decide its
+      // branches and set its variables at startup.
+      ...(opts.define !== undefined ? { define: opts.define } : {}),
     });
     timing("frontend-island-reload");
   }

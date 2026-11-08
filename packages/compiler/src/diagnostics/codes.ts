@@ -110,6 +110,7 @@ export const DIAGNOSTIC_CODES = {
   SC6002: "divergence: observed object key order",
   SC6003: "divergence: localeCompare outside the built-in collation",
   SC6004: "divergence: cast to an unrelated class",
+  SC6007: "divergence: island value crosses as a copy",
   SC6008: "divergence: import kept that tsc's output drops",
   SC6101: "performance: likely-hot function with untyped values",
   SC6102: "performance: declaration-typed boundary note",

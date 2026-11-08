@@ -2034,7 +2034,13 @@ export function collectGlobals(
           const vSym = lowerer.checker.getSymbolAtLocation(rhs);
           const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
           const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
-          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+          if (
+            vSym &&
+            vDecl &&
+            vG &&
+            vG.mutable &&
+            !bindingNeverReassigned(lowerer.bindingScope(), vSym, vDecl)
+          ) {
             const g: IrGlobal = {
               id: `%g.${tag}exports`,
               name: "exports",
@@ -2470,7 +2476,9 @@ export function collectGlobals(
           stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
           (() => {
             const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
-            return symbol !== undefined && bindingNeverReassigned(lowerer, symbol, decl);
+            return (
+              symbol !== undefined && bindingNeverReassigned(lowerer.bindingScope(), symbol, decl)
+            );
           })());
       if (stableStdlibAlias && stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer))
         continue;
@@ -4118,6 +4126,28 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       else_: workerBranch,
       loc,
     });
+  }
+  // `--define`: the program runs as if started with the defined variables
+  // set, so every read of the environment, and each child process, agrees
+  // with the `if` statements the values decided at build time. Set on the
+  // main thread before any module runs, so no thread reads the environment meanwhile.
+  if (lowerer.define !== undefined) {
+    body.unshift(
+      ...Object.entries(lowerer.define).map(([key, value]): IrStmt => ({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "process.envSet",
+          args: [
+            { kind: "strLit", value: key.slice("process.env.".length), type: STRING, loc },
+            { kind: "strLit", value, type: STRING, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      })),
+    );
   }
   if (lowerer.workerTargets.length > 0) {
     const mainBody = body.splice(0);

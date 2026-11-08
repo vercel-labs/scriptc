@@ -238,6 +238,7 @@ import {
   type FnCtx,
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
+import type { Defines } from "../defines.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
@@ -588,7 +589,7 @@ import {
   genericLocalClassBinding,
   checkGenericIdentityPins,
 } from "./generic-functions.js";
-import { bindingNeverReassigned } from "./binding-analysis.js";
+import { bindingNeverReassigned, type BindingScope } from "./binding-analysis.js";
 import { isMessageListenerCall } from "./expressions/message-listeners.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
@@ -1193,6 +1194,9 @@ export interface LowerOptions {
    * path.delimiter / os.EOL lower as the win32 literals; path.posix and
    * path.win32 keep answering THEIR platform everywhere, like Node's. */
   targetPlatform?: string;
+  /** `--define` values: %main sets each defined `process.env.NAME` first,
+   * and writes to one are refused. */
+  define?: Defines | undefined;
   /** Node's startup refusal (LoadResult.startupCrash — preflight's
    * resolution walk and named-import link checks): the program
    * compiles to that startup crash. */
@@ -1368,6 +1372,8 @@ export interface LowererMode {
   /** The build's target platform (LowerOptions.targetPlatform — lowerToIr
    * passes it to every pass). Defaults to the host. */
   targetPlatform?: string;
+  /** LowerOptions.define, shared by every pass. */
+  define?: Defines | undefined;
   /** LowerOptions.tierMode, shared by every pass. */
   tierMode?: TierMode;
   workerTargets?: readonly ts.SourceFile[];
@@ -1600,6 +1606,7 @@ function lowerToIrWithIslands(
     projectCheckJs: options.projectCheckJs ?? false,
     parameterPropertiesFirst: options.parameterPropertiesFirst,
     targetPlatform,
+    define: options.define,
     startupCrash,
     admittedOpinions: options.admittedOpinions,
     inlineRequireCycleCalls,
@@ -1631,6 +1638,7 @@ function lowerToIrWithIslands(
           projectCheckJs: options.projectCheckJs ?? false,
           parameterPropertiesFirst: options.parameterPropertiesFirst,
           targetPlatform,
+          define: options.define,
           startupCrash,
           admittedOpinions: options.admittedOpinions,
           inlineRequireCycleCalls,
@@ -1700,6 +1708,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1736,6 +1745,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1815,6 +1825,7 @@ function lowerToIrWithIslands(
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1855,6 +1866,7 @@ function lowerToIrWithIslands(
       generalNodeStreams: true,
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -2029,6 +2041,7 @@ function lowerToIrWithIslands(
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
+      define: options.define,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -5419,6 +5432,7 @@ export class Lowerer {
     "generalNodeStreams",
     "dynNodeStreams",
     "targetPlatform",
+    "define",
     "startupCrash",
     "projectCheckJs",
     "parameterPropertiesFirst",
@@ -5833,6 +5847,7 @@ export class Lowerer {
    * selects the platform-keyed builtin surfaces (builtinModuleFnsOf /
    * builtinModuleConstOf in surfaces.ts). */
   readonly targetPlatform: string;
+  readonly define: Defines | undefined;
   /** LowererMode.startupCrash — buildMain opens %main with the throw. */
   readonly startupCrash: StartupCrash | null;
   /** The project's tsconfig sets `checkJs`. */
@@ -6478,6 +6493,7 @@ export class Lowerer {
     this.remainder = mode.remainder ?? false;
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
+    this.define = mode.define;
     this.tierMode = mode.tierMode ?? "auto";
     this.runtimeOptionalReport = mode.runtimeOptionalReport === true;
     this.typeClaims = mode.typeClaims === true;
@@ -16667,7 +16683,7 @@ export class Lowerer {
         units.add("undefined");
       }
     }
-    if (!allConst && !bindingNeverReassigned(this, sym, firstDecl!)) return null;
+    if (!allConst && !bindingNeverReassigned(this.bindingScope(), sym, firstDecl!)) return null;
     return [...units].sort().join(" or ");
   }
 
@@ -19815,6 +19831,18 @@ export class Lowerer {
    * read: a record, not the Lowerer (see isStdlibFile). */
   osConstantsCtx(): Pick<TypeMapperCtx, "checker" | "isStdlibFile"> {
     return { checker: this.checker, isStdlibFile: (sf: ts.SourceFile) => this.isStdlibFile(sf) };
+  }
+
+  /** What the binding-write scan (binding-writes.ts) reads of a lowering
+   * context: a record, not the Lowerer (see isStdlibFile). Its parameter is
+   * the BindingScope interface, and handing it the Lowerer converted the
+   * Lowerer to a dynamic value at every one of its callers when the
+   * compiler compiles itself. The record shares this Lowerer's cache. */
+  bindingScope(): BindingScope {
+    return {
+      neverReassignedCache: this.neverReassignedCache,
+      resolveValueSymbol: (ident: ts.Identifier) => this.resolveValueSymbol(ident),
+    };
   }
 
   /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by

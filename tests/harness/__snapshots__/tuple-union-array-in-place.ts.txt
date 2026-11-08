@@ -1,27 +1,27 @@
-tuple-union-array-in-place.ts:13:3 - error SC1090: '.forEach()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.forEach()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
+tuple-union-array-in-place.ts:14:3 - error SC1090: '.forEach()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.forEach()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
 
-  12 | for (const [, names] of Object.entries(GROUPS)) {
-  13 |   (names as readonly string[]).forEach((name) => {
+  13 |   total += line.length;
+  14 |   (stops as readonly string[]).forEach((stop) => {
      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  14 |     total += name.length;
+  15 |     total += stop.length;
 
-tuple-union-array-in-place.ts:16:12 - error SC1090: '.reduce()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.reduce()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
+tuple-union-array-in-place.ts:17:12 - error SC1090: '.reduce()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.reduce()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
 
-  15 |   });
-  16 |   total += (names as readonly string[]).reduce((sum, name) => sum + name.length, 0);
+  16 |   });
+  17 |   total += (stops as readonly string[]).reduce((sum, stop) => sum + stop.length, 0);
      |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  17 |   total += String((names as readonly string[]).at(-1)).length;
+  18 |   total += String((stops as readonly string[]).at(-1)).length;
 
-tuple-union-array-in-place.ts:17:19 - error SC1090: '.at()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.at()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
+tuple-union-array-in-place.ts:18:19 - error SC1090: '.at()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.at()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
 
-  16 |   total += (names as readonly string[]).reduce((sum, name) => sum + name.length, 0);
-  17 |   total += String((names as readonly string[]).at(-1)).length;
+  17 |   total += (stops as readonly string[]).reduce((sum, stop) => sum + stop.length, 0);
+  18 |   total += String((stops as readonly string[]).at(-1)).length;
      |                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  18 |   total += (names as readonly string[]).concat(['z']).length;
+  19 |   total += (stops as readonly string[]).concat(['yard']).length;
 
-tuple-union-array-in-place.ts:18:12 - error SC1090: '.concat()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.concat()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
+tuple-union-array-in-place.ts:19:12 - error SC1090: '.concat()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.concat()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
 
-  17 |   total += String((names as readonly string[]).at(-1)).length;
-  18 |   total += (names as readonly string[]).concat(['z']).length;
-     |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  19 | }
+  18 |   total += String((stops as readonly string[]).at(-1)).length;
+  19 |   total += (stops as readonly string[]).concat(['yard']).length;
+     |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  20 | }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { buildComptimeEvaluator } from "../../../native/llvm-codegen/comptime/build.mjs";
 import { buildLinuxHelper } from "../../../native/llvm-codegen/linux-helper.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -17,4 +18,11 @@ buildLinuxHelper({
   version: manifest.version,
   build: join(repo, "node_modules/.cache/scriptc-llvm-linux-arm64-gnu"),
   output: join(root, "bin", "scriptc-llvm-codegen"),
+});
+// Static like the helper, so one executable serves glibc and musl hosts.
+buildComptimeEvaluator({
+  compiler: [process.env.CC ?? "clang", "-static"],
+  platform: "linux",
+  build: join(repo, "node_modules/.cache/scriptc-llvm-linux-arm64-gnu-comptime"),
+  output: join(root, "bin", "scriptc-comptime"),
 });

@@ -29,6 +29,7 @@ export interface NativeToolchain {
   archiverArgs?: string[];
   relocatableLinker?: string;
   declarationsRoot?: string;
+  /** The compile-time evaluator, beside the helper in its package. */
   comptimeExecutable?: string;
   wasiNodeRunner?: string;
   /** The prebuilt lib diagnostics the distribution ships, present while the
@@ -60,7 +61,6 @@ export interface NativeToolchainManifest {
   archiver?: string;
   archiver_args?: string[];
   relocatable_linker?: string;
-  comptime?: string;
   wasi_node_runner?: string;
   /** Answers for the supplied declaration files, computed with `tsc_ts`. */
   lib_diagnostics?: string;
@@ -144,7 +144,6 @@ export function loadNativeToolchain(
     "declarations",
     "archiver",
     "relocatable_linker",
-    "comptime",
     "wasi_node_runner",
     "lib_diagnostics",
   ]) {
@@ -256,9 +255,11 @@ export function loadNativeToolchain(
     ...(manifest.relocatable_linker === undefined
       ? {}
       : { relocatableLinker: commandFrom(root, manifest.relocatable_linker) }),
-    ...(manifest.comptime === undefined
-      ? {}
-      : { comptimeExecutable: pathFrom(root, manifest.comptime) }),
+    comptimeExecutable: join(
+      helperPackageRoot,
+      "bin",
+      host.platform === "win32" ? "scriptc-comptime.exe" : "scriptc-comptime",
+    ),
     ...(manifest.wasi_node_runner === undefined
       ? {}
       : { wasiNodeRunner: pathFrom(root, manifest.wasi_node_runner) }),

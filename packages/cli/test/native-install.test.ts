@@ -55,15 +55,14 @@ function fixture() {
     linker: "clang",
     linker_args: [],
     dsymutil: "dsymutil",
-    comptime: "../lib/comptime",
     wasi_node_runner: "../lib/wasi/cli/wasi-runner.js",
     lib_diagnostics: "../lib/lib-diagnostics.json",
   };
   writeFileSync(binary + ".json", JSON.stringify(toolchain));
   const helpers = [
     toolchain.ts7,
-    toolchain.comptime,
     join(toolchain.llvm_package, "bin/scriptc-llvm-codegen"),
+    join(toolchain.llvm_package, "bin/scriptc-comptime"),
   ].map((path) => resolve(bin, path));
   for (const path of helpers) {
     mkdirSync(dirname(path), { recursive: true });
@@ -148,7 +147,8 @@ test.each(["hoisted", "pnpm"])(
       );
     }
     mkdirSync(join(modules, helper, "bin"));
-    writeFileSync(join(modules, helper, "bin/scriptc-llvm-codegen"), "helper", { mode: 0o644 });
+    for (const tool of ["scriptc-llvm-codegen", "scriptc-comptime"])
+      writeFileSync(join(modules, helper, "bin", tool), "helper", { mode: 0o644 });
     const command = installNativeCli(f.directory, f.packageName);
     const manifest = JSON.parse(readFileSync(command + ".json", "utf8"));
     const bin = dirname(command);
@@ -158,7 +158,8 @@ test.each(["hoisted", "pnpm"])(
       { target: "macos-arm64", path: manifest.runtime_pack },
     ]);
     if (process.platform !== "win32")
-      expect(statSync(join(modules, helper, "bin/scriptc-llvm-codegen")).mode & 0o111).toBe(0o111);
+      for (const tool of ["scriptc-llvm-codegen", "scriptc-comptime"])
+        expect(statSync(join(modules, helper, "bin", tool)).mode & 0o111).toBe(0o111);
     writeFileSync(
       join(modules, runtime, "package.json"),
       JSON.stringify({ name: runtime, version: "1.2.4" }),
@@ -268,8 +269,8 @@ test("npm links the installed native executable without an interpreter", () => {
     const manifest = JSON.parse(readFileSync(join(bin, "scriptc.exe.json"), "utf8"));
     for (const helper of [
       manifest.ts7,
-      manifest.comptime,
       join(manifest.llvm_package, "bin/scriptc-llvm-codegen"),
+      join(manifest.llvm_package, "bin/scriptc-comptime"),
     ]) {
       expect(
         execFileSync(resolve(bin, helper), [], {

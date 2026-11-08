@@ -702,6 +702,14 @@ function defaultParameterShape(
     }
   }
   const bodyType = lowerer.stripUndefinedArm(raw);
+  // A parameter whose own type is `null` (`fallback = null` with no
+  // annotation): a null-typed binding is held in the `null | undefined`
+  // union everywhere else, and the body's binding is that union too. An
+  // omitted argument or undefined takes the default; null stays itself.
+  if (bodyType.kind === "nullT") {
+    const held = lowerer.withUndefinedArm(bodyType);
+    return { type: held, mode: "omittable", bodyType: held };
+  }
   lowerer.checkDefaultParamBodyType(param, bodyType);
   const abi =
     bodyType.kind === "union"

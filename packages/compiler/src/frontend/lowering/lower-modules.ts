@@ -21,11 +21,7 @@ import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
-import {
-  sharedInitFlagStores,
-  sharedModulePlans,
-  sharedModuleRegistrations,
-} from "./lower-shared-modules.js";
+import { sharedModulePlans, sharedModuleRegistrations } from "./lower-shared-modules.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
 import {
   packageNameOfPath,
@@ -3859,7 +3855,6 @@ export function lowerFileInit(
         stmt,
         deferred ? [deferred] : lowerer.lowerStmts([stmt]),
       );
-      if (lowerer.sharedInitFlags.size > 0) stmtIr.push(...sharedInitFlagStores(lowerer, stmt));
       // Class EXPRESSIONS inside this statement queued their static
       // inits while it lowered: they land immediately before it — JS's
       // order for the supported whole-initializer positions.

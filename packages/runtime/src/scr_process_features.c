@@ -18,35 +18,42 @@ static void scr_features_object_cleanup(void) {
 /* Node's process.features keys in Node's order (lib/internal/bootstrap/
  * node.js) with the values that are true of a compiled binary; the
  * lowering's PROCESS_FEATURES table answers member reads from the same
- * values and says why each one holds. Node defines the last four through
- * getters without setters: here they are data properties that cannot be
- * written. */
+ * values and says why each one holds.
+ *
+ * The object cannot be changed: every flag is a data property that is
+ * neither writable nor configurable, and the object takes no new keys. A
+ * member read (`process.features.tls`) is compiled as a constant, so a
+ * write the object accepted would leave the read stale; under Node nine of
+ * the flags are writable and a program may add keys of its own. A write
+ * therefore throws the TypeError of a frozen object, and the constants
+ * stay true of the object. */
 ScrDyn *scr_process_features(void) {
   if (!scr_features_object) {
     static const struct {
       const char *name;
-      bool value, writable;
+      bool value;
     } flags[] = {
-        {"inspector", false, true},
-        {"debug", false, true},
-        {"uv", false, true},
-        {"ipv6", true, true},
-        {"tls_alpn", true, true},
-        {"tls_sni", true, true},
-        {"tls_ocsp", false, true},
-        {"tls", true, true},
-        {"openssl_is_boringssl", false, true},
-        {"cached_builtins", false, false},
-        {"require_module", true, false},
-        {"quic", false, false},
-        {"typescript", false, false},
+        {"inspector", false},
+        {"debug", false},
+        {"uv", false},
+        {"ipv6", true},
+        {"tls_alpn", true},
+        {"tls_sni", true},
+        {"tls_ocsp", false},
+        {"tls", true},
+        {"openssl_is_boringssl", false},
+        {"cached_builtins", false},
+        {"require_module", true},
+        {"quic", false},
+        {"typescript", false},
     };
     scr_features_object = scr_dyn_new_obj();
     for (size_t i = 0; i < sizeof flags / sizeof flags[0]; i++) {
       scr_dyn_obj_set(scr_features_object, flags[i].name, strlen(flags[i].name),
                       scr_dyn_new_bool(flags[i].value));
-      if (!flags[i].writable) scr_dyn_obj_set_attrs_at(scr_features_object, i, false, true, true);
+      scr_dyn_obj_set_attrs_at(scr_features_object, i, false, true, false);
     }
+    scr_features_object->non_extensible = true;
     scr_atexit(&scr_features_object_cleanup);
   }
   return scr_dyn_retain(scr_features_object);

@@ -786,7 +786,9 @@ export function lowerProcessProperty(
   }
   // process.features.<flag>: Node's own keys answer the compiled binary's
   // value (PROCESS_FEATURES); any other name reads undefined, as it does
-  // on Node's object.
+  // on Node's object. The fold is sound because the runtime's object
+  // (scr_process_features) accepts no write and no new key: a program that
+  // holds the object can never make it disagree with these constants.
   // The capability-probe members that honestly DON'T EXIST in a
   // compiled binary — each reads undefined (their declared types carry
   // the undefined arm), so feature probes take their documented

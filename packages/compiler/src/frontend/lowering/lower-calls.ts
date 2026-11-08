@@ -121,6 +121,7 @@ import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, isNodeEsmFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
+import { lowerArgumentsObjectCall } from "./arguments-object.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import {
   erasedOverloadMemberType,
@@ -502,6 +503,9 @@ function lowerCallableMemberCall(lowerer: Lowerer, call: ts.CallExpression): IrE
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
+  // A call that asks an arguments object what it is (arguments-object.ts).
+  const argumentsAnswer = lowerArgumentsObjectCall(lowerer, expr, loc);
+  if (argumentsAnswer !== null) return argumentsAnswer;
   // A JavaScript source calling a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The
   // receiver may be a checked-dynamic value, so the callee's name decides;

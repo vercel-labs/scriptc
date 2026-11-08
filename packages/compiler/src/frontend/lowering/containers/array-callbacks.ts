@@ -71,7 +71,11 @@ import {
 } from "./array-iteration.js";
 import { dynamicReceiverThrows } from "./dynamic-receivers.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
-import { checkedFilterNarrowing, supersetGuardFields } from "./filter-predicates.js";
+import {
+  checkedFilterNarrowing,
+  checkedValueNarrowing,
+  supersetGuardFields,
+} from "./filter-predicates.js";
 import { omittableTrailingParam } from "../coercions/function-adapters.js";
 
 /** `a.map(fn)` / `a.filter(fn)` / `a.forEach(fn)` desugar to a direct
@@ -1428,9 +1432,15 @@ export function lowerArrayFindLikeCall(
 }
 
 /** The retag helper that converts a found element into find's result union,
- * or null when the element converts directly. Only an inline callback with
- * an inferred predicate over its element can narrow the result; a written
- * predicate is an unchecked assertion and keeps the refusal. */
+ * or null when the element converts directly. An inline callback with an
+ * inferred predicate over its element proves the narrowing. A written
+ * predicate (`(c): c is Rich => ...`, a guard function passed as a value)
+ * is an assertion TypeScript does not check and an ordinary boolean
+ * callback at run time: the loop runs it as one, and the element it answers
+ * converts to the predicate's type checked (filter-predicates.ts). An
+ * element that is not of that type throws the TypeError of a checked
+ * extraction. The search answers the element itself, so a predicate type
+ * that only a rebuilt record could hold stays refused. */
 function findResultRetag(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1444,10 +1454,12 @@ function findResultRetag(
   const loc = locOf(call);
   const inline = ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode);
   if (!unchangedElement && (!inline || argNode.type !== undefined)) {
+    const helper = writtenPredicateRetag(lowerer, valueT, resultT, loc);
+    if (helper !== null) return helper;
     lowerer.unsupported(
       "SC1090",
       argNode,
-      `narrowing '.${method}' requires an inline callback with an inferred predicate (annotate the return ': boolean' to keep the receiver's element type)`,
+      `narrowing '.${method}' to '${lowerer.fmt(lowerer.stripUndefinedArm(resultT))}' with a written type predicate (a '${lowerer.fmt(valueT)}' element has no checked conversion that answers the element itself; annotate the return ': boolean' to keep the receiver's element type)`,
     );
   }
   const signature = inline ? lowerer.checker.getSignatureFromDeclaration(argNode) : undefined;
@@ -1470,6 +1482,44 @@ function findResultRetag(
   )
     lowerer.unsupported("SC1090", call, `'.${method}' narrowing to an incompatible result layout`);
   return retag;
+}
+
+/** Interned `%find.narrow.<n>(v)`: the element a written predicate
+ * answered true for, as find's result union: converted checked to the
+ * predicate's type (checkedValueNarrowing), then wrapped. Null when the
+ * element has no checked conversion to that type that hands the element
+ * itself on. */
+function writtenPredicateRetag(
+  lowerer: Lowerer,
+  valueT: IrType,
+  resultT: IrType & { kind: "union" },
+  loc: SrcLoc,
+): string | null {
+  const present = lowerer.stripUndefinedArm(resultT);
+  const typeText = lowerer.fmt(present);
+  const narrow = checkedValueNarrowing(lowerer, valueT, present, typeText, loc);
+  if (narrow === null) return null;
+  const key = `find.narrow:${typeKey(valueT)}:${typeKey(resultT)}:${typeText}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%find.narrow", key);
+  lowerer.valueHelpers.set(key, name);
+  const narrowed: IrExpr = {
+    kind: "call",
+    callee: narrow,
+    args: [varRef("v.0", valueT, loc)],
+    type: present,
+    loc,
+  };
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "v.0", name: "v", type: valueT }],
+    returnType: resultT,
+    locals: [{ id: "v.0", name: "v", type: valueT, mutable: false }],
+    body: [{ kind: "return", value: lowerer.coerceToExpected(narrowed, resultT), loc }],
+    loc,
+  });
+  return name;
 }
 
 /** The find-like predicate results whose ToBoolean has a static answer:

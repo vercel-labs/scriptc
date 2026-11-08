@@ -531,6 +531,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/dynamic-methods",
   "bench/dynamic-properties",
   "bench/dynamic-properties-json",
+  "bench/untyped-record-probes",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",

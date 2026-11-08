@@ -172,42 +172,46 @@ async function projectTree(files: Record<string, string>): Promise<string> {
   return dir;
 }
 
-const EXPORTS_ONLY_CLI = JSON.stringify({
-  name: "shapes-kit",
-  version: "1.0.0",
+const MAPS_ONLY_BLENDS = JSON.stringify({
+  name: "spice-rack",
+  version: "0.8.3",
   type: "module",
-  exports: { "./cli": { types: "./dist/cli.d.mts", default: "./dist/cli.mjs" } },
+  exports: { "./blends": { types: "./lib/blends.d.mts", default: "./lib/blends.mjs" } },
 });
 
 test("a node10 project reads a file the exports map does not list, for types only", async () => {
   const dir = await projectTree({
-    "node_modules/shapes-kit/package.json": EXPORTS_ONLY_CLI,
-    "node_modules/shapes-kit/dist/cli.d.mts": "export declare const commands: string[];\n",
-    "node_modules/shapes-kit/dist/cli.mjs": "export const commands = [];\n",
-    "types/shapes-kit.d.ts": "",
+    "node_modules/spice-rack/package.json": MAPS_ONLY_BLENDS,
+    "node_modules/spice-rack/lib/blends.d.mts": "export declare const titles: string[];\n",
+    "node_modules/spice-rack/lib/blends.mjs": "export const titles = [];\n",
+    "shims/subpaths.d.ts": "",
   });
   try {
     clearResolveCaches();
-    const shim = join(dir, "types/shapes-kit.d.ts");
+    const shim = join(dir, "shims/subpaths.d.ts");
     const main = join(dir, "main.ts");
-    const declaration = join(dir, "node_modules/shapes-kit/dist/cli.d.mts");
+    const declaration = join(dir, "node_modules/spice-rack/lib/blends.d.mts");
     const node10 = { typeRoots: [], byPath: true };
     const bundler = { typeRoots: [], byPath: false };
     // In the project's declaration file, and in an import Node erases.
-    expect(resolveTypesAsProject(shim, "shapes-kit/dist/cli.mjs", node10, true)).toBe(declaration);
-    expect(resolveTypesAsProject(main, "shapes-kit/dist/cli.mjs", node10, true)).toBe(declaration);
+    expect(resolveTypesAsProject(shim, "spice-rack/lib/blends.mjs", node10, true)).toBe(
+      declaration,
+    );
+    expect(resolveTypesAsProject(main, "spice-rack/lib/blends.mjs", node10, true)).toBe(
+      declaration,
+    );
     // An import Node resolves at run time, where the map refuses it, stays
     // unresolved: preflight reports Node's refusal.
-    expect(resolveTypesAsProject(main, "shapes-kit/dist/cli.mjs", node10, false)).toBeNull();
+    expect(resolveTypesAsProject(main, "spice-rack/lib/blends.mjs", node10, false)).toBeNull();
     // A project that resolves as a bundler does reads the map, as its tsc.
-    expect(resolveTypesAsProject(shim, "shapes-kit/dist/cli.mjs", bundler, true)).toBeNull();
+    expect(resolveTypesAsProject(shim, "spice-rack/lib/blends.mjs", bundler, true)).toBeNull();
     // What the map lists resolves without help, and nothing is added.
-    expect(resolveTypesAsProject(main, "shapes-kit/cli", node10, false)).toBeNull();
+    expect(resolveTypesAsProject(main, "spice-rack/blends", node10, false)).toBeNull();
     // Relative, package-internal, URL-like and missing specifiers.
-    expect(resolveTypesAsProject(main, "./dist/cli.mjs", node10, true)).toBeNull();
-    expect(resolveTypesAsProject(main, "#cli", node10, true)).toBeNull();
+    expect(resolveTypesAsProject(main, "./lib/blends.mjs", node10, true)).toBeNull();
+    expect(resolveTypesAsProject(main, "#blends", node10, true)).toBeNull();
     expect(resolveTypesAsProject(main, "node:fs", node10, true)).toBeNull();
-    expect(resolveTypesAsProject(shim, "ghost-kit/dist/cli.mjs", node10, true)).toBeNull();
+    expect(resolveTypesAsProject(shim, "missing-larder/lib/shelves.mjs", node10, true)).toBeNull();
   } finally {
     clearResolveCaches();
     await rm(dir, { recursive: true, force: true });
@@ -216,14 +220,14 @@ test("a node10 project reads a file the exports map does not list, for types onl
 
 test("a node10 project finds declarations by path where the exports map names none", async () => {
   const dir = await projectTree({
-    "node_modules/rule-kit/package.json": JSON.stringify({
-      name: "rule-kit",
-      version: "1.2.0",
+    "node_modules/bread-proof/package.json": JSON.stringify({
+      name: "bread-proof",
+      version: "0.3.1",
       type: "module",
-      exports: { "./cli": "./dist/cli.mjs" },
+      exports: { "./rise": "./esm/rise.mjs" },
     }),
-    "node_modules/rule-kit/dist/cli.mjs": "export function rule() {}\n",
-    "node_modules/rule-kit/cli.d.ts": "export declare function rule(): void;\n",
+    "node_modules/bread-proof/esm/rise.mjs": "export function rise() {}\n",
+    "node_modules/bread-proof/rise.d.ts": "export declare function rise(): void;\n",
   });
   try {
     clearResolveCaches();
@@ -231,10 +235,10 @@ test("a node10 project finds declarations by path where the exports map names no
     // Node loads the file the map names, so the import is not a refusal;
     // its declarations are where a lookup by path finds them.
     expect(
-      resolveTypesAsProject(main, "rule-kit/cli", { typeRoots: [], byPath: true }, false),
-    ).toBe(join(dir, "node_modules/rule-kit/cli.d.ts"));
+      resolveTypesAsProject(main, "bread-proof/rise", { typeRoots: [], byPath: true }, false),
+    ).toBe(join(dir, "node_modules/bread-proof/rise.d.ts"));
     expect(
-      resolveTypesAsProject(main, "rule-kit/cli", { typeRoots: [], byPath: false }, false),
+      resolveTypesAsProject(main, "bread-proof/rise", { typeRoots: [], byPath: false }, false),
     ).toBeNull();
   } finally {
     clearResolveCaches();
@@ -244,14 +248,14 @@ test("a node10 project finds declarations by path where the exports map names no
 
 test("a module without declarations in node_modules is found under a type root", async () => {
   const dir = await projectTree({
-    "node_modules/tiny-lines/package.json":
-      '{ "name": "tiny-lines", "version": "0.1.1", "main": "index.js" }',
-    "node_modules/tiny-lines/index.js": "exports.parse = () => [];\n",
+    "node_modules/pantry-units/package.json":
+      '{ "name": "pantry-units", "version": "2.7.0", "main": "index.js" }',
+    "node_modules/pantry-units/index.js": "exports.scale = () => [];\n",
     "node_modules/typed-kit/package.json":
       '{ "name": "typed-kit", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }',
     "node_modules/typed-kit/index.js": "exports.one = 1;\n",
     "node_modules/typed-kit/index.d.ts": "export declare const one: number;\n",
-    "typings/tiny-lines/index.d.ts": 'declare module "tiny-lines";\n',
+    "typings/pantry-units/index.d.ts": 'declare module "pantry-units";\n',
     "typings/typed-kit/index.d.ts": 'declare module "typed-kit";\n',
     "typings/count-kit.d.ts": "export declare function count(): number;\n",
     "typings/field-kit/package.json": '{ "types": "lib/main.d.ts" }',
@@ -269,16 +273,16 @@ test("a module without declarations in node_modules is found under a type root",
     expect(resolveInTypeRoots(typeRoots, "field-kit")).toBe(
       join(dir, "typings/field-kit/lib/main.d.ts"),
     );
-    expect(resolveInTypeRoots(typeRoots, "tiny-lines")).toBe(
-      join(dir, "typings/tiny-lines/index.d.ts"),
+    expect(resolveInTypeRoots(typeRoots, "pantry-units")).toBe(
+      join(dir, "typings/pantry-units/index.d.ts"),
     );
     expect(resolveInTypeRoots(typeRoots, "empty-kit")).toBeNull();
-    expect(resolveInTypeRoots(typeRoots, "ghost-kit")).toBeNull();
+    expect(resolveInTypeRoots(typeRoots, "missing-larder")).toBeNull();
     expect(resolveInTypeRoots([], "count-kit")).toBeNull();
     // The package's JavaScript loads at run time; its declarations are the
     // type root's, before the JavaScript, as tsc orders them.
-    expect(resolveTypesAsProject(main, "tiny-lines", project, false)).toBe(
-      join(dir, "typings/tiny-lines/index.d.ts"),
+    expect(resolveTypesAsProject(main, "pantry-units", project, false)).toBe(
+      join(dir, "typings/pantry-units/index.d.ts"),
     );
     // A package with declarations of its own keeps them.
     expect(resolveTypesAsProject(main, "typed-kit", project, false)).toBeNull();
@@ -288,7 +292,7 @@ test("a module without declarations in node_modules is found under a type root",
       join(dir, "typings/count-kit.d.ts"),
     );
     expect(
-      resolveTypesAsProject(main, "tiny-lines", { typeRoots: [], byPath: false }, false),
+      resolveTypesAsProject(main, "pantry-units", { typeRoots: [], byPath: false }, false),
     ).toBeNull();
   } finally {
     clearResolveCaches();
@@ -298,21 +302,21 @@ test("a module without declarations in node_modules is found under a type root",
 
 test("an answer of an earlier load is asked again by the next, and dropped when it no longer holds", async () => {
   const dir = await projectTree({
-    "node_modules/shapes-kit/package.json": EXPORTS_ONLY_CLI,
-    "node_modules/shapes-kit/dist/cli.d.mts": "export declare const commands: string[];\n",
-    "node_modules/shapes-kit/dist/cli.mjs": "export const commands = [];\n",
-    "types/shapes-kit.d.ts": "",
+    "node_modules/spice-rack/package.json": MAPS_ONLY_BLENDS,
+    "node_modules/spice-rack/lib/blends.d.mts": "export declare const titles: string[];\n",
+    "node_modules/spice-rack/lib/blends.mjs": "export const titles = [];\n",
+    "shims/subpaths.d.ts": "",
   });
   try {
     clearResolveCaches();
     const config = join(dir, "tsconfig.json");
-    const shim = join(dir, "types/shapes-kit.d.ts");
-    const declaration = join(dir, "node_modules/shapes-kit/dist/cli.d.mts");
+    const shim = join(dir, "shims/subpaths.d.ts");
+    const declaration = join(dir, "node_modules/spice-rack/lib/blends.d.mts");
     const node10 = { typeRoots: [], byPath: true };
     expect(rememberedProjectTypes(config, node10).size).toBe(0);
-    rememberProjectTypes(config, "shapes-kit/dist/cli.mjs", shim, true);
+    rememberProjectTypes(config, "spice-rack/lib/blends.mjs", shim, true);
     expect([...rememberedProjectTypes(config, node10)]).toEqual([
-      ["shapes-kit/dist/cli.mjs", declaration],
+      ["spice-rack/lib/blends.mjs", declaration],
     ]);
     // Another tsconfig's loads, and settings under which the answer is gone.
     expect(rememberedProjectTypes(join(dir, "other/tsconfig.json"), node10).size).toBe(0);
@@ -321,7 +325,7 @@ test("an answer of an earlier load is asked again by the next, and dropped when 
     await rm(declaration);
     expect(rememberedProjectTypes(config, node10).size).toBe(0);
     // Nothing is remembered across compiles.
-    await writeFile(declaration, "export declare const commands: string[];\n");
+    await writeFile(declaration, "export declare const titles: string[];\n");
     expect(rememberedProjectTypes(config, node10).size).toBe(1);
     clearResolveCaches();
     expect(rememberedProjectTypes(config, node10).size).toBe(0);

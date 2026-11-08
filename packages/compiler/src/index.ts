@@ -2267,6 +2267,7 @@ async function compileTracked(
         : {}),
       ...(heapCensusRequested() ? { heapCensus: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
+      ...(opts.define !== undefined ? { define: JSON.stringify(opts.define) } : {}),
       ...(shapeOverlayEnabled() ? { shapeOverlay: true as const } : {}),
       ...(jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0"
         ? { jsInference: true as const }

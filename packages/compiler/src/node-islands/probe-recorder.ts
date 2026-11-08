@@ -502,11 +502,37 @@ exports.probe = function probe(input) {
     if (tags === null) { opaque("a locales argument"); return false; }
     try { return applyFn(supportedLocalesOf.get(service), service, [tags]).length === 0; } catch { return false; }
   };
+  // A value a builtin takes without running the load's code: a primitive.
+  const inert = (v) => v === null || (typeof v !== "object" && typeof v !== "function");
+  // What the built-in prototypes held before any load: a member added to one
+  // since is the load's.
+  const namesOf = Object.getOwnPropertyNames;
+  const builtinNames = new Map();
+  for (const proto of [Object.prototype, Function.prototype, Array.prototype, String.prototype, Number.prototype, Boolean.prototype, BigInt.prototype, Symbol.prototype])
+    builtinNames.set(proto, new Set(namesOf(proto)));
+  // Whether a call can read every member of an options argument without
+  // running the load's code: no proxy, no accessor and no object-valued
+  // member (a conversion) on it or its prototypes. Reading one member here
+  // is not enough: the call reads others first, and a getter or a
+  // conversion among them can remove or replace the member the recorder
+  // looked at before the call gets to it.
+  const inertOptions = (options) => {
+    if (options === undefined || options === null) return true;
+    for (let o = inert(options) ? prototypeOf(options) : options; o !== null; o = prototypeOf(o)) {
+      if (types.isProxy(o)) return false;
+      const builtin = builtinNames.get(o);
+      for (const k of namesOf(o)) {
+        if (builtin !== undefined && builtin.has(k)) continue;
+        const d = descriptorOf(o, k);
+        if (!hasOwn.call(d, "value") || !inert(d.value)) return false;
+      }
+    }
+    return true;
+  };
   const zoneOption = (options) => {
-    if (options === null || (typeof options !== "object" && typeof options !== "function")) return false;
-    const zone = dataMember(options, "timeZone");
-    if (zone === OPAQUE) { opaque("an options argument"); return true; }
-    return zone !== undefined;
+    if (!inertOptions(options)) { opaque("an options argument"); return true; }
+    if (options === undefined || options === null) return false;
+    return dataMember(inert(options) ? prototypeOf(options) : options, "timeZone") !== undefined;
   };
 
   // ── process ──
@@ -711,9 +737,17 @@ exports.probe = function probe(input) {
     }, "");
   wrapFn(Number.prototype, "toLocaleString", (a) => { if (defaultLocale(realIntl.NumberFormat, a[0])) locale(); }, "", "locale");
   wrapFn(BigInt.prototype, "toLocaleString", (a) => { if (defaultLocale(realIntl.NumberFormat, a[0])) locale(); }, "", "locale");
-  wrapFn(String.prototype, "localeCompare", (a) => { if (defaultLocale(realIntl.Collator, a[1])) locale(); }, "", "locale");
+  // The receiver and the compared value are converted to strings before the
+  // locales are read: a conversion of the load's own could change the list.
+  wrapFn(String.prototype, "localeCompare", (a, isNew, self) => {
+    if (typeof self !== "string" || !inert(a[0])) opaque("a compared value");
+    else if (defaultLocale(realIntl.Collator, a[1])) locale();
+  }, "", "locale");
   for (const k of ["toLocaleUpperCase", "toLocaleLowerCase"])
-    wrapFn(String.prototype, k, (a) => { if (defaultLocale(realIntl.Collator, a[0])) locale(); }, "", "locale");
+    wrapFn(String.prototype, k, (a, isNew, self) => {
+      if (typeof self !== "string") opaque("a converted value");
+      else if (defaultLocale(realIntl.Collator, a[0])) locale();
+    }, "", "locale");
   // Every Intl service that takes locales (Intl.Locale and the functions
   // take a tag and answer from ICU's data, which is the pack's).
   for (const k of Object.getOwnPropertyNames(Intl)) {
@@ -815,9 +849,15 @@ exports.probe = function probe(input) {
     undo.push(() => Object.defineProperty(globalThis, key, d));
   };
   const fileMade = (a) => {
-    const given = a[2] !== null && typeof a[2] === "object" ? dataMember(a[2], "lastModified") : undefined;
-    if (given === OPAQUE) opaque("an options argument");
-    else if (given === undefined) add(volatile, "new File() (its lastModified)");
+    // The parts and the name are converted before the options are read.
+    const parts = a[0];
+    let plain = isArray(parts) && !types.isProxy(parts) && parts.length <= 1024 && typeof a[1] === "string" && inertOptions(a[2]);
+    for (let i = 0; plain && i < parts.length; i++) {
+      const d = descriptorOf(parts, i);
+      plain = d !== undefined && hasOwn.call(d, "value") && (typeof d.value === "string" || types.isAnyArrayBuffer(d.value) || types.isArrayBufferView(d.value));
+    }
+    if (!plain) opaque("an argument of new File()");
+    else if (a[2] === undefined || a[2] === null || dataMember(inert(a[2]) ? prototypeOf(a[2]) : a[2], "lastModified") === undefined) add(volatile, "new File() (its lastModified)");
   };
   wrapGlobalClass("File", fileMade);
   try { wrapFn(require("node:buffer"), "File", fileMade, ""); } catch {}

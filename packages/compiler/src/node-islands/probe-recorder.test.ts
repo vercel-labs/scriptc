@@ -772,6 +772,17 @@ describe("what a load reads of the machine and the moment", () => {
       "locale-array-like": `(function () { var n = 0; var list = { get length() { n++; return 1; }, 0: "de-DE" }; return new Intl.NumberFormat(list).resolvedOptions().locale + " " + n; })()`,
       "file-getter": `(function () { var n = 0; var f = new File([], "a", { get lastModified() { n++; return 5; } }); return f.lastModified + " " + n; })()`,
     };
+    // The member the recorder would read is plain data, and the load's code
+    // removes or replaces it while the call reads what comes before it.
+    const shifting: { [name: string]: string } = {
+      "zone-removed-by-getter": `new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tokyo", get hour12() { delete this.timeZone; return false; } }).resolvedOptions().timeZone`,
+      "zone-removed-by-conversion": `(function () { var o = { timeZone: "Asia/Tokyo" }; o.calendar = { toString: function () { delete o.timeZone; return "gregory"; } }; return new Intl.DateTimeFormat("en-US", o).resolvedOptions().timeZone; })()`,
+      "zone-removed-date": `(function () { var o = { timeZone: "Asia/Tokyo", get hour12() { delete this.timeZone; return false; } }; return new Date(0).toLocaleTimeString("en-US", o); })()`,
+      "zone-inherited-getter": `(function () { var o = Object.create({ get hourCycle() { delete o.timeZone; return "h23"; } }); o.timeZone = "Asia/Tokyo"; return new Intl.DateTimeFormat("en-US", o).resolvedOptions().timeZone; })()`,
+      "locales-emptied-by-compared": `(function () { var list = ["de-DE"]; return "\u00e4".localeCompare({ toString: function () { list.length = 0; return "z"; } }, list); })()`,
+      "locales-emptied-by-receiver": `(function () { var list = ["tr"]; return String.prototype.toLocaleUpperCase.call({ toString: function () { list.length = 0; return "i"; } }, list); })()`,
+      "file-option-removed": `(function () { var o = { lastModified: 5, get type() { delete this.lastModified; return "text/plain"; } }; return typeof new File([], "a", o).lastModified; })()`,
+    };
     // Arguments the engine answers by itself stay what they were: constants.
     const plain: { [name: string]: string } = {
       "zone-data": `new Intl.DateTimeFormat(["en-US"], { timeZone: "UTC" }).resolvedOptions().timeZone`,
@@ -786,7 +797,7 @@ describe("what a load reads of the machine and the moment", () => {
       expect(run.status, run.stderr).toBe(0);
       return JSON.parse(run.stdout) as unknown;
     };
-    const recorded = recordSources({ ...opaque, ...plain });
+    const recorded = recordSources({ ...opaque, ...shifting, ...plain });
     for (const [name, source] of Object.entries(opaque)) {
       const record = recorded.of(name);
       expect(recorded.value(name), name).toEqual(underNode(source));
@@ -794,6 +805,13 @@ describe("what a load reads of the machine and the moment", () => {
         "that only the load's own code can answer (an accessor, a proxy or a conversion)",
       );
       expect(record.inputs.join("\n"), name).toContain(`node_modules/${name}/index.js`);
+    }
+    for (const name of Object.keys(shifting)) {
+      const record = recorded.of(name);
+      expect(record.throws, name).toBeUndefined();
+      expect(record.inputs.join("\n"), name).toContain(
+        "that only the load's own code can answer (an accessor, a proxy or a conversion)",
+      );
     }
     for (const [name, source] of Object.entries(plain)) {
       expect(recorded.value(name), name).toEqual(underNode(source));

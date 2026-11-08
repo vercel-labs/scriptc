@@ -5,7 +5,7 @@
  * what Node prints under the setting it runs in: nothing of the build
  * machine or of the build's moment may be in the executable, and a load
  * that reads a clock must read it where it is imported. The programs are
- * corpus programs 9811 to 9816 (the differential suites run them where they
+ * corpus programs 9811 to 9817 (the differential suites run them where they
  * are built). Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, realpathSync, rmSync } from "node:fs";
@@ -190,6 +190,27 @@ describe.skipIf(skip)("island loads that read the machine or the moment", () => 
     expect(tokyo.stdout).toContain(
       "fixed: 4733510400000 2020-01-01T00:00:00.000Z 0 1/1/2020, 12:00:00 AM 1.234,5 1\n",
     );
+  }, 300_000);
+
+  test("an argument only the load's own code can answer keeps the load where it is imported", async () => {
+    // The recorder classifies a locale-sensitive call from its arguments.
+    // It reads them only where no getter, proxy trap or conversion of the
+    // load's would run, and counts an argument as plain only when nothing
+    // on it can run while the call reads it: otherwise the load's code
+    // could take the zone or the locale list away after the recorder
+    // looked, and the build machine's answer would be in the executable.
+    const name = "9817-node-island-load-reads-argument-accessors";
+    const { binary, decision } = await build(name, "main.cjs");
+    for (const pkg of ["options-kit", "tags-kit", "file-kit", "shifting-kit"]) {
+      expect(decision(pkg), pkg).toMatch(/^eager /);
+      expect(decision(pkg), pkg).toContain("that only the load's own code can answer");
+    }
+    for (const set of [{}, { TZ: "America/St_Johns", LC_ALL: "sv_SE.UTF-8" }]) {
+      const expected = await underNode(name, "main.cjs", set);
+      expect((await run(binary, set)).stdout, JSON.stringify(set)).toBe(expected);
+    }
+    const moved = await run(binary, { TZ: "America/St_Johns", LC_ALL: "sv_SE.UTF-8" });
+    expect(moved.stdout).toContain("removed: America/St_Johns America/St_Johns 1\n");
   }, 300_000);
 
   test("a locale variable set at build time is not recorded, and the run's locale still answers", async () => {

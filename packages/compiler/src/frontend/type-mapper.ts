@@ -55,10 +55,11 @@ import {
   VOID,
 } from "../ir/ir.js";
 import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
+import type { SrcLoc } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
 
-import { isJsSourceFile, isNodeTypesPath } from "./program.js";
+import { isJsSourceFile, isNodeTypesPath, locOf } from "./program.js";
 import { isProvenanceSourceFile } from "./provenance-registry.js";
 import { functionCanReturnUndefined } from "./function-completion.js";
 import { accessorSlotProp, recordTextCodecClass } from "../ir/ir.js";
@@ -1912,22 +1913,82 @@ let bypassTypeMemo = false;
 // entries.
 // ---------------------------------------------------------------------------
 
-/** SCRIPTC_TYPE_WALK_MEMO=0 maps without the walk memo, as every mapping did
- * before it: for comparisons. `=verify` maps
+/** SCRIPTC_TYPE_WALK_MEMO=0 maps without the walk memo (and without the step
+ * limit), as every mapping did before it: for comparisons. `=verify` maps
  * again each time an entry serves and fails when the two answers differ: it
  * proves on a corpus that the memo changes no mapping. `=stats` counts. */
 const walkMemoMode = process.env["SCRIPTC_TYPE_WALK_MEMO"] ?? "";
 let walkMemoEnabled = walkMemoMode !== "0";
 let walkMemoVerify = walkMemoMode === "verify";
 
+/** How many steps one walk may take: a step is a frame it computes, or an
+ * entry it finds and cannot use. A walk maps each type it reaches once, so
+ * its steps follow the number of types the mapped type reaches: the longest
+ * walk of the compiler's own build takes 3,026 (a record of 2,440 members).
+ * A walk that passes the limit is one the memo cannot shorten (answers that
+ * differ below every ancestor), and it would run for minutes or without
+ * end: the build ends with SC2016 instead, after a few seconds.
+ * SCRIPTC_TYPE_WALK_STEPS sets another limit. */
+const TYPE_WALK_STEP_LIMIT = 500_000;
+let walkStepLimit = ((): number => {
+  const text = process.env["SCRIPTC_TYPE_WALK_STEPS"];
+  const parsed = text === undefined ? NaN : Number(text);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : TYPE_WALK_STEP_LIMIT;
+})();
+
+/** A type walk passed its step limit. It is thrown by the frame that takes
+ * the walk over the limit and ends the build: lowerToIr reports it as
+ * SC2016 at the declaration of the type the walk was mapping. Nothing
+ * between the two may answer for the type instead (a lenient mapping of it
+ * walks the same graph), so once it is thrown every later walk throws it
+ * again, and a caller that swallowed it does not get far. */
+export class TypeWalkBudgetError extends Error {
+  constructor(
+    readonly typeText: string,
+    readonly steps: number,
+    /** The type's declaration, when it has one. */
+    readonly loc: SrcLoc | null,
+  ) {
+    super(`mapping type '${typeText}' takes more than ${steps} steps`);
+  }
+}
+
+/** The walk that passed the step limit in this build, if one did. */
+let walkOverLimit: TypeWalkBudgetError | null = null;
+
+/** A build starts: no walk has passed the step limit. */
+export function resetTypeWalkBudget(): void {
+  walkOverLimit = null;
+}
+
+/** The walk that passed the step limit since resetTypeWalkBudget, or null:
+ * the build it belongs to ends with SC2016 even when the error was caught
+ * on its way out. */
+export function typeWalkOverLimit(): TypeWalkBudgetError | null {
+  return walkOverLimit;
+}
+
+function walkPassedLimit(walk: TypeWalk, type: ts.Type, ctx: TypeMapperCtx): TypeWalkBudgetError {
+  const root = walk.root ?? type;
+  const declaration = (root.getAliasSymbol() ?? root.getSymbol())?.declarations[0];
+  walkOverLimit = new TypeWalkBudgetError(
+    ctx.checker.typeToString(root),
+    walkStepLimit,
+    declaration === undefined ? null : locOf(declaration),
+  );
+  return walkOverLimit;
+}
+
 /** Sets how type walks run from now on and answers the settings replaced:
  * for tests and measurements, which compare a mapping with the memo, without
- * it and with every served entry verified. Not while a mapping is in
- * progress. */
-export function configureTypeWalk(settings: { memo?: "on" | "off" | "verify" }): {
+ * it and with every served entry verified, or lower the step limit to see
+ * SC2016. Not while a mapping is in progress. */
+export function configureTypeWalk(settings: { memo?: "on" | "off" | "verify"; steps?: number }): {
   memo: "on" | "off" | "verify";
+  steps: number;
 } {
   const previous = {
+    steps: walkStepLimit,
     memo: !walkMemoEnabled
       ? ("off" as const)
       : walkMemoVerify
@@ -1940,6 +2001,7 @@ export function configureTypeWalk(settings: { memo?: "on" | "off" | "verify" }):
     walkMemoEnabled = settings.memo !== "off";
     walkMemoVerify = settings.memo === "verify";
   }
+  if (settings.steps !== undefined) walkStepLimit = settings.steps;
   idleWalk.reset();
   idleWalk.root = null;
   return previous;
@@ -2007,6 +2069,8 @@ class TypeWalk {
   /** Frames computed so far. Entries and progress frames are stamped with
    * it. */
   clock = 0;
+  /** Entries found that did not serve. With the clock, the walk's steps. */
+  refused = 0;
   /** Set when the walk met something the bookkeeping does not describe (a
    * second registry): it then maps without the memo. */
   opaque = false;
@@ -2044,6 +2108,7 @@ class TypeWalk {
   reset(): void {
     if (this.clock === 0) return;
     this.clock = 0;
+    this.refused = 0;
     this.opaque = false;
     this.staleBefore = 0;
     this.shapes = null;
@@ -2146,6 +2211,7 @@ function walkEnded(walk: TypeWalk, ctx: TypeMapperCtx): void {
 export function withTypeWalk<T>(root: ts.Type, ctx: TypeMapperCtx, fn: () => T): T {
   if (activeWalk !== null || !walkMemoEnabled || mapTypeDepth !== 0) return fn();
   if (ctx.canMemoizeType?.() ?? true) return fn();
+  if (walkOverLimit !== null) throw walkOverLimit;
   const walk = idleWalk;
   walk.reset();
   walk.root = root;
@@ -2251,6 +2317,7 @@ function walkEntryServes(
 ): boolean {
   const refusal = walkEntryRefusal(walk, entry, depth, ctx);
   if (refusal < 0) return true;
+  walk.refused++;
   if (walkStats) walkRefusals[refusal]!++;
   return false;
 }
@@ -3010,6 +3077,7 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   let walk = activeWalk;
   let startsWalk = false;
   if (walk === null && walkMemoEnabled && topLevel) {
+    if (walkOverLimit !== null) throw walkOverLimit;
     idleWalk.reset();
     walk = activeWalk = idleWalk;
     startsWalk = true;
@@ -3066,6 +3134,7 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           frameDeps = null;
           frameSpans = null;
           frameDeepest = depth;
+          if (started + walk.refused > walkStepLimit) throw walkPassedLimit(walk, type, ctx);
         }
         mapped = mapTypeInner(type, ctx);
       } catch (e) {

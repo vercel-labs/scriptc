@@ -356,6 +356,7 @@ import {
   unsupportedPackageValueDiag,
   unionMismatchDiag,
   emptyArrayDiag,
+  typeWalkBudgetDiag,
   UNSUPPORTED,
   unsupportedDiag,
   unsupportedTypeDiag,
@@ -431,6 +432,9 @@ import {
   containsUnion,
   describeComponentBlocker,
   describeRecordMemberBlocker,
+  resetTypeWalkBudget,
+  TypeWalkBudgetError,
+  typeWalkOverLimit,
   withTypeWalk,
   erasedOverloadMemberType,
   formatIrType,
@@ -1506,13 +1510,34 @@ export function lowerToIr(
   options: LowerOptions = {},
 ): LowerResult {
   setActiveNodeIslands(options.nodeIslands ?? null);
+  resetTypeWalkBudget();
   try {
     const result = lowerToIrWithIslands(program, entry, moduleOrder, options);
+    // A type walk that passed its step limit ends the build, also when
+    // something on the way out answered for the error.
+    const overLimit = typeWalkOverLimit();
+    if (overLimit !== null) return typeWalkBudgetFailure(overLimit, entry);
     markModuleInitFences(program, result.runtimeFences);
     return result;
+  } catch (e) {
+    if (!(e instanceof TypeWalkBudgetError)) throw e;
+    return typeWalkBudgetFailure(e, entry);
   } finally {
     setActiveNodeIslands(null);
   }
+}
+
+/** The build of a program one of whose types passed the type walk's step
+ * limit: SC2016 at the type's declaration (the entry, for a type without
+ * one) and nothing else, in every tier. */
+function typeWalkBudgetFailure(error: TypeWalkBudgetError, entry: ts.SourceFile): LowerResult {
+  const loc = error.loc ?? { file: entry.fileName, start: 0, end: 0 };
+  return {
+    module: null,
+    diagnostics: [typeWalkBudgetDiag(error.typeText, error.steps, loc)],
+    runtimeFences: [],
+    stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+  };
 }
 
 /** Marks the runtime fences in npm package code whose site is top-level

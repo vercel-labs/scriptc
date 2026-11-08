@@ -5,12 +5,13 @@
 // mapping of a declaration whose type holds a member with no static lowering.
 // These programs are generated type graphs (a parts catalogue): the builds
 // must end within seconds at sizes that used to take hours, the memo must not
-// change what a build produces.
+// change what a build produces, and a mapping the memo cannot shorten must
+// end the build with SC2016 instead of running on.
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { compile } from "../src/index.js";
+import { compile, type TierMode } from "../src/index.js";
 import { configureTypeWalk } from "../src/frontend/type-mapper.js";
 
 type Shape =
@@ -102,21 +103,35 @@ interface Lowered {
   ir: string;
   errors: string[];
   warnings: string[];
+  /** Where each error points: the offset in the source. */
+  errorOffsets: number[];
   seconds: number;
 }
 
-async function lower(source: string): Promise<Lowered> {
+async function lower(source: string, tier?: TierMode): Promise<Lowered> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-type-walk-"));
   try {
     const entry = join(dir, "main.ts");
     const outPath = join(dir, "main.ir.json");
     await writeFile(entry, source);
     const started = performance.now();
-    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath,
+      outputKind: "ir",
+      ...(tier === undefined ? {} : { tier }),
+    });
     const seconds = (performance.now() - started) / 1000;
     const text = (d: { code: string; message: string }): string => `${d.code}: ${d.message}`;
     if (!result.ok)
-      return { ok: false, ir: "", errors: result.diagnostics.map(text), warnings: [], seconds };
+      return {
+        ok: false,
+        ir: "",
+        errors: result.diagnostics.map(text),
+        warnings: [],
+        errorOffsets: result.diagnostics.map((d) => d.loc.start),
+        seconds,
+      };
     return {
       ok: true,
       // The module names its source file, and every lowering has its own
@@ -124,6 +139,7 @@ async function lower(source: string): Promise<Lowered> {
       ir: (await readFile(outPath, "utf8")).split(dir).join("<dir>"),
       errors: [],
       warnings: (result.warnings ?? []).map(text),
+      errorOffsets: [],
       seconds,
     };
   } finally {
@@ -245,4 +261,52 @@ describe("the memo changes no mapping", () => {
     expect(shallow.warnings).toEqual([]);
     expect(deep.warnings.map((w) => w.slice(0, 6))).toEqual(["SC6104"]);
   });
+});
+
+describe("a mapping that passes the step limit ends the build with SC2016", () => {
+  // 40 records map in about 80 steps; nothing else in the program takes 60.
+  const source = catalogue("chain", 40, 2, "none");
+  const declaration = source.indexOf("type Catalogue =");
+
+  // Not a dynamic slot under the automatic tier: the lenient mapping of the
+  // same type would walk the same graph.
+  test.each(["auto", "static-only"] as const)(
+    "tier %s: one error, at the type's declaration",
+    async (tier) => {
+      configureTypeWalk({ steps: 60 });
+      const result = await lower(source, tier);
+      expect(result.ok).toBe(false);
+      expect(result.errors).toEqual([
+        "SC2016: type 'Catalogue' cannot be compiled: mapping the types it reaches takes more than 60 steps",
+      ]);
+      expect(result.errorOffsets).toEqual([declaration]);
+    },
+  );
+
+  test("the lenient mapping of a type with a blocked member ends the build the same way", async () => {
+    // The strict mapping stops at the blocked member of the last record, a
+    // few steps past the limit either way; what matters is the one error.
+    configureTypeWalk({ steps: 60 });
+    const blocked = catalogue("chain", 40, 2, "deep");
+    const result = await lower(blocked);
+    expect(result.errors).toEqual([
+      "SC2016: type 'Catalogue' cannot be compiled: mapping the types it reaches takes more than 60 steps",
+    ]);
+    expect(result.errorOffsets).toEqual([blocked.indexOf("type Catalogue =")]);
+  });
+
+  test("the same program builds under the limit that ships", async () => {
+    const result = await lower(source);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  // Members with their own type parameters are mapped under a context of
+  // their own, so the memo shares nothing between them: 2^24 steps here.
+  test("a graph the memo does not shorten ends within seconds", async () => {
+    const result = await lower(catalogue("generic", 24, 2, "root"));
+    expect(result.errors.map((e) => e.slice(0, 6))).toEqual(["SC2016"]);
+    expect(result.errors[0]).toContain("type 'Catalogue' cannot be compiled");
+    expect(result.seconds).toBeLessThan(LIMIT);
+  }, 120_000);
 });

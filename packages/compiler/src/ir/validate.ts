@@ -5732,7 +5732,13 @@ function validateFunction(
         err(`libCall ${e.fn} must read a Promise<void> entry at a non-void type`, e.loc);
       return true;
     }
-    if (e.fn === "promise.allTuple") {
+    if (e.fn === "promise.entryRejected" || e.fn === "promise.entryReason") {
+      const promise = e.args[0]?.type;
+      if (promise?.kind !== "promise" || promise.inner.kind !== "void")
+        err(`libCall ${e.fn} must read a Promise<void> entry`, e.loc);
+      return true;
+    }
+    if (e.fn === "promise.allTuple" || e.fn === "promise.allSettledTuple") {
       const [entries, build] = e.args;
       if (
         entries?.type.kind !== "array" ||

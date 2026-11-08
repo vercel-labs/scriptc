@@ -693,6 +693,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "whether one enum is ever used as a value; the text test skips files that spell none of its names",
   ),
   scan(
+    "frontend/lowering/fetch-dispatcher.ts#programHasUndiciPackage",
+    1,
+    "closed-world",
+    "whether the program contains the built-in undici package; only global fetch calls whose init can carry a dispatcher change",
+  ),
+  scan(
     "frontend/lowering/empty-array-places.ts#Search",
     2,
     "inference",

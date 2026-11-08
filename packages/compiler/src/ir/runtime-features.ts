@@ -1673,6 +1673,9 @@ const RUNTIME_FEATURE_RULES = {
       // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
       // this unit's warning queue.
       "fs.existsSyncValue",
+      // A rejected entry's reason crosses as a checked-dynamic value
+      // (Promise.allSettled's tuple form).
+      "promise.entryReason",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>

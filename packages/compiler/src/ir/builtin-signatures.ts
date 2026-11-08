@@ -418,6 +418,7 @@ function buildLibFnSignatures() {
     "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
+    "dyn.nativeSearchParamsIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeDateIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeDateHandleIs": { argTypes: [DYN], result: BOOL },
     /** A builtin constructor (`Object`, `Date`, `RegExp`, `Map`, `Set`,
@@ -4017,6 +4018,17 @@ function buildLibFnSignatures() {
      * rejection settles it the same way. The result is the tuple's promise
      * (program-dependent). */
     "promise.allTuple": { argTypes: [null, null], result: VOID },
+    /** Promise.allSettled's tuple form as a value: promise.allTuple over the
+     * combinator that waits for every entry. The function receives every
+     * settled entry, fulfilled or rejected, and builds the tuple of settled
+     * records (program-dependent result). */
+    "promise.allSettledTuple": { argTypes: [null, null], result: VOID },
+    /** Whether a settled entry of the settled tuple form rejected (the
+     * entry, a Promise<void> view of a program-dependent promise). */
+    "promise.entryRejected": { argTypes: [null], result: BOOL },
+    /** The reason of a rejected entry of the settled tuple form as a
+     * checked-dynamic value, with the identity a catch would see. */
+    "promise.entryReason": { argTypes: [null], result: DYN },
     "fsp.readFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
     "fsp.writeFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     /** fs.promises.writeFile(path, data, { mode }): the settled-promise

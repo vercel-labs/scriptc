@@ -586,7 +586,7 @@ import {
   genericLocalClassBinding,
   checkGenericIdentityPins,
 } from "./generic-functions.js";
-import { bindingNeverReassigned } from "./binding-analysis.js";
+import { bindingNeverReassigned, type BindingScope } from "./binding-analysis.js";
 import { isMessageListenerCall } from "./expressions/message-listeners.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
@@ -16481,7 +16481,7 @@ export class Lowerer {
         units.add("undefined");
       }
     }
-    if (!allConst && !bindingNeverReassigned(this, sym, firstDecl!)) return null;
+    if (!allConst && !bindingNeverReassigned(this.bindingScope(), sym, firstDecl!)) return null;
     return [...units].sort().join(" or ");
   }
 
@@ -19614,6 +19614,18 @@ export class Lowerer {
    * read: a record, not the Lowerer (see isStdlibFile). */
   osConstantsCtx(): Pick<TypeMapperCtx, "checker" | "isStdlibFile"> {
     return { checker: this.checker, isStdlibFile: (sf: ts.SourceFile) => this.isStdlibFile(sf) };
+  }
+
+  /** What the binding-write scan (binding-writes.ts) reads of a lowering
+   * context: a record, not the Lowerer (see isStdlibFile). Its parameter is
+   * the BindingScope interface, and handing it the Lowerer converted the
+   * Lowerer to a dynamic value at every one of its callers when the
+   * compiler compiles itself. The record shares this Lowerer's cache. */
+  bindingScope(): BindingScope {
+    return {
+      neverReassignedCache: this.neverReassignedCache,
+      resolveValueSymbol: (ident: ts.Identifier) => this.resolveValueSymbol(ident),
+    };
   }
 
   /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by

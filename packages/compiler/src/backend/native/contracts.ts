@@ -270,6 +270,11 @@ export interface CcOptions {
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
+  /** The program holds a process output stream as a value. With
+   * `nodeIsland` it compiles scr_node_island_stdio.c and defines
+   * SCR_NODE_ISLAND_STDIO: the island's process.stdout.write and
+   * process.stderr.write are the program's write slots. */
+  stdioObject?: boolean;
   /** The program pipes or unpipes a stream: compiles
    * scr_stream_pipe_events.c (Node's pipe lifecycle). */
   streamPipeEvents?: boolean;

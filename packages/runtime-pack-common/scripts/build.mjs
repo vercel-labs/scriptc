@@ -808,6 +808,7 @@ async function build() {
           "SCR_CHILD_ERR_FIELDS",
           "SCR_CHILD_STREAM_FLOW",
           "SCR_NODE_ISLANDS",
+          "SCR_NODE_ISLAND_STDIO",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",

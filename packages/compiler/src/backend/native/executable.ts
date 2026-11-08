@@ -498,7 +498,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+    "scr_node_island_events.c",
   ),
+  // One process.stdout.write for the program and its islands: only a program
+  // that holds a process output stream as a value can replace the method.
+  unit((u) => u.opts.nodeIsland === true && u.opts.stdioObject === true, "scr_node_island_stdio.c"),
   // A native AbortSignal or AbortController crossing into an island: the
   // signal's twin there follows it through the signal unit's watcher list.
   unit(
@@ -572,6 +576,9 @@ const RUNTIME_DEFINES: readonly {
   // resume(), isPaused(), readableFlowing).
   { define: "SCR_CHILD_STREAM_FLOW", when: (opts) => opts.childStreamFlow },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
+  // scr_node_island.c's bootstrap carries the stdio accessor and calls
+  // scr_node_island_stdio.c when Node has started.
+  { define: "SCR_NODE_ISLAND_STDIO", when: (opts) => opts.nodeIsland && opts.stdioObject },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {

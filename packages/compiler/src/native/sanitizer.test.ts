@@ -49,6 +49,7 @@ const features = {
   promiseRejectDyn: false,
   jsObjectModel: false,
   streamWriteErrors: false,
+  stdioObject: false,
   streamPipeEvents: false,
   nodeIsland: false,
   brotli: false,

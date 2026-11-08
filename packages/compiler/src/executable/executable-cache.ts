@@ -79,6 +79,9 @@ export interface EarlyExecutableNativeFeatures {
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
+  /** A process output stream held as a value: with Node islands,
+   * SCR_NODE_ISLAND_STDIO and scr_node_island_stdio.c. */
+  stdioObject?: boolean;
   /** pipe()'s listeners and Node's unpipe: scr_stream_pipe_events.c. */
   streamPipeEvents?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */

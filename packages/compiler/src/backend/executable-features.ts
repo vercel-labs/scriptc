@@ -50,6 +50,7 @@ export function executableLinkFeatures(
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
+    ...(features.stdioObject ? { stdioObject: true } : {}),
     ...(features.streamPipeEvents ? { streamPipeEvents: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),

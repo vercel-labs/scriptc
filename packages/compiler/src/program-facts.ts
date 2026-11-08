@@ -233,7 +233,7 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
       "every typed stdout and stderr write goes through the patchable path, and a runtime twin",
     narrower: "none wanted: a closed-world fact about two host members",
     tracked: "designs/host-patching",
-    lowererFields: ["patchesStdio", "stdioPatchSites"],
+    lowererFields: ["patchesStdio"],
   },
   {
     name: "reads-exit-code",

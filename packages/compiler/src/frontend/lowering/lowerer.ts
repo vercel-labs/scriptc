@@ -16688,7 +16688,58 @@ export class Lowerer {
    * directly when the expression was already lowered. In package files, a
    * check this coercion creates names the package declaration that types
    * the slot (decl-origin.ts). */
+  /** Whether `node` is the key argument of `set`, `get`, `has`, `delete` or
+   * `add` on a WeakMap or a WeakSet. A key with a promise type is boxed as
+   * the promise itself (weakMap.promiseKey in coerceInto). */
+  private isWeakKeyArgument(node: ts.Node): boolean {
+    let key: ts.Node = node;
+    while (
+      key.parent !== undefined &&
+      (ts.isParenthesizedExpression(key.parent) || ts.isSatisfiesExpression(key.parent))
+    )
+      key = key.parent;
+    const call = key.parent;
+    if (call === undefined || !ts.isCallExpression(call) || call.arguments.nodes[0] !== key)
+      return false;
+    const access = call.expression;
+    if (!ts.isPropertyAccessExpression(access) || !ts.isIdentifier(access.name)) return false;
+    const method = access.name.text;
+    if (
+      method !== "set" &&
+      method !== "get" &&
+      method !== "has" &&
+      method !== "delete" &&
+      method !== "add"
+    )
+      return false;
+    const symbol = this.checker.getNonNullableType(this.typeOf(access.expression)).getSymbol();
+    const name = ts.symbolNameOf(symbol);
+    return (
+      symbol !== undefined &&
+      (name === "WeakMap" || name === "WeakSet") &&
+      this.isStdlibSymbol(symbol)
+    );
+  }
+
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    // A typed promise as the key of a weak collection: the collection reads
+    // the key for its identity alone, which is the promise's own. Boxing it
+    // as other checked-dynamic uses do would make an adapter promise for a
+    // value nobody settles through, and the adapter of a rejected promise
+    // would be reported as an unhandled rejection of its own.
+    if (
+      expected.kind === "dyn" &&
+      expr.type.kind === "promise" &&
+      expr.type.inner.kind !== "dyn" &&
+      this.isWeakKeyArgument(node)
+    ) {
+      const loc = expr.loc;
+      const key: IrExpr =
+        expr.type.inner.kind === "void"
+          ? expr
+          : { kind: "promiseVoidWiden", value: expr, type: { kind: "promise", inner: VOID }, loc };
+      return { kind: "libCall", fn: "weakMap.promiseKey", args: [key], type: DYN, loc };
+    }
     const outerNode = this.slotSiteNode;
     const outerType = this.slotSiteType;
     this.slotSiteNode = node;

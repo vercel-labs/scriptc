@@ -74,17 +74,16 @@ export function needsGeneralNodeStreams(
   if (actual.kind === "dyn") return containsPart(lowerer, expected, pipeHandle);
   // process.stdout or process.stderr flowing into a `Writable` slot (the
   // child stdin handle until the program asks for the general
-  // representation): the general representation converts the descriptor
-  // into its stream.
-  if (
-    actual.kind === "procStream" &&
-    containsPart(
-      lowerer,
-      expected,
-      (p) => p.kind === "childWriter" || (p.kind === "object" && p.className === "%Writable"),
-    )
-  )
-    return true;
+  // representation) does not ask for the general representation by itself:
+  // the flow stops by name (SC1090). In Node the two names are one object
+  // with one writable state. Here the converted stream and the process
+  // stream name still answer apart, each without a diagnostic: a write
+  // through process.stdout after stream.end() or stream.destroy() is
+  // written, the stream stays ended and destroyed where Node's stdio stream
+  // is writable again, stream.setDefaultEncoding is not seen by
+  // process.stdout.write, and a reader that closed early is not an error on
+  // the stream. Until they answer as one, only a program that asks for the
+  // general representation by another member reaches the conversion.
   if (containsPart(lowerer, expected, stdio))
     return containsPart(lowerer, actual, (p) => isGeneralStream(lowerer, p));
   // A child pipe handle flowing into a runtime stream slot (a declared

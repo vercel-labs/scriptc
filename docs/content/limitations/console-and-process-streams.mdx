@@ -48,8 +48,7 @@ The record is a separate value: it is not identical to the stream, and it expose
 A record type that also declares a data member, such as `isTTY`, throws `SC2002`.
 An instance of a stream class such as `Writable` throws `SC2002` in a record type of methods as well.
 For those, pass an object literal that wraps the stream: `const sink: Sink = { write: (text: string) => { process.stdout.write(text); } }`.
-Under `@types/node`, `process.stdout` and `process.stderr` passed, stored or returned where `stream.Writable` is declared are one `Writable` each.
-Every conversion answers the same stream, and a binding of the stream class compares identical to the process stream it was read from.
+Passing, storing or returning `process.stdout` or `process.stderr` where `stream.Writable` is declared does not by itself make them a `Writable`: without another use that needs the stream class, the build stops with `SC1090`.
 A process stream held as an untyped value does not convert to a stream class: asserting or passing it as `Readable` or `Writable` throws a TypeError.
 Passing `process.stdin` where `Readable`, `Duplex` or `EventEmitter` is declared throws the same TypeError.
 The bundled declarations declare `process.stdin` by its own members, so these conversions need `@types/node`.

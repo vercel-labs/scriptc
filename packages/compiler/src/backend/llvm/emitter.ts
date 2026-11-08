@@ -9217,14 +9217,22 @@ export class LlEmitter {
       const slot = this.arenaSlot(e);
       this.statementFrame().push({ name: slot, type: e.type, slot: true, arena: "drop" });
       this.B.line(`call ptr @scr_arena_open(ptr ${slot}, i32 ${this.arenaClosed(e)})`);
+      this.arenaWindows++;
       const value = emitExpr(this, e);
+      this.arenaWindows--;
       if (!arenaAware(arenas, this.fnByName.get(this.currentFunctionName)))
         this.B.line(`call void @scr_arena_drop(ptr ${slot})`);
       return value;
     }
-    if (arenas.sites.heapCalls.has(e) && this.arenaSite(null)) {
+    if (
+      arenas.sites.heapCalls.has(e) &&
+      (this.arenaSite(null) || (this.arenaWindows > 0 && arenas.sites.heldCalls.has(e)))
+    ) {
       // A call whose value the group does not keep: everything it allocates
-      // takes the heap.
+      // takes the heap. So does a call whose value may hold a reference into
+      // a group that is dropped before the open arena is (heldCalls), also
+      // in a function that runs in no arena itself, where the arena open at
+      // the call is the one this function opened around it.
       const saved = this.suspendArena();
       const value = emitExpr(this, e);
       this.resumeArena(saved);
@@ -9243,12 +9251,18 @@ export class LlEmitter {
       });
       const arena = this.B.tmp();
       this.B.line(`${arena} = call ptr @scr_arena_open(ptr ${slot}, i32 ${this.arenaClosed(e)})`);
+      this.arenaWindows++;
       const value = emitExpr(this, e);
+      this.arenaWindows--;
       this.B.line(`call void @scr_arena_close(ptr ${arena})`);
       return value;
     }
     return emitExpr(this, e);
   }
+
+  /** How many roots and call regions of the function being emitted are
+   * open around the expression being emitted. */
+  private arenaWindows = 0;
 
   /** Group arenas (arenas.ts): the plan, the list slot of each root and
    * call region, and which locals' scopes drop which roots' arenas. */
@@ -9291,6 +9305,7 @@ export class LlEmitter {
   opensArena(e: Node): e is Extract<IrExpr, { kind: "call" | "new" }> {
     return (
       this.arenas !== null &&
+      // region-sites.ts opensArena asks the same of a plan.
       this.arenas.groups.roots.has(e) &&
       (e.kind === "call" || e.kind === "new") &&
       isRefCounted(e.type)
@@ -9323,25 +9338,30 @@ export class LlEmitter {
   beginArenaFunction(fn: IrFunction): void {
     this.arenaSlots.clear();
     this.statementFrames.clear();
+    this.arenaWindows = 0;
     this.arenaDropsByLocal = new Map();
     const arenas = this.arenas;
     if (arenas === null) return;
     const declared = new Set<string>();
+    // A local's roots in the order their values are complete: a root that
+    // was made from another's value (`wrap(rows())`, or `wrap(kept)` in a
+    // later statement) comes after it. Its group can hold references into
+    // the other's, so the scope drops it first: the lists are reversed.
     const visit = (node: Node): void => {
       if (node.kind === "varDecl") declared.add(node.localId);
-      if (this.opensArena(node)) {
-        const local = arenas.groups.drops.get(node);
-        if (local !== undefined && local !== null) {
-          const list = this.arenaDropsByLocal.get(local) ?? [];
-          list.push({ root: node, type: node.type });
-          this.arenaDropsByLocal.set(local, list);
-        }
-      }
+      const root = this.opensArena(node) ? node : null;
+      const local = root === null ? null : (arenas.groups.drops.get(root) ?? null);
+      // Entered here, so the locals keep the order of their first root.
+      if (local !== null && !this.arenaDropsByLocal.has(local))
+        this.arenaDropsByLocal.set(local, []);
       const kids: Node[] = [];
       children(node, kids);
       for (const kid of kids) visit(kid);
+      if (root !== null && local !== null)
+        this.arenaDropsByLocal.get(local)!.push({ root, type: root.type });
     };
     for (const s of fn.body) visit(s);
+    for (const list of this.arenaDropsByLocal.values()) list.reverse();
     for (const local of [...this.arenaDropsByLocal.keys()])
       if (!declared.has(local)) this.ownArenasOf(local);
   }

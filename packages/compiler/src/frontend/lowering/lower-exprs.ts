@@ -118,7 +118,11 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary, staleReadMessage } from "./expressions/narrowing.js";
+import {
+  lowerTernary,
+  noteStrandedInstanceRead,
+  staleReadMessage,
+} from "./expressions/narrowing.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import {
   classFieldTarget,
@@ -698,7 +702,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
   if (ts.isTypeOfExpression(expr)) return lowerTypeofExpr(lowerer, expr, loc);
-  if (ts.isIdentifier(expr)) return lowerIdentifierExpr(lowerer, expr, loc);
+  if (ts.isIdentifier(expr)) {
+    const value = lowerIdentifierExpr(lowerer, expr, loc);
+    // A generic instance's binding that came out as one of its records.
+    if (lowerer.typeParamBindings !== null) noteStrandedInstanceRead(lowerer, expr, value.type);
+    return value;
+  }
   if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
     return lowerer.lowerLambda(expr);
   }

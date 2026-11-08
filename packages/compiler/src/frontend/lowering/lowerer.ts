@@ -108,6 +108,7 @@ import { guardedDeferredFences } from "../../ir/deferred-fence.js";
 import {
   absentDefaultStopDiag,
   deferredRefusalDiag,
+  strandedInstanceArmDiag,
   guardedDeferredFenceDiag,
 } from "../../diagnostics/diagnostic.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
@@ -899,6 +900,10 @@ import { funduleMemberOf, type FunduleMember } from "./lower-fundule.js";
 import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import {
+  noteStrandedInstanceFlow,
+  noteStrandedInstanceParameter,
+} from "./expressions/narrowing.js";
 import { guardPartialReads, partialAssertionFields } from "./partial-assertions.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
@@ -14837,6 +14842,21 @@ export class Lowerer {
       this.deferredRefusalWarnings.push(diag);
   }
 
+  /** SC6015 for the statement at `node`, which takes the record `target` out
+   * of a generic instance's binding that holds `others` further layouts
+   * (strandedInstanceArmDiag): once per site, whatever the number of
+   * instances lowered from it. */
+  noteStrandedInstanceArm(node: ts.Node, target: string, others: number): void {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node))) return;
+    const diag = strandedInstanceArmDiag(target, others, locOf(node));
+    if (
+      !this.deferredRefusalWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.deferredRefusalWarnings.push(diag);
+  }
+
   /** Whether the value of `node`, lowered as `value`, is a function the
    * runtime holds as a plain function value: a typed function, or a held
    * built-in constructor in an untyped slot. */
@@ -17875,6 +17895,10 @@ export class Lowerer {
         // that has no conversion is refused like that arm's plain flow.
         if (this.slotTypedAs(node, expected))
           this.requireSeenArmsConvert(node, expr.type.unionId, site, expected);
+        // A generic instance's binding that kept its arms: the extraction
+        // below throws for each arm the record does not name (SC6015).
+        if (this.typeParamBindings !== null)
+          noteStrandedInstanceFlow(this, node, expr.type, expected);
       }
       const siteArms =
         site?.kind === "union" ? (this.unions.get(site.unionId)?.arms ?? []) : site ? [site] : [];
@@ -20781,6 +20805,10 @@ export class Lowerer {
       if (passed) {
         const loc = locOf(decl);
         params.push({ localId: passed.id, name, type: passed.type });
+        // A generic instance's slot that holds further records beside the
+        // parameter's own: the conversion throws for each of them (SC6015).
+        if (this.typeParamBindings !== null)
+          noteStrandedInstanceParameter(this, decl.name, passed.type, local.type);
         const converted = this.coerceToExpected(
           { kind: "varRef", localId: passed.id, type: passed.type, loc },
           local.type,

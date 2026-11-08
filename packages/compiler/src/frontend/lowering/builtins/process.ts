@@ -284,6 +284,7 @@ export function lowerProcStreamMethodCall(
     call.arguments.nodes.length <= terminalArity &&
     !call.arguments.nodes.some(ts.isSpreadElement)
   ) {
+    noteTerminalColorRefusal(lowerer, call, name);
     const invoke = (stream: IrExpr): IrExpr =>
       lowerer.coerceInto(
         call,
@@ -311,6 +312,7 @@ export function lowerProcStreamMethodCall(
     // descriptor is a terminal, which is when it has `isTTY`. The stream is
     // evaluated once; on a pipe the call and its arguments never run and the
     // answer is undefined, whatever the declarations promise.
+    refuseAssertedTerminalAnswer(lowerer, call, access, name);
     const held = lowerer.declareHiddenLocal("%terminalStream", stream.type);
     const read: IrExpr = { kind: "varRef", localId: held.id, type: stream.type, loc };
     const terminal = processStreamValueMember(lowerer, "isTTY", read, loc);
@@ -371,6 +373,92 @@ const TERMINAL_STREAM_METHODS: ReadonlyMap<string, number> = new Map([
   ["getColorDepth", 1],
   ["hasColors", 2],
 ]);
+
+/** The kinds of environment argument the runtime's color rules refuse: Node
+ * reads variables from any object, and only a plain object has a compiled
+ * reading. */
+const REFUSED_COLOR_ENVIRONMENTS: ReadonlySet<string> = new Set(["array", "map", "set", "func"]);
+
+/** The `TERM` values that name a member of Object.prototype in Node's table
+ * of terminals (the table is a plain object and the lookup lowercases the
+ * value): Node answers that member, which is no color depth. */
+const PROTOTYPE_TERMS: ReadonlySet<string> = new Set(["constructor", "__proto__"]);
+
+/** SC6015 for a `getColorDepth` or `hasColors` call whose environment
+ * argument the build can see the runtime refuses when the call runs: an
+ * environment that is no plain object, or a literal environment whose one
+ * variable is a `TERM` naming a member of Object.prototype. An environment
+ * the build cannot see (a parameter, the process's own variables) is not
+ * named: the runtime's refusal names itself when such a call throws. */
+function noteTerminalColorRefusal(lowerer: Lowerer, call: ts.CallExpression, name: string): void {
+  if (name !== "getColorDepth" && name !== "hasColors") return;
+  const args = call.arguments.nodes;
+  // hasColors([count][, env]): a lone argument is the environment unless it
+  // is a number.
+  let env = name === "hasColors" && args.length === 2 ? args[1] : args[0];
+  if (env === undefined) return;
+  while (ts.isParenthesizedExpression(env)) env = env.expression;
+  const hint =
+    'pass a plain object of variables (`{ TERM: "xterm" }`, `process.env`), or no environment at all';
+  const type = lowerer.mapTypeOf(lowerer.typeOf(env));
+  if (type && REFUSED_COLOR_ENVIRONMENTS.has(type.kind)) {
+    lowerer.noteDeferredRefusal(
+      call,
+      `SC2020: Native process stream ${name} with an environment that is not a plain object has no lowering`,
+      hint,
+    );
+    return;
+  }
+  if (!ts.isObjectLiteralExpression(env) || env.properties.nodes.length !== 1) return;
+  const only = env.properties.nodes[0]!;
+  if (!ts.isPropertyAssignment(only) || !ts.isStringLiteralLike(only.initializer)) return;
+  const key = only.name;
+  if (!(ts.isIdentifier(key) || ts.isStringLiteralLike(key)) || key.text !== "TERM") return;
+  if (!PROTOTYPE_TERMS.has(only.initializer.text.toLowerCase())) return;
+  lowerer.noteDeferredRefusal(
+    call,
+    "SC2020: Native process stream getColorDepth for a TERM that names a member of Object.prototype has no lowering",
+    "name a terminal Node knows (`xterm`, `linux`, `screen`); Node answers the member of Object.prototype for this value, which is no color depth",
+  );
+}
+
+/** Refuses an assertion that the optional call of a process stream's color
+ * method answered (`out.getColorDepth?.() as number`, `…!`). The stream has
+ * the method only on a terminal, so on a pipe or a file the call answers
+ * undefined: Node lets that undefined through the assertion, and a slot of
+ * the asserted type cannot hold it. */
+function refuseAssertedTerminalAnswer(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+): void {
+  if (name !== "getColorDepth" && name !== "hasColors") return;
+  let node: ts.Node = call;
+  while (node.parent && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const assertion = node.parent;
+  if (!assertion) return;
+  if (!ts.isNonNullExpression(assertion)) {
+    if (!ts.isAsExpression(assertion) && !ts.isTypeAssertion(assertion)) return;
+    const asserted = lowerer.mapTypeOf(lowerer.typeOf(assertion));
+    // An assertion to a type that still holds undefined, or to an untyped
+    // one, asserts nothing about the answer.
+    if (
+      !asserted ||
+      asserted.kind === "dyn" ||
+      asserted.kind === "void" ||
+      asserted.kind === "undefinedT" ||
+      (asserted.kind === "union" && lowerer.armTag(asserted.unionId, UNDEFINED_T) >= 0)
+    )
+      return;
+  }
+  lowerer.noLowering(
+    `an asserted answer of WritableStream.${name}?.()`,
+    assertion,
+    "the stream has the method only on a terminal, and on a pipe or a file the optional call answers undefined: test the answer (`?? 1`, `=== undefined`) instead of asserting it",
+    lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
 
 /** Whether `node` reads one of those methods from a process stream: a member
  * the declarations require and a stream that is no terminal does not have,

@@ -1056,34 +1056,11 @@ function instanceSlotUnnarrowed(
   siteTs: ts.Type,
   site: IrType | null,
 ): IrExpr | null {
-  if (lowerer.typeParamBindings === null || value.type.kind !== "union" || site === null)
-    return null;
-  if (site.kind === "union" || site.kind === "void" || isUnitType(site)) return null;
-  if (!ts.isIdentifier(node)) return null;
+  if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
-  const from = lowerer.unions.get(unionId);
-  if (!from || lowerer.armTag(unionId, site) < 0) return null;
+  if (!instanceSlotReadAtDeclaredType(lowerer, node, unionId, siteTs, site)) return null;
+  const from = lowerer.unions.get(unionId)!;
   const values = from.arms.filter((arm) => !isUnitType(arm));
-  if (values.length < 2) return null;
-  const symbol = lowerer.resolveValueSymbol(node);
-  if (!symbol) return null;
-  const declared = lowerer.checker.getTypeOfSymbol(symbol);
-  // The declared type itself, or a type variable (`T[number]`) read through
-  // its constraint: the whole declared type is assignable to the read's
-  // type exactly when that type is no narrower than the constraint.
-  // A test that only excluded null or undefined (`part === null ? … :
-  // part.id`) chose no value arm either: the comparison is with the
-  // declared type's values.
-  const variable = (declared.flags & ts.TypeFlags.Instantiable) !== 0;
-  const declaredValues = variable ? declared : lowerer.checker.getNonNullableType(declared);
-  if (
-    declaredValues !== siteTs &&
-    !(
-      lowerer.checker.isTypeAssignableTo(declaredValues, siteTs) &&
-      (variable || lowerer.checker.isTypeAssignableTo(siteTs, declaredValues))
-    )
-  )
-    return null;
   if (values.length === from.arms.length) return value;
   if (!isSafeToRepeat(value)) return null;
   const subId = lowerer.unions.transform(from, values);
@@ -1108,6 +1085,117 @@ function instanceSlotUnnarrowed(
     };
   }
   return result;
+}
+
+/** Whether `node` reads a generic instance's binding at the binding's own
+ * declared type while the slot `unionId` holds that type, `site`, as one arm
+ * among several value arms: the reads instanceSlotUnnarrowed keeps whole.
+ * The checker narrowed nothing there, so each of the other value arms still
+ * reaches the read. */
+export function instanceSlotReadAtDeclaredType(
+  lowerer: Lowerer,
+  node: ts.Node,
+  unionId: string,
+  siteTs: ts.Type,
+  site: IrType | null,
+): boolean {
+  if (lowerer.typeParamBindings === null || site === null) return false;
+  if (site.kind === "union" || site.kind === "void" || isUnitType(site)) return false;
+  if (!ts.isIdentifier(node)) return false;
+  const from = lowerer.unions.get(unionId);
+  if (!from || lowerer.armTag(unionId, site) < 0) return false;
+  const values = from.arms.filter((arm) => !isUnitType(arm));
+  if (values.length < 2) return false;
+  const symbol = lowerer.resolveValueSymbol(node);
+  if (!symbol) return false;
+  const declared = lowerer.checker.getTypeOfSymbol(symbol);
+  // The declared type itself, or a type variable (`T[number]`) read through
+  // its constraint: the whole declared type is assignable to the read's
+  // type exactly when that type is no narrower than the constraint.
+  // A test that only excluded null or undefined (`part === null ? … :
+  // part.id`) chose no value arm either: the comparison is with the
+  // declared type's values.
+  const variable = (declared.flags & ts.TypeFlags.Instantiable) !== 0;
+  const declaredValues = variable ? declared : lowerer.checker.getNonNullableType(declared);
+  if (
+    declaredValues !== siteTs &&
+    !(
+      lowerer.checker.isTypeAssignableTo(declaredValues, siteTs) &&
+      (variable || lowerer.checker.isTypeAssignableTo(siteTs, declaredValues))
+    )
+  )
+    return false;
+  return true;
+}
+
+/** The number of value arms the slot `unionId` holds beside `site`. */
+function otherValueArms(lowerer: Lowerer, unionId: string, site: IrType): number {
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  return arms.filter((arm) => !isUnitType(arm) && !typeEquals(arm, site)).length;
+}
+
+/** Names (SC6015) a read of a generic instance's binding that came out as
+ * the one record its declared type names, `result`, while the slot holds
+ * further value arms the checker did not narrow away
+ * (instanceSlotReadAtDeclaredType): the extraction throws for each of
+ * them. A read that kept its arms has a union type and is not named. */
+export function noteStrandedInstanceRead(
+  lowerer: Lowerer,
+  node: ts.Identifier,
+  result: IrType,
+): void {
+  if (lowerer.typeParamBindings === null || result.kind === "union") return;
+  const slot = lowerer.peekLocal(node)?.type;
+  if (slot === undefined || slot.kind !== "union") return;
+  const siteTs = lowerer.typeOf(node);
+  const site = lowerer.mapTypeOf(siteTs);
+  if (site === null || !typeEquals(site, result)) return;
+  if (!instanceSlotReadAtDeclaredType(lowerer, node, slot.unionId, siteTs, site)) return;
+  lowerer.noteStrandedInstanceArm(
+    node,
+    lowerer.checker.typeToString(siteTs),
+    otherValueArms(lowerer, slot.unionId, site),
+  );
+}
+
+/** The same warning for the parameter `name` of a function literal lowered
+ * at its slot's signature: the slot hands it `slot`, and the parameter binds
+ * the one record `type` the checker gives it. The checker never narrows a
+ * parameter, so each other value arm of the slot still arrives. */
+export function noteStrandedInstanceParameter(
+  lowerer: Lowerer,
+  name: ts.Node,
+  slot: IrType,
+  type: IrType,
+): void {
+  if (lowerer.typeParamBindings === null || slot.kind !== "union" || type.kind !== "record") return;
+  if (lowerer.armTag(slot.unionId, type) < 0) return;
+  const others = otherValueArms(lowerer, slot.unionId, type);
+  if (others === 0) return;
+  lowerer.noteStrandedInstanceArm(name, lowerer.checker.typeToString(lowerer.typeOf(name)), others);
+}
+
+/** The same warning for a value that kept its arms (`value`, read at
+ * `node`) and now flows into a slot of the one record its declared type
+ * names: the conversion extracts that arm and throws for the others. */
+export function noteStrandedInstanceFlow(
+  lowerer: Lowerer,
+  node: ts.Node,
+  value: IrType,
+  expected: IrType,
+): void {
+  if (lowerer.typeParamBindings === null || value.kind !== "union") return;
+  let read = node;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  const siteTs = lowerer.typeOf(read);
+  const site = lowerer.mapTypeOf(siteTs);
+  if (site === null || !typeEquals(site, expected)) return;
+  if (!instanceSlotReadAtDeclaredType(lowerer, read, value.unionId, siteTs, site)) return;
+  lowerer.noteStrandedInstanceArm(
+    read,
+    lowerer.checker.typeToString(siteTs),
+    otherValueArms(lowerer, value.unionId, site),
+  );
 }
 
 /** A getter read whose runtime result can be undefined (an unchecked

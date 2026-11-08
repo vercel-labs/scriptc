@@ -1021,6 +1021,7 @@ export function moduleArtifacts(
   unions: IrUnionDef[];
 } {
   const valueInstanceOfRoots = new Set<string>();
+  const instanceOfTargets = new Set<string>();
   const classNames = new Set<string>();
   const shapeIds = new Set<string>();
   const unionIds = new Set<string>();
@@ -1089,10 +1090,13 @@ export function moduleArtifacts(
     expr: (node: IrExpr): boolean => {
       visitType(node.type);
       switch (node.kind) {
+        case "instanceOf":
+          instanceOfTargets.add(node.className);
+          visitClass(node.className);
+          break;
         case "fieldIncDec":
         case "new":
         case "classRef":
-        case "instanceOf":
         case "virtualCall":
         case "fieldGet":
         case "caughtCheck":
@@ -1214,43 +1218,60 @@ export function moduleArtifacts(
       pendingClasses.push(name);
     }
   }
-  while (pendingClasses.length > 0 || pendingShapes.length > 0 || pendingUnions.length > 0) {
-    while (pendingShapes.length > 0) {
-      // Declared fields AND the index-signature value type: an
-      // overflow-valued shape (`{ [key: string]: {script?: string} }`)
-      // references its value shape through indexValue alone.
-      const shape = lowerer.shapes.get(pendingShapes.pop()!);
-      if (shape !== undefined) {
-        for (const field of shape.fields) visitType(field.type);
-        if (shape.indexValue !== undefined) visitType(shape.indexValue);
+  const close = (): void => {
+    while (pendingClasses.length > 0 || pendingShapes.length > 0 || pendingUnions.length > 0) {
+      while (pendingShapes.length > 0) {
+        // Declared fields AND the index-signature value type: an
+        // overflow-valued shape (`{ [key: string]: {script?: string} }`)
+        // references its value shape through indexValue alone.
+        const shape = lowerer.shapes.get(pendingShapes.pop()!);
+        if (shape !== undefined) {
+          for (const field of shape.fields) visitType(field.type);
+          if (shape.indexValue !== undefined) visitType(shape.indexValue);
+        }
+      }
+      while (pendingUnions.length > 0) {
+        const union = lowerer.unions.get(pendingUnions.pop()!);
+        if (union !== undefined) for (const arm of union.arms) visitType(arm);
+      }
+      while (pendingClasses.length > 0) {
+        const name = pendingClasses.pop()!;
+        // Referenced by an emitted type but never registered: collection
+        // deferred its diagnostics — a reached reference makes them count
+        // (or registers the class with dynamic slots, retryDeferred).
+        const info = lowerer.classes.get(name) ?? lowerer.flushDeferredClass(name);
+        if (!info) continue;
+        for (const field of info.def.fields) visitType(field.type);
+        if (info.base) visitClass(info.base.def.name);
+        if (info.def.genericOf) visitClass(info.def.genericOf);
+        if (lowerer.inHierarchy(info)) {
+          let root = info;
+          while (root.base) root = root.base;
+          const wholeTree = (c: ClassInfo): void => {
+            if (valueInstanceOfRoots.has(root.def.name) || lowerer.classCanBeConstructed(c))
+              visitClass(c.def.name);
+            for (const s of c.subclasses) wholeTree(s);
+          };
+          wholeTree(root);
+        }
       }
     }
-    while (pendingUnions.length > 0) {
-      const union = lowerer.unions.get(pendingUnions.pop()!);
-      if (union !== undefined) for (const arm of union.arms) visitType(arm);
-    }
-    while (pendingClasses.length > 0) {
-      const name = pendingClasses.pop()!;
-      // Referenced by an emitted type but never registered: collection
-      // deferred its diagnostics — a reached reference makes them count
-      // (or registers the class with dynamic slots, retryDeferred).
-      const info = lowerer.classes.get(name) ?? lowerer.flushDeferredClass(name);
-      if (!info) continue;
-      for (const field of info.def.fields) visitType(field.type);
-      if (info.base) visitClass(info.base.def.name);
-      if (info.def.genericOf) visitClass(info.def.genericOf);
-      if (lowerer.inHierarchy(info)) {
-        let root = info;
-        while (root.base) root = root.base;
-        const wholeTree = (c: ClassInfo): void => {
-          if (valueInstanceOfRoots.has(root.def.name) || lowerer.classCanBeConstructed(c))
-            visitClass(c.def.name);
-          for (const s of c.subclasses) wholeTree(s);
-        };
-        wholeTree(root);
-      }
-    }
+  };
+  close();
+  // An `instanceof` test reads its class's place in a hierarchy, which the
+  // test was lowered against because the class has subclasses. When none of
+  // them was reached (nothing constructs one), the class would stand alone in
+  // the module and the test would name a hierarchy the module does not have:
+  // its subclasses join, as declarations. The runtime's emitter class is a
+  // hierarchy member by itself (inHierarchy) and needs none.
+  for (const name of instanceOfTargets) {
+    const info = lowerer.classes.get(name);
+    if (!info || info.base || info.subclasses.length === 0 || info.builtinEmitter === true)
+      continue;
+    if (info.subclasses.some((sub) => classNames.has(sub.def.name))) continue;
+    for (const sub of info.subclasses) visitClass(sub.def.name);
   }
+  close();
   const reachable = lowerer.reachableForArtifacts ?? lowerer.reachable;
   return {
     classes: lowerer

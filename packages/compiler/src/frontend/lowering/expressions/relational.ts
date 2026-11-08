@@ -569,7 +569,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         };
       }
       // Plain data (records, arrays, strings, numbers, booleans, and unions
-      // of them) is never a promise: false after the operand's evaluation.
+      // of them) is never a promise, and neither is a class instance (no
+      // program class extends Promise): false after the operand's evaluation.
       const neverPromise = (t: IrType): boolean =>
         NEVER_PROMISE_KINDS.has(t.kind) ||
         (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms ?? [t]).every(neverPromise));
@@ -1069,12 +1070,14 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     const arms = lowerer.unions.get(unionId)?.arms;
     // Records, arrays and scalar values are no instances of a class that
     // does not extend Array (lowerArrayClassInstanceOf tests the classes
-    // that do). Dynamic/opaque runtime objects keep their existing
-    // instanceof fences.
+    // that do), and neither is a promise: every compiled promise is the
+    // standard library's own, and no program class extends it. Dynamic/opaque
+    // runtime objects keep their existing instanceof fences.
     if (
       arms?.every(
         (arm) =>
           arm.kind === "object" ||
+          arm.kind === "promise" ||
           arm.kind === "record" ||
           arm.kind === "array" ||
           arm.kind === "f64" ||
@@ -3483,6 +3486,7 @@ function nodeDeclaredMember(lowerer: Lowerer, t: ts.Type, key: string): boolean 
 }
 
 const NEVER_PROMISE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "object",
   "record",
   "array",
   "string",

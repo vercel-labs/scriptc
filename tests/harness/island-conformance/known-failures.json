@@ -206,7 +206,7 @@
   "npm/hono-zod-validator": {
     "island:@hono/zod-validator": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Error: Malformed JSON in request body"
+      "signature": "exit 1, Node 0: Error: 'Headers.[Symbol.iterator] in a static build' is part of the standard library types but has no scriptc lowering yet [SC2020 at <root>/node_modules/hono/d"
     },
     "island:hono": {
       "category": "build",

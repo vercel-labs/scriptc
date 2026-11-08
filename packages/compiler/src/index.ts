@@ -887,6 +887,7 @@ async function compileExecutableNative(
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
+    ...(features.moduleCompileCache ? { moduleCompileCache: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),

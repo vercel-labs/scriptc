@@ -1,5 +1,6 @@
 import { lowerWrapperToObject, programCreatesWrappers } from "../primitive-wrappers.js";
 import { keyedHelperName } from "../stable-names.js";
+import { COPY_HELPERS } from "../width-lift.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import { arrayValueStore, optionalElementValue, primitiveElement } from "../array-values.js";
@@ -1072,7 +1073,7 @@ export function lowerRecordOvfCaptureHelper(
 ): string | null {
   return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
     key: `ovf:${fromId}:${toId}`,
-    namePrefix: "%rec.capture",
+    namePrefix: COPY_HELPERS.ovf,
     excluded: EMPTY_CAPTURE_EXCLUSION,
     propagateNullProto: true,
     keepSourceTail: true,
@@ -2066,8 +2067,127 @@ export function lowerIndexMergeHelper(
           return stmt ? [stmt] : [];
         });
       const group: IrStmt & { kind: "block" } = { kind: "block", body: ordered(from), loc };
+      // A closed source built by a checked conversion keeps the own keys its
+      // shape does not declare, and their order, beside it (the
+      // record-sources.ts view), and a spread copies every own key in that
+      // order. When the source kept such a view the keys come from the view,
+      // converted into the target's shape by the checked record builder as
+      // the capture helper's tail does. Whether any record of the program
+      // can keep one is settled when the finalizers run, so a program
+      // without them keeps the field writes alone. A field that only holds
+      // its key's place for a later property has no value the view could
+      // convert, so such a literal keeps the field writes too.
+      const sourcedFromView =
+        ![...plan.fields.values()].some((lift) => lift === "placeholder") &&
+        recordMayKeepSource(lowerer, fromT) &&
+        canDynCheckTo(
+          toT,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        );
       lowerer.shapeOrderHelperFinalizers.push(() => {
-        group.body = ordered(lowerer.shapes.get(plan.shapeId) ?? from);
+        const fields = ordered(lowerer.shapes.get(plan.shapeId) ?? from);
+        if (!sourcedFromView || !lowerer.recordSourcesPossible) {
+          group.body = fields;
+          return;
+        }
+        const view = `vw.${ci}`;
+        const ks = `ks.${ci}`;
+        const iv = `i.${ci}`;
+        const kv = `k.${ci}`;
+        locals.push(
+          { id: view, name: `vw${n}`, type: toT, mutable: false },
+          { id: ks, name: `ks${n}`, type: ksT, mutable: false },
+          { id: iv, name: `i${n}`, type: F64, mutable: true },
+          { id: kv, name: `k${n}`, type: STRING, mutable: false },
+        );
+        const viewRef = varRef(view, toT, loc);
+        const fromView: IrStmt[] = [
+          {
+            kind: "varDecl",
+            localId: view,
+            init: {
+              kind: "dynCheck",
+              value: { kind: "dynFrom", value: sRef, type: DYN, loc },
+              type: toT,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "varDecl",
+            localId: ks,
+            init: { kind: "recordOvfKeys", obj: viewRef, shapeId: toId, type: ksT, loc },
+            loc,
+          },
+          {
+            kind: "for",
+            init: { kind: "varDecl", localId: iv, init: numLit(0, loc), loc },
+            cond: {
+              kind: "bin",
+              op: "<",
+              left: varRef(iv, F64, loc),
+              right: {
+                kind: "arrIntrinsic",
+                method: "length",
+                receiver: varRef(ks, ksT, loc),
+                args: [],
+                type: F64,
+                loc,
+              },
+              type: BOOL,
+              loc,
+            },
+            update: {
+              kind: "assign",
+              localId: iv,
+              value: {
+                kind: "bin",
+                op: "+",
+                left: varRef(iv, F64, loc),
+                right: numLit(1, loc),
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            body: [
+              {
+                kind: "varDecl",
+                localId: kv,
+                init: {
+                  kind: "arrayGet",
+                  arr: varRef(ks, ksT, loc),
+                  index: varRef(iv, F64, loc),
+                  type: STRING,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "recordKeySet",
+                obj: outRef,
+                shapeId: toId,
+                key: varRef(kv, STRING, loc),
+                value: {
+                  kind: "recordKeyGet",
+                  obj: viewRef,
+                  shapeId: toId,
+                  key: varRef(kv, STRING, loc),
+                  overflowOnly: true,
+                  type: tIv,
+                  loc,
+                },
+                overflowOnly: true,
+                loc,
+              },
+            ],
+            loc,
+          },
+        ];
+        group.body = [
+          { kind: "if", cond: recordSourceTest(sRef, loc), then: fromView, else_: fields, loc },
+        ];
       });
       body.push(group);
       return;

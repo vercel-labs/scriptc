@@ -2944,8 +2944,10 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
 // `Date.prototype` reads as the prototype object; a WRITE into it cannot be
 // observed by a typed Date, so every writer keeps the SC1090 fence it had
 // before the prototype had a value — including the plural defineProperties,
-// which the dynamic path would otherwise apply to the prototype object while
-// `new Date(0).getTime()` kept answering the builtin method.
+// which the dynamic path would otherwise apply to the prototype object. A
+// program that also calls the written member natively (`new
+// Date(0).getTime()`) is refused when it is built (SC1092,
+// tests/diagnostics/builtin-member-write-js.cjs).
 describe("standard library prototype writes (JS lane)", () => {
   test("defineProperties keeps the fence, like defineProperty", async () => {
     const r = await compileAndRun(
@@ -2964,14 +2966,11 @@ refuse("defineProperties", () =>
 );
 refuse("defineProperty", () => Object.defineProperty(Date.prototype, "getTime", { value: () => 42 }));
 refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
-console.log("getTime", new Date(0).getTime());
 `,
       "cjs",
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(
-      "defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\ngetTime 0\n",
-    );
+    expect(r.stdout).toBe("defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\n");
   });
 });
 

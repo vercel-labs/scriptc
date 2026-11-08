@@ -166,7 +166,11 @@ describe.skipIf(skip)("the island load plan", () => {
     const whole = await run(binary, env);
     expect(whole.code).toBe(0);
     const trees = join(cache, "scriptc", "node-islands");
-    const installed = readdirSync(trees).map((name) => join(trees, name));
+    // The module tree is named by its digest; Node's compile cache for it
+    // is beside it (`<digest>.compile-cache`).
+    const installed = readdirSync(trees)
+      .filter((name) => /^[0-9a-f]{64}$/.test(name))
+      .map((name) => join(trees, name));
     expect(installed.length).toBe(1);
     // A module the plan names and the island reads itself: the plan does
     // not look at the disk, so the read is what fails, on the file's path.
@@ -174,8 +178,7 @@ describe.skipIf(skip)("the island load plan", () => {
     const thinned = await run(binary, env);
     expect(thinned.stdout).toBe(whole.stdout);
     expect(thinned.code).toBe(0);
-    for (const tree of readdirSync(trees))
-      rmSync(join(trees, tree, ".scriptc/load-plan"), { force: true });
+    for (const tree of installed) rmSync(join(tree, ".scriptc/load-plan"), { force: true });
     const unplanned = await run(binary, env);
     expect(unplanned.stdout).toBe(whole.stdout);
     expect(unplanned.code).toBe(0);

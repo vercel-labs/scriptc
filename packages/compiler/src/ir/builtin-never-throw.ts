@@ -30,6 +30,16 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_emitter_symbol_name allocates the registry key of the symbol it is
   // given (scr_str_symbol_key); running out of memory ends the process.
   "emitter.symName",
+  // scr_promise_all_settled subscribes a countdown reaction to each entry
+  // and queues one job for the entries already settled; the builder runs
+  // later, inside the combinator's settlement, never in this call.
+  "promise.allSettledTuple",
+  // scr_promise_is_rejected reads the promise's state.
+  "promise.entryRejected",
+  // scr_promise_reason_dyn boxes the stored reason (a number, a boolean, a
+  // string, an error object or the checked-dynamic value itself); running
+  // out of memory ends the process.
+  "promise.entryReason",
   // Emitted inline: the value's tag, its signature literal's length and
   // the literal's last four bytes. No runtime call but strlen.
   "dyn.classValueHash",

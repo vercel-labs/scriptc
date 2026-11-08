@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/bounded-import-concat-specifier/main.ts"
+ ],
+ "diags": []
+}

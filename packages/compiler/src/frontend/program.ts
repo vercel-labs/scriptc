@@ -124,11 +124,13 @@ import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
   ambientDtsPath,
+  domExceptionDtsPath,
   fallbackDtsPath,
   fallbackModulesNamedIn,
   isFallbackDtsPath,
   isNodeTypesPath,
   overridesDtsPath,
+  packageShimRoot,
   tsgoPath,
 } from "./dts-paths.js";
 import {
@@ -988,6 +990,26 @@ function erasedSpecifier(specifier: ts.Node): boolean {
   return ts.isLiteralTypeNode(parent);
 }
 
+/** A global the runtime provides and scriptc's own package implementations
+ * (packages/compiler/shims) name, which the project's @types/node is too old
+ * to declare: DOMException, absent from @types/node 20.11 and earlier. Such a
+ * project's own code cannot name the global (its tsc rejects it), but
+ * scriptc's implementation of a package it imports does, and would not lower
+ * (an aborted undici fetch rejects with one). The declaration joins the
+ * program exactly then: a program file belongs to a package implementation
+ * and no file of the adopted Node types declares the global. Decided from the
+ * program's files, like the fallback module roots. */
+function nodeTypesSupplementRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
+  const names = program.getSourceFileNames();
+  const shims = tsgoPath(packageShimRoot()) + "/";
+  if (!names.some((name) => tsgoPath(name).startsWith(shims))) return [];
+  for (const name of names) {
+    if (isNodeTypesPath(name) && /\bvar\s+DOMException\b/.test(host.sourceText(name) ?? ""))
+      return [];
+  }
+  return [domExceptionDtsPath()];
+}
+
 /** Program roots hidden behind canonical createRequire bindings. tsgo
  * discovers ordinary import/require edges itself, but a source binding
  * returned by createRequire is intentionally just a function to the type
@@ -1405,7 +1427,9 @@ function loadProgram7(
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
-        ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
+        ...(nodeTypes === null
+          ? fallbackModuleRoots7(program, host)
+          : nodeTypesSupplementRoots7(program, host)),
         ...entryPackageProgramRoots7(program, entryPath, packageRoots),
         ...createRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),
@@ -3387,12 +3411,15 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
  *   fence, and the resolve.paths value is a function that throws one when
  *   called (module-resolution.ts), so the statement's catch clause handles
  *   them (packages that look for optional native addons).
- * - "value": in JavaScript source, the loader itself as a value (stored,
- *   passed, returned). It lowers to a run-time require function over the
- *   runtime resolver. A package compiled statically cannot prove those
- *   call sites, so npm-static refuses it (the "escaping" class there).
- * - "computed": the "runtime" and "value" uses in TypeScript source, and
- *   the "deferred" shapes outside a try block.
+ * - "value": the loader itself as a value (stored, passed, returned), in
+ *   JavaScript and TypeScript source alike. It lowers to a run-time require
+ *   function over the runtime resolver: the calls it will receive are not
+ *   in sight where the value is read, so they are answered when they run.
+ *   A package compiled statically cannot prove those call sites, so
+ *   npm-static refuses it (the "escaping" class there).
+ * - "computed": the "runtime" uses in TypeScript source (a call the
+ *   compiler can see cannot load anything, so it is refused where it is
+ *   written), and the "deferred" shapes outside a try block.
  * - "escaping": writes, optional calls, and other members. */
 const COMPUTED_CREATE_REQUIRE_REASON =
   "its createRequire result is used with a computed specifier in TypeScript, or with spread arguments or resolve.paths outside a try block (static requires need literal specifiers)";
@@ -3401,9 +3428,7 @@ type CreateRequireUse7 = "static" | "runtime" | "deferred" | "computed" | "escap
 
 function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
   const use = createRequireUseShape7(expr);
-  return (use === "runtime" || use === "value") && !isJsSourceFile(ts.getSourceFileOfNode(expr))
-    ? "computed"
-    : use;
+  return use === "runtime" && !isJsSourceFile(ts.getSourceFileOfNode(expr)) ? "computed" : use;
 }
 
 function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
@@ -3454,9 +3479,8 @@ function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
       call.expression === use
     )
       return "escaping";
-    // The loader itself as a value (stored, passed, returned). JavaScript
-    // source lowers it to a run-time require function over the runtime
-    // resolver; TypeScript source keeps the refusal (createRequireUse7).
+    // The loader itself as a value (stored, passed, returned): a run-time
+    // require function over the runtime resolver.
     return "value";
   } else if (!paths) {
     return "runtime";

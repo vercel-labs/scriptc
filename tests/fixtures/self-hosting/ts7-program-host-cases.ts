@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { FrontendInputTracker, trackedRealpath, trackedReadFile } from "../../../packages/compiler/src/frontend/input-tracker.js";
+import { FrontendInputTracker, invalidateTrackedPath, trackedRealpath, trackedReadFile } from "../../../packages/compiler/src/frontend/input-tracker.js";
 import { findConfigFile, getPreEmitDiagnostics, sys, type Ts7Host, type Ts7HostOptions } from "../../../packages/compiler/src/frontend/ts7/program-host.js";
 import { ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "../../../packages/compiler/src/frontend/ts7/enums.js";
 import { isVariableStatement, isIdentifier } from "../../../packages/compiler/src/frontend/ts7/ast-guards.generated.js";
@@ -122,8 +122,15 @@ export function runProgramHost(createHost: (options: Ts7HostOptions) => Ts7Host,
       check(trackedReadFile(entry) !== null, "stable duplicate read");
     });
     check(paths.snapshot().stable, "duplicate probes stay stable");
-    writeFileSync(entry, "export const changed = true;\n");
-    paths.run(() => { trackedReadFile(entry); });
+    const changed = "export const changed = true;\n";
+    writeFileSync(entry, changed);
+    // A tracker keeps its first answer for a file that had been unchanged for
+    // the settle time when it was read, and asks the disk again for one read
+    // sooner. How long this run took to get here decides which, so the write
+    // is declared, as a compile declares its own: the next read asks the disk
+    // either way.
+    const reread = paths.run(() => { invalidateTrackedPath(entry); return trackedReadFile(entry); });
+    check(reread === changed, "declared write is read again");
     check(!paths.snapshot().stable, "changed probes are unstable");
   } finally { host.close(); host.close(); }
   let refused = false;

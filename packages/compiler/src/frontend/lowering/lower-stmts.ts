@@ -86,7 +86,7 @@ import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { lowerDeclaredMemberLiteral, viewTargetOf } from "./view-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
-import { nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
+import { lowerTupleOrEmptyPattern, nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
 import { notIterableSpelling } from "./iterable-spelling.js";
@@ -113,7 +113,11 @@ import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
 import { clearPendingPrimitiveReturn, lowerConstructorReturn } from "./constructor-returns.js";
 import type { DynamicSlot, Lowerer } from "./lowerer.js";
-import type { ScrDiagnostic, TypeFailureSlot } from "../../diagnostics/diagnostic.js";
+import {
+  unsupportedDiag,
+  type ScrDiagnostic,
+  type TypeFailureSlot,
+} from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
 import {
   accessorExportIsExact,
@@ -377,6 +381,7 @@ import {
   isUnitOnlyTsType,
   jsOpenObjectType,
   unitOnlyUnion,
+  isAnyArrayType,
 } from "../type-mapper.js";
 import { canonicalBuiltinModule } from "../builtin-modules.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
@@ -2867,6 +2872,12 @@ export function lowerDestructuringDecl(
   {
     const tokenBound = stdlibGlobalMemberDestructure(lowerer, decl, isLet);
     if (tokenBound !== null) return tokenBound;
+  }
+  // `const [a, b] = pair ?? []`: the tuple's positions or, from the empty
+  // literal, undefined, each read when its binding is reached.
+  {
+    const positional = lowerTupleOrEmptyPattern(lowerer, decl.name, decl.initializer, isLet);
+    if (positional !== null) return positional;
   }
   let init =
     importMetaBindingSource(lowerer, decl.name, decl.initializer) ??
@@ -5643,7 +5654,11 @@ function lowerClassValuePattern(
  * rules; null never triggers a default). Returns the defaulted value at
  * the binding's own type — identifier bindings and nested patterns
  * alike (the caller's bindPatternTarget recurses through the latter). */
-function applyBindingDefault(lowerer: Lowerer, el: ts.BindingElement, value: IrExpr): IrExpr {
+export function applyBindingDefault(
+  lowerer: Lowerer,
+  el: ts.BindingElement,
+  value: IrExpr,
+): IrExpr {
   const name = el.name!; // callers skip nameless elisions
   if (value.type.kind === "dyn") {
     const loc = value.loc;
@@ -7392,16 +7407,18 @@ export function lowerVarDecl(
         ? lowerer.lowerExprExpecting(decl.initializer, DYN)
         : immediatelyGuardedAbsenceProbe(lowerer, decl)
           ? (lowerAbsenceProbe(lowerer, decl.initializer) ?? lowerer.lowerExpr(decl.initializer))
-          : lowerVariableInitializer(
-              lowerer,
-              decl.initializer,
-              decl.type &&
-                (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Never) === 0 &&
-                !annotatedKeepsLayoutTarget(decl)
-                ? annotatedInitializerTarget(lowerer, decl.name)
-                : undefined,
-              bindingSlot(lowerer, decl),
-            );
+          : emptyAnyArrayInitializer(lowerer, decl)
+            ? lowerer.lowerExprExpecting(decl.initializer, DYN)
+            : lowerVariableInitializer(
+                lowerer,
+                decl.initializer,
+                decl.type &&
+                  (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Never) === 0 &&
+                  !annotatedKeepsLayoutTarget(decl)
+                  ? annotatedInitializerTarget(lowerer, decl.name)
+                  : undefined,
+                bindingSlot(lowerer, decl),
+              );
   } catch (e) {
     if (e instanceof PoisonError) {
       const salvaged = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
@@ -8256,6 +8273,21 @@ function bindingSlot(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | u
 /** The destination an annotated declaration builds its initializer for:
  * the declared type, or the record layout the optional-read analysis
  * widened for fields a missing element can leave undefined. */
+/** `const list: any[] = []`: the annotation has no mapping of its own and
+ * the literal no element type, so the binding took the literal's
+ * element-less array and every later `push` failed. The declared type is
+ * what the program stores, as for `unknown[]`: the binding holds the
+ * dynamic empty array. A filled literal keeps its own element type. */
+function emptyAnyArrayInitializer(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (!decl.type || !decl.initializer || isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
+  const literal = withoutParentheses(decl.initializer);
+  return (
+    ts.isArrayLiteralExpression(literal) &&
+    literal.elements.nodes.length === 0 &&
+    isAnyArrayType(lowerer.typeOf(decl.name), lowerer.checker)
+  );
+}
+
 function annotatedInitializerTarget(lowerer: Lowerer, name: ts.Identifier): IrType | undefined {
   const declared = lowerer.mapTypeOf(lowerer.typeOf(name));
   if (!declared) return undefined;
@@ -9975,6 +10007,60 @@ function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpressi
   };
 }
 
+/** Whether a TypeScript receiver held as a checked-dynamic value is known to
+ * be a promise the compiled program made: a `const` whose initializer,
+ * under its assertions, has a compiled promise type (`new Promise(...) as
+ * Promise<T> & { settle(value: T): void }`, a `Promise<T>` parameter
+ * asserted to such a type). A promise a Node island handed over is an island object
+ * and keeps its members; nothing here names one. */
+function holdsCompiledPromise(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  if (isJsSourceFile(ts.getSourceFileOfNode(receiver))) return false;
+  const name = withoutParenthesesTypeWrappers(receiver);
+  if (!ts.isIdentifier(name)) return false;
+  const declaration = lowerer.checker.getSymbolAtLocation(name)?.declarations[0];
+  if (
+    declaration === undefined ||
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.initializer === undefined ||
+    declaration.parent === undefined ||
+    !ts.isVariableDeclarationList(declaration.parent) ||
+    (declaration.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return false;
+  const made = withoutParenthesesTypeWrappers(declaration.initializer);
+  return lowerer.mapTypeOf(lowerer.typeOf(made))?.kind === "promise";
+}
+
+/** `p.member = value` where `p` holds a promise the compiled program made
+ * (holdsCompiledPromise): the value is evaluated, as Node evaluates it
+ * before the write, and the statement then throws the catchable SC1090
+ * error that names the write and what to write instead. The refusal is on
+ * the deferred list (runtimeFences), so a coverage report shows it. */
+function compiledPromiseMemberWrite(
+  lowerer: Lowerer,
+  target: ts.PropertyAccessExpression,
+  right: ts.Expression,
+): IrStmt {
+  const loc = locOf(target);
+  const member = target.name.text;
+  const value = lowerer.lowerExprExpecting(right, DYN);
+  const held = lowerer.declareHiddenLocal("%promiseMember", DYN);
+  const diag = unsupportedDiag(
+    "SC1090",
+    locOf(target),
+    `writing '${member}' on a promise the program made (Node adds the member to the promise object, and a compiled promise holds no members of its own: keep the members beside the promise, such as returning \`{ promise, ${member} }\`)`,
+  );
+  lowerer.runtimeFences.push(diag);
+  return {
+    kind: "block",
+    body: [
+      { kind: "varDecl", localId: held.id, init: value, loc },
+      lowerer.runtimeFenceStmt(diag, target, undefined),
+    ],
+    loc,
+  };
+}
+
 /** `leaf`, when given, may lower an expression that is not a conditional
  * (the statement itself, or an arm of a discarded conditional at any
  * depth) in its own way; null leaves it to the statement lowering. */
@@ -10568,6 +10654,14 @@ export function lowerExprStatement(
         if (!expr.left.questionDotToken && !ts.isPrivateIdentifier(expr.left.name)) {
           const recv = tryLowerExpression(lowerer, expr.left.expression);
           if (recv && recv.type.kind === "dyn") {
+            // A member added to a promise the program made (`const p = new
+            // Promise(...) as Promise<T> & { settle(value: T): void };
+            // p.settle = ...`): Node adds it to the promise object, and a
+            // compiled promise holds no members of its own. The statement
+            // evaluates its right-hand side and then throws the refusal by
+            // name, so a write that never runs costs the program nothing.
+            if (holdsCompiledPromise(lowerer, expr.left.expression))
+              return compiledPromiseMemberWrite(lowerer, expr.left, expr.right);
             const loc = locOf(expr);
             const key: IrExpr = {
               kind: "strLit",
@@ -11089,6 +11183,39 @@ export function lowerExprStatement(
                   loc,
                 },
                 strLit("write", locOf(expr.left.name)),
+                lowerer.lowerExprExpecting(expr.right, DYN),
+              ],
+              type: VOID,
+              loc,
+            },
+            loc,
+          };
+        }
+      }
+      // A member write on a process stream value (`out.write = fn` where
+      // `out: NodeJS.WriteStream` holds stdout or stderr, `out.columns =
+      // 132`): a write on the stream object the value names, as a write
+      // through `process.stdin` already is. The object keeps `write` (the
+      // slot above); a member it does not keep is refused by name when the
+      // statement runs.
+      if (
+        ts.isPropertyAccessExpression(expr.left) &&
+        !expr.left.questionDotToken &&
+        !ts.isPrivateIdentifier(expr.left.name) &&
+        !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression))?.kind === "procStream"
+      ) {
+        const out = lowerer.lowerExpr(expr.left.expression);
+        if (out.type.kind === "procStream") {
+          const loc = locOf(expr);
+          return {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.keySet",
+              args: [
+                lowerer.coerceToExpected(out, DYN),
+                strLit(expr.left.name.text, locOf(expr.left.name)),
                 lowerer.lowerExprExpecting(expr.right, DYN),
               ],
               type: VOID,

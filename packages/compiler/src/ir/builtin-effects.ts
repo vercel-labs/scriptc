@@ -38,6 +38,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.promiseResolve",
   // A code that is not a safe integer throws, as process.setExitCode does.
   "nodeIsland.setExitCode",
+  // A directory the process cannot enter throws, as process.chdir does.
+  "nodeIsland.chdir",
+  // Node's own clearTimeout, clearInterval or clearImmediate on an island
+  // value, which is island JavaScript: a proxy's trap can throw there.
+  "nodeIsland.clearTimer",
   // Both read Node's process.exitCode through an island helper once Node is
   // loaded, which is island JavaScript (the property can be redefined
   // there). The runtime drops what that read throws today and answers its
@@ -270,6 +275,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "icu.numFormatDefault",
   "icu.dateLocaleString",
   "icu.dateLocaleTimeString",
+  // The formatter constructors read the options object (a getter or a
+  // proxy trap may run) and raise ECMA-402's RangeError and TypeError;
+  // format raises RangeError for a time value out of range.
+  "icu.numberFormatNew",
+  "icu.numberFormatFormat",
+  "icu.numberFormatFormatDyn",
+  "icu.dateTimeFormatFormatDyn",
+  "icu.numToLocaleString",
+  "icu.dateTimeFormatNew",
+  "icu.dateTimeFormatFormat",
+  "icu.dateToLocale",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",

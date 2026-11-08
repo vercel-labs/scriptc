@@ -35,6 +35,7 @@ import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
+  cjsNestedExportReplacementOf,
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
   wholeExportValue,
@@ -85,6 +86,7 @@ import {
   unsupportedPackageValueDiag,
 } from "../../../diagnostics/diagnostic.js";
 import { dirname } from "node:path";
+import { packageDirOf } from "../../../node-islands/origin.js";
 import { funcTypeFromParamShapes } from "../call-signatures.js";
 import { threadsImportOf } from "../../threads-import.js";
 import { nodeApiBindingOf } from "../../node-api-import.js";
@@ -884,6 +886,29 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     if (required !== null) return required;
   }
   if (lowerer.cjsLocalModuleBindingOf(expr)) {
+    // A module that assigns module.exports inside a function or under a
+    // condition (a UMD wrapper) exports whatever that statement chose when
+    // it ran: the binding is that value under Node, and the static export
+    // table this build reads does not hold it. The refusal names that
+    // cause; "access its members" would not help.
+    const dep = lowerer.cjsModuleBindingDepOf(expr);
+    const nested = dep === null ? null : cjsNestedExportReplacementOf(dep);
+    if (dep !== null && nested !== null) {
+      const pkg = packageDirOf(dep.fileName);
+      const line = ts.getLineAndCharacterOfPosition(dep, locOf(nested).start).line + 1;
+      const where =
+        pkg === null
+          ? `line ${line} of its module`
+          : `${posix.relative(pkg.dir, dep.fileName.split("\\").join("/"))}:${line}`;
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `the value of '${expr.text}' (its module assigns module.exports inside a function or under a condition, at ${where}, so what it exports is decided when it runs)`,
+        pkg === null
+          ? "assign module.exports in a top-level statement of the module, or mark the module to run in a Node island"
+          : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
+      );
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -1095,7 +1120,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "Proxy constructor values have no native lowering; use a direct new Proxy with checked-native plain objects",
         Reflect:
           "reflective property access has no static lowering — read and call members directly",
-        Intl: 'native Intl supports Intl.Segmenter with grapheme or word granularity and the composed new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and x.toLocaleString(); formatter objects, locale negotiation and the other Intl constructors remain unsupported',
+        Intl: 'native Intl supports Intl.NumberFormat and Intl.DateTimeFormat objects with format() (the default locale, "en-US" or "en"), the toLocaleString() forms that construct them, and Intl.Segmenter with grapheme or word granularity; locale negotiation and the other Intl constructors remain unsupported',
         SharedArrayBuffer: "use direct new SharedArrayBuffer(length) for fixed shared storage",
         ArrayBuffer:
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",

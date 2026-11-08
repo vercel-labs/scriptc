@@ -26,6 +26,7 @@ import {
   isSortValuesElement,
   isUnitType,
   typeEquals,
+  canBoxFuncIntoDyn,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
@@ -2146,19 +2147,22 @@ export function lowerArrayFlatMapCall(
   // leave an element its callback ignores unread.
   const unread = lowered.unread && !present && elementMayBeForeign(lowerer, elem);
   const fnRet = fnArg.type.ret;
+  // The runtime's flatMap over the live array, with the callback boxed: it
+  // decides per result whether to spread it, as JavaScript does.
+  const atRunTime = (): IrExpr => ({
+    kind: "dynInvoke",
+    recv: { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc },
+    method: "flatMap",
+    calleeName: ts.getTextOfNode(access),
+    args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }, ...(thisArg ? [thisArg] : [])],
+    type: DYN,
+    loc,
+  });
   if (
     fnRet.kind === "dyn" ||
     (fnRet.kind === "record" && lowerer.shapes.get(fnRet.shapeId)?.tuple)
   ) {
-    return {
-      kind: "dynInvoke",
-      recv: { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc },
-      method: "flatMap",
-      calleeName: ts.getTextOfNode(access),
-      args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }, ...(thisArg ? [thisArg] : [])],
-      type: DYN,
-      loc,
-    };
+    return atRunTime();
   }
   // Every path below calls the callback from a helper's loop.
   requireFixedArityCallback(lowerer, argNode, fnArg.type);
@@ -2187,6 +2191,17 @@ export function lowerArrayFlatMapCall(
       };
     }
     if (def?.arms.some((a) => a.kind === "array")) {
+      // No static plan for the mix of array and other results: the decision
+      // is the runtime's, when the callback's values convert to dynamic ones.
+      if (
+        canBoxFuncIntoDyn(
+          fnArg.type,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
+        return atRunTime();
+      }
       lowerer.unsupported(
         "SC1090",
         argNode,
@@ -3440,17 +3455,31 @@ export function lowerDynArrayFlatMapCall(
   const loc = locOf(call);
   const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN, false, undefined, true);
   const ret = fnArg.type.ret;
-  // Only the dynamic-returning path boxes the callback; the helper below
-  // calls it from its loop.
-  if (ret.kind !== "dyn") requireFixedArityCallback(lowerer, argNode, fnArg.type);
+  // A callback whose result is not one typed array is boxed: a result that
+  // is dynamic already, or one that converts to a dynamic value whatever it
+  // holds at run time (`cond ? [[key, name]] : []` — a one-pair tuple or an
+  // empty array; a value or an array of them).
+  const boxes =
+    ret.kind === "dyn" ||
+    (ret.kind !== "array" &&
+      canBoxFuncIntoDyn(
+        fnArg.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      ));
+  // Only the boxing path takes any function; the helper below calls the
+  // callback from its loop.
+  if (!boxes) requireFixedArityCallback(lowerer, argNode, fnArg.type);
   if (ret.kind !== "array") {
     // A DYNAMIC-returning callback (`plugins.flatMap((plugin) =>
     // plugin.languages ?? [])` — the getSupportInfo shape, where the
     // callback's members ride the checked-dynamic tree): the call dispatches on the
     // RECEIVER's runtime kind (dynInvoke) with the callback boxed. A native
     // dyn array runs the runtime's flatMap, and non-arrays throw Node's
-    // TypeError. The result stays dyn, checked per use.
-    if (ret.kind === "dyn") {
+    // TypeError. The result stays dyn, checked per use. The runtime's
+    // flatMap decides per result, as JavaScript does: an array is spread
+    // one level, anything else is kept as one element.
+    if (boxes) {
       const boxed: IrExpr = { kind: "dynFrom", value: fnArg, type: DYN, loc };
       return {
         kind: "dynInvoke",

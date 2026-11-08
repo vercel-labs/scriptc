@@ -86,10 +86,7 @@ import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { lowerDeclaredMemberLiteral, viewTargetOf } from "./view-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
-import {
-  nullishEmptyPatternSource,
-  nullishEmptyTuplePatternSource,
-} from "./nullish-empty-pattern.js";
+import { lowerTupleOrEmptyPattern, nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
 import { notIterableSpelling } from "./iterable-spelling.js";
@@ -2864,10 +2861,15 @@ export function lowerDestructuringDecl(
     const tokenBound = stdlibGlobalMemberDestructure(lowerer, decl, isLet);
     if (tokenBound !== null) return tokenBound;
   }
+  // `const [a, b] = pair ?? []`: the tuple's positions or, from the empty
+  // literal, undefined, each read when its binding is reached.
+  {
+    const positional = lowerTupleOrEmptyPattern(lowerer, decl.name, decl.initializer, isLet);
+    if (positional !== null) return positional;
+  }
   let init =
     importMetaBindingSource(lowerer, decl.name, decl.initializer) ??
     nullishEmptyPatternSource(lowerer, decl.name, decl.initializer) ??
-    nullishEmptyTuplePatternSource(lowerer, decl.name, decl.initializer) ??
     lowerer.lowerExpr(decl.initializer);
   // `const { table } = console`: each element names a console key as a
   // value, which only the output members are (console-records.ts).
@@ -5640,7 +5642,11 @@ function lowerClassValuePattern(
  * rules; null never triggers a default). Returns the defaulted value at
  * the binding's own type — identifier bindings and nested patterns
  * alike (the caller's bindPatternTarget recurses through the latter). */
-function applyBindingDefault(lowerer: Lowerer, el: ts.BindingElement, value: IrExpr): IrExpr {
+export function applyBindingDefault(
+  lowerer: Lowerer,
+  el: ts.BindingElement,
+  value: IrExpr,
+): IrExpr {
   const name = el.name!; // callers skip nameless elisions
   if (value.type.kind === "dyn") {
     const loc = value.loc;

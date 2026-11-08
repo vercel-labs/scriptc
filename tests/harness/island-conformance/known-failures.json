@@ -47,12 +47,6 @@
       "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
     }
   },
-  "corpus/7531-buffer-constructor-dependency": {
-    "island:legacy-buf": {
-      "category": "stdout",
-      "signature": "Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
-    }
-  },
   "corpus/7532-buffer-constructor-check-limit": {
     "island:legacy-buf": {
       "category": "stdout",
@@ -72,10 +66,6 @@
     }
   },
   "corpus/7748-npm-any-bytes-receiver": {
-    "island:chunk-buffers": {
-      "category": "stdout",
-      "signature": "<Buffer 01 02 09 10 00 00 00 00 00 00 00 00 00 00 00 00>"
-    },
     "island:etag-digest": {
       "category": "exit",
       "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"

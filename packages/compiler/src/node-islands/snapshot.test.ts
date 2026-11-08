@@ -293,17 +293,22 @@ describe("modules that share a file", () => {
     expect(decisions[1]!.reason).toContain("process.cwd()");
   });
 
-  test("only the load that read the clock snapshots, and without constants", () => {
-    // The load whose own record names the clock defers with no constants.
-    // The other stays eager: a snapshot without constants still keeps the
-    // build's object flags and object links ("the effects of a file that
-    // modules share", below).
-    const { decisions, calls, snapshots } = sharingProject({ volatile: ["Date.now()"] });
-    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.require"]);
-    expect(decisions.find((d) => !d.deferred)!.reason).toContain(
-      "a load it shares a file with reads Date.now()",
-    );
-    expect(snapshots[0]).not.toContain("4:info");
+  test("neither snapshots when the shared file read the clock", () => {
+    // Until the recorder's rule for ambient reads, the load whose own record
+    // named the clock deferred with no constants and only the other stayed
+    // eager. That was wrong for the first as well, for three reasons. A load
+    // evaluated when Node starts reads the clock after the program's own
+    // readings that followed its import, where Node read it before them. A
+    // snapshot without constants still keeps the build's object flags and
+    // object links, which answer `typeof` and hand out members from the
+    // build's reading ("the effects of a file that modules share", below,
+    // said so of the other load). And what the load left in shared state is
+    // in the constants of the loads probed after it.
+    const { decisions, calls, text } = sharingProject({ volatile: ["Date.now()"] });
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+    expect(decisions[0]!.reason).toContain("its load reads Date.now()");
+    expect(decisions[1]!.reason).toContain("a load it shares a file with reads Date.now()");
+    expect(text).not.toContain("4:info");
   });
 });
 
@@ -392,22 +397,32 @@ describe("the effects of a file that modules share", () => {
     expect(decisions[1]!.reason).toContain("a load it shares a file with reads process.argv");
   });
 
-  test("a module that shares a file whose load read the clock does not defer", () => {
+  test("a load that read the clock does not defer, nor does a module that shares its file", () => {
     // A snapshot written without constants still keeps the object's flags and
     // its object links, and those answer `typeof` without evaluating the
-    // module: an export's type can come from the read as its value can.
+    // module: an export's type can come from the read as its value can. That
+    // holds for the load that read the clock as it does for the one that
+    // shares its file, and the reader has one more reason: evaluated when
+    // Node starts, it would read the clock after the program's own readings
+    // that followed its import.
     const { decisions, calls } = sharing({ volatile: ["Date.now()"] });
-    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
-    expect(decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
-    // The module whose own load read the clock keeps its rule: no constants.
-    expect(decisions[1]!.reason).toContain("volatile Date.now(): no constants");
-    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.require"]);
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[0]!.reason).toContain("its load reads Date.now()");
+    expect(decisions[0]!.reason).toContain("no run repeats the reading");
+    expect(decisions[1]!.reason).toContain("a load it shares a file with reads Date.now()");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
 
     // The same when the probe reached the other module first.
     const other = sharing({ volatile: ["Date.now()"] }, true, "second");
-    expect(other.decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(other.decisions.map((d) => d.deferred)).toEqual([false, false]);
     expect(other.decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
-    expect(other.calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.defer"]);
+    expect(other.decisions[1]!.reason).toContain("its load reads Date.now()");
+    expect(other.calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+
+    // A module that shares nothing with it still defers, with its constants.
+    const apart = sharing({ volatile: ["Math.random()"] }, false);
+    expect(apart.decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(apart.snapshots[1]).toContain("5:three");
   });
 
   test("a module that shares nothing with such a load still defers", () => {
@@ -633,6 +648,148 @@ describe("state an earlier load wrote", () => {
     expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
     expect(snapshots.join("")).not.toContain(secret);
   });
+});
+
+describe("a package file a generated module's load evaluated first", () => {
+  /** A package `kit` whose `config.js` reads a private environment value,
+   * and a module the build wrote for a statement of the program
+   * (`kit.use();`), which loads the package's files. The probe evaluates a
+   * file in the first load that reaches it, so `config.js`'s read is in the
+   * record of whichever of the two the probe loaded first, and the other's
+   * record is empty with the file in its list.
+   *   "package first": the import of `kit` comes before the statement, as a
+   *     program has it.
+   *   "generated first": the probe reached the statement's module first.
+   *   "package unreached": the import of `kit` sits where the order walk
+   *     does not reach, so the probe loads it after the others. */
+  function evaluatedFirst(order: "package first" | "generated first" | "package unreached") {
+    const root = scratch();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
+    const dir = join(root, "node_modules", "kit");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), '{ "name": "kit" }');
+    writeFileSync(join(dir, "config.js"), "exports.token = process.env.TOKEN;\n");
+    writeFileSync(
+      join(dir, "index.js"),
+      'const { token } = require("./config.js");\nmodule.exports = { token, use() {} };\n',
+    );
+    const [index, config] = [join(dir, "index.js"), join(dir, "config.js")];
+    const defer = (path: string) => ({
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: path },
+        { kind: "strLit", value: "" },
+      ],
+    });
+    const load = (call: unknown) => ({ kind: "assign", localId: "%g.island.0", value: call });
+    const loads = {
+      kit: "./node_modules/kit/index.js",
+      statement: "./.scriptc/closed/main.0000000000.0.mjs",
+    };
+    const kit = defer(loads.kit);
+    const statement = defer(loads.statement);
+    const init =
+      order === "package first"
+        ? [load(kit), load(statement)]
+        : order === "generated first"
+          ? [load(statement), load(kit)]
+          : [load(statement)];
+    const mod = {
+      entry: "%main",
+      functions: [
+        ...(order === "package unreached" ? [{ name: "later", body: [load(kit)] }] : []),
+        { name: "%init.0", body: init },
+        {
+          name: "%main",
+          body: [{ kind: "exprStmt", expr: { kind: "call", callee: "%init.0", args: [] } }],
+        },
+      ],
+      globals: [],
+      nodeIsland: {
+        libnode: "",
+        nodeVersion: "",
+        modules: {
+          root,
+          files: [
+            {
+              path: loads.statement.slice(2),
+              size: 0,
+              sha256: "",
+              generated: 'import kit from "../../node_modules/kit/index.js";\nkit.use();\n',
+            },
+            { path: "node_modules/kit/index.js", size: 0, sha256: "" },
+            { path: "node_modules/kit/config.js", size: 0, sha256: "" },
+          ],
+          links: [],
+        },
+      },
+    } as unknown as IrModule;
+    const secret = "sk-live-0123456789";
+    const probed: string[] = [];
+    const decisions = finalizeDeferredIslands(
+      mod,
+      join(root, "main.ts"),
+      root,
+      (_pack, modules) => {
+        probed.push(...modules);
+        return {
+          results: modules.map((path, i) => ({
+            path,
+            // The package's value holds the token; the statement's is empty.
+            root: path === index ? 1 : 2,
+            inputs: [],
+            volatile: [],
+            effects: [],
+            mutations: [],
+            // The load the probe reached first evaluated `config.js`.
+            env: (i === 0 ? [["TOKEN", secret]] : []) as [string, string | null][],
+            tty: [],
+            files: [path, index, config],
+          })),
+          objects: {
+            "1": {
+              f: 0,
+              p: false,
+              m: [
+                ["token", { s: secret }],
+                ["use", { o: 3 }],
+              ],
+            },
+            "2": { f: 0, p: false, m: [] },
+            "3": { f: 1, p: false, m: [] },
+          },
+        };
+      },
+    );
+    const of = (end: string) => decisions.find((d) => d.path.endsWith(end))!;
+    return {
+      probed: probed.map((path) => (path === index ? "package" : "generated")),
+      packageDecision: of("kit/index.js"),
+      generatedDecision: of("main.0000000000.0.mjs"),
+      calls: [kit, statement],
+      text: JSON.stringify(mod),
+      secret,
+    };
+  }
+
+  test.each(["package first", "generated first", "package unreached"] as const)(
+    "neither defers and no value is kept (%s)",
+    (order) => {
+      const { probed, packageDecision, generatedDecision, calls, text, secret } =
+        evaluatedFirst(order);
+      expect(probed).toEqual(
+        order === "package first" ? ["package", "generated"] : ["generated", "package"],
+      );
+      // The package's snapshot would hold the token, whichever load read it.
+      expect(packageDecision.deferred).toBe(false);
+      expect(packageDecision.reason).toContain("TOKEN");
+      expect(generatedDecision.deferred).toBe(false);
+      expect(generatedDecision.reason).toContain("TOKEN");
+      expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+      expect(text).not.toContain(secret);
+    },
+  );
 });
 
 describe("the order deferred loads are probed in", () => {
@@ -1031,7 +1188,9 @@ describe("generated island modules (closed-island-init.ts)", () => {
    * generated modules: one where the entry's own statements reach it, one
    * inside a function. The probe's stand-in records what it was given and
    * answers a deterministic load for every module. */
-  function generatedProject() {
+  function generatedProject(
+    options: { statement?: boolean; volatile?: string[]; effects?: string[] } = {},
+  ) {
     const root = scratch();
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
     mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
@@ -1039,6 +1198,8 @@ describe("generated island modules (closed-island-init.ts)", () => {
     writeFileSync(join(root, "node_modules", "dep", "index.js"), "exports.make = () => ({});\n");
     const text = (name: string) =>
       `import dep from "../../node_modules/dep/index.js";\nexport const ${name} = dep.make();\n`;
+    // A statement of the program the island evaluates: no export.
+    const statement = `import dep from "../../node_modules/dep/index.js";\ndep.make();\n`;
     const defer = (path: string) => ({
       kind: "libCall",
       fn: "nodeIsland.defer",
@@ -1074,7 +1235,12 @@ describe("generated island modules (closed-island-init.ts)", () => {
           root,
           files: [
             { path: loads.first.slice(2), size: 0, sha256: "", generated: text("a") },
-            { path: loads.second.slice(2), size: 0, sha256: "", generated: text("b") },
+            {
+              path: loads.second.slice(2),
+              size: 0,
+              sha256: "",
+              generated: options.statement === true ? statement : text("b"),
+            },
             { path: "node_modules/dep/index.js", size: 0, sha256: "" },
           ],
           links: [],
@@ -1099,8 +1265,9 @@ describe("generated island modules (closed-island-init.ts)", () => {
             path,
             root: i + 1,
             inputs: [],
-            volatile: [],
-            effects: [],
+            volatile: i === 0 ? [] : (options.volatile ?? []),
+            // The second generated module's own.
+            effects: i === 2 ? (options.effects ?? []) : [],
             mutations: [],
             env: [],
             tty: [],
@@ -1153,5 +1320,39 @@ describe("generated island modules (closed-island-init.ts)", () => {
     );
     // A package's entry point too: nothing before the first load.
     expect(snapshot(dep)).toMatch(new RegExp(`^P 0 ${loadsHash([])}$`, "m"));
+  });
+
+  test("a statement defers like a constant, with nothing in its snapshot but its guards", () => {
+    const { decisions, second, snapshot } = generatedProject({ statement: true });
+    const decision = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
+    expect(decision.deferred).toBe(true);
+    expect(snapshot(second)).toMatch(/^P 2 \d+$/m);
+  });
+
+  test("a statement that read the clock stays where it stands, and so does a constant that did", () => {
+    // A statement has no value at whose use a late failure could be raised,
+    // and a constant's value read late is read after the program's own
+    // readings: neither evaluation is the probe's.
+    const { decisions } = generatedProject({ statement: true, volatile: ["Date.now()"] });
+    const constant = decisions.find((d) => d.path.endsWith("main.0000000000.0.mjs"))!;
+    const statement = decisions.find((d) => d.path.endsWith("main.0000000000.1.mjs"))!;
+    expect(constant.deferred).toBe(false);
+    expect(constant.reason).toContain("its load reads Date.now()");
+    expect(statement.deferred).toBe(false);
+    expect(statement.reason).toContain("its load reads Date.now()");
+    // The package they both name read nothing: its import still waits.
+    expect(decisions.find((d) => d.path.endsWith("dep/index.js"))!.deferred).toBe(true);
+  });
+
+  test("a generated module's effects are its own: the package it names and its neighbour still wait", () => {
+    // The second module prints through the package's function. The
+    // package's file evaluated in the package's own import, before it, and
+    // did nothing; the first module does not import the second.
+    const { decisions } = generatedProject({ effects: ["process.stdout.write()"] });
+    const of = (end: string) => decisions.find((d) => d.path.endsWith(end))!;
+    expect(of("dep/index.js").deferred).toBe(true);
+    expect(of("main.0000000000.0.mjs").deferred).toBe(true);
+    expect(of("main.0000000000.1.mjs").deferred).toBe(false);
+    expect(of("main.0000000000.1.mjs").reason).toContain("its load has effects");
   });
 });

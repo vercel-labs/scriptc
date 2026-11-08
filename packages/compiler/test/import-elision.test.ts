@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import ts5 from "typescript5";
 import {
   elideImports,
@@ -15,6 +15,7 @@ import { Ts7Host } from "../src/frontend/ts7/program-host.js";
 import { Ts7RpcClient } from "../src/frontend/ts7/rpc-client.js";
 import { TS7_FILE_SYSTEM_CALLBACKS } from "../src/frontend/ts7/rpc-filesystem.js";
 import { spawnTs7Wire } from "../src/frontend/ts7/rpc-process.js";
+import { SemanticChecker } from "../src/frontend/ts7/semantic-checker.js";
 import { ts7TestServers, type Ts7TestServer } from "../src/frontend/ts7/test-servers.js";
 
 /* The oracle is tsc itself: each case below is a module of one program,
@@ -632,6 +633,46 @@ describe.each(ts7TestServers())("import elision ($name)", (server) => {
     expect(rewrite(files, "main.ts", {})).toBe(
       `import * as lib from "./values";\n${" ".repeat('import * as other from "./values";'.length)}\nnamespace N {\n  import helper = lib.helper;\n  ${" ".repeat("import unused = other.spare;".length)}\n  export const r = helper();\n}\nconsole.log(N.r);\nimport type * as other from "./values";\nexport {};\n`,
     );
+  });
+
+  test("the checker is asked about a whole program's imports in one request, not file by file", () => {
+    // Each module imports from two modules, uses a value of each, and one
+    // in three imports a type without `type`.
+    const modules = 36;
+    const files: Record<string, string> = {
+      "values.ts": VALUES,
+      "more.ts": "export function grow(n: number): number { return n + 1; }\n",
+    };
+    for (let i = 0; i < modules; i++) {
+      files[`m${i}.ts`] =
+        `import { a${i % 3 === 0 ? ", I" : ""} } from "./values";\n` +
+        `import { grow } from "./more";\n` +
+        `export const v${i}${i % 3 === 0 ? ": I" : ""} = { x: grow(a) };\n`;
+    }
+    const root = project(files);
+    const programHost = host(server, root);
+    try {
+      const program = programHost.createProgram(
+        Object.keys(files).map((name) => join(root, name)),
+        { strict: true, noEmit: true },
+      );
+      const symbols = vi.spyOn(SemanticChecker.prototype, "getSymbolAtLocation");
+      try {
+        const elision = elideProgramImports(program, () => importElisionOptions({})!);
+        expect(elision.texts.size).toBe(modules / 3);
+        // One batch holds every module's binding names, their uses and the
+        // module specifiers behind which a type-only declaration is looked
+        // for. A request per file, or per import declaration, is what made
+        // the decision cost a second per thousand files on every load.
+        expect(symbols.mock.calls.length).toBe(1);
+        expect(Array.isArray(symbols.mock.calls[0]![0])).toBe(true);
+      } finally {
+        symbols.mockRestore();
+      }
+      program.dispose();
+    } finally {
+      programHost.close();
+    }
   });
 
   test("a file with nothing to drop is left alone", () => {

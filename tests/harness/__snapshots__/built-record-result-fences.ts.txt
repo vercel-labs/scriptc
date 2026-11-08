@@ -1,0 +1,69 @@
+built-record-result-fences.ts:12:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: string; b: string }', got '{ [key: string]: string }' — 'a' is not a declared field of the source, and the source's '[key: string]: string' overflow cannot produce 'string' (instantiating 'view' with <string>)
+
+  11 | function view<K extends string>(names: readonly K[], bag: Record<string, string>): Keys<K> {
+  12 |   return bag as Keys<K>;
+     |          ^~~~~~~~~~~~~~
+  13 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+built-record-result-fences.ts:21:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: string; b: string }', got '{ [key: string]: string }' — 'a' is not a declared field of the source, and the source's '[key: string]: string' overflow cannot produce 'string' (instantiating 'stored' with <string>)
+
+  20 |   kept = out;
+  21 |   return out as Keys<K>;
+     |          ^~~~~~~~~~~~~~
+  22 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+built-record-result-fences.ts:31:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: string; b: string }', got '{ [key: string]: string }' — 'a' is not a declared field of the source, and the source's '[key: string]: string' overflow cannot produce 'string' (instantiating 'captured' with <string>)
+
+  30 |   for (const name of names) add(name);
+  31 |   return out as Keys<K>;
+     |          ^~~~~~~~~~~~~~
+  32 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+built-record-result-fences.ts:39:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: string; b: string }', got '{ [key: string]: string }' — 'a' is not a declared field of the source, and the source's '[key: string]: string' overflow cannot produce 'string' (instantiating 'passed' with <string>)
+
+  38 |   console.log(Object.keys(out).length);
+  39 |   return out as Keys<K>;
+     |          ^~~~~~~~~~~~~~
+  40 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+built-record-result-fences.ts:47:12 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: string; b: string }', got '{ [key: string]: string }' — 'a' is not a declared field of the source, and the source's '[key: string]: string' overflow cannot produce 'string' (instantiating 'late' with <string>)
+
+  46 |     for (const name of names) out[name] = name;
+  47 |     return out as Keys<K>;
+     |            ^~~~~~~~~~~~~~
+  48 |   } finally {
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+built-record-result-fences.ts:57:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: string; b: string }', got '{ [key: string]: string }' — 'a' is not a declared field of the source, and the source's '[key: string]: string' overflow cannot produce 'string' (instantiating 'twice' with <string>)
+
+  56 |   for (const name of names) out[name] = name;
+  57 |   return out as { [P in K]: string };
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  58 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+built-record-result-fences.ts:64:9 - error SC2001: values of type '{ [P in K]: string; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown') (instantiating 'local' with <string>)
+
+  63 |   for (const name of names) out[name] = name;
+  64 |   const typed = out as Keys<K>;
+     |         ^~~~~
+  65 |   return typed;
+
+built-record-result-fences.ts:65:10 - error SC2004: uses of 'typed' inherit the blocker on its declaration (instantiating 'local' with <string>)
+
+  64 |   const typed = out as Keys<K>;
+  65 |   return typed;
+     |          ^~~~~
+  66 | }
+
+  hint: the declaration of 'typed' did not compile — fix the diagnostic reported there and these sites clear with it

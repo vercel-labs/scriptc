@@ -27,6 +27,11 @@ struct ScrSym {
    * box retains the symbol and clears this when it is freed), shared by
    * every conversion of the symbol to a checked value. */
   ScrDyn *box;
+  /* A registered symbol's box, retained for the registry from the first
+   * conversion until the registry is torn down: the symbol lives that long
+   * anyway, so its conversions share one box instead of building and
+   * freeing one each. NULL for every other symbol. */
+  ScrDyn *reg_box;
 };
 
 ScrSym *scr_sym_retain(ScrSym *s) {
@@ -68,6 +73,7 @@ ScrSym *scr_sym_new(ScrStr *desc) {
   s->reg_key = NULL;
   s->reg_next = NULL;
   s->box = NULL;
+  s->reg_box = NULL;
   return s;
 }
 
@@ -146,6 +152,11 @@ static void scr_sym_registry_cleanup(void) {
   g_sym_registry = NULL;
   while (s) {
     ScrSym *next = s->reg_next;
+    /* The registry's reference to the symbol's box (scr_dyn_new_symbol);
+     * the box holds the symbol, so the symbol outlives this release. */
+    ScrDyn *kept = s->reg_box;
+    s->reg_box = NULL;
+    scr_dyn_release(kept);
     scr_sym_release(s);
     s = next;
   }
@@ -184,9 +195,15 @@ static void scr_sym_release_box(ScrSym *s) {
 }
 
 ScrDyn *scr_dyn_new_symbol(ScrSym *value) {
+  if (value->reg_box) return scr_dyn_retain(value->reg_box);
   if (value->box) return scr_dyn_retain(value->box);
   ScrDyn *box = scr_dyn_symbol_ref(scr_sym_retain(value), scr_sym_release_box, scr_sym_to_string, scr_sym_desc);
   value->box = box;
+  /* A registered symbol lives until its thread exits, and so does its box:
+   * the registry keeps a reference (dropped by scr_sym_registry_cleanup),
+   * so a comparison against a `Symbol.for` constant does not build and
+   * free a box each time. */
+  if (value->reg_key) value->reg_box = scr_dyn_retain(box);
   return box;
 }
 

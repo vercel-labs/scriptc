@@ -3056,12 +3056,18 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
 }
 
 static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
+static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d);
+static bool scr_typed_ref_plain_array(const ScrDyn *d);
 
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
   if (scr_dyn_class_reflection_fence(object)) return NULL;
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
+    /* A live record's snapshot is an ordinary object and a live array's an
+     * ordinary array, each with the prototype it is born with. */
+    if (scr_typed_ref_plain_record(object)) return scr_dyn_object_prototype();
+    if (scr_typed_ref_plain_array(object)) return scr_dyn_array_prototype_base();
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (!view) return NULL;
     ScrDyn *result = scr_dyn_get_prototype(view);
@@ -5832,7 +5838,66 @@ ScrDyn *scr_dyn_date_class_member(const ScrDyn *d, const char *key, size_t key_l
   return NULL;
 }
 
+/* ── live capsules: reads of what the native value does not hold ─────────
+ * A live record's snapshot is an ordinary object with exactly the record's
+ * present fields, no prototype and no symbol properties; a live array's is
+ * an ordinary array of its elements. A read of a name such a snapshot does
+ * not own answers undefined whatever the fields or elements are, so it
+ * needs no snapshot, and it must not make one: a snapshot becomes the
+ * capsule's view, and a capsule with a view copies its record again for
+ * every later read, `typeof`, `in` and key walk. Names an ordinary object
+ * or array answers from elsewhere keep the snapshot path: the members of
+ * Object.prototype, an array's names once the program has put a member or
+ * a prototype on Array.prototype, and a capsule with properties, a
+ * prototype or a source of its own. */
+static bool scr_typed_ref_plain(const ScrDyn *d) {
+  return !d->prototype && !d->symbol_properties && !d->symbol_keys &&
+         !d->v.typed_ref.materialized && !scr_dyn_generator(d);
+}
+
+/* A record capsule whose snapshot holds its present fields and nothing
+ * else, or NULL. */
+static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d) {
+  if (!d->v.typed_ref.record || !scr_typed_ref_plain(d) || scr_typed_ref_linked_copy(d)) return NULL;
+  return scr_typed_ref_record_ops(d);
+}
+
+/* An array capsule whose snapshot holds its elements and nothing else: the
+ * native array has no numeric properties, no match-result metadata and no
+ * class of its own. */
+static bool scr_typed_ref_plain_array(const ScrDyn *d) {
+  if (!scr_dyn_typed_ref_array_ops(d) || !scr_typed_ref_plain(d)) return false;
+  const ScrArrExt *x = scr_arr_ext_of((const ScrArr *)d->v.typed_ref.ptr);
+  return !x || (x->prop_len == 0 && !x->metadata && !x->cls);
+}
+
+/* What the snapshot of live capsule `d` would answer for a read of `key`,
+ * which names no present field or element of it: +1, or NULL when the read
+ * needs the snapshot. */
+static ScrDyn *scr_typed_ref_unowned_get(const ScrDyn *d, const ScrStr *key) {
+  if (scr_dyn_object_proto_name(key)) return NULL;
+  if (d->v.typed_ref.record)
+    return scr_typed_ref_plain_record(d) ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+  if (!scr_typed_ref_plain_array(d) || key->len == 0) return NULL;
+  /* An identifier: indexes and numeric names have their own answers. */
+  unsigned char first = (unsigned char)key->data[0];
+  if (first != '$' && first != '_' && !((first | 0x20) >= 'a' && (first | 0x20) <= 'z')) return NULL;
+  /* An ordinary array asks Array.prototype, when the program made it a
+   * value. Without string-keyed members or a prototype of its own, its
+   * answer runs no accessor, so it is the same for every array. */
+  const ScrDyn *prototype = scr_builtin_array_prototype;
+  if (!prototype) return scr_dyn_retain(scr_dyn_undefined());
+  if (prototype->v.arr.properties || prototype->prototype) return NULL;
+  return scr_dyn_obj_read_receiver(prototype, key->data, key->len, d);
+}
+
 ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
+  ScrDyn *own = scr_dyn_typed_ref_own_get(d, key);
+  if (own || scr_exc_pending()) return own;
+  return scr_typed_ref_unowned_get(d, key);
+}
+
+ScrDyn *scr_dyn_typed_ref_own_get(const ScrDyn *d, const ScrStr *key) {
   if (d->v.typed_ref.record) return scr_typed_ref_record_get(d, key);
   if (scr_event_ref_hooks) {
     ScrDyn *inherited = scr_event_ref_hooks->get(d, key);
@@ -8329,12 +8394,15 @@ ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p)) {
 }
 
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name) {
+  /* Only a capsule has an answer here; every other kind is the caller's. */
+  if (d->kind != SCR_DYN_TYPED_REF) return false;
+  /* Bound records and arrays always view as an ordinary object/array; the
+   * test comes first because most capsules are one of the two. */
+  if (d->v.typed_ref.record || scr_dyn_typed_ref_array_ops(d)) return strcmp(name, "object") == 0;
   if (scr_dyn_generator(d)) return strcmp(name, "object") == 0;
-  if (d->kind == SCR_DYN_TYPED_REF) {
-    /* Bound records and arrays always view as an ordinary object/array. */
-    if ((d->v.typed_ref.type_key_len >= 7 &&
-         memcmp(d->v.typed_ref.type_key, "object:", 7) == 0) ||
-        scr_typed_ref_record_ops(d) || scr_dyn_typed_ref_array_ops(d))
+  {
+    if (d->v.typed_ref.type_key_len >= 7 &&
+        memcmp(d->v.typed_ref.type_key, "object:", 7) == 0)
       return strcmp(name, "object") == 0;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     bool out;
@@ -8361,7 +8429,7 @@ bool scr_dyn_ref_is_array(const ScrDyn *d) {
   if (d->kind == SCR_DYN_TYPED_REF) {
     if (d->v.typed_ref.type_key_len >= 7 &&
         memcmp(d->v.typed_ref.type_key, "object:", 7) == 0) return false;
-    if (scr_typed_ref_record_ops(d)) return false;
+    if (d->v.typed_ref.record) return false;
     if (scr_dyn_typed_ref_array_ops(d)) return true;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     if (!materialized) return false;
@@ -8383,6 +8451,14 @@ bool scr_dyn_ref_is_error(const ScrDyn *d) {
     return true;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
+    /* A live record's snapshot is an ordinary object of its present fields
+     * and a live array's an ordinary array: the answer needs neither. */
+    const ScrDynTypedRecordOps *record = scr_typed_ref_plain_record(d);
+    size_t field;
+    if (record)
+      return scr_typed_ref_record_field_bytes(record, "%error", 6, &field) &&
+             (record->fixed || record->has(d->v.typed_ref.ptr, field));
+    if (scr_typed_ref_plain_array(d)) return false;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     bool out =
         (materialized->kind == SCR_DYN_OBJ &&
@@ -8869,7 +8945,7 @@ static bool scr_dyn_descriptor_fields_read(const ScrDyn *descriptor, ScrDyn **fi
  * read, and throws an SC2020 Error. */
 static ScrDyn *scr_dyn_descriptor_field_get(const ScrDyn *descriptor, const ScrStr *key) {
   if (descriptor->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *live = scr_dyn_typed_ref_key_get(descriptor, key);
+    ScrDyn *live = scr_dyn_typed_ref_own_get(descriptor, key);
     if (live || scr_exc_pending()) return live;
     ScrDyn *view = scr_dyn_typed_ref_materialize(descriptor);
     if (!view || scr_exc_pending()) {
@@ -10757,6 +10833,8 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
     ? scr_iterator_function(4, &scr_iterator_self_call, "[Symbol.iterator]") : scr_dyn_retain(scr_dyn_undefined());
   if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, key, optional);
   if (value->kind == SCR_DYN_TYPED_REF) {
+    /* A live record's snapshot has no symbol properties and no prototype. */
+    if (scr_typed_ref_plain_record(value)) return scr_dyn_retain(scr_dyn_undefined());
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     ScrDyn *result = scr_exc_pending() ? NULL
       : scr_dyn_symbol_key_get_receiver(view, key, optional, receiver);
@@ -11522,7 +11600,7 @@ ScrStr *scr_dyn_typeof(const ScrDyn *d) {
   if (d->kind == SCR_DYN_TYPED_REF) {
     if ((d->v.typed_ref.type_key_len >= 7 &&
          memcmp(d->v.typed_ref.type_key, "object:", 7) == 0) ||
-        scr_typed_ref_record_ops(d) || scr_dyn_typed_ref_array_ops(d))
+        d->v.typed_ref.record || scr_dyn_typed_ref_array_ops(d))
       return scr_str_new("object", 6);
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     ScrStr *out = scr_dyn_typeof(materialized);
@@ -16567,7 +16645,7 @@ static ScrStr *scr_json_index_key(size_t index) {
 static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key) {
   if (holder->kind == SCR_DYN_TYPED_REF) {
     /* Bound records and arrays answer present members from the native value. */
-    ScrDyn *live = scr_dyn_typed_ref_key_get(holder, key);
+    ScrDyn *live = scr_dyn_typed_ref_own_get(holder, key);
     if (live) return live;
     ScrDyn *view = scr_dyn_typed_ref_materialize(holder);
     ScrDyn *member = scr_exc_pending() ? NULL : scr_json_member(view, key);

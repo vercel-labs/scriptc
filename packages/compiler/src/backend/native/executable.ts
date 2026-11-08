@@ -512,6 +512,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The stderr report of a deferred diagnostic that fires
   // (ir/deferred-fence.ts).
   unit((u) => u.opts.deferredFence === true, "scr_deferred_fence.c"),
+  // `fn.constructor = value` on a value the checker types as a function.
+  unit((u) => u.opts.functionOwnWrite === true, "scr_dyn_fn_own.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */

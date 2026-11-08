@@ -226,6 +226,9 @@ export interface CcOptions {
   /** A runtimeFence that stands for a deferred diagnostic: compiles
    * scr_deferred_fence.c, its stderr reporter. */
   deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value: compiles
+   * scr_dyn_fn_own.c. */
+  functionOwnWrite?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */

@@ -39,6 +39,7 @@ import {
 import {
   constructedFromValue,
   constructedValue,
+  constructorForeignFlag,
   constructorPrimitiveFlag,
   superIntoResultSlot,
 } from "./constructor-returns.js";
@@ -8941,6 +8942,18 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
       body.push({
         kind: "assign",
         localId: pendingPrimitive.id,
+        value: { kind: "boolLit", value: false, type: BOOL, loc: clearLoc },
+        loc: clearLoc,
+      });
+    }
+    // The same for a foreign result (constructor-returns.ts): the flag
+    // means "this construction's constructor returned another object".
+    const pendingForeign = constructorForeignFlag(lowerer, info);
+    if (pendingForeign !== null) {
+      const clearLoc = locOf(info.ctor ?? info.decl!);
+      body.push({
+        kind: "assign",
+        localId: pendingForeign.id,
         value: { kind: "boolLit", value: false, type: BOOL, loc: clearLoc },
         loc: clearLoc,
       });

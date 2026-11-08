@@ -4396,6 +4396,9 @@ export class Lowerer {
    * only then can a value that is not an Error instance be
    * `instanceof Error`. */
   errorPrototypeValues = false;
+  /** Every write of the global object the program makes, by any spelling
+   * (global-object-writes.ts), collected on first use. */
+  globalObjectWrites: import("./global-object-writes.js").GlobalObjectWrites | null = null;
   /** The property names the program assigns on the global object
    * (property-access.ts), collected on first use. */
   globalThisWrittenNames: Set<string> | null = null;
@@ -5840,6 +5843,7 @@ export class Lowerer {
       fixed("handleAdditions", () => this.handleAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
+      fixed("globalObjectWrites", () => this.globalObjectWrites),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),

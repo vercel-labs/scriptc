@@ -23,7 +23,7 @@
  * A program with an aliasable copy and no observation of its layouts
  * behaves as it does under Node; every other aliasable copy is reported
  * (SC6001). Programs without copy helpers skip the scan. */
-import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
+import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { isUnitType, typeKey } from "../../ir/ir.js";
 import { dynamicFieldStores, type DynamicFieldStores } from "../../ir/int32-slots.js";
 import { everyExprChild, everyStmtChild, everyTypeChild } from "../../ir/traverse.js";
@@ -561,7 +561,7 @@ function readOnlyRuntimeCall(fn: string): boolean {
  * initializes the members that class holds on the object being built and
  * runs none of the program's code with it, so the call does not let the
  * object out. */
-const RUNTIME_BASE_CONSTRUCTORS: ReadonlySet<string> = new Set([
+const RUNTIME_BASE_CONSTRUCTORS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "error.ctor",
   "error.ctorOptions",
   "emitter.ctor",

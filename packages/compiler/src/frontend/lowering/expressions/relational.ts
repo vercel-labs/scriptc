@@ -325,6 +325,27 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "dyn.nativeUrlIs", args: [value], type: BOOL, loc };
   }
+  // `x instanceof URLSearchParams`: the brand of the value an untyped slot
+  // holds for one, as for URL above.
+  if (
+    lowerer.isStdlibGlobal(expr.right, "URLSearchParams") ||
+    (rhsBuiltin?.module === "url" && rhsBuiltin.member === "URLSearchParams")
+  ) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "libCall", fn: "dyn.nativeSearchParamsIs", args: [value], type: BOOL, loc };
+  }
+  // `x instanceof Buffer` in TypeScript: Buffer is the one byte view with a
+  // brand of its own beside its element kind. JavaScript holds the
+  // constructor as a value and tests against that (below).
+  if (
+    (lowerer.isStdlibGlobal(expr.right, "Buffer") ||
+      (rhsBuiltin?.module === "buffer" && rhsBuiltin.member === "Buffer")) &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    !lowerer.caughtLocalOf(expr.left)
+  ) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "dynTest", test: "buffer", value, type: BOOL, loc };
+  }
   {
     const stack = lowerDisposableStackInstanceOf(lowerer, expr);
     if (stack) return stack;
@@ -519,6 +540,26 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     // never promises (scriptc promises are all native, and no data arm
     // can hold one). A promise-typed operand answers true after its
     // evaluation; a checked-dynamic one asks the runtime.
+    // A catch binding holds a thrown promise as its checked-dynamic value.
+    {
+      const caughtPromise =
+        ts.isIdentifier(expr.right) && lowerer.isStdlibGlobal(expr.right, "Promise")
+          ? lowerer.caughtLocalOf(expr.left)
+          : null;
+      if (caughtPromise)
+        return {
+          kind: "dynTest",
+          test: "promise",
+          value: {
+            kind: "caughtToDyn",
+            value: varRef(caughtPromise.id, CAUGHT, loc),
+            type: DYN,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+    }
     if (
       ts.isIdentifier(expr.right) &&
       lowerer.isStdlibGlobal(expr.right, "Promise") &&
@@ -541,7 +582,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         };
       }
       // Plain data (records, arrays, strings, numbers, booleans, and unions
-      // of them) is never a promise: false after the operand's evaluation.
+      // of them) is never a promise, and neither is a class instance (no
+      // program class extends Promise): false after the operand's evaluation.
       const neverPromise = (t: IrType): boolean =>
         NEVER_PROMISE_KINDS.has(t.kind) ||
         (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms ?? [t]).every(neverPromise));
@@ -856,6 +898,19 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         loc,
       };
     }
+    // A built-in class that has no test of its own above: name it, and
+    // what a program can test instead.
+    const builtinClass =
+      stdlibGlobalNameOf(lowerer, expr.right) ??
+      (rhsBuiltin ? `${rhsBuiltin.module}.${rhsBuiltin.member}` : null);
+    if (builtinClass !== null) {
+      lowerer.unsupported(
+        "SC1090",
+        expr.right,
+        `'instanceof ${builtinClass}' (this built-in class has no run-time class test yet: test what the value has instead, ` +
+          `such as \`typeof value === "object" && value !== null && "member" in value\`)`,
+      );
+    }
     lowerer.unsupported(
       "SC1090",
       expr.right,
@@ -1040,12 +1095,14 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     const arms = lowerer.unions.get(unionId)?.arms;
     // Records, arrays and scalar values are no instances of a class that
     // does not extend Array (lowerArrayClassInstanceOf tests the classes
-    // that do). Dynamic/opaque runtime objects keep their existing
-    // instanceof fences.
+    // that do), and neither is a promise: every compiled promise is the
+    // standard library's own, and no program class extends it. Dynamic/opaque
+    // runtime objects keep their existing instanceof fences.
     if (
       arms?.every(
         (arm) =>
           arm.kind === "object" ||
+          arm.kind === "promise" ||
           arm.kind === "record" ||
           arm.kind === "array" ||
           arm.kind === "f64" ||
@@ -3484,6 +3541,7 @@ function nodeDeclaredMember(lowerer: Lowerer, t: ts.Type, key: string): boolean 
 }
 
 const NEVER_PROMISE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "object",
   "record",
   "array",
   "string",

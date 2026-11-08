@@ -280,7 +280,7 @@ export function lowerConsoleArg(
       (id) => lowerer.unions.get(id),
     )
   ) {
-    const name = jsFuncNameOf(node);
+    const name = jsFuncNameOf(node, lowerer);
     const boxed: IrExpr = {
       kind: "dynFrom",
       value: lowered,

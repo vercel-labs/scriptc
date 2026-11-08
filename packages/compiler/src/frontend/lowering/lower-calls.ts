@@ -58,6 +58,7 @@ import {
 } from "./lower-timers.js";
 import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
+import { lowerOpenEnumeration } from "./open-enumerations.js";
 import { InternalCompilerError } from "../../errors.js";
 import {
   isFsStreamMember,
@@ -375,6 +376,7 @@ import {
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { lowerRecordInheritedCall } from "./record-inherited.js";
 import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
+import { lowerFetchDispatcherHook } from "./fetch-dispatcher.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -7417,8 +7419,11 @@ export function lowerPromiseMethodCall(
         type: inner,
         loc,
       };
+      // The settled value is read after the guarded await, so the function's
+      // statement list owns it: the try body's scope ends with the try.
+      if (vLocal) vLocal.mutable = true;
       const tryBody: IrStmt[] = vLocal
-        ? [{ kind: "varDecl", localId: vLocal.id, init: awaitE, loc }]
+        ? [{ kind: "assign", localId: vLocal.id, value: awaitE, loc }]
         : [{ kind: "exprStmt", expr: awaitE, loc }];
       const resultOf = (value: IrExpr, promise: Adoption = "never"): IrStmt[] => {
         if (value.type.kind === "promise")
@@ -7495,7 +7500,7 @@ export function lowerPromiseMethodCall(
         ? {
             kind: "dynCall",
             callee: { kind: "varRef", localId: rLocal.id, type: DYN, loc },
-            calleeName: jsFuncNameOf(rejectedNode!) ?? "onRejected",
+            calleeName: jsFuncNameOf(rejectedNode!, undefined, { spelling: true }) ?? "onRejected",
             args: [
               {
                 kind: "caughtToDyn",
@@ -7523,9 +7528,16 @@ export function lowerPromiseMethodCall(
                   loc,
                 },
               ];
-      const body: IrStmt[] = [
-        { kind: "tryCatch", tryBody, catchBody, catchLocalId: eLocal.id, finallyBody: null, loc },
-      ];
+      const body: IrStmt[] = [];
+      if (vLocal) body.push({ kind: "varDecl", localId: vLocal.id, init: null, loc });
+      body.push({
+        kind: "tryCatch",
+        tryBody,
+        catchBody,
+        catchLocalId: eLocal.id,
+        finallyBody: null,
+        loc,
+      });
       // The fulfillment callback sits after the catch so a throw from it
       // rejects the result instead of reaching onRejected.
       if (fLocal) {
@@ -7565,7 +7577,8 @@ export function lowerPromiseMethodCall(
             {
               kind: "dynCall",
               callee: { kind: "varRef", localId: fLocal.id, type: DYN, loc },
-              calleeName: jsFuncNameOf(fulfilledNode!) ?? "onFulfilled",
+              calleeName:
+                jsFuncNameOf(fulfilledNode!, undefined, { spelling: true }) ?? "onFulfilled",
               args: [arg],
               type: DYN,
               loc,
@@ -7733,7 +7746,8 @@ export function lowerPromiseMethodCall(
           value: {
             kind: "dynCall",
             callee: { kind: "varRef", localId: cbLocal.id, type: DYN, loc },
-            calleeName: jsFuncNameOf(call.arguments.nodes[0]!, lowerer) ?? "onFulfilled",
+            calleeName:
+              jsFuncNameOf(call.arguments.nodes[0]!, lowerer, { spelling: true }) ?? "onFulfilled",
             args: handlerArgs,
             type: DYN,
             loc,
@@ -8048,7 +8062,8 @@ export function lowerPromiseMethodCall(
             value: {
               kind: "dynCall",
               callee: { kind: "varRef", localId: cbLocal.id, type: DYN, loc },
-              calleeName: jsFuncNameOf(call.arguments.nodes[0]!, lowerer) ?? "onRejected",
+              calleeName:
+                jsFuncNameOf(call.arguments.nodes[0]!, lowerer, { spelling: true }) ?? "onRejected",
               args: [
                 {
                   kind: "caughtToDyn",
@@ -10642,6 +10657,12 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+  }
+  // An open spread value whose pairs or values go straight to bindings
+  // that take them as they are (open-enumerations.ts).
+  if (member !== "keys") {
+    const open = lowerOpenEnumeration(lowerer, call);
+    if (open !== null) return open;
   }
   // A CHECKED-DYNAMIC argument — the checker may still spell a record
   // type (the JS file-scope object-literal identity story stores the
@@ -13821,17 +13842,18 @@ function lowerShimIntrinsicCall(
   callee: ts.Identifier,
   loc: SrcLoc,
 ): IrExpr | null {
-  const intrinsic = SHIM_INTRINSICS.get(callee.text);
-  if (intrinsic === undefined) return null;
   const decl = lowerer.checker.getSymbolAtLocation(callee)?.valueDeclaration;
   if (
     decl === undefined ||
     !ts.isFunctionDeclaration(decl) ||
     decl.body ||
-    !isPackageShimFile(ts.getSourceFileOfNode(decl).fileName) ||
-    expr.arguments.nodes.length !== intrinsic.args.length
+    !isPackageShimFile(ts.getSourceFileOfNode(decl).fileName)
   )
     return null;
+  const hook = lowerFetchDispatcherHook(lowerer, callee, expr, loc);
+  if (hook !== null) return hook;
+  const intrinsic = SHIM_INTRINSICS.get(callee.text);
+  if (intrinsic === undefined || expr.arguments.nodes.length !== intrinsic.args.length) return null;
   const args = expr.arguments.nodes.map((arg, i) =>
     lowerer.lowerExprExpecting(arg, intrinsic.args[i]!),
   );

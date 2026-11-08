@@ -143,8 +143,23 @@ struct ScrChild {
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
   ScrAlsCtx *als;
   struct ScrChild *next; /* the pending registry */
+#ifdef SCR_NODE_ISLANDS
+  void *island; /* a Node island's child: every entry point goes to scr_child_island_ops */
+#endif
 };
 
 #endif /* _WIN32 */
+
+/* The Node island build's guard (scr_child.c defines the same). */
+#if defined(SCR_NODE_ISLANDS) && !defined(_WIN32)
+#define SCR_IF_ISLAND(handle, ...) \
+  do { \
+    if ((handle)->island != NULL) { __VA_ARGS__; } \
+  } while (0)
+#else
+#define SCR_IF_ISLAND(handle, ...) \
+  do { \
+  } while (0)
+#endif
 
 #endif /* SCR_CHILD_PRIVATE_H */

@@ -12,10 +12,14 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // scr_dyn_native_search_params_is compares the value's kind and handle tag.
+  "dyn.nativeSearchParamsIs",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
+  // scr_dyn_new_promise retains the promise and allocates its box.
+  "weakMap.promiseKey",
   // scr_resolve_adopt queues a job; a promise resolved with itself is
   // rejected, not thrown.
   "promise.adopt",
@@ -59,6 +63,16 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_emitter_symbol_name allocates the registry key of the symbol it is
   // given (scr_str_symbol_key); running out of memory ends the process.
   "emitter.symName",
+  // scr_promise_all_settled subscribes a countdown reaction to each entry
+  // and queues one job for the entries already settled; the builder runs
+  // later, inside the combinator's settlement, never in this call.
+  "promise.allSettledTuple",
+  // scr_promise_is_rejected reads the promise's state.
+  "promise.entryRejected",
+  // scr_promise_reason_dyn boxes the stored reason (a number, a boolean, a
+  // string, an error object or the checked-dynamic value itself); running
+  // out of memory ends the process.
+  "promise.entryReason",
   // Emitted inline: the value's tag, its signature literal's length and
   // the literal's last four bytes. No runtime call but strlen.
   "dyn.classValueHash",

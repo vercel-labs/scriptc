@@ -16,7 +16,8 @@
     "x64"
   ],
   "bin": {
-    "scriptc-llvm-linux-x64-musl": "bin/scriptc-llvm-codegen"
+    "scriptc-llvm-linux-x64-musl": "bin/scriptc-llvm-codegen",
+    "scriptc-comptime-linux-x64-musl": "bin/scriptc-comptime"
   },
   "files": [
     "bin",
@@ -27,7 +28,7 @@
   "scripts": {
     "build": "true",
     "build:native": "node scripts/build.mjs",
-    "prepack": "test -x bin/scriptc-llvm-codegen"
+    "prepack": "test -x bin/scriptc-llvm-codegen && test -x bin/scriptc-comptime"
   },
   "publishConfig": {
     "access": "public"

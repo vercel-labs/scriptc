@@ -156,6 +156,7 @@ describe(`static fetch differential${sanitize ? " (sanitized)" : ""}`, () => {
     "static",
     "static-request",
     "static-coercion",
+    "static-headers-iteration",
     "static-controller",
     "static-stream",
     "static-stream-this",

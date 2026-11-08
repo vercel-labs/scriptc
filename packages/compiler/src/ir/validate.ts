@@ -4,6 +4,7 @@
  * an ICE that points at source is a gift to whoever debugs it.
  */
 import { validByteNumberToken } from "./byte-numbers.js";
+import { localScopeUses } from "./local-scopes.js";
 import type {
   IrClassDef,
   IrExpr,
@@ -5727,7 +5728,13 @@ function validateFunction(
         err(`libCall ${e.fn} must read a Promise<void> entry at a non-void type`, e.loc);
       return true;
     }
-    if (e.fn === "promise.allTuple") {
+    if (e.fn === "promise.entryRejected" || e.fn === "promise.entryReason") {
+      const promise = e.args[0]?.type;
+      if (promise?.kind !== "promise" || promise.inner.kind !== "void")
+        err(`libCall ${e.fn} must read a Promise<void> entry`, e.loc);
+      return true;
+    }
+    if (e.fn === "promise.allTuple" || e.fn === "promise.allSettledTuple") {
       const [entries, build] = e.args;
       if (
         entries?.type.kind !== "array" ||
@@ -7281,6 +7288,15 @@ function validateFunction(
   }
 
   checkStmts(fn.body);
+
+  // A local is named only inside the region that owns its value: the
+  // backend releases a reference when that region ends (ir/local-scopes.ts).
+  for (const use of localScopeUses(fn)) {
+    err(
+      `local "${use.local.name}" is used after the ${use.ended === "block" ? "statement list" : use.ended} of its declaration ended (in a ${use.owner})`,
+      use.loc,
+    );
+  }
 
   if (!typeEquals(fn.returnType, VOID) && !alwaysReturns(fn.body, unions)) {
     err(`non-void function may complete without returning`, fn.loc);

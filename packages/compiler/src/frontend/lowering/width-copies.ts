@@ -23,7 +23,7 @@
  * A program with an aliasable copy and no observation of its layouts
  * behaves as it does under Node; every other aliasable copy is reported
  * (SC6001). Programs without copy helpers skip the scan. */
-import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
+import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { isUnitType, typeKey } from "../../ir/ir.js";
 import { dynamicFieldStores, type DynamicFieldStores } from "../../ir/int32-slots.js";
 import { everyExprChild, everyStmtChild, everyTypeChild } from "../../ir/traverse.js";
@@ -36,6 +36,7 @@ import {
   ROUTING_HELPERS,
 } from "./width-lift.js";
 import {
+  unionArmCopyDiag,
   unsupportedDiag,
   widthCopyDivergenceDiag,
   type ScrDiagnostic,
@@ -87,6 +88,13 @@ const EXTRACTION_PREFIX = `${ARM_EXTRACTION_HELPER}.`;
  * and answers an element of the predicate's own type as it is. */
 const PREDICATE_PREFIX = `${PREDICATE_HELPER}.`;
 
+/** A union converted to another union arm by arm, and the route an arm
+ * takes inside it when it fits several destination arms by width: it
+ * enters the arm the value of its own discriminant names (union-retag.ts,
+ * the arm kind `own`). */
+const RETAG_PREFIX = `${ROUTING_HELPERS.retag}.`;
+const RECORD_ROUTE_PREFIX = `${ROUTING_HELPERS.recordRoute}.`;
+
 /** How a program can tell a copy from the object it copied. */
 export interface CopyObservation {
   how: "write" | "identity" | "untyped";
@@ -113,6 +121,11 @@ export interface WidthCopyFact {
    * operand of (`call` for an argument, `recordLit` for a field value,
    * `arrIntrinsic.push`, `return`, `varDecl`, ...). */
   slot: string;
+  /** Whether the copy is made by a union conversion one of whose arms
+   * enters the destination by the value of its own discriminant. That
+   * conversion compiles only where no copy it makes can be told from the
+   * object (refuseObservedCopies). */
+  routed: boolean;
   /** The first observation that tells the copy from its object, or null
    * when the program has none. */
   observed: CopyObservation | null;
@@ -124,7 +137,11 @@ interface CopyEffect {
   from: IrType;
   to: IrType;
   depth: "value" | "member";
+  routed: boolean;
 }
+
+/** A conversion site before the program's observations are asked. */
+type CopySite = Omit<WidthCopyFact, "observed">;
 
 function copyKindOf(name: string): WidthCopyKind | null {
   if (name.charCodeAt(0) !== 37 /* % */) return null;
@@ -219,19 +236,40 @@ export function collectWidthCopies(
    * backend's record-view plan's answer. */
   checked = false,
 ): WidthCopyFact[] {
+  return collectCopies(lowerer, functions, checked, false);
+}
+
+/** The copies that are refused where the program can tell them from their
+ * object, instead of reported (refuseObservedCopies). */
+function isNamedCopy(kind: WidthCopyKind, routed: boolean): boolean {
+  return kind === "clsWidth" || routed;
+}
+
+/** collectWidthCopies, or with `namedOnly` the named copies alone: a program
+ * none of whose helpers performs one is then not walked, and the program's
+ * observations are asked for those copies only. */
+function collectCopies(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  checked: boolean,
+  namedOnly: boolean,
+): WidthCopyFact[] {
   const helpers = new Map<string, IrFunction>();
   for (const fn of functions) if (isConversionHelper(fn.name)) helpers.set(fn.name, fn);
   // A program that interned no conversion helper converts nothing by copy.
   if (helpers.size === 0 && !checked) return [];
   const scan = new CopyScan(helpers, functions, checked, (id) => lowerer.unions.get(id)?.arms);
-  const sites = scan.sites();
+  if (namedOnly && !scan.performsNamedCopy()) return [];
+  const sites = namedOnly
+    ? scan.sites().filter((site) => isNamedCopy(site.kind, site.routed))
+    : scan.sites();
   if (sites.length === 0) return [];
   // The program-wide observations are only needed for an aliasable copy.
   let observations: Observations | null = null;
   const facts: WidthCopyFact[] = [];
   const seen = new Set<string>();
   for (const site of sites) {
-    const key = `${site.loc.file}\0${site.loc.start}\0${site.kind}\0${site.depth}\0${typeKey(site.from)}\0${typeKey(site.to)}`;
+    const key = `${site.loc.file}\0${site.loc.start}\0${site.kind}\0${site.depth}\0${site.routed ? 1 : 0}\0${typeKey(site.from)}\0${typeKey(site.to)}`;
     if (seen.has(key)) continue;
     seen.add(key);
     if (!site.aliasable) {
@@ -250,7 +288,7 @@ class CopyScan {
   private readonly effects = new Map<string, CopyEffect[]>();
   private readonly freshReturns = new Map<string, boolean>();
   private readonly byName = new Map<string, IrFunction>();
-  private readonly out: Omit<WidthCopyFact, "observed">[] = [];
+  private readonly out: CopySite[] = [];
 
   constructor(
     private readonly helpers: ReadonlyMap<string, IrFunction>,
@@ -261,7 +299,16 @@ class CopyScan {
     for (const fn of functions) if (!this.byName.has(fn.name)) this.byName.set(fn.name, fn);
   }
 
-  sites(): Omit<WidthCopyFact, "observed">[] {
+  /** Whether a call of some helper performs a named copy. Reads the
+   * helpers alone. */
+  performsNamedCopy(): boolean {
+    for (const name of this.helpers.keys())
+      for (const effect of this.effectsOf(name))
+        if (isNamedCopy(effect.kind, effect.routed)) return true;
+    return false;
+  }
+
+  sites(): CopySite[] {
     for (const fn of this.functions) {
       if (this.helpers.has(fn.name)) continue;
       this.walk(
@@ -316,6 +363,7 @@ class CopyScan {
         loc: check.loc,
         aliasable,
         slot,
+        routed: false,
       });
   }
 
@@ -396,24 +444,41 @@ class CopyScan {
     if (fn === undefined || param === undefined) return effects;
     const keys = new Set<string>();
     const add = (effect: CopyEffect): void => {
-      const key = `${effect.kind}\0${effect.depth}\0${typeKey(effect.from)}\0${typeKey(effect.to)}`;
+      const key = `${effect.kind}\0${effect.depth}\0${effect.routed ? 1 : 0}\0${typeKey(effect.from)}\0${typeKey(effect.to)}`;
       if (keys.has(key)) return;
       keys.add(key);
       effects.push(effect);
     };
     const kind = copyKindOf(name);
-    if (kind !== null) add({ kind, from: param.type, to: fn.returnType, depth: "value" });
+    if (kind !== null)
+      add({ kind, from: param.type, to: fn.returnType, depth: "value", routed: false });
     else if (name.startsWith(PREDICATE_PREFIX) && buildsRecord(fn))
-      add({ kind: "width", from: param.type, to: fn.returnType, depth: "value" });
+      add({ kind: "width", from: param.type, to: fn.returnType, depth: "value", routed: false });
+    // A union conversion one of whose arms takes the record's own route:
+    // without that route the conversion has no plan, so every copy it
+    // makes exists through it, the arms with one destination arm too.
+    const routed = name.startsWith(RETAG_PREFIX) && this.takesOwnRoute(fn);
     this.walk(fn.body, (call) => {
       const arg = call.args[0];
       if (arg === undefined) return;
       const reach = this.reach(arg, param.localId);
       if (reach === null) return;
-      for (const inner of this.effectsOf(call.callee))
-        add(reach === "value" ? inner : { ...inner, depth: "member" });
+      for (const inner of this.effectsOf(call.callee)) {
+        const copy = routed && !inner.routed ? { ...inner, routed: true } : inner;
+        add(reach === "value" ? copy : { ...copy, depth: "member" });
+      }
     });
     return effects;
+  }
+
+  /** Whether the union conversion `fn` hands one of its arms to the
+   * record's own route into the destination union. */
+  private takesOwnRoute(fn: IrFunction): boolean {
+    const routes: string[] = [];
+    this.walk(fn.body, (call) => {
+      if (call.callee.startsWith(RECORD_ROUTE_PREFIX)) routes.push(call.callee);
+    });
+    return routes.length > 0;
   }
 
   /** How a helper's expression relates to its parameter `param`: `value`
@@ -451,13 +516,25 @@ class CopyScan {
         return this.fresh(e.then) && this.fresh(e.else_);
       case "seqExpr":
         return this.fresh(e.result);
+      // A union box is a value: what a program can reach is the arm inside,
+      // and that is the wrapped value, whichever union the box is viewed as.
+      case "unionWrap":
+      case "unionRetype":
+      case "unionNarrow":
+        return this.fresh(e.value);
       case "call": {
         // A copy is a new object, but it stands for the value it copied: a
         // conversion of a copy of an aliasable value (`w` to N to M in one
         // expression, or through a function that returns its converted
         // parameter) is still a second object where Node has `w`, and a
-        // write to its layout is as lost as one to the first copy's.
-        if (copyKindOf(e.callee) !== null) {
+        // write to its layout is as lost as one to the first copy's. A
+        // helper that routes its argument to copies, or extracts an arm of
+        // it, answers that value or a copy of it.
+        if (
+          copyKindOf(e.callee) !== null ||
+          hasPrefix(e.callee, ROUTING_PREFIXES) ||
+          e.callee.startsWith(EXTRACTION_PREFIX)
+        ) {
           const arg = e.args[0];
           return arg === undefined || this.fresh(arg);
         }
@@ -555,6 +632,22 @@ function readOnlyRuntimeCall(fn: string): boolean {
   for (const prefix of READ_ONLY_RUNTIME_CALLS) if (fn.startsWith(prefix)) return true;
   return false;
 }
+
+/** The runtime calls a constructor makes for the runtime-provided class its
+ * class is rooted in (superCall in lower-classes.ts). The runtime
+ * initializes the members that class holds on the object being built and
+ * runs none of the program's code with it, so the call does not let the
+ * object out. */
+const RUNTIME_BASE_CONSTRUCTORS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "error.ctor",
+  "error.ctorOptions",
+  "emitter.ctor",
+  "readable.init",
+  "writable.init",
+  "duplex.init",
+  "transform.init",
+  "passthrough.init",
+]);
 
 /** What the whole program does to values of each layout. */
 class Observations {
@@ -1035,7 +1128,12 @@ class Observations {
         stack.push(type.elem);
       } else {
         const unit = this.unitOf(type);
-        if (unit !== null && !this.fieldWrites.has(`${unit}\0*`))
+        const held = type.kind === "object" ? this.runtimeHeld(type.className) : null;
+        if (unit !== null && held !== null) {
+          for (const name of held)
+            if (!this.fieldWrites.has(`${unit}\0${name}`))
+              this.fieldWrites.set(`${unit}\0${name}`, observation);
+        } else if (unit !== null && !this.fieldWrites.has(`${unit}\0*`))
           this.fieldWrites.set(`${unit}\0*`, observation);
         if (type.kind === "record") {
           const shape = this.lowerer.shapes.get(type.shapeId);
@@ -1044,6 +1142,30 @@ class Observations {
         }
       }
     }
+  }
+
+  /** The fields the runtime can write on an instance of `className` it is
+   * handed, when the class is rooted in a runtime-provided class (an
+   * emitter, an error, a stream; objToRecordPlan's rule): the members that
+   * runtime class holds. The runtime knows no other layout of the instance,
+   * so the fields the program's classes declare are written by the program's
+   * own code, which this scan reads, and no conversion copies a member the
+   * runtime class holds. Null for any other class. */
+  private runtimeHeld(className: string): string[] | null {
+    let rooted = false;
+    const names: string[] = [];
+    for (let info = this.lowerer.classes.get(className) ?? null; info; info = info.base) {
+      if (
+        !info.builtinError &&
+        !info.builtinEmitter &&
+        info.builtinStream === undefined &&
+        !info.def.runtime
+      )
+        continue;
+      rooted = true;
+      for (const name of info.fields.keys()) if (!names.includes(name)) names.push(name);
+    }
+    return rooted ? names : null;
   }
 
   /** Whether the constructor named `name` uses its `this` as anything but
@@ -1060,6 +1182,9 @@ class Observations {
     if (fn === undefined || self === undefined) return true;
     let leaked = false;
     const isSelf = (e: IrExpr): boolean => e.kind === "varRef" && e.localId === self;
+    // A base constructor takes the object at the base's type.
+    const isReceiver = (e: IrExpr): boolean =>
+      isSelf(e) || (e.kind === "upcast" && isSelf(e.value));
     const expr = (e: IrExpr): boolean => {
       if (leaked) return false;
       if (isSelf(e)) {
@@ -1075,12 +1200,21 @@ class Observations {
         e.kind === "call" &&
         e.callee.endsWith(".constructor") &&
         e.args.length > 0 &&
-        isSelf(e.args[0]!)
+        isReceiver(e.args[0]!)
       ) {
         if (this.leaks(e.callee)) {
           leaked = true;
           return false;
         }
+        for (let i = 1; i < e.args.length; i++) if (!expr(e.args[i]!)) return false;
+        return true;
+      }
+      if (
+        e.kind === "libCall" &&
+        RUNTIME_BASE_CONSTRUCTORS.has(e.fn) &&
+        e.args.length > 0 &&
+        isReceiver(e.args[0]!)
+      ) {
         for (let i = 1; i < e.args.length; i++) if (!expr(e.args[i]!)) return false;
         return true;
       }
@@ -1097,17 +1231,45 @@ class Observations {
   }
 }
 
-/** Refuses the record-to-class conversions of a value something else can
- * still reach when the program can tell the instance from the record: a
- * class instance is not the record it was built from, so a write through
- * either is lost. Nothing keeps such a value one object, and no program
- * measured needs it, so it is named instead of reported. Runs while the
- * module can still fail; programs without such a conversion skip it. */
-export function refuseObservedClassCopies(lowerer: Lowerer, functions: IrFunction[]): void {
-  if (!functions.some((fn) => copyKindOf(fn.name) === "clsWidth")) return;
-  for (const fact of collectWidthCopies(lowerer, functions)) {
+/** Refuses the two conversions whose copy is named instead of reported,
+ * when the value converted is one something else can still reach and the
+ * program can tell the copy from it. Runs while the module can still fail;
+ * programs without such a conversion skip it.
+ *
+ * - A record converted to a class instance: an instance is not the record
+ *   it was built from, so a write through either is lost. Nothing keeps
+ *   such a value one object, and no program measured needs it.
+ * - A union's arm that fits several arms of the destination union and
+ *   enters the one its own discriminant names. That conversion compiles
+ *   where the program cannot tell the copy from the object: a fresh value,
+ *   or layouts nothing writes, compares or hands to code the scan cannot
+ *   follow. Elsewhere it has no layout mapping that keeps the object, and
+ *   it is refused as a union conversion without a mapping is. The object
+ *   copied may be the arm or one inside a record or array converted with
+ *   it. An arm with one destination arm is copied and reported (SC6001):
+ *   the observation is a fact about a layout, not about one value, and
+ *   programs that convert that way and write another value of the layout
+ *   behave as they do under Node. */
+export function refuseObservedCopies(lowerer: Lowerer, functions: IrFunction[]): void {
+  const refusedArms = new Set<string>();
+  for (const fact of collectCopies(lowerer, functions, false, true)) {
     const observed = fact.observed;
-    if (fact.kind !== "clsWidth" || observed === null) continue;
+    if (observed === null) continue;
+    if (fact.kind !== "clsWidth") {
+      // One refusal per conversion, whichever of its arms is observed first.
+      const site = `${fact.loc.file}\0${fact.loc.start}`;
+      if (refusedArms.has(site)) continue;
+      refusedArms.add(site);
+      lowerer.pushDiag(
+        unionArmCopyDiag(
+          typeText(lowerer, fact.from),
+          typeText(lowerer, fact.to),
+          { how: observed.how, what: observed.what, where: whereOf(lowerer, observed.loc) },
+          fact.loc,
+        ),
+      );
+      continue;
+    }
     lowerer.pushDiag(
       unsupportedDiag(
         "SC1090",
@@ -1180,6 +1342,6 @@ export function traceWidthCopies(lowerer: Lowerer, facts: readonly WidthCopyFact
       : fact.observed === null
         ? "unobserved"
         : `${fact.observed.how}:${fact.observed.side ?? ""}:${fact.observed.what}@${fact.observed.loc.file}:${fact.observed.loc.start}`;
-    return `width-copy\t${fact.kind}\t${fact.depth}\t${observed}\t${lowerer.fmt(fact.from)}\t${lowerer.fmt(fact.to)}\t${fact.loc.file}:${fact.loc.start}\t${fact.slot}`;
+    return `width-copy\t${fact.routed ? `${fact.kind}:routed` : fact.kind}\t${fact.depth}\t${observed}\t${lowerer.fmt(fact.from)}\t${lowerer.fmt(fact.to)}\t${fact.loc.file}:${fact.loc.start}\t${fact.slot}`;
   });
 }

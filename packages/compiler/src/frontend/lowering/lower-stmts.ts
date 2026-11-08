@@ -1935,6 +1935,7 @@ const THROWN_AS_DYN: ReadonlySet<IrType["kind"]> = new Set([
   "func",
   "regex",
   "date",
+  "promise",
 ]);
 
 /** A `return` at the top level of a CommonJS module (preflight admits it
@@ -2317,9 +2318,11 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       value = { kind: "dynFrom", value, liveRef: true, type: DYN, loc: locOf(stmt.expression) };
     } else if (THROWN_AS_DYN.has(value.type.kind) && lowerer.dynConvertible(value.type)) {
       // Arrays, Maps, Sets, typed arrays, Buffers, functions, regexes,
-      // Dates and unions over them keep their identity and contents the
-      // same way: the catch binding, `typeof`, `instanceof`,
+      // Dates, promises and unions over them keep their identity and
+      // contents the same way: the catch binding, `typeof`, `instanceof`,
       // `Array.isArray`, inspection and typed views read the thrown object.
+      // A thrown promise is still a promise where it is caught: its `then`
+      // is there, it can be awaited, and it is the promise that was thrown.
       value = lowerer.coerceInto(stmt.expression, value, DYN);
     }
     // A dyn throw rides the REF cell arm (scr_throw_ref over the checked-dynamic tree
@@ -11183,6 +11186,39 @@ export function lowerExprStatement(
                   loc,
                 },
                 strLit("write", locOf(expr.left.name)),
+                lowerer.lowerExprExpecting(expr.right, DYN),
+              ],
+              type: VOID,
+              loc,
+            },
+            loc,
+          };
+        }
+      }
+      // A member write on a process stream value (`out.write = fn` where
+      // `out: NodeJS.WriteStream` holds stdout or stderr, `out.columns =
+      // 132`): a write on the stream object the value names, as a write
+      // through `process.stdin` already is. The object keeps `write` (the
+      // slot above); a member it does not keep is refused by name when the
+      // statement runs.
+      if (
+        ts.isPropertyAccessExpression(expr.left) &&
+        !expr.left.questionDotToken &&
+        !ts.isPrivateIdentifier(expr.left.name) &&
+        !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression))?.kind === "procStream"
+      ) {
+        const out = lowerer.lowerExpr(expr.left.expression);
+        if (out.type.kind === "procStream") {
+          const loc = locOf(expr);
+          return {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.keySet",
+              args: [
+                lowerer.coerceToExpected(out, DYN),
+                strLit(expr.left.name.text, locOf(expr.left.name)),
                 lowerer.lowerExprExpecting(expr.right, DYN),
               ],
               type: VOID,

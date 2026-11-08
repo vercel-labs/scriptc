@@ -27,7 +27,7 @@ runs:
       env:
         SCRIPTC_LIBNODE_TOOLCHAIN: ${{ steps.target.outputs.toolchain }}
       run: node packages/libnode-common/scripts/cache-key.mjs --platform ${{ steps.target.outputs.platform }} >> "$GITHUB_OUTPUT"
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: libnode
       with:
         path: .libnode-cache/${{ steps.key.outputs.path }}
@@ -42,7 +42,7 @@ runs:
         node packages/libnode-${{ steps.target.outputs.platform }}/scripts/build.mjs --from-cache
         node packages/libnode-common/scripts/verify.mjs packages/libnode-${{ steps.target.outputs.platform }}
         echo "SCRIPTC_LIBNODE=$GITHUB_WORKSPACE/packages/libnode-${{ steps.target.outputs.platform }}" >> "$GITHUB_ENV"
-    - uses: actions/cache@v4
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: steps.libnode.outputs.cache-hit != 'true'
       id: devpack
       with:

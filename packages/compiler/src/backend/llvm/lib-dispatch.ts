@@ -254,7 +254,25 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return output;
   }
-  if (e.fn === "promise.allTuple") return emitPromiseAllTuple(host, e);
+  if (e.fn === "promise.allTuple" || e.fn === "promise.allSettledTuple")
+    return emitPromiseAllTuple(host, e);
+  if (e.fn === "promise.entryRejected") {
+    // Whether a settled entry promise rejected (borrowed operand).
+    const promise = host.emitExpr(e.args[0]!);
+    const out = B.tmp();
+    host.declare(`declare zeroext i1 @scr_promise_is_rejected(ptr)`);
+    B.line(`${out} = call zeroext i1 @scr_promise_is_rejected(ptr ${promise.name})`);
+    return { name: out, type: e.type };
+  }
+  if (e.fn === "promise.entryReason") {
+    // A rejected entry's reason as a checked-dynamic value, +1 (borrowed
+    // operand; the entry keeps its settlement).
+    const promise = host.emitExpr(e.args[0]!);
+    const out = B.tmp();
+    host.declare(`declare ptr @scr_promise_reason_dyn(ptr)`);
+    B.line(`${out} = call ptr @scr_promise_reason_dyn(ptr ${promise.name})`);
+    return host.own({ name: out, type: e.type });
+  }
   if (e.fn === "promise.fulfilledValue") {
     // The payload of a fulfilled promise (borrowed operand): the scalar
     // kinds that lower to a double (numbers, Dates, process streams) and
@@ -1786,7 +1804,11 @@ registerReplay("allTupleAdapterFor", (host, args) =>
  * entries stores each fulfilled entry promise, and a settlement adapter on
  * the combinator calls the builder with them and fulfills the result with
  * the tuple inside the combinator's settlement; a rejection settles the
- * result the same way. The combinator itself counts as handled. */
+ * result the same way. The combinator itself counts as handled.
+ * Promise.allSettled's tuple form (promise.allSettledTuple) is the same
+ * over the combinator that waits for every entry and stores each settled
+ * entry promise, fulfilled or rejected; its builder asks each entry which
+ * it was. */
 function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
   const build = e.args[1]!;
@@ -1795,7 +1817,9 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
   const entriesT = e.args[0]!.type;
   const entries = host.emitExpr(e.args[0]!);
   const adapter = allTupleAdapterFor(host, build.fnName, e.type.inner);
-  host.declare(`declare ptr @scr_promise_all(ptr, ptr, ptr)`);
+  const combinator =
+    e.fn === "promise.allSettledTuple" ? "scr_promise_all_settled" : "scr_promise_all";
+  host.declare(`declare ptr @${combinator}(ptr, ptr, ptr)`);
   host.declare(`declare void @scr_promise_all_store_promise(ptr, double, ptr)`);
   host.declare(`declare ptr @scr_promise_new()`);
   host.declare(`declare void @scr_promise_race_add(ptr, ptr, ptr)`);
@@ -1813,7 +1837,7 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
   host.own({ name: values, type: entriesT });
   const all = B.tmp();
   B.line(
-    `${all} = call ptr @scr_promise_all(ptr ${entries.name}, ptr ${values}, ptr @scr_promise_all_store_promise)`,
+    `${all} = call ptr @${combinator}(ptr ${entries.name}, ptr ${values}, ptr @scr_promise_all_store_promise)`,
   );
   B.line(`call void @scr_promise_mark_handled(ptr ${all})`);
   const result = B.tmp();

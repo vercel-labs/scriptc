@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { load } from "js-yaml";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
@@ -96,9 +96,7 @@ test("every download of a toolchain archive is checked against the pin file", ()
     const text = read(path);
     const downloads = text.split("\n").filter((line) => origins.test(line)).length;
     const checks = text.split("verify-toolchain.sh").length - 1;
-    expect(checks, `${path}: ${downloads} downloads`).toBeGreaterThanOrEqual(
-      path === "scripts/install-zig.sh" ? 1 : Math.min(downloads, 1),
-    );
+    expect(checks, `${path}: ${downloads} downloads`).toBeGreaterThanOrEqual(downloads);
     // Nothing trusts a checksum list fetched from the same place as the archive.
     expect(text, path).not.toContain("SHASUMS256.txt");
   }
@@ -114,6 +112,60 @@ test("every download of a toolchain archive is checked against the pin file", ()
   }
   const assets = [...read(".github/workflows/release.yml").matchAll(/llvm_asset: (\S+)/g)];
   for (const asset of assets) expect(pinned).toContain(`  ${asset[1]}.tar.xz\n`);
+});
+
+// ICU's release archives are downloaded by the pack build, not by a workflow step, and CI keeps them in a cache
+// that several jobs restore. The cache is no way around the pins: its key names them, and whatever it restores
+// is checked against them before it is unpacked.
+test("the ICU download cache is keyed by the pins, and an archive it restores is checked", async () => {
+  const icuPins = "hashFiles('packages/runtime-pack-common/scripts/icu-inputs.mjs')";
+  const restores: string[] = [];
+  for (const path of actions) {
+    const action = load(read(path)) as {
+      runs: { steps: { uses?: string; with?: { path?: string; key?: string } }[] };
+    };
+    for (const step of action.runs.steps) {
+      if (!step.uses?.startsWith("actions/cache/restore@")) continue;
+      if (!step.with?.path?.includes("scriptc-icu-")) continue;
+      expect(step.with.key, path).toContain(icuPins);
+      restores.push(path);
+    }
+  }
+  expect(restores).toEqual([
+    ".github/actions/icu-downloads/action.yml",
+    ".github/actions/native-packages/action.yml",
+  ]);
+
+  const scripts = join(root, "packages", "runtime-pack-common", "scripts");
+  const icuData = (await import(pathToFileURL(join(scripts, "icu-data.mjs")).href)) as {
+    ICU_DATA_VERSION: string;
+    ensureIcuSources(cacheDir: string): Promise<string>;
+    ensureIcuData(cacheDir: string): Promise<string>;
+  };
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-icu-cache-"));
+  const sources = `icu4c-${icuData.ICU_DATA_VERSION}-sources.tgz`;
+  const data = `icu4c-${icuData.ICU_DATA_VERSION}-data-bin-l.zip`;
+  let requests = 0;
+  vi.stubGlobal("fetch", async () => {
+    requests++;
+    return new Response("not the archive either");
+  });
+  try {
+    // What a restored cache could hold: files with the archives' names and other bytes.
+    writeFileSync(join(directory, sources), "not the archive");
+    writeFileSync(join(directory, data), "not the archive");
+    const mismatch = /expected \d+ bytes with sha256 [0-9a-f]{64}/;
+    await expect(icuData.ensureIcuSources(directory)).rejects.toThrow(mismatch);
+    await expect(icuData.ensureIcuData(directory)).rejects.toThrow(mismatch);
+    // Each reader refused the cached file and asked the release host, and refused that answer too: nothing
+    // was unpacked, and the download did not replace the cached file.
+    expect(requests).toBe(2);
+    expect(readdirSync(directory).sort()).toEqual([data, sources].sort());
+    expect(readFileSync(join(directory, sources), "utf8")).toBe("not the archive");
+  } finally {
+    vi.unstubAllGlobals();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("the verifier accepts the pinned digest and rejects any other file", () => {

@@ -35,7 +35,7 @@ runs:
         path: |
           packages/runtime-${{ inputs.target }}/artifacts
           packages/runtime-${{ inputs.target }}/runtime-pack.json
-        key: runtime-v1-${{ inputs.target }}-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'packages/runtime/package.json', 'packages/runtime/LICENSE', 'packages/runtime/src/**', 'packages/runtime/vendor/**', 'packages/runtime-*/package.json', 'packages/runtime-*/scripts/**', 'packages/runtime-*/*.mjs', 'packages/runtime-*/*.h', 'packages/runtime-pack-common/profiles/**', 'native/llvm-codegen/**', 'packages/llvm-*/package.json', 'packages/llvm-*/scripts/**') }}
+        key: runtime-v1-${{ inputs.target }}-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'packages/runtime/package.json', 'packages/runtime/LICENSE', 'packages/runtime/src/**', 'packages/runtime/vendor/**', 'packages/runtime-*/package.json', 'packages/runtime-*/scripts/**', 'packages/runtime-*/*.mjs', 'packages/runtime-*/*.h', 'packages/runtime-pack-common/profiles/**', 'native/llvm-codegen/**', 'packages/llvm-*/package.json', 'packages/llvm-*/scripts/**', 'packages/runtime/vendor/quickjs-ng/**', 'packages/runtime/src/scr_ieee754.*') }}
     # ICU's release archives are the one build input the pack build downloads
     # (packages/runtime-pack-common/scripts/icu-inputs.mjs). They are cached
     # apart from the built pack and keyed by their pins alone, so a pack whose

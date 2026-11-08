@@ -1,0 +1,56 @@
+uri as a string: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+uri in options: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+uri with credentials: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / proxy-authorization: Basic dXNlcjpwYXNzIHdvcmQ=
+uri with an IPv6 literal: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: [::1]:PORT / connection: close
+uri socks5: threw InvalidArgumentError UND_ERR_INVALID_ARG: Invalid URL protocol: the URL must start with `http:` or `https:`. | proxy saw nothing
+uri empty: threw InvalidArgumentError UND_ERR_INVALID_ARG: Proxy opts.uri is mandatory | proxy saw nothing
+uri not a URL: threw TypeError ERR_INVALID_URL: Invalid URL | proxy saw nothing
+token: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / proxy-authorization: Bearer abc
+token with a line break: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid proxy-authorization header | proxy saw nothing
+token with a line feed: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid proxy-authorization header | proxy saw nothing
+token with a NUL: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid proxy-authorization header | proxy saw nothing
+auth: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / proxy-authorization: Basic dXNlcjpwYXNz
+auth with a line break: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid proxy-authorization header | proxy saw nothing
+auth and token: threw InvalidArgumentError UND_ERR_INVALID_ARG: opts.auth cannot be used in combination with opts.token | proxy saw nothing
+header: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / x-trace: t1
+header beside a token: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / x-trace: t1 / proxy-authorization: Bearer abc
+header with a line break: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid x-trace header | proxy saw nothing
+header name with a line break: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid header key | proxy saw nothing
+header name with a space: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid header key | proxy saw nothing
+header with a list: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / x-trace: t1 / x-trace: t2
+header with a list holding a line break: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid x-trace header | proxy saw nothing
+header latin1: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / x-trace: café
+header beyond latin1: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid x-trace header | proxy saw nothing
+header connection close: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+header connection keep-alive: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+header host: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+header Host: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: elsewhere.example / connection: close / host: 127.0.0.1:PORT
+header content-length: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+header content-type: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / content-type: text/plain
+header transfer-encoding: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid transfer-encoding header | proxy saw nothing
+header keep-alive: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid keep-alive header | proxy saw nothing
+header upgrade: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid upgrade header | proxy saw nothing
+header expect: threw NotSupportedError UND_ERR_NOT_SUPPORTED: expect header not supported | proxy saw nothing
+requestTls timeout: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+requestTls keepAlive: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+requestTls servername, plain origin: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+proxyTls timeout: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+proxyTls keepAlive: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+proxyTls noDelay: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+proxyTls port: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+proxyTls autoSelectFamily: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+proxyTls maxCachedSessions invalid: threw InvalidArgumentError UND_ERR_INVALID_ARG: maxCachedSessions must be a positive integer or zero | proxy saw nothing
+connect option: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+pool options: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+clientFactory: threw Error -: never | proxy saw nothing
+tls, the origin's name, ca: 200 named GET /s | proxy saw CONNECT origin.test:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, no ca: threw Error UNABLE_TO_VERIFY_LEAF_SIGNATURE | proxy saw CONNECT origin.test:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, certificate of another name, ca: threw Error ERR_TLS_CERT_ALTNAME_INVALID | proxy saw CONNECT origin.test:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, certificate of another name, servername of that name: 200 local GET /s | proxy saw CONNECT origin.test:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, servername of another name: threw Error ERR_TLS_CERT_ALTNAME_INVALID | proxy saw CONNECT origin.test:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, rejectUnauthorized false: 200 local GET /s | proxy saw CONNECT origin.test:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, an address, certificate for the address: 200 address GET /s | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, an address, certificate of a name: threw Error ERR_TLS_CERT_ALTNAME_INVALID | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, certificate of the proxy's address: threw Error ERR_TLS_CERT_ALTNAME_INVALID | proxy saw CONNECT origin.test:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, localhost: 200 local GET /s | proxy saw CONNECT localhost:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
+tls, empty requestTls: threw Error UNABLE_TO_VERIFY_LEAF_SIGNATURE | proxy saw CONNECT origin.test:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close

@@ -1088,8 +1088,10 @@ export function isRefCounted(t: IrType): boolean {
 export interface IrNodeIslandModules {
   root: string;
   /** `placeholder`: a program module the islands share, shipped as
-   * providedModulePlaceholder (node-islands/modules.ts), not its source. */
-  files: { path: string; size: number; sha256: string; placeholder?: true }[];
+   * providedModulePlaceholder (node-islands/modules.ts), not its source.
+   * `generated`: the text of a module the build wrote (node-islands/
+   * generated.ts); no file at `root` holds it. */
+  files: { path: string; size: number; sha256: string; placeholder?: true; generated?: string }[];
   links: { path: string; target: string }[];
   /** Where the executable finds the tree: absent when it carries the tree
    * itself, else a `$ORIGIN/` path (`--libnode=beside`). */
@@ -2439,7 +2441,11 @@ export type IrStmt =
    * TypeScript sources produce it only as the tsc-unreachable fallthrough
    * trap (appendImplicitUndefinedReturn's SC9002) and for a typed-array
    * store through an element index that is undefined at run time
-   * (undefined-index.ts); their construct fences stay compile errors. */
+   * (undefined-index.ts); their construct fences stay compile errors.
+   * In a JavaScript source, a message that ends with its diagnostic's tag
+   * ("[SC2020 at file:line]") marks a diagnostic deferred from a
+   * statement, which the program reports on stderr the first time the site
+   * fires (deferred-fence.ts). */
   | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,
@@ -3368,7 +3374,9 @@ export type IrExpr =
    * the function's own `length` where the type's parameter list does not
    * give it: a function literal lowered with the parameter list of the slot
    * it is written into receives the slot's remaining arguments in
-   * parameters it never declared. */
+   * parameters it never declared, and a method value takes the parameter
+   * list of the slot its class inherits. On an interned closure every
+   * mention carries the same length. */
   | {
       kind: "closure";
       fnName: string;

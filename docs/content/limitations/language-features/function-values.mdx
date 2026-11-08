@@ -1,5 +1,7 @@
 - **Function values:** Immutable aliases of overloaded program functions retain per-call overload resolution and identity.
   A function stored in a slot with a different signature remains the same function for equality, array searches, `length`, and own properties.
+  A method value's `length` is the length of the method its object's class declares, whatever type the receiver is read through.
+  The `length` of a function declaration, a static method, or a method of a JavaScript class counts a parameter with a default, where Node.js stops counting at the first one.
   Typed rest-parameter functions can be stored and called indirectly, including through a slot with fixed parameters, where the slot's arguments arrive in the rest array.
   That store is refused with `SC1090` when the program hands a function of the slot's type to a caller that passes more arguments than the type names, because the rest array would not receive them.
   Builtin function values have API-specific restrictions; see [Builtin function values](#builtin-function-values).

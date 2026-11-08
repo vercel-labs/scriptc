@@ -1,7 +1,7 @@
 // @requires-libnode
-// Two deferred island packages that share no files (scope-B NI-7b): every
-// static island import is deferred and none changes builtin state, so
-// each package evaluates on its own first use, not when Node starts.
+// Two deferred island packages that share no files (scope-B NI-7b). Node
+// starts at the first call into one of them, and both evaluate then, in
+// import order, before the call runs.
 import { hello, NAME } from "pkg-a";
 import { Counter, make } from "pkg-b";
 

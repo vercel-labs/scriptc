@@ -22,7 +22,9 @@
  * package keeps its own state on the global object) does not count: the
  * runtime refuses such a write when the key names a built-in, where it
  * runs ("setting 'setTimeout' on a dynamic Object is not supported"), so
- * it cannot replace one. */
+ * it cannot replace one. A key the checker types as a symbol does not
+ * count either, in any spelling (`Reflect.set(G, KEY, v)` with `KEY` a
+ * `Symbol.for(…)`): a symbol names no built-in. */
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
@@ -53,10 +55,13 @@ export function globalObjectWrites(lowerer: Lowerer, globalType: ts.Type): Globa
       lowerer.typeOf(value) === globalType || stdlibGlobalNameOf(lowerer, value) === "globalThis"
     );
   };
+  const isSymbol = (expr: ts.Expression): boolean =>
+    (lowerer.typeOf(expr).flags & ts.TypeFlags.ESSymbolLike) !== 0;
   const key = (name: ts.Node | undefined): void => {
     if (name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteralLike(name)))
       writes.names.add(name.text);
-    else writes.computed = true;
+    else if (name === undefined || !ts.isComputedPropertyName(name) || !isSymbol(name.expression))
+      writes.computed = true;
   };
   const member = (target: ts.Expression): void => {
     const written = withoutParenthesesTypeWrappers(target);
@@ -102,7 +107,8 @@ export function globalObjectWrites(lowerer: Lowerer, globalType: ts.Type): Globa
             else {
               const name = node.arguments.nodes[1];
               const literal = name === undefined ? undefined : withoutParenthesesTypeWrappers(name);
-              key(literal !== undefined && ts.isStringLiteralLike(literal) ? literal : undefined);
+              if (literal === undefined || ts.isSpreadElement(literal) || !isSymbol(literal))
+                key(literal !== undefined && ts.isStringLiteralLike(literal) ? literal : undefined);
             }
           }
         }

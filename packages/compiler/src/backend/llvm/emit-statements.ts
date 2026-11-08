@@ -2048,9 +2048,12 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.mod.lib === undefined &&
         isDeferredDiagnosticFence(s.code, s.message, s.loc.file)
       ) {
-        emitter.declare(`declare void @scr_deferred_fence(ptr, ${emitter.sizeType}, ptr)`);
+        // A site inside its own try/catch (`guarded`) reports only under
+        // SCRIPTC_DEFERRED_REPORT=all: the build named it instead.
+        const reporter = s.guarded === true ? "scr_deferred_fence_guarded" : "scr_deferred_fence";
+        emitter.declare(`declare void @${reporter}(ptr, ${emitter.sizeType}, ptr)`);
         B.line(
-          `call void @scr_deferred_fence(ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+          `call void @${reporter}(ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
         );
       } else {
         emitter.declare(

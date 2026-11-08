@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "vitest";
+import { loadProgram } from "../program-node.js";
 import type { Program, SourceFile, Symbol as TsSymbol } from "../ts7/adapter.js";
 import type { AdmittedOpinion } from "../tsc-codes.js";
 import { LoweringFacts } from "./lowering-facts.js";
@@ -118,4 +122,85 @@ test("a shared symbol provenance answer is verified against a fresh walk", () =>
   // The hooks live on the Lowerer (verifySymbolProvenance); the memo itself
   // keeps the answer a pass stored.
   expect(facts.symbolProvenance.get(symbol)).toBe(first);
+});
+
+test("a file may spell a name only when one of its identifiers does", () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-lowering-facts-"));
+  try {
+    writeFileSync(
+      join(directory, "main.ts"),
+      `import { tend } from "./beds.ts";
+var spare: typeof Array;
+console.log(tend(3));
+`,
+    );
+    // Spells `spare` in a string and in a comment only.
+    writeFileSync(
+      join(directory, "beds.ts"),
+      `// spare beds are counted elsewhere
+export function tend(count: number): number {
+  const label = "spare";
+  return count + label.length;
+}
+`,
+    );
+    const load = loadProgram(join(directory, "main.ts"));
+    try {
+      const facts = new LoweringFacts(load.program, load.moduleOrder, new Map(), { verify: true });
+      const main = load.program.getSourceFile(join(directory, "main.ts"))!;
+      const beds = load.program.getSourceFile(join(directory, "beds.ts"))!;
+      expect(facts.maySpellIdentifier(main, "spare")).toBe(true);
+      expect(facts.maySpellIdentifier(main, "tend")).toBe(true);
+      // A string and a comment spell no identifier; the verify mode walks the
+      // file again for each answer that skips it.
+      expect(facts.maySpellIdentifier(beds, "spare")).toBe(false);
+      expect(facts.maySpellIdentifier(beds, "console")).toBe(false);
+      expect(facts.verifiedHits("maySpellIdentifier")).toBe(2);
+      // Member names and parameter names are identifiers.
+      expect(facts.maySpellIdentifier(beds, "length")).toBe(true);
+      expect(facts.maySpellIdentifier(beds, "count")).toBe(true);
+    } finally {
+      load.dispose();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("an import specifier is resolved once for every pass that asks", () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-lowering-facts-"));
+  try {
+    writeFileSync(
+      join(directory, "main.ts"),
+      `import tend from "./beds.ts";
+console.log(tend(3));
+`,
+    );
+    writeFileSync(
+      join(directory, "beds.ts"),
+      `export default function tend(count: number): number {
+  return count + 1;
+}
+`,
+    );
+    const load = loadProgram(join(directory, "main.ts"));
+    try {
+      const facts = new LoweringFacts(load.program, load.moduleOrder, new Map(), { verify: true });
+      const main = load.program.getSourceFile(join(directory, "main.ts"))!;
+      const beds = load.program.getSourceFile(join(directory, "beds.ts"))!;
+      expect(facts.importedModule(main, "./beds.ts")).toBe(beds);
+      expect(facts.importedModule(main, "./beds.ts")).toBe(beds);
+      expect(facts.importedModule(main, "./missing.ts")).toBeNull();
+      expect(facts.importedModule(main, "./missing.ts")).toBeNull();
+      // An import and a require of one specifier are separate answers.
+      expect(facts.importedModule(main, "./beds.ts", "require")).toBe(beds);
+      expect(facts.verifiedHits("importedModule")).toBe(2);
+      // No package of the program is compiled from node_modules.
+      expect(facts.npmStaticModule(main, "./beds.ts")).toBeNull();
+    } finally {
+      load.dispose();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -2618,7 +2618,9 @@ export class ClassDynamicDispatch {
           if (converted.kind === "seqExpr") return converted;
           expr = converted;
         }
-        if (expr.kind === "dynCheck" && isDynTypedRefType(expr.type)) {
+        // An exact extraction (narrowed-class-chains.ts) is not a check: it
+        // reads the instance of a capsule its guard already proved.
+        if (expr.kind === "dynCheck" && isDynTypedRefType(expr.type) && expr.exact !== true) {
           const type = expr.type;
           let cast = this.checkedCasts.get(type.className);
           if (!cast) {

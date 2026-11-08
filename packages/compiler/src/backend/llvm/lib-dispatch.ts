@@ -12,7 +12,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { nodeThrowExpr } from "../../ir/build.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
+import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType, typeKey } from "../../ir/ir.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
@@ -36,6 +36,30 @@ import { RECORD_SOURCES_GATE } from "./alloc.js";
 
 /** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
 const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
+
+/** The most classes below a class whose keys `dyn.typedRefKeyIn` compares
+ * in line, one pointer test each. A capsule boxed from a class of a larger
+ * tree fails the test unless its key is the class's own, and the caller's
+ * other arm answers it: the test is a proof, never the answer for a value
+ * it rejects. */
+const MAX_CLASS_KEYS_BELOW = 8;
+
+/** The keys of the classes strictly below the class `key` names, or none
+ * when there are more than MAX_CLASS_KEYS_BELOW of them (or the module has
+ * no such class, so nothing boxes that key). Their instances start with the
+ * class's own layout. */
+function classKeysBelow(host: LlvmEmitterContext, key: string): string[] {
+  const className = key.startsWith("object:") ? key.slice("object:".length) : null;
+  const target = className === null ? undefined : host.classMeta.get(className);
+  if (target === undefined) return [];
+  // The physical layout tree, not the membership intervals: a generic
+  // family's members answer one class test with different layouts.
+  const below: string[] = [];
+  for (const meta of host.classMeta.values())
+    if (target.pre < meta.pre && meta.pre <= target.post)
+      below.push(typeKey({ kind: "object", className: meta.def.name }));
+  return below.length > MAX_CLASS_KEYS_BELOW ? [] : below;
+}
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -542,10 +566,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return value;
   }
-  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
+  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs" || e.fn === "dyn.typedRefKeyIn") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
-    if (e.fn === "dyn.typedRefKeyIs" && literal === null)
-      throw new InternalCompilerError("llvm emitter bug: dyn.typedRefKeyIs needs a literal key");
+    if (e.fn !== "dyn.typedRefIs" && literal === null)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} needs a literal key`);
     // A literal brand cannot replace the receiver while being evaluated.
     // Generated class dispatch uses these probes repeatedly on one local.
     const value = literal !== null ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
@@ -579,8 +603,29 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       );
       B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
       B.line(`${same} = icmp eq ptr ${keyPtr}, ${host.cstr(literal)}`);
-      if (e.fn === "dyn.typedRefKeyIs") {
+      const below = e.fn === "dyn.typedRefKeyIn" ? classKeysBelow(host, literal) : [];
+      if (e.fn === "dyn.typedRefKeyIs" || (e.fn === "dyn.typedRefKeyIn" && below.length === 0)) {
         B.line(`store i1 ${same}, ptr ${slot}`);
+        B.br(done);
+      } else if (e.fn === "dyn.typedRefKeyIn") {
+        // The class's own key answers first; the keys of the classes below
+        // it are compared only for a capsule boxed from another class.
+        const rest = B.newLabel("brand.below");
+        B.line(`store i1 true, ptr ${slot}`);
+        B.condBr(same, done, rest);
+        B.startBlock(rest);
+        let any: string | undefined;
+        for (const key of below) {
+          const hit = B.tmp();
+          B.line(`${hit} = icmp eq ptr ${keyPtr}, ${host.cstr(key)}`);
+          if (any === undefined) any = hit;
+          else {
+            const either = B.tmp();
+            B.line(`${either} = or i1 ${any}, ${hit}`);
+            any = either;
+          }
+        }
+        B.line(`store i1 ${any!}, ptr ${slot}`);
         B.br(done);
       } else {
         const compare = B.newLabel("brand.compare");

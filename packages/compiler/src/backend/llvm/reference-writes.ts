@@ -100,6 +100,7 @@ const INERT_LIB_CALLS = new Set<IrLibFn>([
   "error.nodeThrow",
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
+  "dyn.typedRefKeyIn",
   "dyn.classHash",
   "dyn.classValueHash",
   "dyn.bagGet",

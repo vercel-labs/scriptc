@@ -586,6 +586,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.toStringCoerce",
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
+  "dyn.typedRefKeyIn",
   "dyn.typeof",
   // error.ctorOptions runs scr_error_init_options, the initializer
   // error.newOptions also runs: it stamps the receiver's runtime-owned

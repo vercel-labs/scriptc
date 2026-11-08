@@ -146,6 +146,7 @@ export {
   v8CalleeText,
   withRuntimeOptionalNarrowed,
 } from "./expressions/narrowing.js";
+import { lowerNarrowedClassChain } from "./narrowed-class-chains.js";
 export {
   ensureString,
   lowerBinary,
@@ -453,6 +454,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // enclosing optChain — read the bind temp instead of re-lowering.
   const chainRecv = lowerer.chainRecvByNode.get(expr);
   if (chainRecv) return { ...chainRecv, loc };
+
+  // A member chain on an untyped binding the checker narrowed to a compiled
+  // class: the typed chain behind a test of the value's capsule.
+  const narrowedClassChain = lowerNarrowedClassChain(lowerer, expr);
+  if (narrowedClassChain !== null) return narrowedClassChain;
 
   // Node islands (scope-B NI-4): member operations on island values and
   // island import bindings. Programs without islands skip it.

@@ -24,8 +24,9 @@
  *
  *   - it is an object literal under `as const`, the initializer of a `const`
  *     at the top level of a module, and its members are plain data:
- *     primitives, nested literals of the same kind, lists of them, and other
- *     tables by name (plainTable);
+ *     primitives, nested literals of the same kind, lists of them, other
+ *     tables by name, and objects made elsewhere whose type is the type of
+ *     the slot that holds them (plainTable, heldAsItself);
  *   - every use of the binding is a member read, an identity comparison, or
  *     a flow into a type the checker names at the site (an argument, an
  *     annotated declaration, a return, an element or member of a
@@ -75,8 +76,6 @@ interface Table {
   exported: boolean;
   /** The tables whose literals name this one as a member. */
   readonly within: { container: Table; mention: ts.Identifier }[];
-  /** The identifiers the literal names as members: each must be a table. */
-  readonly members: ts.Identifier[];
   /** The nested literals that flow somewhere by themselves, read as members
    * through the table's own type: the member names from the table to the
    * literal, and the structural type the read flows into. */
@@ -173,12 +172,6 @@ export class LayoutAdoptions {
         table.escaped = true;
       }
     }
-    // A member named in a literal that is neither a table nor a primitive
-    // is an object of unknown layout: its container keeps its own.
-    for (const table of tables.values())
-      for (const member of table.members)
-        if (this.tableOf(member, tables) === undefined && !this.primitiveAt(member))
-          table.escaped = true;
     // A module taken as a whole object hands its exported tables to code
     // that names none of them.
     if (wholeModules.length > 0) {
@@ -279,8 +272,7 @@ export class LayoutAdoptions {
           const asserted = withoutParentheses(declaration.initializer);
           if (!ts.isAsExpression(asserted) || !isConstAssertionTypeNode(asserted.type)) continue;
           const literal = withoutParentheses(asserted.expression);
-          const members: ts.Identifier[] = [];
-          if (!ts.isObjectLiteralExpression(literal) || !plainTable(literal, members)) continue;
+          if (!ts.isObjectLiteralExpression(literal) || !plainTable(literal)) continue;
           try {
             const binding = this.checker.getSymbolAtLocation(declaration.name);
             const type = this.checker.getTypeAtLocation(declaration.name);
@@ -300,7 +292,6 @@ export class LayoutAdoptions {
                   (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
                 ) === true,
               within: [],
-              members,
               memberFlows: [],
               escaped: false,
             });
@@ -432,10 +423,10 @@ export class LayoutAdoptions {
   /** A member that is not a primitive, read through the type its literal
    * has. A nested literal is followed as a part of its table, and another
    * table named there as that table: each takes the layout of the slot that
-   * holds it, so the read is typed by a literal that has that layout. A list
-   * is typed as the tuple the literal wrote, which the adopted layout does
-   * not hold (its slot is the structural type's array), and any other
-   * object keeps the layout it was made in: a table read that way keeps its
+   * holds it, so the read is typed by a literal that has that layout. An
+   * object made elsewhere is in its slot as itself. A list is typed as the
+   * tuple the literal wrote, which the adopted layout does not hold (its
+   * slot is the structural type's array): a table read that way keeps its
    * own layout. */
   private readMember(access: ts.PropertyAccessExpression, subject: Subject): void {
     const member = memberOf(subject.literal, access.name.text);
@@ -448,14 +439,14 @@ export class LayoutAdoptions {
         return;
       }
     }
-    const named =
-      member !== undefined && ts.isIdentifier(member)
-        ? this.tableOf(member, this.found)
-        : undefined;
-    if (named === undefined) {
+    if (member === undefined || ts.isArrayLiteralExpression(member)) {
       subject.table.escaped = true;
       return;
     }
+    // An object made elsewhere sits in its slot as itself (heldAsItself):
+    // the read answers that object, whose uses are its own.
+    const named = ts.isIdentifier(member) ? this.tableOf(member, this.found) : undefined;
+    if (named === undefined) return;
     if (named.escaped) return;
     try {
       this.useValue(access, {
@@ -621,15 +612,6 @@ export class LayoutAdoptions {
     );
   }
 
-  /** Whether an expression is primitive by its type. */
-  private primitiveAt(node: ts.Expression): boolean {
-    try {
-      return primitive(this.checker.getTypeAtLocation(node));
-    } catch {
-      return false;
-    }
-  }
-
   /** Whether the member `name` of a literal's own type is a primitive. */
   private primitiveMember(type: ts.Type, name: string): boolean {
     const member = this.checker.getPropertyOfType(type, name);
@@ -662,11 +644,16 @@ export class LayoutAdoptions {
     const literal = ts.isObjectLiteralExpression(value) || ts.isArrayLiteralExpression(value);
     // A primitive, however it is computed, is held by value in every
     // layout that has a primitive slot for it.
-    if (!literal && primitive(this.checker.getTypeAtLocation(value))) return primitive(declared);
+    const type = literal ? undefined : this.checker.getTypeAtLocation(value);
+    if (type !== undefined && primitive(type)) return primitive(declared);
+    const named = ts.isIdentifier(value) ? this.tableOf(value, this.found) : undefined;
+    // An object made elsewhere (a binding of a declared type, a call's
+    // result, a function, a class instance) is held as itself.
+    if (type !== undefined && named === undefined) return heldAsItself(type, declared);
     const slot = presentPart(declared);
     if (slot === undefined) return false;
-    // Another table by name (the scan checked that it is one).
-    if (ts.isIdentifier(value)) {
+    // Another table by name.
+    if (named !== undefined) {
       if (!this.structural(slot)) return false;
       fit.slots.set(value, slot);
       return true;
@@ -748,6 +735,21 @@ export class LayoutAdoptions {
 function flowsInto(subject: Subject, target: ts.Type): void {
   if (subject.path.length === 0) subject.table.targets.add(target);
   else subject.table.memberFlows.push({ path: subject.path, target });
+}
+
+/** Whether a slot declared as `declared` holds a value of `type` as the
+ * object it is: everything the value can be is one of the things the slot
+ * declares, so building the literal converts nothing and a read through the
+ * table's own type only narrows the slot. A value of any other type the
+ * slot accepts (a record with more members, a class instance for an
+ * interface) would be copied into the slot's layout when the literal is
+ * built, where the program could tell it from the object. */
+function heldAsItself(type: ts.Type, declared: ts.Type): boolean {
+  const slots = new Set(declared.isUnionType() ? ts.constituentTypes(declared) : [declared]);
+  const absent = ts.TypeFlags.Undefined | ts.TypeFlags.Null;
+  return (type.isUnionType() ? ts.constituentTypes(type) : [type]).every(
+    (part) => (part.flags & absent) !== 0 || slots.has(part),
+  );
 }
 
 /** A slot's one type besides `undefined` and `null`. */
@@ -887,34 +889,31 @@ function primitive(type: ts.Type): boolean {
 
 /** Whether a literal is plain data a layout can take member by member:
  * named members whose values are nested literals of the same kind, lists of
- * such values, or other expressions (a primitive, or another table by name:
- * the identifiers are collected in `members`). No computed name, spread,
- * method or function. */
-function plainTable(literal: ts.ObjectLiteralExpression, members: ts.Identifier[]): boolean {
+ * such values, or other expressions (a primitive, another table by name, an
+ * object made elsewhere). No computed name, spread, method or function
+ * written in the literal. */
+function plainTable(literal: ts.ObjectLiteralExpression): boolean {
   if (literal.properties.nodes.length === 0) return false;
   return literal.properties.nodes.every((property) => {
     if (!ts.isPropertyAssignment(property)) return false;
     if (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name)) return false;
-    return plainValue(property.initializer, members, true);
+    return plainValue(property.initializer, true);
   });
 }
 
-function plainValue(node: ts.Expression, members: ts.Identifier[], lists: boolean): boolean {
+function plainValue(node: ts.Expression, lists: boolean): boolean {
   const value = withoutParentheses(node);
-  if (ts.isObjectLiteralExpression(value)) return plainTable(value, members);
+  if (ts.isObjectLiteralExpression(value)) return plainTable(value);
   if (ts.isArrayLiteralExpression(value))
     return (
       lists &&
       value.elements.nodes.every(
         (item) =>
-          !ts.isSpreadElement(item) &&
-          !ts.isOmittedExpression(item) &&
-          plainValue(item, members, false),
+          !ts.isSpreadElement(item) && !ts.isOmittedExpression(item) && plainValue(item, false),
       )
     );
-  // Any other expression is a leaf: a primitive by its type (fitsSlot), or
-  // another table by name.
-  if (ts.isIdentifier(value)) members.push(value);
+  // Any other expression is a leaf: a primitive by its type, another table
+  // by name, or an object made elsewhere (fitsSlot).
   return !ts.isFunctionLike(value) && !ts.isClassExpression(value);
 }
 

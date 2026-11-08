@@ -65,6 +65,15 @@ test.each([
      console.log(whole(plane), same(plane.best, plane.spare), plane.spare.grams + 1, plane.best === blade);`,
   ],
   [
+    "members made elsewhere whose type is the slot's: a declared binding, a call's result",
+    `interface Kit { readonly label: string; readonly best?: Tool; readonly spare?: Tool | null }
+     function forge(label: string): Tool { return { label }; }
+     function whole(kit: Kit): boolean { return kit === kit && kit.best === kit.spare; }
+     const blade: Tool = { label: "blade" };
+     const plane = { label: "plane", best: blade, spare: forge("wedge") } as const;
+     console.log(whole(plane), same(plane.best, blade), plane.spare.label);`,
+  ],
+  [
     "a type parameter constrained to the type",
     `const awl = { label: "awl" } as const;
      function keep<Kind extends Tool>(tool: Kind): Tool { return tool; }
@@ -142,6 +151,15 @@ test.each([
      const blade = { label: "blade" } as const;
      const plane = { label: "plane", best: blade } as const;
      console.log(kept(plane), named(blade), same(blade, plane.best));`,
+  ],
+  [
+    "a member made elsewhere in another layout than its slot's",
+    `${TOOL}
+     interface Kit { readonly label: string; readonly best?: Tool }
+     function kept(kit: Kit): boolean { return kit.best === kit.best; }
+     const blade = { label: "blade", maker: "smith" };
+     const plane = { label: "plane", best: blade } as const;
+     console.log(kept(plane), blade.maker);`,
   ],
   [
     "a generic callee that answers the table's own type",

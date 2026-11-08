@@ -140,6 +140,10 @@ static NiPending *ni_pending = NULL;
 static size_t ni_npending = 0, ni_pending_cap = 0;
 
 void scr_node_island_install(const char *libnode, const char *node_version) {
+  /* The entry of every script thread records the same constants. The
+   * island's thread did before any other thread existed, and it reads them
+   * while a worker starts: a worker's entry writes nothing. */
+  if (!scr_ni_main_thread()) return;
   ni_libnode = libnode;
   ni_node_version = node_version;
 }
@@ -277,6 +281,7 @@ static char ni_root[4096] = "/";
 void scr_node_island_install_modules(const char *manifest, size_t manifest_len,
                                      const unsigned char *data, size_t data_len,
                                      const char *location) {
+  if (!scr_ni_main_thread()) return; /* as scr_node_island_install */
   ni_manifest = manifest;
   ni_manifest_len = manifest_len;
   ni_modules = data;
@@ -1685,6 +1690,9 @@ static uintptr_t ni_mark = 0;
 #define NI_MARK_END (ni_mark = ni_saved_mark)
 
 void scr_node_island_leave_stack(uintptr_t sp) {
+  /* Node's stack is the island thread's: another thread's frames are never
+   * on it, and the mark is that thread's to read. */
+  if (!scr_ni_main_thread()) return;
   if (ni_mark != 0 && ni_stack_has(sp) && sp < ni_mark) ni_mark = sp;
 }
 
@@ -2175,9 +2183,9 @@ static ScrNodeBridge ni_hosted;
 void (*scr_ni_started_hook)(void) = NULL;
 
 static void ni_start(void) {
-  if (ni_bridge != NULL &&
-      (!SCR_NI_THREADS || atomic_load_explicit(&ni_started, memory_order_acquire)))
-    return;
+  /* Another thread reads only the flag, which the island's thread sets
+   * last: the bridge pointer is that thread's until then. */
+  if (SCR_NI_THREADS && atomic_load_explicit(&ni_started, memory_order_acquire)) return;
   if (!scr_ni_main_thread()) {
     /* Only the island's thread may load Node: it runs ni_start itself, then
      * the posted no-op. When this returns, ni_started is set. */

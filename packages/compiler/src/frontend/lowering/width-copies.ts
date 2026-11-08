@@ -325,8 +325,12 @@ class CopyScan {
     if (typeKey(from) === typeKey(to) || seen.has(key)) return;
     seen.add(key);
     if (from.kind === "union" || to.kind === "union") {
-      const sources = from.kind === "union" ? (this.unionArms(from.unionId) ?? []) : [from];
-      const targets = to.kind === "union" ? (this.unionArms(to.unionId) ?? []) : [to];
+      // Read into a local first: called as `this.unionArms(…)` the function
+      // is handed this scan as its receiver, which makes the class a dynamic
+      // value in the compiler's own build (LlEmitter.integerCloneHost).
+      const unionArms = this.unionArms;
+      const sources = from.kind === "union" ? (unionArms(from.unionId) ?? []) : [from];
+      const targets = to.kind === "union" ? (unionArms(to.unionId) ?? []) : [to];
       for (const source of sources)
         for (const target of targets)
           if (source.kind === target.kind) this.layoutPairs(source, target, out, seen);

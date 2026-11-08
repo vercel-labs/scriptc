@@ -154,6 +154,7 @@ import {
   findIntegerClones,
   NO_INTEGER_CLONES,
   type CloneReferences,
+  type IntegerCloneHost,
   type IntegerClones,
 } from "./integer-clones.js";
 import { writeRepresentationReport } from "./repr-report.js";
@@ -2166,6 +2167,27 @@ export class LlEmitter {
 
   integerParamRange(fnName: string, localId: string): IntegerRange | null {
     return this.int32Slots.facts(fnName).params?.get(localId) ?? null;
+  }
+
+  /** What the integer clone emitter reads of this emitter while it emits
+   * the current function's clone (integer-clones.ts): a record, not the
+   * emitter. The compiler compiles itself, and an emitter handed over where
+   * the IntegerCloneHost interface is declared becomes a dynamic value
+   * there, which puts the emitter and every class its fields reach in the
+   * dynamic tier of the compiler's own build (as Lowerer.bindingScope
+   * explains for the frontend). The ranges are the current function's:
+   * nothing the clone emitter calls replaces them. */
+  integerCloneHost(): IntegerCloneHost {
+    return {
+      integerClones: this.integerClones,
+      integerParamRange: (fnName: string, localId: string) =>
+        this.integerParamRange(fnName, localId),
+      integerRanges: this.integerRanges,
+      declare: (decl: string) => this.declare(decl),
+      pendingTestLines: (dest: string) => this.pendingTestLines(dest),
+      cloneReferences: this.cloneReferences,
+      executableTls: this.executableTls,
+    };
   }
   /** Immutable module constants (contract types) whose graphs become
    * immortal once initialized: their reads need no reference counting. */

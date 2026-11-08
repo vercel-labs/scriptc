@@ -226,6 +226,9 @@ export interface NativeLinkFeatures {
   /** A runtimeFence that stands for a deferred diagnostic links
    * scr_deferred_fence.c, its stderr reporter; absent (false) otherwise. */
   deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value links scr_dyn_fn_own.c;
+   * absent (false) otherwise. */
+  functionOwnWrite?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

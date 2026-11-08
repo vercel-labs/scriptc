@@ -9,6 +9,7 @@ import {
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
+import { isVariadicFunctionType, type FinishedBodies } from "./variadic-functions.js";
 
 type VirtualCall = IrExpr & { kind: "virtualCall" };
 
@@ -45,19 +46,33 @@ export interface DevirtualizeFacts {
  * count. Subtrees whose classes the compiler cannot see completely
  * (decorated classes, dynamic bases, exported library classes) stay
  * virtual. Methods replaceable at runtime never reach this pass: their
- * calls take the checked property path instead of a virtualCall. */
+ * calls take the checked property path instead of a virtualCall.
+ *
+ * The rewrite passes every expression of the bodies it leaves through its
+ * hands, replaced or kept, and it is the last step to rewrite them before
+ * lowering's last checks (Lowerer.finishModule names the one exception and
+ * what it writes). It answers what those checks would otherwise walk the
+ * program again to learn (FinishedBodies). */
 export function devirtualizeVirtualCalls(
   lowerer: Lowerer,
   functions: IrFunction[],
   facts: DevirtualizeFacts,
-): void {
+): FinishedBodies {
   const sites = new ConstructedClasses(lowerer, functions, facts);
+  const bodies: FinishedBodies = { variadicFunctions: false };
   for (const fn of functions)
     fn.body = transformStmtList(fn.body, {
       stmt: (statement) => statement,
-      expr: (expression) =>
-        expression.kind === "virtualCall" ? sites.devirtualize(expression) : expression,
+      expr: (expression) => {
+        const left =
+          expression.kind === "virtualCall" ? sites.devirtualize(expression) : expression;
+        // The traversal hands a replacement's children here in turn, so this
+        // sees each expression of the rewritten body.
+        if (isVariadicFunctionType(left.type)) bodies.variadicFunctions = true;
+        return left;
+      },
     });
+  return bodies;
 }
 
 class ConstructedClasses {

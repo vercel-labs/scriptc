@@ -6,6 +6,8 @@ import { expect, test } from "vitest";
 import {
   BUDGET_FILE,
   budgetVerdict,
+  dynamicClassesEnv,
+  dynamicClassReport,
   heapLimitMb,
   HEAP_LIMIT_SHARE,
   HEAP_PROBE_FLAGS,
@@ -394,4 +396,153 @@ test("the compiler's own LLVM may not grow far beyond its source", () => {
   ).toContain(
     "self-compile budget: outputGrowthAllowance needs a reason (scripts/self-compile-budget.json)",
   );
+});
+
+const dynamicClass = (site: object) => `scriptc dynamic-class ${JSON.stringify(site)}`;
+const dynamicClasses = (names: string[], sites: number) =>
+  `scriptc dynamic-classes ${JSON.stringify({ names, sites })}`;
+const handedOver = {
+  name: "Lowerer",
+  class: "m7.Lowerer",
+  kind: "dynamic",
+  function: "m7.Lowerer.unitOf",
+  file: "/checkout/packages/compiler/src/frontend/lowering/lowerer.ts",
+  line: 16481,
+  column: 44,
+  text: "if (!allConst && !bindingNeverReassigned(this, sym, firstDecl!)) return null;",
+};
+
+test("a self-compile's output names the places that make a listed class a dynamic value", () => {
+  // A build that was not asked, or took its frontend from a cache, reports nothing.
+  expect(dynamicClassReport(lowering("reachable-emit"))).toBeNull();
+  expect(dynamicClassReport(dynamicClasses(["Lowerer"], 0))).toEqual({
+    names: ["Lowerer"],
+    sites: [],
+  });
+  // Every pass that runs to its end reports; the last report is the program's.
+  const stderr = [
+    lowering("reachable-emit", { reachable: 3 }),
+    dynamicClass({ ...handedOver, line: 1 }),
+    dynamicClasses(["Lowerer"], 1),
+    lowering("general-streams-relower", { reachable: 3 }),
+    dynamicClass(handedOver),
+    dynamicClass({ name: "Lowerer", class: "m7.Lowerer", kind: "boxed" }),
+    dynamicClasses(["Lowerer"], 2),
+  ].join("\n");
+  expect(dynamicClassReport(stderr)).toEqual({
+    names: ["Lowerer"],
+    sites: [handedOver, { name: "Lowerer", class: "m7.Lowerer", kind: "boxed" }],
+  });
+  // The lines of the other reports are left where they are.
+  expect(selfCompileTrace(stderr).passes).toEqual(["reachable-emit", "general-streams-relower"]);
+});
+
+test("a listed class that becomes a dynamic value fails the budget, with the place", () => {
+  const keeping = budget({
+    neverDynamicClasses: { value: ["Lowerer", "LlEmitter"], reason: "the two receivers" },
+  });
+  const trace = { passes: ["reachable-emit"], liveHeapMb: 5000 };
+  const bytes = 25 * 2 ** 20;
+  expect(dynamicClassesEnv(keeping)).toEqual({ SCRIPTC_DYNAMIC_CLASSES: "Lowerer,LlEmitter" });
+  expect(dynamicClassesEnv(budget())).toEqual({});
+  expect(dynamicClassesEnv(null)).toEqual({});
+
+  const clean = budgetVerdict({
+    budget: keeping,
+    trace,
+    bytes,
+    dynamicClasses: { names: ["Lowerer", "LlEmitter"], sites: [] },
+  });
+  expect(clean.failures).toEqual([]);
+  expect(clean.lines.at(-1)).toBe(
+    "keeps Lowerer, LlEmitter out of the dynamic tier: no instance becomes a dynamic value",
+  );
+
+  const dynamic = budgetVerdict({
+    budget: keeping,
+    trace,
+    bytes,
+    root: "/checkout/",
+    dynamicClasses: {
+      names: ["Lowerer", "LlEmitter"],
+      sites: [
+        handedOver,
+        { ...handedOver, kind: "cast", line: 20, column: 3, text: "return value as Lowerer;" },
+        { name: "Lowerer", class: "m7.Lowerer", kind: "boxed" },
+      ],
+    },
+  });
+  expect(dynamic.lines.at(-1)).toBe(
+    "Lowerer becomes a dynamic value in 3 places of its own source",
+  );
+  expect(dynamic.failures).toHaveLength(1);
+  expect(dynamic.failures[0]).toContain(
+    "self-compile budget: Lowerer must not be a dynamic value in the compiler's own build " +
+      "(neverDynamicClasses, scripts/self-compile-budget.json), and 3 places make it one:\n" +
+      "  packages/compiler/src/frontend/lowering/lowerer.ts:16481:44: a Lowerer becomes a dynamic value  |  " +
+      "if (!allConst && !bindingNeverReassigned(this, sym, firstDecl!)) return null;\n" +
+      "  packages/compiler/src/frontend/lowering/lowerer.ts:20:3: a dynamic value is checked into Lowerer  |  " +
+      "return value as Lowerer;\n" +
+      "  (no position): Lowerer is among the classes whose instances are dynamic values, with no place listed\n",
+  );
+
+  // A value that crosses inside another type names that type.
+  const inside = budgetVerdict({
+    budget: keeping,
+    trace,
+    bytes,
+    dynamicClasses: {
+      names: ["Lowerer", "LlEmitter"],
+      sites: [{ ...handedOver, name: "LlEmitter", through: "LlEmitter[]", file: "/else/emit.ts" }],
+    },
+  });
+  expect(inside.failures[0]).toContain(
+    "  /else/emit.ts:16481:44: a LlEmitter inside LlEmitter[] becomes a dynamic value  |  ",
+  );
+
+  // A build that printed no report, or answered for other classes, is not judged here: the
+  // command line, which asks for the report, fails it.
+  for (const report of [null, { names: ["Lowerer"], sites: [] }]) {
+    const silent = budgetVerdict({ budget: keeping, trace, bytes, dynamicClasses: report });
+    expect(silent.failures).toEqual([]);
+    expect(silent.lines.at(-1)).toMatch(/^dynamic classes: not reported for Lowerer, LlEmitter /);
+  }
+  // A budget that lists none says nothing about them.
+  expect(budgetVerdict({ budget: budget(), trace, bytes }).lines).toHaveLength(2);
+});
+
+test("the list of classes kept out of the dynamic tier changes with a reason and does not go away", () => {
+  const trace = { passes: ["reachable-emit"], liveHeapMb: 5000 };
+  const bytes = 25 * 2 ** 20;
+  const report = { names: ["Lowerer", "LlEmitter"], sites: [] };
+  const judge = (now: object, before: object) =>
+    budgetVerdict({ budget: now, previous: before, trace, bytes, dynamicClasses: report }).failures;
+  const one = budget({ neverDynamicClasses: { value: ["Lowerer"], reason: "the frontend" } });
+  const two = budget({
+    neverDynamicClasses: { value: ["Lowerer", "LlEmitter"], reason: "and the emitter" },
+  });
+  expect(judge(two, one)).toEqual([]);
+  expect(judge(one, one)).toEqual([]);
+  expect(
+    judge(budget({ neverDynamicClasses: { value: [], reason: "the frontend" } }), one),
+  ).toEqual([
+    'self-compile budget: neverDynamicClasses changed from ["Lowerer"] to [] with the old reason; say why in its reason (scripts/self-compile-budget.json)',
+  ]);
+  expect(judge(budget(), one)).toEqual([
+    'self-compile budget: neverDynamicClasses was removed; the baseline lists ["Lowerer"] (scripts/self-compile-budget.json)',
+  ]);
+  expect(
+    judge(budget({ neverDynamicClasses: { value: ["Lowerer"], reason: " " } }), budget()),
+  ).toEqual([
+    "self-compile budget: neverDynamicClasses needs a list of class names and a reason (scripts/self-compile-budget.json)",
+  ]);
+});
+
+test("the committed budget keeps the Lowerer out of the dynamic tier", () => {
+  const committed = readBudget(root);
+  expect(committed.neverDynamicClasses.value).toContain("Lowerer");
+  expect(committed.neverDynamicClasses.reason).not.toBe("");
+  // The check command asks its build for the report on them.
+  const script = readFileSync(join(root, "scripts/self-compile-budget.mjs"), "utf8");
+  expect(script).toContain('SCRIPTC_TIMING: "1", ...dynamicClassesEnv(budget)');
 });

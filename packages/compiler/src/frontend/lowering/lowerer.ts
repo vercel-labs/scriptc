@@ -178,7 +178,8 @@ import {
   recordClassWidthHelper,
   classStaticsProjection,
 } from "./coercions/structural.js";
-import { checkVariadicFunctions } from "./variadic-functions.js";
+import { checkVariadicFunctions, type FinishedBodies } from "./variadic-functions.js";
+import { reportDynamicClasses, watchedDynamicClasses } from "./dynamic-class-report.js";
 import {
   callbackReadsThis,
   callbackTakesEveryArgument,
@@ -501,6 +502,8 @@ import {
   usesCjsTopLevelThis,
 } from "./lower-node-module.js";
 import {
+  accessorRequirerAssign,
+  accessorRequirerSlot,
   type SplitRequireBinding,
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
@@ -3394,6 +3397,10 @@ export class Lowerer {
   readonly cjsWholeExportSymbols = new Map<ts.SourceFile, ts.Symbol | null>();
   /** Per-module live member-export classification (cjs-inline-require.ts). */
   readonly cjsLiveMemberExports = new Map<ts.SourceFile, boolean>();
+  /** Per requiring module and accessor-exporting module, the storage of
+   * what that module's `require()` answered (accessorRequirerSlot); null
+   * for a pair without one. A cache: a miss finds the global again. */
+  readonly accessorRequirerSlots = new Map<string, IrGlobal | null>();
   /** Inline program-module require calls whose %init the enclosing member
    * read or member call is already sequencing (cjs-inline-require.ts). */
   readonly inlineRequireInitDone = new Set<ts.CallExpression>();
@@ -5614,6 +5621,7 @@ export class Lowerer {
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
+    "accessorRequirerSlots",
     "requireWholeExportSlots",
     "cjsNamespaces",
     "runtimeExports",
@@ -8369,7 +8377,13 @@ export class Lowerer {
     }
     for (const d of symbol.declarations) {
       const byDecl = this.globalsByDeclNode.get(d);
-      if (byDecl) return byDecl;
+      // A binding of a module whose export object is an accessor reads the
+      // value its own module's `require()` got (accessorRequirerSlot).
+      if (byDecl)
+        return (
+          accessorRequirerSlot(this, ts.getSourceFileOfNode(ident), ts.getSourceFileOfNode(d)) ??
+          byDecl
+        );
     }
     return null;
   }
@@ -8667,9 +8681,13 @@ export class Lowerer {
       expr: { kind: "call", callee: initName, args: [], type: VOID, loc },
       loc,
     };
+    // A module whose export object is an accessor answers this `require()`
+    // a value of its own, taken after the module has loaded.
+    const own = accessorRequirerAssign(this, ts.getSourceFileOfNode(node), dep, loc);
     const parentModule = this.cjsModuleIdOf.get(ts.getSourceFileOfNode(node));
     const childModule = this.cjsModuleIdOf.get(dep);
-    if (parentModule === undefined || childModule === undefined) return init;
+    if (parentModule === undefined || childModule === undefined)
+      return own.length === 0 ? init : { kind: "block", body: [init, ...own], loc };
     return {
       kind: "block",
       body: [
@@ -8685,6 +8703,7 @@ export class Lowerer {
           loc,
         },
         init,
+        ...own,
       ],
       loc,
     };
@@ -12474,13 +12493,13 @@ export class Lowerer {
     // index loops run to the joint fixpoint. Same-key recursion re-uses
     // its own entry; polymorphic recursion is cut off by
     // the recursive instantiation demand path.
+    const classDispatch = new ClassDynamicDispatch();
     {
       let ec = 0;
       let gc = 0;
       let gi = 0;
       let es = 0;
       let rd = 0;
-      const classDispatch = new ClassDynamicDispatch();
       const functionViews = new FunctionViews();
       let dispatchChanged = !this.remainder;
       while (
@@ -12592,13 +12611,18 @@ export class Lowerer {
       };
     }
 
-    return this.finishModule(functions);
+    return this.finishModule(functions, false, undefined, classDispatch);
   }
 
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
-  finishModule(functions: IrFunction[], library = false): LowerResult {
+  finishModule(
+    functions: IrFunction[],
+    library = false,
+    bodies?: FinishedBodies,
+    dispatch?: ClassDynamicDispatch,
+  ): LowerResult {
     // Whether the program uses workers is final now.
     settleLoaderShareEnv(this, functions);
     // Every instance of every generic value is known now (the
@@ -12608,8 +12632,11 @@ export class Lowerer {
     // Every function value and conversion is in the IR now: a variadic
     // function must not reach a native call of fixed arity, and one stored
     // as a fixed signature is exact only if no function of that type is
-    // handed to a caller with a longer argument list.
-    checkVariadicFunctions(this, functions);
+    // handed to a caller with a longer argument list. `bodies` (what
+    // devirtualization found in them) answers for a program that holds no
+    // variadic function without another walk of its IR; the one step since,
+    // settleLoaderShareEnv above, stores a boxed symbol and no function.
+    checkVariadicFunctions(this, functions, bodies);
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
     refuseSourceFieldDeletes(this, functions);
@@ -12820,6 +12847,11 @@ export class Lowerer {
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
     if (module) checkCycleBindingAccesses(this, module);
     if (module) bindCompletionCallbacks(module);
+    // SCRIPTC_DYNAMIC_CLASSES: where the finished program makes instances of
+    // the named classes dynamic values (dynamic-class-report.ts).
+    const watchedClasses = watchedDynamicClasses();
+    if (module && watchedClasses.length > 0)
+      reportDynamicClasses(this, module.functions, dispatch?.boxedClasses(), watchedClasses);
     // Execution tiers from the final bodies (ir/tiers.ts). Assigned with or
     // without a module: coverage reports the dynamic tier of programs that
     // still have blockers.
@@ -13798,14 +13830,17 @@ export class Lowerer {
     if (this.regexGroupResults) for (const fn of functions) foldRegexSpanReads(this, fn);
     // The worklist can leave a virtual site with a single implementation.
     // Devirtualize after construction/override reachability has settled.
-    devirtualizeVirtualCalls(this, functions, {
+    const bodies = devirtualizeVirtualCalls(this, functions, {
       reachable,
       instantiated,
       library: extraRoots !== undefined,
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    return { reachable, result: this.finishModule(functions, extraRoots !== undefined) };
+    return {
+      reachable,
+      result: this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
+    };
   }
 
   /** What the steps before the worklist settled for a top-level

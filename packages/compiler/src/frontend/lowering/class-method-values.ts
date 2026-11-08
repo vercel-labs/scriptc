@@ -29,6 +29,10 @@ import { errorToStringMethod } from "./error-methods.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 
+/** The name prefix of the helper that checks the receiver a class's method
+ * value was called with into the class (`%method.receiver:C`). */
+export const METHOD_RECEIVER_PREFIX = "%method.receiver:";
+
 export interface ClassMethodValueSelection {
   expression: ts.PropertyAccessExpression;
   info: ClassInfo;
@@ -265,7 +269,7 @@ export function classMethodValue(
       type: param.type,
     }));
     const receiverType: IrType = { kind: "object", className: owner.def.name };
-    const receiverName = `%method.receiver:${owner.def.name}`;
+    const receiverName = `${METHOD_RECEIVER_PREFIX}${owner.def.name}`;
     if (!lowerer.classMethodValueHelpers.has(receiverName)) {
       lowerer.liftedFns.push({
         name: receiverName,
@@ -584,7 +588,7 @@ function isSuperMethodCallee(node: ts.Node): boolean {
 export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunction[]): void {
   const byName = new Map(functions.map((fn) => [fn.name, fn]));
   for (const fn of [...functions]) {
-    if (fn.name.startsWith("%method.receiver:") && fn.returnType.kind === "object") {
+    if (fn.name.startsWith(METHOD_RECEIVER_PREFIX) && fn.returnType.kind === "object") {
       const owner = fn.returnType.className;
       const loc = fn.loc;
       const receiver = varRef("this.0", DYN, loc);

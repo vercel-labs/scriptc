@@ -315,6 +315,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The stderr report of a deferred diagnostic that fires: only a program
   // that contains one links it, so no other executable changes.
   ["scr_deferred_fence.c", "deferredFence"],
+  // `fn.constructor = value` on a value the checker types as a function: the
+  // write into the function's own property table (lower-stmts.ts,
+  // lowerFunctionConstructorWrite).
+  ["scr_dyn_fn_own.c", "functionOwnWrite"],
 ];
 
 /** One more build column for a unit: a twin, with `define`, of every build

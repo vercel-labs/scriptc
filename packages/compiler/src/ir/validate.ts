@@ -2869,8 +2869,12 @@ function validateFunction(
           break;
         }
         const wantCaps = target.captures ?? [];
-        if (e.adapts === true && locals.get(e.captures[0] ?? "")?.type.kind !== "func") {
-          err(`closure ${e.fnName}: an adapter's first capture must be a function`, e.loc);
+        const adapted = locals.get(e.captures[0] ?? "")?.type.kind;
+        if (e.adapts === true && adapted !== "func" && adapted !== "dyn") {
+          err(
+            `closure ${e.fnName}: an adapter's first capture must be a function or a checked-dynamic function value`,
+            e.loc,
+          );
         }
         if (
           e.length !== undefined &&

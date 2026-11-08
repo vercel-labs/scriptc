@@ -61,6 +61,7 @@ export function lowerStringReplacement(
     const value = plainSearch
       ? lowerReplacerCallback(lowerer, node, PLAIN_SEARCH_CAPTURES)
       : lowerer.lowerExpr(node);
+    if (callback && !plainSearch) lowerer.noteLongerCall(node, value.type, "a replacer", 3);
     if (value.type.kind === "dyn" || (callback && value.type.kind === "func")) return value;
     if (!primitive(value.type)) {
       lowerer.noLowering(

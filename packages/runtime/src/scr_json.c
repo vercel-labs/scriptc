@@ -10713,6 +10713,16 @@ ScrDyn *scr_dyn_array_from_iterator(const ScrDyn *source) {
 static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn *key,
                                                bool optional, const ScrDyn *receiver);
 
+/* The class tag of a function value by its kind: the Symbol.toStringTag a
+ * generator, async or async generator function inherits, which
+ * Object.prototype.toString answers with. NULL for an ordinary function
+ * (a declaration, an arrow function, a method, a class, a builtin), which
+ * inherits none and is "[object Function]". */
+static const char *scr_dyn_fn_kind_tag(const ScrDyn *value) {
+  static const char *const tags[] = {NULL, "GeneratorFunction", "AsyncFunction", "AsyncGeneratorFunction"};
+  return tags[scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_CALL_MASK];
+}
+
 /* Get(O, key) on a Proxy for a symbol key: the handler's get trap answers
  * when it has one, and the target answers when it has none. A trap's result
  * must agree with an own non-configurable, non-writable symbol property of
@@ -10794,6 +10804,20 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
     scr_str_release(name);
     scr_dyn_release(table);
     return inspect ? inspect : scr_dyn_retain(scr_dyn_undefined());
+  }
+  /* A generator, async or async generator function inherits the
+   * Symbol.toStringTag of its kind's prototype, unless an own symbol
+   * property shadows it. An ordinary function has none. */
+  if (!entry && value->kind == SCR_DYN_FUNC && scr_to_string_tag_symbol &&
+      key->v.symbol.value == scr_to_string_tag_symbol->v.symbol.value) {
+    const char *kind_tag = scr_dyn_fn_kind_tag(value);
+    if (kind_tag) {
+      ScrStr *name = scr_str_new(kind_tag, strlen(kind_tag));
+      ScrDyn *out = scr_dyn_new_str(name);
+      scr_str_release(name);
+      scr_dyn_release(table);
+      return out;
+    }
   }
   if (!table) return scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *out;
@@ -11761,7 +11785,19 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
     scr_jb_putc(&b, ']');
     return scr_jb_finish(&b);
   }
-  case SCR_DYN_FUNC: tag = "[object Function]"; break;
+  case SCR_DYN_FUNC: {
+    const char *kind_tag = scr_dyn_fn_kind_tag(d);
+    if (kind_tag) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, kind_tag);
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
+    tag = "[object Function]";
+    break;
+  }
   case SCR_DYN_PROMISE: tag = "[object Promise]"; break;
   default: {
     const char *msg = "Object.prototype.toString.call on this checked-dynamic kind is not supported yet";

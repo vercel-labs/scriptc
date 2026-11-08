@@ -778,7 +778,19 @@ static void scr_stream_emit_error(ScrStream *s, ScrError *err) {
   /* The error is also the checked-dynamic argument a listener registered
    * through an untyped value reads. */
   ScrDyn *boxed = scr_dyn_from_error(err);
-  scr_emitter_emit_error_mixed((ScrEmitter *)s, n, err, &boxed, 1);
+  ScrError *own = scr_errdyn_err_of(boxed);
+  if (own) {
+    scr_error_release(own);
+    scr_emitter_emit_error_mixed((ScrEmitter *)s, n, err, &boxed, 1);
+  } else {
+    /* The reason is not an Error (the error only stands for it in here):
+     * it is emitted as the value it is. A listener whose parameter admits
+     * the value receives it, one that declares an Error fails its checked
+     * conversion by name, and with no listener the emitter throws
+     * ERR_UNHANDLED_ERROR; no listener of the program's is handed an Error
+     * it never made. */
+    scr_emitter_emit_error_carried((ScrEmitter *)s, n, err, &boxed, 1);
+  }
   scr_dyn_release(boxed);
   scr_str_release(n);
 }
@@ -791,13 +803,38 @@ static ScrError *scr_stream_mkerr(const char *code, const char *msg) {
   return e;
 }
 
+/* A caught value as a stream error (+1, or NULL): an Error as itself; any
+ * other truthy value carried by an Error that boxes back to it (Node hands
+ * the thrown value on as the stream's error). NULL for a falsy value: Node
+ * tests `if (err)`, and what a stream does without an error differs by
+ * path, so the callers keep their own answer for it. */
+static ScrError *scr_stream_error_of_caught(const ScrDyn *value) {
+  if (!value) return NULL;
+  ScrError *err = scr_errdyn_err_of(value);
+  if (err || !scr_dyn_truthy(value)) return err;
+  return scr_error_from_dyn(value);
+}
+
+/* Whether two distinct errors are one value to JavaScript: each carries the
+ * same reason (a number thrown once and seen on two paths). Two Errors are
+ * the same only by address, which the callers test first. */
+static bool scr_stream_same_reason(ScrError *a, ScrError *b) {
+  ScrDyn *x = scr_dyn_from_error(a);
+  ScrDyn *y = scr_dyn_from_error(b);
+  bool same = scr_dyn_strict_eq(x, y);
+  scr_dyn_release(x);
+  scr_dyn_release(y);
+  return same;
+}
+
 /* The pending exception as a stream error (+1): Error values as
- * themselves, any other thrown value as an internal assertion. */
+ * themselves, any other truthy value carried, a falsy one as an internal
+ * assertion. */
 static ScrError *scr_stream_take_error(void) {
   ScrCaught *caught = scr_exc_take();
   ScrDyn *value = scr_caught_to_dyn(caught);
   scr_caught_release(caught);
-  ScrError *err = value ? scr_errdyn_err_of(value) : NULL;
+  ScrError *err = scr_stream_error_of_caught(value);
   if (value) scr_dyn_release(value);
   return err ? err : scr_stream_mkerr("ERR_INTERNAL_ASSERTION", "a stream operation threw a value that is not an Error");
 }
@@ -1312,8 +1349,8 @@ static ScrError *scr_stream_dyn_err(ScrDyn *const *args, size_t argc) {
   if (argc < 1) return NULL;
   const ScrDyn *a = args[0];
   if (!scr_dyn_truthy(a)) return NULL;
-  if (a->kind == SCR_DYN_STR) return scr_error_new(SCR_ERR_ERROR, a->v.str);
-  /* the error value itself (the same object reaches 'error') */
+  /* the error value itself (the same value reaches 'error': a string stays
+   * the string) */
   return scr_error_from_dyn(a);
 }
 
@@ -4257,7 +4294,7 @@ static ScrError *scr_pump_caught(void) {
   ScrCaught *c = scr_exc_take();
   ScrDyn *d = scr_caught_to_dyn(c);
   scr_caught_release(c);
-  ScrError *e = d ? scr_errdyn_err_of(d) : NULL;
+  ScrError *e = scr_stream_error_of_caught(d);
   if (d) scr_dyn_release(d);
   if (e) return e;
   return scr_stream_mkerr("SC2020", "a pipeline stage rejection that is not an Error object is not supported yet");
@@ -8090,7 +8127,7 @@ static void scr_stream_emit_readable_now(ScrStream *s) {
  * present and distinct make an AggregateError([outer, inner]) with
  * outer's message and code. Borrows both; +1 or NULL. */
 static ScrError *scr_stream_aggregate_errors(ScrError *inner, ScrError *outer) {
-  if (inner && outer && inner != outer) {
+  if (inner && outer && inner != outer && !scr_stream_same_reason(inner, outer)) {
     ScrDyn *message = scr_dyn_new_str(outer->message);
     ScrError *agg = scr_aggregate_new(message, scr_dyn_undefined());
     scr_dyn_release(message);
@@ -8930,7 +8967,8 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
       scr_stream_release(scr_stream_end(stream, first->v.bytes, NULL, NULL));
     } else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", first);
   } else if (!strcmp(method, "destroy")) {
-    ScrError *error = first->kind == SCR_DYN_UNDEF || first->kind == SCR_DYN_NULL ? NULL : scr_error_from_dyn(first);
+    /* Node tests `if (err)`: a falsy reason destroys without an error. */
+    ScrError *error = scr_dyn_truthy(first) ? scr_error_from_dyn(first) : NULL;
     scr_stream_release(scr_stream_destroy(stream, error));
     scr_error_release(error);
   } else if (!strcmp(method, "cork")) scr_stream_cork(stream);

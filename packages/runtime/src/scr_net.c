@@ -6590,7 +6590,8 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
     } else if (scr_net_dynh_name_is(name, "end")) {
       scr_net_sock_on_end(s, scr_dyn_listener_closure0(cb), once);
     } else if (scr_net_dynh_name_is(name, "close")) {
-      scr_net_sock_on_close(s, scr_dyn_listener_closure0(cb), once);
+      /* The listener is called with hadError, as a typed one is. */
+      scr_net_sock_on_close_dyn(s, cb, once);
     } else if (scr_net_dynh_name_is(name, "error")) {
       scr_net_sock_on_error(s, scr_dyn_listener_closure_err(cb), (ScrChildErrFn)&scr_dyn_listener_fire_err, once);
     } else if (scr_net_dynh_name_is(name, "connect")) {

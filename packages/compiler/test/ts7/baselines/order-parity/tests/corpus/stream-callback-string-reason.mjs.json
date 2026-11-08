@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-callback-string-reason.mjs"
+ ],
+ "diags": []
+}

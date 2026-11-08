@@ -169,6 +169,7 @@ import type { ClassInfo } from "./lower-classes.js";
 import {
   builtinRequireBaseOf,
   collectInheritedJsFieldWrites,
+  collectOverrideParamReservations,
   collectVirtualJsMethods,
   decoratorNodesOf,
   genericIfaceBindingKeepsClass,
@@ -555,6 +556,10 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
   lowerer.collecting = true;
   try {
     collectVirtualJsMethods(
+      lowerer,
+      parts.map((part) => part.sf),
+    );
+    collectOverrideParamReservations(
       lowerer,
       parts.map((part) => part.sf),
     );

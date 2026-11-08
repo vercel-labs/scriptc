@@ -277,4 +277,60 @@ export const eventLoopCases: EventLoopCase[] = [
     fixture: "stdin-set-encoding-empty-iteration.ts",
     script: { writes: [], end: true },
   },
+  {
+    title: "stdin as a Readable: paused before the hand-on, async iteration reads the input",
+    fixture: "../node-types/stdin-readable-paused-iteration.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "first\nsec" },
+        { delayMs: 150, data: "ond\nthird\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: paused before the hand-on, an iteration of an empty input ends",
+    fixture: "../node-types/stdin-readable-paused-iteration.ts",
+    script: { writes: [], end: true },
+  },
+  {
+    title:
+      "stdin as a Readable: paused, read(4) under 'readable' feeds the 'data' listener on process.stdin",
+    fixture: "../node-types/stdin-readable-paused-read.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "first\nsec" },
+        { delayMs: 150, data: "ond\nthird\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: paused before the hand-on, readline reads the lines",
+    fixture: "../node-types/stdin-readable-paused-readline.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "first\nsec" },
+        { delayMs: 150, data: "ond\nthird\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title: "stdin as a Readable: paused, 'data' listeners on both names wait for resume()",
+    fixture: "../node-types/stdin-readable-paused-listener.ts",
+    script: {
+      writes: [
+        { delayMs: 0, data: "first\n" },
+        { delayMs: 400, data: "second\nthird\n" },
+      ],
+      end: true,
+    },
+  },
+  {
+    title:
+      "stdin as a Readable: pause() and resume() through either name, and a paused input releases the event loop",
+    fixture: "../node-types/stdin-readable-state.ts",
+    script: { writes: [], end: false },
+  },
 ];

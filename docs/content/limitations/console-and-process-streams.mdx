@@ -50,7 +50,13 @@ Under `@types/node`, `process.stdin` passed, stored or returned where `stream.Re
 Every conversion answers the same stream, and a binding of the stream class compares identical to the process stream it was read from.
 The stdin stream receives each chunk once, beside any listener registered on `process.stdin` itself, and ends when the input ends.
 Listeners registered on `process.stdin` and listeners registered on the stream are kept separately, so for one event their relative order can differ from Node's registration order.
-For the same reason `process.stdin.isPaused()` does not report a `pause()` of the stream, and `listenerCount` does not include the listeners Node itself attaches to a pipe or a terminal.
+For the same reason `listenerCount` through one name does not include the listeners registered through the other, nor the listeners Node itself attaches to a pipe or a terminal.
+The stream and `process.stdin` share one flowing state, as the one object does in Node: `pause()`, `resume()`, `isPaused()` and `setEncoding()` through either name act on both, and a stream handed on after `process.stdin.pause()` starts paused.
+A paused stream still answers `read()`, async iteration and a `'readable'` listener, and it does not keep the process running while nothing reads it.
+A `'data'` listener registered on `process.stdin` receives each chunk when the stream takes it from the input, which for a stream read in paused mode can be earlier than Node emits it and in other pieces.
+`for await` over `process.stdin` in a program that also passes `process.stdin` as a `Readable` throws a TypeError with code `SC2020` at its first step: iterate the `Readable` instead.
+Piping that `Readable` while `process.stdin` has a `'readable'` listener throws a TypeError with code `SC2020`, because in Node the listener keeps the stream paused.
+With a `'readable'` listener that never reads, input redirected from an empty file still ends the stream, as an empty pipe does in Node.
 A process stream held as an untyped value does not convert to a stream class: asserting or passing it as `Readable` or `Writable` throws a TypeError.
 Passing `process.stdin` where `Duplex` or `EventEmitter` is declared throws the same TypeError.
 The bundled declarations declare `process.stdin` by its own members, so these conversions need `@types/node`.

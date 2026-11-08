@@ -73,6 +73,33 @@ bool scr_stdin_pending(void);
  * destroyed — a later createInterface is born dead). */
 void scr_stdin_remove_data(ScrClosure *cb);
 bool scr_stdin_ended(void);
+/* process.stdin handed on as a node:stream Readable (scr_stream_stdin.c).
+ * In Node that Readable is process.stdin itself, so from the first
+ * conversion the stream holds the one flowing state and the stdin unit is
+ * its source. The stream gives the unit these operations when it is
+ * created (scr_stdin_view_open); the unit then reads descriptor 0 only
+ * for a pull (scr_stdin_pull, the stream's _read), in either mode, and
+ * hands the stream what arrived. */
+typedef struct ScrStdinView {
+  void (*chunk)(ScrBytes *chunk); /* a pull's answer (borrowed); NULL: the input ended */
+  void (*pause)(void);            /* process.stdin.pause() */
+  void (*resume)(void);           /* process.stdin.resume() */
+  bool (*is_paused)(void);        /* process.stdin.isPaused() */
+  void (*set_encoding)(ScrStr *enc);
+  /* A listener was registered through the process.stdin name: 'data'
+   * starts the flow unless the stream is paused, 'readable' pins paused
+   * mode, as registering it on the stream would. */
+  void (*listening)(bool readable);
+  ScrBytes *(*read)(double size); /* process.stdin.read(size), size < 0: all held (+1 or NULL) */
+} ScrStdinView;
+void scr_stdin_view_open(const ScrStdinView *view);
+void scr_stdin_pull(void);
+bool scr_stdin_pull_cancel(void); /* the stream was paused; true when a pull was open */
+/* The stream emitted 'readable' / 'end': the listeners registered through
+ * the process.stdin name follow. */
+void scr_stdin_view_readable(void);
+void scr_stdin_view_end(void);
+bool scr_stdin_has_readable_listener(void); /* registered through the process.stdin name */
 
 /* Process events island code listens to (the bridge's SCR_NODE_EVENT_* ABI).
  * Their listeners sit in this unit's registries at their registration

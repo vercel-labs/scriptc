@@ -619,6 +619,12 @@
  },
  {
   "file": "scr_events.c",
+  "function": "scr_stdin_view_refuse_iteration",
+  "message": "for await over process.stdin is not supported in a program that also passes process.stdin as a stream.Readable (iterate the Readable) [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events.c",
   "function": "scr_stdio_refusal",
   "message": "Native process stream %s has no lowering [SC2020]",
   "code": "SC2020"
@@ -1791,6 +1797,12 @@
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream_stdin.c",
+  "function": "scr_stream_stdin_read",
+  "message": "process.stdin piped as a stream.Readable while process.stdin has a 'readable' listener is not supported: in Node that listener keeps the stream paused (remove the listener, or read the stream in it) [SC2020]",
   "code": "SC2020"
  },
  {

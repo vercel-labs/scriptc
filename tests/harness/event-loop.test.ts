@@ -125,3 +125,61 @@ test.for([
   expect(result.stderr).toContain("SC2020");
   expect(result.code).toBe(1);
 });
+
+// Not differential either: Node reads the one stream through both names;
+// these two forms are refused by name instead of answering otherwise.
+test.for([
+  [
+    "for await over process.stdin",
+    "../node-types/stdin-readable-own-iteration.ts",
+    "for await over process.stdin is not supported in a program that also passes process.stdin as a stream.Readable",
+  ],
+  [
+    "a pipe while process.stdin has a 'readable' listener",
+    "../node-types/stdin-readable-own-readable-pipe.ts",
+    "process.stdin piped as a stream.Readable while process.stdin has a 'readable' listener is not supported",
+  ],
+] as const)(
+  "stdin also handed on as a Readable: %s is refused by name",
+  async ([, fixture, message]) => {
+    const binary = await compileFixture(fixture);
+    const result = await new Promise<{ stdout: string; stderr: string; code: number }>(
+      (resolve) => {
+        const child = execFile(binary, [], { encoding: "utf8" }, (err, stdout, stderr) => {
+          const e = err as { code?: unknown } | null;
+          resolve({ stdout, stderr, code: e && typeof e.code === "number" ? e.code : 0 });
+        });
+        // Both refusals come before any input is read, so the program may be
+        // gone when the pipe closes: nothing is written, and the pipe's own
+        // error is not the test's.
+        child.stdin?.on("error", () => {});
+        child.stdin?.end();
+      },
+    );
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(message);
+    expect(result.stderr).toContain("SC2020");
+    expect(result.code).toBe(1);
+  },
+);
+
+test("stdin as a Readable: a closed descriptor 0 is an input that ends at once", async () => {
+  // Node opens /dev/null on a closed descriptor 0 at startup, so its stdin
+  // ends without input; the paused iteration answers the same.
+  const binary = await compileFixture("../node-types/stdin-readable-paused-iteration.ts");
+  const result = await new Promise<{ stdout: string; code: number }>((resolve) => {
+    execFile(
+      "sh",
+      ["-c", 'exec "$0" <&-', binary],
+      { encoding: "utf8", timeout: 20_000 },
+      (err, stdout) => {
+        const e = err as { code?: unknown } | null;
+        resolve({ stdout, code: e ? (typeof e.code === "number" ? e.code : -1) : 0 });
+      },
+    );
+  });
+  expect(result.stdout).toBe(
+    "handed on true false true\niterated 0 all Buffers: true\nafter true true\n",
+  );
+  expect(result.code).toBe(0);
+});

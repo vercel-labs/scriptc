@@ -8,45 +8,48 @@
  * conversion answers the same object and its listeners and readable state are
  * shared.
  *
- * The stdin unit (scr_events.c) stays the only reader of descriptor 0. The
- * stream is one of its consumers: the first time the stream is asked for
- * data it registers a 'data', an 'end' and an 'error' listener there, pushes
- * each chunk it is handed, ends at the unit's 'end' and is destroyed with the
- * unit's error. A chunk therefore reaches a listener registered on
- * process.stdin and a listener registered on the stream once each. Until the
- * stream is read nothing is registered, so a program that converts
- * process.stdin and never reads it leaves descriptor 0 alone, as Node leaves
- * a paused stdin.
+ * Node has one object there, with one flowing state, whichever name the
+ * program uses. So from its creation this stream holds that state for both
+ * names: it starts in the state process.stdin was put in before (paused,
+ * resumed, read by a 'readable' listener, an encoding), and pause(),
+ * resume(), isPaused() and setEncoding() through the process.stdin name act
+ * on it (the ScrStdinView the stdin unit is given here).
  *
- * When the stream's buffer is full (a paused stream, or a pipe whose
- * destination is behind) the unit is paused, which is what Node's one
- * stream does under backpressure, and the stream's next request for data
- * resumes it. destroy() on the stream destroys the unit's input.
+ * The stdin unit (scr_events.c) stays the only reader of descriptor 0 and
+ * becomes this stream's source. The stream's _read is a pull: the unit reads
+ * the next input and hands it over, whether the stream flows or is read in
+ * paused mode by read(), an iteration or a 'readable' listener. Pausing
+ * therefore stops 'data' events, not reads, which is what paused mode means
+ * in Node. A stream nobody reads asks for nothing, so a program that
+ * converts process.stdin and never reads it leaves descriptor 0 alone, and a
+ * paused stream does not hold the process.
+ *
+ * Listeners registered through the process.stdin name stay in the unit's
+ * tables. Its 'data' listeners get each chunk as the stream takes it, its
+ * 'readable' and 'end' listeners follow this stream's events (one listener
+ * of this stream for each), and its read() is this stream's read().
+ * destroy() on the stream destroys the unit's input.
  *
  * Linked only by programs that convert process.stdin (the streamStdin link
  * feature), so every other program's stream and stdin units are unchanged. */
 #include "scr_runtime.h"
 
 static SCR_TL ScrStream *scr_stream_stdin = NULL; /* +1 until exit */
-static SCR_TL bool scr_stream_stdin_fed = false;      /* listeners registered with the unit */
-static SCR_TL bool scr_stream_stdin_held = false;     /* this unit paused the input */
+static SCR_TL bool scr_stream_stdin_fed = false;      /* the error listener is registered with the unit */
+static SCR_TL bool scr_stream_stdin_readable = false; /* this stream's 'readable' reaches the unit's listeners */
 
-static void scr_stream_stdin_data(ScrClosure *cb, ScrBytes *chunk) {
-  (void)cb;
+/* A pull's answer from the unit: the next input, or NULL at its end. */
+static void scr_stream_stdin_chunk(ScrBytes *chunk) {
   ScrStream *s = scr_stream_stdin;
   if (s == NULL) return;
+  if (chunk == NULL) {
+    (void)scr_stream_push_null(s);
+    return;
+  }
   /* Node's stdin yields Buffers; the unit marks the chunks of its own
    * iteration the same way. */
   chunk->is_buffer = true;
-  if (!scr_stream_push(s, chunk)) {
-    scr_stream_stdin_held = true;
-    scr_stdin_pause();
-  }
-}
-
-static void scr_stream_stdin_end(ScrClosure *cb) {
-  (void)cb;
-  if (scr_stream_stdin != NULL) (void)scr_stream_push_null(scr_stream_stdin);
+  (void)scr_stream_push(s, chunk);
 }
 
 static void scr_stream_stdin_error(ScrClosure *cb, ScrStr *message) {
@@ -59,7 +62,7 @@ static void scr_stream_stdin_error(ScrClosure *cb, ScrStr *message) {
   scr_error_release(error);
 }
 
-/* The stream's _read: start (or resume) the input. */
+/* The stream's _read: ask the unit for the next input. */
 static void scr_stream_stdin_read(ScrClosure *cb, ScrStream *s, double size) {
   (void)cb;
   (void)size;
@@ -69,14 +72,22 @@ static void scr_stream_stdin_read(ScrClosure *cb, ScrStream *s, double size) {
   }
   if (!scr_stream_stdin_fed) {
     scr_stream_stdin_fed = true;
-    scr_stdin_on_data(scr_closure_new((void *)scr_stream_stdin_data, 0), scr_stream_stdin_data, false);
-    scr_stdin_on_end(scr_closure_new((void *)scr_stream_stdin_end, 0), false);
     scr_stdin_on_error(scr_closure_new((void *)scr_stream_stdin_error, 0), scr_stream_stdin_error, false);
   }
-  if (scr_stream_stdin_held) {
-    scr_stream_stdin_held = false;
-    scr_stdin_resume();
+  if (scr_stream_flowing(s) == 1 && scr_stdin_has_readable_listener()) {
+    /* The stream flows although process.stdin has a 'readable' listener.
+     * Node cannot be in that state: the listener pins paused mode, and a
+     * pipe from the stream moves nothing until something reads. The
+     * runtime's pipe starts the flow whatever listens, so the input would
+     * go where Node sends none; the read is refused by name instead. */
+    static const char msg[] =
+        "process.stdin piped as a stream.Readable while process.stdin has a 'readable' listener "
+        "is not supported: in Node that listener keeps the stream paused (remove the listener, or "
+        "read the stream in it) [SC2020]";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+    return;
   }
+  scr_stdin_pull();
 }
 
 /* The stream's _destroy: the input is torn down with it, as destroying
@@ -86,6 +97,81 @@ static void scr_stream_stdin_destroy(ScrClosure *cb, ScrStream *s, ScrError *err
   scr_stdin_destroy();
   scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
 }
+
+/* One listener of this stream that carries an event without arguments to
+ * the listeners registered through the process.stdin name. */
+static void scr_stream_stdin_follow(ScrStream *s, const char *event, void (*fn)(ScrClosure *)) {
+  ScrStr *name = scr_str_new(event, strlen(event));
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, scr_closure_new((void *)fn, 0),
+                                     scr_ee_inv_fixed0, false, false));
+  scr_str_release(name);
+}
+
+static void scr_stream_stdin_on_end(ScrClosure *cb) {
+  (void)cb;
+  scr_stdin_view_end();
+}
+
+static void scr_stream_stdin_on_readable(ScrClosure *cb) {
+  (void)cb;
+  scr_stdin_view_readable();
+}
+
+/* The process.stdin name's state calls: this stream's. */
+static void scr_stream_stdin_pause(void) {
+  if (scr_stream_stdin != NULL) scr_stream_release(scr_stream_pause(scr_stream_stdin));
+}
+
+static void scr_stream_stdin_resume(void) {
+  if (scr_stream_stdin != NULL) scr_stream_release(scr_stream_resume(scr_stream_stdin));
+}
+
+static bool scr_stream_stdin_is_paused(void) {
+  return scr_stream_stdin != NULL && scr_stream_is_paused(scr_stream_stdin);
+}
+
+/* 'pause' on the stream (pause() through either name, readline closing,
+ * an unpipe): the unit stops reading, as Node's stdin does on 'pause', so
+ * a paused stdin does not hold the process. The read the stream had asked
+ * for is closed with an empty chunk, which adds nothing and lets the next
+ * read(), iteration step, 'readable' listener or resume() ask again. */
+static void scr_stream_stdin_on_pause(ScrClosure *cb) {
+  (void)cb;
+  ScrStream *s = scr_stream_stdin;
+  if (s == NULL || !scr_stdin_pull_cancel()) return;
+  ScrBytes *none = scr_bytes_new(SCR_BYTES_U8, 0);
+  (void)scr_stream_push(s, none);
+  scr_bytes_release(none);
+}
+
+static void scr_stream_stdin_set_encoding(ScrStr *enc) {
+  if (scr_stream_stdin != NULL) scr_stream_release(scr_stream_set_encoding(scr_stream_stdin, enc));
+}
+
+/* A listener registered through the process.stdin name. A 'data' listener
+ * starts the flow unless the stream is paused, as Readable#on does; the
+ * first 'readable' listener becomes a 'readable' listener of this stream,
+ * which pins paused mode and starts reading ahead. */
+static void scr_stream_stdin_listening(bool readable) {
+  ScrStream *s = scr_stream_stdin;
+  if (s == NULL) return;
+  if (!readable) {
+    if (scr_stream_flowing(s) != 0) scr_stream_release(scr_stream_resume(s));
+  } else if (!scr_stream_stdin_readable) {
+    scr_stream_stdin_readable = true;
+    scr_stream_stdin_follow(s, "readable", scr_stream_stdin_on_readable);
+  }
+}
+
+static ScrBytes *scr_stream_stdin_read_held(double size) {
+  return scr_stream_stdin != NULL ? scr_stream_read(scr_stream_stdin, size) : NULL;
+}
+
+static const ScrStdinView scr_stream_stdin_view = {
+    scr_stream_stdin_chunk,        scr_stream_stdin_pause,     scr_stream_stdin_resume,
+    scr_stream_stdin_is_paused,    scr_stream_stdin_set_encoding, scr_stream_stdin_listening,
+    scr_stream_stdin_read_held,
+};
 
 /* At exit. A listener that captures an object holding the stream (a class
  * that keeps the stream in a field and listens on it) forms a cycle through
@@ -106,6 +192,9 @@ ScrStream *scr_stream_stdio_readable(void) {
     scr_stream_stdin = scr_stream_new_readable(-1, true, true,
         scr_closure_new((void *)scr_stream_stdin_read, 0), scr_stream_stdin_read,
         scr_closure_new((void *)scr_stream_stdin_destroy, 0), scr_stream_stdin_destroy);
+    scr_stream_stdin_follow(scr_stream_stdin, "end", scr_stream_stdin_on_end);
+    scr_stream_stdin_follow(scr_stream_stdin, "pause", scr_stream_stdin_on_pause);
+    scr_stdin_view_open(&scr_stream_stdin_view);
   }
   return scr_stream_retain(scr_stream_stdin);
 }

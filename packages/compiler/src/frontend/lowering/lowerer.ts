@@ -119,6 +119,8 @@ import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.
 import {
   isOptionalProcessStreamProperty,
   isOptionalProcessVersionsRead,
+  isProcessStreamPatternSource,
+  OPTIONAL_PROCESS_STREAM_MEMBERS,
 } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
@@ -9790,6 +9792,8 @@ export class Lowerer {
         // equivalent array pattern: each may sit past the end.
         // Regex match results keep their own pattern lowering.
         const arrayType = this.mapTypeOf(this.typeOf(init));
+        if (isProcessStreamPatternSource(this, init, arrayType))
+          return scanProcessStreamPattern(name, init);
         const initType = this.checker.getNonNullableType(this.typeOf(init));
         const initSymbol = initType.getAliasSymbol() ?? initType.getSymbol();
         const matchResult =
@@ -9849,6 +9853,48 @@ export class Lowerer {
           }
         }
       });
+      return changed;
+    };
+    /** `const { isTTY, columns } = process.stdout`: a process stream has
+     * its terminal members only on a terminal, whatever the declarations
+     * say, so a name that takes one of them can be undefined, exactly as
+     * the spelled read `process.stdout.isTTY` can
+     * (isOptionalProcessStreamProperty). A binding with a default never
+     * holds the missing value. */
+    const scanProcessStreamPattern = (
+      name: ts.ObjectBindingPattern,
+      init: ts.Expression,
+    ): boolean => {
+      let changed = false;
+      for (const el of name.elements.nodes) {
+        if (el.dotDotDotToken || el.initializer || el.name === undefined) continue;
+        if (!ts.isIdentifier(el.name)) continue;
+        const key = el.propertyName ?? el.name;
+        const keyName = ts.isComputedPropertyName(key)
+          ? this.foldedStringKeyOf(key.expression)
+          : ts.isIdentifier(key) || ts.isStringLiteral(key)
+            ? key.text
+            : undefined;
+        if (typeof keyName !== "string" || !OPTIONAL_PROCESS_STREAM_MEMBERS.includes(keyName))
+          continue;
+        const symbol = symbolOf(el.name);
+        if (!symbol || optionalSymbols.has(symbol)) continue;
+        const read = this.mapTypeOf(this.typeOf(el.name));
+        if (!read || read.kind === "dyn" || read.kind === "void") continue;
+        if (read.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0) continue;
+        const widened =
+          read.kind === "union" ? this.withUndefinedArmOf(read) : this.withUndefinedArm(read);
+        if (!widened) continue;
+        optionalSymbols.add(symbol);
+        provenance?.note("pattern-binding", el.name, init);
+        this.runtimeOptionalBindingTypes.set(symbol, widened);
+        const global = this.globalsBySymbol.get(symbol);
+        if (global) {
+          global.type = widened;
+          this.runtimeOptionalGlobals.add(global);
+        }
+        changed = true;
+      }
       return changed;
     };
     /** `const { a, b } = table` over an index-signature record: a name that

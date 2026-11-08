@@ -425,6 +425,24 @@ describe.skipIf(skip)("Node islands in-process", () => {
       undefined,
       join(repoRoot, "tests/fixtures/node-island/worker.ts"),
     );
+    // The build says what differs from Node (SC6010): a module that worker
+    // threads run loads these island modules, and the program has one
+    // instance of each for all its threads.
+    const notedDir = join(outDir, "worker-noted");
+    mkdirSync(notedDir, { recursive: true });
+    const noted = await compile(join(repoRoot, "tests/fixtures/node-island/worker.ts"), {
+      outPath: join(notedDir, "worker"),
+      outDir: notedDir,
+      sanitize,
+    });
+    expect(noted.ok).toBe(true);
+    const shared = (noted.warnings ?? []).filter((d) => d.code === "SC6010");
+    expect([...new Set(shared.map((d) => /module '([^']+)'/.exec(d.message)?.[1]))].sort()).toEqual(
+      ["./helper.cjs", "thenable-pkg"],
+    );
+    expect(shared[0]?.message).toContain(
+      "the program has one instance of that module for all its threads, while under Node each worker thread has its own",
+    );
     const refusal = (what: string, value: string, where: string): string =>
       `worker ${what} ERR_SCRIPTC_ISLAND_WORKER_VALUE\n` +
       `worker   scriptc: ${value} cannot cross between a worker thread and its Node island (${where})\n`;

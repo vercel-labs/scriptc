@@ -1929,6 +1929,7 @@ function lowerToIrWithIslands(
   const divergences = [
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
+    ...resultLowerer.islandWorkerWarnings,
   ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };
@@ -4521,6 +4522,10 @@ export class Lowerer {
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
   readonly sharedModuleWarnings: ScrDiagnostic[] = [];
+  /** SC6010 warnings: the Node island modules that modules worker threads
+   * run load (noteIslandOnWorkerThread), one per load site. Warnings, so
+   * they leave with the divergences and never fail the build. */
+  readonly islandWorkerWarnings: ScrDiagnostic[] = [];
   readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
@@ -5139,6 +5144,7 @@ export class Lowerer {
       // module; a warning it adds is a diagnostic of that unit, so its count
       // is journaled like `diags` (the plan itself is unjournaled).
       checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
+      checkedTable("islandWorkerWarnings", () => this.islandWorkerWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -13812,7 +13818,13 @@ export class Lowerer {
   noteIslandOnWorkerThread(module: string, node: ts.Node): void {
     if (this.workerModules.size === 0) return;
     if (!this.workerModules.has(ts.getSourceFileOfNode(node))) return;
-    this.pushDiag(nodeIslandWorkerInstanceDiag(module, locOf(node)));
+    const diag = nodeIslandWorkerInstanceDiag(module, locOf(node));
+    if (
+      !this.islandWorkerWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.islandWorkerWarnings.push(diag);
   }
 
   refuseIslandWorkerValue(node: ts.Node, kind: string): never {

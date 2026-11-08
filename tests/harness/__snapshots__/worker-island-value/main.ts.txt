@@ -1,12 +1,3 @@
-worker-island-value/job.ts:3:1 - warning SC6010: worker threads run this module, and it loads the Node island module 'crossing-pkg': the program has one instance of that module for all its threads, while under Node each worker thread has its own, so what the module keeps between calls (a counter, a cache, a registered listener) is shared with the main thread and the other workers
-
-  2 | import { parentPort } from "node:worker_threads";
-  3 | import { each, settled, shout, sum } from "crossing-pkg";
-    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  4 | 
-
-  hint: nothing differs when the module keeps no state between calls; otherwise use it from one thread only, or pass the state in and out of each call
-
 worker-island-value/job.ts:9:29 - error SC8012: this module runs on worker threads only, and a worker thread cannot pass bytes (a typed array or a Buffer) to a Node island
 
    8 | parentPort!.postMessage(shout("text"));

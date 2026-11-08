@@ -10,6 +10,7 @@ node_modules/
 !tests/diagnostics/types-only-workspace-package-value-import/node_modules/
 !tests/diagnostics/types-only-workspace-package-class-type/node_modules/
 !tests/diagnostics/node-island-function-value/node_modules/
+!tests/diagnostics/umd-export-forced-native/node_modules/
 !tests/diagnostics/worker-island-value/node_modules/
 !tests/fixtures/commander-calc/node_modules/
 !tests/fixtures/npm/node_modules/

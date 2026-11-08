@@ -421,6 +421,7 @@ import {
   isCjsExportTableLiteral,
   isCjsJsFile,
   isJsSourceFile,
+  isModuleExportsAccess,
   isNodeEsmFile,
   locOf,
   orderedImportsOf,
@@ -1529,8 +1530,41 @@ export function lowerToIr(
   }
 }
 
-/** Marks the runtime fences in npm package code whose site is top-level
- * module code (outside every function body): they throw when the module
+/** Whether `fn` is a function the expression it sits in calls where it is
+ * written (`(function () {…})()`, `(() => {…})()`, `(function () {…}).call(this)`,
+ * `!function () {…}()`): its body runs when that call is evaluated. A UMD
+ * wrapper is one. A generator's body does not run at the call. */
+export function isImmediatelyInvokedFunction(fn: ts.Node): boolean {
+  if (!ts.isFunctionExpression(fn) && !ts.isArrowFunction(fn)) return false;
+  if (ts.isFunctionExpression(fn) && fn.asteriskToken !== undefined) return false;
+  let callee: ts.Node = fn;
+  while (callee.parent !== undefined && ts.isParenthesizedExpression(callee.parent))
+    callee = callee.parent;
+  let parent = callee.parent;
+  if (
+    parent !== undefined &&
+    ts.isPropertyAccessExpression(parent) &&
+    parent.expression === callee &&
+    !parent.questionDotToken &&
+    (parent.name.text === "call" || parent.name.text === "apply")
+  ) {
+    callee = parent;
+    while (callee.parent !== undefined && ts.isParenthesizedExpression(callee.parent))
+      callee = callee.parent;
+    parent = callee.parent;
+  }
+  return (
+    parent !== undefined &&
+    ts.isCallExpression(parent) &&
+    parent.expression === callee &&
+    !parent.questionDotToken
+  );
+}
+
+/** Marks the runtime fences in npm package code whose site is module-init
+ * code: top-level module code outside every function body, or the body of a
+ * function that is called where it is written, at such a place (a UMD
+ * wrapper's body runs when its module evaluates). They throw when the module
  * evaluates (ScrDiagnostic.moduleInit). */
 function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
   for (const d of fences) {
@@ -1556,7 +1590,7 @@ function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnosti
       });
       if (next === undefined) break;
       if (
-        ts.isFunctionLike(next) ||
+        (ts.isFunctionLike(next) && !isImmediatelyInvokedFunction(next)) ||
         (ts.isPropertyDeclaration(next) &&
           !next.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword))
       )
@@ -2752,6 +2786,22 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     if (js && declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
       if (!declaration.initializer) break;
       return null;
+    }
+    // A whole export (`module.exports = <value>`) read through an importer's
+    // binding: the value is the one that statement assigned. A member target
+    // names nothing, so an anonymous definition there keeps the empty name;
+    // any other value carries its own.
+    if (
+      declaration &&
+      ts.isBinaryExpression(declaration) &&
+      declaration.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isModuleExportsAccess(declaration.left)
+    ) {
+      let exported: ts.Node = declaration.right;
+      while (ts.isParenthesizedExpression(exported)) exported = exported.expression;
+      if (isAnonymousCallableDefinition(exported)) return "";
+      n = exported;
+      continue;
     }
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
     let value: ts.Node = declaration.initializer;
@@ -4460,6 +4510,9 @@ export class Lowerer {
   /** The property names the program assigns on the global object
    * (property-access.ts), collected on first use. */
   globalThisWrittenNames: Set<string> | null = null;
+  /** Whether the program contains the built-in undici package
+   * (fetch-dispatcher.ts), found on first use. */
+  undiciPackageInProgram: boolean | null = null;
   /** Set with globalThisWrittenNames: the program writes the global object
    * by a computed name somewhere. */
   globalThisComputedWrite = false;
@@ -5949,6 +6002,7 @@ export class Lowerer {
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalObjectWrites", () => this.globalObjectWrites),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
+      fixed("undiciPackageInProgram", () => this.undiciPackageInProgram),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),
       // State of the lowering in progress, which a unit restores.

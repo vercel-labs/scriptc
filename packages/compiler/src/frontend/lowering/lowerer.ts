@@ -99,7 +99,7 @@ import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/co
 import { scanDivergences } from "./divergences.js";
 import {
   collectWidthCopies,
-  refuseObservedClassCopies,
+  refuseObservedCopies,
   traceWidthCopies,
   widthCopyDivergences,
   type WidthCopyFact,
@@ -4711,6 +4711,13 @@ export class Lowerer {
   /** Names a native module re-exports from an island package, by the
    * symbol an alias chain reaches (lower-node-island.ts). */
   readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
+  /** The island binding each symbol's alias chain reaches (null: none),
+   * for the island modules and re-exports collected so far: `collected`
+   * is their count when the answers were made (lower-node-island.ts). */
+  readonly islandAliasBindings = {
+    collected: 0,
+    bySymbol: new Map<ts.Symbol, IslandBinding | null>(),
+  };
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
   /** Module-level constants and statements the island evaluates
@@ -5774,6 +5781,10 @@ export class Lowerer {
     // The island names native modules re-export: a pure function of the
     // program's modules, collected before lowering begins.
     "islandReexports",
+    // The island binding an alias chain reaches: a pure function of the
+    // program's declarations and of the two collections above, emptied
+    // whenever either grows.
+    "islandAliasBindings",
     // Which module-level constants and statements the island evaluates:
     // decided from the program's syntax, types and the facts collection
     // settled (island bindings, initialization flags), so every pass decides
@@ -6899,7 +6910,6 @@ export class Lowerer {
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
       isNpmFile: (sf) => this.isNpmFile(sf),
-      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: this.isExternalTypeFile,
@@ -7009,6 +7019,18 @@ export class Lowerer {
     );
   }
 
+  /** The untyped island values the program stores where their origin is no
+   * longer followed (class-protocols.ts, noteIslandEscapes). */
+  islandEscapeSites(): readonly ts.Expression[] {
+    return this.facts.classProtocols().islandEscapeSites();
+  }
+
+  /** Whether `expr` holds a value a Node island made, by its origin
+   * (class-protocols.ts, islandOrigin). */
+  islandOrigin(expr: ts.Expression): boolean {
+    return this.facts.classProtocols().islandOrigin(expr);
+  }
+
   /** A record view a Map or Set answers: it keeps protocol identity but
    * calls the collection's own methods, never a stored member. */
   classCollectionView(type: ts.Type): boolean {
@@ -7028,7 +7050,9 @@ export class Lowerer {
     const answer = ask(this.facts.classProtocols());
     if (!this.facts.verify) return answer;
     if (this.ownClassProtocols === null) {
-      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder);
+      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder, (file) =>
+        this.isStdlibFile(file),
+      );
     }
     const fresh = ask(this.ownClassProtocols);
     this.facts.noteVerified("classProtocols");
@@ -12780,9 +12804,10 @@ export class Lowerer {
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
     refuseSourceFieldDeletes(this, functions);
-    // A record built into a class instance where the program can tell the
-    // instance from the record is refused while a module can still fail.
-    refuseObservedClassCopies(this, functions);
+    // A record built into a class instance, or a union's arm copied into
+    // another union's arm, where the program can tell the copy from the
+    // object is refused while a module can still fail.
+    refuseObservedCopies(this, functions);
     finalizeRecordLinks(this, functions);
     finalizeGeneratorArrays(this, functions);
     // The statics lookup installs before value boxing, so the function

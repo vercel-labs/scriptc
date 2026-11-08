@@ -7,6 +7,8 @@ node_modules/
 !tests/diagnostics/npm-program-type-error/node_modules/
 !tests/diagnostics/retired-engine-import-refusal/node_modules/
 !tests/diagnostics/package-value-shape-refusal/node_modules/
+!tests/diagnostics/types-only-workspace-package-value-import/node_modules/
+!tests/diagnostics/types-only-workspace-package-class-type/node_modules/
 !tests/diagnostics/node-island-function-value/node_modules/
 !tests/diagnostics/package-built-object-member/node_modules/
 !tests/diagnostics/umd-export-forced-native/node_modules/

@@ -231,6 +231,9 @@ export interface DynHost extends WalkerHost {
   readonly programLifetime?: ReadonlySet<string>;
   /** The immortal ABSENT field-slot state of an undefined-armed union. */
   absentInstanceRef(unionId: string): string;
+  /** The emitted code can queue work for the event loop: the program runs
+   * it before it ends (LlEmitter.usesTimers). */
+  keepLoopLive(): void;
   /** The optional checked-dynamic field slot's ABSENT marker. */
   dynAbsentRef(): string;
   /** The shared adapter record: live array capsules read its `arrayOps`, so a
@@ -4033,6 +4036,10 @@ export class LlDyn {
         break;
       }
       case "procStream": {
+        // The stream object queues its write callbacks and write errors on
+        // a tick, so a program that holds it runs the loop, as one that
+        // reaches it through process.stdio does (USES_TIMERS_LIB_FNS).
+        host.keepLoopLive();
         host.declare(`declare ptr @scr_process_stdio(double)`);
         const r = B.tmp();
         B.line(`${r} = call ptr @scr_process_stdio(double %v)`);

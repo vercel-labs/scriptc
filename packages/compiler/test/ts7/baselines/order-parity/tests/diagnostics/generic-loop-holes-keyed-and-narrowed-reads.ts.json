@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/generic-loop-holes-keyed-and-narrowed-reads.ts"
+ ],
+ "diags": []
+}

@@ -1408,6 +1408,11 @@ interface Headers {
     callbackfn: (value: string, key: string, parent: Headers) => void,
     thisArg?: unknown,
   ): void;
+  /* Live iterators over the sorted list: names in byte order with their
+   * combined values, every Set-Cookie value on its own. */
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
   [Symbol.iterator](): IterableIterator<[string, string]>;
 }
 declare var Headers: {

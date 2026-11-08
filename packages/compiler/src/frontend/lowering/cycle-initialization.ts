@@ -102,11 +102,18 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
       // The class's references from code that can run before its
       // statement check its initialization flag: Node's ReferenceError
       // only when the class is actually reached early.
+      // A class whose collection was deferred (a field type that only a
+      // reference's retry admits) has no record yet. This check is such a
+      // reference: the class registers now, or reports its own diagnostics
+      // and is refused as a class, not as a cycle.
+      const deferred = lowerer.deferredDiags.has(binding.symbol);
+      if (deferred) lowerer.flushDeferred(binding.symbol);
       const info = lowerer.classBySymbol.get(binding.symbol);
       const heritage = earlyHeritageReference(lowerer, binding);
       if (info !== undefined && !info.generic && heritage === null)
         registerClassInitFlag(lowerer, binding, info, true);
-      else refuse(heritage ?? binding.reference, `the class ${where}`);
+      else if (!deferred || info !== undefined)
+        refuse(heritage ?? binding.reference, `the class ${where}`);
       continue;
     }
     const global = lowerer.globalsBySymbol.get(binding.symbol);

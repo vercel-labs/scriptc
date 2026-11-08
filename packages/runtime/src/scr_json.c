@@ -8394,7 +8394,7 @@ ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k) {
   ScrDyn *method = scr_dyn_promise_member_fn ? scr_dyn_promise_member_fn(k->data, k->len) : NULL;
   /* An island promise is an island object too: an island class that
    * extends Promise has members of its own, which V8 answers. */
-  if (!method && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_get != NULL) {
+  if (!method && scr_ni_dyn_ops != NULL) {
     ScrDyn *island = NULL;
     if (scr_ni_dyn_ops->promise_get(d, k->data, k->len, &island)) return island;
   }
@@ -13953,13 +13953,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   if (scr_dyn_has_key(v, key)) return true;
   if (scr_exc_pending()) return false;
   /* The view of an error island code threw: the V8 error answers for what
-   * the view does not hold (scr_dyn_obj_read_receiver reads it there). */
-  if (v->kind == SCR_DYN_OBJ && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->error_has != NULL) {
-    size_t island_hit = scr_errdyn_find(v, false);
-    if (island_hit != SIZE_MAX) {
-      int has = scr_ni_dyn_ops->error_has(scr_errdyn_cache[island_hit].err, key->data, key->len);
-      if (has >= 0) return has == 1;
-    }
+   * the view does not hold (scr_dyn_obj_read_receiver reads it there). The
+   * island unit decides whether `v` is such a view: this unit is in every
+   * program, so the site is the table test and the call. */
+  if (v->kind == SCR_DYN_OBJ && scr_ni_dyn_ops != NULL) {
+    int has = scr_ni_dyn_ops->error_has(v, key->data, key->len);
+    if (has >= 0) return has == 1;
   }
   if (v->kind == SCR_DYN_OBJ) return scr_dyn_builtin_inherited(v, key);
   if (v->kind == SCR_DYN_ARR) {
@@ -13972,7 +13971,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     for (size_t i = 0; i < 3; i++)
       if (strlen(names[i]) == key->len && memcmp(names[i], key->data, key->len) == 0) return true;
     /* An island promise is an island object too (scr_dyn_promise_key_get). */
-    if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_has != NULL) {
+    if (scr_ni_dyn_ops != NULL) {
       int has = scr_ni_dyn_ops->promise_has(v, key->data, key->len);
       if (has >= 0) return has == 1;
     }
@@ -14450,7 +14449,6 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   /* An island promise is an island object too (scr_dyn_promise_key_get):
    * a member an island Promise subclass has is written there. */
   if (recv->kind == SCR_DYN_PROMISE && scr_ni_dyn_ops != NULL &&
-      scr_ni_dyn_ops->promise_set != NULL &&
       scr_ni_dyn_ops->promise_set(recv, key->data, key->len, (ScrDyn *)value))
     return;
 
@@ -18363,12 +18361,9 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
    * errno, cause, an AggregateError's errors), a method or accessor of its
    * class, and its `constructor`, which is its own realm's (the island's
    * TypeError is the one `e.constructor` names). */
-  if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->error_get != NULL) {
-    size_t island_hit = scr_errdyn_find(d, false);
+  if (scr_ni_dyn_ops != NULL) {
     ScrDyn *island = NULL;
-    if (island_hit != SIZE_MAX &&
-        scr_ni_dyn_ops->error_get(scr_errdyn_cache[island_hit].err, key, key_len, &island))
-      return island;
+    if (scr_ni_dyn_ops->error_get(d, key, key_len, &island)) return island;
   }
   if (key_len == 11 && memcmp(key, "constructor", 11) == 0) {
     /* An error's constructor: the interned function value its global

@@ -954,6 +954,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_intl.c",
+  "function": "scr_intl_refuse",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_js_promise_generic.c",
   "function": "scr_js_promise_generic_call",
   "message": "Promise static is not supported",

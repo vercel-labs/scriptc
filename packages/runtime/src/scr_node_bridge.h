@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 19u
+#define SCR_NODE_BRIDGE_ABI 21u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -145,6 +145,14 @@ enum {
    * twinPrototypes: the runtime may answer it with a native object that
    * adopts it. */
   SCR_NVF_TWIN = 1024,
+  /* A built-in constructor (String, Number, Boolean, BigInt, Map, Date, ...).
+   * EXPORT: the native value of the one `exp.name` names; its representative
+   * is the island's own intrinsic of that name, so island code compares it
+   * equal to its `String` and the island hands the same object back.
+   * HANDLE: the function is one of the island's intrinsic constructors: the
+   * runtime answers it with the native value of that name when the program
+   * holds one. */
+  SCR_NVF_INTRINSIC = 32768,
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
 typedef struct ScrNodeValue {

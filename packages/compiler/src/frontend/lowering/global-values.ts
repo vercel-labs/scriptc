@@ -207,7 +207,7 @@ export function jsSpecialGlobalValue(
   if (name === "NaN" || name === "Infinity")
     return { kind: "numLit", value: name === "NaN" ? NaN : Infinity, type: F64, loc };
   if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
-    return primitiveCtorClosure(lowerer, name, loc, true);
+    return primitiveCtorClosure(lowerer, name, loc);
   if (name === "ArrayBuffer")
     return { kind: "libCall", fn: "arrayBuffer.constructor", args: [], type: DYN, loc };
   if (name === "Array")

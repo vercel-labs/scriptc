@@ -201,7 +201,17 @@ export function planUnionRetag(
     // A checker-proven absent arm retains any exact representation, as
     // before. Otherwise the narrowing path needs no structural conversion.
     if (identity < 0 && trappable?.has(tag)) {
-      result.push({ kind: "trap" });
+      // An arm the assertion's own types exclude traps, unless the checked
+      // lane places it (an array arm claimed as the destination's tuple).
+      const checked =
+        checkedLift === undefined || source.kind !== "array"
+          ? null
+          : uniqueCheckedArm(to, source, checkedLift);
+      result.push(
+        checked === null || checked.lift.how !== "arrTuple"
+          ? { kind: "trap" }
+          : { kind: "direct", route: checked },
+      );
       continue;
     }
     if (useDiscriminant && discriminant && owners && source.kind === "record") {

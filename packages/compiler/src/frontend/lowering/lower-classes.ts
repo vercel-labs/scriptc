@@ -136,6 +136,7 @@ import {
   withUnitArm,
   X509_DER_FIELD,
   X509_PUBLIC_KEY_FIELD,
+  holdsPrimitiveConstructors,
 } from "../type-mapper.js";
 import {
   canonicalBuiltinModule,
@@ -12864,6 +12865,20 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       if (hint !== undefined) {
         lowerer.unsupported("SC1090", expr, hint);
       }
+    }
+  }
+  // `new` through a HELD primitive constructor (`new column.parse(raw)` where
+  // the slot's type is `typeof String`): Node builds a wrapper object,
+  // which the constructor's function value does not. Named here, where the
+  // type says what the slot holds; `new String(x)` itself lowers above.
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    if (holdsPrimitiveConstructors(lowerer.typeOf(expr.expression), lowerer.typeCtx)) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "'new' through a held String, Number, Boolean or BigInt constructor value (it builds a wrapper object)",
+        "call the held constructor as a function for the primitive, or construct with the constructor's own name",
+      );
     }
   }
   // Checked construction supports emitted classes and builtin typed arrays.

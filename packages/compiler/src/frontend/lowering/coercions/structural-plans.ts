@@ -483,6 +483,16 @@ function checkedWidenPlan(lowerer: Lowerer, fromId: string, toId: string): boole
  * compile. A caller that reaches this point has no field-copy plan, so only
  * a program that refused before gains the conversion. */
 export function checkedWidthLift(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
+  // An array into a fixed tuple each of whose positions takes the array's
+  // element (WidthLift's `arrTuple`).
+  if (src.kind === "array" && dst.kind === "record") {
+    const tuple = lowerer.shapes.get(dst.shapeId);
+    return tuple?.tuple === true &&
+      tuple.fields.length > 0 &&
+      tuple.fields.every((field) => lowerer.widthLiftPlan(src.elem, field.type) !== null)
+      ? { how: "arrTuple" }
+      : null;
+  }
   if (src.kind !== "record" || dst.kind !== "record" || typeEquals(src, dst)) return null;
   return checkedWidenPlan(lowerer, src.shapeId, dst.shapeId) ? { how: "checkedWiden" } : null;
 }

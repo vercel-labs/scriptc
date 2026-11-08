@@ -3071,6 +3071,7 @@ function validateFunction(
             source.rest !== target.rest ||
             source.restAbi !== target.restAbi ||
             source.argumentsAll !== target.argumentsAll ||
+            source.argumentsPresence !== target.argumentsPresence ||
             source.params.length !== target.params.length ||
             !source.params.every((param, i) => typeEquals(param, target.params[i]!)) ||
             source.ret.kind !== "object" ||

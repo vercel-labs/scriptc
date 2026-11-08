@@ -1496,7 +1496,12 @@ export function lowerPropertyAccessExpr(
       // keeps its length when that is not its adapter's parameter count
       // (`Math.max.length` is 2).
       const builtinName = builtinValueNameOf(expr.expression, lowerer);
-      const fnName = builtinName ?? jsFuncNameOf(expr.expression, lowerer);
+      // A `name` read answers the static spelling only when the read reaches
+      // a definition: a member or a parameter holds whatever function was
+      // stored in it (`column.parse.name` is "String"), and the box then takes
+      // the function's own name. The other members never observe the name.
+      const fnName =
+        builtinName ?? jsFuncNameOf(expr.expression, lowerer, expr.name.text === "name");
       const identity = lowerer.builtinFunctionIdentity(probed);
       const fnLength = identity.fnLength;
       const boxed: IrExpr = {
@@ -2472,12 +2477,7 @@ export function lowerIntrinsicProperty(
     | "BigInt"
   )[]) {
     if (!lowerer.chainBlocked(expr) && lowerer.isStdlibGlobal(expr, name)) {
-      return primitiveCtorClosure(
-        lowerer,
-        name,
-        locOf(expr),
-        isJsSourceFile(ts.getSourceFileOfNode(expr)),
-      );
+      return primitiveCtorClosure(lowerer, name, locOf(expr));
     }
   }
   // A Reflect member read as a value (a callback table's `Reflect.has`): the
@@ -6535,7 +6535,7 @@ export function primitiveConstructorOr(
       cond: { kind: "dynTest", test, value, type: BOOL, loc },
       then: {
         kind: "dynFrom",
-        value: primitiveCtorClosure(lowerer, name, loc, true),
+        value: primitiveCtorClosure(lowerer, name, loc),
         type: DYN,
         loc,
       },
@@ -6785,7 +6785,7 @@ function jsPrimitivePrototypeValue(
         {
           kind: "libCall",
           fn: "wrapper.booleanPrototype",
-          args: [lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN)],
+          args: [lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc), DYN)],
           type: DYN,
           loc,
         }
@@ -6797,7 +6797,7 @@ function jsPrimitivePrototypeValue(
             // The compiled constructor value the prototype belongs to: the
             // unit answers it as the constructor's `prototype` member, so
             // `Object(1).constructor.prototype === Number.prototype`.
-            lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN),
+            lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc), DYN),
           ],
           type: DYN,
           loc,

@@ -130,6 +130,7 @@ import {
 } from "../type-mapper.js";
 import { dynFallbackType, jsFuncNameOf, newFnCtx, staticImportNamespaceType } from "./lowerer.js";
 import {
+  ARRAY_CALLBACK_METHODS,
   NARROW_FIRST,
   STRING_INDEX_METHODS,
   STR_METHODS,
@@ -239,7 +240,7 @@ import {
   stringWrapperToString,
   symbolFieldInfo,
   templateRawTextOf,
-  primitiveCtorClosure,
+  primitiveConversionCallback,
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { nullishLiteral, nullishReadTypeError, throwAfterEach } from "./primitive-throws.js";
@@ -1247,7 +1248,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         loc,
       };
     }
-    if (name === "String") return lowerer.ensureString(arg, argNode);
+    if (name === "String") {
+      const constructorText = builtinConstructorText(lowerer, argNode, arg, loc);
+      if (constructorText) return constructorText;
+      return lowerer.ensureString(arg, argNode);
+    }
   }
 
   // Computed calls preserve their evaluated receiver just like dotted
@@ -2963,6 +2968,77 @@ function lowerStringMethodCallWithOptionalArgs(
     changed = true;
   }
   return changed ? { ...lowered, args } : lowered;
+}
+
+/** `String(c)` of a value the checker types as a builtin constructor whose
+ * function value is compiled or has no text of its own in the runtime
+ * (`typeof String`, a union of the primitive constructors, `typeof
+ * Function`): Node's `function String() { [native code] }`. One constructor
+ * type names its constructor; a union's value carries the name. Null for
+ * any other argument. */
+function builtinConstructorText(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  const type = lowerer.typeOf(node);
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  const names = parts.map((part) => {
+    const symbol = part.getSymbol();
+    if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+    const name = ts.symbolName(symbol);
+    return name === "StringConstructor" ||
+      name === "NumberConstructor" ||
+      name === "BooleanConstructor" ||
+      name === "BigIntConstructor" ||
+      name === "FunctionConstructor"
+      ? name.slice(0, -"Constructor".length)
+      : null;
+  });
+  if (names.length === 0 || names.some((name) => name === null)) return null;
+  const text = (name: IrExpr): IrExpr => ({
+    kind: "strConcat",
+    left: {
+      kind: "strConcat",
+      left: { kind: "strLit", value: "function ", type: STRING, loc },
+      right: name,
+      type: STRING,
+      loc,
+    },
+    right: { kind: "strLit", value: "() { [native code] }", type: STRING, loc },
+    type: STRING,
+    loc,
+  });
+  if (names.length === 1) {
+    const result: IrExpr = {
+      kind: "strLit",
+      value: `function ${names[0]}() { [native code] }`,
+      type: STRING,
+      loc,
+    };
+    if (isSafeToDiscard(value)) return result;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result,
+      type: STRING,
+      loc,
+    };
+  }
+  if (value.type.kind !== "func") return null;
+  return text({
+    kind: "dynCheck",
+    value: {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(value, DYN),
+      key: { kind: "strLit", value: "name", type: STRING, loc },
+      type: DYN,
+      loc,
+    },
+    type: STRING,
+    loc,
+  });
 }
 
 /** `.then(String)` / `.then(Number)` / `.then(Boolean)` over a promise of
@@ -5741,8 +5817,7 @@ export function lowerDynDispatchMethodCall(
   // `String`, `Number` or `Boolean` as the callback of an array method
   // (`values.map(String)` over an unknown array): the method calls it with
   // each element, whatever its type, and cannot observe which function
-  // value it received, so it gets the constructor's form that converts any
-  // argument rather than the string-input form typed code stores.
+  // value it received, so it gets the conversion of any argument.
   const arrayCallbackReceiver =
     ARRAY_CALLBACK_METHODS.has(method) &&
     lowerer.checker.isArrayType(lowerer.typeOf(access.expression));
@@ -5754,7 +5829,7 @@ export function lowerDynDispatchMethodCall(
     if (primitive === "String" || primitive === "Number" || primitive === "Boolean")
       return lowerer.coerceInto(
         arg,
-        primitiveCtorClosure(lowerer, primitive, locOf(arg), true),
+        primitiveConversionCallback(lowerer, primitive, locOf(arg), true),
         DYN,
       );
     if (i === 0 && predicate) return lowerer.coerceInto(arg, predicate, DYN);
@@ -5778,21 +5853,6 @@ export function lowerDynDispatchMethodCall(
     loc: locOf(call),
   };
 }
-
-/** Array.prototype methods whose first argument is a callback they call
- * with the elements. */
-const ARRAY_CALLBACK_METHODS = new Set([
-  "map",
-  "filter",
-  "forEach",
-  "some",
-  "every",
-  "find",
-  "findIndex",
-  "findLast",
-  "findLastIndex",
-  "flatMap",
-]);
 
 /** Every String.prototype method name a typed or dyn string lowering
  * answers. */
@@ -5910,8 +5970,18 @@ function lowerArrayIsArrayCall(
         loc,
       };
     }
-    if (!opaque && freeRead && arrayTags.length === 0) {
-      return { kind: "boolLit", value: false, type: BOOL, loc };
+    if (!opaque && arrayTags.length === 0) {
+      // No arm is an array: the read runs for its effects and the answer
+      // is false whichever arm is active.
+      const answer: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+      if (freeRead) return answer;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: arg, loc }],
+        result: answer,
+        type: BOOL,
+        loc,
+      };
     }
     if (!opaque && freeRead && arrayTags.length > 1) {
       return arrayTags

@@ -361,6 +361,11 @@ void scr_ni_twin_detached(uint32_t id); /* the attachment freed itself */
 /* The native object (+1) that adopts island object `island` (its handle
  * box, import `handle`), or NULL when no class adopts it: it stays a handle. */
 ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle);
+/* Built-in constructors (SCR_NVF_INTRINSIC, scr_node_island_export.c): the
+ * program's function for the constructor `name`, registered at start, and
+ * the native value (+1, or NULL) of the island intrinsic behind `handle`. */
+void scr_ni_intrinsic_register(ScrStr *name, ScrDyn *value);
+ScrDyn *scr_ni_intrinsic_native(ScrDyn *handle);
 size_t scr_ni_twin_exports(const void *object, uint32_t ids[2]); /* NI-8 */
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));

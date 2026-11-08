@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "55ff1cab7c8d559b";
+export const IR_CODEC_LAYOUT = "03383f7edf66e3bf";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -48,7 +48,7 @@ const KEYS20: readonly string[] = ["kind"];
 const KEYS21: readonly string[] = ["kind"];
 const KEYS22: readonly string[] = ["kind"];
 const KEYS23: readonly string[] = ["kind"];
-const KEYS24: readonly string[] = ["kind","params","ret","rest","restAbi","argumentsAll"];
+const KEYS24: readonly string[] = ["kind","params","ret","rest","restAbi","argumentsAll","argumentsPresence"];
 const KEYS25: readonly string[] = ["kind","async","yieldT","retT","nextT"];
 const KEYS26: readonly string[] = ["kind"];
 const KEYS27: readonly string[] = ["kind"];
@@ -941,6 +941,11 @@ function encIrType(w: IrWriter, v: IrType): void {
         w.byte(1);
         w.bool(v.argumentsAll);
       }
+      if (v.argumentsPresence === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.argumentsPresence);
+      }
       return;
     }
     case "generator": {
@@ -1195,7 +1200,8 @@ function decIrType(r: IrReader): IrType {
       const f2 = r.tag(2, "IrFunction.returnType<func>.rest") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrType, { kind: "func" }>["rest"]>);
       const f3 = r.tag(2, "IrFunction.returnType<func>.restAbi") === 0 ? undefined : (r.str() as NonNullable<Extract<IrType, { kind: "func" }>["restAbi"]>);
       const f4 = r.tag(2, "IrFunction.returnType<func>.argumentsAll") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrType, { kind: "func" }>["argumentsAll"]>);
-      const o: Extract<IrType, { kind: "func" }> = { kind: "func", params: f0, ret: f1, ...(f2 !== undefined ? { rest: f2 } : {}), ...(f3 !== undefined ? { restAbi: f3 } : {}), ...(f4 !== undefined ? { argumentsAll: f4 } : {}) };
+      const f5 = r.tag(2, "IrFunction.returnType<func>.argumentsPresence") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrType, { kind: "func" }>["argumentsPresence"]>);
+      const o: Extract<IrType, { kind: "func" }> = { kind: "func", params: f0, ret: f1, ...(f2 !== undefined ? { rest: f2 } : {}), ...(f3 !== undefined ? { restAbi: f3 } : {}), ...(f4 !== undefined ? { argumentsAll: f4 } : {}), ...(f5 !== undefined ? { argumentsPresence: f5 } : {}) };
       return o;
     }
     case 20: {

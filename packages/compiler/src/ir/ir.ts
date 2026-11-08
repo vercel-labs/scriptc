@@ -302,7 +302,15 @@ export type IrType =
    * thunk. `argumentsAll` keeps that hidden ABI but fills it with every
    * actual argument, including named positions. The backends therefore
    * still see one fixed native closure ABI;
-   * only the frontend's call completion observes variadic source arity. */
+   * only the frontend's call completion observes variadic source arity.
+   * `argumentsPresence` says of an `argumentsAll` function that it reads the
+   * hidden array only to ask whether an argument was passed at all, and reads
+   * the arguments' values through `params` alone (the primitive constructors:
+   * `String()` is "" where `String(undefined)` is "undefined"). A caller
+   * that passes its first argument is, to such a function, any caller that
+   * passes more; no other variadic function gives that guarantee, which is
+   * what lets one serve a slot with a fixed parameter list
+   * (function-adapters.ts, exactVariadicSlot). */
   | {
       kind: "func";
       params: IrType[];
@@ -310,6 +318,7 @@ export type IrType =
       rest?: true;
       restAbi?: "typed";
       argumentsAll?: true;
+      argumentsPresence?: true;
     }
   | { kind: "object"; className: string } // heap, refcounted class instance
   /** The class STATIC side as a value — `typeof C`, the type of the class
@@ -888,6 +897,23 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
   return { kind: "func", params, ret };
 }
 
+/** The type of a primitive constructor read as a value (`String`, `Number`,
+ * `Boolean`, `BigInt`): a function of one declared parameter (its `length`
+ * is 1) that also sees every argument its caller actually passed, as the
+ * builtin does (`String()` is "", `String(undefined)` is "undefined"). One
+ * type per result, so the constructors are distinct arms of a union that
+ * holds several. */
+export function primitiveConstructorType(ret: IrType): IrType & { kind: "func" } {
+  return {
+    kind: "func",
+    params: [DYN],
+    ret,
+    rest: true,
+    argumentsAll: true,
+    argumentsPresence: true,
+  };
+}
+
 /** Maps and sets use tagged union storage and retain their native identity.
  * Joined unions (inferred joins of member reads and array elements) keep
  * promises nullable-only; declared maybe-promise unions are admitted by
@@ -944,7 +970,7 @@ export function typeKey(t: IrType): string {
     case "set":
       return `set<${typeKey(t.elem)}>`;
     case "func":
-      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "typed" ? "...typed[]" : t.argumentsAll ? "arguments[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
+      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "typed" ? "...typed[]" : t.argumentsPresence ? "presence[]" : t.argumentsAll ? "arguments[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
     case "object":
       return `object:${t.className}`;
     case "classval":
@@ -1042,6 +1068,7 @@ export function typeEquals(a: IrType, b: IrType): boolean {
         (a.rest === true) === (b.rest === true) &&
         a.restAbi === b.restAbi &&
         a.argumentsAll === b.argumentsAll &&
+        a.argumentsPresence === b.argumentsPresence &&
         a.params.every((p, i) => typeEquals(p, b.params[i]!)) &&
         typeEquals(a.ret, b.ret)
       );

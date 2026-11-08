@@ -29,6 +29,7 @@ import {
   FOREIGN,
   F64,
   funcOf,
+  primitiveConstructorType,
   isSupportedArrayElem,
   isSupportedIndexValue,
   isSupportedMapKey,
@@ -2783,33 +2784,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   // The lib's PRIMITIVE-CONSTRUCTOR interfaces as TYPES (`typeof String`,
   // a `type: StringConstructor` record field — the CLI option-table
-  // idiom): the VALUE is the interned coercion closure (lower-exprs mints
-  // one per program), so the type maps to that closure's one concrete
-  // signature — the string-coercion form `(value: string) => primitive`.
-  // String(s) is identity on strings, Number(s) the ECMA StringToNumber,
-  // Boolean(s) emptiness — the parsed-token shape every stored-constructor
-  // call feeds. Calls passing other argument types fence at their site
-  // (the func param coercion), exactly like any other typed closure slot.
-  // Provenance-gated like the boxed wrappers above: a user's own
-  // `interface StringConstructor` maps as a record.
+  // idiom): the VALUE is the program's one function for the constructor
+  // (lower-exprs.ts primitiveCtorClosure), so the type is that function's:
+  // it takes whatever arguments its caller passes and answers the
+  // constructor's primitive. The result differs per constructor; a union
+  // of several of them is one function arm whose result joins theirs (the
+  // union rule below). Provenance-gated like the boxed wrappers above: a
+  // user's own `interface StringConstructor` maps as a record.
   {
-    const ctorSym = widened.getSymbol();
-    if (
-      ctorSym &&
-      (ts.symbolName(ctorSym) === "StringConstructor" ||
-        ts.symbolName(ctorSym) === "NumberConstructor" ||
-        ts.symbolName(ctorSym) === "BooleanConstructor") &&
-      ctorSym.declarations.some((d) => ctx.isStdlibFile(ts.getSourceFileOfNode(d)))
-    ) {
-      return funcOf(
-        [STRING],
-        ts.symbolName(ctorSym) === "StringConstructor"
-          ? STRING
-          : ts.symbolName(ctorSym) === "NumberConstructor"
-            ? F64
-            : BOOL,
-      );
-    }
+    const ctorResult = primitiveConstructorResult(widened, ctx);
+    if (ctorResult !== null) return primitiveConstructorType(ctorResult);
   }
   // `symbol` and `unique symbol` (the type of `const k = Symbol(...)` —
   // getBaseTypeOfLiteralType widens unique symbols, but check both flags)
@@ -5660,7 +5644,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const hybrid = mapUniformHybridUnion(widened, ctx);
     if (hybrid) return hybrid;
   }
-  const callSigs = checker.getCallSignatures(widened);
+  // A union whose callable members are all primitive constructors (a table
+  // member that is one of several constructors, beside the union's strings
+  // and arrays) is held by the union rule below,
+  // which joins them into one function arm: the single signature the
+  // checker joins such a union into has fixed parameters (and Boolean's
+  // type parameter), and a constructor reads the arguments its caller
+  // actually passed (`String()` is "", `String(undefined)` is "undefined").
+  const callSigs =
+    widened.isUnionType() && onlyPrimitiveConstructorsCallable(widened, ctx)
+      ? []
+      : checker.getCallSignatures(widened);
   // AsyncLocalStorage.snapshot()'s generic runner is a dyn function value
   // (als.snapshot), called through the dyn call path.
   if (callSigs.length === 1 && isAsyncLocalStorageSnapshot(callSigs[0]!, ctx)) return DYN;
@@ -5984,6 +5978,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         );
       let neverConditionalPart = false;
       let undefinedPart: ts.Type | undefined;
+      const constructorResults = new Map<string, IrType>();
       for (const part of parts) {
         if (hasArrayPart && emptyTuple(part)) continue;
         // TypeScript's client can retain impossible intersections in a
@@ -6013,6 +6008,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
         if (part.flags & ts.TypeFlags.Null) {
           byKey.set(typeKey(NULL_T), NULL_T);
+          continue;
+        }
+        // Primitive constructors join into ONE function arm (below): which
+        // constructor a value is stays its identity, as for any function.
+        const constructed = primitiveConstructorResult(part, ctx);
+        if (constructed !== null) {
+          constructorResults.set(typeKey(constructed), constructed);
           continue;
         }
         let mapped: IrType | null;
@@ -6060,6 +6062,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           if (programClassBases(source, ctx).some((base) => byKey.has(typeKey(base))))
             byKey.delete(typeKey(mapped));
         }
+      }
+      // The primitive constructors among the parts are one function arm,
+      // whose result is the join of theirs (`typeof String | typeof Number`
+      // answers `string | number`): a slot of the union holds a function,
+      // and a second function arm would make its tag a fact about the
+      // static type that an untyped round trip could not restore.
+      if (constructorResults.size > 0) {
+        const results = [...constructorResults.values()];
+        sortArms(results);
+        const joined = primitiveConstructorType(
+          results.length === 1 ? results[0]! : { kind: "union", unionId: unions.intern(results) },
+        );
+        byKey.set(typeKey(joined), joined);
       }
       const arms = [...byKey.values()];
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
@@ -6177,6 +6192,54 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
   }
   return null;
+}
+
+/** Whether every value of `type` is a primitive constructor: the type is
+ * one (`typeof String`) or a union of several. */
+export function holdsPrimitiveConstructors(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): boolean {
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  return parts.length > 0 && parts.every((part) => primitiveConstructorResult(part, ctx) !== null);
+}
+
+/** Whether the union `type` holds a primitive constructor and none of its
+ * other members is callable. */
+function onlyPrimitiveConstructorsCallable(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  let constructors = false;
+  for (const part of ts.constituentTypes(type)) {
+    if (primitiveConstructorResult(part, ctx) !== null) constructors = true;
+    else if (ctx.checker.getCallSignatures(part).length > 0) return false;
+  }
+  return constructors;
+}
+
+/** The primitive a standard-library primitive-constructor interface
+ * answers when called (`typeof String` is `StringConstructor`: string), or
+ * null for any other type. A program's own interface of the same name is
+ * not one. */
+export function primitiveConstructorResult(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): IrType | null {
+  const symbol = type.getSymbol();
+  if (!symbol) return null;
+  const name = ts.symbolName(symbol);
+  const result =
+    name === "StringConstructor"
+      ? STRING
+      : name === "NumberConstructor"
+        ? F64
+        : name === "BooleanConstructor"
+          ? BOOL
+          : name === "BigIntConstructor"
+            ? BIGINT_T
+            : null;
+  if (result === null) return null;
+  return symbol.declarations.some((d) => ctx.isStdlibFile(ts.getSourceFileOfNode(d)))
+    ? result
+    : null;
 }
 
 /** The classes a non-generic program class extends, nearest first, as
@@ -6373,6 +6436,7 @@ function sameTypeUpToUnionOrder(a: IrType, b: IrType, ctx: TypeMapperCtx, depth:
         (a.rest ?? false) === (b.rest ?? false) &&
         (a.restAbi ?? null) === (b.restAbi ?? null) &&
         (a.argumentsAll ?? false) === (b.argumentsAll ?? false) &&
+        (a.argumentsPresence ?? false) === (b.argumentsPresence ?? false) &&
         a.params.every((p, i) => sameTypeUpToUnionOrder(p, b.params[i]!, ctx, depth + 1)) &&
         sameTypeUpToUnionOrder(a.ret, b.ret, ctx, depth + 1)
       );

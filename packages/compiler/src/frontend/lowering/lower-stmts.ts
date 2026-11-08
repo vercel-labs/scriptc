@@ -358,6 +358,7 @@ import {
   isUnitOnlyTsType,
   jsOpenObjectType,
   unitOnlyUnion,
+  holdsPrimitiveConstructors,
 } from "../type-mapper.js";
 import { canonicalBuiltinModule } from "../builtin-modules.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
@@ -7596,7 +7597,8 @@ export function lowerVarDecl(
       (!decl.type &&
         !hasJsTypeAnnotation(decl) &&
         type.rest === true &&
-        type.restAbi === undefined))
+        type.restAbi === undefined &&
+        !holdsPrimitiveConstructors(lowerer.typeOf(decl.name), lowerer.typeCtx)))
   ) {
     type = DYN;
   }

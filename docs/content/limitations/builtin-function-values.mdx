@@ -8,6 +8,16 @@ Some builtins can be stored and passed as functions:
 - `util.isDeepStrictEqual`, `styleText`, `stripVTControlCharacters`, `toUSVString`, `inherits`, `deprecate`, `callbackify`, `debuglog`, and `debug`.
 - `fs.existsSync`, `unlinkSync`, `chmodSync`, `chownSync`, `renameSync`, and `closeSync`, and `fs/promises.unlink`, `chmod`, and `rename`.
 
+`String`, `Number`, `Boolean`, and `BigInt` are function values wherever they are stored, in TypeScript and JavaScript: an option table can hold them as type tags (`{ "--port": Number, "--tag": [String] }`), beside strings and arrays.
+A held constructor is the same function everywhere in the program, so `type === Boolean` holds across modules, through `unknown`, and as a `Map` key or `Set` member.
+Called through the value, it converts whatever arguments it is given, as the builtin does.
+A call through a held constructor converts its arguments to untyped values first; a direct call such as `Number(x)`, and a constructor written as the callback of an array method (`xs.map(Number)`), keep their typed conversion.
+A held constructor converts to a function type that has a first parameter (`(value: string, name: string) => unknown`), whoever calls it.
+Under a function type with no parameters it is called with no argument, and the store is refused when the program hands a function of that type to a caller that passes arguments, as for any function that reads its argument list.
+Through a function type whose first parameter is optional or accepts `undefined`, a call that passes `undefined` there, or omits the argument, throws a `TypeError`: a constructor answers a missing argument differently from `undefined` (`String()` is `""`), and the function type does not say which one the call passed.
+`new` through a held constructor, its `prototype`, and a `Map` or `Set` keyed by a union of several constructor types are refused.
+A constructor passed into a Node island is the island's own constructor there, and the island's comes back as the program's.
+
 In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.
 Calls through these values bypass `node:test` mock timers.
 In JavaScript, `atob`, `btoa`, and `structuredClone` are function values the same way, and calls through them run what the direct calls run.

@@ -98,7 +98,7 @@ import { identityPreservingWidening } from "./coercions/identity.js";
 import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/console-records.js";
 import { scanDivergences } from "./divergences.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
-import { installBuiltinStatics } from "./builtin-statics.js";
+import { installBuiltinStatics, registerIslandIntrinsics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
@@ -428,6 +428,7 @@ import {
   computeSymbolProvenance,
   declaresLegacyUrl,
   declaresWebAssemblyNamespace,
+  holdsPrimitiveConstructors,
   ShapeRegistry,
   noteScopeSensitiveMapping,
   type DeclaredOrderPriorityRef,
@@ -844,6 +845,7 @@ import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import { lowerTernary } from "./lower-exprs.js";
 import { closeLoweringBudget, openLoweringBudget, refuseSpentLowering } from "./lower-exprs.js";
+import { conversionCallbackTypeOf } from "./lower-exprs.js";
 import {
   maybePromiseReturnStmt,
   maybePromiseUnionOf,
@@ -2603,8 +2605,19 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
 /** The name V8 gives a function value read from this expression: its own
  * definition, through parenthesized, rebindable and const bindings and
  * property reads (`process.cwd`), or the binding an anonymous definition
- * initializes. Null when the source does not determine it. */
-export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
+ * initializes. Null when the source does not determine it.
+ *
+ * A read that reaches no definition is answered by its spelling (a
+ * parameter `cb`, a member `column.parse`), which is right only when the slot
+ * holds the function defined under that name. `definitionsOnly` answers
+ * null for those reads instead, so the caller takes the name the function
+ * value carries at run time (`column.parse.name` is "String" when the table
+ * holds String). */
+export function jsFuncNameOf(
+  node: ts.Node,
+  lowerer?: Lowerer,
+  definitionsOnly = false,
+): string | null {
   // Typed source cannot read a function's `name` (SC2020), so the names below
   // are unobservable there; keeping them JavaScript-only leaves every typed
   // program's output byte-identical.
@@ -2657,8 +2670,10 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     n = value;
   }
-  if (ts.isIdentifier(n)) return n.text;
-  if (ts.isPropertyAccessExpression(n)) return n.name.text;
+  if (ts.isIdentifier(n))
+    return definitionsOnly && lowerer && !spellingNamesValue(lowerer, n) ? null : n.text;
+  if (ts.isPropertyAccessExpression(n))
+    return definitionsOnly && lowerer && !spellingNamesValue(lowerer, n.name) ? null : n.name.text;
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
   if (ts.isClassExpression(n) && n.name) return n.name.text;
   if (ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassExpression(n)) {
@@ -2708,6 +2723,30 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
   }
   return null;
+}
+
+/** Whether the binding or member `name` reads is declared with the function
+ * it holds, so its spelling is that function's name: a class or function
+ * declaration, a method, a member initialized by an anonymous definition,
+ * or an ambient declaration (a library's own function). A parameter, a
+ * variable or a data member holds whatever was stored in it. */
+function spellingNamesValue(lowerer: Lowerer, name: ts.Node): boolean {
+  const symbol = lowerer.checker.getSymbolAtLocation(name);
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  if (!declaration) return true;
+  if (ts.getSourceFileOfNode(declaration).isDeclarationFile) return true;
+  if (
+    ts.isClassDeclaration(declaration) ||
+    ts.isFunctionDeclaration(declaration) ||
+    ts.isMethodDeclaration(declaration)
+  )
+    return true;
+  if (ts.isPropertyAssignment(declaration)) {
+    let value: ts.Node = declaration.initializer;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    return isAnonymousCallableDefinition(value);
+  }
+  return false;
 }
 
 /** Answers `fallback` when a checker query panics inside the type checker. */
@@ -10070,7 +10109,7 @@ export class Lowerer {
         if ((checkerType.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
         param = this.mapTypeOf(checkerType);
       } else {
-        const value = this.mapTypeOf(this.typeOf(fn));
+        const value = conversionCallbackTypeOf(this, fn) ?? this.mapTypeOf(this.typeOf(fn));
         if (value?.kind !== "func" || value.rest === true) return true;
         param = value.params[index] ?? null;
       }
@@ -12155,6 +12194,7 @@ export class Lowerer {
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
     if (!library) installBuiltinStatics(this, functions);
+    if (!library) registerIslandIntrinsics(this, functions);
     boxBuiltinValuesChecked(this, functions);
     shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
@@ -15263,6 +15303,7 @@ export class Lowerer {
       expr.type.rest === expected.rest &&
       expr.type.restAbi === expected.restAbi &&
       expr.type.argumentsAll === expected.argumentsAll &&
+      expr.type.argumentsPresence === expected.argumentsPresence &&
       expr.type.params.length === expected.params.length &&
       expr.type.params.every((type, i) => typeEquals(type, expected.params[i]!)) &&
       expr.type.ret.kind === "object" &&
@@ -16483,7 +16524,18 @@ export class Lowerer {
     // from the source node (identifier reads, named function expressions,
     // NamedEvaluation through a variable initializer) — inspect prints
     // [Function: name] and call errors spell it, like Node.
-    if (e.kind === "dynFrom" && e.value.type.kind === "func" && e.fnName === undefined) {
+    // A slot the checker types as a primitive constructor (`column.parse` of
+    // `typeof String`) holds that constructor, whatever the slot is called:
+    // its box takes the function's own name. A constructor written as an
+    // array method's callback is its conversion closure, not the
+    // constructor value, and is named by its spelling like any closure.
+    if (
+      e.kind === "dynFrom" &&
+      e.value.type.kind === "func" &&
+      e.fnName === undefined &&
+      (!holdsPrimitiveConstructors(this.typeOf(node), this.typeCtx) ||
+        (ts.isExpression(node) && conversionCallbackTypeOf(this, node) !== null))
+    ) {
       const name = jsFuncNameOf(node, this);
       if (name !== null) e = { ...e, fnName: name };
     }

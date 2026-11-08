@@ -525,6 +525,7 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
     /* `v` is the bridge's until the next entry, and an adoption enters. */
     uint32_t handle = v->u.handle;
     bool twin = (v->flags & SCR_NVF_TWIN) != 0;
+    bool intrinsic = (v->flags & SCR_NVF_INTRINSIC) != 0;
     ScrNodeRef *ref = nh_ref(handle, v->flags);
     if (ref->flags & SCR_NVF_ERROR) {
       /* An island error the program already holds as an error (it caught
@@ -544,6 +545,15 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
      * the native object that adopts it, when a class does. */
     if (twin) {
       ScrDyn *native = scr_ni_twin_adopt(d, handle);
+      if (native != NULL) {
+        scr_dyn_release(d);
+        return native;
+      }
+    }
+    /* One of the island's intrinsic constructors (its `String`): the
+     * program's own value of that name, when it holds one. */
+    if (intrinsic) {
+      ScrDyn *native = scr_ni_intrinsic_native(d);
       if (native != NULL) {
         scr_dyn_release(d);
         return native;

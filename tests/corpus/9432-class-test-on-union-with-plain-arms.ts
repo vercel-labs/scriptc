@@ -114,3 +114,19 @@ for (const n of [0, 1, 2]) {
     console.log("guarded", tagOf(held), held instanceof Barrel ? held.litres : -1);
   }
 }
+
+// A class test on a union that holds no class at all is false for every
+// value: the branch compiles and never runs.
+type Slip = { berth: number; vessel: string };
+function assign(n: number): Slip | null {
+  return n === 0 ? null : { berth: n, vessel: "tug" };
+}
+function report(problem: Error): string {
+  return `unexpected ${problem.message}`;
+}
+for (const n of [0, 2]) {
+  const slip = assign(n);
+  if (slip instanceof Error) console.log(report(slip));
+  else if (slip === null) console.log("no slip");
+  else console.log("slip", slip.berth, slip.vessel);
+}

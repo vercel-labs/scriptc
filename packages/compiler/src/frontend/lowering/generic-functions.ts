@@ -1538,6 +1538,9 @@ function typeParamUnifier(
         }
         if (rest.size + named.size !== arms.length) return;
         for (const [d, match] of pairs) unify(d, match, depth + 1);
+        // A named part that mentions the parameter (`T | T[]`) has bound
+        // it by now; the first binding wins.
+        if (bindings.has(sym)) return;
         // Filtering preserves the canonical arm order.
         const kept = arms.filter((_, tag) => rest.has(tag));
         bindings.set(

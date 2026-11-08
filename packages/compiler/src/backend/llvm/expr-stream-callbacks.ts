@@ -202,6 +202,7 @@ export function streamDataAdapter(
         `  %pend = call zeroext i1 @scr_exc_pending()`,
         `  br i1 %pend, label %fail, label %conv`,
         `fail:`,
+        ...host.pendingBailReleaseLines(p, "%tv"),
         `  call void @scr_closure_release(ptr %orig)`,
         `  ret void`,
         `conv:`,
@@ -784,6 +785,7 @@ export function streamCbThunkFor(
           `  %vtbad${i} = call zeroext i1 @scr_exc_pending()`,
           `  br i1 %vtbad${i}, label %vtfail${i}, label %vtok${i}`,
           `vtfail${i}:`,
+          ...host.pendingBailReleaseLines(p, `%vt${i}`),
           ...(hasThis ? [`  call void @scr_stream_release_v(ptr %sr)`] : []),
           `  ret void`,
           `vtok${i}:`,
@@ -909,6 +911,7 @@ export function streamCbThunkFor(
         `  %ctbad${i} = call zeroext i1 @scr_exc_pending()`,
         `  br i1 %ctbad${i}, label %ctfail${i}, label %${desc !== null ? "ctconvok" : "ctok"}${i}`,
         `ctfail${i}:`,
+        ...host.pendingBailReleaseLines(p, `%ct${i}`),
         ...(hasThis ? [`  call void @scr_stream_release_v(ptr %sr)`] : []),
         `  ret void`,
       );
@@ -965,6 +968,7 @@ export function streamCbThunkFor(
         `  %etbad${i} = call zeroext i1 @scr_exc_pending()`,
         `  br i1 %etbad${i}, label %etfail${i}, label %${undefinedIsNull ? "etconvok" : "etok"}${i}`,
         `etfail${i}:`,
+        ...host.pendingBailReleaseLines(p, `%et${i}`),
         ...(hasThis ? [`  call void @scr_stream_release_v(ptr %sr)`] : []),
         `  ret void`,
       );

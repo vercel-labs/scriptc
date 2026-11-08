@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8848-untyped-string-conversion.ts"
+ ],
+ "diags": []
+}

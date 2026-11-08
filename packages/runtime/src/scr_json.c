@@ -5777,6 +5777,28 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
     return out;
   }
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+  /* The view of a class instance holds its fields, not its class's methods:
+   * a toString the class declares is compiled for the class's own calls,
+   * which the runtime cannot make. Node runs that method, so answering
+   * "[object Object]" from the view would be a wrong value: the conversion
+   * is refused by name. (A class with prototype data answers no to the
+   * class test, and its view reaches the method.) */
+  if (view->kind == SCR_DYN_OBJ && !scr_dyn_property_owner(view, "toString", 8)) {
+    ScrStr *to_string_key = scr_str_new("toString", 8);
+    bool declared = scr_dyn_typed_ref_class_has(d, to_string_key);
+    scr_str_release(to_string_key);
+    if (declared) {
+      static const char message[] = "String conversion of a class instance whose class defines toString has "
+                                    "no lowering where the value is untyped; convert the instance where its "
+                                    "class is known";
+      scr_dyn_release(view);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *out = scr_dyn_new_str(empty);
+      scr_str_release(empty);
+      return out;
+    }
+  }
   const char *tag = scr_event_ref_hooks ? scr_event_ref_hooks->string_tag(d) : NULL;
   if (!tag || view->kind != SCR_DYN_OBJ || scr_dyn_property_owner(view, "toString", 8)) return view;
   scr_dyn_release(view);
@@ -13184,6 +13206,10 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     }
     if (scr_exc_pending()) return NULL;
     ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
+    if (scr_exc_pending()) {
+      scr_dyn_release(materialized);
+      return NULL;
+    }
     ScrStr *out = scr_dyn_string_coerce_js(materialized);
     scr_dyn_release(materialized);
     return out;

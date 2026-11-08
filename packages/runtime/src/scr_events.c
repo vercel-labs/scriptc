@@ -1370,24 +1370,38 @@ static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_
     scr_dyn_arg_type_fail("cb", "of type function", callback);
     return NULL;
   }
+  /* Node resolves the encoding before it looks at the chunk: a name that is
+   * no Buffer encoding (in any ASCII case) throws ERR_UNKNOWN_ENCODING, for a
+   * byte chunk too; an empty name is the default. */
+  ScrStr *enc = NULL;
+  if (encoding->kind == SCR_DYN_STR) {
+    if (encoding->v.str->len > 0) {
+      enc = scr_bytes_normalize_encoding(encoding->v.str);
+      if (!enc) return NULL;
+    }
+  } else if (encoding->kind != SCR_DYN_UNDEF && encoding->kind != SCR_DYN_NULL) {
+    return scr_stdio_refusal("write encoding");
+  }
   if (arg->kind == SCR_DYN_NULL) {
     const char *m = "May not write null values to stream";
     scr_throw_error_msg_code(SCR_ERR_TYPE, m, strlen(m), "ERR_STREAM_NULL_VALUES");
+    if (enc) scr_str_release(enc);
     return NULL;
   }
-  if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem != SCR_BYTES_U8)
+  if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem != SCR_BYTES_U8) {
+    if (enc) scr_str_release(enc);
     return scr_stdio_refusal("write of a typed array other than Uint8Array");
+  }
   ScrBytes *bytes = NULL;
   if (arg->kind == SCR_DYN_STR) {
-    if (encoding->kind != SCR_DYN_UNDEF && encoding->kind != SCR_DYN_NULL && encoding->kind != SCR_DYN_STR) {
-      return scr_stdio_refusal("write encoding");
-    }
-    ScrStr *enc = encoding->kind == SCR_DYN_STR ? scr_str_retain(encoding->v.str) : scr_str_new("utf8", 4);
+    if (!enc) enc = scr_str_new("utf8", 4);
     bytes = scr_bytes_from_str(arg->v.str, enc);
     scr_str_release(enc);
   } else if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem == SCR_BYTES_U8) {
+    if (enc) scr_str_release(enc);
     bytes = arg->v.bytes->shared ? scr_bytes_copy(arg->v.bytes) : scr_bytes_retain(arg->v.bytes);
   } else {
+    if (enc) scr_str_release(enc);
     scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer, TypedArray, or DataView", arg);
     return NULL;
   }

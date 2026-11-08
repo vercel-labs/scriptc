@@ -54,6 +54,27 @@ function maybe(panel: WriteStream | undefined, label: string): void {
 maybe(process.stdout, "present");
 maybe(undefined, "absent");
 
+// An encoding name is read as Node reads it: in any ASCII case, an empty name
+// is the default, and a name that is no encoding throws before anything is
+// written, for a byte chunk too.
+function encodings(panel: WriteStream): void {
+  panel.write("7a0a", "HEX" as BufferEncoding);
+  panel.write("upper\n", "UTF-8" as BufferEncoding);
+  panel.write("empty\n", "" as BufferEncoding);
+  try {
+    panel.write("never\n", "bogus" as BufferEncoding);
+  } catch (problem) {
+    const failure = problem as Error & { code?: string };
+    console.log("bogus:", failure.name, failure.message, failure.code);
+  }
+  try {
+    panel.write(Buffer.from("never\n"), "nope" as BufferEncoding, () => {});
+  } catch (problem) {
+    console.log("bytes:", (problem as Error).message);
+  }
+}
+encodings(process.stdout);
+
 // A stream held in an untyped binding takes the same path.
 const loose: any = process.stdout;
 loose.write("loose\n", (problem: unknown) => order.push("loose:" + (problem === null)));

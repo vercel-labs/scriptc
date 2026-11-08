@@ -88,7 +88,9 @@ void scr_process_off_exit_island(uint32_t listener);
  * Island values the program holds are SCR_DYN_HANDLE boxes with tag
  * SCR_DYNH_NODE_ISLAND: one handle per V8 value, so `===` is identity.
  * Primitives, strings and BigInt are copies; island promises are scriptc
- * promises; typed arrays and Buffers are ScrBytes over the same memory.
+ * promises; typed arrays, Buffers, DataViews and ArrayBuffers are ScrBytes
+ * over the same memory, one per island object; island symbols are native
+ * symbols paired with them.
  * All arguments are borrowed; ScrDyn results are +1, NULL (or false, or
  * -1 for the int forms) with the exception pending. The first call loads
  * Node. See scriptc-perf/results/ni-4/ABI.md. */
@@ -199,12 +201,14 @@ typedef struct ScrNiDynOps {
   /* A property of an error island code threw that its native view does not
    * hold, read from the V8 error (+1 in *out, NULL with the exception
    * pending when the read threw): own properties, its class's methods and
-   * accessors, and `constructor`, its own realm's. 1 for an island error,
-   * 0 for any other. It has the place error_constructor had, which it
-   * replaces, so the entries behind it keep their offsets in the units
-   * every program links (error_has, below, is at the end for the same
-   * reason). */
-  int (*error_get)(const struct ScrError *err, const char *key, size_t len, ScrDyn **out);
+   * accessors, and `constructor`, its own realm's. `view` is any object:
+   * 1 for the view of an island error, 0 for any other value. The caller,
+   * in a unit every program links, only tests the table and calls; finding
+   * the error of a view is done here, where only island programs pay for
+   * it. It has the place error_constructor had, which it replaces, so the
+   * entries behind it keep their offsets in the units every program links
+   * (error_has, below, is at the end for the same reason). */
+  int (*error_get)(const ScrDyn *view, const char *key, size_t len, ScrDyn **out);
   /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);
@@ -230,9 +234,9 @@ typedef struct ScrNiDynOps {
   int (*weak_test)(ScrDyn *collection, bool set, ScrDyn *key, bool remove);
   bool (*weak_set)(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
   /* The `in` operator on an error island code threw, for what its native
-   * view does not hold (error_get reads the same): 1, 0, or -1 for an error
-   * the runtime made itself. */
-  int (*error_has)(const struct ScrError *err, const char *key, size_t len);
+   * view does not hold (error_get reads the same): 1, 0, or -1 for a value
+   * that is not the view of an island error. */
+  int (*error_has)(const ScrDyn *view, const char *key, size_t len);
   /* A member of an island promise that a promise does not have itself (an
    * island class that extends Promise adds its own), read from the V8
    * promise (+1 in *out, NULL with the exception pending when the read
@@ -245,6 +249,18 @@ typedef struct ScrNiDynOps {
    * (a throw stays pending). 1 for the mirror of an island promise, 0 for
    * any other. */
   int (*promise_set)(const ScrDyn *promise, const char *key, size_t len, ScrDyn *value);
+  /* obj[key] = value for any property key (a symbol crosses as the symbol
+   * paired with it). */
+  bool (*set)(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
+  /* Object.hasOwn, and propertyIsEnumerable when `enumerable` is set, by
+   * Node's intrinsics: the object's own methods of those names may be
+   * shadowed or absent and decide nothing.
+   *
+   * New entries go at the end. The runtime every program links reads the
+   * entries above by their offset (scr_dyn_call reads `call`, for one), so
+   * an entry added in the middle changes the bytes of programs that have
+   * no island at all. */
+  int (*has_own)(ScrDyn *obj, ScrDyn *key, int enumerable);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
@@ -273,6 +289,12 @@ size_t scr_ni_tree_repairs(void);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);
+/* One V8 value per byte view, ArrayBuffer storage and symbol (the bridge's
+ * `bound`, `bind` and `holds` host callbacks). */
+uint32_t scr_ni_host_bound(uint32_t kind, void *owner);
+void scr_ni_host_bind(uint32_t kind, void *owner, uint32_t handle, int store);
+int scr_ni_host_holds(uint32_t handle);
+void scr_ni_called_in(void); /* island code called a native function: its arguments are converted */
 void scr_ni_handles_install(void);
 void scr_ni_stop(void);
 
@@ -304,6 +326,7 @@ int scr_ni_host_export_set(uint32_t id, const struct ScrNodeValue *key,
 int scr_ni_host_export_has(uint32_t id, const struct ScrNodeValue *key);
 int scr_ni_host_export_delete(uint32_t id, const struct ScrNodeValue *key, struct ScrNodeValue *out);
 int scr_ni_host_export_keys(uint32_t id, struct ScrNodeValue *out);
+int scr_ni_host_export_symbol(uint32_t id, uint32_t index, struct ScrNodeValue *out);
 void scr_ni_host_export_watch(uint32_t id);
 void scr_ni_host_export_release(uint32_t id);
 /* ── shared modules (scope-B NI-6, scr_node_island_export.c) ── */

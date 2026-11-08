@@ -4,7 +4,7 @@ import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
-import { closedIslandInitLoad } from "./closed-island-init.js";
+import { closedIslandInitLoad, isClosedIslandStatement } from "./closed-island-init.js";
 import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
@@ -52,7 +52,6 @@ import {
   locOf,
   makeCycleAdmission,
   orderedImportsOf,
-  npmStaticDepSf7,
   requireSpecOf,
   resolveImport,
   resolveNpmImport,
@@ -744,7 +743,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       if (lowerer.nodeIslands !== null && collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
       const projectDep = isRelativeSpecifier(spec)
         ? null
-        : resolveImport(lowerer.program, fp.sf, spec);
+        : lowerer.facts.importedModule(fp.sf, spec);
       if (projectDep !== null) {
         // A Node island package that tsconfig `paths` maps to its installed
         // directory resolves to its declarations: it loads in Node.
@@ -781,7 +780,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
         // An explicitly selected installed entry owns its package's
         // source graph. Preflight included these modules for native
 
-        const dep = resolveImport(lowerer.program, fp.sf, spec);
+        const dep = lowerer.facts.importedModule(fp.sf, spec);
         if (dep !== null && entryPackageFile(dep.fileName) && lowerer.fileTag.has(dep)) continue;
       }
       if (!npm && !relIsJs) continue;
@@ -851,8 +850,7 @@ function dynamicImportRejectionOf(
           loc: locOf(call),
         };
   if (isUnloadedPackage(spec)) return rejection(probeNodeImportRefusal(sf.fileName, spec));
-  const root =
-    resolveImport(lowerer.program, sf, spec) ?? npmStaticDepSf7(lowerer.program, sf, spec);
+  const root = lowerer.facts.importedModule(sf, spec) ?? lowerer.facts.npmStaticModule(sf, spec);
   if (root !== null) return lowerer.dynamicImportRejections.get(root) ?? null;
   // Builtins, and URL specifiers (file:, data:), are not package names.
   if (canonicalBuiltinModule(spec) !== null || /^[a-z][a-z0-9+.-]*:/i.test(spec)) return null;
@@ -930,7 +928,7 @@ function collectOneDynamicImport(
           );
         })()
       : (() => {
-          const target = resolveImport(lowerer.program, sf, spec);
+          const target = lowerer.facts.importedModule(sf, spec);
           return target !== null && !target.isDeclarationFile;
         })();
   const builtin = canonicalBuiltinModule(spec);
@@ -1364,7 +1362,8 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
  * class (their bodies lower on their own and reach the binding only
  * through module storage), or code another module runs (an exported
  * binding). An arrow or function expression of the module's start captures
- * the binding where it is. */
+ * the binding where it is. A read counts however it is spelled: a plain
+ * name, an object shorthand, an export list entry (bindingSymbolAt). */
 function sharedJsBinding(lowerer: Lowerer, sf: ts.SourceFile, name: ts.Identifier): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(name);
   if (symbol === undefined) return false;
@@ -1389,10 +1388,28 @@ function sharedJsBinding(lowerer: Lowerer, sf: ts.SourceFile, name: ts.Identifie
         ts.isSetAccessorDeclaration(p) ||
         ts.isExportSpecifier(p) ||
         ts.isExportAssignment(p);
-    if (declared && lowerer.checker.getSymbolAtLocation(node) === symbol) shared = true;
+    if (declared && bindingSymbolAt(lowerer, node) === symbol) shared = true;
     return undefined;
   });
   return shared;
+}
+
+/** The binding an identifier reads, where the checker's symbol at the
+ * identifier is not the binding's own: the name of an object shorthand
+ * (`{ state }`: the symbol there is the property's) and the name of an
+ * export list entry (`export { state }`: the symbol there is the export's
+ * alias). */
+function bindingSymbolAt(lowerer: Lowerer, node: ts.Identifier): ts.Symbol | undefined {
+  const parent = node.parent;
+  if (parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === node)
+    return (
+      lowerer.checker.getShorthandAssignmentValueSymbol(parent) ??
+      lowerer.checker.getSymbolAtLocation(node)
+    );
+  const symbol = lowerer.checker.getSymbolAtLocation(node);
+  return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+    ? lowerer.checker.getAliasedSymbol(symbol)
+    : symbol;
 }
 
 /** An object or array literal of plain data written inline, as one arm of
@@ -2025,7 +2042,13 @@ export function collectGlobals(
           const vSym = lowerer.checker.getSymbolAtLocation(rhs);
           const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
           const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
-          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+          if (
+            vSym &&
+            vDecl &&
+            vG &&
+            vG.mutable &&
+            !bindingNeverReassigned(lowerer.bindingScope(), vSym, vDecl)
+          ) {
             const g: IrGlobal = {
               id: `%g.${tag}exports`,
               name: "exports",
@@ -2471,7 +2494,9 @@ export function collectGlobals(
           stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
           (() => {
             const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
-            return symbol !== undefined && bindingNeverReassigned(lowerer, symbol, decl);
+            return (
+              symbol !== undefined && bindingNeverReassigned(lowerer.bindingScope(), symbol, decl)
+            );
           })());
       if (stableStdlibAlias && stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer))
         continue;
@@ -3875,9 +3900,13 @@ export function lowerFileInit(
         body.push(...funduleFnStoreAt(funduleFns[funduleAt]!));
         funduleAt++;
       }
-      // A run of constants the island evaluates loads its generated module
-      // where the run begins (closed-island-init.ts).
-      if (lowerer.nodeIslands !== null) body.push(...closedIslandInitLoad(lowerer, sf, stmt));
+      // A constant the island evaluates loads its generated module where
+      // it is declared, and a statement the island evaluates is that load
+      // and nothing else (closed-island-init.ts).
+      if (lowerer.nodeIslands !== null) {
+        body.push(...closedIslandInitLoad(lowerer, sf, stmt));
+        if (isClosedIslandStatement(lowerer, sf, stmt)) continue;
+      }
       // A cycle binding's declaration stays at its position: its
       // initialization flag must be set where the declaration runs.
       const deferred = lowerer.cycleInitDeclarations.has(stmt)
@@ -4148,6 +4177,28 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       else_: workerBranch,
       loc,
     });
+  }
+  // `--define`: the program runs as if started with the defined variables
+  // set, so every read of the environment, and each child process, agrees
+  // with the `if` statements the values decided at build time. Set on the
+  // main thread before any module runs, so no thread reads the environment meanwhile.
+  if (lowerer.define !== undefined) {
+    body.unshift(
+      ...Object.entries(lowerer.define).map(([key, value]): IrStmt => ({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "process.envSet",
+          args: [
+            { kind: "strLit", value: key.slice("process.env.".length), type: STRING, loc },
+            { kind: "strLit", value, type: STRING, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      })),
+    );
   }
   if (lowerer.workerTargets.length > 0) {
     const mainBody = body.splice(0);

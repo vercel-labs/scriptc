@@ -75,6 +75,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // existsSync over a path value that may not be a string (the DEP0187
   // fallback), apart from scr_lib.c's typed form.
   ["scr_fs_exists_dyn.c", "fsExistsValue"],
+  // node:module's compile cache family (enableCompileCache and its
+  // neighbours), linked only by a program that names one of them.
+  ["scr_module_cache.c", "moduleCompileCache"],
   // The BYTE-data spellings of the option write and fs.promises.writeFile.
   ["scr_fs_bytes_write.c", "fsBytesWrites"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's

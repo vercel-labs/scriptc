@@ -1956,11 +1956,41 @@ export function isOsConstantsSymbol(
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
   types = false,
 ): boolean {
+  return isBuiltinConstantsSymbol(symbol, ctx, "os", types);
+}
+
+/** node:module's `constants` and its `compileCacheStatus` group, as
+ * @types/node and the fallback declare them (namespaces): the runtime's
+ * frozen checked-dynamic constants object. Its members are the same four
+ * numbers on every platform. */
+export function isModuleConstantsType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  return (
+    isBuiltinConstantsSymbol(type.getAliasSymbol(), ctx, "module", false) ||
+    isBuiltinConstantsSymbol(type.getSymbol(), ctx, "module", false)
+  );
+}
+
+/** A symbol declared as `constants`, or a namespace inside it, of the
+ * builtin module `module` (os or module). */
+function isBuiltinConstantsSymbol(
+  symbol: ts.Symbol | null | undefined,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+  module: "os" | "module",
+  types: boolean,
+): boolean {
   if (!symbol) return false;
   for (const d of symbol.declarations) {
-    const alias = types && ts.isTypeAliasDeclaration(d) && d.name.text === "SignalConstants";
+    const os = module === "os";
+    const alias = os && types && ts.isTypeAliasDeclaration(d) && d.name.text === "SignalConstants";
     const signals =
-      !types && ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) && d.name.text === "signals";
+      os &&
+      !types &&
+      ts.isVariableDeclaration(d) &&
+      ts.isIdentifier(d.name) &&
+      d.name.text === "signals";
     if (
       !(alias || signals || ts.isModuleDeclaration(d)) ||
       !ctx.isStdlibFile(ts.getSourceFileOfNode(d))
@@ -1970,7 +2000,7 @@ export function isOsConstantsSymbol(
     for (let n: ts.Node | undefined = d.parent; n; n = n.parent) {
       if (!ts.isModuleDeclaration(n)) continue;
       if (ts.isStringLiteral(n.name)) {
-        if ((n.name.text === "os" || n.name.text === "node:os") && (alias || inConstants))
+        if ((n.name.text === module || n.name.text === `node:${module}`) && (alias || inConstants))
           return true;
         break;
       }
@@ -2590,6 +2620,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // module object (the checked-dynamic module value).
   if (isPlatformPathType(type, ctx)) return DYN;
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
+  if (isModuleConstantsType(type, ctx)) return DYN;
   // The WebAssembly API's values have the checked-dynamic representation, so
   // declarations that merely mention them compile; each reached use of the
   // API itself is refused at its site (builtins/webassembly.ts).
@@ -4138,6 +4169,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "bigintStats" };
   }
+  // module.enableCompileCache()'s result and its options argument
+  // (@types/node's EnableCompileCacheResult and EnableCompileCacheOptions,
+  // and the fallback's twins) are the plain objects Node passes: a result
+  // lacks the members Node did not set, and an options object is read by the
+  // runtime the way Node reads it.
+  if (
+    psym !== undefined &&
+    (psymName === "EnableCompileCacheResult" || psymName === "EnableCompileCacheOptions") &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "module"),
+    )
+  )
+    return DYN;
   // Capacity snapshots and options keep their live object representation
   // across numeric/BigInt overloads, runtime options, and callbacks.
   if (

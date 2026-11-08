@@ -1,0 +1,62 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9817-node-island-load-reads-argument-accessors/main.cjs"
+ ],
+ "diags": [
+  {
+   "code": "SC1010",
+   "message": "the 'key-kit' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9817-node-island-load-reads-argument-accessors/main.cjs",
+    "start": 1488,
+    "end": 1513
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'shifting-kit' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9817-node-island-load-reads-argument-accessors/main.cjs",
+    "start": 1691,
+    "end": 1725
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'options-kit' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9817-node-island-load-reads-argument-accessors/main.cjs",
+    "start": 1816,
+    "end": 1848
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'tags-kit' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9817-node-island-load-reads-argument-accessors/main.cjs",
+    "start": 1856,
+    "end": 1882
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'file-kit' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9817-node-island-load-reads-argument-accessors/main.cjs",
+    "start": 1890,
+    "end": 1916
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  }
+ ]
+}

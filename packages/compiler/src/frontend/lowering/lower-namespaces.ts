@@ -45,7 +45,7 @@ import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { isIslandImportBinding } from "./lower-node-island.js";
 import { funduleFunctionOf, funduleMemberOf, lowerFunduleMemberValue } from "./lower-fundule.js";
 import type { FileParts } from "./lower-modules.js";
-import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
+import { isCjsJsFile, isJsSourceFile, locOf } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 
@@ -421,8 +421,7 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
         stmt.moduleSpecifier !== undefined &&
         ts.isStringLiteral(stmt.moduleSpecifier)
       ) {
-        const dep = resolveImport(
-          lowerer.program,
+        const dep = lowerer.facts.importedModule(
           ts.getSourceFileOfNode(d),
           stmt.moduleSpecifier.text,
         );
@@ -441,7 +440,7 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
       continue;
     const from = ts.getSourceFileOfNode(d);
     if (packageShimFor(from.fileName, stmt.moduleSpecifier.text) === null) continue;
-    const dep = resolveImport(lowerer.program, from, stmt.moduleSpecifier.text);
+    const dep = lowerer.facts.importedModule(from, stmt.moduleSpecifier.text);
     if (dep && !dep.isDeclarationFile && lowerer.fileTag.has(dep)) return dep;
   }
   return null;
@@ -462,7 +461,7 @@ export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.So
     return null;
   const from = ts.getSourceFileOfNode(decl);
   if (!isJsSourceFile(from)) return null;
-  const dep = resolveImport(lowerer.program, from, stmt.moduleSpecifier.text);
+  const dep = lowerer.facts.importedModule(from, stmt.moduleSpecifier.text);
   return dep !== null &&
     !dep.isDeclarationFile &&
     lowerer.fileTag.has(dep) &&

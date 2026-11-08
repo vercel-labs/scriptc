@@ -960,7 +960,7 @@ function undefinedResultParam(
   const error =
     errorSymbol !== undefined &&
     errorDecl.initializer === undefined &&
-    bindingNeverReassigned(lowerer, errorSymbol, errorDecl)
+    bindingNeverReassigned(lowerer.bindingScope(), errorSymbol, errorDecl)
       ? errorSymbol
       : null;
   return { symbol, name: decl.name, error, onlyAdapterCalls };

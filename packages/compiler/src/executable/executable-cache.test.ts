@@ -963,6 +963,9 @@ const OPTION_KEY_RULES: Record<string, KeyRule> = {
   "node-island": { keyed: (o) => ({ ...o, nodeIslands: "node:a-package" }) },
   native: { keyed: (o) => ({ ...o, nodeIslands: "native:a-package" }) },
   node: { keyed: (o) => ({ ...o, nodeIslands: "node:another-package" }) },
+  define: {
+    keyed: (o) => ({ ...o, define: JSON.stringify({ "process.env.NODE_ENV": '"production"' }) }),
+  },
 };
 
 test("every build and run option is in the cache keys or says why it need not be", async () => {

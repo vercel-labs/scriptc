@@ -83,6 +83,8 @@ import {
   npmStaticFsShadow,
   programBuiltinAliasSource,
   clearProgramBuiltinAliasCache,
+  definedSource,
+  setProgramDefines,
   npmStaticLexerVisibleNames,
   npmStaticLiveExportTable,
   npmStaticPackageOfPath,
@@ -91,6 +93,7 @@ import {
   setNpmStaticPackages,
   setNpmStaticTypeExports,
 } from "./npm-static.js";
+import type { Defines } from "./defines.js";
 import { isPrunedNpmReexport, planNpmStaticReexports } from "./npm-static-prune.js";
 import { npmStaticTypeExportPlan } from "./npm-static-type-exports-host.js";
 import { isNpmStaticSubclassArgument } from "./npm-static-subtyping.js";
@@ -171,6 +174,7 @@ import {
   elideProgramImports,
   importElisionOptions,
   type ImportElisionOptions,
+  type ProgramImportElision,
 } from "./import-elision.js";
 import {
   planDeclProjection,
@@ -1548,8 +1552,18 @@ function loadProgram7(
     // project that does not set `verbatimModuleSyntax` is compiled with the
     // imports and exports tsc keeps. The tsc gate reads the files as
     // written; the rewrite keeps their offsets.
+    //
+    // The authored world (PackageRoots.declared) is never compiled: it types
+    // the files as written for the declaration projection, which pairs each
+    // of its files with the lowering world's file of the same text and
+    // skips a file whose texts differ, and for the gate's project world,
+    // which is built over the files as written. It holds no elided file,
+    // so it asks the checker nothing about the program's imports.
     const dialectOf = fileDialects7(host);
-    const elision = elideProgramImports(program, (file) => dialectOf(file)?.elision ?? null);
+    const elision: ProgramImportElision =
+      packageRoots?.declared === true
+        ? { texts: new Map(), inlinedOnly: [] }
+        : elideProgramImports(program, (file) => dialectOf(file)?.elision ?? null);
     const elisions = elision.texts;
     const importWarnings = elision.inlinedOnly.map((kept) =>
       inlinedImportKeptDiag(kept.specifier, { file: kept.file, start: kept.start, end: kept.end }),
@@ -1572,6 +1586,16 @@ function loadProgram7(
       } else {
         gateWorld.diagnostics();
       }
+      // A type-only import the program itself uses as a value is the
+      // program's own error (TS1361, TS1362 in the file as written; the gate
+      // reports it): the check after the rewrite must not take it for a
+      // binding the elision dropped. The gate's diagnostics are the files as
+      // written and are already computed: nothing is checked a second time.
+      const writtenTypeOnlyValueUses = new Set<string>();
+      for (const d of gateWorld.diagnostics()) {
+        if ((d.code === 1361 || d.code === 1362) && d.fileName !== undefined)
+          writtenTypeOnlyValueUses.add(`${d.fileName}:${d.pos}`);
+      }
       for (const [file, text] of elisions) {
         // The text is carried, not inspected: what the elision took from it
         // is the rewrite it reported.
@@ -1583,7 +1607,7 @@ function loadProgram7(
       }
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       if (gateWorld.program !== before) before.dispose();
-      assertElisionKeptValues7(program, elisions.keys());
+      assertElisionKeptValues7(program, elisions.keys(), writtenTypeOnlyValueUses);
     }
     // The other two things a file's tsconfig decides: the order of class
     // field initializers and parameter properties, which the lowering
@@ -1692,18 +1716,30 @@ export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   /** Exact host module specifiers paired with their declaration paths. */
   externalTypes?: readonly (readonly [string, string])[];
+  /** `--define` values: JavaScript files' `if` statements they decide
+   * resolve to their taken branches. */
+  define?: Defines | undefined;
 }
 
 /** A binding the elision dropped is declared type-only, so a value use of
  * it that the analysis missed is a TypeScript error in the rewritten file
  * (TS1361, TS1362) where the file as written has none. That is a compiler
- * bug to report, never a program to lower with the import missing. */
-function assertElisionKeptValues7(program: ts.Program, files: Iterable<string>): void {
+ * bug to report, never a program to lower with the import missing. A use
+ * the file as written already reports (`written`, by file and offset: the
+ * rewrite keeps every offset; taken from the gate's diagnostics) is the
+ * program's own type-only import used as a value, which the gate reports
+ * as the program's error. */
+function assertElisionKeptValues7(
+  program: ts.Program,
+  files: Iterable<string>,
+  written: ReadonlySet<string>,
+): void {
   for (const file of files) {
     const sf = program.getSourceFile(file);
     if (sf === undefined) continue;
     for (const d of program.getSemanticDiagnostics(sf)) {
       if (d.code !== 1361 && d.code !== 1362) continue;
+      if (written.has(`${d.fileName ?? file}:${d.pos}`)) continue;
       throw new InternalCompilerError(
         `import elision dropped a binding that ${file} uses as a value: ${ts.flattenDiagnosticMessageText(d, "\n")}`,
       );
@@ -1898,9 +1934,13 @@ export function loadProgram(
   // resolve.ts answers the same sibling for scriptc's own edges).
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
+  setProgramDefines(opts?.define);
   const fsShadow = {
     readFile: (path: string) =>
-      npmShadow?.readFile(path) ?? programBuiltinAliasSource(services, path),
+      npmShadow?.readFile(path) ??
+      programBuiltinAliasSource(services, path) ??
+      definedSource(services, path) ??
+      undefined,
     hideFile: (path: string) =>
       (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
   };

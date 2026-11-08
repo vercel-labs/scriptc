@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9652-lazy-init-effects/stamp.ts",
+  "<repo>/tests/corpus/9652-lazy-init-effects/shapes.ts",
+  "<repo>/tests/corpus/9652-lazy-init-effects/checked.ts",
+  "<repo>/tests/corpus/9652-lazy-init-effects/quiet.ts",
+  "<repo>/tests/corpus/9652-lazy-init-effects/main.ts"
+ ],
+ "diags": []
+}

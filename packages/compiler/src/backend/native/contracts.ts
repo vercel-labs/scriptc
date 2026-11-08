@@ -262,6 +262,9 @@ export interface CcOptions {
   /** fs.existsSync over a path value that may not be a string: compiles
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** node:module's enableCompileCache, getCompileCacheDir, flushCompileCache
+   * and constants: compiles scr_module_cache.c. */
+  moduleCompileCache?: boolean;
   /** SCR_FN_MEMBER_PROPS: a function's inherited member shadowed by an own
    * data property (`fn.call = f`; that build of scr_json.c and
    * scr_dyn_invoke.c). */

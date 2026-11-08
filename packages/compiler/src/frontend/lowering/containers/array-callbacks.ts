@@ -3238,7 +3238,7 @@ function recognizedSortKeys(
   fnArg: IrExpr,
   elem: IrType,
 ): readonly SortKeyOrder[] | null {
-  const keyed = closureKeyOrder(lowerer, fnArg);
+  const keyed = closureKeyOrder((name) => lowerer.liftedFnNamed(name), fnArg);
   if (!keyed) return null;
   if (keyed[0]!.read === null) return elem.kind === "f64" ? keyed : null;
   return elem.kind === "record" || elem.kind === "object" ? keyed : null;

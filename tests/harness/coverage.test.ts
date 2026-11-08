@@ -111,6 +111,30 @@ test("record width copies report at every storing site", async () => {
   );
 });
 
+test("a Node island value converted to a native type reports as a copy", async () => {
+  // SC6007: an assertion to an array and to a record, the same through a
+  // `const`, a typed binding of an `any`, a typed callback parameter the
+  // callback writes through, and an island Map keyed by a record type. A
+  // record of unknown members, a structuredClone, a value no island made, a
+  // read-only parameter and a Map of scalars report nothing.
+  const entry = fixture("island-copies/main.ts");
+  const { coverage } = analyze(entry);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  const source = readFileSync(entry, "utf8");
+  const lineOf = (offset: number): number => source.slice(0, offset).split("\n").length;
+  expect((coverage.divergences ?? []).map((d) => [d.code, lineOf(d.loc.start)])).toEqual([
+    ["SC6007", 12],
+    ["SC6007", 13],
+    ["SC6007", 15],
+    ["SC6007", 16],
+    ["SC6007", 17],
+    ["SC6007", 20],
+  ]);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
+  await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-island-copies.txt");
+});
+
 test("ordinary code reports no divergence", () => {
   const { coverage } = analyze(fixture("no-divergences.ts"));
   expect(coverage.diagnostics).toEqual([]);
@@ -1195,6 +1219,25 @@ test("a package a build islands by its module-init fence is the same island here
   }
 });
 
+test("the island reload keeps the define values the analysis started with", () => {
+  // ni-sdk fences at module initialization, so lowering grows it into the
+  // island set and the analysis reloads the program to lower it as a build
+  // does. The reload carries the --define values along: the untaken branch
+  // is resolved away in what the report counts, exactly as in the build.
+  const entry = fixture("node-islands-fenced-sdk-values/define.js");
+  const define = { "process.env.SCRIPTC_COVERAGE_DEFINE": "on" };
+  const withDefine = analyze(entry, { define });
+  const plain = analyze(entry).coverage;
+  expect(withDefine.coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
+    ["ni-sdk", "gap"],
+  ]);
+  const text = [...withDefine.sourceTexts].find(([file]) => file.endsWith("define.js"))?.[1];
+  expect(text).not.toContain("untaken");
+  expect(withDefine.coverage.stats.statementsTotal).toBeLessThan(plain.stats.statementsTotal);
+  expect(withDefine.coverage.stats.statementsFailed).toBe(0);
+  expect(withDefine.coverage.diagnostics).toEqual([]);
+});
+
 test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
   const entry = fixture("node-islands-config/main.ts");
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-config-"));
@@ -1325,15 +1368,19 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     const { coverage } = analyze(file, {});
     expect.soft(coverage.diagnostics, file).toEqual([]);
     // Corpus programs match Node on the path the corpus runs: a divergence
-    // warning on one is a false positive, except SC6001. That warning is
-    // sound rather than exact: it names every conversion that copies a value
-    // the program could tell from the original (lowering/width-copies.ts),
-    // and a corpus program can hold one on a path it does not take. What
-    // keeps it honest is tests/harness/copy-soundness.test.ts, which counts
-    // the conversions that copy and the warnings that were not needed.
+    // warning on one is a false positive, except SC6001 and SC6012. SC6001
+    // is sound rather than exact: it names every conversion that copies a
+    // value the program could tell from the original
+    // (lowering/width-copies.ts), and a corpus program can hold one on a
+    // path it does not take. What keeps it honest is
+    // tests/harness/copy-soundness.test.ts, which counts the conversions
+    // that copy and the warnings that were not needed. SC6012 names a
+    // refused statement inside its own try block, and a corpus program that
+    // has one is written so that Node throws there too (a guarded require
+    // of a module that is not there), which is how it matches.
     expect
       .soft(
-        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001"),
+        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001" && d.code !== "SC6012"),
         file,
       )
       .toEqual([]);

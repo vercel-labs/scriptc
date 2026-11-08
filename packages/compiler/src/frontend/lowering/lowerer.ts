@@ -104,6 +104,8 @@ import {
   widthCopyDivergences,
   type WidthCopyFact,
 } from "./width-copies.js";
+import { guardedDeferredFences } from "../../ir/deferred-fence.js";
+import { guardedDeferredFenceDiag } from "../../diagnostics/diagnostic.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
@@ -248,6 +250,7 @@ import {
   type FnCtx,
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
+import type { Defines } from "../defines.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
@@ -412,11 +415,9 @@ import {
   isNodeEsmFile,
   locOf,
   orderedImportsOf,
-  npmStaticDepSf7,
   requireSpecOf,
   isJsWriteTarget7,
   isStrictCode,
-  resolveImport,
   workspacePackageOfPath,
   type CycleEdge,
 } from "../program.js";
@@ -598,7 +599,7 @@ import {
   genericLocalClassBinding,
   checkGenericIdentityPins,
 } from "./generic-functions.js";
-import { bindingNeverReassigned } from "./binding-analysis.js";
+import { bindingNeverReassigned, type BindingScope } from "./binding-analysis.js";
 import { isMessageListenerCall } from "./expressions/message-listeners.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
@@ -1223,6 +1224,9 @@ export interface LowerOptions {
    * path.delimiter / os.EOL lower as the win32 literals; path.posix and
    * path.win32 keep answering THEIR platform everywhere, like Node's. */
   targetPlatform?: string;
+  /** `--define` values: %main sets each defined `process.env.NAME` first,
+   * and writes to one are refused. */
+  define?: Defines | undefined;
   /** Node's startup refusal (LoadResult.startupCrash — preflight's
    * resolution walk and named-import link checks): the program
    * compiles to that startup crash. */
@@ -1402,6 +1406,8 @@ export interface LowererMode {
   /** The build's target platform (LowerOptions.targetPlatform — lowerToIr
    * passes it to every pass). Defaults to the host. */
   targetPlatform?: string;
+  /** LowerOptions.define, shared by every pass. */
+  define?: Defines | undefined;
   /** LowerOptions.tierMode, shared by every pass. */
   tierMode?: TierMode;
   workerTargets?: readonly ts.SourceFile[];
@@ -1634,6 +1640,7 @@ function lowerToIrWithIslands(
     projectCheckJs: options.projectCheckJs ?? false,
     parameterPropertiesFirst: options.parameterPropertiesFirst,
     targetPlatform,
+    define: options.define,
     startupCrash,
     admittedOpinions: options.admittedOpinions,
     inlineRequireCycleCalls,
@@ -1665,6 +1672,7 @@ function lowerToIrWithIslands(
           projectCheckJs: options.projectCheckJs ?? false,
           parameterPropertiesFirst: options.parameterPropertiesFirst,
           targetPlatform,
+          define: options.define,
           startupCrash,
           admittedOpinions: options.admittedOpinions,
           inlineRequireCycleCalls,
@@ -1734,6 +1742,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1770,6 +1779,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1849,6 +1859,7 @@ function lowerToIrWithIslands(
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1889,6 +1900,7 @@ function lowerToIrWithIslands(
       generalNodeStreams: true,
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1943,6 +1955,13 @@ function lowerToIrWithIslands(
     ...widthCopyDivergences(resultLowerer, widthCopies),
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
+    // Deferred refusals inside their own try/catch: named here, since the
+    // binary does not report them (ir/deferred-fence.ts).
+    ...(result.module === null
+      ? []
+      : guardedDeferredFences(result.module).map((site) =>
+          guardedDeferredFenceDiag(site.code, site.refusal, site.loc),
+        )),
   ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };
@@ -2073,6 +2092,7 @@ function lowerToIrWithIslands(
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
+      define: options.define,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -4543,7 +4563,7 @@ export class Lowerer {
    * global holding what the import form sees (lower-node-island.ts). */
   readonly islandModules = new Map<string, IslandModuleBinding>();
   /** The modules Node island calls load (lower-node-island.ts). */
-  readonly nodeIslandModules = new NodeIslandModuleCollector();
+  readonly nodeIslandModules: NodeIslandModuleCollector;
   /** Each call's caller literal, set to its tree path when lowering ends. */
   readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
   /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
@@ -4561,9 +4581,9 @@ export class Lowerer {
   readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
-  /** Module-level constants the island evaluates (closed-island-init.ts):
-   * what each top-level `const` statement declares (null: not closed), and
-   * each file's constants. */
+  /** Module-level constants and statements the island evaluates
+   * (closed-island-init.ts): what each top-level `const`, expression
+   * statement or `for…of` is to it (null: not closed), and each file's. */
   readonly closedIslandStatements = new Map<
     ts.Statement,
     import("./closed-island-init.js").ClosedConstant | null
@@ -4572,6 +4592,14 @@ export class Lowerer {
     ts.SourceFile,
     import("./closed-island-init.js").ClosedFile
   >();
+  /** The decisions in progress, and each file's identifiers by their text
+   * (closed-island-init.ts: a table and the statements that name it are
+   * decided together). */
+  readonly closedIslandDeciding: import("./closed-island-init.js").ClosedDeciding = {
+    active: new Set(),
+    assumed: null,
+  };
+  readonly closedIslandMentions = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
@@ -4799,6 +4827,9 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
+  /** array-values.ts's answer per binding: where its value is handed to a
+   * slot of a mutable array type (mutableArraySlotUseOf), or null. */
+  readonly mutableArraySlotUses = new Map<ts.Symbol, ts.Node | null>();
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
@@ -5490,6 +5521,7 @@ export class Lowerer {
     "generalNodeStreams",
     "dynNodeStreams",
     "targetPlatform",
+    "define",
     "startupCrash",
     "projectCheckJs",
     "parameterPropertiesFirst",
@@ -5574,6 +5606,7 @@ export class Lowerer {
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
+    "mutableArraySlotUses",
     "sloppyThisGlobalReads",
     "globalLookupNames",
     "namesWebStreamClass",
@@ -5593,11 +5626,16 @@ export class Lowerer {
     // The island names native modules re-export: a pure function of the
     // program's modules, collected before lowering begins.
     "islandReexports",
-    // Which module-level constants the island evaluates: decided from the
-    // program's syntax, types and the facts collection settled (island
-    // bindings, initialization flags), so every pass decides the same.
+    // Which module-level constants and statements the island evaluates:
+    // decided from the program's syntax, types and the facts collection
+    // settled (island bindings, initialization flags), so every pass decides
+    // the same.
     "closedIslandStatements",
     "closedIslandFiles",
+    // A file's identifiers by their text: syntax. The decisions in progress
+    // are empty whenever no decision is being taken.
+    "closedIslandMentions",
+    "closedIslandDeciding",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.
@@ -5908,6 +5946,7 @@ export class Lowerer {
    * selects the platform-keyed builtin surfaces (builtinModuleFnsOf /
    * builtinModuleConstOf in surfaces.ts). */
   readonly targetPlatform: string;
+  readonly define: Defines | undefined;
   /** LowererMode.startupCrash — buildMain opens %main with the throw. */
   readonly startupCrash: StartupCrash | null;
   /** The project's tsconfig sets `checkJs`. */
@@ -6553,6 +6592,7 @@ export class Lowerer {
     this.remainder = mode.remainder ?? false;
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
+    this.define = mode.define;
     this.tierMode = mode.tierMode ?? "auto";
     this.runtimeOptionalReport = mode.runtimeOptionalReport === true;
     this.typeClaims = mode.typeClaims === true;
@@ -6579,6 +6619,7 @@ export class Lowerer {
       throw new InternalCompilerError(
         "lowerer bug: LowererMode.facts belongs to a different program or moduleOrder",
       );
+    this.nodeIslandModules = new NodeIslandModuleCollector(this.facts.moduleSpecifierScans);
     this.verifySymbolProvenance = this.facts.verify
       ? (sym, answer) => this.verifySymbolProvenanceAnswer(sym, answer)
       : undefined;
@@ -7564,7 +7605,7 @@ export class Lowerer {
     for (const decl of moduleSymbol ? moduleSymbol.declarations : []) {
       if (ts.isSourceFile(decl)) return decl;
     }
-    return resolveImport(this.program, from, spec.text);
+    return this.facts.importedModule(from, spec.text);
   }
 
   /** Follow one project-module export through the checker's resolved export
@@ -7717,7 +7758,7 @@ export class Lowerer {
       }
       if (d === undefined || spec === undefined || !ts.isStringLiteral(spec) || name !== "default")
         return null;
-      const dep = resolveImport(this.program, ts.getSourceFileOfNode(d), spec.text);
+      const dep = this.facts.importedModule(ts.getSourceFileOfNode(d), spec.text);
       if (!dep) return null;
       sym = defaultExportSymbolOf(this, dep) ?? undefined;
     }
@@ -7833,8 +7874,8 @@ export class Lowerer {
     // Project aliases/self-references resolve through the same entry point as
     // relative imports; an opted-in --npm-static package is the fallback.
     const dep =
-      resolveImport(this.program, ts.getSourceFileOfNode(importDecl), spec) ??
-      npmStaticDepSf7(this.program, ts.getSourceFileOfNode(importDecl), spec);
+      this.facts.importedModule(ts.getSourceFileOfNode(importDecl), spec) ??
+      this.facts.npmStaticModule(ts.getSourceFileOfNode(importDecl), spec);
     if (!dep || !isJsSourceFile(dep) || isNodeEsmFile(dep, this.program)) return null;
     return dep;
   }
@@ -7874,8 +7915,8 @@ export class Lowerer {
     if (directSpec !== null) {
       if (isJsonRequireDecl(this, decl)) return null;
       return (
-        resolveImport(this.program, ts.getSourceFileOfNode(decl), directSpec, "require") ??
-        npmStaticDepSf7(this.program, ts.getSourceFileOfNode(decl), directSpec, "require")
+        this.facts.importedModule(ts.getSourceFileOfNode(decl), directSpec, "require") ??
+        this.facts.npmStaticModule(ts.getSourceFileOfNode(decl), directSpec, "require")
       );
     }
     return createRequireProgramModuleOf(this, decl.initializer)?.dep ?? null;
@@ -7898,8 +7939,8 @@ export class Lowerer {
     if (spec === null) return null;
     const sf = stmt.parent;
     const dep =
-      resolveImport(this.program, sf, spec, "require") ??
-      npmStaticDepSf7(this.program, sf, spec, "require");
+      this.facts.importedModule(sf, spec, "require") ??
+      this.facts.npmStaticModule(sf, spec, "require");
     return dep !== null && cjsNamespaceModule(this, dep) ? dep : null;
   }
 
@@ -8593,8 +8634,8 @@ export class Lowerer {
     // those globals stay uninitialized: the dep's module body would never
     // run.
     const dep =
-      resolveImport(this.program, ts.getSourceFileOfNode(node), spec, "require") ??
-      npmStaticDepSf7(this.program, ts.getSourceFileOfNode(node), spec, "require");
+      this.facts.importedModule(ts.getSourceFileOfNode(node), spec, "require") ??
+      this.facts.npmStaticModule(ts.getSourceFileOfNode(node), spec, "require");
     if (!dep || dep.fileName.endsWith(".json")) return null;
     if (this.asyncInitFiles.has(dep)) {
       this.unsupported(
@@ -17034,7 +17075,7 @@ export class Lowerer {
         units.add("undefined");
       }
     }
-    if (!allConst && !bindingNeverReassigned(this, sym, firstDecl!)) return null;
+    if (!allConst && !bindingNeverReassigned(this.bindingScope(), sym, firstDecl!)) return null;
     return [...units].sort().join(" or ");
   }
 
@@ -20197,6 +20238,18 @@ export class Lowerer {
     return { checker: this.checker, isStdlibFile: (sf: ts.SourceFile) => this.isStdlibFile(sf) };
   }
 
+  /** What the binding-write scan (binding-writes.ts) reads of a lowering
+   * context: a record, not the Lowerer (see isStdlibFile). Its parameter is
+   * the BindingScope interface, and handing it the Lowerer converted the
+   * Lowerer to a dynamic value at every one of its callers when the
+   * compiler compiles itself. The record shares this Lowerer's cache. */
+  bindingScope(): BindingScope {
+    return {
+      neverReassignedCache: this.neverReassignedCache,
+      resolveValueSymbol: (ident: ts.Identifier) => this.resolveValueSymbol(ident),
+    };
+  }
+
   /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by
    * symbol. A symbol's declarations are fixed for one loaded program, and
    * the mapper asks on every object type it maps, so the round shares one
@@ -21521,6 +21574,10 @@ export class Lowerer {
     // os.constants: the runtime's null-prototype constants object.
     if (bi.module === "os" && bi.member === "constants") {
       return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
+    }
+    // module.constants: the frozen object that holds compileCacheStatus.
+    if (bi.module === "module" && bi.member === "constants") {
+      return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
     }
     // tls.rootCertificates through the namespace: the same runtime-valued
     // constant the named-import read lowers to.

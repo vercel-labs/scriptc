@@ -62,6 +62,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import { markGuardedDeferredFences } from "../../ir/deferred-fence.js";
 import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import {
   constantDeleteKey,
@@ -136,6 +137,8 @@ import {
   arrayValueType,
   unionArrayValueRead,
   unionArrayValueType,
+  unionArmsView,
+  unionTupleJoin,
   lowerSafeIndexRead,
 } from "./array-values.js";
 import {
@@ -375,6 +378,7 @@ import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { iterableUnionOf, lowerForOfIterable } from "./iterable-values.js";
+import { refuseDefinedEnvWrite } from "./builtins/environment.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -6941,7 +6945,7 @@ export function lowerVarDecl(
       stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
       (() => {
         const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
-        return symbol !== undefined && bindingNeverReassigned(lowerer, symbol, decl);
+        return symbol !== undefined && bindingNeverReassigned(lowerer.bindingScope(), symbol, decl);
       })());
   if (stableStdlibAlias && stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer)) return null;
 
@@ -8991,6 +8995,10 @@ function lowerBranchSwitch(
  * WRAPPING the catch block, like the spec's catch environment). */
 export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   const tryBody = lowerer.lowerScopedBlock(stmt.tryBlock);
+  // A deferred refusal in the block of a `try` that has a `catch` is the
+  // program's own handler's to deal with: the build names it and the run
+  // does not report it (ir/deferred-fence.ts).
+  if (stmt.catchClause) markGuardedDeferredFences(tryBody);
   let catchBody: IrStmt[] | null = null;
   let catchLocalId: string | null = null;
   if (stmt.catchClause) {
@@ -9125,9 +9133,11 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     lowerer.isProcessEnv(target.expression) ||
     heldEnvValueType(lowerer, target.expression) !== null
   ) {
+    const key = lowerKey();
+    refuseDefinedEnvWrite(lowerer, key, target);
     return {
       kind: "exprStmt",
-      expr: { kind: "libCall", fn: "process.envUnset", args: [lowerKey()], type: VOID, loc },
+      expr: { kind: "libCall", fn: "process.envUnset", args: [key], type: VOID, loc },
       loc,
     };
   }
@@ -9355,7 +9365,7 @@ function unchangedAfterExport(
       return false;
     return runsBeforeExport(decl);
   }
-  if (!bindingNeverReassigned(lowerer, sym, decl)) return false;
+  if (!bindingNeverReassigned(lowerer.bindingScope(), sym, decl)) return false;
   // A binding of another module: the exporting module's own binding
   // `nameNode` names holds that module's require, evaluated before the
   // export, and this file does not assign the binding either.
@@ -10215,6 +10225,7 @@ export function lowerExprStatement(
             type: STRING,
             loc: locOf(expr.left.name),
           };
+          refuseDefinedEnvWrite(lowerer, key, expr.left);
           const value = lowerer.lowerExpr(expr.right);
           if (value.type.kind !== "string") {
             lowerer.unsupported(
@@ -13067,7 +13078,13 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   // A union of native arrays (`string[] | Chunk[]`): one walk over the
   // value, whose length and element reads dispatch on the arm the value
   // holds. `elem` is the join of the arms' element values.
-  let arrayUnionSource: { unionId: string; arms: readonly IrType[]; elem: IrType } | null = null;
+  let arrayUnionSource: {
+    unionId: string;
+    arms: readonly IrType[];
+    elem: IrType;
+    /** Some arms are tuples, read at the cursor's position. */
+    moving: boolean;
+  } | null = null;
   // A nested loop receiver can be an OOB-safe array read from the outer
   // loop (`for (const row of grid) for (const cell of row)`). The checker
   // sees the inner value as an array, while its runtime slot retains
@@ -13103,6 +13120,24 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         type: checkerIterable,
         loc: locOf(iterSrc),
       };
+  }
+  // A union of tuples and arrays the checker reads as one array, or whose
+  // elements all have one type: the loop reads each position of the value
+  // itself when it reaches it (unionArmsView), as it does for one tuple, so
+  // it sees what its own body writes.
+  let unionArmsLoop = false;
+  if (!stmt.awaitModifier) {
+    const view = unionArmsView(
+      lowerer,
+      iterSrc,
+      iterable,
+      checkerIterable?.kind === "array" ? checkerIterable : unionTupleJoin(lowerer, iterable.type),
+      locOf(iterSrc),
+    );
+    if (view) {
+      iterable = view;
+      unionArmsLoop = view.type.kind === "union";
+    }
   }
   if (iterable.type.kind === "bytes" || indexedUnionArms(lowerer, iterable.type)) {
     return lowerForOfBytes(lowerer, stmt, iterable, labels);
@@ -13261,11 +13296,17 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
             loc: locOf(iterSrc),
           };
       }
-      const arms = arrayArms(iterable.type);
-      const elem = arms === null ? null : unionArrayValueType(lowerer, iterable.type);
+      const arms =
+        arrayArms(iterable.type) ??
+        (unionArmsLoop && iterable.type.kind === "union"
+          ? (lowerer.unions.get(iterable.type.unionId)?.arms ?? null)
+          : null);
+      const moving = unionArmsLoop && arms !== null && arms.some((arm) => arm.kind !== "array");
+      const elem =
+        arms === null ? null : unionArrayValueType(lowerer, iterable.type, null, false, moving);
       if (iterable.type.kind !== "union" || arms === null || elem === null)
         lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
-      arrayUnionSource = { unionId: iterable.type.unionId, arms, elem };
+      arrayUnionSource = { unionId: iterable.type.unionId, arms, elem, moving };
     }
   }
   const elementType =
@@ -13398,6 +13439,8 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         varRef(source.id, sourceT, loc),
         varRef(cursor.id, F64, loc),
         loc,
+        undefined,
+        arrayUnionSource.moving,
       )!;
     } else if (presentElements) {
       yielded = {
@@ -13466,15 +13509,20 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     // The live length of the arm a union of arrays holds: a tag test per
     // arm but the last, which answers untested.
     const unionLength = (union: { unionId: string; arms: readonly IrType[] }): IrExpr => {
-      const armLength = (tag: number): IrExpr =>
-        lengthOf({
+      const armLength = (tag: number): IrExpr => {
+        const arm = union.arms[tag]!;
+        // A tuple arm has as many positions as fields.
+        const tuple = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+        if (tuple?.tuple) return numLit(tuple.fields.length, loc);
+        return lengthOf({
           kind: "unionNarrow",
           unionId: union.unionId,
           tag,
           value: varRef(source.id, sourceT, loc),
-          type: union.arms[tag]!,
+          type: arm,
           loc,
         });
+      };
       let result = armLength(union.arms.length - 1);
       for (let tag = union.arms.length - 2; tag >= 0; tag--) {
         result = {
@@ -15715,7 +15763,7 @@ export function stdlibBufferVarAlias(lowerer: Lowerer, decl: ts.VariableDeclarat
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
   return (
     symbol !== undefined &&
-    bindingNeverReassigned(lowerer, symbol, decl) &&
+    bindingNeverReassigned(lowerer.bindingScope(), symbol, decl) &&
     requireEarlyReference(lowerer.program, decl) === null
   );
 }

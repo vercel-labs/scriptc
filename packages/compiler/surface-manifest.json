@@ -1781,12 +1781,37 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.module.constants",
+      "kind": "node-builtin",
+      "name": "module.constants",
+      "status": "static",
+      "note": "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED"
+    },
+    {
       "id": "node-builtin.module.createRequire",
       "kind": "node-builtin",
       "name": "module.createRequire",
       "status": "unsupported",
       "code": "SC2020",
       "note": "the lowered shape is a const binding (or a proven stable top-level let/var) over createRequire(import.meta.url) (or __filename) whose require calls take STATIC string literals — builtins, project modules (including #imports), relative .json documents and natively compiled npm packages resolve at build time; dynamic specifiers cannot exist in a compiled binary's fixed module graph"
+    },
+    {
+      "id": "node-builtin.module.enableCompileCache",
+      "kind": "node-builtin",
+      "name": "module.enableCompileCache",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.module.flushCompileCache",
+      "kind": "node-builtin",
+      "name": "module.flushCompileCache",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.module.getCompileCacheDir",
+      "kind": "node-builtin",
+      "name": "module.getCompileCacheDir",
+      "status": "static"
     },
     {
       "id": "node-builtin.module.isBuiltin",

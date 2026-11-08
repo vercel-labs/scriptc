@@ -1,0 +1,6 @@
+- **Objects converted from Node islands:** An object or array made by JavaScript running in a Node island is one object under Node.js, whatever type the program gives it.
+  A compiled program keeps it as the island's object while it is typed `unknown`, `any` or by the island package's own declarations.
+  Where the program converts it to an array or record type of its own (`value as Item[]`, a typed binding of an `any` value, a typed parameter of a callback the island calls), the conversion reads the members that type declares and builds a native value from them.
+  That value is a copy: a later change made by the island does not show through it, a write made through it does not reach the island, it is not `===` to the island's object, and it holds only the members the type declares.
+  scriptc reports each conversion it can see as an `SC6007` warning; a value that reaches the conversion through a function parameter or a property typed `unknown` is converted the same way without a warning.
+  Declare the type in the island package's declarations to keep the island's object, or write the copy yourself (`structuredClone(value) as Item[]`) so that Node.js copies too.

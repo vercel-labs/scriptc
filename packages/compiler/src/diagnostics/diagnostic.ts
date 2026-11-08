@@ -73,8 +73,10 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004), an import the
- *            build keeps although tsc's output drops it (SC6008); SC6005 (Date strings
+ *            to a cast to an unrelated class (SC6004), a value a Node island
+ *            made converted to a native type, which is a copy (SC6007), an
+ *            import the build keeps although tsc's output drops it (SC6008);
+ *            SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
@@ -329,6 +331,27 @@ export function widthCopyDivergenceDiag(
   };
 }
 
+/** SC6012 — a JavaScript statement that does not compile (a deferred
+ * refusal) sits in the `try` block of a `try`/`catch` of the same function.
+ * It throws when it runs, so the program's `catch` clause runs, also where
+ * the statement would have completed under Node (where Node throws there
+ * too, a missing module behind a guarded require, the two agree). The
+ * program handles the throw itself, so the binary does not report the site
+ * on stderr as it does for other deferred refusals; this warning is where
+ * the site is named. */
+export function guardedDeferredFenceDiag(
+  code: string,
+  refusal: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6012",
+    message: `this statement does not compile (${code}: ${refusal}) and sits inside its own try block: when it runs it throws and the catch clause runs, also where the statement would have completed under Node, so the program's output can differ from Node's from there on. The binary prints nothing about it when it runs`,
+    loc,
+    hint: "rewrite the statement so that it compiles, or accept the catch path; SCRIPTC_DEFERRED_REPORT=all in the program's environment makes the binary name each such site on stderr the first time it throws",
+  };
+}
+
 /** SC6002 — an object literal whose written key order differs from the
  * order its declared type compiles to, for a type the program observes
  * (JSON.stringify, Object.keys/values/entries, for-in, console output). */
@@ -380,6 +403,42 @@ export function unrelatedClassCastDivergenceDiag(
     message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
     loc,
     hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
+  };
+}
+
+/** Where a value a Node island made is converted to a native type (SC6007). */
+export type IslandValueCopySite = "assertion" | "binding" | "parameter" | "members";
+
+/** SC6007 — an object or array a Node island made is converted to a native
+ * array or record type where the compiler sees the conversion: an assertion
+ * (`value as T`), a typed binding of an `any` value, a typed parameter of a
+ * callback the island calls, or the keys and values of an island `Map` or
+ * `Set` whose declared member type is a native array or record. The checked
+ * conversion reads the members through the island's object and builds a
+ * native value from them. Under
+ * Node there is one object, so the island's later changes show through every
+ * name, the program's writes reach the island, and `===` holds; the copy has
+ * none of the three, and it holds only the members the target type declares.
+ * A target that stays checked-dynamic (`unknown`, a record of `unknown`
+ * members, a type the island declares) keeps the island's object and is not
+ * reported, and neither is a copy the program writes itself
+ * (`structuredClone(value) as T`). */
+export function islandValueCopyDivergenceDiag(
+  targetType: string,
+  site: IslandValueCopySite,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const how: Record<IslandValueCopySite, string> = {
+    assertion: `asserting a value a Node island made as '${targetType}'`,
+    binding: `storing a value a Node island made in a '${targetType}' binding`,
+    parameter: `a Node island calling this callback with an object of its own for the '${targetType}' parameter`,
+    members: `reading a key or a value of this '${targetType}', when a Node island made it,`,
+  };
+  return {
+    code: "SC6007",
+    message: `${how[site]} copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own object, so the island's later changes are visible through it, writes made through it reach the island, and it is '===' to the island's object; the copy has none of the three`,
+    loc,
+    hint: "declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too",
   };
 }
 

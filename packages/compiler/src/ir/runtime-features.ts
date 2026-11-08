@@ -2063,8 +2063,10 @@ const RUNTIME_FEATURE_RULES = {
     fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
-    // symbols scr_sym_well_known makes.
-    prefixes: ["sym.", "disposable.", "iterator."],
+    // symbols scr_sym_well_known makes. An island symbol the program
+    // receives is a native symbol (scr_node_island_handle.c makes it), so
+    // a program with a Node island links the unit too.
+    prefixes: ["sym.", "disposable.", "iterator.", "nodeIsland."],
     types: ["symbol"],
   }),
   /** Symbol.toPrimitive is read (sym.wellKnown with that name, or a name
@@ -2244,6 +2246,8 @@ const RUNTIME_FEATURE_RULES = {
    * scr_fs_exists_dyn.c, which reports DEP0187 through the warning queue the
    * dynAsync rule brings in. */
   fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
   /** The BYTE-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -2323,6 +2327,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fnMemberProps: false,
     fsFlags: false,
     fsExistsValue: false,
+    moduleCompileCache: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,

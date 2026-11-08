@@ -487,6 +487,9 @@ describe("what a load reads of the machine and the moment", () => {
       "core-modules": `[require("os").EOL.length, require("os").constants.signals.SIGINT, require("worker_threads").isMainThread, require("http").STATUS_CODES[404], require("net").isIP("127.0.0.1"), require("util").inspect({ a: 1 }), require("path").join("a", "b"), require("fs").constants.O_RDONLY, require("crypto").createHash("sha1").update("x").digest("hex").length, require("events").defaultMaxListeners].join(" ")`,
       classes: `[typeof require("net").Socket, typeof require("fs").ReadStream, typeof require("http").Agent, typeof new (require("http").Agent)().destroy, typeof class extends require("events") {}, typeof new (require("async_hooks").AsyncLocalStorage)().run].join(" ")`,
       "stream-descriptor": `process.stdout.fd + process.stderr.fd`,
+      // Node's Headers, Request and Response mark themselves uncloneable
+      // through worker_threads when they are made: no effect of the load.
+      "web-objects": `[new Headers({ a: "b" }).get("a"), new Request("http://localhost/x").method, new Response().status, typeof new FormData().append].join(" ")`,
       "esm-platform": `import { platform } from "node:process";\nexport const v = platform.length > 0;\n`,
       "esm-default": `import process from "node:process";\nimport os from "node:os";\nexport const v = process.platform === os.platform();\n`,
       "esm-worker": `import { isMainThread } from "node:worker_threads";\nexport const v = isMainThread;\n`,
@@ -505,6 +508,7 @@ describe("what a load reads of the machine and the moment", () => {
     expect(recorded.value("date-parse-zoned")).toBe(`${T0} ${T0} ${T0} ${T0}`);
     expect(recorded.value("explicit-zone")).toBe("12 AM 1/1/2020, 12:00:00 AM");
     expect(recorded.value("esm-worker")).toBe(true);
+    expect(recorded.value("web-objects")).toBe("b GET 200 function");
   });
 
   test("an environment variable behind a builtin is a guard", () => {

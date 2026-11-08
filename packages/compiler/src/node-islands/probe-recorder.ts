@@ -854,6 +854,9 @@ exports.probe = function probe(input) {
     wrapFn(Module, k, effects, "module." + k + "()");
   const pureFns = new Set(["os.platform", "os.homedir", "os.tmpdir", "os.type", "os.arch", "os.machine", "os.endianness",
     "tty.isatty", "net.isIP", "net.isIPv4", "net.isIPv6", "tls.getCiphers", "tls.checkServerIdentity",
+    // Marks on an object the caller holds: Node's own Headers, Request and
+    // Response mark themselves when they are made.
+    "worker_threads.markAsUncloneable", "worker_threads.markAsUntransferable", "worker_threads.isMarkedAsUntransferable",
     "crypto.createHash", "crypto.createHmac", "crypto.getHashes", "crypto.getCiphers", "crypto.getCurves",
     "crypto.createCipheriv", "crypto.createDecipheriv", "crypto.hash", "crypto.createSecretKey", "crypto.createPublicKey",
     "crypto.createPrivateKey", "crypto.pbkdf2Sync", "crypto.scryptSync", "crypto.hkdfSync", "crypto.timingSafeEqual",

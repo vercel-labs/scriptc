@@ -1779,7 +1779,7 @@ function lowerToIrWithIslands(
         !constructorsCompared &&
         !resultLowerer.untypedConstructors &&
         constructorRefusals(resultLowerer, result);
-      const whole = partial && (!untyped || otherErrors(resultLowerer, result));
+      const whole = partial && (!untyped || otherErrors(result));
       if (!whole && !untyped) return;
       if (untyped) constructorsCompared = true;
       const pass = new Lowerer(program, entry, moduleOrder, {
@@ -5613,7 +5613,6 @@ export class Lowerer {
     "constructorTouchMark",
     "constructorHolders",
     "constructorFunctionMemo",
-    "earlyDiagnostics",
     "abortOnStreamFlags",
     // The stream mode the pass settled on asking for (pass scratch, read
     // from the journaled requiresGeneralNodeStreams / requiresDynNodeStreams).
@@ -6099,10 +6098,6 @@ export class Lowerer {
    * as a value expression (lower-exprs.ts, primitiveCtorValue). Until then
    * nothing of held-constructors.ts is asked of the values it lowers. */
   constructorFunctionTypes = false;
-  /** The diagnostics made while constructorFunctionTypes was still false
-   * (pushDiag): lowering order is not evaluation order, so a statement
-   * lowered before the program's first constructor value may use one. */
-  readonly earlyDiagnostics = new WeakSet<ScrDiagnostic>();
   /** How often lowering met a value or a type that holds a constructor's
    * function type (lowerExpr, the type mapper). */
   constructorTouches = 0;
@@ -14327,11 +14322,12 @@ export class Lowerer {
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
     // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts). Until the program is known to hold one,
-    // values are not looked at, so a diagnostic made that early is kept
-    // aside: it counts if the program turns out to hold a constructor.
-    if (!this.constructorFunctionTypes) this.earlyDiagnostics.add(d);
-    else if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
+    // (held-constructors.ts). Until the program writes its first
+    // constructor value, values are not looked at, so a diagnostic made
+    // that early is marked too: lowering order is not evaluation order, and
+    // the mark counts only if the program turns out to hold a constructor.
+    if (!this.constructorFunctionTypes || this.constructorTouches > this.constructorTouchMark)
+      d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
     // (a reference flushes them; unreferenced declarations report nothing in

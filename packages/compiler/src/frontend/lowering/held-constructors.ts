@@ -25,8 +25,8 @@
  * function type and each mapping of such a type
  * (Lowerer.constructorTouches); a diagnostic made after the innermost
  * statement being lowered counted one is marked
- * (ScrDiagnostic.heldConstructor), and every diagnostic made before that
- * first value counts too. The mark over-approximates on purpose: it decides
+ * (ScrDiagnostic.heldConstructor), and so is every diagnostic made before
+ * that first value. The mark over-approximates on purpose: it decides
  * only whether the comparison pass runs, never which pass stands. A program
  * that writes no constructor as a value looks at nothing and never
  * compares. */
@@ -142,23 +142,21 @@ function named(
 
 /** Whether one of a pass's refusals, a build error or a refusal deferred to
  * run time, involves a held constructor. A program that never writes a
- * constructor as a value has none. */
+ * constructor as a value has none, whatever its diagnostics are marked. */
 export function constructorRefusals(lowerer: Lowerer, result: LowerResult): boolean {
   if (!lowerer.constructorFunctionTypes) return false;
-  const involved = (d: ScrDiagnostic): boolean => involvesConstructor(lowerer, d);
-  return result.diagnostics.some(involved) || result.runtimeFences.some(involved);
+  return (
+    result.diagnostics.some(involvesConstructor) || result.runtimeFences.some(involvesConstructor)
+  );
 }
 
 /** Whether one of a pass's build errors involves no held constructor. */
-export function otherErrors(lowerer: Lowerer, result: LowerResult): boolean {
-  return result.diagnostics.some((d) => !involvesConstructor(lowerer, d));
+export function otherErrors(result: LowerResult): boolean {
+  return result.diagnostics.some((d) => !involvesConstructor(d));
 }
 
-/** Marked while lowering, or made before the program's first constructor
- * value was lowered (Lowerer.earlyDiagnostics): the statement around such a
- * diagnostic was not watched. */
-function involvesConstructor(lowerer: Lowerer, d: ScrDiagnostic): boolean {
-  return d.heldConstructor === true || lowerer.earlyDiagnostics.has(d);
+function involvesConstructor(d: ScrDiagnostic): boolean {
+  return d.heldConstructor === true;
 }
 
 /** Whether `candidate` refuses less than `standing`: fewer build errors; or

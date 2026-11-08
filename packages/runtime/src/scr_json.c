@@ -8394,12 +8394,15 @@ ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p)) {
 }
 
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name) {
+  /* Only a capsule has an answer here; every other kind is the caller's. */
+  if (d->kind != SCR_DYN_TYPED_REF) return false;
+  /* Bound records and arrays always view as an ordinary object/array; the
+   * test comes first because most capsules are one of the two. */
+  if (d->v.typed_ref.record || scr_dyn_typed_ref_array_ops(d)) return strcmp(name, "object") == 0;
   if (scr_dyn_generator(d)) return strcmp(name, "object") == 0;
-  if (d->kind == SCR_DYN_TYPED_REF) {
-    /* Bound records and arrays always view as an ordinary object/array. */
-    if ((d->v.typed_ref.type_key_len >= 7 &&
-         memcmp(d->v.typed_ref.type_key, "object:", 7) == 0) ||
-        d->v.typed_ref.record || scr_dyn_typed_ref_array_ops(d))
+  {
+    if (d->v.typed_ref.type_key_len >= 7 &&
+        memcmp(d->v.typed_ref.type_key, "object:", 7) == 0)
       return strcmp(name, "object") == 0;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     bool out;

@@ -5,6 +5,7 @@ import {
   STRING,
   VOID,
   RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
   arrayOf,
   funcOf,
   mapOf,
@@ -177,6 +178,58 @@ test("the runtime emitter and its descendants retain listener tracing", () => {
     { name: RUNTIME_EMITTER_CLASS, loc, fields: [] },
   ];
   check(mod, ["object:Events", `object:${RUNTIME_EMITTER_CLASS}`]);
+});
+
+test("a slot typed as a subclass leads to what the runtime holds for its base", () => {
+  const mod = module();
+  const of = (className: string): IrType => ({ kind: "object", className });
+  mod.classes = [
+    { name: RUNTIME_EMITTER_CLASS, loc, fields: [] },
+    { name: "%Writable", loc, base: RUNTIME_EMITTER_CLASS, fields: [] },
+    { name: "Events", loc, base: RUNTIME_EMITTER_CLASS, fields: [] },
+    { name: "Deeper", loc, base: "Events", fields: [] },
+    { name: RUNTIME_EVENT_TARGET_CLASS, loc, fields: [] },
+    { name: "Board", loc, base: RUNTIME_EVENT_TARGET_CLASS, fields: [] },
+    { name: "Local", loc, localCaptures: [], fields: [] },
+    { name: "Inner", loc, base: "Local", fields: [] },
+    { name: "Plain", loc, fields: [{ name: "size", type: F64 }] },
+    { name: "HoldsDeeper", loc, fields: [{ name: "events", type: of("Deeper") }] },
+  ];
+  // No field is ever written after construction: the listeners, the engine
+  // state and the class value reach anything, whatever the edges' mutability.
+  mod.records = [
+    shape("holdsSink", [of("%Writable")]),
+    shape("holdsEvents", [of("Events")]),
+    shape("holdsBoard", [of("Board")]),
+    shape("holdsInner", [of("Inner")]),
+    shape("holdsHolder", [ref("holdsSink"), F64]),
+    shape("holdsPlain", [of("Plain")]),
+  ];
+  checkExact(mod, [
+    `object:${RUNTIME_EMITTER_CLASS}`,
+    "object:%Writable",
+    "object:Events",
+    "object:Deeper",
+    `object:${RUNTIME_EVENT_TARGET_CLASS}`,
+    "object:Board",
+    "object:Local",
+    "object:Inner",
+    "object:HoldsDeeper",
+    "record:holdsSink",
+    "record:holdsEvents",
+    "record:holdsBoard",
+    "record:holdsInner",
+    "record:holdsHolder",
+  ]);
+  expect(explainCycle(mod, "record:holdsSink")).toEqual({
+    kind: "intrinsic",
+    steps: [
+      { from: "record:holdsSink", label: { kind: "field", field: "field0", mutable: false } },
+    ],
+    owner: "object:%Writable",
+    field: "<listeners>",
+    holds: "func",
+  });
 });
 
 test("separate calls do not share mutable fixed-point state", () => {

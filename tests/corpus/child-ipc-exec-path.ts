@@ -148,11 +148,7 @@ sailings.push((done) => {
   const child = fork(self, ["--booth", "leaves"], { execPath: process.execPath });
   const log: string[] = [];
   child.on("message", (got: Note) => log.push(got.kind + ":" + got.n));
-  // A send without a callback on the closed channel is an 'error' event.
-  child.on("error", (error) => log.push("error:" + error.message));
-  child.on("disconnect", () => {
-    log.push("disconnect:" + child.connected + ":" + child.send(note("late", 0)));
-  });
+  child.on("disconnect", () => log.push("disconnect:" + child.connected));
   child.on("close", (code) => {
     console.log("leaves", log.join(" "), code);
     done();

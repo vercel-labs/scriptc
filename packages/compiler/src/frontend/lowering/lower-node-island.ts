@@ -57,7 +57,6 @@ import {
   crossingOf,
   isCopiedTsType,
   isForeignType,
-  isIslandProgramModule,
   isIslandSubclassDecl,
   markIslandSubclass,
   islandOwnerOfFile,
@@ -66,6 +65,7 @@ import {
 import { thenReader } from "./checked-promise-all.js";
 import { dynCompoundValue } from "./lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS } from "./surfaces.js";
+import { lowerClosedIslandInit } from "./closed-island-init.js";
 
 const JSON_HINT =
   "only JSON data (numbers, strings, booleans, null, arrays, plain objects of those, and unknown) crosses into Node.js in this version";
@@ -353,7 +353,7 @@ export function islandModuleFile(
 }
 
 /** The module global of the island module at `path`, created on first use. */
-function islandModuleGlobal(lowerer: Lowerer, path: string): IslandModuleBinding {
+export function islandModuleGlobal(lowerer: Lowerer, path: string): IslandModuleBinding {
   let binding = lowerer.islandModules.get(path);
   if (binding === undefined) {
     const global: IrGlobal = {
@@ -419,14 +419,10 @@ function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
  * a module proved effect-free at load keeps it with its interface snapshot
  * and evaluates on first use; any other becomes nodeIsland.require.
  *
- * A program module that runs in an island loads eagerly
- * (`nodeIsland.require`): deciding a deferral means evaluating the module
- * in the build-time probe, and the build never runs the program's own
- * source. */
+ * A program module that runs in an island is decided there too, under a
+ * stricter rule: the build evaluates the program's own source only when
+ * the static gate proves its top level free of effects. */
 function deferIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
-  const islands = lowerer.nodeIslands;
-  if (islands !== null && isIslandProgramModule(islands, path))
-    return loadIslandModule(lowerer, path, loc);
   return {
     kind: "libCall",
     fn: "nodeIsland.defer",
@@ -584,7 +580,7 @@ function islandSnapshotAssign(
   };
 }
 
-function islandGet(target: IrExpr, key: string, loc: SrcLoc): IrExpr {
+export function islandGet(target: IrExpr, key: string, loc: SrcLoc): IrExpr {
   return {
     kind: "libCall",
     fn: "nodeIsland.get",
@@ -656,7 +652,7 @@ export function isIslandImportBinding(lowerer: Lowerer, ident: ts.Identifier): b
   return islandBindingOf(lowerer, ident) !== null;
 }
 
-function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
+export function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
   const islands = lowerer.nodeIslands;
   if (islands === null) return null;
   // A shorthand property's name (`{ compare }`) reads the binding of that
@@ -849,7 +845,7 @@ function islandUnitComparison(
  * through the checked conversion. A coverage analysis also records the
  * package declaration that types the value, for the type-claims report
  * (type-claims.ts); the lowered code is the same either way. */
-function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
+export function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
   const out = islandValueAt(lowerer, raw, node);
   if (lowerer.typeClaims) noteIslandClaim(lowerer, out, node, node);
   // The conversion names the declaration that types the value, so its
@@ -906,12 +902,15 @@ function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrEx
   if (isDiscarded(node)) return raw;
   const mapped = lowerer.mapTypeOf(tsType);
   if (mapped === null) {
-    // An intersection of containers (`Choice[] & GenChoice[]`: the
-    // island's array extended by the caller's own type) has no native
-    // representation of its own. Where the program only uses it through
-    // island operations it stays a handle, like an array the island does
-    // not declare.
-    if (containerType(lowerer, tsType) && handleUseOk(lowerer, node)) return raw;
+    // An object whose type has no native representation and that the island
+    // does not declare: an intersection of containers (`Choice[] &
+    // GenChoice[]`: the island's array extended by the caller's own type),
+    // or an interface with methods that the project declares for the
+    // island's module and its own code alike (a global interface in the
+    // project's .d.ts, named by its `declare module` block). Where the
+    // program only uses it through island operations it stays a handle,
+    // like an array the island does not declare.
+    if (unrepresentedObjectType(lowerer, tsType) && handleUseOk(lowerer, node)) return raw;
     // A function the island declares through a types-only package
     // (`express.json(): NextHandleFunction`): the value is a function object
     // the island made, with no native representation, and the program
@@ -1260,9 +1259,33 @@ function undeclaredHandleType(lowerer: Lowerer, type: ts.Type): boolean {
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
   if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return false;
   const mapped = lowerer.mapTypeOf(type);
-  if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return false;
+  // No native representation at all: the island's object is the only one
+  // there is. A function object keeps its own rule (fromIsland).
+  if (mapped === null)
+    return unrepresentedObjectType(lowerer, type) && !callableType(lowerer, type);
+  if (mapped.kind === "dyn" || mapped.kind === "void") return false;
   if (mapped.kind === "promise" || copiedType(lowerer, mapped)) return false;
   return containerType(lowerer, type);
+}
+
+/** Whether `type`, which has no native representation (its mapping is
+ * null), is the type of objects: every part of a union or an intersection
+ * that is not null or undefined is an object type. A type parameter, or a
+ * type the mapper refuses for another reason, is not. */
+function unrepresentedObjectType(lowerer: Lowerer, type: ts.Type): boolean {
+  if (containerType(lowerer, type)) return true;
+  const parts =
+    type.isUnionType() || (type.flags & ts.TypeFlags.Intersection) !== 0
+      ? ts.constituentTypes(type)
+      : [type];
+  let any = false;
+  for (const part of parts) {
+    if ((part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
+      continue;
+    if ((part.flags & ts.TypeFlags.Object) === 0) return false;
+    any = true;
+  }
+  return any;
 }
 
 /** Builtin classes whose native representation is not a JavaScript object
@@ -1350,7 +1373,7 @@ function callableType(lowerer: Lowerer, type: ts.Type): boolean {
 
 /** A member read, call, index or `new` whose receiver or callee is an
  * island value. */
-function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
+export function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
   const e = withoutParenthesesTypeWrappers(node);
   if (ts.isCallExpression(e)) {
     if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return false;
@@ -2201,6 +2224,9 @@ function islandHandleLocal(lowerer: Lowerer, ident: ts.Identifier): IrLocal | nu
  * expression, the ordinary lowering applies). */
 export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
   if (lowerer.nodeIslands === null) return null;
+  // A module-level constant the island evaluates (closed-island-init.ts).
+  const closed = lowerClosedIslandInit(lowerer, expr);
+  if (closed !== null) return closed;
   const loc = locOf(expr);
   if (ts.isIdentifier(expr)) {
     const subclass = islandSubclassGlobal(lowerer, expr);

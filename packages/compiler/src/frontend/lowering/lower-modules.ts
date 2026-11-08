@@ -4,6 +4,7 @@ import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
+import { closedIslandInitLoad } from "./closed-island-init.js";
 import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
@@ -2599,14 +2600,16 @@ export function collectGlobals(
           // bodies (runCallChecks, _mustCallInner) reach the SAME
           // storage instead of fencing per reference. Identifier
           // declarations only: a destructured array literal binds its
-          // pieces, not the array.
+          // pieces, not the array. A chained export declaration (`const
+          // src = exports.src = []`) holds the literal the chain assigns:
+          // the binding and the export are that one array.
           if (
             isJsSourceFile(sf) &&
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            decl.initializer !== undefined &&
-            ts.isArrayLiteralExpression(decl.initializer)
+            declValue !== undefined &&
+            ts.isArrayLiteralExpression(declValue)
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol) {
@@ -3824,6 +3827,9 @@ export function lowerFileInit(
         body.push(...lowerStaticsAt(statics[at]!));
         at++;
       }
+      // A run of constants the island evaluates loads its generated module
+      // where the run begins (closed-island-init.ts).
+      if (lowerer.nodeIslands !== null) body.push(...closedIslandInitLoad(lowerer, sf, stmt));
       // A cycle binding's declaration stays at its position: its
       // initialization flag must be set where the declaration runs.
       const deferred = lowerer.cycleInitDeclarations.has(stmt)

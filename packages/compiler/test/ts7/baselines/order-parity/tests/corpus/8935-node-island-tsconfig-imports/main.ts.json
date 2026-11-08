@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8935-node-island-tsconfig-imports/main.ts"
+ ],
+ "diags": []
+}

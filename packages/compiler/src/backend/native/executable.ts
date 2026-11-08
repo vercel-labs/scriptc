@@ -513,6 +513,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
+  // The stderr report of a deferred diagnostic that fires
+  // (ir/deferred-fence.ts).
+  unit((u) => u.opts.deferredFence === true, "scr_deferred_fence.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */

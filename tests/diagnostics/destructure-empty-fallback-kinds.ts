@@ -2,8 +2,8 @@
 // is reached, or undefined from the empty array
 // (tests/corpus/destructure-default-writes-later-position.ts). Declarations
 // take that lowering. These neighbours keep a refusal: the same source in an
-// assignment pattern, a parameter's default and a `for...of` head, and an
-// object pattern in a position, which would destructure undefined.
+// assignment pattern and a parameter's default, and an object pattern in a
+// position (it would destructure undefined). A `for...of` head compiles.
 const shelves: Record<string, [string, number]> = { top: ["jars", 4] };
 
 // An assignment to names declared before.

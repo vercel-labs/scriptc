@@ -441,7 +441,7 @@ export function unionRetagHelper(
         arm.kind === "classRoute" ||
         (arm.kind === "direct"
           ? arm.route.lift.how === "copy"
-          : arm.routes.every((route) => route.lift.how === "copy")),
+          : arm.kind === "discriminant" && arm.routes.every((route) => route.lift.how === "copy")),
     )
   ) {
     lowerer.coercions.copyRetags.set(request, {

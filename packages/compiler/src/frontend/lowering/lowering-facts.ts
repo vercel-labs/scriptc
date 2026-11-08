@@ -432,7 +432,11 @@ export class LoweringFacts {
    * changed an answer fails there instead of lowering a stale one. Nothing
    * may edit the program while a round lowers. */
   classProtocols(): ClassProtocols {
-    this.protocols ??= new ClassProtocols(this.program.getTypeChecker(), this.moduleOrder);
+    this.protocols ??= new ClassProtocols(
+      this.program.getTypeChecker(),
+      this.moduleOrder,
+      this.isStdlibFile,
+    );
     return this.protocols;
   }
 

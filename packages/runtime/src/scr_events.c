@@ -1320,39 +1320,55 @@ static void scr_stdio_write_done(ScrClosure *cb) {
   scr_dyn_release(arg);
 }
 
+/* 'error' on a process output stream after a failed write. Node destroys
+ * the stream with the error once the write callback has run, and the
+ * destroy emits 'error' from a tick of its own: a tick the program queued
+ * after the failed write runs before the listeners do. With no listener
+ * the error is thrown from that tick, uncaught. */
+static void scr_stdio_error_emit(ScrClosure *cb) {
+  ScrDyn *error = scr_box_get_ref(cb->caps[0]);
+  ScrStdio *stream = &scr_stdio_streams[(int)scr_box_get_f64(cb->caps[1])];
+  size_t count = stream->nerrors;
+  ScrDyn **listeners = count ? malloc(count * sizeof *listeners) : NULL;
+  if (count && !listeners) scr_events_oom();
+  size_t kept = 0;
+  for (size_t i = 0; i < count; i++) {
+    listeners[i] = scr_dyn_retain(stream->errors[i]);
+    if (stream->error_once[i]) scr_dyn_release(stream->errors[i]);
+    else {
+      stream->errors[kept] = stream->errors[i];
+      stream->error_once[kept++] = false;
+    }
+  }
+  stream->nerrors = kept;
+  if (!count) scr_dyn_throw(scr_dyn_retain(error));
+  for (size_t i = 0; i < count; i++) {
+    if (!scr_exc_pending()) {
+      scr_dyn_this_push(stream, SCR_DYNH_STDIO);
+      ScrDyn *result = scr_dyn_call(listeners[i], &error, 1, "error listener");
+      scr_dyn_this_pop();
+      scr_dyn_release(result);
+    }
+    scr_dyn_release(listeners[i]);
+  }
+  free(listeners);
+  scr_dyn_release(error);
+}
+
 static void scr_stdio_write_failed(ScrClosure *cb) {
   ScrDyn *callback = scr_box_get_ref(cb->caps[0]);
   ScrDyn *error = scr_box_get_ref(cb->caps[1]);
-  ScrStdio *stream = &scr_stdio_streams[(int)scr_box_get_f64(cb->caps[2])];
   if (callback->kind == SCR_DYN_FUNC) {
     ScrDyn *result = scr_dyn_call(callback, &error, 1, "write callback");
     scr_dyn_release(result);
   }
   if (!scr_exc_pending()) {
-    size_t count = stream->nerrors;
-    ScrDyn **listeners = count ? malloc(count * sizeof *listeners) : NULL;
-    if (count && !listeners) scr_events_oom();
-    size_t kept = 0;
-    for (size_t i = 0; i < count; i++) {
-      listeners[i] = scr_dyn_retain(stream->errors[i]);
-      if (stream->error_once[i]) scr_dyn_release(stream->errors[i]);
-      else {
-        stream->errors[kept] = stream->errors[i];
-        stream->error_once[kept++] = false;
-      }
-    }
-    stream->nerrors = kept;
-    if (!count) scr_throw_ref(scr_dyn_retain(error), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-    for (size_t i = 0; i < count; i++) {
-      if (!scr_exc_pending()) {
-        scr_dyn_this_push(stream, SCR_DYNH_STDIO);
-        ScrDyn *result = scr_dyn_call(listeners[i], &error, 1, "error listener");
-        scr_dyn_this_pop();
-        scr_dyn_release(result);
-      }
-      scr_dyn_release(listeners[i]);
-    }
-    free(listeners);
+    ScrClosure *emit = scr_closure_new((void *)scr_stdio_error_emit, 2);
+    emit->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_box_set_ref(emit->caps[0], scr_dyn_retain(error));
+    emit->caps[1] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(emit->caps[1], scr_box_get_f64(cb->caps[2]));
+    scr_next_tick(emit);
   }
   scr_dyn_release(callback);
   scr_dyn_release(error);
@@ -1557,24 +1573,38 @@ static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_
     scr_dyn_arg_type_fail("cb", "of type function", callback);
     return NULL;
   }
+  /* Node resolves the encoding before it looks at the chunk: a name that is
+   * no Buffer encoding (in any ASCII case) throws ERR_UNKNOWN_ENCODING, for a
+   * byte chunk too; an empty name is the default. */
+  ScrStr *enc = NULL;
+  if (encoding->kind == SCR_DYN_STR) {
+    if (encoding->v.str->len > 0) {
+      enc = scr_bytes_normalize_encoding(encoding->v.str);
+      if (!enc) return NULL;
+    }
+  } else if (encoding->kind != SCR_DYN_UNDEF && encoding->kind != SCR_DYN_NULL) {
+    return scr_stdio_refusal("write encoding");
+  }
   if (arg->kind == SCR_DYN_NULL) {
     const char *m = "May not write null values to stream";
     scr_throw_error_msg_code(SCR_ERR_TYPE, m, strlen(m), "ERR_STREAM_NULL_VALUES");
+    if (enc) scr_str_release(enc);
     return NULL;
   }
-  if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem != SCR_BYTES_U8)
+  if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem != SCR_BYTES_U8) {
+    if (enc) scr_str_release(enc);
     return scr_stdio_refusal("write of a typed array other than Uint8Array");
+  }
   ScrBytes *bytes = NULL;
   if (arg->kind == SCR_DYN_STR) {
-    if (encoding->kind != SCR_DYN_UNDEF && encoding->kind != SCR_DYN_NULL && encoding->kind != SCR_DYN_STR) {
-      return scr_stdio_refusal("write encoding");
-    }
-    ScrStr *enc = encoding->kind == SCR_DYN_STR ? scr_str_retain(encoding->v.str) : scr_str_new("utf8", 4);
+    if (!enc) enc = scr_str_new("utf8", 4);
     bytes = scr_bytes_from_str(arg->v.str, enc);
     scr_str_release(enc);
   } else if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem == SCR_BYTES_U8) {
+    if (enc) scr_str_release(enc);
     bytes = arg->v.bytes->shared ? scr_bytes_copy(arg->v.bytes) : scr_bytes_retain(arg->v.bytes);
   } else {
+    if (enc) scr_str_release(enc);
     scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer, TypedArray, or DataView", arg);
     return NULL;
   }

@@ -95,6 +95,18 @@
       "signature": "SC8006"
     }
   },
+  "corpus/9961-package-callback-optional-member": {
+    "island:kiln-kit": {
+      "category": "build",
+      "signature": "SC1090"
+    }
+  },
+  "corpus/declared-types-in-other-forms": {
+    "island:shape-entry": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
   "corpus/fs-extra-package": {
     "island:fs-extra": {
       "category": "build",
@@ -115,6 +127,12 @@
   },
   "corpus/readable-stream-disable": {
     "island:readable-stream": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/types-only-workspace-package": {
+    "island:lending-types": {
       "category": "build",
       "signature": "SC8006"
     }
@@ -267,12 +285,6 @@
       "signature": "exit 1, Node 0: Uncaught TypeError: Reflect.get called on non-object"
     }
   },
-  "npm/jsval-into-dyn": {
-    "island:plugstub": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: Own-property checks on this checked-dynamic kind are not supported yet [SC1090]"
-    }
-  },
   "npm/jsval-iterate": {
     "island:plugstub": {
       "category": "stdout",
@@ -328,6 +340,16 @@
       "signature": "SC8006"
     }
   },
+  "npm/workspace-types-only": {
+    "island:wsrecords": {
+      "category": "build",
+      "signature": "SC8006"
+    },
+    "island:wstypes": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
   "npm/zod3": {
     "island:zod": {
       "category": "exit",
@@ -337,7 +359,7 @@
   "npm/zod3-adoption": {
     "island:zod": {
       "category": "build",
-      "signature": "SC8010"
+      "signature": "SC1090,SC8010"
     }
   },
   "npm/zod4-boundary": {

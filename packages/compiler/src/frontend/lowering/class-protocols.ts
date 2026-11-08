@@ -5,6 +5,7 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { TypeSameness } from "./type-sameness.js";
+import { bindsIslandExport } from "./lower-node-island.js";
 
 /** Index only program classes. Ambient declarations describe APIs, not
  * compiled implementations, and must not change a protocol's storage. */
@@ -39,6 +40,18 @@ export class ClassProtocols {
   private readonly islandViews = new Set<ts.Type>();
   /** islandValue's answers: which expressions read an island handle. */
   private readonly islandValues = new Map<ts.Node, boolean>();
+  /** The names each file's imports and `require` declarations bind
+   * (importBoundNames): only those can bind an island module's export. */
+  private readonly importNames = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** islandSubclass's answers, per class declaration. */
+  private readonly islandSubclasses = new Map<ts.Node, boolean>();
+  /** The parameters a call passes an island value to, and the functions that
+   * return one, where the type is `any` or `unknown` (followIslandFlows). */
+  private readonly islandParameters = new Set<ts.Symbol>();
+  private readonly islandReturners = new Set<ts.Symbol>();
+  /** The untyped island values stored out of the analysis' sight
+   * (noteIslandEscapes). */
+  private readonly islandEscapes: ts.Expression[] = [];
   /** The object types markReceivedView has answered for, so a type that
    * names itself in a member (`interface Node { next?: Node }`) ends. */
   private readonly receivedTypes = new Set<ts.Type>();
@@ -46,6 +59,10 @@ export class ClassProtocols {
   constructor(
     private readonly checker: ts.TypeChecker,
     private readonly sources: readonly ts.SourceFile[],
+    /** True for the standard library's declaration files: a type any other
+     * declaration file declares is a data type the program takes from a
+     * file with no implementation (markUnplacedConversions). */
+    private readonly isStdlibFile: (file: ts.SourceFile) => boolean,
   ) {
     this.sameness = new TypeSameness(checker);
   }
@@ -92,20 +109,32 @@ export class ClassProtocols {
     // program runs islands at all: their declared types are marked once the
     // walk ends (markIslandView).
     const islands = activeNodeIslands();
-    const crossings: ts.Expression[] = [];
+    const sites: ts.Node[] = [];
     const visit = (node: ts.Node): void => {
       if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
         const name = propertyNameText(node.name);
         if (name !== null) accessorNames.add(name);
       }
+      // The nodes an island value can be read, asserted, handed over or
+      // passed on at: they are judged once the walk ends, when the flows
+      // through the program's own functions are known (markIslandSites).
       if (
         islands !== null &&
         (ts.isPropertyAccessExpression(node) ||
           ts.isElementAccessExpression(node) ||
-          ts.isCallExpression(node)) &&
-        this.islandValue(node.expression, islands)
+          ts.isCallExpression(node) ||
+          ts.isNewExpression(node) ||
+          ts.isAssertionExpression(node) ||
+          (ts.isIdentifier(node) && this.importBound(node)) ||
+          ts.isReturnStatement(node) ||
+          ts.isArrowFunction(node) ||
+          ts.isVariableDeclaration(node) ||
+          ts.isPropertyDeclaration(node) ||
+          ts.isObjectLiteralExpression(node) ||
+          ts.isArrayLiteralExpression(node) ||
+          (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken))
       )
-        crossings.push(node);
+        sites.push(node);
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
         for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
@@ -156,9 +185,409 @@ export class ClassProtocols {
     };
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
     for (const literal of literals) this.markMemberKindViews(literal, accessorNames, add);
-    for (const crossing of crossings) this.markIslandView(crossing, islands, add);
+    if (islands !== null) this.markIslandSites(sites, islands, add);
     this.markIdentityFlows(protocols);
     return protocols;
+  }
+
+  /** Judges the nodes of the program an island value can pass through
+   * (collected by index) and marks the types that receive one.
+   *
+   * A crossing is a node whose declared type receives an island value: a
+   * member read, an index or a call on an island value; a name bound to an
+   * island module's export, read as a value (the island's value at each use,
+   * whatever type the program's declarations give it); and an assertion
+   * applied to an island value (`raw() as Item`, `raw() as unknown as Item`).
+   * The assertion names the type the program reads that value through. It
+   * has no run-time effect in Node, so it is a view of the island's object
+   * like any typed island read, never a copy: a record is made only where
+   * the program copies (`structuredClone`, a spread, JSON).
+   *
+   * What the program hands to an island (an argument of an island call or
+   * construction, a value assigned to a member of an island object) holds the
+   * functions the island calls with its own values (markIslandCallbacks). */
+  private markIslandSites(
+    sites: readonly ts.Node[],
+    islands: NodeIslandSet,
+    add: (type: ts.Type) => void,
+  ): void {
+    this.followIslandFlows(sites, islands);
+    const crossings: ts.Expression[] = [];
+    const handed: ts.Expression[] = [];
+    for (const node of sites) {
+      if (ts.isIdentifier(node)) {
+        if (this.islandBinding(node, islands)) crossings.push(node);
+        continue;
+      }
+      if (
+        ts.isReturnStatement(node) ||
+        ts.isArrowFunction(node) ||
+        ts.isVariableDeclaration(node) ||
+        ts.isPropertyDeclaration(node) ||
+        ts.isObjectLiteralExpression(node) ||
+        ts.isArrayLiteralExpression(node)
+      )
+        continue;
+      if (ts.isBinaryExpression(node)) {
+        if (
+          (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+          this.islandValue(node.left.expression, islands)
+        )
+          handed.push(node.right);
+        continue;
+      }
+      if (ts.isAssertionExpression(node)) {
+        if (this.islandValue(node.expression, islands)) crossings.push(node);
+        continue;
+      }
+      if (ts.isNewExpression(node)) {
+        if (this.islandValue(node.expression, islands))
+          for (const argument of node.arguments?.nodes ?? []) handed.push(argument);
+        continue;
+      }
+      const access = node as
+        | ts.PropertyAccessExpression
+        | ts.ElementAccessExpression
+        | ts.CallExpression;
+      if (ts.isCallExpression(access) && this.islandValue(access.expression, islands))
+        for (const argument of access.arguments.nodes) handed.push(argument);
+      // A call of a program function that hands on an island value answers
+      // one too (followIslandFlows); its callee is not an island value.
+      if (this.islandValue(access, islands)) crossings.push(access);
+    }
+    // An island read marks every type it reaches, as it always has: the read
+    // the island's own declarations type, and equally the read whose value
+    // the island makes under a type of the program's (a name bound to an
+    // island export, a member of a native subclass of an island class), which
+    // had no other form than a refusal. The origins where the program GIVES
+    // an untyped island value a type (an assertion, the typed slot an `any`
+    // value is put in, a parameter of a function handed to the island) are
+    // conversions on main: they mark a type only when a view can hold all it
+    // declares (markOriginView), and they come last, so that the outcome does
+    // not depend on the order in which the program's files name a type.
+    const given: ts.Expression[] = [];
+    for (const crossing of crossings) {
+      if (ts.isAssertionExpression(crossing)) {
+        given.push(crossing);
+        continue;
+      }
+      this.markIslandView(crossing, islands, add);
+      const type = attempt(() => this.checker.getTypeAtLocation(crossing));
+      if (type !== undefined && (type.flags & ts.TypeFlags.Any) !== 0) given.push(crossing);
+    }
+    for (const crossing of given) {
+      const type = attempt(() => this.checker.getTypeAtLocation(crossing));
+      if (ts.isAssertionExpression(crossing)) {
+        if (type !== undefined) this.markOriginView(type, islands, add, 0);
+      } else {
+        // An untyped island value takes the type of the slot it is put in (a
+        // typed binding, a parameter, a return): that type receives it.
+        const slot = attempt(() => this.checker.getContextualType(crossing));
+        if (slot !== undefined) this.markOriginView(slot, islands, add, 0);
+      }
+    }
+    for (const value of handed) this.markIslandCallbacks(value, islands, add, 0);
+    traceIslandViews(crossings);
+    for (const node of sites) this.noteIslandEscapes(node, islands);
+    if (this.islandEscapes.length > 0) this.markUnplacedConversions(sites, islands, add);
+  }
+
+  /** Marks the declaration-file types an untyped value of unknown origin is
+   * given, in a program that stores an untyped island value out of sight
+   * (noteIslandEscapes found a store). The stored value is read back with no
+   * origin, so any assertion applied to an untyped value, and any typed
+   * binding of an `any`, may be the one that receives it. A type a
+   * declaration file declares has no implementation of its own: until such
+   * types were mapped to native records, a value asserted to one stayed the
+   * dynamic value it was, an island's object included. Marking the type a
+   * view keeps that: the island's object stays the island's, and a native
+   * value under the type is read with the same checks. A type the program's
+   * own source declares keeps the checked conversion, as it always had (it
+   * copies an island's object; SC6007 names the store). */
+  private markUnplacedConversions(
+    sites: readonly ts.Node[],
+    islands: NodeIslandSet,
+    add: (type: ts.Type) => void,
+  ): void {
+    for (const node of sites) {
+      let operand: ts.Expression;
+      let untyped: number = ts.TypeFlags.Any;
+      if (ts.isAssertionExpression(node)) {
+        operand = node.expression;
+        untyped |= ts.TypeFlags.Unknown;
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        node.type !== undefined &&
+        node.initializer !== undefined
+      ) {
+        operand = node.initializer;
+      } else continue;
+      // An island value the analysis follows was marked where it crossed.
+      if (this.islandValue(operand, islands)) continue;
+      const from = attempt(() => this.checker.getTypeAtLocation(operand));
+      if (from === undefined || (from.flags & untyped) === 0) continue;
+      const target = attempt(() => this.checker.getTypeAtLocation(node));
+      if (target === undefined || !this.declarationFileType(target, 0)) continue;
+      this.markOriginView(target, islands, add, 0);
+    }
+  }
+
+  /** Whether `type`, an arm of it or its element type is an object type
+   * whose every declaration is in a declaration file outside the standard
+   * library. */
+  private declarationFileType(type: ts.Type, depth: number): boolean {
+    if (depth > DECLARATION_FILE_TYPE_DEPTH) return false;
+    if (type.isUnionType() || type.isIntersectionType())
+      return ts.constituentTypes(type).some((part) => this.declarationFileType(part, depth + 1));
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) {
+      const elements = attempt(() => this.checker.getTypeArguments(type as ts.TypeReference));
+      return (elements ?? []).some((element) => this.declarationFileType(element, depth + 1));
+    }
+    const declarations = type.getSymbol()?.declarations ?? [];
+    return (
+      declarations.length > 0 &&
+      declarations.every((declaration) => {
+        const file = ts.getSourceFileOfNode(declaration);
+        return file.isDeclarationFile && !this.isStdlibFile(file);
+      })
+    );
+  }
+
+  /** The untyped island values the program stores where their origin is no
+   * longer followed (see noteIslandEscapes), in source order. */
+  islandEscapeSites(): readonly ts.Expression[] {
+    this.index();
+    return this.islandEscapes;
+  }
+
+  /** Whether `expr` holds a value a Node island made, as this analysis
+   * follows it (islandValue): the divergence scan asks it of the operand of
+   * a conversion that copies (SC6007), so that the warning sees every origin
+   * the marking does. False for a program that runs no island. */
+  islandOrigin(expr: ts.Expression): boolean {
+    this.index();
+    const islands = activeNodeIslands();
+    return islands !== null && this.islandValue(expr, islands);
+  }
+
+  /** Records the untyped island values `node` stores out of the analysis'
+   * sight. An island value typed `any` or `unknown` is followed through
+   * `const` bindings, parameters and returns of the program's functions, and
+   * where it is asserted it becomes a view. Stored in a member, an element, a
+   * reassigned binding, a literal the program keeps or a container (an
+   * argument whose declared type is a type parameter: `list.push(v)`,
+   * `map.set(k, v)`, `keep<T>(v)`), it is read back as a value of unknown
+   * origin, and an assertion applied to it then is the checked conversion,
+   * which copies an island's object. The build names each such store
+   * (SC6007, divergences.ts). */
+  private noteIslandEscapes(node: ts.Node, islands: NodeIslandSet): void {
+    const note = (value: ts.Expression | undefined, stored: () => boolean): void => {
+      if (value === undefined || !this.islandValue(value, islands)) return;
+      const type = attempt(() => this.checker.getTypeAtLocation(value));
+      if (type === undefined || (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0)
+        return;
+      if (stored()) this.islandEscapes.push(value);
+    };
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      if (this.islandValue(node.expression, islands) || isStructuredClone(node)) return;
+      const args = node.arguments?.nodes ?? [];
+      for (let index = 0; index < args.length; index++) {
+        const argument = args[index]!;
+        if (ts.isSpreadElement(argument)) break;
+        note(argument, () => this.argumentKept(node, index));
+      }
+    } else if (ts.isBinaryExpression(node)) {
+      const target = node.left;
+      if (
+        (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) &&
+        this.islandValue(target.expression, islands)
+      )
+        return;
+      note(node.right, () => true);
+    } else if (ts.isVariableDeclaration(node)) {
+      const held =
+        ts.isIdentifier(node.name) && (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0;
+      if (!held) note(node.initializer, () => true);
+    } else if (ts.isPropertyDeclaration(node)) {
+      note(node.initializer, () => true);
+    } else if (ts.isObjectLiteralExpression(node)) {
+      for (const property of node.properties.nodes) {
+        const value = ts.isPropertyAssignment(property)
+          ? property.initializer
+          : ts.isShorthandPropertyAssignment(property)
+            ? (property.name as ts.Identifier)
+            : ts.isSpreadAssignment(property)
+              ? property.expression
+              : undefined;
+        note(value, () => !this.handedToIsland(node, islands));
+      }
+    } else if (ts.isArrayLiteralExpression(node)) {
+      for (const element of node.elements.nodes)
+        note(ts.isSpreadElement(element) ? element.expression : element, () => {
+          return !this.handedToIsland(node, islands);
+        });
+    } else if (ts.isReturnStatement(node)) {
+      note(node.expression, () => this.functionSymbolOf(node) === undefined);
+    } else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) {
+      note(node.body, () => this.functionSymbolOf(node) === undefined);
+    }
+  }
+
+  /** Whether the callee of `call` may keep its argument at `index`: the
+   * parameter's declared type names a type parameter, of the function or of
+   * the class or interface that declares it, so the callee stores the value
+   * or hands it back at a type the caller chose (`Array<T>.push`,
+   * `Map<K, V>.set`, a generic helper). A parameter with a type of its own
+   * converts the value, and an untyped one of a program function is followed
+   * (followIslandFlows). */
+  private argumentKept(call: ts.CallExpression | ts.NewExpression, index: number): boolean {
+    const declaration = attempt(() => this.checker.getResolvedSignature(call))?.declaration;
+    if (declaration === undefined || !ts.isFunctionLike(declaration)) return false;
+    const parameters = declaration.parameters.nodes;
+    const last = parameters.at(-1);
+    const parameter =
+      parameters[index] ??
+      (last !== undefined && last.dotDotDotToken !== undefined ? last : undefined);
+    if (parameter === undefined || parameter.type === undefined) return false;
+    const names = new Set<string>();
+    for (let scope: ts.Node | undefined = declaration; scope !== undefined; scope = scope.parent) {
+      const declared =
+        ts.isFunctionLike(scope) ||
+        ts.isClassDeclaration(scope) ||
+        ts.isClassExpression(scope) ||
+        ts.isInterfaceDeclaration(scope)
+          ? scope.typeParameters
+          : undefined;
+      for (const typeParameter of declared?.nodes ?? []) names.add(typeParameter.name.text);
+    }
+    if (names.size === 0) return false;
+    const mentions = (type: ts.Node): boolean =>
+      (ts.isIdentifier(type) && names.has(type.text)) || ts.forEachChild(type, mentions) === true;
+    return mentions(parameter.type);
+  }
+
+  /** Whether the literal `literal`, or the literal it is a member of, is
+   * handed to an island where it stands: an argument of an island call or
+   * construction, or a value assigned to a member of an island object. The
+   * island then holds what the literal holds. */
+  private handedToIsland(
+    literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+    islands: NodeIslandSet,
+  ): boolean {
+    let value: ts.Node = literal;
+    for (;;) {
+      const parent: ts.Node | undefined = value.parent;
+      if (parent === undefined) return false;
+      if (
+        ts.isParenthesizedExpression(parent) ||
+        ts.isAssertionExpression(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isPropertyAssignment(parent) ||
+        ts.isSpreadElement(parent) ||
+        ts.isSpreadAssignment(parent) ||
+        ts.isObjectLiteralExpression(parent) ||
+        ts.isArrayLiteralExpression(parent)
+      ) {
+        value = parent;
+        continue;
+      }
+      if (ts.isCallExpression(parent) || ts.isNewExpression(parent))
+        return parent.expression !== value && this.islandValue(parent.expression, islands);
+      if (
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        parent.right === value
+      ) {
+        const target = parent.left;
+        return (
+          (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) &&
+          this.islandValue(target.expression, islands)
+        );
+      }
+      return false;
+    }
+  }
+
+  /** Follows island values through the program's own functions, where the
+   * type says nothing about them: a parameter typed `any` or `unknown` that
+   * a call passes an island value to holds one (`asItem(raw())` with
+   * `function asItem(value: unknown)`), and a function that returns an
+   * island value at one of those types answers one. Both sets only grow, and
+   * each round judges every call and return again with what the previous one
+   * found, until a round finds nothing. A value stored in a field, an
+   * element or a reassigned binding is not followed: its origin is not
+   * visible where it is read back. */
+  private followIslandFlows(sites: readonly ts.Node[], islands: NodeIslandSet): void {
+    const untyped = (node: ts.Node): boolean => {
+      const type = attempt(() => this.checker.getTypeAtLocation(node));
+      return type !== undefined && (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+    };
+    for (let round = 0; round < ISLAND_FLOW_ROUNDS; round++) {
+      let grew = false;
+      for (const node of sites) {
+        if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+          const args = node.arguments?.nodes ?? [];
+          let declaration: ts.Node | undefined | null = null;
+          for (let index = 0; index < args.length; index++) {
+            const argument = args[index]!;
+            if (ts.isSpreadElement(argument)) break;
+            if (!this.islandValue(argument, islands)) continue;
+            if (declaration === null)
+              declaration = attempt(() => this.checker.getResolvedSignature(node))?.declaration;
+            if (declaration === undefined || declaration === null) break;
+            if (!ts.isFunctionLike(declaration)) break;
+            if (ts.getSourceFileOfNode(declaration).isDeclarationFile) break;
+            const parameter = declaration.parameters.nodes[index];
+            if (
+              parameter === undefined ||
+              parameter.dotDotDotToken !== undefined ||
+              !ts.isIdentifier(parameter.name) ||
+              !untyped(parameter)
+            )
+              continue;
+            const symbol = attempt(() => this.checker.getSymbolAtLocation(parameter.name));
+            if (symbol === undefined || this.islandParameters.has(symbol)) continue;
+            this.islandParameters.add(symbol);
+            grew = true;
+          }
+          continue;
+        }
+        let returned: ts.Expression | undefined;
+        if (ts.isReturnStatement(node)) returned = node.expression;
+        else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) returned = node.body;
+        if (returned === undefined || !untyped(returned) || !this.islandValue(returned, islands))
+          continue;
+        const symbol = this.functionSymbolOf(node);
+        if (symbol === undefined || this.islandReturners.has(symbol)) continue;
+        this.islandReturners.add(symbol);
+        grew = true;
+      }
+      if (!grew) return;
+      // What a round found changes the answers of the next.
+      this.islandValues.clear();
+    }
+  }
+
+  /** The symbol callers name the function enclosing `node` by: a declared
+   * function's or method's own, or the binding or member an arrow or
+   * function expression initializes. */
+  private functionSymbolOf(node: ts.Node): ts.Symbol | undefined {
+    let fn: ts.Node | undefined = ts.isArrowFunction(node) ? node : node.parent;
+    while (fn !== undefined && !ts.isFunctionLike(fn)) fn = fn.parent;
+    if (fn === undefined) return undefined;
+    let name: ts.Node | undefined;
+    if (ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) name = fn.name;
+    else if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+      const holder = fn.parent;
+      if (holder !== undefined && ts.isVariableDeclaration(holder) && holder.initializer === fn)
+        name = holder.name;
+      else if (holder !== undefined && ts.isPropertyAssignment(holder) && holder.initializer === fn)
+        name = holder.name;
+    }
+    if (name === undefined || !ts.isIdentifier(name)) return undefined;
+    const named = name;
+    return attempt(() => this.checker.getSymbolAtLocation(named));
   }
 
   /** Marks the program types that receive island values (SPEC 6 = C). An
@@ -190,6 +619,59 @@ export class ClassProtocols {
   ): void {
     const type = attempt(() => this.checker.getTypeAtLocation(crossing));
     if (type !== undefined) this.markReceivedView(type, islands, add, 0);
+  }
+
+  /** Marks the types that receive island values through a function the
+   * program hands to an island: an argument of an island call or
+   * construction, or a value assigned to a member of an island object. The
+   * island calls the function with its own values (`each((item) => ...)`,
+   * `emitter.on("row", onRow)`, `{ validate: (items) => ... }`), so each
+   * parameter's declared type receives an island value exactly as the type
+   * of an island read does. A fresh object or array literal is copied member
+   * by member, so the functions among its members are handed over too; any
+   * other object crosses by reference and keeps its own members' types. */
+  private markIslandCallbacks(
+    value: ts.Expression,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    if (depth > RECEIVED_VIEW_DEPTH) return;
+    let inner: ts.Expression = value;
+    for (;;) {
+      if (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner))
+        inner = inner.expression;
+      else if (ts.isAssertionExpression(inner) || ts.isSatisfiesExpression(inner))
+        inner = inner.expression;
+      else break;
+    }
+    if (ts.isSpreadElement(inner)) return;
+    if (ts.isArrayLiteralExpression(inner)) {
+      for (const element of inner.elements.nodes)
+        this.markIslandCallbacks(element, islands, add, depth + 1);
+      return;
+    }
+    if (ts.isObjectLiteralExpression(inner)) {
+      for (const property of inner.properties.nodes) {
+        if (ts.isPropertyAssignment(property))
+          this.markIslandCallbacks(property.initializer, islands, add, depth + 1);
+        else if (ts.isShorthandPropertyAssignment(property))
+          this.markIslandCallbacks(property.name as ts.Identifier, islands, add, depth + 1);
+        else if (ts.isMethodDeclaration(property))
+          for (const parameter of property.parameters.nodes) {
+            const type = attempt(() => this.checker.getTypeAtLocation(parameter));
+            if (type !== undefined) this.markOriginView(type, islands, add, depth + 1);
+          }
+      }
+      return;
+    }
+    const type = attempt(() => this.checker.getTypeAtLocation(inner));
+    if (type === undefined) return;
+    for (const signature of attempt(() => this.checker.getCallSignatures(type)) ?? [])
+      for (const parameter of signature.getParameters()) {
+        const received = attempt(() => this.checker.getTypeOfSymbol(parameter));
+        if (received !== undefined) this.markOriginView(received, islands, add, depth + 1);
+      }
   }
 
   private markReceivedView(
@@ -257,6 +739,64 @@ export class ClassProtocols {
     this.markReceivedMembers(type, islands, add, depth);
   }
 
+  /** Marks `type` where the program gives an untyped island value a type,
+   * unless a view cannot hold what the type declares (viewKept): then
+   * nothing is marked, the value keeps the checked conversion (a copy taken
+   * where the type is given), and the divergence scan names the conversion
+   * (SC6007, divergences.ts). */
+  private markOriginView(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    if (this.viewKept(type, islands, new Set(), 0)) return;
+    this.markReceivedView(type, islands, add, depth);
+  }
+
+  /** Whether `type`, or a type one of its members is declared with, is one
+   * a view of an island object cannot answer as the checked conversion does:
+   * a string-keyed dictionary (a view reads a missing key as a TypeError
+   * where a native dictionary answers `undefined`, and marking it would
+   * change every dictionary of the type the program builds itself), or a
+   * library object other than an array, a byte view or a promise (a Date, a
+   * RegExp, a Map, a Set, an Error, a URL: the conversion builds the native
+   * value, a member read through a view does not). */
+  private viewKept(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    seen: Set<ts.Type>,
+    depth: number,
+  ): boolean {
+    if (depth > RECEIVED_VIEW_DEPTH) return false;
+    if (type.isUnionType() || type.isIntersectionType())
+      return ts
+        .constituentTypes(type)
+        .some((part) => this.viewKept(part, islands, seen, depth + 1));
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    if (islands !== null && isForeignType(islands, type, this.checker)) return false;
+    if (seen.has(type)) return false;
+    seen.add(type);
+    if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) {
+      const elements = attempt(() => this.checker.getTypeArguments(type as ts.TypeReference));
+      return (elements ?? []).some((element) => this.viewKept(element, islands, seen, depth + 1));
+    }
+    if (attempt(() => this.checker.getCallSignatures(type).length > 0) === true) return false;
+    const settled = attempt(() => this.checker.getAwaitedType(type));
+    if (settled !== undefined && settled !== type)
+      return this.viewKept(settled, islands, seen, depth + 1);
+    if (this.isLibraryClassInstance(type)) {
+      const symbol = type.getSymbol();
+      return symbol === undefined || !VIEWED_LIBRARY_OBJECTS.has(ts.symbolName(symbol));
+    }
+    if (attempt(() => this.checker.getIndexInfosOfType(type).length > 0) === true) return true;
+    for (const property of this.checker.getPropertiesOfType(type)) {
+      const member = attempt(() => this.checker.getTypeOfSymbol(property));
+      if (member !== undefined && this.viewKept(member, islands, seen, depth + 1)) return true;
+    }
+    return false;
+  }
+
   /** Marks the types the members of a marked type are declared with: the
    * island object behind a view holds island objects in its members, and a
    * read hands one to the member's type. Property types and index signature
@@ -285,9 +825,13 @@ export class ClassProtocols {
   }
 
   /** Whether `expr` reads a value out of an island handle: its receiver
-   * chain is rooted at a binding of an island-declared type. A value a
-   * program type holds is a program value — that type is the one this pass
-   * marks — so the chain never has to be followed through one. */
+   * chain is rooted at a value that comes out of an island. The origin
+   * decides, not the type the program names: a binding of an island-declared
+   * type, a name bound to an island module's export (islandBinding), or
+   * `this` in a member of a native subclass of an island class, whose
+   * instances the island constructs (islandSubclass). A value a program type
+   * holds is a program value — that type is the one this pass marks — so the
+   * chain never has to be followed through one. */
   private islandValue(expr: ts.Expression, islands: NodeIslandSet): boolean {
     const known = this.islandValues.get(expr);
     if (known !== undefined) return known;
@@ -299,16 +843,148 @@ export class ClassProtocols {
         inner = inner.expression;
       else break;
     }
+    // A chain that comes back to itself through `const` initializers ends.
+    this.islandValues.set(expr, false);
     let answer = false;
     if (ts.isPropertyAccessExpression(inner) || ts.isElementAccessExpression(inner))
       answer = this.islandValue(inner.expression, islands);
-    else if (ts.isCallExpression(inner)) answer = this.islandValue(inner.expression, islands);
+    else if (ts.isCallExpression(inner))
+      answer = this.islandValue(inner.expression, islands) || this.islandReturner(inner);
+    // The value an island promise settles with, and a value one of whose
+    // sources is an island value (`a ?? b`, `c ? a : b`).
+    else if (ts.isAwaitExpression(inner)) answer = this.islandValue(inner.expression, islands);
+    else if (ts.isConditionalExpression(inner))
+      answer =
+        this.islandValue(inner.whenTrue, islands) || this.islandValue(inner.whenFalse, islands);
+    else if (ts.isBinaryExpression(inner) && VALUE_SELECTING.has(inner.operatorToken.kind))
+      answer = this.islandValue(inner.left, islands) || this.islandValue(inner.right, islands);
     else if (ts.isIdentifier(inner))
       answer =
         attempt(() =>
           isForeignType(islands, this.checker.getTypeAtLocation(inner), this.checker),
-        ) === true;
+        ) === true ||
+        this.islandBinding(inner, islands) ||
+        this.islandHeld(inner, islands);
+    else if (inner.kind === ts.SyntaxKind.ThisKeyword)
+      answer = this.islandSubclassReceiver(inner, islands);
     this.islandValues.set(expr, answer);
+    return answer;
+  }
+
+  /** Whether `name` holds a value read out of an island for good: a `const`
+   * initialized with one (`const body = makeBody()`), whatever type it has
+   * (an island's `any` or `unknown` result is asserted or passed on later),
+   * or a parameter a call passes one to (followIslandFlows). A `let` can be
+   * reassigned, and a member holds whatever its writers put there: the
+   * origin is not visible through those. */
+  private islandHeld(name: ts.Identifier, islands: NodeIslandSet): boolean {
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(name));
+    if (symbol === undefined) return false;
+    if (this.islandParameters.has(symbol)) return true;
+    const declaration = symbol.valueDeclaration;
+    if (
+      declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) ||
+      declaration.initializer === undefined ||
+      !ts.isIdentifier(declaration.name) ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+    )
+      return false;
+    return this.islandValue(declaration.initializer, islands);
+  }
+
+  /** Whether `call` calls a program function that returns an island value
+   * (followIslandFlows), named by a binding or a member. */
+  private islandReturner(call: ts.CallExpression): boolean {
+    if (this.islandReturners.size === 0) return false;
+    let callee: ts.Expression = call.expression;
+    while (ts.isParenthesizedExpression(callee) || ts.isNonNullExpression(callee))
+      callee = callee.expression;
+    const name = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
+    if (!ts.isIdentifier(name)) return false;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(name));
+    return symbol !== undefined && this.islandReturners.has(symbol);
+  }
+
+  /** Whether the identifier `name`, read as a value, binds an island
+   * module's export: an import or a `require` of an island module, or a name
+   * a native module re-exports from one (bindsIslandExport). Only a name the
+   * file's own import and `require` declarations bind can be one, so every
+   * other identifier is answered from syntax. */
+  private islandBinding(name: ts.Identifier, islands: NodeIslandSet): boolean {
+    if (!this.importBound(name)) return false;
+    return attempt(() => bindsIslandExport(this.checker, islands, name)) === true;
+  }
+
+  /** Whether `name` is a use of a name its file's import and `require`
+   * declarations bind, answered from syntax. */
+  private importBound(name: ts.Identifier): boolean {
+    const parent = name.parent;
+    if (parent === undefined) return false;
+    // The declaration's own names, a member name, and a name in a type.
+    if (
+      ts.isImportClause(parent) ||
+      ts.isImportSpecifier(parent) ||
+      ts.isNamespaceImport(parent) ||
+      ts.isExportSpecifier(parent) ||
+      ts.isTypeReferenceNode(parent) ||
+      ts.isTypeQueryNode(parent) ||
+      ts.isQualifiedName(parent) ||
+      (ts.isPropertyAccessExpression(parent) && parent.name === name)
+    )
+      return false;
+    const source = ts.getSourceFileOfNode(name);
+    let names = this.importNames.get(source);
+    if (names === undefined) {
+      names = importBoundNames(source);
+      this.importNames.set(source, names);
+    }
+    return names.has(name.text);
+  }
+
+  /** Whether `receiver` (a `this`) is an instance of a native subclass of an
+   * island class: the island constructs the instance, so its members are
+   * read out of the island like any island object's. */
+  private islandSubclassReceiver(receiver: ts.Node, islands: NodeIslandSet): boolean {
+    // Arrow functions keep the enclosing member's `this`.
+    let scope: ts.Node | undefined = receiver.parent;
+    while (scope !== undefined && (!ts.isFunctionLike(scope) || ts.isArrowFunction(scope))) {
+      if (ts.isPropertyDeclaration(scope) || ts.isClassStaticBlockDeclaration(scope)) break;
+      scope = scope.parent;
+    }
+    const owner = scope?.parent;
+    return (
+      owner !== undefined && ts.isClassDeclaration(owner) && this.islandSubclass(owner, islands)
+    );
+  }
+
+  /** Whether `declaration` is a top-level class whose base is an island
+   * class or another such subclass (lower-node-island.ts,
+   * islandSubclassHeritage), answered from the declarations alone. */
+  private islandSubclass(declaration: ts.ClassDeclaration, islands: NodeIslandSet): boolean {
+    const known = this.islandSubclasses.get(declaration);
+    if (known !== undefined) return known;
+    this.islandSubclasses.set(declaration, false);
+    let answer = false;
+    const base = declaration.heritageClauses?.nodes.find(
+      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+    )?.types.nodes[0];
+    if (
+      declaration.name !== undefined &&
+      ts.isSourceFile(declaration.parent) &&
+      base !== undefined
+    ) {
+      answer =
+        attempt(() =>
+          isForeignType(islands, this.checker.getTypeAtLocation(base.expression), this.checker),
+        ) === true;
+      if (!answer) {
+        const symbol = attempt(() => this.checker.getSymbolAtLocation(base.expression));
+        const parent = symbol?.declarations.find(ts.isClassDeclaration);
+        answer = parent !== undefined && this.islandSubclass(parent, islands);
+      }
+    }
+    this.islandSubclasses.set(declaration, answer);
     return answer;
   }
 
@@ -1961,6 +2637,46 @@ export class ClassProtocols {
  * name. */
 const RECEIVED_VIEW_DEPTH = 32;
 
+/** The library objects a view of an island object holds as they are: byte
+ * views share their memory with the island's (viewKept). */
+const VIEWED_LIBRARY_OBJECTS: ReadonlySet<string> = new Set([
+  "ArrayBuffer",
+  "SharedArrayBuffer",
+  "Buffer",
+  "DataView",
+  "Int8Array",
+  "Uint8Array",
+  "Uint8ClampedArray",
+  "Int16Array",
+  "Uint16Array",
+  "Int32Array",
+  "Uint32Array",
+  "Float32Array",
+  "Float64Array",
+  "BigInt64Array",
+  "BigUint64Array",
+]);
+
+/** How deep declarationFileType looks into unions and element types. */
+const DECLARATION_FILE_TYPE_DEPTH = 4;
+
+/** The operators whose value is one of their operands. */
+const VALUE_SELECTING: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.QuestionQuestionToken,
+  ts.SyntaxKind.BarBarToken,
+  ts.SyntaxKind.AmpersandAmpersandToken,
+]);
+
+/** `structuredClone(value)`: the program states the copy. */
+function isStructuredClone(call: ts.CallExpression | ts.NewExpression): boolean {
+  return ts.isIdentifier(call.expression) && call.expression.text === "structuredClone";
+}
+
+/** How many rounds followIslandFlows runs at most: each round follows an
+ * island value one more call or return further, and a program hands one
+ * through only a few of its own functions before it types it. */
+const ISLAND_FLOW_ROUNDS = 8;
+
 interface FlowFacts {
   /** Types whose values reach identity comparisons, Set/Map keys, array
    * searches or whole-object observers. */
@@ -2142,6 +2858,55 @@ function inConstructor(node: ts.Node): boolean {
       return false;
   }
   return false;
+}
+
+/** SCRIPTC_NODE_ISLANDS_TRACE=views at build time prints each assertion
+ * applied to an island value, whose asserted type becomes a view: the sites
+ * where a program that copied on an assertion now reads through the handle. */
+function traceIslandViews(crossings: readonly ts.Expression[]): void {
+  const trace = process.env["SCRIPTC_NODE_ISLANDS_TRACE"];
+  if (trace === undefined || !trace.includes("views")) return;
+  for (const crossing of crossings) {
+    if (!ts.isAssertionExpression(crossing)) continue;
+    const source = ts.getSourceFileOfNode(crossing);
+    const { line } = ts.getLineAndCharacterOfPosition(source, ts.tokenStartOfNode(crossing));
+    process.stderr.write(`[node-islands] view assertion ${source.fileName}:${line + 1}\n`);
+  }
+}
+
+/** The names a file's imports and top-level `require` declarations bind. */
+function importBoundNames(source: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  const bound = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) names.add(name.text);
+    else if (ts.isObjectBindingPattern(name))
+      for (const element of name.elements.nodes)
+        if (element.name !== undefined) bound(element.name);
+  };
+  for (const statement of source.statements.nodes) {
+    if (ts.isImportDeclaration(statement)) {
+      const clause = statement.importClause;
+      if (clause === undefined || clause.isTypeOnly) continue;
+      if (clause.name !== undefined) names.add(clause.name.text);
+      const named = clause.namedBindings;
+      if (named === undefined) continue;
+      if (ts.isNamespaceImport(named)) names.add(named.name.text);
+      else for (const element of named.elements.nodes) names.add(element.name.text);
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations.nodes) {
+        let init = declaration.initializer;
+        while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
+        if (
+          init !== undefined &&
+          ts.isCallExpression(init) &&
+          ts.isIdentifier(init.expression) &&
+          init.expression.text === "require"
+        )
+          bound(declaration.name);
+      }
+    }
+  }
+  return names;
 }
 
 /** A checker query that may hit an upstream checker panic: the flow scan

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9443-process-stream-write-callback-at-exit.ts"
+ ],
+ "diags": []
+}

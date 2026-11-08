@@ -536,23 +536,20 @@ function buildFetchCompatProfile() {
           evidence: [fixture("static"), fixture("static-coercion")],
         }),
       ),
-      // The iterators walk the sort-and-combine list live, one step per
-      // `next()`: entries, names or values, and `[Symbol.iterator]` is
-      // `entries`.
-      ...(
-        [
-          ["keys", "keys"],
-          ["values", "values"],
-          ["entries", "entries"],
-          ["symbol.iterator", "[Symbol.iterator]"],
-        ] as const
-      ).map(([id, member]): FetchCompatOperation => ({
-        id: `stdlib.headers.${id}`,
+      ...["keys", "values", "entries"].map((member): FetchCompatOperation => ({
+        id: `stdlib.headers.${member}`,
         name: `Headers.${member}`,
         kind: "method",
         facets: ["liveness", "mutation", "state-machine"],
-        evidence: [fixture("static")],
+        evidence: [fixture("static-headers-iteration")],
       })),
+      {
+        id: "stdlib.headers.symbol.iterator",
+        name: "Headers.[Symbol.iterator]",
+        kind: "method",
+        facets: ["liveness", "mutation", "state-machine"],
+        evidence: [fixture("static-headers-iteration")],
+      },
       ...["ok", "status", "statusText", "url", "redirected", "headers", "body", "bodyUsed"].map(
         (member): FetchCompatOperation => ({
           id: `stdlib.response.${member}`,

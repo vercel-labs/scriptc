@@ -5035,7 +5035,7 @@
       "kind": "stdlib",
       "name": "Headers.entries",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static"
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static-headers-iteration"
     },
     {
       "id": "stdlib.headers.forEach",
@@ -5070,7 +5070,7 @@
       "kind": "stdlib",
       "name": "Headers.keys",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static"
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static-headers-iteration"
     },
     {
       "id": "stdlib.headers.set",
@@ -5084,14 +5084,14 @@
       "kind": "stdlib",
       "name": "Headers.[Symbol.iterator]",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static"
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static-headers-iteration"
     },
     {
       "id": "stdlib.headers.values",
       "kind": "stdlib",
       "name": "Headers.values",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static"
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static-headers-iteration"
     },
     {
       "id": "stdlib.map.clear",

@@ -238,3 +238,60 @@ test("an assertion that keeps the dictionary's object is no copy", () => {
   expect(seen.facts).toEqual([]);
   expect(seen.warnings).toEqual([]);
 });
+test("a call that builds its union result is fresh", () => {
+  // The literals are wrapped into the union the function returns: the box
+  // is a value, and nothing else holds the record inside it.
+  const seen = facts(
+    `${TYPES}function make(flag: boolean): W | null { return flag ? { a: 1, b: "x" } : null; }\nconst n: N | null = make(process.argv.length < 100); if (n !== null) n.a = 2; console.log(n?.a);`,
+  );
+  expect(seen.facts).toEqual([{ kind: "width", depth: "value", aliasable: false, observed: null }]);
+  expect(seen.warnings).toEqual([]);
+});
+
+/** The refusals of a program, as `code: message`. */
+function refusalsOf(source: string): string[] {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-width-copies-"));
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(entry, source);
+    return analyze(entry).coverage.diagnostics.map((d) => `${d.code}: ${d.message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// `Stored` takes a `Shipped` by width, so a `Shipped` fits two arms of
+// `Tracked` and enters the one its `place` names. `Crate` lacks the member,
+// so the source union keeps no discriminant of its own.
+const PARCELS = `type Crate = { weight: number };\ntype Stored = { place: "stored"; shelf?: number };\ntype Shipped = { place: "shipped"; carrier: string; days: number };\ntype Parcel = Stored | Shipped;\ntype Tracked = Parcel & { scanned?: boolean };\nconst dock: (Crate | Parcel)[] = [{ weight: 4 }, { place: "shipped", carrier: "rail", days: 2 }, { place: "stored" }];\n`;
+
+test("a union arm that enters by its own discriminant compiles where nothing tells the copy from the object", () => {
+  const seen = facts(
+    `${PARCELS}for (const item of dock) if ("place" in item) { const t: Tracked = item; console.log(t.place, t.scanned, JSON.stringify(item)); }`,
+  );
+  expect(seen.facts.length).toBeGreaterThan(0);
+  expect(seen.facts.every((f) => f.kind === "width" && f.aliasable && f.observed === null)).toBe(
+    true,
+  );
+  expect(seen.warnings).toEqual([]);
+});
+
+test("a union arm that enters by its own discriminant is refused where the program can tell", () => {
+  // A write through the converted value while the list still holds the
+  // object: to a member of the arm that has two destination arms,
+  const written = refusalsOf(
+    `${PARCELS}for (const item of dock) if ("place" in item) { const t: Tracked = item; t.scanned = true; console.log(JSON.stringify(item)); }`,
+  );
+  expect(written).toHaveLength(1);
+  expect(written[0]).toContain(
+    "SC2003: union conversion has no layout mapping that keeps the object",
+  );
+  expect(written[0]).toContain("the program writes field 'scanned'");
+  // and to a member only the arm with one destination arm has. Without the
+  // route the conversion has no plan at all, so each of its copies counts.
+  const oneArm = refusalsOf(
+    `${PARCELS}for (const item of dock) if ("place" in item) { const t: Tracked = item; if (t.place === "stored") t.shelf = 7; console.log(JSON.stringify(item)); }`,
+  );
+  expect(oneArm).toHaveLength(1);
+  expect(oneArm[0]).toContain("the program writes field 'shelf'");
+});

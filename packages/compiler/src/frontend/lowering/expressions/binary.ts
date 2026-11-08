@@ -826,6 +826,19 @@ export function lowerNullishPair(
       if (converts) return converted;
     }
   }
+  // A left side that holds only null or undefined (a value asserted or
+  // declared `undefined`): the default is the answer, after the left's
+  // evaluation.
+  if (rest.length === 0) {
+    const right = lowerer.lowerExprExpecting(expr.right, type);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: left, loc }],
+      result: right,
+      type: right.type,
+      loc,
+    };
+  }
   lowerer.unsupported(
     "SC1090",
     expr,

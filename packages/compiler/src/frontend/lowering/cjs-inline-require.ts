@@ -590,6 +590,32 @@ export function cjsWholeExportValueOf(
   return { assign: kept, rhs };
 }
 
+/** The first `module.exports = <value>` of a CommonJS module that is not a
+ * top-level statement: inside a function (a UMD wrapper's body) or in an arm
+ * of a condition. The value is chosen when the module runs, so the module's
+ * static export table does not hold it, and the statement itself is refused
+ * where it would run (lowerExprStatement). Null when the module has none. */
+export function cjsNestedExportReplacementOf(sf: ts.SourceFile): ts.BinaryExpression | null {
+  let found: ts.BinaryExpression | null = null;
+  for (const stmt of sf.statements.nodes) {
+    const top = cjsExportAssignmentOf(stmt)?.expr ?? null;
+    ts.walkPreorder(stmt, (node) => {
+      if (
+        node !== top &&
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        isModuleExportsAccess(node.left)
+      ) {
+        found = node;
+        return "stop";
+      }
+      return undefined;
+    });
+    if (found !== null) break;
+  }
+  return found;
+}
+
 /** True when `dep`'s exports, through `module.exports = require("./y")`
  * re-export chains, are a table that member reads resolve against. */
 export function cjsNamespaceModule(lowerer: Lowerer, dep: ts.SourceFile, depth = 0): boolean {

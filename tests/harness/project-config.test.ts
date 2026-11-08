@@ -136,6 +136,10 @@ for (const [name, title] of [
     "process.stdout and process.stderr where a node:stream Writable is declared, as one stream each",
   ],
   [
+    "process-stream-member-writes",
+    "write assigned through a stored NodeJS.WriteStream is seen by every writer and put back, under @types/node",
+  ],
+  [
     "child-windows-only-options",
     "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
   ],

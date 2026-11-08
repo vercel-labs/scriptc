@@ -504,8 +504,8 @@ describe.skipIf(skip)("Node islands in-process", () => {
       .map((d) => d.message.slice(0, d.message.indexOf(":")).replace(repoRoot, "<repo>"))
       .sort();
     expect(subjects).toEqual([
-        "worker threads run the module '<repo>/tests/fixtures/node-island/worker-shared/state.mjs', and Node island code imports it too",
-        "worker threads run this module, and it loads the Node island module './plugin.mjs'",
+      "worker threads run the module '<repo>/tests/fixtures/node-island/worker-shared/state.mjs', and Node island code imports it too",
+      "worker threads run this module, and it loads the Node island module './plugin.mjs'",
     ]);
     const ran = await run(built.binaryPath, []);
     expect(ran.stdout).toBe("main 2 2\nworker 0/2 1/2 3 1/3\nmain after 3 3\n");

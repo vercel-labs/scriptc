@@ -7369,8 +7369,11 @@ export function lowerPromiseMethodCall(
         type: inner,
         loc,
       };
+      // The settled value is read after the guarded await, so the function's
+      // statement list owns it: the try body's scope ends with the try.
+      if (vLocal) vLocal.mutable = true;
       const tryBody: IrStmt[] = vLocal
-        ? [{ kind: "varDecl", localId: vLocal.id, init: awaitE, loc }]
+        ? [{ kind: "assign", localId: vLocal.id, value: awaitE, loc }]
         : [{ kind: "exprStmt", expr: awaitE, loc }];
       const resultOf = (value: IrExpr, promise: Adoption = "never"): IrStmt[] => {
         if (value.type.kind === "promise")
@@ -7475,9 +7478,16 @@ export function lowerPromiseMethodCall(
                   loc,
                 },
               ];
-      const body: IrStmt[] = [
-        { kind: "tryCatch", tryBody, catchBody, catchLocalId: eLocal.id, finallyBody: null, loc },
-      ];
+      const body: IrStmt[] = [];
+      if (vLocal) body.push({ kind: "varDecl", localId: vLocal.id, init: null, loc });
+      body.push({
+        kind: "tryCatch",
+        tryBody,
+        catchBody,
+        catchLocalId: eLocal.id,
+        finallyBody: null,
+        loc,
+      });
       // The fulfillment callback sits after the catch so a throw from it
       // rejects the result instead of reaching onRejected.
       if (fLocal) {

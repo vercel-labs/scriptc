@@ -40,7 +40,10 @@ export type UnionRetagArm =
   | { kind: "trap" }
   | { kind: "direct"; route: UnionRetagRoute }
   | { kind: "discriminant"; field: string; fieldType: IrType; routes: UnionRetagRoute[] }
-  | { kind: "classRoute"; routes: readonly UnionClassRoute[] };
+  | { kind: "classRoute"; routes: readonly UnionClassRoute[] }
+  /** The arm's payload enters the destination union by the plan it has on
+   * its own (`lift` is the width plan of the arm's type into the union). */
+  | { kind: "own"; lift: WidthLift };
 
 /** A source arm's routes by the values of one discriminant field, planned
  * for one conversion from the checker types of its site. */
@@ -246,6 +249,16 @@ export function planUnionRetag(
     // Unannotated unions retain the unique-width-arm rule. A discriminant
     // present on just one side cannot establish correspondence.
     const lift = widthLift(source, target);
+    // A record that fits several arms of a discriminated destination has no
+    // unique arm, and alone it enters by the value of that discriminant
+    // (planRecordUnionLift). It does the same as an arm of a union that
+    // keeps no discriminant, or another one: a union with one arm that lacks
+    // the member, a record beside `undefined`. A value no route names throws
+    // the catchable TypeError there.
+    if (lift?.how === "discriminantRoute") {
+      result.push({ kind: "own", lift });
+      continue;
+    }
     if (!lift || lift.how !== "liftWrap") {
       // The CHECKED widening, for a conversion that would otherwise refuse
       // (a narrowed `{ role: string }` arm into the wider record arm its
@@ -536,6 +549,8 @@ export function buildUnionRetag(
           },
           loc,
         });
+      } else if (armPlan.kind === "own") {
+        statements.push({ kind: "return", value: applyLift(armPlan.lift, payload, toType), loc });
       } else if (armPlan.kind === "classRoute") {
         if (arm.kind !== "object")
           throw new InternalCompilerError("lowerer bug: class route on non-object arm");

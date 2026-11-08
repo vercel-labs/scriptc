@@ -51,10 +51,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes ninja-build zlib1g-dev libzstd-dev
           base=https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8
-          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm.tar.xz" "$base/${{ matrix.llvm_asset }}.tar.xz"
+          curl -fL --retry 4 --retry-delay 30 -o "$RUNNER_TEMP/llvm.tar.xz" "$base/${{ matrix.llvm_asset }}.tar.xz"
           tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
-          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm-src.tar.xz" "$base/llvm-project-22.1.8.src.tar.xz"
+          curl -fL --retry 4 --retry-delay 30 -o "$RUNNER_TEMP/llvm-src.tar.xz" "$base/llvm-project-22.1.8.src.tar.xz"
           tar -xJf "$RUNNER_TEMP/llvm-src.tar.xz" -C "$RUNNER_TEMP"
           rm "$RUNNER_TEMP/llvm.tar.xz" "$RUNNER_TEMP/llvm-src.tar.xz"
           echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"

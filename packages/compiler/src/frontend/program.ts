@@ -59,12 +59,14 @@ import {
 } from "../diagnostics/diagnostic.js";
 import {
   isNodeModulesPath,
+  isPathSpecifier,
   nearestInvalidPackageJsonPath,
   nearestPackageType,
   nearestPkgJsonPath,
   packageImportTarget,
   projectDtsRuntimeSibling,
   resolveBareModule,
+  resolveNodeRuntimeModule,
   resolveProjectModule,
   resolveWorkspaceSourceModule,
   rememberProjectTypes,
@@ -77,6 +79,8 @@ import {
   setProjectRealm,
 } from "./resolve.js";
 import { probeNodeImportRefusal, probeNodeRequireRefusal } from "./npm.js";
+import { boundSpecifier, specifierBoundContextOf } from "./specifier-bounds.js";
+import type { SpecifierBoundContext } from "./specifier-bounds.js";
 import {
   isNpmStaticPackage,
   npmStaticActive,
@@ -120,11 +124,13 @@ import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
   ambientDtsPath,
+  domExceptionDtsPath,
   fallbackDtsPath,
   fallbackModulesNamedIn,
   isFallbackDtsPath,
   isNodeTypesPath,
   overridesDtsPath,
+  packageShimRoot,
   tsgoPath,
 } from "./dts-paths.js";
 import {
@@ -984,6 +990,26 @@ function erasedSpecifier(specifier: ts.Node): boolean {
   return ts.isLiteralTypeNode(parent);
 }
 
+/** A global the runtime provides and scriptc's own package implementations
+ * (packages/compiler/shims) name, which the project's @types/node is too old
+ * to declare: DOMException, absent from @types/node 20.11 and earlier. Such a
+ * project's own code cannot name the global (its tsc rejects it), but
+ * scriptc's implementation of a package it imports does, and would not lower
+ * (an aborted undici fetch rejects with one). The declaration joins the
+ * program exactly then: a program file belongs to a package implementation
+ * and no file of the adopted Node types declares the global. Decided from the
+ * program's files, like the fallback module roots. */
+function nodeTypesSupplementRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
+  const names = program.getSourceFileNames();
+  const shims = tsgoPath(packageShimRoot()) + "/";
+  if (!names.some((name) => tsgoPath(name).startsWith(shims))) return [];
+  for (const name of names) {
+    if (isNodeTypesPath(name) && /\bvar\s+DOMException\b/.test(host.sourceText(name) ?? ""))
+      return [];
+  }
+  return [domExceptionDtsPath()];
+}
+
 /** Program roots hidden behind canonical createRequire bindings. tsgo
  * discovers ordinary import/require edges itself, but a source binding
  * returned by createRequire is intentionally just a function to the type
@@ -1031,6 +1057,39 @@ function createRequireProgramRoots7(program: ts.Program): string[] {
       if (target === null || target.endsWith(".json") || target.endsWith(".node")) continue;
       const normalized = tsgoPath(resolve(target));
       if (!known.has(normalized)) roots.add(normalized);
+    }
+  }
+  return [...roots].sort();
+}
+
+/** Program roots named only by a BOUNDED dynamic import() (SPEC §5.1 of
+ * results/designs/island-dynamic-subgraphs): tsgo includes a literal
+ * import()'s target in the program, but a computed specifier is opaque to it,
+ * so the bound's path values must join the program as roots themselves. A
+ * value resolves to the exact file it names, as Node resolves it at run time:
+ * a `.js` spelling never answers with the `.ts` source beside it. */
+function boundedDynamicImportRoots7(program: ts.Program): string[] {
+  const known = new Set(program.getSourceFileNames().map((name) => tsgoPath(resolve(name))));
+  const roots = new Set<string>();
+  let ctx: SpecifierBoundContext | null = null;
+  for (const sf of program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile || sf.fileName.endsWith(".json")) continue;
+    for (const call of moduleSourceCandidates(program, sf).calls) {
+      if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) continue;
+      const arg = call.arguments.nodes[0];
+      if (arg === undefined || ts.isStringLiteralLike(arg)) continue;
+      ctx ??= specifierBoundContextOf(program);
+      const bound = boundSpecifier(ctx, arg as ts.Expression);
+      if (bound.kind !== "set") continue;
+      for (const value of bound.values) {
+        if (!isPathSpecifier(value)) continue;
+        const path = resolveNodeRuntimeModule(sf.fileName, value);
+        // A declaration file or a non-module artifact (JSON, native addon)
+        // keeps its run-time answer: the load never reaches a compiled module.
+        if (path === null || known.has(path) || !/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(path))
+          continue;
+        roots.add(path);
+      }
     }
   }
   return [...roots].sort();
@@ -1368,9 +1427,12 @@ function loadProgram7(
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
-        ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
+        ...(nodeTypes === null
+          ? fallbackModuleRoots7(program, host)
+          : nodeTypesSupplementRoots7(program, host)),
         ...entryPackageProgramRoots7(program, entryPath, packageRoots),
         ...createRequireProgramRoots7(program),
+        ...boundedDynamicImportRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
         ...workerTargetPaths(program, program.getImplementationSourceFiles()),
       ];
@@ -3349,12 +3411,15 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
  *   fence, and the resolve.paths value is a function that throws one when
  *   called (module-resolution.ts), so the statement's catch clause handles
  *   them (packages that look for optional native addons).
- * - "value": in JavaScript source, the loader itself as a value (stored,
- *   passed, returned). It lowers to a run-time require function over the
- *   runtime resolver. A package compiled statically cannot prove those
- *   call sites, so npm-static refuses it (the "escaping" class there).
- * - "computed": the "runtime" and "value" uses in TypeScript source, and
- *   the "deferred" shapes outside a try block.
+ * - "value": the loader itself as a value (stored, passed, returned), in
+ *   JavaScript and TypeScript source alike. It lowers to a run-time require
+ *   function over the runtime resolver: the calls it will receive are not
+ *   in sight where the value is read, so they are answered when they run.
+ *   A package compiled statically cannot prove those call sites, so
+ *   npm-static refuses it (the "escaping" class there).
+ * - "computed": the "runtime" uses in TypeScript source (a call the
+ *   compiler can see cannot load anything, so it is refused where it is
+ *   written), and the "deferred" shapes outside a try block.
  * - "escaping": writes, optional calls, and other members. */
 const COMPUTED_CREATE_REQUIRE_REASON =
   "its createRequire result is used with a computed specifier in TypeScript, or with spread arguments or resolve.paths outside a try block (static requires need literal specifiers)";
@@ -3363,9 +3428,7 @@ type CreateRequireUse7 = "static" | "runtime" | "deferred" | "computed" | "escap
 
 function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
   const use = createRequireUseShape7(expr);
-  return (use === "runtime" || use === "value") && !isJsSourceFile(ts.getSourceFileOfNode(expr))
-    ? "computed"
-    : use;
+  return use === "runtime" && !isJsSourceFile(ts.getSourceFileOfNode(expr)) ? "computed" : use;
 }
 
 function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
@@ -3416,9 +3479,8 @@ function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
       call.expression === use
     )
       return "escaping";
-    // The loader itself as a value (stored, passed, returned). JavaScript
-    // source lowers it to a run-time require function over the runtime
-    // resolver; TypeScript source keeps the refusal (createRequireUse7).
+    // The loader itself as a value (stored, passed, returned): a run-time
+    // require function over the runtime resolver.
     return "value";
   } else if (!paths) {
     return "runtime";
@@ -8824,6 +8886,9 @@ export function npmStaticLoadableFiles(
   };
   for (const sf of moduleOrder) add(sf);
   let computed = false;
+  // The bounder a computed import() site needs (SPEC §3.1); built on the
+  // first such site only.
+  let boundContext: SpecifierBoundContext | null = null;
   while (work.length > 0 && !computed) {
     const sf = work.pop()!;
     const packageJs =
@@ -8841,7 +8906,15 @@ export function npmStaticLoadableFiles(
         const arg = n.arguments.nodes[0];
         if (arg !== undefined && ts.isStringLiteralLike(arg))
           follow(arg.text, isImport ? "import" : "require");
-        else if (packageJs || isImport) computed = true;
+        else if (isImport) {
+          // A bounded site is its literal values, one edge each; a site
+          // whose values cannot be bounded has no build-time closure
+          // (SPEC §7 B2).
+          boundContext ??= specifierBoundContextOf(program);
+          const bound = arg === undefined ? null : boundSpecifier(boundContext, arg);
+          if (bound === null || bound.kind !== "set") computed = true;
+          else for (const value of bound.values) follow(value, "import");
+        } else if (packageJs) computed = true;
       } else if (
         packageJs &&
         (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&

@@ -254,7 +254,25 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return output;
   }
-  if (e.fn === "promise.allTuple") return emitPromiseAllTuple(host, e);
+  if (e.fn === "promise.allTuple" || e.fn === "promise.allSettledTuple")
+    return emitPromiseAllTuple(host, e);
+  if (e.fn === "promise.entryRejected") {
+    // Whether a settled entry promise rejected (borrowed operand).
+    const promise = host.emitExpr(e.args[0]!);
+    const out = B.tmp();
+    host.declare(`declare zeroext i1 @scr_promise_is_rejected(ptr)`);
+    B.line(`${out} = call zeroext i1 @scr_promise_is_rejected(ptr ${promise.name})`);
+    return { name: out, type: e.type };
+  }
+  if (e.fn === "promise.entryReason") {
+    // A rejected entry's reason as a checked-dynamic value, +1 (borrowed
+    // operand; the entry keeps its settlement).
+    const promise = host.emitExpr(e.args[0]!);
+    const out = B.tmp();
+    host.declare(`declare ptr @scr_promise_reason_dyn(ptr)`);
+    B.line(`${out} = call ptr @scr_promise_reason_dyn(ptr ${promise.name})`);
+    return host.own({ name: out, type: e.type });
+  }
   if (e.fn === "promise.fulfilledValue") {
     // The payload of a fulfilled promise (borrowed operand): the scalar
     // kinds that lower to a double (numbers, Dates, process streams) and
@@ -302,6 +320,43 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const t = B.tmp();
     B.line(`${t} = phi i1 [ false, %${from} ], [ ${has}, %${probed} ]`);
     return { name: t, type: e.type };
+  }
+  if (e.fn === "record.sourceHasKey") {
+    // Own-key presence in the kept source: a key the source lacks must leave
+    // the converted field absent, not hold the undefined value.
+    const record = host.emitReadReceiver(e.args[0]!);
+    const key = e.args[1]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceHasKey key is not a literal");
+    host.declare(`declare zeroext i1 @scr_record_source_has_key(ptr, ptr, ${host.sizeType})`);
+    const present = B.tmp();
+    const length = Buffer.byteLength(key.value, "utf8");
+    B.line(
+      `${present} = call zeroext i1 @scr_record_source_has_key(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${length})`,
+    );
+    return { name: present, type: e.type };
+  }
+  if (e.fn === "record.sourceGet") {
+    const record = host.emitReadReceiver(e.args[0]!);
+    const key = e.args[1]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceGet key is not a literal");
+    // The kept source's own-key read (+1): a record→record conversion answers
+    // a field the source type does not declare from here, without building
+    // the record's capsule (which would reach the dynamic tier).
+    host.declare(`declare ptr @scr_record_source_get(ptr, ptr, ${host.sizeType})`);
+    const value = B.tmp();
+    const length = Buffer.byteLength(key.value, "utf8");
+    B.line(
+      `${value} = call ptr @scr_record_source_get(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${length}) ; +1`,
+    );
+    // The read runs the view's accessor: a getter that throws leaves the
+    // exception pending and answers NULL, which must unwind here rather
+    // than reach the dynamic-value consumer as a value. The temp joins its
+    // frame first, so the unwind releases it as every other call's does.
+    const out = host.own({ name: value, type: e.type });
+    host.emitPendingCheck();
+    return out;
   }
   if (e.fn === "record.sourceDelete") {
     // `delete rec.key` of a key the declared layout does not hold: the key
@@ -1726,6 +1781,7 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
           `  %failed = call zeroext i1 @scr_exc_pending()`,
           `  br i1 %failed, label %reject, label %fulfill`,
           `reject:`,
+          ...host.pendingBailReleaseLines(tuple, "%tuple"),
           `  call void @scr_promise_reject_pending(ptr %dst)`,
           `  ret void`,
           `fulfill:`,
@@ -1748,7 +1804,11 @@ registerReplay("allTupleAdapterFor", (host, args) =>
  * entries stores each fulfilled entry promise, and a settlement adapter on
  * the combinator calls the builder with them and fulfills the result with
  * the tuple inside the combinator's settlement; a rejection settles the
- * result the same way. The combinator itself counts as handled. */
+ * result the same way. The combinator itself counts as handled.
+ * Promise.allSettled's tuple form (promise.allSettledTuple) is the same
+ * over the combinator that waits for every entry and stores each settled
+ * entry promise, fulfilled or rejected; its builder asks each entry which
+ * it was. */
 function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
   const build = e.args[1]!;
@@ -1757,7 +1817,9 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
   const entriesT = e.args[0]!.type;
   const entries = host.emitExpr(e.args[0]!);
   const adapter = allTupleAdapterFor(host, build.fnName, e.type.inner);
-  host.declare(`declare ptr @scr_promise_all(ptr, ptr, ptr)`);
+  const combinator =
+    e.fn === "promise.allSettledTuple" ? "scr_promise_all_settled" : "scr_promise_all";
+  host.declare(`declare ptr @${combinator}(ptr, ptr, ptr)`);
   host.declare(`declare void @scr_promise_all_store_promise(ptr, double, ptr)`);
   host.declare(`declare ptr @scr_promise_new()`);
   host.declare(`declare void @scr_promise_race_add(ptr, ptr, ptr)`);
@@ -1775,7 +1837,7 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
   host.own({ name: values, type: entriesT });
   const all = B.tmp();
   B.line(
-    `${all} = call ptr @scr_promise_all(ptr ${entries.name}, ptr ${values}, ptr @scr_promise_all_store_promise)`,
+    `${all} = call ptr @${combinator}(ptr ${entries.name}, ptr ${values}, ptr @scr_promise_all_store_promise)`,
   );
   B.line(`call void @scr_promise_mark_handled(ptr ${all})`);
   const result = B.tmp();

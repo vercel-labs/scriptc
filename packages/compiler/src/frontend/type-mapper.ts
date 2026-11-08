@@ -1682,9 +1682,6 @@ export interface TypeMapperCtx {
   verifySymbolProvenance?: (sym: ts.Symbol, answer: SymbolProvenance) => void;
 
   isNpmFile: (sf: ts.SourceFile) => boolean;
-  /** The declaration file of @scriptc/experimental, wherever it is installed
-   * (a workspace links it outside node_modules). */
-  isExperimentalFile?: (sf: ts.SourceFile) => boolean;
   /** True for a declaration file explicitly mapped by coverage's
    * --external-types option. These declarations are trusted as structural
    * type descriptions for project-owned values, but their imported runtime
@@ -4199,6 +4196,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("SegmentData")
   )
     return DYN;
+  // Intl.NumberFormat and Intl.DateTimeFormat objects are handles the
+  // runtime builds over ICU (scr_intl.c), and their options objects are
+  // read at run time by ECMA-402's steps, as checked-dynamic values.
+  if (
+    isStdlibInterface("NumberFormat") ||
+    isStdlibInterface("DateTimeFormat") ||
+    isStdlibInterface("NumberFormatOptions") ||
+    isStdlibInterface("DateTimeFormatOptions")
+  )
+    return DYN;
   // Typed arrays: references to the lib's Uint8Array/Uint32Array/
   // Float32Array/Float64Array interfaces (provenance, not names). The es2022+ lib
   // declares them generic over the backing buffer (`Uint8Array<ArrayBuffer>`
@@ -4778,8 +4785,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "testCtx" };
   }
   // node:test's MockFunctionContext<F> and MockFunctionCall<F>: compiler
-  // records built from F (mock-shapes.ts). Mock<F> then maps as the hybrid
-  // { %call: F, mock } record through mapHybridCallableIntersection.
+  // records built from F (mock-shapes.ts). Mock<F> — `F & { mock }` — maps
+  // through mapCallableIntersection to F's func type, with `mock` a member
+  // of the closure's own-property table.
   if (
     ((psym !== undefined && psymName === "MockFunctionContext") ||
       (psym !== undefined && psymName === "MockFunctionCall")) &&
@@ -5891,14 +5899,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // the plain-func mapping below (historic behavior: the properties drop
   // from the type).
   if (widened.isIntersectionType() && checker.getConstructSignatures(widened).length === 0) {
-    // node:test's `Mock<F>` (`F & { mock: MockFunctionContext<F> }`) keeps
-    // its hybrid `%call` record: the `mock` member is the runner's live
-    // call log, which the mock lowering builds and mutates, not data the
-    // closure's own-property table could carry yet.
-    if (isMockHybridIntersection(widened, ctx)) {
-      const hybrid = mapHybridCallableRecord(widened, ctx);
-      if (hybrid) return hybrid;
-    }
+    // node:test's `Mock<F>` (`F & { mock: MockFunctionContext<F> }`) maps
+    // here too: the mock IS the wrapper closure and its `mock` member is a
+    // table entry like any other callable member (lower-mock.ts writes it
+    // through the closure's own-property table), so `typeof`, identity and
+    // enumeration answer as Node's function object does.
     const callable = mapCallableIntersection(widened, ctx);
     if (callable) return callable;
     // Recursive and Symbol-keyed callable objects need their complete live
@@ -6361,6 +6366,26 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           results.length === 1 ? results[0]! : { kind: "union", unionId: unions.intern(results) },
         );
         byKey.set(typeKey(joined), joined);
+      }
+      // A class arm beside an interface it implements, where that interface
+      // is held as the checked view of its objects (a class-backed protocol:
+      // the view holds the instance itself): the class arm is contained in
+      // the interface's, as the subclass arm above is in its ancestor's. The
+      // checker folds such a class into the interface by itself, except
+      // when the interface has optional members the class leaves out
+      // (`swap ? new Label() : item` over `Piece` with `press?()` is typed
+      // `Label | Piece`). Kept as an arm of its own, the class would make
+      // the interface's arm a record, and an instance of ANOTHER class of
+      // the interface would enter the union as a record copy: not the
+      // object, and no instance of its class.
+      if (classParts.length > 0 && byKey.has(typeKey(DYN)) && ctx.classImplementedProtocol) {
+        const views = parts.filter((part) => ctx.classImplementedProtocol!(part));
+        if (views.length > 0) {
+          for (const { source, mapped } of classParts) {
+            if (views.some((view) => checker.isTypeAssignableTo(source, view)))
+              byKey.delete(typeKey(mapped));
+          }
+        }
       }
       const arms = [...byKey.values()];
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
@@ -8774,85 +8799,19 @@ function mapCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType |
   return fn?.kind === "func" ? fn : null;
 }
 
-/** Whether `widened` is node:test's `Mock<F>` — an intersection carrying a
- * `mock: MockFunctionContext<F>` member declared in the ambient `test`
- * module (the same provenance check MockFunctionContext's own mapping
- * uses). */
-function isMockHybridIntersection(widened: ts.Type, ctx: TypeMapperCtx): boolean {
-  if (!widened.isIntersectionType()) return false;
-  const mock = ctx.checker.getPropertyOfType(widened, "mock");
-  if (mock === undefined) return false;
-  const sym = ctx.checker.getTypeOfSymbol(mock).getSymbol();
-  return (
-    sym !== undefined &&
-    ts.symbolName(sym) === "MockFunctionContext" &&
-    sym.declarations.some(
-      (d) =>
-        ts.isInterfaceDeclaration(d) &&
-        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-        isDeclaredInAmbientModule(d, "test"),
-    )
-  );
-}
-
-function mapHybridCallableRecord(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
-  const { checker, shapes } = ctx;
-  if (!widened.isIntersectionType()) return null;
-  if (checker.getCallSignatures(widened).length !== 1) return null;
-  let funcPart: ts.Type | null = null;
-  for (const part of ts.constituentTypes(widened)) {
-    if (checker.getCallSignatures(part).length > 0) {
-      if (funcPart) return null; // exactly one callable part
-      funcPart = part;
-      continue;
-    }
-    const partSym = part.getSymbol();
-    if (
-      (part.flags & ts.TypeFlags.Object) === 0 ||
-      checker.getConstructSignatures(part).length > 0 ||
-      (partSym !== undefined && (partSym.flags & ts.SymbolFlags.Class) !== 0) ||
-      checker.getIndexInfosOfType(part).length > 0
-    ) {
-      return null;
-    }
-  }
-  if (!funcPart) return null;
-  const fn = mapType(funcPart, ctx);
-  if (!fn || fn.kind !== "func") return null;
-  const fields: IrRecordField[] = [{ name: "%call", type: fn }];
-  const declaredOrder: string[] = [];
-  for (const p of checker.getPropertiesOfType(widened)) {
-    if (p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) return null;
-    const pt = mapType(checker.getTypeOfSymbol(p), ctx);
-
-    if (!pt || pt.kind === "void") return null;
-    fields.push({
-      name: ts.symbolName(p),
-      type: pt,
-      ...(optionalCheckedDyn(p, pt) ? { optional: true as const } : {}),
-    });
-    declaredOrder.push(ts.symbolName(p));
-  }
-  if (fields.length === 1) return null; // no properties — it is just F
-  fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return { kind: "record", shapeId: shapes.intern(fields, false, undefined, declaredOrder) };
-}
-
 /** The representation every part of a union of function-with-properties
  * intersections maps to, or null when a part does not map to the same one.
- * Each part maps exactly as it does alone — an ordinary callable
- * intersection to the callable's func type (its members ARE the closure's
- * own properties), node:test's `Mock<F>` to its hybrid `%call` record — so a
- * union never reintroduces the record a value no longer has. */
+ * Each part maps exactly as it does alone — a callable intersection (or
+ * node:test's `Mock<F>` among them) to the callable's func type, whose
+ * members ARE the closure's own properties — so a union never reintroduces
+ * a record a value no longer has. */
 function mapUniformHybridUnion(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const parts = ts.constituentTypes(widened);
   if (!parts.every((p) => p.isIntersectionType())) return null;
   let first: IrType | null = null;
   for (const part of parts) {
     if (ctx.checker.getConstructSignatures(part).length > 0) return null;
-    const mapped = isMockHybridIntersection(part, ctx)
-      ? mapHybridCallableRecord(part, ctx)
-      : mapCallableIntersection(part, ctx);
+    const mapped = mapCallableIntersection(part, ctx);
     if (!mapped || (first && typeKey(mapped) !== typeKey(first))) return null;
     first ??= mapped;
   }
@@ -9157,11 +9116,6 @@ function isMappedShape(t: ts.Type): boolean {
   );
 }
 
-/** A declaration file an installed package ships (its own or an @types
- * twin), outside the standard library and @types/node: the type surface
- * of a package the program does not compile. Its pure type shapes —
- * interfaces, aliases, type literals — describe data a program can build
- * itself (`import type` from a types-only package such as type-fest). */
 /** A class an SDK declares only to describe data (aws-sdk's
  * `declare class PresignedPost { url: string; fields: Fields }`, which
  * arrives as JSON and is never constructed): public instance fields and
@@ -9204,15 +9158,13 @@ function isTypeOnlyNamespace(d: ts.Node): boolean {
   );
 }
 
-function packageTypeFile(
-  sf: ts.SourceFile,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExperimentalFile">,
-): boolean {
-  return (
-    sf.isDeclarationFile &&
-    (/[\\/]node_modules[\\/]/.test(sf.fileName) || ctx.isExperimentalFile?.(sf) === true) &&
-    !ctx.isStdlibFile(sf)
-  );
+/** A declaration file whose pure type declarations describe data the
+ * program builds: a package's, and equally the project's own (a
+ * `types.d.ts` beside the sources, a workspace package's declarations
+ * reached through its link, which resolve outside `node_modules`). Only
+ * the standard library's declarations are another type world. */
+function packageTypeFile(sf: ts.SourceFile, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  return sf.isDeclarationFile && !ctx.isStdlibFile(sf);
 }
 
 /** `type`'s declarations — through its alias, or its own symbol when the
@@ -9239,7 +9191,7 @@ function packageDeclarations(
  * or implementation shape, null when no package declares it. */
 function packageDataPart(
   type: ts.Type,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile">,
 ): boolean | null {
   const aliasDecls = packageDeclarations(type.getAliasSymbol(), ctx);
   const ownDecls = packageDeclarations(type.getSymbol(), ctx);
@@ -9257,7 +9209,7 @@ function packageDataPart(
  * no implementation either: the program fills it with its own closure. */
 function purePackageDeclarations(
   decls: readonly ts.Node[] | null,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile">,
 ): boolean {
   return (
     decls === null ||
@@ -9287,7 +9239,7 @@ function purePackageDeclarations(
  * of its own. */
 export function packageTypeIsData(
   type: ts.Type,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile">,
 ): boolean {
   // `npmPackageOf` reaches the declaring package through the union's
   // members; the value-shape test is per member and never recurses (a

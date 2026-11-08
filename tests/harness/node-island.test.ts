@@ -310,6 +310,29 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect((await run(join(moved, "app"), [], env)).stdout).toBe(`${before}\n42\n${after}\ndone\n`);
   });
 
+  test("a bounded import() names a program module the island shares", async () => {
+    // The island loads its module through a syntactically bounded argument
+    // (`"./bounded" + "-dyn.mjs"`), so the module it names is provided to
+    // the island instead of refused, and both sides write the one instance.
+    const app = await build(
+      "bounded-import",
+      undefined,
+      join(repoRoot, "tests/fixtures/node-island/bounded-import.ts"),
+    );
+    expect(await run(app, [])).toEqual({
+      stdout: [
+        'main 1 "main-1"',
+        "island main-1 -> 2 ns=2",
+        'main after true "main-1,island-dyn"',
+        "island again main-1,island-dyn -> 3 ns=3",
+        'main end "main-1,island-dyn,island-dyn"',
+        "",
+      ].join("\n"),
+      stderr: "",
+      code: 0,
+    });
+  }, 300_000);
+
   test("an island package's import is repeated after its lost file is put back", async () => {
     // The compiler's island imports load through the handle API, the other
     // road by which Node's error reaches the program.
@@ -426,18 +449,146 @@ describe.skipIf(skip)("Node islands in-process", () => {
     });
   });
 
-  test("a call from a worker thread throws", async () => {
+  test("a call from a worker thread is routed to the island's thread", async () => {
     const worker = await build(
       "worker",
       undefined,
       join(repoRoot, "tests/fixtures/node-island/worker.ts"),
     );
+    // The build says what differs from Node (SC6011): a module that worker
+    // threads run loads these island modules, and the program has one
+    // instance of each for all its threads.
+    const notedDir = join(outDir, "worker-noted");
+    mkdirSync(notedDir, { recursive: true });
+    const noted = await compile(join(repoRoot, "tests/fixtures/node-island/worker.ts"), {
+      outPath: join(notedDir, "worker"),
+      outDir: notedDir,
+      sanitize,
+    });
+    expect(noted.ok).toBe(true);
+    const shared = (noted.warnings ?? []).filter((d) => d.code === "SC6011");
+    expect([...new Set(shared.map((d) => /module '([^']+)'/.exec(d.message)?.[1]))].sort()).toEqual(
+      ["./helper.cjs", "thenable-pkg"],
+    );
+    expect(shared[0]?.message).toContain(
+      "the program has one instance of that module for all its threads, while under Node each worker thread has its own",
+    );
+    const refusal = (what: string, value: string, where: string): string =>
+      `worker ${what} ERR_SCRIPTC_ISLAND_WORKER_VALUE\n` +
+      `worker   scriptc: ${value} cannot cross between a worker thread and its Node island (${where})\n`;
     expect(await run(worker, [])).toEqual({
       stdout:
-        "main 42\nworker Node islands run on the main thread only; this call came from a worker thread\nexit 0\n",
+        // One instance of the island module for both threads: the worker's
+        // count continues the main thread's (Node: a worker counts from 1).
+        "main 42\nmain count 1\nworker called 42\nworker get ERR_SCRIPTC_ISLAND_WORKER_VALUE\n" +
+        "worker count 2\n" +
+        refusal(
+          "function back",
+          "a native function or object the island holds by reference",
+          "the result of the call to 'getFunction'",
+        ) +
+        refusal(
+          "callback",
+          "a native function (a callback)",
+          "argument 1 of the call to 'callBack'",
+        ) +
+        refusal(
+          "bytes out",
+          "native bytes (a typed array or Buffer)",
+          "argument 1 of the call to 'byteLength'",
+        ) +
+        refusal(
+          "bytes in",
+          "island bytes (a typed array or Buffer)",
+          "the result of the call to 'bytes'",
+        ) +
+        refusal("buffer out", "a native ArrayBuffer", "argument 1 of the call to 'byteLength'") +
+        refusal("buffer in", "an island ArrayBuffer", "the result of the call to 'buffer'") +
+        refusal("symbol out", "a native symbol", "argument 1 of the call to 'describe'") +
+        refusal("symbol in", "an island symbol", "the result of the call to 'symbol'") +
+        refusal(
+          "error out",
+          "a native error passed by reference",
+          "argument 1 of the call to 'errorName'",
+        ) +
+        "worker plain 42\n" +
+        "worker async ERR_SCRIPTC_ISLAND_WORKER_ASYNC\n" +
+        "worker await ERR_SCRIPTC_ISLAND_WORKER_ASYNC\n" +
+        "worker thenable ERR_SCRIPTC_ISLAND_WORKER_VALUE\nexit 0\n",
       stderr: "",
       code: 0,
     });
+  }, 300_000);
+
+  test("a module shared with the island that a worker also runs is named at build time", async () => {
+    // The island has one instance of every module it imports, the main
+    // thread's, whichever thread calls it, and a worker's own code runs the
+    // worker's instance of the same module: the build says so (SC6011), for
+    // the shared module and for the island module the worker loads, and the
+    // program runs with that one difference from Node, which prints
+    // `worker 0/0 1/1 2 2/2` and `main after 2 2`.
+    const entry = join(repoRoot, "tests/fixtures/node-island/worker-shared/main.mjs");
+    const dir = join(outDir, "worker-shared");
+    mkdirSync(dir, { recursive: true });
+    const built = await compile(entry, { outPath: join(dir, "main"), outDir: dir, sanitize });
+    if (!built.ok)
+      throw new Error(built.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const noted = (built.warnings ?? []).filter((d) => d.code === "SC6011");
+    const subjects = noted
+      .map((d) => d.message.slice(0, d.message.indexOf(":")).replace(repoRoot, "<repo>"))
+      .sort();
+    expect(subjects).toEqual([
+      "worker threads run the module '<repo>/tests/fixtures/node-island/worker-shared/state.mjs', and Node island code imports it too",
+      "worker threads run this module, and it loads the Node island module './plugin.mjs'",
+    ]);
+    const ran = await run(built.binaryPath, []);
+    expect(ran.stdout).toBe("main 2 2\nworker 0/2 1/2 3 1/3\nmain after 3 3\n");
+    // The sanitized lane's reference-count audit fails at exit for a
+    // program with worker threads and a shared module that exports a
+    // function, with or without this change and whether or not a worker
+    // runs: in such a build each read of the module's exports after the
+    // script has ended (the island reads them while Node stops) makes the
+    // function's value again, and nothing frees it. Until that is fixed the
+    // exit status and stderr are compared in the plain lane only.
+    if (!sanitize) expect(ran).toMatchObject({ stderr: "", code: 0 });
+  }, 300_000);
+
+  test("a worker thread's call is repeated after its module's lost file is put back", async () => {
+    // The worker reads the outcome of its own call, and the tree and its
+    // manifest belong to the island's thread: the repair runs there, and the
+    // worker makes the call again.
+    const dir = join(outDir, "worker-repair");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "later.cjs"), "exports.later = (n) => n + 1;\n");
+    writeFileSync(
+      join(dir, "main.ts"),
+      [
+        'import { Worker, isMainThread, parentPort } from "node:worker_threads";',
+        'import { callSync } from "@scriptc/node";',
+        "if (isMainThread) {",
+        "  const worker = new Worker(new URL(import.meta.url));",
+        '  worker.on("message", (message: string) => console.log("worker", message));',
+        '  worker.on("exit", (code: number) => console.log("exit", code));',
+        "} else {",
+        '  parentPort!.postMessage("called " + callSync<number>("./later.cjs", "later", 41));',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const program = await build("worker-repair-out", undefined, join(dir, "main.ts"));
+    const cache = join(outDir, "worker-repair-cache");
+    rmSync(cache, { recursive: true, force: true });
+    const env = { ...process.env, XDG_CACHE_HOME: cache };
+    const intact = { stdout: "worker called 42\nexit 0\n", stderr: "", code: 0 };
+    expect(await run(program, [], env)).toEqual(intact);
+    const islands = join(cache, "scriptc/node-islands");
+    const root = join(islands, readdirSync(islands)[0]!);
+    rmSync(fileBelow(root, "later.cjs"));
+    expect(await run(program, [], env)).toEqual({
+      ...intact,
+      stderr: `scriptc: reinstalled 1 Node island module file missing from ${root}\n`,
+    });
+    expect(await run(program, [], env)).toEqual(intact);
   }, 300_000);
 
   test("full garbage collections during calls, at depth on both sides", async () => {
@@ -1490,6 +1641,114 @@ test("a host-global fence inside a function body keeps its package native", asyn
     expect(warm.diagnostics.map((d) => d.code)).toEqual(islanded.diagnostics.map((d) => d.code));
 }, 300_000);
 
+// The body of a function that is called where it is written runs when its
+// module evaluates, so a refusal there throws before the module finishes, as
+// one in top-level code does. The classic UMD wrapper is such a function, and
+// the statement it holds is the module's export (`module.exports = factory()`),
+// which a build reads from top-level statements only: the package runs in a
+// Node island, and a default import of it is the function it exports. A
+// generator's body does not run at the call, so the same refusal there keeps
+// its package native. Needs no libnode pack for the decision: the island
+// build stops before linking without one.
+test("a refusal in a function called where it is written makes its package a Node island", async () => {
+  const dir = join(outDir, "called-where-written");
+  rmSync(dir, { recursive: true, force: true });
+  const writePackage = (name: string, type: "module" | "commonjs", body: string[]): void => {
+    const at = join(dir, "node_modules", name);
+    mkdirSync(at, { recursive: true });
+    writeFileSync(
+      join(at, "package.json"),
+      JSON.stringify({ name, version: "1.0.0", type, main: "./index.js", types: "./index.d.ts" }),
+    );
+    writeFileSync(join(at, "index.js"), [...body, ""].join("\n"));
+    writeFileSync(
+      join(at, "index.d.ts"),
+      type === "commonjs"
+        ? "declare function plural(word: string, count: number): string;\nexport = plural;\n"
+        : "export declare function answer(): string;\n",
+    );
+  };
+  const entry = (name: string, body: string): string => {
+    const file = join(dir, `${name}.mjs`);
+    writeFileSync(file, body);
+    return file;
+  };
+  const umd = (assign: string): string[] => [
+    "(function (root, factory) {",
+    '  if (typeof require === "function" && typeof exports === "object" && typeof module === "object") {',
+    `    ${assign}`,
+    "  } else {",
+    "    root.plural = factory();",
+    "  }",
+    "})(this, function () {",
+    "  function plural(word, count) {",
+    '    return count === 1 ? word : word + "s";',
+    "  }",
+    "  return plural;",
+    "});",
+  ];
+  writePackage("umd-wrapped", "commonjs", umd("module.exports = factory();"));
+  writePackage("called-with-this", "module", [
+    "(function () {",
+    "  new FormData();",
+    "}).call(undefined);",
+    'export function answer() { return "island"; }',
+  ]);
+  writePackage("generator-body", "module", [
+    "const pending = (function* () {",
+    "  yield new FormData();",
+    "})();",
+    'export function answer() { return typeof pending === "object" ? "native" : "none"; }',
+  ]);
+  const islandNotes = (result: Awaited<ReturnType<typeof compile>>): string[] =>
+    result.ok
+      ? (result.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message)
+      : [];
+  const build = (name: string, body: string): Promise<Awaited<ReturnType<typeof compile>>> =>
+    compile(entry(name, body), { outPath: join(dir, name), outDir: dir, sanitize });
+
+  const wrapped = await build(
+    "umd-wrapped",
+    'import plural from "umd-wrapped";\nconsole.log(plural("item", 2), plural("item", 1), typeof plural);\n',
+  );
+  if (wrapped.ok) {
+    expect(islandNotes(wrapped)).toEqual([
+      expect.stringContaining("'umd-wrapped@1.0.0' runs in a Node island"),
+    ]);
+    if (!skip)
+      expect(await run(wrapped.binaryPath, [])).toEqual({
+        stdout: "items item function\n",
+        stderr: "",
+        code: 0,
+      });
+  } else expect(wrapped.diagnostics.map((d) => d.code)).toContain("SC8005");
+
+  const withThis = await build(
+    "called-with-this",
+    'import { answer } from "called-with-this";\nconsole.log(answer());\n',
+  );
+  if (withThis.ok)
+    expect(islandNotes(withThis)).toEqual([
+      expect.stringContaining("'called-with-this@1.0.0' runs in a Node island"),
+    ]);
+  else expect(withThis.diagnostics.map((d) => d.code)).toContain("SC8005");
+
+  const generator = await build(
+    "generator-body",
+    'import { answer } from "generator-body";\nconsole.log(answer());\n',
+  );
+  expect(generator.ok ? [] : generator.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual(
+    [],
+  );
+  if (!generator.ok) return;
+  expect(islandNotes(generator)).toEqual([]);
+  // The generator is never resumed, and a sanitized build says on stderr
+  // that it skipped its reference-count audit for that: the answer and the
+  // exit status are what this checks.
+  const ran = await run(generator.binaryPath, []);
+  expect({ stdout: ran.stdout, code: ran.code }).toEqual({ stdout: "native\n", code: 0 });
+}, 300_000);
+
 // Compiling a package natively leaves every other package typed as it is
 // without it. plugboard runs in a Node island and declares its plugin
 // subpaths from an ambient block, while the plugin's own JSDoc requires the
@@ -1708,4 +1967,35 @@ test("a star re-export of a path-mapped island package reports the island bounda
   expect(result.diagnostics.map((d) => `${d.code} ${d.loc.file.slice(dir.length + 1)}`)).toEqual([
     "SC8010 main.ts",
   ]);
+}, 300_000);
+
+// An array that holds generators is a checked-dynamic value in a program
+// without an island. A generator that crosses into an island is not the same
+// value on the other side yet, so a program that loads a module into one is
+// refused by name. Needs no libnode pack: the build fails before linking.
+test("an array of generators beside requireModule is refused by name", async () => {
+  // A program of its own, outside every node_modules directory.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-island-generator-array-"));
+  mkdirSync(join(dir, "node_modules/@scriptc"), { recursive: true });
+  symlinkSync(join(repoRoot, "packages/node"), join(dir, "node_modules/@scriptc/node"));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `import { requireModule } from "@scriptc/node";
+const os = requireModule("node:os");
+function* count(from: number): Generator<number> {
+  yield from;
+  yield from + 1;
+}
+const list = [count(1), count(5)];
+console.log(list.length, typeof os.EOL);
+`,
+  );
+  const result = await compile(join(dir, "main.ts"), { outPath: join(dir, "main"), outDir: dir });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => `${d.code} ${d.loc.file.slice(dir.length + 1)}`)).toEqual([
+    "SC8010 main.ts",
+  ]);
+  expect(result.diagnostics[0]!.message).toContain("an array that holds generators");
+  rmSync(dir, { recursive: true, force: true });
 }, 300_000);

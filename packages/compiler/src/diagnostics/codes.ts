@@ -113,6 +113,7 @@ export const DIAGNOSTIC_CODES = {
   SC6004: "divergence: cast to an unrelated class",
   SC6007: "divergence: island value crosses as a copy",
   SC6008: "divergence: import kept that tsc's output drops",
+  SC6011: "divergence: one Node island module instance for all threads",
   SC6012: "divergence: refused statement inside its own try",
   SC6101: "performance: likely-hot function with untyped values",
   SC6102: "performance: declaration-typed boundary note",
@@ -137,6 +138,7 @@ export const DIAGNOSTIC_CODES = {
   SC8006: "Node island modules the build cannot collect",
   SC8010: "value crossing a Node island boundary in a form without an exact copy",
   SC8011: "native class extending a Node island class outside the supported forms",
+  SC8012: "a Node island use a native worker thread cannot make",
   SC8020: "stateful module duplicated across the Node island boundary",
   SC8021: "Node island evaluation notes (deferred or at startup)",
   SC8022: "island code extends a class of a compiled module",
@@ -177,9 +179,8 @@ export const RETIRED_DIAGNOSTIC_CODES = {
 
 /** Codes that open work already uses, so no other change claims them. When
  * that work lands it moves its codes into DIAGNOSTIC_CODES; when it is
- * abandoned, delete them here. */
-export const RESERVED_DIAGNOSTIC_CODES = {
-  SC8012: "Node islands (ni/* branches)",
-} as const satisfies Record<`SC${number}`, string>;
+ * abandoned, delete them here. Empty today: the last reserved code (SC8012)
+ * shipped with the worker-thread island refusal. */
+export const RESERVED_DIAGNOSTIC_CODES = {} as const satisfies Record<`SC${number}`, string>;
 
 export type DiagnosticCode = keyof typeof DIAGNOSTIC_CODES;

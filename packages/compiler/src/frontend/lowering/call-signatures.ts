@@ -772,6 +772,28 @@ function lambdaSpellsCompletedAbi(
   return mappedRet !== null && typeEquals(mappedRet, funcType.ret);
 }
 
+/** Whether `node` is the value of a property (or a method) of an object
+ * literal whose own contextual type is `any`. */
+function memberOfAnyLiteral(lowerer: Lowerer, node: ts.Node): boolean {
+  let member: ts.Node = node;
+  if (!ts.isMethodDeclaration(member)) {
+    while (member.parent !== undefined && ts.isParenthesizedExpression(member.parent))
+      member = member.parent;
+    const property = member.parent;
+    if (
+      property === undefined ||
+      !ts.isPropertyAssignment(property) ||
+      property.initializer !== member
+    )
+      return false;
+    member = property;
+  }
+  const literal = member.parent;
+  if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return false;
+  const context = lowerer.checker.getContextualType(literal);
+  return context !== undefined && (context.flags & ts.TypeFlags.Any) !== 0;
+}
+
 /** funcSlotAdaptable for a slot the checker types: calls through it pass
  * its declared parameters (function-adapters.ts, THE RULE). */
 function declaredSlotAdaptable(
@@ -851,6 +873,21 @@ export function requireExactArityValue(
   if (
     target !== undefined &&
     ((target.flags & ts.TypeFlags.Any) !== 0 || mapped?.kind === "dyn") &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return;
+  }
+  // A member of an object literal that is itself written under an 'any'
+  // slot (an options record handed to an untyped function): the checker
+  // gives the member no contextual type, and the literal is a
+  // checked-dynamic object whose members box like the 'any' slot above.
+  if (
+    target === undefined &&
+    memberOfAnyLiteral(lowerer, contextual ?? blame) &&
     canBoxFuncIntoDyn(
       funcType,
       (id) => lowerer.shapes.get(id),

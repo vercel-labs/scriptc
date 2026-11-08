@@ -234,6 +234,7 @@ jobs:
           name: native-linux-x64-gnu
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - uses: ./.github/actions/icu-downloads
       - run: pnpm build
       # Node island tests (`// @requires-libnode` corpus programs and
       # node-island.test.ts) load Node from a libnode pack, and fail rather
@@ -306,6 +307,7 @@ jobs:
           name: native-darwin-arm64
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
+      - uses: ./.github/actions/icu-downloads
       - run: pnpm build
       # Node island tests load Node from a libnode pack, and fail rather
       # than skip on macOS CI when none is configured.
@@ -1286,7 +1288,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           if (-not (Test-Path $sevenZip)) { throw "7-Zip is unavailable" }
-          curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
+          # Five attempts 30 seconds apart: GitHub's release downloads can answer 504 for a minute or two.
+          curl.exe -fL --retry 4 --retry-delay 30 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
           & $sevenZip x -y "-o$expanded" $archive
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $sevenZip x -y "-o$expanded" "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar"
@@ -1298,6 +1301,7 @@ jobs:
       - name: Build Windows helper
         run: pnpm --filter @scriptc/llvm-win32-x64-msvc build:native
       - uses: ./.github/actions/zig
+      - uses: ./.github/actions/icu-downloads
       - name: Build Windows runtime pack
         run: pnpm --filter @scriptc/runtime-win32-x64-msvc build:native
       - run: pnpm build

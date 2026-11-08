@@ -1195,6 +1195,37 @@ function buildLibFnSignatures() {
      * ICU data file is missing. Result +1. */
     "icu.dateLocaleString": { argTypes: [DATE_T], result: STRING },
     "icu.dateLocaleTimeString": { argTypes: [DATE_T], result: STRING },
+    /** `new Intl.NumberFormat(locales, options)` (and the call without
+     * `new`): the locale tag the compiler accepted (the empty string: the
+     * default locale) and the options argument as a checked-dynamic value
+     * (undefined when absent), which the runtime reads by ECMA-402's steps:
+     * Node's reads, conversions and errors. The result is a NumberFormat
+     * handle (+1). */
+    "icu.numberFormatNew": { argTypes: [STRING, DYN], result: DYN },
+    /** `nf.format(x)` over a number: the formatter's text (+1); a TypeError
+     * when the value is not a NumberFormat. */
+    "icu.numberFormatFormat": { argTypes: [DYN, F64], result: STRING },
+    /** The same over a checked-dynamic argument: a number, or undefined
+     * (NaN); any other value is refused with the code SC2020. */
+    "icu.numberFormatFormatDyn": { argTypes: [DYN, DYN], result: STRING },
+    /** `x.toLocaleString(locales, options)`: the same formatter built for
+     * one call, with the method's name in the null-options TypeError. */
+    "icu.numToLocaleString": { argTypes: [F64, STRING, DYN], result: STRING },
+    /** `new Intl.DateTimeFormat(locales, options)` (and the call without
+     * `new`): as icu.numberFormatNew; a DateTimeFormat handle (+1). */
+    "icu.dateTimeFormatNew": { argTypes: [STRING, DYN], result: DYN },
+    /** `dtf.format(date)` over a time value: the text (+1); a RangeError
+     * outside the time value range. */
+    "icu.dateTimeFormatFormat": { argTypes: [DYN, F64], result: STRING },
+    /** The same over a checked-dynamic argument: a Date's time value,
+     * undefined (the current time), else ToNumber. */
+    "icu.dateTimeFormatFormatDyn": { argTypes: [DYN, DYN], result: STRING },
+    /** `d.toLocaleString(locales, options)` (kind 0), `toLocaleDateString`
+     * (1) and `toLocaleTimeString` (2) over the receiver's time value: the
+     * formatter with the method's required and default components, built
+     * for one call. "Invalid Date" for an invalid date, before any option
+     * is read. */
+    "icu.dateToLocale": { argTypes: [F64, F64, STRING, DYN], result: STRING },
     /** ES Symbol values (scr_symbol.c — link-gated by moduleUsesSymbol).
      * sym.new: `Symbol(desc)` — a fresh runtime-unique identity (+1) whose
      * one arg is the description string (borrowed); sym.newAnon is the

@@ -100,7 +100,12 @@ import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
-import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
+import {
+  PROCESS_STREAM_VALUE_MEMBERS,
+  processDataMemberValue,
+  processStreamValueMember,
+  programReadsExitCode,
+} from "./builtins/process.js";
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
@@ -4092,6 +4097,10 @@ export function lowerBindingPattern(
     lowerUnionObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
     return;
   }
+  if (srcType.kind === "procStream") {
+    lowerProcessStreamObjectPattern(lowerer, pattern, srcRef, isLet, out);
+    return;
+  }
   if (srcType.kind !== "record") {
     lowerer.unsupported(
       "SC1031",
@@ -4581,6 +4590,56 @@ const URL_PATTERN_GETTERS: Record<string, IrLibFn> = {
 /** An object pattern over a URL: each element reads its getter in pattern
  * order, as `url.name` does; `searchParams` binds the URL's live view.
  * Methods and rest elements stay fenced. */
+/** `const { isTTY, columns } = stream` over a process stream value
+ * (`process.stdout`, `process.stderr`, a parameter or alias of that type):
+ * each element is the member read `stream.<name>` of that value
+ * (processStreamValueMember), so a pattern and the spelled reads answer
+ * alike: the terminal members are undefined off a terminal, and the
+ * bindings carry that arm (the optional-read pass widens them). Members
+ * the stream value does not answer as data, methods among them (a
+ * detached method loses the stream it writes to), keep a fence that names
+ * them. */
+function lowerProcessStreamObjectPattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  srcRef: () => IrExpr,
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  for (const el of pattern.elements.nodes) {
+    if (el.name === undefined) continue;
+    if (el.dotDotDotToken) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over a process stream (its properties belong to the stream object, which a rest element would have to copy)",
+      );
+    }
+    const prop = el.propertyName ?? el.name;
+    const propName =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    const loc = locOf(el);
+    let value =
+      propName === null ? null : processStreamValueMember(lowerer, propName, srcRef(), loc);
+    if (value === null) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        propName === null
+          ? "destructuring with computed keys that do not fold to one property name"
+          : `destructuring '${propName}' from a process stream (${PROCESS_STREAM_VALUE_MEMBERS.join(", ")} are the members a stream value answers; call methods through the stream)`,
+      );
+    }
+    if (el.initializer) value = applyBindingDefault(lowerer, el, value);
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
+}
+
 function lowerUrlObjectPattern(
   lowerer: Lowerer,
   pattern: ts.ObjectBindingPattern,

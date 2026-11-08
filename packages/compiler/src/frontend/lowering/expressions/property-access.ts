@@ -218,6 +218,7 @@ import { lowerGlobalValue } from "../lower-global-value.js";
 import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
 import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
+import { packageBuiltWithoutMember } from "../package-built-values.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
 import {
   createRequireCalleeFileOf,
@@ -2128,6 +2129,10 @@ export function lowerPropertyAccessExpr(
       },
       expr,
     );
+  }
+  if (!ts.isPrivateIdentifier(expr.name)) {
+    const built = packageBuiltWithoutMember(lowerer, expr.expression, expr.name.text, "reading");
+    if (built !== null) lowerer.unsupported("SC1090", expr, built);
   }
   lowerer.unsupported(
     "SC1090",

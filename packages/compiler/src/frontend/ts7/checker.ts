@@ -620,7 +620,22 @@ export class CheckerFacade {
     return type ?? this.anyType();
   }
 
+  /** While set, answers getSymbolAtLocation for a node the checker
+   * resolves no symbol at. The lowering sets it while a refused JavaScript
+   * statement lowers again with its reads typed by what their bindings
+   * declare (Lowerer.bindingTypedRetry): the checker calls such a receiver
+   * `any` and resolves no member on it, and the member the binding's type
+   * declares is the one the code names. */
+  unresolvedSymbol: ((node: Node) => Ts7Symbol | undefined) | null = null;
+
   getSymbolAtLocation(node: Node): Ts7Symbol | undefined {
+    const symbol = this.symbolAtLocation(node);
+    return symbol === undefined && this.unresolvedSymbol !== null
+      ? this.unresolvedSymbol(node)
+      : symbol;
+  }
+
+  private symbolAtLocation(node: Node): Ts7Symbol | undefined {
     this.ensureActive();
     if (this.cache.symbolAtLocation.has(node)) return this.cache.symbolAtLocation.get(node);
     this.autoPrefetch(node, "symbols");

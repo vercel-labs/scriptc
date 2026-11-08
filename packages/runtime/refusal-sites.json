@@ -1111,6 +1111,18 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_promise_protocol_fence",
+  "message": " on a promise is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_promise_island_fence",
+  "message": " on a promise from a Node island is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_handle_key_set",
   "message": " is not supported yet",
   "code": "SC2020"
@@ -1137,6 +1149,12 @@
   "file": "scr_json.c",
   "function": "scr_dyn_symbol_receiver",
   "message": "Symbol properties on this native value have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_promise_symbol_fence",
+  "message": "symbol-keyed properties on a promise are not supported yet",
   "code": "SC2020"
  },
  {

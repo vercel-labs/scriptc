@@ -6,6 +6,8 @@
 
 #include "scr_dyn.h"
 
+#include <stdlib.h>
+
 /* ── node:timers/promises (scr_async.c) ──────────────────────────────
  * The promisified pair: a PENDING void promise a one-shot heap timer /
  * the immediate queue fulfills (the armed entry keeps the loop alive
@@ -30,10 +32,39 @@ ScrPromise *scr_promise_new(void);
  * A WeakMap or a WeakSet keys a promise by the same cell. Their unit, the
  * checked-dynamic core, is linked by programs that have no promise and calls
  * nothing of this unit, so it reads and creates the cell through the head
- * below: the first two words of every promise. */
+ * below: the first two words of every promise. A cell starts zeroed, with
+ * one count and one promise for the promise that creates it.
+ *
+ * The cell also holds the promise's own properties (`p.status = "pending"`):
+ * a checked-dynamic object the dyn unit creates on the first write and
+ * releases through `release_properties`. The table is not traced: the
+ * collector counts it as an outside reference, as it does the box-to-promise
+ * edge. Only a promise reads the table, so it is released when the last
+ * promise that points at the cell lets go of it (`promises`), even while a
+ * WeakMap, a WeakSet or a Node island still holds the cell. */
 typedef struct ScrPromiseIdentity {
   size_t rc;
+  size_t promises;
+  void *properties;
+  void (*release_properties)(void *);
 } ScrPromiseIdentity;
+/* Gives up one count of the cell; the last count frees it. */
+static inline void scr_promise_identity_release(ScrPromiseIdentity *identity) {
+  if (--identity->rc != 0) return;
+  if (identity->properties) identity->release_properties(identity->properties);
+  free(identity);
+}
+/* Gives up the count of a promise that points at the cell: the last such
+ * promise releases the own-property table first. The cell keeps that count
+ * while the table is released, so it outlives the release. */
+static inline void scr_promise_identity_release_promise(ScrPromiseIdentity *identity) {
+  if (--identity->promises == 0 && identity->properties) {
+    void *properties = identity->properties;
+    identity->properties = NULL;
+    identity->release_properties(properties);
+  }
+  scr_promise_identity_release(identity);
+}
 typedef struct ScrPromiseHead {
   size_t rc;
   ScrPromiseIdentity *identity;
@@ -48,6 +79,11 @@ const void *scr_promise_identity_key(ScrPromise *p);
  * keeps the key after the promises that share it are gone. */
 void scr_promise_identity_hold(const void *key);
 void scr_promise_identity_drop(const void *key);
+/* The slot of the own-property table the promise's identity shares (NULL
+ * when the promise has no identity and `create` is false). The table is
+ * released through `release` with the identity's last count (a promise or
+ * a WeakMap or WeakSet entry). */
+void **scr_promise_properties_slot(ScrPromise *p, bool create, void (*release)(void *));
 ScrPromise *scr_promise_retain(ScrPromise *p);
 void scr_promise_release(ScrPromise *p);
 void *scr_promise_retain_v(void *p);

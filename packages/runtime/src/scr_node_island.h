@@ -307,6 +307,8 @@ typedef struct ScrNiDynOps {
    * an entry added in the middle changes the bytes of programs that have
    * no island at all. */
   int (*has_own)(ScrDyn *obj, ScrDyn *key, int enumerable);
+  /* 1 for the mirror of an island promise, 0 for any other promise. */
+  int (*promise_is_island)(const ScrDyn *promise);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

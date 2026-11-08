@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/promise-own-properties-across-views/lib.cjs",
+  "<repo>/tests/corpus/promise-own-properties-across-views/main.ts"
+ ],
+ "diags": []
+}

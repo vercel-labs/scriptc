@@ -1,0 +1,26 @@
+regexp-call-without-new-refusals.ts:6:14 - error SC2020: 'RegExp() without new on a pattern that may be a RegExp, with flags that may be undefined' is part of the standard library types but has no scriptc lowering yet
+
+  5 | const source = /ab+c/i;
+  6 | const same = RegExp(source);
+    |              ^~~~~~~~~~~~~~
+  7 | 
+
+  hint: a RegExp pattern with undefined flags comes back as the same object; pass flags, or a string pattern
+
+regexp-call-without-new-refusals.ts:9:16 - error SC2020: 'RegExp() without new on a pattern that may be a RegExp, with flags that may be undefined' is part of the standard library types but has no scriptc lowering yet
+
+   8 | const input = process.argv.length > 99 ? "x" : source;
+   9 | const either = RegExp(input);
+     |                ^~~~~~~~~~~~~
+  10 | 
+
+  hint: a RegExp pattern with undefined flags comes back as the same object; pass flags, or a string pattern
+
+regexp-call-without-new-refusals.ts:12:20 - error SC2020: 'RegExp() without new on a pattern that may be a RegExp, with flags that may be undefined' is part of the standard library types but has no scriptc lowering yet
+
+  11 | const flags = process.argv.length > 99 ? "g" : undefined;
+  12 | const maybeFlags = RegExp(source, flags);
+     |                    ^~~~~~~~~~~~~~~~~~~~~
+  13 | 
+
+  hint: a RegExp pattern with undefined flags comes back as the same object; pass flags, or a string pattern

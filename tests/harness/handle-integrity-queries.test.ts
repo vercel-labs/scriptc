@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 
 // Object.isExtensible and Object.isSealed of a checked-dynamic value answer
 // from the state the runtime models (a plain object, array, function, class
-// instance, Map or Set) and refuse for a native handle or a promise, whose
+// instance, promise, Map or Set) and refuse for a native handle, whose
 // integrity state scriptc does not track: Object.preventExtensions and
 // Object.seal do not change it and Object.freeze refuses, so any answer
 // would be invented where Node answers true/false. These queries answered
@@ -40,10 +40,7 @@ attempt("reflect regexp extensible", () => reflectIsExtensible(/a/));
 attempt("buffer extensible", () => Object.isExtensible(new ArrayBuffer(1)));
 attempt("weakmap extensible", () => Object.isExtensible(new WeakMap()));
 attempt("weakmap sealed", () => Object.isSealed(new WeakMap()));
-attempt("promise extensible", () => isExtensible(Promise.resolve(1)));
-attempt("promise sealed", () => isSealed(Promise.resolve(1)));
 attempt("date frozen", () => Object.isFrozen(new Date(0)));
-attempt("promise frozen", () => Object.isFrozen(Promise.resolve(1)));
 attempt("object extensible", () => isExtensible({ a: 1 }));
 attempt("object sealed", () => isSealed({ a: 1 }));
 attempt("array sealed", () => isSealed([1]));
@@ -75,10 +72,7 @@ attempt("instance sealed", () => Object.isSealed(new Point()));
       `buffer extensible ${refused("Object.isExtensible", "ArrayBuffer")}`,
       `weakmap extensible ${refused("Object.isExtensible", "WeakMap")}`,
       `weakmap sealed ${refused("Object.isSealed", "WeakMap")}`,
-      `promise extensible ${refused("Object.isExtensible", "Promise")}`,
-      `promise sealed ${refused("Object.isSealed", "Promise")}`,
       "date frozen Object.isFrozen of this native value has no lowering",
-      "promise frozen Object.isFrozen of this native value has no lowering",
       "object extensible true",
       "object sealed false",
       "array sealed false",

@@ -1,9 +1,10 @@
 "use strict";
 // Object.isExtensible, Object.isSealed and Object.isFrozen answer from the
 // integrity state the runtime models: plain objects, arrays, functions, Maps
-// and Sets. A native handle or a promise refuses instead (scriptc does not
-// track its integrity state, and answering there used to be silently
-// wrong); tests/harness/handle-integrity-queries.test.ts pins the refusals.
+// and Sets (promises: tests/corpus/promise-own-properties.cjs). A native
+// handle refuses instead (scriptc does not track its integrity state, and
+// answering there used to be silently wrong);
+// tests/harness/handle-integrity-queries.test.ts pins the refusals.
 function show(label, value) {
   console.log(label, Object.isExtensible(value), Object.isSealed(value), Object.isFrozen(value));
 }

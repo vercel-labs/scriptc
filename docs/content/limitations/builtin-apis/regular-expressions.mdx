@@ -5,5 +5,7 @@
   The groups object has a null prototype, as in Node.
   Non-numeric `lastIndex`, detached methods, and `exec` through an untyped receiver are unsupported.
   The `v` (unicode sets) flag supports class set operations (`--`, `&&`), nested classes, `\q{...}` string literals, and properties of strings such as `\p{RGI_Emoji}`.
+  `RegExp(pattern, flags)` called without `new` builds the same regex as `new RegExp`.
+  Node returns a regex pattern unchanged when the flags are `undefined`, so a call whose pattern may be a regex, including an untyped pattern, is unsupported unless its flags can't be `undefined`.
   `new RegExp` with an invalid pattern throws a `SyntaxError` whose message comes from the native engine and can differ from Node's.
   The `d` (match indices) flag is unsupported: regex literals and `new RegExp` calls with a literal flag string containing it fail to compile with SC1120, and `new RegExp` with a computed flag string containing it throws an error naming the flag.

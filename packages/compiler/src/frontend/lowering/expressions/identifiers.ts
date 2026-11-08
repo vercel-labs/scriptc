@@ -1045,7 +1045,20 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         loc,
       };
     }
-    if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
+    // A JavaScript binding that names a global and owns no storage (`const
+    // p = process`, `import process from "node:process"`, `var Buffer =
+    // buffer.Buffer`): its member reads resolve through to the global, and
+    // its value is the value the global's own name reads. A TypeScript
+    // binding of this kind is reported at its declaration
+    // (rejectUnresolvedSymbol).
+    const aliasedGlobal =
+      sym !== undefined &&
+      !lowerer.isStdlibSymbol(sym) &&
+      expr.text !== "globalThis" &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? stdlibGlobalNameOf(lowerer, expr)
+        : null;
+    if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis" || aliasedGlobal !== null) {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
       // %Iterator% in JavaScript: the live constructor (scr_js_iterator.c).
       if (canonical === "Iterator" && isJsIteratorGlobal(lowerer, expr))

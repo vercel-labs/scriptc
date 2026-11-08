@@ -3210,9 +3210,7 @@ export class LlDyn {
         }
       }
       const checked = B.tmp();
-      B.line(
-        `${checked} = call ptr @${own}(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
-      );
+      B.line(`${checked} = call ptr @${own}(ptr %d, ptr ${host.cstr(key)}, ptr %path)`);
       B.terminate(`ret ptr ${checked}`);
       this.defs.push(
         `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,

@@ -15,9 +15,17 @@ export function needsDarwinDebugSymbols(
 }
 
 /** Run before deleting link inputs: Mach-O executables retain a debug map,
- * while the actual line tables live in those temporary object files. */
+ * while the actual line tables live in those temporary object files.
+ *
+ * A sanitized dev build references runtime symbols that its temporary objects
+ * do not define, and darwin's dsymutil warns once per reference — tens of
+ * thousands of lines, past the 1 MiB a child's stderr may hold by default.
+ * `-q` limits that stream, and the buffer covers what it still prints; a real
+ * failure keeps dsymutil's stderr for the compile error. */
 export async function createDarwinDebugSymbols(binary: string): Promise<void> {
-  await exec("dsymutil", [binary, "-o", `${binary}.dSYM`]);
+  await exec("dsymutil", ["-q", binary, "-o", `${binary}.dSYM`], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
 }
 
 /** Keep the two dSYM payloads together as one integrity-checked cache file.

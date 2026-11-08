@@ -7,6 +7,7 @@
 
 #include "scr_async.h"
 #include "scr_dyn.h"
+#include "scr_events.h"
 
 /* Records the build-time configuration: the libnode pack directory
  * (absolute, or `$ORIGIN/`-relative to the executable) and the Node version
@@ -65,11 +66,13 @@ void scr_loop_hosted_microtasks_done(void);
 void scr_node_island_leave_stack(uintptr_t sp);
 
 /* Process events island code listens to (SCR_NODE_EVENT_* of the bridge
- * ABI). Their listeners sit in the runtime's registries (the
- * SCR_NODE_ISLANDS build of scr_events.c) at their registration position,
- * and a delivery calls them through scr_node_island_emit: a signal with
- * its number, exit with the code. */
-enum { SCR_NODE_ISLAND_EVENT_SIGNAL = 1, SCR_NODE_ISLAND_EVENT_EXIT = 2 };
+ * ABI). Their listeners sit in scr_events.c's registries at their
+ * registration position, and a delivery calls them through
+ * scr_node_island_emit: a signal with its number, exit with the code. */
+enum {
+  SCR_NODE_ISLAND_EVENT_SIGNAL = SCR_EVENTS_ISLAND_SIGNAL,
+  SCR_NODE_ISLAND_EVENT_EXIT = SCR_EVENTS_ISLAND_EXIT,
+};
 void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg);
 void scr_signal_on_island(ScrStr *name, uint32_t listener);
 void scr_signal_off_island(uint32_t listener);
@@ -127,9 +130,10 @@ uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
 /* The operations the units every program can link route to the island
  * units: what scr_json.c's dynamic paths do with an island handle (typeof,
- * calls, ToPrimitive, `in`, delete, Object.keys and the rest), util.inspect
- * of one (scr_inspect.c), instanceof against one (scr_dyn_builtin_class.c)
- * and the uncaught report of an island error (scr_exception.c).
+ * calls, ToPrimitive, `in`, delete, Object.keys, weak-collection keys and
+ * the rest), util.inspect of one (scr_inspect.c), instanceof against one
+ * (scr_dyn_builtin_class.c) and the uncaught report of an island error
+ * (scr_exception.c).
  * scr_node_island_handle.c installs them from a constructor, so they are
  * set in every program that can hold an island handle and NULL in every
  * other, and each of those units builds one object whether or not a program
@@ -172,6 +176,13 @@ typedef struct ScrNiDynOps {
   /* Node's uncaught-exception report for an error island code threw
    * (scr_ni_report_uncaught): true when it printed one. */
   bool (*report_uncaught)(struct ScrError *error);
+  /* Weak collections keyed by island objects (scr_ni_weak_get,
+   * scr_ni_weak_test, scr_ni_weak_set): the entries of a native WeakMap,
+   * WeakSet or FinalizationRegistry whose key is an island object live in a
+   * collection inside the island. */
+  ScrDyn *(*weak_get)(ScrDyn *collection, ScrDyn *key);
+  int (*weak_test)(ScrDyn *collection, bool set, ScrDyn *key, bool remove);
+  bool (*weak_set)(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
@@ -301,6 +312,14 @@ struct ScrNodeGcResult;
 int scr_ni_host_gc_analyze(const uint32_t *exports, size_t nexports,
                            struct ScrNodeGcResult *out);
 void scr_ni_gc_cleanup(void); /* at exit */
+/* Weak collections keyed by island objects (scr_node_island_gc.c): the
+ * entries of a native WeakMap, WeakSet or FinalizationRegistry whose key
+ * is an island object live in a WeakMap or WeakSet inside the island,
+ * `collection` (NULL until the first such entry; `set`: a WeakSet).
+ * scr_json.c calls them through ScrNiDynOps. */
+ScrDyn *scr_ni_weak_get(ScrDyn *collection, ScrDyn *key); /* +1; undefined: no entry */
+int scr_ni_weak_test(ScrDyn *collection, bool set, ScrDyn *key, bool remove); /* 1, 0; -1: threw */
+bool scr_ni_weak_set(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
 
 /* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
  * nodeIsland.defer(path, snapshot): a statically imported island module the

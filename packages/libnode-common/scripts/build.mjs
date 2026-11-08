@@ -2,10 +2,13 @@
 // Builds one libnode pack into its package directory:
 //
 //   1. libnode: the pinned Node.js release (libnode.json) from its official
-//      source tarball, SHA-256 verified, configured `--shared` with full ICU,
-//      only the `libnode` target built, stripped, staged with its headers
-//      and LICENSE in a cache directory keyed by libnodeCacheKey(). A cache
-//      hit skips the Node build entirely (about 26 minutes on 8 cores).
+//      source tarball, SHA-256 verified, configured `--shared` with full ICU
+//      (and, on Linux, `--partly-static` so the library carries its own
+//      libstdc++ and libgcc), only the `libnode` target built, checked to
+//      reference no GLIBCXX/CXXABI symbol version, stripped, staged with its
+//      headers and LICENSE in a cache directory keyed by
+//      libnodeCacheKey(). A cache hit skips the Node build entirely (about
+//      26 minutes on 8 cores).
 //   2. the bridge, compiled against those headers (seconds, every run);
 //   3. the pack: libnode, the bridge, Node's LICENSE and manifest.json in
 //      packages/libnode-<platform>/, plus `--compress` copies (.zst) of both
@@ -41,9 +44,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { buildPack } from "../build-pack.mjs";
+import { cxxRuntimeDependencies, elfRequirements } from "./elf.mjs";
 import {
   bridgeAbi,
   bridgeHash,
+  configureFlagsFor,
   libnodeCacheKey,
   packFileNames,
   platformInfo,
@@ -100,32 +105,13 @@ function moduleVersionOf(headers) {
   return Number(/#define NODE_MODULE_VERSION (\d+)/.exec(text)?.[1]);
 }
 
-/** The highest GLIBC_x.y symbol version a Linux library needs. */
-function minimumGlibc(library) {
-  const dynamic = execFileSync("objdump", ["-T", library], {
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-  });
-  const versions = [...new Set(dynamic.match(/GLIBC_\d+(\.\d+)+/g) ?? [])].map((v) =>
-    v.slice("GLIBC_".length),
-  );
-  versions.sort((a, b) => {
-    const x = a.split(".").map(Number);
-    const y = b.split(".").map(Number);
-    for (let i = 0; i < Math.max(x.length, y.length); i++) {
-      if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
-    }
-    return 0;
-  });
-  return versions.at(-1) ?? null;
-}
-
 /** Configures and builds libnode in `tree`, then stages it into `stage`. */
 function buildLibnode(tree, stage, platform, pin) {
   const { os } = platformInfo(platform);
   if (sourceVersion(tree) !== pin.nodeVersion) {
     throw new Error(`${tree} is Node ${sourceVersion(tree)}, the pin is ${pin.nodeVersion}`);
   }
+  const flags = configureFlagsFor(platform, pin);
   const python = process.env.PYTHON ?? "python3";
   // An earlier tree configured with exactly these flags is reused as is, so
   // a seeded build tree is a ninja no-op instead of a reconfigure.
@@ -135,9 +121,9 @@ function buildLibnode(tree, stage, platform, pin) {
     existsSync(join(tree, "out", "Release", "build.ninja")) &&
     readFileSync(status, "utf8")
       .trimEnd()
-      .endsWith(`configure ${pin.configureFlags.join(" ")}`);
+      .endsWith(`configure ${flags.join(" ")}`);
   const started = Date.now();
-  if (!configured) run("./configure", pin.configureFlags, { cwd: tree });
+  if (!configured) run("./configure", flags, { cwd: tree });
   const gypi = readFileSync(join(tree, "config.gypi"), "utf8");
   for (const [setting, expected] of [
     ["node_shared", "true"],
@@ -146,6 +132,19 @@ function buildLibnode(tree, stage, platform, pin) {
   ]) {
     if (!gypi.includes(`"${setting}": "${expected}"`)) {
       throw new Error(`config.gypi does not have ${setting}: ${expected}`);
+    }
+  }
+  // --partly-static appends these to target_defaults.libraries, so every
+  // link in the tree - libnode included - resolves the C++ runtime from the
+  // toolchain's static archive instead of leaving a libstdc++ dependency in
+  // the pack.
+  if (os === "linux") {
+    for (const flag of ["-static-libstdc++", "-static-libgcc"]) {
+      if (!gypi.includes(`"${flag}"`)) {
+        throw new Error(
+          `config.gypi does not link with ${flag}: the Linux configure flags (${flags.join(" ")}) must include --partly-static`,
+        );
+      }
     }
   }
   const jobs = process.env.SCRIPTC_LIBNODE_JOBS ?? String(availableParallelism());
@@ -172,6 +171,19 @@ function buildLibnode(tree, stage, platform, pin) {
     run("codesign", ["--force", "--sign", "-", library]);
   } else {
     run("strip", ["--strip-unneeded", "-o", library, built]);
+  }
+  // The staged library, not the build tree's objects, is what the pack
+  // ships: prove it carries its own C++ runtime before anything is packed.
+  let minimumGlibc = null;
+  if (os === "linux") {
+    const requirements = elfRequirements(library);
+    const cxx = cxxRuntimeDependencies(requirements);
+    if (cxx.length > 0) {
+      throw new Error(
+        `${names.libnode} still needs libstdc++ (${cxx.join(", ")}): the pack would fail to load on a host whose libstdc++ is older than ${process.env.SCRIPTC_LIBNODE_TOOLCHAIN ?? "the build toolchain"}'s (Linux packs link it statically with --partly-static)`,
+      );
+    }
+    minimumGlibc = requirements.glibc;
   }
   run(
     python,
@@ -202,12 +214,13 @@ function buildLibnode(tree, stage, platform, pin) {
       {
         nodeVersion: pin.nodeVersion,
         moduleVersion,
-        configureFlags: pin.configureFlags,
+        configureFlags: flags,
         icu: pin.icu,
         toolchain: process.env.SCRIPTC_LIBNODE_TOOLCHAIN ?? "default",
         buildSeconds,
         builtBytes: statSync(built).size,
-        minimumGlibc: os === "linux" ? minimumGlibc(library) : null,
+        minimumGlibc,
+        libstdcxx: os === "linux" ? "static" : null,
       },
       null,
       2,
@@ -277,6 +290,7 @@ export async function buildLibnodePack(options) {
         icu: build.icu,
         toolchain: build.toolchain,
         minimumGlibc: build.minimumGlibc,
+        libstdcxx: build.libstdcxx,
       },
     },
   });
@@ -301,6 +315,7 @@ export async function buildLibnodePack(options) {
     bridgeBytes: manifest.files[names.bridge].size,
     bridgeSeconds,
     minimumGlibc: manifest.build.minimumGlibc,
+    libstdcxx: manifest.build.libstdcxx,
   };
   if (options.compress) {
     report.compressed = compress(packageRoot, names, join(cacheRoot, "compressed", platform));

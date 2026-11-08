@@ -26,7 +26,9 @@ import {
   lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
   lowerFsWriteOptionsCall,
+  lowerFsSyncWriteOptionsCall,
   lowerFsReadPathCall,
+  lowerFsExistsValueCall,
 } from "./filesystem-calls.js";
 import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } from "./fs-paths.js";
 import { lowerBufferEncodingCall } from "./text-codecs.js";
@@ -188,6 +190,13 @@ export function lowerBuiltinModuleCall(
   const promiseReaddirTypes = bi.module === "fs/promises" && bi.member === "readdir";
   if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.nodes.length === 2) {
     return lowerFsReaddirTypesCall(lowerer, expr, loc, promiseReaddirTypes);
+  }
+  // fs.existsSync(path) over a Buffer path or a value whose type only the
+  // runtime knows (`any`): Node answers false for a non-path and reports
+  // DEP0187 once, which the value form does.
+  if (bi.module === "fs" && bi.member === "existsSync") {
+    const lowered = lowerFsExistsValueCall(lowerer, expr, loc);
+    if (lowered) return lowered;
   }
   // fs.statSync/fs.lstatSync(path, options) and fs.fstatSync(fd, options):
   // throwIfNoEntry and bigint, routed BEFORE the table completion.
@@ -412,6 +421,18 @@ export function lowerBuiltinModuleCall(
     expr.arguments.nodes.length === 2
   ) {
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
+    if (lowered) return lowered;
+  }
+  // writeFileSync/appendFileSync with options the plain forms do not cover:
+  // a non-utf8 encoding, a flag from Node's wider table, Buffer data, or
+  // any options on appendFileSync. The plain utf8 forms keep their existing
+  // lowerings (lowerFsWriteOptionsCall answers them).
+  if (
+    bi.module === "fs" &&
+    (bi.member === "writeFileSync" || bi.member === "appendFileSync") &&
+    expr.arguments.nodes.length === 3
+  ) {
+    const lowered = lowerFsSyncWriteOptionsCall(lowerer, expr, loc, bi.member);
     if (lowered) return lowered;
   }
   // writeFileSync(p, data, options) / fs.promises.writeFile(p, data,

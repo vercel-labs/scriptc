@@ -1442,7 +1442,7 @@ static void scr_stream_next_str_fence(void) {
   static const char msg[] =
       "for-await over a stream with an encoding set is not supported yet in "
       "typed code (chunks are Buffers here)";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
 }
 
 /* Fulfills the parked iterator with a chunk taken from the buffer; kind
@@ -1621,7 +1621,7 @@ static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool resul
   if (st->r.next_waiter) {
     /* the desugared loop awaits each chunk before asking again */
     static const char msg[] = "concurrent for-await iteration of one stream is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     scr_promise_reject_pending(p);
     return p;
   }
@@ -1975,7 +1975,7 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
                        (int)(name->len > 64 ? 64 : name->len), name->data);
       scr_dyn_release(keys);
       if (iter) scr_dyn_release(iter);
-      scr_throw_error_msg(SCR_ERR_ERROR, m, (size_t)n);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, m, (size_t)n, "SC2020");
       return NULL;
     }
     scr_dyn_release(keys);
@@ -3218,7 +3218,7 @@ static bool scr_stream_dynopt_truthy(const ScrDyn *o, const char *key, size_t kl
 }
 
 static bool scr_stream_dynopt_unsupported(const char *msg, size_t len) {
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, len);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, len, "SC2020");
   return false;
 }
 
@@ -4246,8 +4246,7 @@ static ScrError *scr_pump_caught(void) {
   ScrError *e = d ? scr_errdyn_err_of(d) : NULL;
   if (d) scr_dyn_release(d);
   if (e) return e;
-  return scr_stream_mkerr("ERR_INTERNAL_ASSERTION",
-                          "a pipeline stage rejection that is not an Error object is not supported yet");
+  return scr_stream_mkerr("SC2020", "a pipeline stage rejection that is not an Error object is not supported yet");
 }
 
 static void scr_pump_loop(ScrPump *pm);
@@ -7160,7 +7159,7 @@ static void scr_stream_read_str_fence(void) {
   static const char msg[] =
       "read() on a stream with an encoding set is not supported yet "
       "(consume 'data' events, which deliver strings)";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
 }
 
 ScrBytes *scr_stream_read(ScrStream *s, double size) {
@@ -7189,7 +7188,7 @@ ScrBytes *scr_stream_read(ScrStream *s, double size) {
     static const char msg[] =
         "read() of an object-mode stream value that is not a Buffer is not supported yet in typed "
         "code (consume 'data' events or for await)";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
   }
   if (chunk && kind == SCR_ENTRY_STR) {
@@ -8744,18 +8743,10 @@ static ScrDyn *scr_stream_dyn_unshift(ScrStream *stream, ScrDyn *const *args, si
   return scr_dyn_new_bool(more);
 }
 
-/* eventNames(): the stream's event names as a string array, +1. */
+/* eventNames(): the stream's event names as an array, +1 (symbol keys
+ * included: the emitter registry holds every key). */
 static ScrDyn *scr_stream_dyn_event_names(ScrStream *stream) {
-  ScrArr *names = scr_emitter_event_names((ScrEmitter *)stream);
-  ScrDyn *result = scr_dyn_new_arr();
-  double length = scr_arr_len(names);
-  for (double i = 0; i < length; i++) {
-    ScrStr *name = scr_arr_get_ref(names, i);
-    scr_dyn_arr_push(result, scr_dyn_new_str(name));
-    scr_str_release(name);
-  }
-  scr_arr_release(names);
-  return result;
+  return scr_emitter_event_names((ScrEmitter *)stream);
 }
 
 /* A checked-dynamic call of one of a native stream's members (borrowed

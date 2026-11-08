@@ -35,4 +35,10 @@ ScrStr *scr_sym_to_string(ScrSym *s); /* +1 "Symbol(desc)" ("Symbol()" when abse
 typedef struct ScrDyn ScrDyn; /* full definition in scr_dyn.h (C11 repeat) */
 void scr_dyn_dirent_finish(ScrDyn *obj);
 
+/* A symbol event name's registry key is a ScrStr-shaped identity key
+ * (scr_str_symbol_key in scr_string.h). The emitter's symbol-keyed
+ * buckets reach this unit through scr_sym_event_ops, the table this unit
+ * installs from a constructor — scr_string.h declares it beside the key.
+ */
+
 #endif /* SCR_SYMBOL_H */

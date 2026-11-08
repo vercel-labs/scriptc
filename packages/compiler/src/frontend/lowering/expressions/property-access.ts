@@ -231,7 +231,7 @@ import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../conta
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
 import { arrayValueRead, arrayValueType, unionArmsLength, unionArmsView } from "../array-values.js";
-import { adaptedOverrideLength, lowerClassMethodValue } from "../class-method-values.js";
+import { lowerClassMethodValue } from "../class-method-values.js";
 import { reflectMemberValue } from "../builtins/reflection.js";
 import {
   objLitGenericFnInfoOf,
@@ -429,16 +429,6 @@ export function lowerPropertyAccessExpr(
   // decides: the receiver may be a checked-dynamic value.
   if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.buffersMutable = true;
-  // The length of a method whose own declaration has another arity than the
-  // slot it overrides (class-method-values.ts).
-  if (
-    expr.name.text === "length" &&
-    !expr.questionDotToken &&
-    ts.isPropertyAccessExpression(expr.expression)
-  ) {
-    const length = adaptedOverrideLength(lowerer, expr.expression);
-    if (length !== null) return { kind: "numLit", value: length, type: F64, loc };
-  }
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `x.constructor`, `x.constructor.name` and a static read through

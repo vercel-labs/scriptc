@@ -745,38 +745,3 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
     });
   }
 }
-
-/** `recv.m.length` where the nearest declaration of `m` on the receiver's
- * class is a TypeScript override adapted to an inherited slot of another
- * arity (it declares parameters past the slot's, or fewer than it), and no
- * subclass overrides it again: the method value is the slot function, whose
- * arity is the inherited one, so the length is answered from the override's
- * own parameter list, as Node counts it (the parameters before the first
- * one with a default). Null for every other read; only a receiver that is
- * a plain name or `this` is taken, since nothing of it is evaluated. */
-export function adaptedOverrideLength(
-  lowerer: Lowerer,
-  method: ts.PropertyAccessExpression,
-): number | null {
-  if (method.questionDotToken) return null;
-  const receiver = method.expression;
-  if (!ts.isIdentifier(receiver) && receiver.kind !== ts.SyntaxKind.ThisKeyword) return null;
-  const type = lowerer.mapTypeOf(lowerer.typeOf(receiver));
-  if (type?.kind !== "object") return null;
-  const info = lowerer.classes.get(type.className);
-  const found = info ? findMethodOn(lowerer, info, method.name.text) : null;
-  if (!info || !found) return null;
-  const adapter = found.declarer.returnAdapters?.get(method.name.text);
-  if (
-    adapter === undefined ||
-    adapter.params.length === found.sig.params.length ||
-    found.declarer.decl == null ||
-    isJsSourceFile(ts.getSourceFileOfNode(found.declarer.decl)) ||
-    lowerer.overrideBelow(info, method.name.text)
-  )
-    return null;
-  const firstDefault = adapter.params.findIndex(
-    (param) => param.bodyType !== undefined || param.mode === "rest" || param.mode === "dynRest",
-  );
-  return firstDefault < 0 ? adapter.params.length : firstDefault;
-}

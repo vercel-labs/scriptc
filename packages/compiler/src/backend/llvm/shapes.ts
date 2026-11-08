@@ -1134,9 +1134,21 @@ export function emitInlineRcHelpers(host: ShapeHost): string[] {
   return out;
 }
 
+/** What the walk below answers for a nullable union it is already inside:
+ * read by the container around it as "not null" and never returned from
+ * the outermost call, which is always that of a container or of the union
+ * whose arm is one. Not a symbol, so LLVM rejects it if that ever fails. */
+const TRACED_INSIDE_ITSELF = "@<a nullable union inside itself>";
+
 /** The trace entry point for a payload/field type, or null when the type
- * cannot participate in a cycle. */
-export function traceAdapter(host: ShapeHost, t: IrType): string | null {
+ * cannot participate in a cycle.
+ *
+ * A nullable union is the pointer of its one reference arm, and that arm
+ * can be a container of the union (`type Nest = Nest[] | null`). `inside`
+ * holds the nullable unions whose container arm the walk is in. Meeting one
+ * again asks whether a container of itself is on a cycle, which is the
+ * cycle analysis's answer for the union. */
+export function traceAdapter(host: ShapeHost, t: IrType, inside?: Set<string>): string | null {
   switch (t.kind) {
     case "caught":
       host.declare(`declare void @scr_caught_trace_v(ptr, ptr, ptr)`);
@@ -1166,7 +1178,18 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
         return host.tracedShapes.has(`object:${nullable.arms[0]!.className}`)
           ? classTraceFn(host.nullableUnions.helperOwner(nullable.unionId))
           : null;
-      if (nullable) return traceAdapter(host, nullable.arm);
+      if (nullable) {
+        const arm = nullable.arm;
+        if (arm.kind !== "array" && arm.kind !== "map" && arm.kind !== "set")
+          return traceAdapter(host, arm);
+        if (inside?.has(t.unionId) === true)
+          return host.tracedUnions.has(t.unionId) ? TRACED_INSIDE_ITSELF : null;
+        const within = inside ?? new Set<string>();
+        within.add(t.unionId);
+        const traced = traceAdapter(host, arm, within);
+        within.delete(t.unionId);
+        return traced;
+      }
       if (!host.tracedUnions.has(t.unionId)) return null;
       host.declare(`declare void @scr_union_trace_v(ptr, ptr, ptr)`);
       return "@scr_union_trace_v";
@@ -1198,15 +1221,19 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
         return null;
       return `@${mangleClassTrace(t.className)}`;
     case "map":
-      if (traceAdapter(host, t.key) === null && traceAdapter(host, t.value) === null) return null;
+      if (
+        traceAdapter(host, t.key, inside) === null &&
+        traceAdapter(host, t.value, inside) === null
+      )
+        return null;
       host.declare(`declare void @scr_map_trace_v(ptr, ptr, ptr)`);
       return "@scr_map_trace_v";
     case "set":
-      if (traceAdapter(host, t.elem) === null) return null;
+      if (traceAdapter(host, t.elem, inside) === null) return null;
       host.declare(`declare void @scr_map_trace_v(ptr, ptr, ptr)`);
       return "@scr_map_trace_v";
     case "array":
-      if (traceAdapter(host, t.elem) === null) return null;
+      if (traceAdapter(host, t.elem, inside) === null) return null;
       host.declare(`declare void @scr_arr_trace_v(ptr, ptr, ptr)`);
       return "@scr_arr_trace_v";
     default:

@@ -3794,6 +3794,25 @@ function buildLibFnSignatures() {
       argTypes: [DYN, DYN],
       result: { kind: "object", className: "%Writable" },
     },
+    /** The same four constructors where the options can hold a `signal`
+     * (fsStreamOptionsMayHoldSignal): the same runtime entries, in the
+     * SCR_FS_STREAM_SIGNAL build of the unit, which applies the signal. */
+    "fs.createReadStreamSignal": {
+      argTypes: [DYN, DYN],
+      result: { kind: "object", className: "%Readable" },
+    },
+    "fs.createWriteStreamSignal": {
+      argTypes: [DYN, DYN],
+      result: { kind: "object", className: "%Writable" },
+    },
+    "fileHandle.createReadStreamSignal": {
+      argTypes: [FILEHANDLE_T, DYN],
+      result: { kind: "object", className: "%Readable" },
+    },
+    "fileHandle.createWriteStreamSignal": {
+      argTypes: [FILEHANDLE_T, DYN],
+      result: { kind: "object", className: "%Writable" },
+    },
     "fs.fsStreamBytes": { argTypes: [null], result: F64 },
     "fs.fsStreamPending": { argTypes: [null], result: BOOL },
     "fs.fsStreamPath": { argTypes: [null], result: DYN },
@@ -5557,6 +5576,17 @@ function buildLibFnSignatures() {
      * (inspect, Object.keys/values/entries) then answer through its live
      * checked view. The receiver is any such record type. Never throws. */
     "record.sourceHas": { argTypes: [null], result: BOOL },
+    /** `record.sourceGet(record, name)`: the value the record's kept source
+     * holds under `name`, or the undefined value when it keeps none or its
+     * source lacks the key (+1). The name is a strLit. A kept accessor runs
+     * with the view as its receiver, so a getter that throws leaves the
+     * exception pending. */
+    "record.sourceGet": { argTypes: [null, STRING], result: DYN },
+    /** `record.sourceHasKey(record, name)`: whether the record's kept source
+     * holds `name` as an own property (false when it keeps none). The name is
+     * a strLit. A conversion tests this before `record.sourceGet` so a key the
+     * source lacks leaves the target field absent. Never throws. */
+    "record.sourceHasKey": { argTypes: [null, STRING], result: BOOL },
     /** `record.sourceDelete(record, key, strict)`: `delete record.key` of a
      * key the record's declared layout does not hold — the key lives in the
      * record's kept source, and the delete removes it there. Answers

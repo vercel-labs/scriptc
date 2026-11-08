@@ -274,6 +274,7 @@ import {
   storedClassValueType,
   type ClassInfo,
 } from "./lower-classes.js";
+import { checkRefusedMemberUse } from "./class-member-refusals.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
 import { lowerInstanceConstructorStaticCall } from "./class-instance-constructor.js";
 import {
@@ -311,6 +312,7 @@ import {
   nsMemberIdentOf,
   nsUndefRead,
 } from "./lower-namespaces.js";
+import { funduleMemberOf } from "./lower-fundule.js";
 import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
 import { fenceExpandoRead } from "./lower-expando.js";
 import {
@@ -342,6 +344,7 @@ import {
   checkedRestCallArgs,
   lowerSpreadArgsCall,
   completeArgs,
+  omittedArgFor,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { dynamicOverloadChoice } from "./overload-choice.js";
@@ -1716,9 +1719,16 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
       if (memberSym) fenceEarlyNsMemberRef(lowerer, expr.expression, memberSym);
       refuseModuleMemberThis(lowerer, expr, nsMember);
-      const generic = lowerer.genericFnOf(nsMember);
+      // A member of a function+namespace merge is an own property of the
+      // function object (lower-fundule.ts), and the qualified call reads
+      // that property as Node does: after `Object.assign(fmt, { helper })`
+      // or a write through an untyped alias, `fmt.helper()` runs the
+      // function the property holds now. The direct paths below name the
+      // declaration, so a merge member takes the call through its value.
+      const merged = funduleMemberOf(lowerer, lowerer.resolveValueSymbol(nsMember)) !== null;
+      const generic = merged ? null : lowerer.genericFnOf(nsMember);
       if (generic) return lowerer.lowerGenericCall(expr, generic);
-      const sig = lowerer.fnSigOf(nsMember);
+      const sig = merged ? null : lowerer.fnSigOf(nsMember);
       if (sig) {
         lowerer.noteEdge(sig.name);
         const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
@@ -1730,8 +1740,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           loc,
         });
       }
-      let callee = lowerer.lowerExpr(nsMember);
-      if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
+      const callee = lowerer.lowerExpr(nsMember);
       const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
       if (checked) return checked;
       if (callee.type.kind !== "func")
@@ -1796,8 +1805,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         loc,
       });
     }
-    let callee = lowerer.lowerExpr(nameId);
-    if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
+    const callee = lowerer.lowerExpr(nameId);
     const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
     if (checked) return checked;
     if (callee.type.kind !== "func")
@@ -2599,8 +2607,7 @@ function lowerCalleeValueCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
     const direct = callableInstanceStringCall(lowerer, expr, callee, loc);
     if (direct) return direct;
   }
-  if (callee.type.kind === "record" || callee.type.kind === "object")
-    callee = lowerer.hybridCallUnwrap(callee);
+  if (callee.type.kind === "object") callee = lowerer.hybridCallUnwrap(callee);
   return lowerCallThroughValue(lowerer, expr, callee, loc);
 }
 
@@ -2639,6 +2646,14 @@ export function overloadValueResult(
   const erased = erasedOverloadMemberType(calleeTs, lowerer.typeCtx);
   if (erased === undefined || !typeEquals(erased, callee.type)) return result;
   return lowerer.coerceInto(expr, result, resolvedOverloadResultType(lowerer, expr));
+}
+
+/** Whether the checker gives the callee no call signature: `any`, or the
+ * `Function` an `unknown` narrows to. */
+function writtenWithoutSignature(lowerer: Lowerer, callee: ts.Expression): boolean {
+  const type = lowerer.typeOf(callee);
+  if ((type.flags & ts.TypeFlags.Any) !== 0) return true;
+  return lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(type)).length === 0;
 }
 
 function lowerCallThroughValueRaw(
@@ -2749,7 +2764,22 @@ function lowerCallThroughValueRaw(
     return { kind: "dynCall", callee: boxed, calleeName, args, type: DYN, loc };
   }
   const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
-  return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+  // A callee the program holds at `any`, or at `unknown` behind a `typeof`
+  // test, whose function type the lowering knows: an untyped argument
+  // checked against that type's parameter is a check the source did not
+  // ask for (function-views.ts, untypedCalls).
+  const untyped =
+    args.some((arg) => arg.kind === "dynCheck" && arg.value.type.kind === "dyn") &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    writtenWithoutSignature(lowerer, expr.expression);
+  return {
+    kind: "callValue",
+    callee,
+    args,
+    ...(untyped ? { untyped: true as const } : {}),
+    type: callee.type.ret,
+    loc,
+  };
 }
 
 /** Exported checked and variadic callables use the same runtime-arity ABI
@@ -5461,6 +5491,11 @@ const DYN_DISPATCH_METHODS = new Set([
   "every",
   "find",
   "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flat",
+  "reduce",
+  "reduceRight",
   // The native-handle receiver surface (SCR_DYN_HANDLE — req/res/socket
   // boxed through the checked-dynamic boundary): these names dispatch on
   // the runtime kind so a boxed IncomingMessage/ServerResponse/Socket
@@ -11658,8 +11693,7 @@ export function lowerRecordFieldCall(
     const closure = lowerer.hybridCallUnwrap(callee);
     if (closure !== callee) return lowerCallThroughValue(lowerer, call, closure, loc);
   }
-  if (callee.type.kind === "record" || callee.type.kind === "object")
-    callee = lowerer.hybridCallUnwrap(callee);
+  if (callee.type.kind === "object") callee = lowerer.hybridCallUnwrap(callee);
   // Inferred JavaScript option records can retain checked callables in
   // fields even when the checker only describes those members as any.
   // TypeScript reaches here for callable library types that are checked
@@ -12542,6 +12576,9 @@ export function lowerObjectMethodCall(
   const info =
     lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
   const found = info ? lowerer.findMethodOn(info, access.name.text) : null;
+  // A member the class refused (class-member-refusals.ts): this call is a
+  // statically visible use of it.
+  if (found) checkRefusedMemberUse(lowerer, found.declarer, access.name.text, access.name);
   // The zlib stream members (flush/params/close/reset) are declared on
   // the zlib classes; their receivers are runtime Transform streams.
   if (
@@ -12766,7 +12803,7 @@ export function lowerObjectMethodCall(
     const own =
       widened !== undefined &&
       !virtual &&
-      widened.params.length > found.sig.params.length &&
+      widened.params.length !== found.sig.params.length &&
       !(found.declarer.decl && isJsSourceFile(ts.getSourceFileOfNode(found.declarer.decl)))
         ? widened
         : null;
@@ -12880,7 +12917,29 @@ export function lowerObjectMethodCall(
   if (lowerer.overrideBelow(info, method)) lowerer.noteVirtualEdge(info, method);
   else lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
   const receiver = lowerReceiver();
-  const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, locOf(call), call);
+  // The nearest declaration is an override with FEWER parameters than the
+  // slot, and a subclass overrides it again: the call was checked against
+  // the shorter list, and the virtual slot still takes every inherited
+  // argument. Each dropped one travels as the omitted value (what a deeper
+  // override that declares it again receives in Node); a slot parameter
+  // that cannot hold it has nothing to pass.
+  const slotParams =
+    adapted &&
+    adapted.params.length < found.sig.params.length &&
+    !(declarerDecl && isJsSourceFile(ts.getSourceFileOfNode(declarerDecl)))
+      ? found.sig.params.map((p, i): ParamShape => {
+          if (i < adapted.params.length) return p;
+          if (p.mode === "omittable") return p;
+          if (omittedArgFor(lowerer, p.type, locOf(call)) === null)
+            lowerer.unsupported(
+              "SC1090",
+              call,
+              `calling '${method}' through a class whose override declares fewer parameters than the inherited method while a subclass overrides it again (the inherited parameter ${i + 1} has no omitted value to pass through the slot)`,
+            );
+          return { type: p.type, mode: "omittable" };
+        })
+      : found.sig.params;
+  const args = lowerer.completeArgs(call.arguments.nodes, slotParams, locOf(call), call);
   if (lowerer.overrideBelow(info, method)) {
     return reconcileOverloadReturn(lowerer, call, {
       kind: "virtualCall",
@@ -13834,6 +13893,7 @@ function lowerCheckedPrivateMethodCall(
   const owner = privateNameClass(lowerer, access.name);
   const found = owner ? lowerer.findMethodOn(owner, name) : null;
   if (!owner || !found || found.declarer !== owner || found.sig.abstract === true) return null;
+  checkRefusedMemberUse(lowerer, owner, name, access.name);
   const probed = tryLowerExpression(lowerer, access.expression);
   if (!probed || !checkedDynamicOperand(probed)) return null;
   const value = checkedDynamicOperand(lowerer.lowerExpr(access.expression));

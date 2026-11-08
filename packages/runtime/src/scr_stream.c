@@ -6070,7 +6070,11 @@ ScrStream *scr_stream_add_abort_signal(ScrStream *s, ScrDyn *signal, bool from_o
   scr_box_set_ref(w->caps[0], dispose); /* moves */
   w->caps[1] = scr_box_new_obj(&scr_stream_ptr_keep_v, &scr_stream_ptr_drop_v, NULL);
   scr_box_set_ref(w->caps[1], h);
-  scr_closure_release(scr_stream_finished(s, w, &scr_stream_abort_dispose_inv));
+  /* eos(stream, disposable[SymbolDispose]): the listener goes at the point
+   * finished() calls back, which for a stream that does not destroy itself
+   * is its end or finish, not its close. */
+  scr_closure_release(
+      scr_stream_finished_opts(s, w, &scr_stream_abort_dispose_inv, -1, -1, true, NULL, NULL));
   return scr_stream_retain(s);
 }
 

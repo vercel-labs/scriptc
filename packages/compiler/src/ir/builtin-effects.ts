@@ -908,6 +908,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.throwReadOnly",
   "class.throwNotExtensible",
   "record.throwFrozen",
+  // The kept-source read runs the source view's accessor, which can throw
+  // (record-sources.ts carries the read into a record width copy).
+  "record.sourceGet",
   // `delete r.k` of a key the record's kept source holds throws Node's
   // TypeError on a frozen record in strict code.
   "record.sourceDelete",
@@ -1253,6 +1256,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.createWriteStream",
   "fileHandle.createReadStream",
   "fileHandle.createWriteStream",
+  "fs.createReadStreamSignal",
+  "fs.createWriteStreamSignal",
+  "fileHandle.createReadStreamSignal",
+  "fileHandle.createWriteStreamSignal",
   "fs.fsStreamClose",
   "fs.fsStreamCloseCb",
   "dir.readSync",

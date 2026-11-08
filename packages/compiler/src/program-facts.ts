@@ -401,9 +401,9 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     source: "ir",
     scope: "type",
     setBy:
-      "one signature adapter that holds a function with more parameters, or a rest parameter, at a function type",
+      "one signature adapter that holds a function with more parameters, a rest parameter, or another parameter type, at a function type",
     gates:
-      "every conversion of that function type to one with more parameters, and every boxing of it, tests whether the value is such a view and starts from the function it forwards to",
+      "every conversion of that function type to one with more parameters or a wider parameter type, and every boxing of it, tests whether the value is such a view and starts from the function it forwards to",
     narrower:
       "the value, at run time: an entry on the closure that takes an argument count, which needs a closure field and dynamic arguments",
     tracked: "pi-decisions DECISIONS.md 2026-11-07 (fn-slot-widening)",
@@ -817,6 +817,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots named by createRequire calls",
+  ),
+  scan(
+    "frontend/program.ts#boundedDynamicImportRoots7",
+    1,
+    "discovery",
+    "program roots named only by a bounded dynamic import()",
   ),
   scan(
     "frontend/program.ts#entryPackageProgramRoots7",

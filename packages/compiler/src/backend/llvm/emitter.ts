@@ -413,7 +413,13 @@ import {
   type ArenaPlan,
 } from "./arenas.js";
 import { children, type Node } from "./region-ir.js";
-import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from "./dyn.js";
+import {
+  LlDyn,
+  recordDynKeepsIdentity,
+  type BoxedView,
+  type DynHost,
+  type JsEntryClosure,
+} from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import {
   absentTrapLines,
@@ -2858,6 +2864,7 @@ export class LlEmitter {
         : (table, key, value) => this.journal?.entry(table, key, value),
       compactArrayElem: (elem) => this.compactArrayElem(elem),
       jsEntryClosures: () => this.jsEntryClosures(),
+      boxedViews: () => this.boxedViews(),
       compactRegion: () => this.compactRegion,
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
@@ -2936,6 +2943,7 @@ export class LlEmitter {
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       closureNames: () => this.closureNames(),
       threadLocalState: mod.workers === true || mod.lib?.threadInstances === true,
+      pendingBailReleaseLines: (type, value) => this.pendingBailReleaseLines(type, value),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
@@ -4859,6 +4867,21 @@ export class LlEmitter {
     ];
   }
 
+  /** Instructions (two-space indented) for the block a hand-built helper
+   * or adapter takes when the pending test after a call is true: they
+   * release `value`, what that call returned, when nothing else owns it
+   * yet. A call that throws returns null for a counted type, so where the
+   * test is exactly "an exception is pending" there is nothing to release
+   * and there are no lines. In a Worker program the test is also true once
+   * the thread's context must stop (a terminate request, process.exit() in
+   * a worker, the shutdown that starts every thread's cleanup), which a
+   * call that succeeded knows nothing about: its value is released there.
+   * The release helpers accept the null of a call that did throw. */
+  pendingBailReleaseLines(type: IrType, value: string): string[] {
+    if (this.mod.workers !== true || type.kind === "void" || !isRefCounted(type)) return [];
+    return [`  call void ${releaseSym(this.shapeHost, type)}(ptr ${value})`];
+  }
+
   /** The emitter contract for exceptions: after EVERY call that can throw
    * (per the may-throw analysis), test the pending flag and unwind. The
    * call's result temp must join its frame BEFORE this runs so the unwind
@@ -6752,6 +6775,28 @@ export class LlEmitter {
         });
       }
     this.jsEntryClosureList = list;
+    return list;
+  }
+
+  private boxedViewList: readonly BoxedView[] | null = null;
+
+  /** The view bodies whose closures box as the function they forward to
+   * (IrFunction.boxesSource), by name. */
+  boxedViews(): readonly BoxedView[] {
+    if (this.boxedViewList !== null) return this.boxedViewList;
+    const list: BoxedView[] = [];
+    for (const fn of this.fnByName.values()) {
+      const source = fn.captures?.[0]?.type;
+      if (fn.boxesSource !== true || source?.kind !== "func") continue;
+      list.push({
+        closure: this.callTarget(fn.name),
+        params: fn.params.map((p) => p.type),
+        ret: fn.returnType,
+        source,
+      });
+    }
+    list.sort((a, b) => (a.closure < b.closure ? -1 : a.closure > b.closure ? 1 : 0));
+    this.boxedViewList = list;
     return list;
   }
 

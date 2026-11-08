@@ -53,6 +53,7 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/bui
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
+import { checkRefusedMemberUse } from "../class-member-refusals.js";
 import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
@@ -974,6 +975,7 @@ export function fieldSetStmt(
         blame,
         `assignment to the getter-only property '${target.field}'`,
       );
+    checkRefusedMemberUse(lowerer, setF.declarer, `set:${target.field}`, blame);
     return {
       kind: "exprStmt",
       expr: lowerer.accessorCall(

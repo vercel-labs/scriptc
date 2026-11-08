@@ -1,0 +1,31 @@
+print-function-fences.ts:16:23 - error SC2020: 'util.format %s of '(string) => string | string' values' is part of the standard library types but has no scriptc lowering yet
+
+  15 | function formatted(stage: string | Filter): string {
+  16 |   return format("%s", stage);
+     |                       ^~~~~
+  17 | }
+
+  hint: Node prints a function's or a class's source text for %s (String(fn)); pass util.inspect(value) for the '[Function: name]' form
+
+print-function-fences.ts:21:14 - error SC1090: string conversions of unions with object arms (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
+
+  20 | function templated(stage: string | Filter): string {
+  21 |   return `<${stage}>`;
+     |              ^~~~~
+  22 | }
+
+print-function-fences.ts:34:15 - error SC1090: console.log of 'typeof Counted' values ('typeof Counted' values have no inspect lowering (class 'Counted' has static fields, which Node prints after the class tag)) are not supported yet
+
+  33 | function shown(value: typeof Counted): void {
+  34 |   console.log(value);
+     |               ^~~~~
+  35 | }
+
+print-function-fences.ts:39:23 - error SC2020: 'util.format %s of 'typeof Plain' values' is part of the standard library types but has no scriptc lowering yet
+
+  38 | function classText(value: typeof Plain): string {
+  39 |   return format("%s", value);
+     |                       ^~~~~
+  40 | }
+
+  hint: Node prints a function's or a class's source text for %s (String(fn)); pass util.inspect(value) for the '[Function: name]' form

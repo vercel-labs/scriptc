@@ -4340,6 +4340,10 @@ export function primitiveCtorClosure(
       loc,
     };
     lowerer.liftedFns.push(fn);
+    // Printed through a typed slot, the typed value takes the constructor's
+    // name (function-names.ts). The form over untyped input is the global
+    // object's member in JavaScript, which has its name where it is read.
+    if (!dynamicInput) lowerer.heldFunctionNames.set(fnName, name);
   }
   return { kind: "closure", fnName, captures: [], type: fnT, loc };
 }

@@ -38,18 +38,19 @@ test("compile-time execution belongs to the supplied host and closes with its se
   const value = { table: [1, 2, 3] };
   const evaluate = vi.fn(() => value);
   const { services, factory } = setup(evaluate);
-  expect(services.evaluateComptime("() => [1, 2, 3]", 2000)).toBe(value);
-  expect(evaluate).toHaveBeenCalledExactlyOnceWith("() => [1, 2, 3]", 2000);
+  const limits = { timeoutMs: 2000, memoryMb: 256 };
+  expect(services.evaluateComptime("() => [1, 2, 3]", limits, ["() => 4"])).toBe(value);
+  expect(evaluate).toHaveBeenCalledExactlyOnceWith("() => [1, 2, 3]", limits, ["() => 4"]);
   expect(factory).not.toHaveBeenCalled();
   services.close();
-  expect(() => services.evaluateComptime("() => 1", 2000)).toThrow("closed");
+  expect(() => services.evaluateComptime("() => 1", limits)).toThrow("closed");
   expect(evaluate).toHaveBeenCalledTimes(1);
 });
 
 test("a host without a compile-time evaluator refuses explicitly", () => {
   const { services, factory } = setup();
   try {
-    expect(() => services.evaluateComptime("() => 1", 2000)).toThrow(
+    expect(() => services.evaluateComptime("() => 1", { timeoutMs: 2000, memoryMb: 256 })).toThrow(
       "does not provide compile-time evaluation",
     );
   } finally {

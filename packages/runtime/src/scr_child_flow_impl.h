@@ -376,25 +376,32 @@ static void scr_child_flow_resume(ScrChildStream *s) {
 
 /* ── the members ─────────────────────────────────────────────────────── */
 
-/* stream.pause(): +1 receiver (Node returns the stream). */
+/* stream.pause(): +1 receiver (Node returns the stream). A stream of a child
+ * a Node island made is the island's: its own pause, resume, isPaused and
+ * readableFlowing answer, as for every other member. */
 ScrChildStream *scr_child_stream_pause(ScrChildStream *s) {
+  SCR_IF_ISLAND(s, scr_child_island_ops->call(s->island, "pause"); return scr_child_stream_retain(s));
   if (s->flow.state != SCR_CHILD_FLOW_PAUSED) scr_child_flow_enter(s, SCR_CHILD_FLOW_PAUSED);
   return scr_child_stream_retain(s);
 }
 
 /* stream.resume(): +1 receiver. */
 ScrChildStream *scr_child_stream_resume(ScrChildStream *s) {
+  SCR_IF_ISLAND(s, scr_child_island_ops->call(s->island, "resume"); return scr_child_stream_retain(s));
   scr_child_flow_resume(s);
   return scr_child_stream_retain(s);
 }
 
 bool scr_child_stream_is_paused(ScrChildStream *s) {
+  SCR_IF_ISLAND(s, return scr_child_island_ops->boolean(s->island, SCR_CHILD_PROP_PAUSED));
   return s->flow.state == SCR_CHILD_FLOW_PAUSED;
 }
 
 /* stream.readableFlowing: 0 false, 1 true, -1 null (no 'data' listener was
  * ever registered and the stream was never paused or resumed). */
 double scr_child_stream_flowing(ScrChildStream *s) {
+  SCR_IF_ISLAND(s, double flowing = 0;
+                return scr_child_island_ops->number(s->island, SCR_CHILD_PROP_FLOWING, &flowing) ? flowing : -1);
   if (s->flow.state == SCR_CHILD_FLOW_PAUSED) return 0;
   if (s->flow.state == SCR_CHILD_FLOW_FLOWING || s->flow.listened) return 1;
   return -1;

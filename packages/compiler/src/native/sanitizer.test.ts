@@ -21,6 +21,7 @@ const features = {
   childLifecycle: false,
   childShellLine: false,
   processFeatures: false,
+  islandChild: false,
   childOptionExt: false,
   spawnCaptureBytes: false,
   childErrorFields: false,

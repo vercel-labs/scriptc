@@ -179,4 +179,18 @@ bool scr_node_island_has_exit_code(void) {
   return state < 0 ? scr_process_has_exit_code() : state == 1;
 }
 
+/* process.chdir in a program with islands (island-process-state.ts): the
+ * working directory is the process's, and Node caches process.cwd() until
+ * its own process.chdir runs. After the program's change Node changes to
+ * ".", which keeps the directory and drops the cached answer. A Node that
+ * is not loaded yet reads the directory when it starts. */
+void scr_node_island_chdir(ScrStr *dir) {
+  scr_process_chdir(dir);
+  if (scr_exc_pending() || !scr_context_is_main() || !scr_ni_running()) return;
+  scr_dyn_release(scr_ni_helper("processChdir", NULL, 0));
+  /* The program's own change succeeded: a directory that vanished since
+   * leaves Node's cached answer, which its next process.chdir replaces. */
+  if (scr_exc_pending()) scr_exc_clear();
+}
+
 #endif

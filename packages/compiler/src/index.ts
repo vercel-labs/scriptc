@@ -919,6 +919,7 @@ async function compileExecutableNative(
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.childShellLine ? { childShellLine: true } : {}),
     ...(features.processFeatures ? { processFeatures: true } : {}),
+    ...(features.islandChild ? { islandChild: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
     ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),

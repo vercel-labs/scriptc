@@ -1,0 +1,8 @@
+promise-into-own-thenable.ts:17:7 - error SC2002: record shapes must match exactly or width-coerce: expected '{ then: ((number) => void, (unknown) => void) => void }', got 'Promise<number>' — a promise is not a value of the program's own type with a 'then' method (that type is a record of its members and cannot hold the promise itself); declare the slot PromiseLike<T>, which takes promises and the program's own thenables, or Promise<T> | YourType narrowed with instanceof
+
+  16 | 
+  17 | watch(Promise.resolve(1));
+     |       ^~~~~~~~~~~~~~~~~~
+  18 | 
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

@@ -44,6 +44,7 @@ import {
   accessorSlotProp,
   DYN,
   DYN_HANDLE_KINDS,
+  ISLAND_ADOPTED_KINDS,
   isDirentShape,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
@@ -250,7 +251,8 @@ export interface DynHost extends WalkerHost {
   declBoundary?(): boolean;
   /** The program links Node islands (IrModule.nodeIsland): a value an
    * island made is a handle whose members live in Node, and a checked
-   * conversion reads them there. */
+   * conversion reads them there; a kind in ISLAND_ADOPTED_KINDS converts
+   * through its island-aware functions. */
   nodeIslands?(): boolean;
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
@@ -1968,6 +1970,15 @@ export class LlDyn {
             undefined,
             `a checked-dynamic value tested against type ${typeKey(t)}`,
           );
+        const adopted = this.islandConversion(t);
+        if (adopted) {
+          // An island's own instance matches too: its runtime unit answers.
+          const matched = B.tmp();
+          this.host.declare(`declare zeroext i1 @${adopted.is}(ptr)`);
+          B.line(`${matched} = call zeroext i1 @${adopted.is}(ptr %d)`);
+          B.terminate(`ret i1 ${matched}`);
+          break;
+        }
         const kd = this.kindOf(B, "%d");
         const isHandle = B.tmp();
         B.line(`${isHandle} = icmp eq i32 ${kd}, ${DYN_KIND.HANDLE}`);
@@ -3729,7 +3740,7 @@ export class LlDyn {
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) {
           const r = B.tmp();
-          const unbox = DYN_HANDLE_UNBOX_FN[t.kind];
+          const unbox = this.islandConversion(t)?.unbox ?? DYN_HANDLE_UNBOX_FN[t.kind];
           if (unbox) {
             host.declare(`declare ptr @${unbox}(ptr, ptr, ptr)`);
             B.line(`${r} = call ptr @${unbox}(ptr %d, ptr %path, ptr ${want})`);
@@ -3754,6 +3765,14 @@ export class LlDyn {
     if (recursive || memo) this.emitVisitWrapper(name, t, recursive ? "build" : "memo");
     this.host.journalBuilt?.();
     return name;
+  }
+
+  /** The island-aware conversion functions of a kind whose instances made by
+   * a Node island a native slot holds (ISLAND_ADOPTED_KINDS), in a program
+   * that has islands; undefined for every other kind and program. */
+  private islandConversion(t: IrType): { unbox: string; box: string; is: string } | undefined {
+    const adoption = ISLAND_ADOPTED_KINDS.get(t.kind);
+    return adoption?.at === "conversion" && this.host.nodeIslands?.() ? adoption : undefined;
   }
 
   /** `i1`: %d is a handle box with tag `tag`. */
@@ -4600,7 +4619,7 @@ export class LlDyn {
         // tag's installed ops.
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) {
-          const box = DYN_HANDLE_BOX_FN[t.kind];
+          const box = this.islandConversion(t)?.box ?? DYN_HANDLE_BOX_FN[t.kind];
           const r = B.tmp();
           if (box) {
             host.declare(`declare ptr @${box}(ptr)`);

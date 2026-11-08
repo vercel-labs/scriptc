@@ -33,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
+  id: "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -98,6 +98,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   childLifecycle: boolean;
   childShellLine: boolean;
   processFeatures: boolean;
+  islandChild: boolean;
   childOptionExt: boolean;
   spawnCaptureBytes: boolean;
   childErrorFields: boolean;
@@ -387,6 +388,7 @@ export function effectiveRuntimeFeatures(
     childLifecycle: features.childLifecycle === true,
     childShellLine: features.childShellLine === true,
     processFeatures: features.processFeatures === true,
+    islandChild: features.islandChild === true,
     childOptionExt: features.childOptionExt === true,
     spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,

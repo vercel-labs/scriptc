@@ -1,18 +1,23 @@
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
+import { canBoxFuncIntoDyn } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import type { GenericFnInfo } from "./generic-functions.js";
+import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 
-/** `fn.name` inside generic higher-order functions.
+/** `fn.name` inside generic higher-order functions, for a function whose
+ * signature has no checked-value box.
  *
- * Native closures carry no name, but a generic wrapper is instantiated per
- * call site anyway: when its body reads `.name` of a function parameter,
- * the instantiation key also carries the static name of that call's
- * argument (the function declaration's name, a const binding's inferred
- * name, the name of the function a wrapper call returns), and the read
- * folds to that string. A call whose argument's name is only known at run
- * time keeps a precise refusal at the read. */
+ * A function value that boxes answers its own name at run time (its own
+ * `name` property, else its row in the closure-name table), like every
+ * other read. One that cannot box has no such read, but a generic wrapper
+ * is instantiated per call site anyway: when its body reads `.name` of a
+ * function parameter, the instantiation key also carries the static name
+ * of that call's argument (the function declaration's name, a const
+ * binding's inferred name, the name of the function a wrapper call
+ * returns), and the read folds to that string. A call whose argument's
+ * name is only known at run time keeps a precise refusal at the read. */
 
 /** Parameter index → symbol for the parameters whose `.name` the generic
  * body reads (and never reassigns). Computed once per generic. */
@@ -207,6 +212,20 @@ export function staticFunctionNameRead(
   }
   const symbol = lowerer.checker.getSymbolAtLocation(expr.expression);
   if (!symbol || !names.has(symbol)) return null;
+  // A function value that boxes answers with its own name at run time, like
+  // every other read: it may carry a `name` the program defined on it. The
+  // folded name answers only for a signature that has no box, which no
+  // property definition can reach either.
+  const value = tryLowerExpression(lowerer, expr.expression);
+  if (
+    value?.type.kind === "func" &&
+    canBoxFuncIntoDyn(
+      value.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return null;
   const name = names.get(symbol);
   if (name === null || name === undefined) {
     lowerer.unsupported(

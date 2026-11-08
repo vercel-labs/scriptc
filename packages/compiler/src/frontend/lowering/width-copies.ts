@@ -31,7 +31,7 @@
  * of the converted value tells the two apart, so the lowering notes the
  * conversion where it makes it (noteDictionaryCopy), and the scan counts
  * the lowered conversions that carry a note. */
-import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
+import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { DYN, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
 import { dynamicFieldStores, type DynamicFieldStores } from "../../ir/int32-slots.js";
 import { everyExprChild, everyStmtChild, everyTypeChild } from "../../ir/traverse.js";
@@ -1089,6 +1089,22 @@ function readOnlyRuntimeCall(fn: string): boolean {
   return false;
 }
 
+/** The runtime calls a constructor makes for the runtime-provided class its
+ * class is rooted in (superCall in lower-classes.ts). The runtime
+ * initializes the members that class holds on the object being built and
+ * runs none of the program's code with it, so the call does not let the
+ * object out. */
+const RUNTIME_BASE_CONSTRUCTORS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "error.ctor",
+  "error.ctorOptions",
+  "emitter.ctor",
+  "readable.init",
+  "writable.init",
+  "duplex.init",
+  "transform.init",
+  "passthrough.init",
+]);
+
 /** What the whole program does to values of each layout. */
 class Observations {
   /** `record:<shape>\0<field>` and `object:<root class>\0<field>` (field
@@ -1601,7 +1617,12 @@ class Observations {
         stack.push(type.elem);
       } else {
         const unit = this.unitOf(type);
-        if (unit !== null && !this.fieldWrites.has(`${unit}\0*`))
+        const held = type.kind === "object" ? this.runtimeHeld(type.className) : null;
+        if (unit !== null && held !== null) {
+          for (const name of held)
+            if (!this.fieldWrites.has(`${unit}\0${name}`))
+              this.fieldWrites.set(`${unit}\0${name}`, observation);
+        } else if (unit !== null && !this.fieldWrites.has(`${unit}\0*`))
           this.fieldWrites.set(`${unit}\0*`, observation);
         if (type.kind === "record") {
           const shape = this.lowerer.shapes.get(type.shapeId);
@@ -1610,6 +1631,30 @@ class Observations {
         }
       }
     }
+  }
+
+  /** The fields the runtime can write on an instance of `className` it is
+   * handed, when the class is rooted in a runtime-provided class (an
+   * emitter, an error, a stream; objToRecordPlan's rule): the members that
+   * runtime class holds. The runtime knows no other layout of the instance,
+   * so the fields the program's classes declare are written by the program's
+   * own code, which this scan reads, and no conversion copies a member the
+   * runtime class holds. Null for any other class. */
+  private runtimeHeld(className: string): string[] | null {
+    let rooted = false;
+    const names: string[] = [];
+    for (let info = this.lowerer.classes.get(className) ?? null; info; info = info.base) {
+      if (
+        !info.builtinError &&
+        !info.builtinEmitter &&
+        info.builtinStream === undefined &&
+        !info.def.runtime
+      )
+        continue;
+      rooted = true;
+      for (const name of info.fields.keys()) if (!names.includes(name)) names.push(name);
+    }
+    return rooted ? names : null;
   }
 
   /** Whether the constructor named `name` uses its `this` as anything but
@@ -1626,6 +1671,9 @@ class Observations {
     if (fn === undefined || self === undefined) return true;
     let leaked = false;
     const isSelf = (e: IrExpr): boolean => e.kind === "varRef" && e.localId === self;
+    // A base constructor takes the object at the base's type.
+    const isReceiver = (e: IrExpr): boolean =>
+      isSelf(e) || (e.kind === "upcast" && isSelf(e.value));
     const expr = (e: IrExpr): boolean => {
       if (leaked) return false;
       if (isSelf(e)) {
@@ -1641,12 +1689,21 @@ class Observations {
         e.kind === "call" &&
         e.callee.endsWith(".constructor") &&
         e.args.length > 0 &&
-        isSelf(e.args[0]!)
+        isReceiver(e.args[0]!)
       ) {
         if (this.leaks(e.callee)) {
           leaked = true;
           return false;
         }
+        for (let i = 1; i < e.args.length; i++) if (!expr(e.args[i]!)) return false;
+        return true;
+      }
+      if (
+        e.kind === "libCall" &&
+        RUNTIME_BASE_CONSTRUCTORS.has(e.fn) &&
+        e.args.length > 0 &&
+        isReceiver(e.args[0]!)
+      ) {
         for (let i = 1; i < e.args.length; i++) if (!expr(e.args[i]!)) return false;
         return true;
       }

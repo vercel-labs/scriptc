@@ -2061,6 +2061,12 @@ declare module "tty" {
     off(event: string, listener: (...args: any[]) => void): this;
     removeListener(event: string, listener: (...args: any[]) => void): this;
     getWindowSize(): [number, number];
+    /* The color depth Node derives from an environment object
+     * (process.env by default): 1, 4, 8 or 24 bits. */
+    getColorDepth(env?: object): number;
+    hasColors(count?: number): boolean;
+    hasColors(env?: object): boolean;
+    hasColors(count: number, env?: object): boolean;
   }
   export function isatty(fd: number): boolean;
 }

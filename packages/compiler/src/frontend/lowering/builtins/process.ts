@@ -277,21 +277,60 @@ export function lowerProcStreamMethodCall(
       };
     }
   }
-  if (name === "getWindowSize" && call.arguments.nodes.length === 0) {
-    const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(access.expression), DYN);
-    return lowerer.coerceInto(
-      call,
-      {
-        kind: "dynInvoke",
-        recv: receiver,
-        method: name,
-        calleeName: ts.getTextOfNode(call.expression),
-        args: [],
-        type: DYN,
+  const terminalArity = TERMINAL_STREAM_METHODS.get(name);
+  if (
+    terminalArity !== undefined &&
+    !(call.questionDotToken !== undefined && isJsSourceFile(ts.getSourceFileOfNode(call))) &&
+    call.arguments.nodes.length <= terminalArity &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const invoke = (stream: IrExpr): IrExpr =>
+      lowerer.coerceInto(
+        call,
+        {
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(stream, DYN),
+          method: name,
+          calleeName: ts.getTextOfNode(call.expression),
+          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        },
+        lowerer.irTypeOf(call),
+      );
+    const stream = lowerer.lowerExpr(access.expression);
+    // getWindowSize's pair keeps the plain call: an optional pair has no
+    // compiled form yet.
+    if (
+      call.questionDotToken === undefined ||
+      stream.type.kind !== "procStream" ||
+      name === "getWindowSize"
+    )
+      return invoke(stream);
+    // `out.getColorDepth?.(env)`: the stream has the method exactly when its
+    // descriptor is a terminal, which is when it has `isTTY`. The stream is
+    // evaluated once; on a pipe the call and its arguments never run and the
+    // answer is undefined, whatever the declarations promise.
+    const held = lowerer.declareHiddenLocal("%terminalStream", stream.type);
+    const read: IrExpr = { kind: "varRef", localId: held.id, type: stream.type, loc };
+    const terminal = processStreamValueMember(lowerer, "isTTY", read, loc);
+    const body = invoke(read);
+    const type = lowerer.withUndefinedArmOf(body.type);
+    if (terminal === null || type === null) return body;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: held.id, init: stream, loc }],
+      result: {
+        kind: "optChain",
+        id: lowerer.closureName(loc, "", "chain"),
+        receiver: terminal,
+        body: lowerer.coerceToExpected(body, type),
+        type,
         loc,
       },
-      lowerer.irTypeOf(call),
-    );
+      type,
+      loc,
+    };
   }
   const viaObject = lowerProcStreamObjectCall(lowerer, call, access);
   if (viaObject !== null) return viaObject;
@@ -317,9 +356,32 @@ export function lowerProcStreamMethodCall(
       lowerer.typeCtx,
     )
       ? "write(data) with one string and getWindowSize() are the supported stream-value methods"
-      : "write(data[, encoding][, callback]), listeners for 'resize' and 'error' (as literals), and getWindowSize() are the supported stream-value methods",
+      : "write(data[, encoding][, callback]), listeners for 'resize' and 'error' (as literals), getWindowSize(), getColorDepth([env]) and hasColors([count][, env]) are the supported stream-value methods",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** The methods a process stream has only while its descriptor is a terminal
+ * (Node's tty.WriteStream; a piped or redirected stream is a net.Socket or a
+ * file stream and has none of them), with the most arguments each takes. The
+ * runtime's stream object serves them with Node's own semantics: the window
+ * size, and the color depth Node derives from an environment object. */
+const TERMINAL_STREAM_METHODS: ReadonlyMap<string, number> = new Map([
+  ["getWindowSize", 0],
+  ["getColorDepth", 1],
+  ["hasColors", 2],
+]);
+
+/** Whether `node` reads one of those methods from a process stream: a member
+ * the declarations require and a stream that is no terminal does not have,
+ * so an optional call of it (`out.getColorDepth?.()`) is a real test. */
+export function isTerminalStreamMethodRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(node) || !TERMINAL_STREAM_METHODS.has(node.name.text))
+    return false;
+  // A JavaScript source reads the member from the stream object and tests
+  // the value it gets.
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  return lowerer.mapTypeOf(lowerer.typeOf(node.expression))?.kind === "procStream";
 }
 
 /** The event names the runtime's process stream object takes listeners

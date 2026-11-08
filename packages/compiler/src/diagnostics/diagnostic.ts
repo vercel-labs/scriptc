@@ -1506,6 +1506,22 @@ export function componentTypeDiag(typeText: string, detail: string, loc: SrcLoc)
   };
 }
 
+/** A type whose mapping took more steps than one mapping may take
+ * (frontend/type-mapper.ts, the walk memo's step limit). A mapping maps each
+ * type it reaches once, so a type that gets here reaches a graph of types
+ * that map differently below every ancestor, and the mapping would run for
+ * minutes or without end. The build ends here, in every tier: `loc` is the
+ * type's declaration. */
+export function typeWalkBudgetDiag(typeText: string, steps: number, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2016",
+    message: `type '${typeText}' cannot be compiled: mapping the types it reaches takes more than ${steps} steps`,
+    loc,
+    milestone: "M2",
+    hint: "the type reaches a large graph of types that refer to each other, or members with their own type parameters nested many levels deep; declare the value with a narrower type (the members the program reads), or cut the graph with 'unknown' where it closes",
+  };
+}
+
 /** A REACHED use of standard-library surface with no lowering — the scope
  * fence of the real-lib type world. The checker sees the full es2025
  * standard library, so `Symbol`, `new Date()`, `p.then(...)`, `Math.min`

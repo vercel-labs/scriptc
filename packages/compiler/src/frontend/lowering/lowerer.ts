@@ -361,6 +361,7 @@ import {
   unsupportedPackageValueDiag,
   unionMismatchDiag,
   emptyArrayDiag,
+  typeWalkBudgetDiag,
   UNSUPPORTED,
   unsupportedDiag,
   unsupportedTypeDiag,
@@ -438,6 +439,10 @@ import {
   containsUnion,
   describeComponentBlocker,
   describeRecordMemberBlocker,
+  resetTypeWalkBudget,
+  TypeWalkBudgetError,
+  typeWalkOverLimit,
+  withTypeWalk,
   erasedOverloadMemberType,
   formatIrType,
   FETCH_AMBIENT_TYPES,
@@ -1523,13 +1528,34 @@ export function lowerToIr(
   options: LowerOptions = {},
 ): LowerResult {
   setActiveNodeIslands(options.nodeIslands ?? null);
+  resetTypeWalkBudget();
   try {
     const result = lowerToIrWithIslands(program, entry, moduleOrder, options);
+    // A type walk that passed its step limit ends the build, also when
+    // something on the way out answered for the error.
+    const overLimit = typeWalkOverLimit();
+    if (overLimit !== null) return typeWalkBudgetFailure(overLimit, entry);
     markModuleInitFences(program, result.runtimeFences);
     return result;
+  } catch (e) {
+    if (!(e instanceof TypeWalkBudgetError)) throw e;
+    return typeWalkBudgetFailure(e, entry);
   } finally {
     setActiveNodeIslands(null);
   }
+}
+
+/** The build of a program one of whose types passed the type walk's step
+ * limit: SC2016 at the type's declaration (the entry, for a type without
+ * one) and nothing else, in every tier. */
+function typeWalkBudgetFailure(error: TypeWalkBudgetError, entry: ts.SourceFile): LowerResult {
+  const loc = error.loc ?? { file: entry.fileName, start: 0, end: 0 };
+  return {
+    module: null,
+    diagnostics: [typeWalkBudgetDiag(error.typeText, error.steps, loc)],
+    runtimeFences: [],
+    stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+  };
 }
 
 /** Whether `fn` is a function the expression it sits in calls where it is
@@ -4405,6 +4431,10 @@ export class Lowerer {
   /** Which member calls on records pass the record as the receiver
    * (memberCallReceivers), computed on first use. */
   memberReceivers: MemberCallReceivers | undefined = undefined;
+  /** Whether the program imports @scriptc/node (programImportsNodeApi), so
+   * a checked-dynamic value may be a Node island value; computed on first
+   * use. */
+  importsNodeApi: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5699,6 +5729,7 @@ export class Lowerer {
     "mentionsProcessVersions",
     "createsWrappers",
     "memberReceivers",
+    "importsNodeApi",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -14677,6 +14708,9 @@ export class Lowerer {
       ...strict,
       lenient: true,
       canMemoizeType: () => false,
+      // Nothing of it enters the strict memos; the mapping itself still
+      // maps each type it reaches once.
+      canMemoizeWalk: () => strict.canMemoizeType?.() ?? true,
       onLenientPiece: (piece) => {
         const id = (piece as { id?: number }).id;
         if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
@@ -14761,7 +14795,14 @@ export class Lowerer {
       if (c.k === "opaque" || c.k === "param") return null;
       const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
       notes.generatorArraysMap = true;
-      const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false }, 0, notes);
+      // One walk for the whole form: each object node whose members do not
+      // map structurally asks mapType for its own type.
+      const canonCtx: TypeMapperCtx = {
+        ...strict,
+        canMemoizeType: () => false,
+        canMemoizeWalk: () => strict.canMemoizeType?.() ?? true,
+      };
+      const mapped = withTypeWalk(type, canonCtx, () => mapCanonical(c, canonCtx, 0, notes));
       if (notes.collapsedToDynamic) return null;
       return mapped === null || mapped.kind === "void" || mapped.kind === "dyn" ? null : mapped;
     } catch {

@@ -729,9 +729,20 @@ const islandHelpers = {
     const current = process.exitCode;
     return current === undefined || current === null ? null : Number(current);
   },
+  // The program changed directory with its own system call. Node caches
+  // process.cwd() until its own process.chdir runs: changing to "." keeps
+  // the directory and drops the cached answer.
+  processChdir() {
+    process.chdir(".");
+  },
   // The V8 error a native error crosses as (scr_ni_error_link).
   same(value) {
     return value;
+  },
+  // clearTimeout (0), clearInterval (1) or clearImmediate (2) of an island
+  // value the program holds: Node's own function.
+  clearTimer(which, timer) {
+    clearFunctions[which](timer);
   },
 };
 
@@ -883,6 +894,52 @@ function refImmediate(handle, ref) {
 function nextTick(token) {
   process.nextTick(onTick, token);
 }
+
+// ── timers across the boundary ───────────────────────────────────────────
+// A timer or immediate the program created is a number in island code, as
+// it is in the program: its id, which starts at 2^52 in a program with
+// islands, a range Node's own timer ids (async ids) do not reach. Node's
+// clear functions accept such a number and clear the program's handle of that
+// kind through the runtime's own clear (scr_loop_hosted_run in scr_async.c,
+// whose job kinds these are), so the runtime releases its callback and its
+// count of live timers stays right; a clear of the other kind's number finds
+// nothing to clear, as in Node. Every other value is Node's to clear.
+const TIMER_ID_BASE = 2 ** 52;
+const JOB_CLEAR_TIMER = 16;
+const JOB_CLEAR_IMMEDIATE = 16 | 8;
+
+function programTimerId(value) {
+  if (typeof value !== "number" && typeof value !== "string") return 0;
+  const id = typeof value === "string" ? Number(value) : value;
+  return Number.isInteger(id) && id > TIMER_ID_BASE && id < 2 * TIMER_ID_BASE ? id : 0;
+}
+
+function clearProgramTimer(job, id) {
+  const offset = id - TIMER_ID_BASE;
+  nativeHost.run(job | (Math.floor(offset / 2 ** 32) << 8), offset >>> 0);
+}
+
+function clearFunction(name, job) {
+  const nodeClear = timers[name];
+  // The wrapper has the name and length of the Node function it replaces.
+  const clear = {
+    [name](timer) {
+      const id = programTimerId(timer);
+      if (id !== 0) return clearProgramTimer(job, id);
+      return Reflect.apply(nodeClear, this, arguments);
+    },
+  }[name];
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+  timers[name] = clear;
+  if (descriptor !== undefined)
+    Object.defineProperty(globalThis, name, { ...descriptor, value: clear });
+  return clear;
+}
+const clearFunctions = [
+  clearFunction("clearTimeout", JOB_CLEAR_TIMER),
+  clearFunction("clearInterval", JOB_CLEAR_TIMER),
+  clearFunction("clearImmediate", JOB_CLEAR_IMMEDIATE),
+];
 
 // ── process state (scope-B NI-3) ─────────────────────────────────────────
 // Signal and 'exit' listeners of island code join the runtime's registries

@@ -148,6 +148,7 @@ import {
   lowerStaticFieldRead,
   lowerStaticSuperRead,
 } from "../lower-classes.js";
+import { checkRefusedMemberUse } from "../class-member-refusals.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
 import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
@@ -5880,6 +5881,7 @@ export function fieldGetExpr(
         `reading a property that has only a setter ('${target.field}' — Node would yield undefined)`,
       );
     }
+    checkRefusedMemberUse(lowerer, getF.declarer, `get:${target.field}`, blame);
     if (
       !target.field.startsWith("#") &&
       isJsSourceFile(ts.getSourceFileOfNode(blame)) &&

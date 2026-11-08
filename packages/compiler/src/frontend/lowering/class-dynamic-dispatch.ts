@@ -7526,6 +7526,8 @@ export class ClassDynamicDispatch {
       generic &&
       !generic.info.implicitParams &&
       generic.info.typeParams.length > 0 &&
+      // A refused generic member has no instance: the call keeps the fence.
+      generic.info.refused === undefined &&
       generic.declarer.decl &&
       // An async generator has no checked-dynamic form: one that leaves
       // through an untyped value can neither be iterated there nor checked
@@ -7558,6 +7560,7 @@ export class ClassDynamicDispatch {
             !sub.decl ||
             own.implicitParams ||
             own.typeParams.length === 0 ||
+            own.refused ||
             isAsyncGenerator(own.decl)
           )
             return fence();

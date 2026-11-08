@@ -274,6 +274,7 @@ import { recordKeysArrayCall } from "./lower-calls.js";
 import { registerOverloadedCallableAlias } from "./call-signatures.js";
 import { isMixinFnBinding, mixinResultBindingClassOf } from "./lower-mixins.js";
 import type { ClassInfo, ClassIteratorInfo } from "./lower-classes.js";
+import { checkRefusedAccessorWrite } from "./class-member-refusals.js";
 import { isCompiledPrototypeMember } from "./class-prototypes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
@@ -10619,6 +10620,7 @@ export function lowerExprStatement(
         assertedOnlyMemberWrite(lowerer, expr.left.expression, expr.left.name.text, expr.left);
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
+          checkRefusedAccessorWrite(lowerer, target, expr.left.name);
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);
           refuseCopiedStore(lowerer, expr.left, target.fieldType, expr.right);
           return lowerer.fieldSetStmt(target, value, locOf(expr), expr.left);

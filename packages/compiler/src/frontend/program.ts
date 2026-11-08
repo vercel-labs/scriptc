@@ -174,6 +174,7 @@ import {
   elideProgramImports,
   importElisionOptions,
   type ImportElisionOptions,
+  type ProgramImportElision,
 } from "./import-elision.js";
 import {
   planDeclProjection,
@@ -1551,8 +1552,18 @@ function loadProgram7(
     // project that does not set `verbatimModuleSyntax` is compiled with the
     // imports and exports tsc keeps. The tsc gate reads the files as
     // written; the rewrite keeps their offsets.
+    //
+    // The authored world (PackageRoots.declared) is never compiled: it types
+    // the files as written for the declaration projection, which pairs each
+    // of its files with the lowering world's file of the same text and
+    // skips a file whose texts differ, and for the gate's project world,
+    // which is built over the files as written. It holds no elided file,
+    // so it asks the checker nothing about the program's imports.
     const dialectOf = fileDialects7(host);
-    const elision = elideProgramImports(program, (file) => dialectOf(file)?.elision ?? null);
+    const elision: ProgramImportElision =
+      packageRoots?.declared === true
+        ? { texts: new Map(), inlinedOnly: [] }
+        : elideProgramImports(program, (file) => dialectOf(file)?.elision ?? null);
     const elisions = elision.texts;
     const importWarnings = elision.inlinedOnly.map((kept) =>
       inlinedImportKeptDiag(kept.specifier, { file: kept.file, start: kept.start, end: kept.end }),

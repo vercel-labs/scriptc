@@ -95,6 +95,16 @@
       "signature": "SC8006"
     }
   },
+  "corpus/9562-npm-overload-selected-result": {
+    "island:gauge": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: expected number at $, got undefined"
+    },
+    "island:weigh": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: expected number at $, got undefined"
+    }
+  },
   "corpus/fs-extra-package": {
     "island:fs-extra": {
       "category": "build",
@@ -105,6 +115,12 @@
     "island:graceful-fs": {
       "category": "build",
       "signature": "SC8006"
+    }
+  },
+  "corpus/package-js-record-member-kinds": {
+    "island:shelf-kit": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
     }
   },
   "corpus/readable-stream-3": {

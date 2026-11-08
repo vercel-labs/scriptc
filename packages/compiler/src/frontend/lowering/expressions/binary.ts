@@ -538,9 +538,6 @@ export function lowerNullishPair(
   if (!def) lowerer.badType(expr.left, lowerer.typeOf(expr.left));
   if (!def.arms.some(isUnitType)) return left;
   const rest = def.arms.filter((a) => !isUnitType(a));
-  // A left operand that can only be null or undefined: the result is the
-  // default, after the operand is evaluated.
-  if (rest.length === 0) return afterEvaluating(left, lowerer.lowerExpr(expr.right), loc);
   // `optionalMap ?? new Map()` carries its element contract on the left;
   // the empty fallback may use it without constructing a Map<any, any>
   // arm that has no first-class union representation.

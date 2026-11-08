@@ -808,6 +808,7 @@ async function build() {
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
           "SCR_CHILD_STREAM_FLOW",
+          "SCR_TTY_COLORS",
           "SCR_NODE_ISLANDS",
           "SCR_NODE_ISLAND_STDIO",
         ],

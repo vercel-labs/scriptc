@@ -152,6 +152,7 @@ import {
 } from "./builtins/web-streams-dyn.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
+import { finalizeGeneratorArrays } from "./generator-arrays.js";
 import { iterableSlotValue } from "./iterable-values.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
@@ -868,6 +869,7 @@ import {
   rejectThisInObjectMethod,
 } from "./expressions/object-literals.js";
 import type { ExpandoMembers } from "./lower-expando.js";
+import { funduleMemberOf, type FunduleMember } from "./lower-fundule.js";
 import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
@@ -1335,6 +1337,10 @@ export interface DegradedType {
   /** The type maps exactly from its canonical form (stage N2): its slots
    * are static. */
   canonical?: true;
+  /** The type's canonical form maps but for an array of generators, which
+   * has no array storage: the slot that failed first and the type as
+   * written (generator-arrays.ts). */
+  generatorArray?: { loc: SrcLoc; type: string };
 }
 
 /** The Lowerer's pass configuration (see lowerToIr). */
@@ -4679,6 +4685,15 @@ export class Lowerer {
    * still resolved statically). Ambient blocks never register — their
    * members keep the ReferenceError/fence paths (lower-namespaces.ts). */
   readonly nsBlocks = new Map<ts.Node, "flattened" | "typeOnly">();
+  /** Exported members of function+namespace merges, by member symbol: their
+   * storage is the merged function's own-property table, not a module
+   * global (lower-fundule.ts). Filled by splitFiles. */
+  readonly funduleMembers = new Map<ts.Symbol, FunduleMember>();
+  /** File → the exported FUNCTION members of its merged namespace blocks,
+   * whose property assignment runs at the declaration's source position
+   * (`fmt.helper = helper`) — lowerFileInit's init body interleaves them
+   * by position (lower-fundule.ts). */
+  readonly funduleFnStores = new Map<ts.SourceFile, ts.FunctionDeclaration[]>();
   /** File → its %init function name, filled by prepareModuleInits before
    * any body lowers: import headers and inline require statements call
    * dependency inits by these names. */
@@ -5428,6 +5443,8 @@ export class Lowerer {
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
+      checkedTable("funduleMembers", () => this.funduleMembers.size),
+      checkedTable("funduleFnStores", () => this.funduleFnStores.size),
       checkedTable("initNameOf", () => this.initNameOf.size),
       checkedTable("cjsModuleIdOf", () => this.cjsModuleIdOf.size),
       checkedTable("cjsModuleFiles", () => this.cjsModuleFiles.length),
@@ -8340,6 +8357,19 @@ export class Lowerer {
     if (local) return local;
     const g = this.globalOf(ident);
     if (g) return g;
+    // A BARE write to an exported member of a function+namespace merge
+    // (lower-fundule.ts): Node's transform qualifies the reference, so it
+    // is a property write on the function object — which this compiler
+    // models through the qualified spelling.
+    const merged = funduleMemberOf(this, this.resolveValueSymbol(ident));
+    if (merged !== null) {
+      this.unsupported(
+        "SC1090",
+        ident,
+        `assignment to '${ident.text}' by its bare name inside the function+namespace merge '${merged.fn.text}'`,
+        `the member is a property of the function object; write ${merged.fn.text}.${ident.text}`,
+      );
+    }
     return null;
   }
 
@@ -12639,6 +12669,7 @@ export class Lowerer {
     // instance from the record is refused while a module can still fail.
     refuseObservedClassCopies(this, functions);
     finalizeRecordLinks(this, functions);
+    finalizeGeneratorArrays(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
     if (!library) installBuiltinStatics(this, functions);
@@ -14350,7 +14381,7 @@ export class Lowerer {
       this.diags.splice(i, 1);
     }
     if (committed === undefined) return null;
-    this.degradeType(type, committed.code, committed.message);
+    this.degradeType(type, committed.code, committed.message, committed.loc);
     const canonical = this.isCanonicalDegraded(id);
     const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
     return {
@@ -14501,43 +14532,79 @@ export class Lowerer {
   /** Degrades a type for a commit point: its lenient (pushed-down) form
    * first; a type already degraded that still fails falls back to the
    * whole-slot checked dynamic. False when nothing is left to degrade. */
-  private degradeType(type: ts.Type, code: string, reason: string): boolean {
+  private degradeType(type: ts.Type, code: string, reason: string, loc: SrcLoc): boolean {
     const id = (type as { id?: number }).id;
     if (id === undefined) return false;
     const known = this.degradedTypes.get(id);
     if (known !== undefined) {
       if (known.lenient?.kind === "dyn") return false;
-      this.degradedTypes.set(id, { lenient: DYN, code, reason });
+      this.degradedTypes.set(id, {
+        lenient: DYN,
+        code,
+        reason,
+        ...(known.generatorArray ? { generatorArray: known.generatorArray } : {}),
+      });
       return true;
     }
     // Canonical normalization (stage N2): a type the per-form rules miss
     // maps exactly from its canonical form when that form maps; no dynamic
     // slot then. Otherwise the lenient (pushed-down) form.
-    const canonical = this.canonicalType(type);
+    const notes: CanonMapNotes = { collapsedToDynamic: false };
+    const mapped = this.canonicalType(type, notes);
+    // A form that maps but for an array of generators: the array has no
+    // storage, so the slot takes the lenient form, where the array is a
+    // checked-dynamic value. A build with a Node island keeps the array
+    // type instead, and with it every refusal of its uses
+    // (generator-arrays.ts).
+    const generatorArray =
+      mapped !== null && notes.generatorArray === true
+        ? { generatorArray: { loc, type: this.checker.typeToString(type) } }
+        : {};
+    const canonical =
+      generatorArray.generatorArray !== undefined && !this.hasNodeIslands() ? null : mapped;
     if (canonical !== null) {
-      this.degradedTypes.set(id, { lenient: canonical, code, reason, canonical: true });
+      this.degradedTypes.set(id, {
+        lenient: canonical,
+        code,
+        reason,
+        canonical: true,
+        ...generatorArray,
+      });
       return true;
     }
     this.degradedTypes.set(id, {
       lenient: this.wholeSlotDegradation ? DYN : this.lenientType(type),
       code,
       reason,
+      ...generatorArray,
     });
     return true;
+  }
+
+  /** Whether the build runs a package or a module in a Node island, so
+   * that a value of the program can cross into one. */
+  hasNodeIslands(): boolean {
+    const islands = this.nodeIslands;
+    return islands !== null && (islands.packages.size > 0 || islands.modules.size > 0);
   }
 
   /** The IR type of a type's canonical form (canon-map.ts), or null when
    * the form is irreducible, unbound, only the checked dynamic, or holds a
    * union that mapped to the checked dynamic (such a slot is dynamic in
    * part, so it degrades like any other). Runs only at localized failure's
-   * commit points, so a program that compiles today never consults it. */
-  canonicalType(type: ts.Type): IrType | null {
+   * commit points, so a program that compiles today never consults it. An
+   * array of generators in the form maps to an array type without storage
+   * and is noted in `notes`: degradeType decides what the slot becomes. */
+  canonicalType(
+    type: ts.Type,
+    notes: CanonMapNotes = { collapsedToDynamic: false },
+  ): IrType | null {
     try {
       const resolve = this.typeCtx.resolveTypeParamTs;
       const c = new Normalizer(this.checker).canon(type, resolve ? (t) => resolve(t) : new Map());
       if (c.k === "opaque" || c.k === "param") return null;
       const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
-      const notes: CanonMapNotes = { collapsedToDynamic: false };
+      notes.generatorArraysMap = true;
       const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false }, 0, notes);
       if (notes.collapsedToDynamic) return null;
       return mapped === null || mapped.kind === "void" || mapped.kind === "dyn" ? null : mapped;
@@ -15930,37 +15997,22 @@ export class Lowerer {
     );
   }
 
-  /** Unwraps a HYBRID (function-with-properties) record to its callable:
-   * a record whose shape carries the reserved `%call` func field reads
-   * that field; anything else returns unchanged. The consumer half of
-   * type-mapper.ts's chalk-shape mapping — call paths and func-slot coercions
-   * share it. */
+  /** Unwraps a callable CLASS instance to its callable: a class whose
+   * merged interface carries a call signature stores its call behavior in
+   * a `%call` field (the chalk package shim's builder), so calls read the
+   * field. Every other value returns unchanged — a function with
+   * properties IS the function (callable-properties.ts), never a record
+   * carrying the callable in a field. */
   hybridCallUnwrap(expr: IrExpr): IrExpr {
-    // A callable CLASS instance: a class whose merged interface carries a
-    // call signature stores its call behavior in a `%call` field (the
-    // chalk package shim's builder). Calls read the field.
-    if (expr.type.kind === "object") {
-      const callType = this.classes.get(expr.type.className)?.fields.get("%call");
-      if (callType === undefined || callType.kind !== "func") return expr;
-      return {
-        kind: "fieldGet",
-        obj: expr,
-        className: expr.type.className,
-        field: "%call",
-        type: callType,
-        loc: expr.loc,
-      };
-    }
-    if (expr.type.kind !== "record") return expr;
-    const shape = this.shapes.get(expr.type.shapeId);
-    const call = shape?.fields.find((f) => f.name === "%call");
-    if (!call || call.type.kind !== "func") return expr;
+    if (expr.type.kind !== "object") return expr;
+    const callType = this.classes.get(expr.type.className)?.fields.get("%call");
+    if (callType === undefined || callType.kind !== "func") return expr;
     return {
-      kind: "recordGet",
+      kind: "fieldGet",
       obj: expr,
-      shapeId: expr.type.shapeId,
+      className: expr.type.className,
       field: "%call",
-      type: call.type,
+      type: callType,
       loc: expr.loc,
     };
   }
@@ -16342,18 +16394,16 @@ export class Lowerer {
       }
       return expr;
     }
-    // A HYBRID (function-with-properties) record flowing into a plain
-    // func slot extracts its reserved %call field — the chalk shape's
-    // "the value IS callable" half (type-mapper.ts's hybrid mapping).
-    if (expected.kind === "func" && (expr.type.kind === "record" || expr.type.kind === "object")) {
+    // A callable CLASS instance (the chalk shim's variadic builder) flowing
+    // into a plain func slot extracts its reserved %call field; a function
+    // with properties is already the function and needs no extraction.
+    if (expected.kind === "func" && expr.type.kind === "object") {
       const un = this.hybridCallUnwrap(expr);
       if (un !== expr && typeEquals(un.type, expected)) return un;
-      // A callable class instance (the chalk shim's variadic builder) in a
-      // narrower function slot: its call closure crosses the checked
-      // function boundary, which adapts the arity.
+      // ... in a narrower function slot: its call closure crosses the
+      // checked function boundary, which adapts the arity.
       if (
         un !== expr &&
-        expr.type.kind === "object" &&
         un.type.kind === "func" &&
         canBoxFuncIntoDyn(
           un.type,
@@ -18851,9 +18901,10 @@ export class Lowerer {
                   code: prior.code,
                   reason: prior.reason,
                   ...(prior.canonical === true ? { canonical: true as const } : {}),
+                  ...(prior.generatorArray ? { generatorArray: prior.generatorArray } : {}),
                 },
         });
-        this.degradeType(type, diag.code, diag.message);
+        this.degradeType(type, diag.code, diag.message, diag.loc);
         const canonical = this.isCanonicalDegraded(id);
         const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
         slots.push({

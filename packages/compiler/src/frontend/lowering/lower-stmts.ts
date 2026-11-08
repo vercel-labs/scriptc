@@ -6276,6 +6276,22 @@ export function bindPatternTarget(
       : (lowerer.runtimeOptionalBindingType(name, lowerer.irTypeOf(name)) ??
         lowerer.irTypeOf(name));
     if (type.kind === "void") lowerer.badType(name, lowerer.typeOf(name));
+    // Inside a generic instance the checker types a pattern's names from
+    // the DECLARED source type, which still mentions the type parameters,
+    // while the value comes from the instance's own parameter: the record
+    // the call's resolved signature gave. A member the declared type only
+    // holds through a type parameter (a mapped type over a template of it)
+    // is missing from the mapped declared type and present in the value.
+    // The binding is the value's record then: a copy into the narrower one
+    // would answer undefined for a member the object holds.
+    if (
+      lowerer.typeParamBindings !== null &&
+      type.kind === "record" &&
+      value.type.kind === "record" &&
+      value.type.shapeId !== type.shapeId &&
+      refinesDeclaredRecord(lowerer, value.type, type)
+    )
+      type = value.type;
     // Array destructuring positions are ordinary indexed reads. When the
     // checker was built without noUncheckedIndexedAccess it still spells
     // the binding as the bare element type, but the runtime value carries
@@ -6318,6 +6334,28 @@ export function bindPatternTarget(
     undefined,
     allowDynObject,
   );
+}
+
+/** Whether record `stored` holds every field of record `declared` at the
+ * same type and more fields besides, both plain records (no tuple, no
+ * index signature): reads and writes of the declared members mean the same
+ * on either, so a binding may be the stored one. */
+function refinesDeclaredRecord(
+  lowerer: Lowerer,
+  stored: IrType & { kind: "record" },
+  declared: IrType & { kind: "record" },
+): boolean {
+  const have = lowerer.shapes.get(stored.shapeId);
+  const want = lowerer.shapes.get(declared.shapeId);
+  if (!have || !want || have.tuple || want.tuple) return false;
+  if (have.indexValue !== undefined || want.indexValue !== undefined) return false;
+  if (have.fields.length <= want.fields.length) return false;
+  return want.fields.every((field) => {
+    const held = have.fields.find((f) => f.name === field.name);
+    return (
+      held !== undefined && typeEquals(held.type, field.type) && held.optional === field.optional
+    );
+  });
 }
 
 /** For-loop initializers evaluate declarators from left to right. The LLVM
@@ -7836,6 +7874,23 @@ export function lowerVarDecl(
   if (!isLet && assertionKeepsStorageLayout(lowerer, decl, init.type, settledType)) {
     settledType = init.type;
     notePreservedLayout(lowerer, decl);
+  }
+  // Inside a generic instance an unannotated `const` read from the
+  // instance's own values (`const row = reading.row`) is the value's record
+  // where that record holds the declared one and more: the checker's type
+  // for the name still mentions the type parameters, and the members only a
+  // type parameter names are missing from it (bindPatternTarget has the
+  // same rule for the names of a pattern).
+  if (
+    !isLet &&
+    decl.type === undefined &&
+    lowerer.typeParamBindings !== null &&
+    settledType.kind === "record" &&
+    init.type.kind === "record" &&
+    init.type.shapeId !== settledType.shapeId &&
+    refinesDeclaredRecord(lowerer, init.type, settledType)
+  ) {
+    settledType = init.type;
   }
   // An exact class behind a generic interface keeps its native
   // representation so generic calls can specialize against its body.

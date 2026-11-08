@@ -244,8 +244,17 @@ export function lowerChildMethodCall(
     }
     const param = listenerParams[0];
     if (event === "exit" || event === "close") {
+      // A function value that declares the exit code as `number` (a held
+      // listener: an inline one binds its narrowed parameters as
+      // checked-dynamic values above) keeps its type. The checker accepts
+      // it through the catch-all `on` overload; Node passes null when a
+      // signal ended the child, and the registration's adapter then throws
+      // a TypeError instead of calling the function with a number it does
+      // not have. The closure itself is what registers, so
+      // `removeListener` finds it by identity.
       const armsOk =
         param === undefined ||
+        param.kind === "f64" ||
         (param.kind === "union" &&
           (() => {
             const def = lowerer.unions.get(param.unionId);
@@ -257,7 +266,7 @@ export function lowerChildMethodCall(
         lowerer.unsupported(
           "SC1090",
           call.arguments.nodes[1]!,
-          `${event} listeners whose parameter is not 'number | null' (got '${lowerer.fmt(param!)}')`,
+          `${event} listeners whose parameter is not 'number | null' or 'number' (got '${lowerer.fmt(param!)}')`,
         );
       }
       // The optional SECOND parameter is Node's signal: the terminating

@@ -50,6 +50,7 @@ import {
   recordTextCodecClass,
   shapeKeyOrders,
   typeKey,
+  canBoxFuncIntoDyn,
 } from "../../ir/ir.js";
 import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
@@ -1353,7 +1354,16 @@ function inspectSupport(
       return null;
     }
     case "func":
-      return "function values have no inspect lowering (no runtime name exists — Node prints '[Function: name]'; pass the function's declared identifier directly to util.inspect for the baked form)";
+      // A function value prints through its checked-dynamic box, which
+      // names it from the function itself (`[Function: name]`, `[Function
+      // (anonymous)]`) wherever it sits in the printed value.
+      return canBoxFuncIntoDyn(
+        t,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+        ? null
+        : "function values of this signature have no inspect lowering (a parameter or result type has no checked-dynamic form to box the function with; pass the function's declared identifier directly to util.inspect for the baked form)";
     case "object": {
       const info = lowerer.classes.get(t.className);
       if (!info) return `class '${t.className}' has no inspect lowering`;
@@ -1410,6 +1420,26 @@ function inspectSupport(
       }
       visiting.delete(t.className);
       return null;
+    }
+    // A class value prints through its checked-dynamic form: `[class C]`,
+    // `[class D extends C]` for whichever class the slot holds. Static
+    // fields print after the tag in Node, which that form does not hold
+    // (the runtime refuses it there): a class that has them, or a subclass
+    // that does, keeps the refusal here.
+    case "classval": {
+      const info = lowerer.classes.get(t.className);
+      // A runtime-provided class (EventEmitter, a stream class) has no
+      // checked-dynamic value in typed code.
+      if (!info || info.def.runtime || !lowerer.dynConvertible(t))
+        return `'${lowerer.fmt(t)}' values have no inspect lowering`;
+      const family = (current: ClassInfo): ClassInfo[] => [
+        current,
+        ...current.subclasses.flatMap(family),
+      ];
+      const withStatics = family(info).find((member) => member.staticFields.length > 0);
+      return withStatics
+        ? `'${lowerer.fmt(t)}' values have no inspect lowering (class '${withStatics.def.name}' has static fields, which Node prints after the class tag)`
+        : null;
     }
     // Generator objects print through their checked capsule: Node's
     // `Object [Generator] {}`, or the tag of the iterator they implement.
@@ -1631,6 +1661,25 @@ function inspectExprBody(
       };
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
+    // A function value held in a typed slot (a union arm, a tuple position,
+    // a record member): its box has no static name, so the runtime names it
+    // from the function it is (inspectSupport admitted the signature).
+    case "func":
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [{ kind: "dynFrom", value, type: DYN, loc }, recurse, depth],
+        type: STRING,
+        loc,
+      };
+    case "classval":
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [lowerer.coerceToExpected(value, DYN), recurse, depth],
+        type: STRING,
+        loc,
+      };
     // URLs and URLSearchParams render through their checked-dynamic
     // handles: Node's `URL { href: ..., hash: ... }` and
     // `URLSearchParams { 'a' => '1' }`.
@@ -4600,6 +4649,16 @@ function formatSValue(
       loc,
     };
   }
+  // %s of a function or a class is String(fn), its source text, which a
+  // compiled program does not carry: such a value, alone or as an arm,
+  // keeps the refusal (inside a record or an array it inspects as a member).
+  const callable = (arm: IrType): boolean => arm.kind === "func" || arm.kind === "classval";
+  if (callable(t) || (t.kind === "union" && lowerer.unions.get(t.unionId)?.arms.some(callable)))
+    lowerer.noLowering(
+      `util.format %s of '${lowerer.fmt(t)}' values`,
+      node,
+      "Node prints a function's or a class's source text for %s (String(fn)); pass util.inspect(value) for the '[Function: name]' form",
+    );
   // A UNION argument dispatches per arm at runtime: a string arm prints
   // VERBATIM (typeof arg === 'string' in Node's formatter — inspect's
   // quoting never applies at the top level), every other arm inspects.

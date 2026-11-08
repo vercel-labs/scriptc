@@ -1,8 +1,8 @@
 scriptc coverage tests/coverage-fixtures/node-islands-untracked-store/main.ts
 
-  statements analyzed   25
-  compile statically    25  (100%)
-    in dynamic tier     19  (operate on values typed only at runtime; --explain-dynamic lists them)
+  statements analyzed   23
+  compile statically    23  (100%)
+    in dynamic tier     17  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     store-kit  static

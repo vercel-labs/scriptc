@@ -6758,6 +6758,12 @@ function validateFunction(
           err("newPromise executor must be (resolve?, reject?) => void", e.loc);
           break;
         }
+        if (e.resolves === true && (inner.kind !== "dyn" || exec.params.length === 0)) {
+          err(
+            "newPromise resolves only a checked-dynamic value, through a resolve function",
+            e.loc,
+          );
+        }
         if (exec.params.length === 2) {
           // The reject closure's shapes: (reason: %Error) => void, and the
           // checked-dynamic promise's (reason: dyn) => void.

@@ -155,6 +155,60 @@ export interface TiersEnvelope {
   };
 }
 
+export interface TypeClaimDeclarationEnvelope {
+  package: string;
+  version: string;
+  name: string;
+  /** The `scriptc types patch` selector; absent when the declaration has
+   * none (a generic declaration). */
+  selector?: string;
+  /** `<file in the package>:<line>`. */
+  at: string;
+  declaredType: string;
+}
+
+/** One group of type claims: a package declaration, a parsed type, an
+ * untyped binding or a compiled package, with every checked conversion
+ * that trusts it. */
+export interface TypeClaimEnvelope {
+  /** What makes the claims: a Node island's values (`island`), a package
+   * declaration the program's code receives a value under (`declared`),
+   * the type the program gives parsed data (`parsed`), an untyped binding
+   * (`untyped`), or a package compiled from its JavaScript, whose
+   * conversions check it against its own declarations (`package`). */
+  kind: "island" | "declared" | "parsed" | "untyped" | "package";
+  /** The claiming package declaration, for `island` and `declared`. */
+  declaration?: TypeClaimDeclarationEnvelope;
+  /** The untyped binding the values are read from, for `untyped`. */
+  binding?: SourcePosition & { name: string };
+  /** `package`: the compiled package, and the declarations of its own
+   * that its conversions trust, most trusted first. `declared` without a
+   * `declaration`: the compiled package whose code produced the values. */
+  package?: { name: string; version: string };
+  declarations?: (TypeClaimDeclarationEnvelope & { count: number })[];
+  /** `island`: how many of the sites are functions the island calls,
+   * whose arguments are checked against the declared parameter types. */
+  callbacks?: number;
+  /** `untyped`: how many of the sites are type assertions over a value
+   * the program holds dynamically. */
+  asserted?: number;
+  /** `island`: how many of the sites convert to a type no object the
+   * island made converts to (a Date, a RegExp, a Node handle, a compiled
+   * class); they throw whenever they run, unless the value is one the
+   * program passed into the island. */
+  nativeOnly?: number;
+  /** The sites inside a `try` whose handler neither reads the error nor
+   * throws: a failed claim leaves no trace there, where Node.js keeps the
+   * value. */
+  swallowed?: SourcePosition[];
+  /** The types the conversions check for, most frequent first. */
+  claimed: string[];
+  count: number;
+  sites: SourcePosition[];
+  /** What would make the group safe. */
+  fix: string;
+}
+
 export interface DiagnosticsEnvelope {
   schema: typeof DIAGNOSTICS_SCHEMA;
   schemaVersion: typeof DIAGNOSTICS_SCHEMA_VERSION;
@@ -197,6 +251,10 @@ export interface DiagnosticsEnvelope {
     partial?: boolean;
     dynamicOps: number;
   })[];
+  /** coverage only, when there are any: the checked conversions that
+   * trust a type no build can verify, grouped by what makes the claim and
+   * ranked by reach (diagnostics/type-claims.ts). */
+  typeClaims?: TypeClaimEnvelope[];
   /** coverage --explain-dynamic only: the report-only tier assignment. */
   tiers?: TiersEnvelope;
   /** coverage only: the WebAssembly modules the build can see, with their

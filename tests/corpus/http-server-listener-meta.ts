@@ -115,9 +115,20 @@ server.listen(0, () => {
             });
             cycle.listen(0, "127.0.0.1", () => {
               console.log("cycle listening");
-              cycle.close(() => {
-                console.log("cycle closed", cycle.listening);
+              // The same cycle on a server whose listen fails: the failed
+              // listen drops the list as well.
+              const failed = http.createServer();
+              const failedStates: boolean[] = [];
+              failed.on("newListener", () => {
+                failedStates.push(failed.listening);
               });
+              failed.on("error", (err: Error) => {
+                console.log("failed listen", (err as NodeJS.ErrnoException).code, failedStates.length);
+                cycle.close(() => {
+                  console.log("cycle closed", cycle.listening);
+                });
+              });
+              failed.listen((cycle.address() as AddressInfo).port, "127.0.0.1");
             });
           });
         });

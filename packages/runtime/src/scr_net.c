@@ -6378,6 +6378,7 @@ static void scr_net_sweep(void) {
         scr_net_ls_drop(&srv->close_ls);
         scr_net_ls_drop(&srv->listening_cbs);
         scr_net_ls_drop(&srv->timeout_ls);
+        scr_net_ls_drop(&srv->new_listener_ls);
         scr_net_server_unregister(srv);
       }
       if (scr_exc_pending()) {

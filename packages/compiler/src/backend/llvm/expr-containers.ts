@@ -897,6 +897,8 @@ export function emitArrIntrinsic(
         host.declare(`declare void @scr_dyn_foreign_throw(ptr, ptr)`);
         const want = host.cstr(dynDesc(e.type, host.recordsById, host.unionsById));
         B.line(`call void @scr_dyn_foreign_throw(ptr ${payload}, ptr ${want})`);
+        // The element's deferred checked conversion: a dev build reports it.
+        host.conversionTraceAt(e.loc)?.();
         host.emitAlwaysPendingUnwind();
         B.br(la);
       }

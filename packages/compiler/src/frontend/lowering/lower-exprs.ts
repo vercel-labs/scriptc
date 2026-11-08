@@ -81,6 +81,7 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
+import { isCompilerCrash, noteCrashSite } from "../../diagnostics/crash-site.js";
 import { lowerHelperReturnCall } from "./containers/iterator-helpers.js";
 import {
   lowerSafeIndexRead,
@@ -385,6 +386,12 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
     if (outermost) refuseSpentLowering(lowerer);
     return lowered;
+  } catch (e) {
+    // An internal error or a checker panic on its way out: the innermost
+    // expression being lowered is where the diagnostic belongs
+    // (diagnostics/crash-site.ts). A poison passes untouched.
+    if (!(e instanceof PoisonError) && isCompilerCrash(e)) noteCrashSite(e, () => locOf(expr));
+    throw e;
   } finally {
     lowerExprDepth--;
     lowerer.closeOperandFrame(operands);

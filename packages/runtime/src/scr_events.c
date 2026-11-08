@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <sys/stat.h>
 #ifdef _WIN32
 /* The Windows arm: CRT signal() stands in for sigaction (msvcrt routes
  * Ctrl-C/Ctrl-Break through its own SetConsoleCtrlHandler onto a separate
@@ -927,6 +928,24 @@ void scr_stdin_view_open(const ScrStdinView *view) {
     scr_stdin_view_refuse_iteration(p);
     scr_promise_release(p);
   }
+}
+
+/* Whether descriptor 0 is what Node reads as a file: a regular file, a
+ * device that is no terminal (/dev/null among them), or a closed
+ * descriptor, where Node opens /dev/null. Node's file stream does not read
+ * again at the end of the input; its pipes, sockets and terminals do. */
+bool scr_stdin_from_file(void) {
+  if (scr_stdin_fed) return false;
+#ifdef _WIN32
+  HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+  if (h == NULL || h == INVALID_HANDLE_VALUE) return true;
+  DWORD type = GetFileType(h), mode = 0;
+  return type == FILE_TYPE_DISK || (type == FILE_TYPE_CHAR && !GetConsoleMode(h, &mode));
+#else
+  struct stat st;
+  if (fstat(0, &st) != 0) return true;
+  return S_ISREG(st.st_mode) || (S_ISCHR(st.st_mode) && !isatty(0));
+#endif
 }
 
 /* The stream's _read: it wants the next input, flowing or not. */

@@ -38,12 +38,36 @@ static SCR_TL ScrStream *scr_stream_stdin = NULL; /* +1 until exit */
 static SCR_TL bool scr_stream_stdin_fed = false;      /* the error listener is registered with the unit */
 static SCR_TL bool scr_stream_stdin_readable = false; /* this stream's 'readable' reaches the unit's listeners */
 
+/* One listener of this stream for an event without arguments. */
+static void scr_stream_stdin_follow(ScrStream *s, const char *event, void (*fn)(ScrClosure *)) {
+  ScrStr *name = scr_str_new(event, strlen(event));
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, scr_closure_new((void *)fn, 0),
+                                     scr_ee_inv_fixed0, false, false));
+  scr_str_release(name);
+}
+
+/* resume() after a file's input ended unread: Node's resume reads once
+ * (read(0)), which ends a stream that holds nothing, flowing or not. */
+static void scr_stream_stdin_on_resume(ScrClosure *cb) {
+  (void)cb;
+  if (scr_stream_stdin != NULL) scr_stream_read_zero(scr_stream_stdin);
+}
+
 /* A pull's answer from the unit: the next input, or NULL at its end. */
 static void scr_stream_stdin_chunk(ScrBytes *chunk) {
   ScrStream *s = scr_stream_stdin;
   if (s == NULL) return;
   if (chunk == NULL) {
-    (void)scr_stream_push_null(s);
+    if (!scr_stdin_from_file()) {
+      (void)scr_stream_push_null(s);
+      return;
+    }
+    /* Input from a file: Node reads it through a file stream, which does
+     * not read again at the end. A paused stream with nothing held then
+     * emits 'readable' and ends at the next read, where a pipe's stream
+     * ends at once. */
+    (void)scr_stream_push_null_unread(s);
+    scr_stream_stdin_follow(s, "resume", scr_stream_stdin_on_resume);
     return;
   }
   /* Node's stdin yields Buffers; the unit marks the chunks of its own
@@ -98,15 +122,8 @@ static void scr_stream_stdin_destroy(ScrClosure *cb, ScrStream *s, ScrError *err
   scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
 }
 
-/* One listener of this stream that carries an event without arguments to
- * the listeners registered through the process.stdin name. */
-static void scr_stream_stdin_follow(ScrStream *s, const char *event, void (*fn)(ScrClosure *)) {
-  ScrStr *name = scr_str_new(event, strlen(event));
-  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, scr_closure_new((void *)fn, 0),
-                                     scr_ee_inv_fixed0, false, false));
-  scr_str_release(name);
-}
-
+/* The stream's 'end' and 'readable' reach the listeners registered through
+ * the process.stdin name. */
 static void scr_stream_stdin_on_end(ScrClosure *cb) {
   (void)cb;
   scr_stdin_view_end();

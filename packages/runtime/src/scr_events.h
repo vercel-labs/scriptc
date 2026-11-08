@@ -100,6 +100,7 @@ bool scr_stdin_pull_cancel(void); /* the stream was paused; true when a pull was
 void scr_stdin_view_readable(void);
 void scr_stdin_view_end(void);
 bool scr_stdin_has_readable_listener(void); /* registered through the process.stdin name */
+bool scr_stdin_from_file(void); /* descriptor 0 is what Node reads as a file, not a pipe or a terminal */
 
 /* Process events island code listens to (the bridge's SCR_NODE_EVENT_* ABI).
  * Their listeners sit in this unit's registries at their registration

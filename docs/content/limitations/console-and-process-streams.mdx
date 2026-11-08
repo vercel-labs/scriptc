@@ -56,7 +56,6 @@ A paused stream still answers `read()`, async iteration and a `'readable'` liste
 A `'data'` listener registered on `process.stdin` receives each chunk when the stream takes it from the input, which for a stream read in paused mode can be earlier than Node emits it and in other pieces.
 `for await` over `process.stdin` in a program that also passes `process.stdin` as a `Readable` throws a TypeError with code `SC2020` at its first step: iterate the `Readable` instead.
 Piping that `Readable` while `process.stdin` has a `'readable'` listener throws a TypeError with code `SC2020`, because in Node the listener keeps the stream paused.
-With a `'readable'` listener that never reads, input redirected from an empty file still ends the stream, as an empty pipe does in Node.
 A process stream held as an untyped value does not convert to a stream class: asserting or passing it as `Readable` or `Writable` throws a TypeError.
 Passing `process.stdin` where `Duplex` or `EventEmitter` is declared throws the same TypeError.
 The bundled declarations declare `process.stdin` by its own members, so these conversions need `@types/node`.

@@ -183,3 +183,32 @@ test("stdin as a Readable: a closed descriptor 0 is an input that ends at once",
   );
   expect(result.code).toBe(0);
 });
+
+// Node reads a file through a stream that does not read again at the end
+// of the input, and a pipe through one that does. Under a 'readable'
+// listener that never reads, an empty pipe therefore ends the stream at
+// once and an empty file ends it at the next read. The expected lines are
+// Node's for each input (the closed descriptor is /dev/null there).
+test.for([
+  ["an empty file", '"$0" < /dev/null', "after 'readable': ended false\nend\nexit\n"],
+  ["a closed descriptor 0", 'exec "$0" <&-', "after 'readable': ended false\nend\nexit\n"],
+  ["an empty pipe", ': | "$0"', "end\nafter 'readable': ended true\nexit\n"],
+] as const)(
+  "stdin as a Readable: %s ends the stream as Node's stream for it does",
+  async ([, command, expected]) => {
+    const binary = await compileFixture("../node-types/stdin-readable-unread-end.ts");
+    const result = await new Promise<{ stdout: string; code: number }>((resolve) => {
+      execFile(
+        "sh",
+        ["-c", command, binary],
+        { encoding: "utf8", timeout: 20_000 },
+        (err, stdout) => {
+          const e = err as { code?: unknown } | null;
+          resolve({ stdout, code: e ? (typeof e.code === "number" ? e.code : -1) : 0 });
+        },
+      );
+    });
+    expect(result.stdout).toBe(expected);
+    expect(result.code).toBe(0);
+  },
+);

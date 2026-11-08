@@ -962,17 +962,25 @@ function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrEx
     // reaches it through the island (it passes it back, or calls it through
     // the bridge), so it stays the handle of that function.
     if (callableType(lowerer, tsType)) return raw;
+    // No native representation, and none is asked for.
+    if (onlyTested(lowerer, node) || untypedSlot(lowerer, node)) return raw;
     boundaryFail(
       lowerer,
       `an island value of type '${lowerer.checker.typeToString(tsType)}'`,
       node,
     );
   }
+  if (mapped.kind === "void") return raw;
+  // A test, a `typeof` or a comparison with a primitive reads nothing a
+  // conversion would produce: an object (or a union with an object arm)
+  // stays the island's value there, so no copy, adoption or member check
+  // runs for it. A primitive keeps its checked copy, so a test of a typed
+  // primitive compiles as it always has.
+  if (!copiedType(lowerer, mapped) && onlyTested(lowerer, node)) return raw;
   if (mapped.kind === "dyn") {
     refuseUnreceivableMember(lowerer, tsType, node);
     return raw;
   }
-  if (mapped.kind === "void") return raw;
   // An island promise is the same promise on both sides (the runtime keeps
   // one ScrPromise per V8 promise): PromiseResolve of the dyn value, whose
   // settlement value meets the declared type when it is awaited.
@@ -1049,6 +1057,87 @@ function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrEx
       node,
     );
   return lowerer.coerceToExpected(raw, mapped);
+}
+
+/** Whether the program only tests the island value at `node`: its
+ * truthiness (a condition, the operand of `!`, an operand of `&&` or `||`
+ * that is itself only tested), its `typeof`, or its strict equality with a
+ * primitive. JavaScript answers each of those from the value the island
+ * handed out, whatever its declarations say, and none looks inside the
+ * value, so it stays the island's and no conversion runs: a type with no
+ * native representation, or one whose conversion is a copy or a member
+ * check, is no obstacle to a test. Every other use meets the declared type. */
+function onlyTested(lowerer: Lowerer, node: ts.Expression): boolean {
+  let n: ts.Node = node;
+  for (;;) {
+    const p = n.parent;
+    if (p === undefined) return false;
+    if (ts.isParenthesizedExpression(p) || ts.isNonNullExpression(p)) {
+      n = p;
+      continue;
+    }
+    if (ts.isPrefixUnaryExpression(p)) return p.operator === ts.SyntaxKind.ExclamationToken;
+    if (ts.isTypeOfExpression(p)) return true;
+    if (ts.isIfStatement(p) || ts.isWhileStatement(p) || ts.isDoStatement(p))
+      return p.expression === n;
+    if (ts.isForStatement(p)) return p.condition === n;
+    if (ts.isConditionalExpression(p)) return p.condition === n;
+    if (ts.isBinaryExpression(p)) {
+      const op = p.operatorToken.kind;
+      if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {
+        n = p;
+        continue;
+      }
+      if (
+        op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+      )
+        return primitiveOperand(lowerer, p.left === n ? p.right : p.left);
+      return false;
+    }
+    return false;
+  }
+}
+
+/** Whether the island value at `node` goes into an untyped slot: the type
+ * an assertion gives it (`v as unknown`; `v as unknown as T` is a `T`),
+ * else the context's, is `unknown` or `any`. Untyped code takes the
+ * island's value as it is. */
+function untypedSlot(lowerer: Lowerer, node: ts.Expression): boolean {
+  let outer: ts.Node = node;
+  let asserted = false;
+  for (;;) {
+    const p = outer.parent;
+    if (p === undefined) break;
+    if (ts.isAsExpression(p) || ts.isTypeAssertion(p)) asserted = true;
+    else if (
+      !ts.isParenthesizedExpression(p) &&
+      !ts.isNonNullExpression(p) &&
+      !ts.isSatisfiesExpression(p)
+    )
+      break;
+    outer = p;
+  }
+  const slot = asserted
+    ? lowerer.typeOf(outer as ts.Expression)
+    : lowerer.checker.getContextualType(outer as ts.Expression);
+  return slot !== undefined && (slot.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+}
+
+/** Whether every value of `node`'s type is a string, a number, a boolean,
+ * a bigint, null or undefined: strict equality with one compares by value
+ * and never looks inside the other operand. */
+function primitiveOperand(lowerer: Lowerer, node: ts.Expression): boolean {
+  const primitive =
+    ts.TypeFlags.StringLike |
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined;
+  const type = lowerer.typeOf(node);
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  return parts.every((part) => (part.flags & primitive) !== 0);
 }
 
 /** Refuses (SC8010) an island object received by the live view `type`
@@ -2331,7 +2420,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       // its elements wherever native code needs a native value, and the
       // checked conversion throws on an element of the wrong type. Every
       // other native use stays refused (the value is a handle).
-      const ok = handleUseOk(lowerer, expr);
+      const ok = handleUseOk(lowerer, expr) || onlyTested(lowerer, expr);
       const copy = ok ? null : copyableCrossing(lowerer, expr);
       if (!ok && copy === null)
         boundaryFail(

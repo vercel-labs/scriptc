@@ -430,8 +430,8 @@ export interface CjsExportEvaluations {
 export function cjsExportEvaluations(lowerer: Lowerer, dep: ts.SourceFile): CjsExportEvaluations {
   const found: CjsExportEvaluations = { requires: 0, repeats: false, imported: false };
   const names = (from: ts.SourceFile, spec: string, kind: "import" | "require"): boolean =>
-    (resolveImport(lowerer.program, from, spec, kind) ??
-      npmStaticDepSf7(lowerer.program, from, spec, kind)) === dep;
+    (lowerer.facts.importedModule(from, spec, kind) ??
+      lowerer.facts.npmStaticModule(from, spec, kind)) === dep;
   for (const sf of lowerer.program.getSourceFiles()) {
     if (sf.isDeclarationFile) continue;
     let here = 0;

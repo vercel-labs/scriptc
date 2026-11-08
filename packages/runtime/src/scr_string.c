@@ -1795,6 +1795,14 @@ static size_t scr_sidx_walk_from(const ScrStr *s, ScrSidx *e, size_t cu, size_t 
 
 static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, ScrSidx *e,
                                                              size_t u16, bool *mid) {
+  /* An index at or past a known length (the end of `s.slice(k)`, which is
+   * the length itself) is the byte length. Walking to it would index the
+   * whole string first: the rest of a text cut again and again paid one
+   * pass over that rest for every cut. An unknown length is SIZE_MAX. */
+  if (u16 >= e->u16len) {
+    *mid = false;
+    return s->len;
+  }
   if (scr_sidx_offsets(s, e)) {
     *mid = false;
     if (u16 >= e->offsets->n) return s->len;
@@ -2638,9 +2646,14 @@ static ScrStr *scr_str_slice_units(ScrStr *s, ScrSidx *e,
     ScrStr *result = scr_str_from_span(s->data + from_b, content_len);
     /* Unit boundaries already prove the exact output length. Preserve it
      * instead of decoding a potentially megabyte-sized copy on .length.
-     * Index checkpoints remain lazy and owned by the result's cache slot. */
-    if (content_len >= SCR_SIDX_MIN_BYTES && !result->ascii)
-      scr_sidx(result)->u16len = to - from;
+     * Index checkpoints remain lazy and owned by the result's cache slot;
+     * a result below the index's size keeps its length in the length
+     * table, so the next slice of it (the rest of a text, cut again) does
+     * not count it either. */
+    if (!result->ascii) {
+      if (content_len >= SCR_SIDX_MIN_BYTES) scr_sidx(result)->u16len = to - from;
+      else scr_str_note_utf16_len(result, to - from);
+    }
     return result;
   }
 

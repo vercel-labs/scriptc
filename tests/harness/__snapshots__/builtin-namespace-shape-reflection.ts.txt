@@ -28,6 +28,15 @@ builtin-namespace-shape-reflection.ts:19:17 - error SC1090: typeof a builtin mod
      |                 ^~~~~
   20 | }
 
+builtin-namespace-shape-reflection.ts:22:10 - error SC1100: passing 'unknown' values where 'module namespace 'builtin:fs'' is expected (a 'module namespace 'builtin:fs'' value is outside the checked conversion's domain) is not supported yet
+
+  21 | function load(): typeof NodeFs {
+  22 |   return require("fs");
+     |          ^~~~~~~~~~~~~
+  23 | }
+
+  hint: validate with 'as <type>' first — the cast checks the dynamic value at runtime and throws on mismatch
+
 builtin-namespace-shape-reflection.ts:29:3 - error SC2020: 'Object.keys over a builtin module namespace whose runtime shape is not known statically' is part of the standard library types but has no scriptc lowering yet
 
   28 |   describe({ ns: fs }),

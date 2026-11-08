@@ -42,8 +42,8 @@ console.log("assert", (narrowOf(plain) as Two)("abc", up), (narrowOf(plain) as T
 const kept = n as Two;
 console.log("assert", kept("abc", up), (kept as unknown) === (label as unknown));
 
-// Bound functions: a bound method, and a partial application whose
-// remaining optional parameter the wider call fills.
+// A bound method. (A partial application stored under a fixed signature and
+// then widened is a stored variadic function: refused by name, below.)
 class Maker {
   suffix = "!";
   make(prefix: string, options?: { upper: boolean }): string {
@@ -53,27 +53,12 @@ class Maker {
 const maker = new Maker();
 const bound: One = maker.make.bind(maker);
 const wideBound: Two = bound;
-function three(a: string, b: string, c?: string): string {
-  return a + b + (c ?? "?");
-}
-const partial: (b: string) => string = three.bind(null, "a");
-const widePartial: (b: string, c: string) => string = partial;
-console.log("bind", wideBound("abc", up), bound("abc"), widePartial("b", "c"), partial("b"));
+console.log("bind", wideBound("abc", up), bound("abc"));
 
-// A variadic function narrowed to no parameters and widened again: the
-// untyped one and the typed rest both see the argument of the final call.
-const variadic = (...args: any[]): any => {
-  console.log("variadic", args.length);
-};
-const zero: () => void = variadic;
-const one: (x: number) => void = zero;
-one(5);
-const text = (...parts: string[]): void => {
-  console.log("rest", parts.length, parts.join(","));
-};
-const none: () => void = text;
-const single: (part: string) => void = none;
-single("p");
+// (A rest or `arguments` function stored under a fixed signature and then
+// handed to a caller that passes more is refused by name, SC1090: the rule
+// of variadic-functions.ts, pinned by
+// tests/diagnostics/variadic-store-longer-call.ts.)
 
 // Writes through a dynamic call and through an assertion reach the
 // caller's own array and record.

@@ -58,21 +58,10 @@ registry.push((cb) => (cb as Two)("abc", up));
 registry.push((cb) => widen(cb)("xyz", up));
 console.log("callback", registry[0]!(label), registry[1]!(label), registry[0]!((p) => p + "."));
 
-// A rest parameter sees every argument of the final call.
-function count(...xs: number[]): number {
-  return xs.length;
-}
-function head(a: number, ...rest: number[]): string {
-  return a + "+" + rest.join(",");
-}
-function n1<R>(f: (a: number) => R): (a: number) => R {
-  return f;
-}
-function w3<R>(f: (a: number) => R): (a: number, b: number, c: number) => R {
-  return f;
-}
-console.log("rest", n1(count)(1), w3(n1(count))(1, 2, 3), w3(count)(1, 2, 3), count(1, 2));
-console.log("rest", n1(head)(1), w3(n1(head))(1, 2, 3), w3(head)(1, 2, 3));
+// (A rest or `arguments` function stored under a fixed signature and then
+// handed to a caller that passes more is refused by name, SC1090: the rule
+// of variadic-functions.ts, pinned by
+// tests/diagnostics/variadic-store-longer-call.ts.)
 
 // Defaults apply by what the final call passes: a value is used, an
 // undefined argument or a missing one takes the default.

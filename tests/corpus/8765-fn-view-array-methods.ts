@@ -62,14 +62,10 @@ console.log("flatMap", xs.flatMap(nd(dup)).join(" "));
 const mapped = n1(show);
 console.log("chain", xs.map(mapped).filter(isSecond).join(" "), xs.filter(isSecond).map(mapped).join(" "));
 
-// A rest parameter receives all three.
-function all(...parts: (string | number | string[])[]): number {
-  return parts.length;
-}
-function nn(f: (x: string) => number): (x: string) => number {
-  return f;
-}
-console.log("rest", xs.map(nn(all)).join(","));
+// (A rest or `arguments` function stored under a fixed signature and then
+// handed to a caller that passes more is refused by name, SC1090: the rule
+// of variadic-functions.ts, pinned by
+// tests/diagnostics/variadic-store-longer-call.ts.)
 
 // The callback's writes reach the array it is handed and a captured one.
 const log: number[] = [];

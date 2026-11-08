@@ -1,0 +1,35 @@
+child-ipc-channel-forms.ts:11:62 - error SC2020: 'fork with serialization: "advanced"' is part of the standard library types but has no scriptc lowering yet
+
+  10 | 
+  11 | fork(script, [], { execPath: "/usr/bin/node", serialization: "advanced" });
+     |                                                              ^~~~~~~~~~
+  12 | spawn("/usr/bin/node", [script], { stdio: ["ignore", "inherit", "ipc"] });
+
+  hint: the IPC channel supports Node's default serialization, "json"; "advanced" needs V8's serializer
+
+child-ipc-channel-forms.ts:12:65 - error SC2020: 'spawn with stdio "ipc"' is part of the standard library types but has no scriptc lowering yet
+
+  11 | fork(script, [], { execPath: "/usr/bin/node", serialization: "advanced" });
+  12 | spawn("/usr/bin/node", [script], { stdio: ["ignore", "inherit", "ipc"] });
+     |                                                                 ^~~~~
+  13 | spawn("/usr/bin/node", [script], { stdio: ["ignore", "inherit", "inherit", "ipc"], detached: true });
+
+  hint: "ignore", "inherit", "pipe", and number output fds are the supported stdio slots
+
+child-ipc-channel-forms.ts:13:76 - error SC2020: 'spawn with an "ipc" stdio entry with detached' is part of the standard library types but has no scriptc lowering yet
+
+  12 | spawn("/usr/bin/node", [script], { stdio: ["ignore", "inherit", "ipc"] });
+  13 | spawn("/usr/bin/node", [script], { stdio: ["ignore", "inherit", "inherit", "ipc"], detached: true });
+     |                                                                            ^~~~~
+  14 | fork(script);
+
+  hint: the IPC channel is lowered for [stdin, stdout, stderr, "ipc"] with "pipe", "ignore" or "inherit" slots, on POSIX targets
+
+child-ipc-channel-forms.ts:14:6 - error SC2020: 'fork with a runtime-valued module path' is part of the standard library types but has no scriptc lowering yet
+
+  13 | spawn("/usr/bin/node", [script], { stdio: ["ignore", "inherit", "inherit", "ipc"], detached: true });
+  14 | fork(script);
+     |      ^~~~~~
+  15 | 
+
+  hint: resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed, or name the executable that runs a script file with execPath

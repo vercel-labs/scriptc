@@ -1,11 +1,19 @@
-`child_process.fork()` requires a worker path resolved at build time from `new URL("./worker.ts", import.meta.url)` or `fileURLToPath(new URL("./worker.ts", import.meta.url))`.
+`child_process.fork()` without `execPath` requires a worker path resolved at build time from `new URL("./worker.ts", import.meta.url)` or `fileURLToPath(new URL("./worker.ts", import.meta.url))`.
 Never-reassigned `const` aliases and statically resolvable template parts are accepted.
 The worker and its imports are embedded in the executable, which re-executes itself to start that module.
 Worker arguments begin at `process.argv[2]`.
 
 Supported options are default inherited stdio or an inline object with `cwd`, `env`, `silent`, `windowsHide`, or `[stdin, stdout, stderr, "ipc"]`.
 `execArgv` is accepted but has no native effect.
-Runtime worker paths, custom `execPath`, advanced serialization, transferred sockets or servers, uid/gid, timeout/signal options, and other stdio arrays are unsupported.
+Runtime worker paths without `execPath`, advanced serialization, transferred sockets or servers, uid/gid, timeout/signal options, and other stdio arrays are unsupported.
+
+With an inline `execPath`, `fork()` starts `execPath ...execArgv modulePath ...args` with Node's JSON IPC channel, so the module is a script file that executable runs and its path may be computed at run time.
+`spawn()` opens the same channel for a fourth stdio entry `"ipc"` beside `"pipe"`, `"ignore"` or `"inherit"` slots.
+Both are implemented for POSIX targets, without `shell` or `detached`.
+The child finds its end of the channel through `NODE_CHANNEL_FD`; the descriptor keeps the number it has in the parent, where Node gives it the index of the `"ipc"` entry.
+A compiled program that calls `process.send()` or `process.disconnect()`, reads `process.connected`, or registers a `'message'` or `'disconnect'` listener on `process` takes over the channel its parent opened when it starts, and removes `NODE_CHANNEL_FD` from its environment, as Node does.
+A program that only tests `process.send` leaves the variable in the environment its own children inherit.
+A channel opened with `serialization: "advanced"` is refused: at compile time for a literal, where the call runs otherwise, and at the start of a compiled child whose parent opened the channel that way.
 
 The callback forms of `exec()` and `execFile()` take `encoding: "utf8"`, `maxBuffer`, `cwd`, `env`, `timeout`, `killSignal`, `signal` and `shell: true` in an inline options object.
 A conditional spread such as `...(limited ? { timeout, signal } : {})` may carry `cwd`, `env`, `timeout`, `killSignal` and `signal`.

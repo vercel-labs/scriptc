@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-ipc-exec-path.ts"
+ ],
+ "diags": []
+}

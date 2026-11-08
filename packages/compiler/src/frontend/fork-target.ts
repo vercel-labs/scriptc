@@ -405,6 +405,36 @@ function namesChildProcess(program: ts.Program): boolean {
   return names;
 }
 
+/** A use of the process's IPC channel as it is written: a call of
+ * process.send or process.disconnect, a read of process.connected or
+ * process.channel, a 'message' or 'disconnect' listener. A bare test of
+ * process.send is not one. */
+const PROCESS_CHANNEL_USE =
+  /\bprocess\s*(?:\?\.|\.)\s*(?:send|disconnect)\s*!?\s*(?:\?\.)?\s*\(|\bprocess\s*(?:\?\.|\.)\s*(?:connected|channel)\b|\bprocess\s*\.\s*(?:on|once|addListener)\s*\(\s*["'`](?:message|disconnect)["'`]/;
+
+/** Whether some program file uses the process's IPC channel. Such a
+ * program takes over the channel a parent opened for it (NODE_CHANNEL_FD)
+ * when it starts, as Node does; every other program keeps the test of the
+ * variable alone, which links no runtime code. Decided from the sources
+ * once, before any use is lowered, so that every read of the channel in
+ * the program is lowered the same way. */
+export function usesProcessChannel(program: ts.Program): boolean {
+  const known = program.analysis.usesProcessChannel;
+  if (known !== null) return known;
+  let uses = false;
+  for (const sourceFile of program.getImplementationSourceFiles()) {
+    if (
+      ts.sourceTextIncludes(sourceFile, "process") &&
+      ts.sourceTextMatches(sourceFile, PROCESS_CHANNEL_USE)
+    ) {
+      uses = true;
+      break;
+    }
+  }
+  program.analysis.usesProcessChannel = uses;
+  return uses;
+}
+
 /** Source-order static fork targets in the supplied files, deduplicated by
  * resolved path. */
 export function forkTargetPaths(program: ts.Program, files: readonly ts.SourceFile[]): string[] {

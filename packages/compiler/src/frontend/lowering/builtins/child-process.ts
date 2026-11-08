@@ -392,6 +392,58 @@ function windowsOnlyOption(
   if (!isSafeToDiscard(value)) evaluate(value);
 }
 
+/** The `serialization` of a launch that opens an IPC channel. The channel
+ * speaks Node's JSON serialization; "advanced" is V8's serializer, which
+ * the native runtime does not have. A literal "advanced" is refused where
+ * it is written; a value known only when the call runs is tested there and
+ * throws the same refusal by name. Returns that test, or null for "json". */
+function ipcSerializationCheck(
+  lowerer: Lowerer,
+  what: string,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrStmt | null {
+  const type = lowerer.typeOf(node);
+  const refusal = `${what} with serialization: "advanced" (the native IPC channel speaks Node's JSON serialization; V8's serializer is not available)`;
+  if (type.isStringLiteralType()) {
+    if (type.value === "json") return null;
+    lowerer.noLowering(
+      `${what} with serialization: "${type.value}"`,
+      node,
+      'the IPC channel supports Node\'s default serialization, "json"; "advanced" needs V8\'s serializer',
+    );
+  }
+  if (type.flags & ts.TypeFlags.Undefined) return null;
+  const held = lowerer.declareHiddenLocal("%ipcSerialization", STRING);
+  return {
+    kind: "if",
+    cond: {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "varDecl",
+          localId: held.id,
+          init: lowerer.lowerExprExpecting(node, STRING),
+          loc,
+        },
+      ],
+      result: {
+        kind: "strEq",
+        negated: false,
+        left: varRef(held.id, STRING, loc),
+        right: strLit("advanced", loc),
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    then: [{ kind: "exprStmt", expr: nodeThrowExpr(0, "SC2020", refusal, VOID, loc), loc }],
+    else_: null,
+    loc,
+  };
+}
+
 /** True when the args slot is statically empty (omitted, `undefined`, or an
  * empty array literal): the shape the shell forms accept. Node joins the
  * arguments unescaped and warns DEP0190 whenever a non-empty list meets
@@ -1501,6 +1553,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   let cwd: IrExpr = emptyStr;
   let plain = true; // exactly { stdio: "ignore" }: the historical libCall
+  // The "ipc" entry of a four-slot stdio, and the `serialization` member.
+  let ipcSlot: ts.Expression | null = null;
+  let serialization: { node: ts.Expression; member: ts.Node } | null = null;
   // Node evaluates the command, then the arguments, then the options
   // object's members in source order. A member value that needs a hidden
   // local is bound in that order, so a side effect in an earlier member (a
@@ -1574,7 +1629,23 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           // A slot EXPRESSION whose type is a union of the three literals
           // (`useStdin ? "pipe" : "ignore"`) evaluates once into a hidden
           // local and maps to its mode at the call.
-          if (ts.isArrayLiteralExpression(m.value) && m.value.elements.nodes.length === 3) {
+          const fourth = ts.isArrayLiteralExpression(m.value)
+            ? m.value.elements.nodes[3]
+            : undefined;
+          const fourthType = fourth === undefined ? undefined : lowerer.typeOf(fourth);
+          // [stdin, stdout, stderr, "ipc"]: Node's JSON IPC channel beside
+          // the three slots (the cp.spawnIpc launch).
+          const withIpc =
+            ts.isArrayLiteralExpression(m.value) &&
+            m.value.elements.nodes.length === 4 &&
+            fourthType !== undefined &&
+            fourthType.isStringLiteralType() &&
+            fourthType.value === "ipc";
+          if (
+            ts.isArrayLiteralExpression(m.value) &&
+            (m.value.elements.nodes.length === 3 || withIpc)
+          ) {
+            if (withIpc) ipcSlot = fourth ?? null;
             const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
               const t = lowerer.typeOf(el);
               if (t.isStringLiteralType()) {
@@ -1627,7 +1698,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                 errFd = fd;
               }
             };
-            m.value.elements.nodes.forEach((el, i) => slot(el, i as 0 | 1 | 2));
+            m.value.elements.nodes.slice(0, 3).forEach((el, i) => slot(el, i as 0 | 1 | 2));
             sawStdio = true;
             plain = false;
             break;
@@ -1691,6 +1762,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             plain = false;
           });
           break;
+        case "serialization":
+          serialization = { node: m.value, member: p };
+          plain = false;
+          break;
         case "shell":
           if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
             shell = boolLit(true, loc);
@@ -1710,7 +1785,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           lowerer.noLowering(
             `spawn option '${m.name}'`,
             p,
-            "stdio, detached, env, cwd, windowsHide, windowsVerbatimArguments, and shell are the supported options",
+            "stdio, detached, env, cwd, serialization, windowsHide, windowsVerbatimArguments, and shell are the supported options",
           );
       }
     }
@@ -1718,6 +1793,37 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   if (!sawStdio) {
     inMode = outMode = errMode = numLit(3, loc);
     plain = false;
+  }
+  if (serialization !== null) {
+    const chosen: { node: ts.Expression; member: ts.Node } = serialization;
+    if (ipcSlot !== null) {
+      const check = ipcSerializationCheck(lowerer, "spawn", chosen.node, loc);
+      if (check !== null) valuePrelude.push(check);
+    } else {
+      // Without a channel Node reads the member and nothing uses it.
+      const value = lowerer.lowerExpr(chosen.node);
+      if (!isSafeToDiscard(value)) valuePrelude.push({ kind: "exprStmt", expr: value, loc });
+    }
+  }
+  if (ipcSlot !== null) {
+    const unsupported =
+      lowerer.targetPlatform === "win32"
+        ? "on a Windows target"
+        : shellEnabled
+          ? "with shell enabled"
+          : detached.kind !== "boolLit" || detached.value
+            ? "with detached"
+            : (outMode.kind === "numLit" && outMode.value === 2) ||
+                (errMode.kind === "numLit" && errMode.value === 2)
+              ? "beside a file descriptor slot"
+              : null;
+    if (unsupported !== null) {
+      lowerer.noLowering(
+        `spawn with an "ipc" stdio entry ${unsupported}`,
+        ipcSlot,
+        'the IPC channel is lowered for [stdin, stdout, stderr, "ipc"] with "pipe", "ignore" or "inherit" slots, on POSIX targets',
+      );
+    }
   }
   // Node joins [command, ...args] with single spaces for the shell form, and
   // reports DEP0190 ("passing args to a child process with shell option
@@ -1742,6 +1848,22 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     );
   }
   const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr =>
+    ipcSlot !== null
+      ? withChildArgsCheck(
+          lowerer,
+          {
+            kind: "libCall",
+            fn: "cp.spawnIpc",
+            args: [callCmd, callArgs, inMode, outMode, errMode, hasEnv, envPairs, cwd],
+            type: CHILD_T,
+            loc,
+          },
+          0,
+          (a) => ({ envPairs: a[6], cwd: a[7] }),
+          loc,
+        )
+      : spawnOptsCall(callCmd, callArgs);
+  const spawnOptsCall = (callCmd: IrExpr, callArgs: IrExpr): IrExpr =>
     withChildArgsCheck(
       lowerer,
       {
@@ -1779,6 +1901,179 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   return { kind: "seqExpr", stmts, result: callOf(callCmd, callArgs), type: CHILD_T, loc };
 }
 
+/** `fork(modulePath, args?, { execPath, ... })`: Node spawns
+ * `execPath ...execArgv modulePath ...args` with an IPC channel in the
+ * fourth stdio slot. The module is a file the named executable runs (a
+ * script for a Node.js binary, or any program that takes the channel named
+ * by NODE_CHANNEL_FD), so its path may be known only when the call runs.
+ * The module path, the arguments and the options' values are evaluated in
+ * the source's order. stdio is fork's: inherited, "pipe" with `silent`, a
+ * literal mode, or [stdin, stdout, stderr, "ipc"]. */
+function lowerForkExecCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  argsNode: ts.Expression | undefined,
+  optsNode: ts.ObjectLiteralExpression,
+  loc: SrcLoc,
+): IrExpr {
+  if (lowerer.targetPlatform === "win32") {
+    lowerer.noLowering(
+      "fork with an execPath on a Windows target",
+      optsNode,
+      "the IPC channel to another executable is implemented for POSIX targets",
+    );
+  }
+  const steps: ChildEvalStep[] = [];
+  const bindStep = (name: string, value: IrExpr): IrExpr => {
+    if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit") {
+      return value;
+    }
+    const local = lowerer.declareHiddenLocal(name, value.type);
+    steps.push({ run: { kind: "varDecl", localId: local.id, init: value, loc } });
+    return varRef(local.id, value.type, loc);
+  };
+  const moduleNode = expr.arguments.nodes[0]!;
+  if (lowerer.mapTypeOf(lowerer.typeOf(moduleNode))?.kind !== "string") {
+    lowerer.noLowering(
+      "fork with an execPath and a module path that is not a string",
+      moduleNode,
+      "pass the script's path as a string (fileURLToPath(url) for a URL)",
+    );
+  }
+  const modulePath = bindStep("%forkModule", lowerer.lowerExprExpecting(moduleNode, STRING));
+  const args = bindStep("%forkArgs", lowerChildArgsArg(lowerer, argsNode, loc));
+  let execPath: IrExpr = strLit("", loc);
+  let execArgv: IrExpr | null = null;
+  let inMode = 1;
+  let outMode = 1;
+  let errMode = 1;
+  let sawStdio = false;
+  let silent = false;
+  let hasEnv: IrExpr = boolLit(false, loc);
+  let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
+  let cwd: IrExpr = strLit("", loc);
+  const stdioMode = (node: ts.Expression, label: string): number => {
+    const type = lowerer.typeOf(node);
+    const value = type.isStringLiteralType() ? type.value : null;
+    if (value !== "ignore" && value !== "inherit" && value !== "pipe") {
+      lowerer.noLowering(
+        `fork with ${label} stdio`,
+        node,
+        '"ignore", "inherit", and "pipe" are the supported stdio modes',
+      );
+    }
+    return value === "ignore" ? 0 : value === "inherit" ? 1 : 3;
+  };
+  for (const property of optsNode.properties.nodes) {
+    const member = optionMember(property);
+    if (!member) {
+      lowerer.noLowering(
+        "fork with this options shape",
+        property,
+        "spreads and computed keys have no lowering — write each member inline",
+      );
+    }
+    switch (member.name) {
+      case "execPath":
+        execPath = bindStep("%forkExecPath", lowerer.lowerExprExpecting(member.value, STRING));
+        break;
+      case "execArgv":
+        execArgv = bindStep(
+          "%forkExecArgv",
+          lowerer.lowerExprExpecting(member.value, arrayOf(STRING)),
+        );
+        break;
+      case "cwd":
+        cwd = bindStep("%forkCwd", lowerer.lowerExprExpecting(member.value, STRING));
+        break;
+      case "env":
+        hasEnv = boolLit(true, loc);
+        envPairs = bindStep("%forkEnv", recordToEnvPairs(lowerer, member.value));
+        break;
+      case "silent":
+        if (member.value.kind === ts.SyntaxKind.TrueKeyword) silent = true;
+        else if (member.value.kind !== ts.SyntaxKind.FalseKeyword) {
+          lowerer.noLowering(
+            "fork with a non-literal silent option",
+            member.value,
+            "silent must be a boolean literal",
+          );
+        }
+        break;
+      case "stdio": {
+        if (ts.isArrayLiteralExpression(member.value)) {
+          const entries = member.value.elements.nodes;
+          const ipcType = entries.length === 4 ? lowerer.typeOf(entries[3]!) : undefined;
+          if (ipcType === undefined || !ipcType.isStringLiteralType() || ipcType.value !== "ipc") {
+            lowerer.noLowering(
+              "fork with this stdio tuple",
+              member.value,
+              'use [stdin, stdout, stderr, "ipc"] with exactly four literal entries',
+            );
+          }
+          inMode = stdioMode(entries[0]!, "stdin");
+          outMode = stdioMode(entries[1]!, "stdout");
+          errMode = stdioMode(entries[2]!, "stderr");
+        } else {
+          inMode = outMode = errMode = stdioMode(member.value, "scalar");
+        }
+        sawStdio = true;
+        break;
+      }
+      case "serialization": {
+        const check = ipcSerializationCheck(lowerer, "fork", member.value, loc);
+        if (check !== null) steps.push({ run: check });
+        break;
+      }
+      case "windowsHide": {
+        // Node reads it on Windows only; an observable value still runs.
+        const value = lowerer.lowerExpr(member.value);
+        if (!isSafeToDiscard(value)) steps.push({ run: { kind: "exprStmt", expr: value, loc } });
+        break;
+      }
+      default:
+        lowerer.noLowering(
+          `fork with an execPath and the '${member.name}' option`,
+          member.value,
+          "execPath, execArgv, cwd, env, silent, stdio, serialization, and windowsHide are supported",
+        );
+    }
+  }
+  if (!sawStdio && silent) inMode = outMode = errMode = 3;
+  // What Node spawns: the executable with execArgv, the module, the args.
+  const elems: IrExpr[] = execArgv === null ? [modulePath, args] : [execArgv, modulePath, args];
+  const argv: IrExpr = {
+    kind: "arrayLit",
+    elems,
+    spreads: execArgv === null ? [1] : [0, 2],
+    type: arrayOf(STRING),
+    loc,
+  };
+  return withChildArgsCheck(
+    lowerer,
+    {
+      kind: "libCall",
+      fn: "cp.spawnIpc",
+      args: [
+        execPath,
+        argv,
+        numLit(inMode, loc),
+        numLit(outMode, loc),
+        numLit(errMode, loc),
+        hasEnv,
+        envPairs,
+        cwd,
+      ],
+      type: CHILD_T,
+      loc,
+    },
+    0,
+    (a) => ({ envPairs: a[6], cwd: a[7], ordered: true }),
+    loc,
+    [...steps, 0, 1, 2, 3, 4, 5, 6, 7],
+  );
+}
+
 /** `fork(staticModulePath, args?, options?)` embeds the selected program
  * module and re-executes the native artifact with one private target id.
  * Node's default JSON IPC channel is always present. */
@@ -1794,17 +2089,6 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
       "use fork(staticModulePath[, stringArgs][, inlineOptions])",
     );
   }
-  const targetPath = staticForkModulePath(lowerer.program, expr.arguments.nodes[0]!);
-  const targetId =
-    targetPath === null ? undefined : lowerer.forkTargetIdByPath.get(tsgoPath(resolve(targetPath)));
-  if (targetId === undefined) {
-    lowerer.noLowering(
-      "fork with a runtime-valued module path",
-      expr.arguments.nodes[0]!,
-      'resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed',
-    );
-  }
-
   let argsNode: ts.Expression | undefined;
   let optsNode: ts.Expression | undefined;
   if (expr.arguments.nodes.length === 3) {
@@ -1823,6 +2107,25 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
     } else {
       optsNode = second;
     }
+  }
+  // With an execPath the module is a script that executable runs, over
+  // Node's JSON IPC channel: nothing is compiled into this program.
+  if (
+    optsNode !== undefined &&
+    ts.isObjectLiteralExpression(optsNode) &&
+    optsNode.properties.nodes.some((property) => optionMember(property)?.name === "execPath")
+  ) {
+    return lowerForkExecCall(lowerer, expr, argsNode, optsNode, loc);
+  }
+  const targetPath = staticForkModulePath(lowerer.program, expr.arguments.nodes[0]!);
+  const targetId =
+    targetPath === null ? undefined : lowerer.forkTargetIdByPath.get(tsgoPath(resolve(targetPath)));
+  if (targetId === undefined) {
+    lowerer.noLowering(
+      "fork with a runtime-valued module path",
+      expr.arguments.nodes[0]!,
+      'resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed, or name the executable that runs a script file with execPath',
+    );
   }
   if (optsNode !== undefined && !ts.isObjectLiteralExpression(optsNode)) {
     lowerer.noLowering(
@@ -1932,7 +2235,7 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
           lowerer.noLowering(
             `fork with the '${member.name}' option`,
             member.value,
-            "cwd, env, execArgv, silent, stdio, serialization, and windowsHide are supported",
+            "cwd, env, execArgv, execPath, silent, stdio, serialization, and windowsHide are supported",
           );
       }
     }

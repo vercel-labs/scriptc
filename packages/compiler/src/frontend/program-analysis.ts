@@ -27,6 +27,9 @@ export class ProgramAnalysis {
   cycleEarlyBindings: EarlyBindingsMemo | null = null;
   /** Whether some program file can name node:child_process (namesChildProcess). */
   namesChildProcess: boolean | null = null;
+  /** Whether some program file uses the process's IPC channel
+   * (usesProcessChannel); null until a lowering asks. */
+  usesProcessChannel: boolean | null = null;
   /** Which member names a typed member call passes its holder for
    * (member-call-receivers.ts): null until the census is taken; `any` is
    * false for a program with no function that reads its call's receiver. */
@@ -64,6 +67,7 @@ export class ProgramAnalysis {
     this.exactCycleMembers.clear();
     this.cycleEarlyBindings = null;
     this.namesChildProcess = null;
+    this.usesProcessChannel = null;
     this.bundledLibraryDirectories.clear();
     this.checkedLibraryDirectories.clear();
     this.moduleEarlyBindings = null;

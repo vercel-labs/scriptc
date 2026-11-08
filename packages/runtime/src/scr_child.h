@@ -241,6 +241,18 @@ ScrChild *scr_exec_file_signal(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves
                                ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
                                ScrArr *env_pairs, double timeout, ScrStr *kill_signal,
                                ScrDyn *signal);
+/* Node's JSON IPC channel with a child that is not this executable (the
+ * same build; POSIX): spawn with an "ipc" stdio slot and fork with an
+ * execPath. The child gets one end of a socket pair, named by
+ * NODE_CHANNEL_FD, with NODE_CHANNEL_SERIALIZATION_MODE=json; the stdio
+ * modes, environment and cwd are scr_spawn_opts's. */
+ScrChild *scr_spawn_ipc(ScrStr *cmd, ScrArr *args, double in_mode, double out_mode,
+                        double err_mode, bool has_env, ScrArr *env_pairs, ScrStr *cwd);
+/* The other side: adopts the channel a parent named in NODE_CHANNEL_FD as
+ * the process channel (process.send, 'message', disconnect, connected) and
+ * removes the variable, as Node does at startup. Throws the named refusal
+ * for a channel opened with serialization "advanced". */
+void scr_process_node_channel(void);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);

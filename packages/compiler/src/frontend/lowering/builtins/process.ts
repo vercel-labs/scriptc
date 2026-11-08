@@ -35,6 +35,7 @@ import {
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
 import { builtinFunctionValue } from "../lower-exprs.js";
 import { canonicalBuiltinModule } from "../../builtin-modules.js";
+import { usesProcessChannel } from "../../fork-target.js";
 import {
   lowerProcessIpcDisconnect,
   lowerProcessIpcSend,
@@ -47,9 +48,11 @@ import { refuseCallbackThis } from "../callback-arg.js";
 
 /** Whether the process has an IPC channel, Node's test for defining
  * process.send and process.disconnect: a channel this fork child opened
- * (programs with fork targets only), or a non-empty NODE_CHANNEL_FD from a
- * Node.js parent, the variable Node itself tests at startup. Built from the
- * existing environment read, so the presence test links no runtime code. */
+ * or took over from its parent (programs with fork targets, and programs
+ * that use the channel: usesProcessChannel), or a non-empty
+ * NODE_CHANNEL_FD from a Node.js parent, the variable Node itself tests at
+ * startup. A program that only tests for the channel is built from the
+ * existing environment read, so its test links no runtime code. */
 export function processHasIpc(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const envT = lowerer.envValueType();
   const unionId = (envT as IrType & { kind: "union" }).unionId;
@@ -102,7 +105,9 @@ export function processHasIpc(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     type: BOOL,
     loc,
   };
-  if (lowerer.forkTargets.length === 0) return fromNode;
+  // A program that uses the channel has taken the parent's over at its
+  // start and removed the variable: the runtime answers for it.
+  if (lowerer.forkTargets.length === 0 && !usesProcessChannel(lowerer.program)) return fromNode;
   return {
     kind: "logical",
     op: "||",
@@ -916,6 +921,7 @@ export function lowerProcessProperty(
     // reads undefined there, as Node does (node-value-reads.ts
     // untypedNodeMemberRead); a TypeScript read is typed boolean by its
     // declaration.
+    usesProcessChannel(lowerer.program);
     return { kind: "libCall", fn: "process.connected", args: [], type: BOOL, loc };
   }
   // process.execArgv: the Node runtime flags kept out of process.argv —
@@ -1810,6 +1816,7 @@ export function lowerProcessMethodCall(
           "chaining process IPC listener registration (register each listener as its own statement)",
         );
       }
+      usesProcessChannel(lowerer.program);
       const callback =
         event === "message"
           ? ipcMessageListener(lowerer, call.arguments.nodes[1]!)

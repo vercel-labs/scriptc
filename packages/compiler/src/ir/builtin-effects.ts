@@ -683,6 +683,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "cp.checkKillSignal",
   "cp.execFileSignal",
   "cp.execFileOpts",
+  // The named refusal of a channel a parent opened with serialization
+  // "advanced"; the socket-pair launch shares spawn's emitter arm.
+  "process.nodeChannel",
+  "cp.spawnIpc",
   // The client request constructors validate the method token
   // synchronously (Node's ClientRequest ctor throw:
   // ERR_INVALID_HTTP_TOKEN).

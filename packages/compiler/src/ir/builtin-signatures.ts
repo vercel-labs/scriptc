@@ -3261,6 +3261,19 @@ function buildLibFnSignatures() {
       ],
       result: CHILD_T,
     },
+    /** spawn with an "ipc" stdio slot and fork with an execPath: Node's
+     * JSON IPC channel over a socket pair, to a child that is not this
+     * executable (the same build). (cmd, argv, inMode, outMode, errMode,
+     * hasEnv, envPairs, cwd), as cp.spawnOpts reads them. */
+    "cp.spawnIpc": {
+      argTypes: [STRING, arrayOf(STRING), F64, F64, F64, BOOL, arrayOf(STRING), STRING],
+      result: CHILD_T,
+    },
+    /** Takes over the IPC channel a parent opened for this process
+     * (NODE_CHANNEL_FD), at the start of main, in programs that use the
+     * process channel. Throws the named refusal for a channel opened with
+     * serialization "advanced". */
+    "process.nodeChannel": { argTypes: [], result: VOID },
     /** execFile's validateTimeout (ERR_OUT_OF_RANGE unless a non-negative
      * integer) and its sanitizeKillSignal for a name (ERR_UNKNOWN_SIGNAL). */
     "cp.checkTimeout": { argTypes: [F64], result: VOID },

@@ -93,7 +93,7 @@ child-process.ts:62:6 - error SC2020: 'fork with a runtime-valued module path' i
      |      ^~~~~~~~~~~~~~~~
   63 | const staticWorker = new URL("./child-process.ts", import.meta.url);
 
-  hint: resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed
+  hint: resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed, or name the executable that runs a script file with execPath
 
 child-process.ts:64:41 - error SC2020: 'fork with non-JSON serialization' is part of the standard library types but has no scriptc lowering yet
 

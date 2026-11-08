@@ -3576,6 +3576,10 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef SCR_CHILD_CP_OPTIONS
+#include <sys/socket.h>
+#include <sys/stat.h>
+#endif
 
 /* Child-exit wakeups without polling — the narrow seam scr_platform.h
  * points here for (this unit links into EVERY binary, so its plumbing
@@ -7827,6 +7831,66 @@ ScrChild *scr_exec_file_signal(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves
   scr_exec_abort_release_v(a);
   return c;
 }
+
+/* ── Node's JSON IPC channel to a child that is not this executable ──────
+ * (lib/internal/child_process.js). Node gives the child one end of a UNIX
+ * socket pair, names its descriptor in NODE_CHANNEL_FD, and both sides
+ * exchange `JSON.stringify(message) + "\n"`, with no handshake; this is
+ * the framing the fork channel above already speaks over its two pipes.
+ * The child inherits its end under the number it has here (Node dup2s it
+ * to the stdio index of "ipc"; a Node child reads the number from the
+ * variable and deletes the variable before any program code runs). */
+static ScrArr *scr_ipc_channel_env(bool has_env, ScrArr *env_pairs, int fd) {
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0);
+  if (has_env && env_pairs != NULL) {
+    size_t n = (size_t)scr_arr_len(env_pairs);
+    for (size_t i = 0; i < n; i++) scr_arr_push_ref(pairs, scr_arr_get_ref(env_pairs, (double)i));
+  } else {
+    for (char **entry = environ; entry != NULL && *entry != NULL; entry++) {
+      const char *eq = strchr(*entry, '=');
+      if (eq == NULL || eq == *entry) continue;
+      scr_arr_push_ref(pairs, scr_str_new(*entry, (size_t)(eq - *entry)));
+      scr_arr_push_ref(pairs, scr_str_new(eq + 1, strlen(eq + 1)));
+    }
+  }
+  char number[24];
+  int len = snprintf(number, sizeof number, "%d", fd);
+  /* Node appends the two variables behind the environment it was given. */
+  scr_arr_push_ref(pairs, scr_str_new("NODE_CHANNEL_FD", 15));
+  scr_arr_push_ref(pairs, scr_str_new(number, (size_t)len));
+  scr_arr_push_ref(pairs, scr_str_new("NODE_CHANNEL_SERIALIZATION_MODE", 31));
+  scr_arr_push_ref(pairs, scr_str_new("json", 4));
+  return pairs;
+}
+
+/* spawn with an "ipc" stdio slot, and fork with an execPath: the stdio
+ * modes, environment and cwd are scr_spawn_opts's. The returned child has
+ * the channel when it started. */
+ScrChild *scr_spawn_ipc(ScrStr *cmd, ScrArr *args, double in_mode, double out_mode,
+                         double err_mode, bool has_env, ScrArr *env_pairs, ScrStr *cwd) {
+  int ends[2] = {-1, -1};
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, ends) != 0) {
+    scr_trap("could not create the IPC channel");
+  }
+  fcntl(ends[0], F_SETFD, FD_CLOEXEC);
+  fcntl(ends[1], F_SETFD, 0);
+  ScrArr *pairs = scr_ipc_channel_env(has_env, env_pairs, ends[1]);
+  ScrChild *child = scr_spawn_opts(cmd, args, in_mode, out_mode, err_mode, 0, 0, false, false,
+                                   true, pairs, cwd);
+  scr_arr_release(pairs);
+  close(ends[1]);
+  int write_end = child->state == SCR_CHILD_RUNNING ? dup(ends[0]) : -1;
+  if (write_end >= 0) {
+    ScrChildStream *reader = scr_child_stream_new(ends[0]);
+#ifdef SCR_HAVE_KQUEUE
+    reader->short_read_yields = true; /* as for the fork channel */
+#endif
+    child->ipc = scr_ipc_new(reader, scr_child_writer_new(write_end));
+  } else {
+    close(ends[0]);
+  }
+  return child;
+}
 #endif /* SCR_CHILD_CP_OPTIONS */
 
 #endif /* !_WIN32 */
@@ -8455,6 +8519,11 @@ struct ScrIpc {
    * 'disconnect' run in it. */
   ScrAlsCtx *als;
   struct ScrIpc *next;
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+  /* A send() with a callback met the closed channel: Node queues that
+   * callback behind the tick that emits 'disconnect'. */
+  bool closed_send;
+#endif
 };
 
 static SCR_TL ScrIpc *scr_ipcs = NULL;
@@ -8543,6 +8612,17 @@ static void scr_ipc_queue_message(ScrIpc *ipc, ScrDyn *message /*moves*/) {
   ipc->pending[ipc->n_pending++] = message;
 }
 
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+/* isInternal (lib/internal/child_process.js): an object whose `cmd` is a
+ * string longer than "NODE_" that starts with it. */
+static bool scr_ipc_internal_message(const ScrDyn *message) {
+  if (message == NULL || message->kind != SCR_DYN_OBJ) return false;
+  const ScrDyn *cmd = scr_dyn_obj_get(message, "cmd", 3);
+  return cmd != NULL && cmd->kind == SCR_DYN_STR && cmd->v.str->len > 5 &&
+         memcmp(cmd->v.str->data, "NODE_", 5) == 0;
+}
+#endif
+
 static void scr_ipc_stream_data(ScrClosure *closure, ScrBytes *chunk) {
   ScrIpc *ipc = scr_ipc_from_closure(closure);
   size_t need = ipc->buffer_len + chunk->len;
@@ -8562,6 +8642,15 @@ static void scr_ipc_stream_data(ScrClosure *closure, ScrBytes *chunk) {
     ScrDyn *message = scr_json_parse(line);
     scr_str_release(line);
     if (scr_exc_pending()) break;
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+    /* Node's internal messages (`cmd` starting with "NODE_": a handle that
+     * rides with a message, cluster's) are not 'message' events. */
+    if (scr_ipc_internal_message(message)) {
+      scr_dyn_release(message);
+      consumed = i + 1;
+      continue;
+    }
+#endif
     scr_ipc_queue_message(ipc, message);
     consumed = i + 1;
   }
@@ -8657,6 +8746,9 @@ static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
         if (ipc->send_error == NULL) {
           ipc->send_error = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
         }
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+        ipc->closed_send = true;
+#endif
         scr_ipc_register(ipc);
       } else {
         ScrStr *message = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
@@ -8829,6 +8921,11 @@ static void scr_ipc_finish_eof(ScrIpc *ipc) {
 }
 
 static void scr_ipc_service_one(ScrIpc *ipc) {
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+  bool behind_disconnect = ipc->closed_send && !ipc->disconnect_emitted &&
+                           (ipc->local_closing || ipc->disconnect_pending);
+  if (!behind_disconnect)
+#endif
   scr_ipc_fire_send_callbacks(ipc);
   if (!scr_exc_pending()) scr_ipc_fire_messages(ipc);
   if (!scr_exc_pending()) scr_ipc_finish_eof(ipc);
@@ -8843,6 +8940,12 @@ static void scr_ipc_service_one(ScrIpc *ipc) {
     ipc->disconnect_pending = true;
   }
   if (!scr_exc_pending()) scr_ipc_fire_disconnect(ipc);
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+  if (behind_disconnect && ipc->disconnect_emitted && !scr_exc_pending()) {
+    ipc->closed_send = false;
+    scr_ipc_fire_send_callbacks(ipc);
+  }
+#endif
 }
 
 static void scr_ipc_service(void) {
@@ -8943,13 +9046,95 @@ double scr_process_fork_target(double target_count) {
   return target;
 }
 
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+/* The channel a parent opened for this process: Node's test at startup
+ * (NODE_CHANNEL_FD), for a process that is not this executable's own fork
+ * target. Both variables leave the environment before any program code
+ * runs, as in Node, so no child of this process takes the channel for its
+ * own. A descriptor that is not a socket is not a channel. The runtime has
+ * no V8 serializer: a channel the parent opened with serialization
+ * "advanced" is refused by name. Called once, at the start of main, by
+ * programs that name the process channel. */
+void scr_process_node_channel(void) {
+  if (scr_process_ipc != NULL) return;
+  double target = -1;
+  uintptr_t read_handle = 0, write_handle = 0;
+  if (scr_lib_fork_info(&target, &read_handle, &write_handle)) return;
+  const char *named = getenv("NODE_CHANNEL_FD");
+  if (named == NULL || *named == '\0') return;
+  char *end = NULL;
+  long fd = strtol(named, &end, 10);
+  bool numbered = end != NULL && *end == '\0' && fd >= 0 && fd < 1 << 20;
+  const char *mode = getenv("NODE_CHANNEL_SERIALIZATION_MODE");
+  bool advanced = mode != NULL && strcmp(mode, "advanced") == 0;
+  ScrStr *fd_name = scr_str_new("NODE_CHANNEL_FD", 15);
+  ScrStr *mode_name = scr_str_new("NODE_CHANNEL_SERIALIZATION_MODE", 31);
+  scr_env_unset(fd_name);
+  scr_env_unset(mode_name);
+  scr_str_release(fd_name);
+  scr_str_release(mode_name);
+  struct stat info;
+  if (!numbered || fstat((int)fd, &info) != 0 || !S_ISSOCK(info.st_mode)) return;
+  if (advanced) {
+    static const char msg[] =
+        "an IPC channel opened with serialization: \"advanced\" is not supported (the native "
+        "runtime has no V8 serializer); start this process with serialization: \"json\"";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    return;
+  }
+  int write_end = dup((int)fd);
+  if (write_end < 0) return;
+  scr_process_ipc =
+      scr_ipc_new(scr_child_stream_new((int)fd), scr_child_writer_new(write_end));
+}
+#endif
+
 /* The child was created with an IPC channel; it keeps it until it is freed. */
 bool scr_child_ipc_present(ScrChild *c) { return c->ipc != NULL; }
 
 bool scr_child_ipc_connected(ScrChild *c) {
   return c->ipc != NULL && c->ipc->connected;
 }
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+/* send() without a callback on a channel that is no longer connected:
+ * Node emits 'error' with ERR_IPC_CHANNEL_CLOSED on the next tick, on the
+ * child object or, in a child, on `process`. Without a listener that is
+ * an uncaught error. */
+static ScrError *scr_ipc_closed_error(void) {
+  ScrStr *message = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
+  ScrError *error = scr_error_new(0, message);
+  scr_str_release(message);
+  scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
+  return error;
+}
+
+static void scr_ipc_closed_child_tick(ScrClosure *clo) {
+  ScrChild *c = scr_box_get_ref(clo->caps[0]);
+  ScrError *error = scr_ipc_closed_error();
+  ScrAlsCtx *prev = scr_als_dispatch_enter(c->als);
+  bool heard = scr_child_emit_error(c, error);
+  scr_als_dispatch_leave(prev);
+  if (heard) scr_error_release(error);
+  else scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+  scr_child_release(c);
+}
+
+static void scr_ipc_closed_process_tick(ScrClosure *clo) {
+  (void)clo;
+  scr_throw_obj(scr_ipc_closed_error(), &scr_error_retain_v, &scr_error_release_v,
+                scr_error_trace_arg());
+}
+#endif
+
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json) {
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+  if (c->ipc != NULL && !c->ipc->connected) {
+    ScrClosure *tick = scr_closure_new((void *)&scr_ipc_closed_child_tick, 1);
+    tick->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
+    scr_box_set_ref(tick->caps[0], scr_child_retain(c));
+    scr_next_tick(tick);
+  }
+#endif
   return scr_ipc_send(c->ipc, json, NULL, NULL);
 }
 bool scr_child_ipc_send_cb(ScrChild *c, ScrStr *json, ScrClosure *cb,
@@ -8970,6 +9155,11 @@ bool scr_process_ipc_connected(void) {
 }
 bool scr_process_ipc_open(void) { return scr_process_ipc != NULL; }
 bool scr_process_ipc_send(ScrStr *json) {
+#if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
+  if (scr_process_ipc != NULL && !scr_process_ipc->connected) {
+    scr_next_tick(scr_closure_new((void *)&scr_ipc_closed_process_tick, 0));
+  }
+#endif
   return scr_ipc_send(scr_process_ipc, json, NULL, NULL);
 }
 bool scr_process_ipc_send_cb(ScrStr *json, ScrClosure *cb,

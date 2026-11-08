@@ -481,6 +481,7 @@ const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.disconnect",
   "process.forkTarget",
   "process.ipcOpen",
+  "process.nodeChannel",
   "process.onDisconnect",
   "process.onMessage",
   "process.send",
@@ -1349,6 +1350,9 @@ const RUNTIME_FEATURE_RULES = {
       "cp.execFileSignal",
       "cp.checkTimeout",
       "cp.checkKillSignal",
+      // Node's JSON IPC channel over a socket pair, both sides.
+      "cp.spawnIpc",
+      "process.nodeChannel",
     ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding

@@ -198,7 +198,12 @@ declare module "child_process" {
      * ["ignore", logFd, logFd]) — and "pipe" there too (child.stdout/
      * child.stderr streams); "pipe" in the stdin slot exposes
      * child.stdin. */
-    stdio?: "ignore" | "inherit" | "pipe" | ("ignore" | "inherit" | "pipe" | number)[];
+    stdio?: "ignore" | "inherit" | "pipe" | ("ignore" | "inherit" | "pipe" | "ipc" | number)[];
+    /* A fourth stdio entry "ipc" opens Node's JSON IPC channel to the
+     * child (child.send, 'message', disconnect, connected): a socket pair
+     * the child finds through NODE_CHANNEL_FD. serialization may only be
+     * "json": the native runtime has no V8 serializer. */
+    serialization?: "json" | "advanced";
     /* detached gives the child its own session and process group
      * (POSIX_SPAWN_SETSID); env REPLACES the child environment; cwd
      * sets its working directory; windowsHide is a POSIX no-op; shell
@@ -221,6 +226,10 @@ declare module "child_process" {
       cwd?: string;
       env?: { [k: string]: string | undefined };
       execArgv?: string[];
+      /* With execPath the module is a script file that executable runs
+       * (execPath, ...execArgv, modulePath, ...args) over Node's JSON IPC
+       * channel; without it the module is compiled into this executable. */
+      execPath?: string;
       silent?: boolean;
       stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit" | "ipc")[];
       serialization?: "json" | "advanced";

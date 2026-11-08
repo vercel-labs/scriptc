@@ -80,6 +80,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     e.fn === "cp.spawn" ||
     e.fn === "cp.spawnOpts" ||
     e.fn === "cp.spawnDynamic" ||
+    e.fn === "cp.spawnIpc" ||
     e.fn === "cp.fork"
   ) {
     // child_process.spawn: the child starts NOW (posix_spawn); the
@@ -93,7 +94,9 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
           ? "scr_fork"
           : e.fn === "cp.spawnDynamic"
             ? "scr_spawn_dynamic"
-            : "scr_spawn_opts";
+            : e.fn === "cp.spawnIpc"
+              ? "scr_spawn_ipc"
+              : "scr_spawn_opts";
     const args = e.args.map((a) => host.emitExpr(a));
     const argDecl = args
       .map((a) => (host.llType(a.type) === "i1" ? "i1 zeroext" : host.llType(a.type)))
@@ -104,7 +107,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       `${t} = call ptr @${sym}(${args.map((a) => `${host.llType(a.type)} ${a.name}`).join(", ")})`,
     );
     const out = host.own({ name: t, type: e.type });
-    if (e.fn === "cp.spawnDynamic") host.emitPendingCheck();
+    if (e.fn === "cp.spawnDynamic" || e.fn === "cp.spawnIpc") host.emitPendingCheck();
     return out;
   }
   if (e.fn === "child.onDyn" || e.fn === "child.propsOnDyn") {

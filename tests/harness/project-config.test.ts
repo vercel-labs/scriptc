@@ -132,6 +132,10 @@ for (const [name, title] of [
     "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
   ],
   [
+    "process-stream-member-writes",
+    "write assigned through a stored NodeJS.WriteStream is seen by every writer and put back, under @types/node",
+  ],
+  [
     "child-windows-only-options",
     "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
   ],

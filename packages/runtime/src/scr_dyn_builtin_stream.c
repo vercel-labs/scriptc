@@ -125,7 +125,6 @@ static ScrDyn *bcs_apply(ScrDyn *fn, ScrDyn *self, ScrDyn *const *args, size_t a
  * back to the same JavaScript value (+1). */
 static ScrError *bcs_error_of(const ScrDyn *value) {
   if (!scr_dyn_truthy(value)) return NULL;
-  if (value->kind == SCR_DYN_STR) return scr_error_new(SCR_ERR_ERROR, value->v.str);
   return scr_error_from_dyn(value);
 }
 

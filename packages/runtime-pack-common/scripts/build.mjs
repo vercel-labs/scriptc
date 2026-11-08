@@ -604,7 +604,7 @@ async function build() {
     ];
     // zlib, brotli and mbedtls parse untrusted input and are hardened like the
     // runtime units; QuickJS and libregexp are not (see hardening.mjs).
-    const vendorHardening = runtimeHardeningFlags(config, { optimized: true, ...hardeningSupport });
+    const vendorHardening = runtimeHardeningFlags(config, { optimized: true, vendor: true, ...hardeningSupport });
     const requestedArchives = new Set(matrix.archives.map((entry) => entry.id));
     const archives =
       config.vendorArchives === false
@@ -658,6 +658,7 @@ async function build() {
                     "-O3",
                     ...zstdBuild.defines.map((define) => `-D${define}`),
                     ...zstdBuild.compileFlags,
+                    ...vendorHardening,
                     ...codeAlignment,
                     "-I",
                     zstd,

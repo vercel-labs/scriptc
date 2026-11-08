@@ -48,13 +48,24 @@ const ZERO_INIT = ["-ftrivial-auto-var-init=zero", "-ftrivial-auto-var-init-max-
  * QuickJS and libregexp keep their existing flags: hardening them as well
  * slowed the regex, CSV-number and error-validation benchmarks by 5-7%.
  */
-export function runtimeHardeningFlags(config, { optimized, cappedZeroInit }) {
+export function runtimeHardeningFlags(config, { optimized, cappedZeroInit, vendor = false }) {
   if (typeof cappedZeroInit !== "boolean") {
     throw new Error("runtimeHardeningFlags requires the probed cappedZeroInit support");
   }
   const platform = config.platform;
   const wasi = platform === "wasi";
   const musl = (config.runtimeDefines ?? []).includes("SCR_MUSL");
+  // The runtime units are on the path of every typed program, so they get
+  // only the two protections that execute no or almost no extra instructions
+  // on the benchmark set (zero-initialization +0.07%, stack-clash probes
+  // 0.00%; canaries cost +0.86%, bounds traps +2.15%, FORTIFY +0.15%). The
+  // vendored archives (`vendor`) parse untrusted input and get all of them.
+  if (!vendor) {
+    return [
+      ...(cappedZeroInit ? ZERO_INIT : []),
+      ...(platform === "linux" ? ["-fstack-clash-protection"] : []),
+    ];
+  }
   return [
     ...(cappedZeroInit ? ZERO_INIT : []),
     ...(optimized

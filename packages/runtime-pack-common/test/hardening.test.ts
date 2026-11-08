@@ -21,19 +21,34 @@ test.each([
   ["Darwin", { platform: "darwin" }, [...portable, "-fstack-protector-strong", ...fortify]],
   ["Windows", { platform: "win32" }, [...portable, "-fstack-protector-strong", ...fortify]],
   ["WASI", { platform: "wasi", runtimeDefines: ["_GNU_SOURCE"] }, portable],
-])("hardens optimized %s runtime units", (_name, config, flags) => {
-  expect(runtimeHardeningFlags(config, { optimized: true, ...supported })).toEqual(flags);
+])("hardens the optimized %s vendored archives", (_name, config, flags) => {
+  expect(runtimeHardeningFlags(config, { optimized: true, vendor: true, ...supported })).toEqual(
+    flags,
+  );
+});
+
+test.each([
+  ["glibc Linux", { platform: "linux", runtimeDefines: ["_GNU_SOURCE"] }, true],
+  ["Darwin", { platform: "darwin" }, false],
+  ["WASI", { platform: "wasi", runtimeDefines: ["_GNU_SOURCE"] }, false],
+])("%s runtime units get only the protections that cost no run time", (_name, config, clash) => {
+  for (const optimized of [true, false]) {
+    expect(runtimeHardeningFlags(config, { optimized, ...supported })).toEqual([
+      ...zeroInit,
+      ...(clash ? ["-fstack-clash-protection"] : []),
+    ]);
+  }
 });
 
 test("unoptimized units omit FORTIFY, which requires optimization", () => {
-  const flags = runtimeHardeningFlags({ platform: "linux" }, { optimized: false, ...supported });
+  const flags = runtimeHardeningFlags({ platform: "linux" }, { optimized: false, vendor: true, ...supported });
   expect(flags).toContain("-fstack-protector-strong");
   expect(flags.some((flag) => flag.includes("FORTIFY"))).toBe(false);
 });
 
 test("unoptimized units check only local bounds, which embed no source paths", () => {
   // array-bounds metadata (file names, unnamed struct locations) survives -O0.
-  expect(runtimeHardeningFlags({ platform: "darwin" }, { optimized: false, ...supported })).toEqual(
+  expect(runtimeHardeningFlags({ platform: "darwin" }, { optimized: false, vendor: true, ...supported })).toEqual(
     [
       ...zeroInit,
       "-fsanitize=local-bounds",
@@ -45,7 +60,7 @@ test("unoptimized units check only local bounds, which embed no source paths", (
 
 test("bounds checks trap instead of calling a sanitizer runtime", () => {
   for (const platform of ["linux", "darwin", "win32", "wasi"]) {
-    const flags = runtimeHardeningFlags({ platform }, { optimized: true, ...supported });
+    const flags = runtimeHardeningFlags({ platform }, { optimized: true, vendor: true, ...supported });
     expect(flags.indexOf("-fsanitize-trap=bounds")).toBeGreaterThan(
       flags.indexOf("-fsanitize=bounds"),
     );
@@ -56,7 +71,7 @@ test("a compiler without the zero-init size cap gets no zero-initialization", ()
   // Android NDK 27 clang: unlimited zero-initialization is not a fallback.
   const flags = runtimeHardeningFlags(
     { platform: "linux", runtimeDefines: ["_GNU_SOURCE"] },
-    { optimized: true, cappedZeroInit: false },
+    { optimized: true, vendor: true, cappedZeroInit: false },
   );
   expect(flags.some((flag) => flag.startsWith("-ftrivial-auto-var-init"))).toBe(false);
   expect(flags).toEqual([

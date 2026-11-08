@@ -248,7 +248,7 @@ async function build() {
     // runtime units; QuickJS and libregexp are not (see hardening.mjs).
     const vendorHardening = runtimeHardeningFlags(
       { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
-      { optimized: true, ...hardeningSupport },
+      { optimized: true, vendor: true, ...hardeningSupport },
     );
     const brotliSources = (
       await Promise.all(
@@ -300,6 +300,7 @@ async function build() {
         ...ZSTD_BUILD.defines.map((define) => `-D${define}`),
         ...ZSTD_BUILD.compileFlags,
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         zstd,
       ]),

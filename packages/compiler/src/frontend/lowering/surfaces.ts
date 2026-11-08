@@ -3944,6 +3944,40 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
   return null;
 }
 
+/** The name of a built-in global read directly from the global object
+ * (`globalThis.fetch`, `global.fetch`, through a binding of the global
+ * object too): the member's name node, which is an identifier whose symbol
+ * is the global's own, so everything that recognizes the bare name by text
+ * and provenance recognizes this node as well. `globalThis.fetch(…)` is
+ * then the call `fetch(…)` is, and `new globalThis.URL(…)` already takes
+ * its class this way. Null for an optional read, for a member that is no
+ * standard-library global (a script's own `var`), and for the global
+ * object's names for itself. */
+export function globalObjectMemberName(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): ts.Identifier | null {
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return null;
+  if (!ts.isIdentifier(expr.name)) return null;
+  // Most member reads have another receiver: decide those by spelling
+  // before asking the checker.
+  const receiver = withoutParenthesesTypeWrappers(expr.expression);
+  if (
+    ts.isIdentifier(receiver) &&
+    receiver.text !== "globalThis" &&
+    receiver.text !== "global" &&
+    lowerer.stdlibGlobalAliases.size === 0
+  )
+    return null;
+  if (!ts.isIdentifier(receiver) && !ts.isConditionalExpression(receiver)) return null;
+  if (lowerer.chainBlocked(expr)) return null;
+  if (stdlibGlobalNameOf(lowerer, expr.expression) !== "globalThis") return null;
+  const canonical = stdlibGlobalNameOf(lowerer, expr);
+  return canonical !== null && canonical !== "globalThis" && canonical === expr.name.text
+    ? expr.name
+    : null;
+}
+
 /** True iff `expr` denotes THE standard-library global `name` — name AND
  * provenance, because neither alone suffices: several globals share
  * member names (Math.log must never lower as console.log), and a user

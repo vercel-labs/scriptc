@@ -48,6 +48,7 @@ import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-l
 import { builtinConstantsEsmNamespace } from "./lower-builtin-values.js";
 import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
+import { builtinCalleeName } from "./lower-calls.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
@@ -589,9 +590,17 @@ function fenceRequestInitValue(lowerer: Lowerer, value: ts.Expression): void {
 }
 
 export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
-  const callee = call.expression;
-  if (!ts.isIdentifier(callee) || callee.text !== "fetch") return null;
-  if (call.questionDotToken) return null;
+  // `fetch(…)`, and the same function named through the global object
+  // (`globalThis.fetch(…)`). The spelling decides first: most calls are
+  // neither.
+  const spelled = ts.isIdentifier(call.expression)
+    ? call.expression.text
+    : ts.isPropertyAccessExpression(call.expression)
+      ? call.expression.name.text
+      : null;
+  if (spelled !== "fetch" || call.questionDotToken) return null;
+  const callee = builtinCalleeName(lowerer, call);
+  if (callee === null) return null;
   const symbol = lowerer.resolveValueSymbol(callee);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   if (call.arguments.nodes.length < 1) return null;
@@ -1925,10 +1934,15 @@ export function lowerEventTargetNew(lowerer: Lowerer, expr: ts.NewExpression): I
 }
 
 export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
-  if (!ts.isIdentifier(expr.expression) || expr.expression.text !== "AbortController") {
-    return null;
-  }
-  const symbol = lowerer.resolveValueSymbol(expr.expression);
+  const spelled = ts.isIdentifier(expr.expression)
+    ? expr.expression.text
+    : ts.isPropertyAccessExpression(expr.expression)
+      ? expr.expression.name.text
+      : null;
+  if (spelled !== "AbortController") return null;
+  const named = builtinCalleeName(lowerer, expr);
+  if (named === null) return null;
+  const symbol = lowerer.resolveValueSymbol(named);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   const args = expr.arguments?.nodes ?? [];
   if (args.some((argument) => ts.isSpreadElement(argument))) return null;

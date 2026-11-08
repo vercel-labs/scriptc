@@ -131,6 +131,7 @@ import {
   STRING_INDEX_METHODS,
   STR_METHODS,
   UTIL_TYPES_KEYS,
+  globalObjectMemberName,
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { dynStringReceiver } from "./containers/dynamic-receivers.js";
@@ -160,7 +161,12 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import { builtinGlobalValue, isPrimitivePrototypeRead } from "./expressions/property-access.js";
+import {
+  builtinGlobalValue,
+  globalThisWrittenNames,
+  isPrimitivePrototypeRead,
+} from "./expressions/property-access.js";
+import { staticallySelected } from "./static-typeof.js";
 import {
   lowerBufferConstruct,
   lowerBytesPrototypeSetCall,
@@ -493,6 +499,43 @@ function lowerCallableMemberCall(lowerer: Lowerer, call: ts.CallExpression): IrE
   const callee = lowerer.fieldGetExpr(target, locOf(access), access);
   if (callee.type.kind !== "func") return null;
   return lowerCallThroughValue(lowerer, call, callee, locOf(call));
+}
+
+/** The identifier that names the built-in global a call calls: the bare
+ * identifier (`fetch(…)`), or the member name of a direct read of the
+ * global object (`globalThis.fetch(…)`, `global.fetch(…)`:
+ * globalObjectMemberName), which calls the same function. A program that
+ * assigns that member (`globalThis.fetch = mine`) means its own function
+ * there, and a compiled program has only the built-in to call, so the
+ * call is refused by name. The assignments are the ones
+ * globalThisWrittenNames finds: `globalThis.name = …` and
+ * `globalThis["name"] = …` in a source that spells `globalThis`. */
+export function builtinCalleeName(
+  lowerer: Lowerer,
+  call: ts.CallExpression | ts.NewExpression,
+): ts.Identifier | null {
+  const callee = call.expression;
+  if (ts.isIdentifier(callee)) return callee;
+  if (ts.isCallExpression(call) && call.questionDotToken) return null;
+  const member = globalObjectMemberName(lowerer, callee);
+  if (member === null) return null;
+  const receiver = (callee as ts.PropertyAccessExpression).expression;
+  const written = globalThisWrittenNames(
+    lowerer,
+    lowerer.typeOf(staticallySelected(lowerer, receiver)),
+  );
+  if (written.has(member.text) || lowerer.globalThisComputedWrite) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `${ts.isCallExpression(call) ? "calling" : "constructing"} the built-in '${member.text}' through the global object in a program that assigns ${
+        written.has(member.text)
+          ? `'globalThis.${member.text}'`
+          : "a computed member of the global object"
+      } (it would reach the built-in, not the assigned value)`,
+    );
+  }
+  return member;
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
@@ -937,14 +980,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const consoleInstanceCall = lowerConsoleInstanceCall(lowerer, expr, loc);
   if (consoleInstanceCall) return consoleInstanceCall;
 
-  if (
-    ts.isPropertyAccessExpression(expr.expression) &&
-    TIMER_MODULE_MEMBERS.has(expr.expression.name.text) &&
-    lowerer.stdlibGlobalMember(expr.expression, "globalThis") === expr.expression.name.text
-  ) {
-    const served = lowerTimersMemberCall(lowerer, expr, expr.expression.name.text, loc);
-    if (served) return served;
-  }
+  // The built-in global this call names, bare or through the global
+  // object (`globalThis.setTimeout(…)`): one identifier for every
+  // recognizer below that goes by name and provenance.
+  const named = builtinCalleeName(lowerer, expr);
 
   // The timer globals — setTimeout/clearTimeout, setInterval/
   // clearInterval, setImmediate/clearImmediate. Provenance-checked (a
@@ -952,15 +991,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // symbol); the shared member dispatch also serves the node:timers
   // module forms (Node's timers module re-exports the globals).
   if (
-    ts.isIdentifier(expr.expression) &&
-    TIMER_MODULE_MEMBERS.has(expr.expression.text) &&
-    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined) &&
+    named !== null &&
+    TIMER_MODULE_MEMBERS.has(named.text) &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined) &&
     // A named/destructured node:timers/promises import shares the
     // spelling but is the PROMISIFIED surface (`await setTimeout(1)`)
     // — its own builtin-module lowering owns it below.
-    lowerer.builtinImportOf(expr.expression)?.module !== "timers/promises"
+    lowerer.builtinImportOf(named)?.module !== "timers/promises"
   ) {
-    const served = lowerTimersMemberCall(lowerer, expr, expr.expression.text, loc);
+    const served = lowerTimersMemberCall(lowerer, expr, named.text, loc);
     if (served) return served;
   }
 
@@ -973,9 +1012,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // nowhere — a documented residue: Node evaluates them). Provenance-
   // checked like setTimeout.
   if (
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === "queueMicrotask" &&
-    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+    named !== null &&
+    named.text === "queueMicrotask" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
   ) {
     if (expr.arguments.nodes.length === 0) {
       // Node: queueMicrotask() throws ERR_INVALID_ARG_TYPE at runtime
@@ -1024,9 +1063,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // Node's exact errors; the zero-argument call Node's
   // ERR_MISSING_ARGS. Provenance-checked like setTimeout.
   if (
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === "structuredClone" &&
-    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+    named !== null &&
+    named.text === "structuredClone" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
   ) {
     if (expr.arguments.nodes.length === 0) {
       return { kind: "libCall", fn: "dyn.cloneMissing", args: [], type: DYN, loc };
@@ -1307,15 +1346,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // typecheck — options objects, omitted encodings, Buffer data — so the
   // supported form is fenced here per site. Members with no lowering at
   // all (fs.watch, os.cpus, ...) fence with the module-qualified name.
-  if (ts.isIdentifier(expr.expression)) {
-    if (expr.expression.text === "Array" && lowerer.isStdlibGlobal(expr.expression, "Array")) {
+  if (named !== null) {
+    if (named.text === "Array" && lowerer.isStdlibGlobal(named, "Array")) {
       return lowerArrayConstructor(lowerer, expr, expr.arguments.nodes);
     }
     // A call through a compile-time util.promisify projection. execFile
     // keeps its custom result helper; ordinary builtins route through
     // their existing promise-module lowering.
     {
-      const sym = lowerer.resolveValueSymbol(expr.expression);
+      const sym = lowerer.resolveValueSymbol(named);
       const projection = sym ? lowerer.staticCallables.get(sym) : undefined;
       if (projection?.kind === "promisified-exec-file") {
         return lowerer.lowerExecFileAsyncCall(expr, loc);
@@ -1364,7 +1403,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const rf = sym ? httpClientFnBindingOf(lowerer, sym) : undefined;
       if (rf) return lowerHttpClientFnCall(lowerer, expr, rf, loc);
     }
-    if (threadsImportOf(lowerer.program, expr.expression) === "publish") {
+    if (threadsImportOf(lowerer.program, named) === "publish") {
       // @scriptc/threads publish(value): the same value, its graph made
       // immortal and immutable (backend/llvm/publish.ts).
       if (expr.arguments.nodes.length !== 1 || ts.isSpreadElement(expr.arguments.nodes[0]!))
@@ -1372,18 +1411,18 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const value = lowerer.lowerExpr(expr.arguments.nodes[0]!);
       return { kind: "intrinsic", name: "threads.publish", args: [value], type: value.type, loc };
     }
-    const bi = lowerer.builtinImportOf(expr.expression);
+    const bi = lowerer.builtinImportOf(named);
     if (bi) return lowerBuiltinCall(lowerer, expr, bi, loc);
     // A call through an alias of an http/https client function whose
     // declaration is another module's (`import { request } from "./net"`).
     {
-      const ref = httpClientFnRefOf(lowerer, expr.expression);
+      const ref = httpClientFnRefOf(lowerer, named);
       if (ref) return lowerHttpClientFnRefCall(lowerer, expr, ref, loc);
     }
     // A constant bound to an assert method (`const ok = assert.ok`) called
     // directly is that assertion, with the message Node quotes the call for.
     {
-      const alias = assertFunctionAliasOf(lowerer, expr.expression);
+      const alias = assertFunctionAliasOf(lowerer, named);
       const served = alias ? lowerer.lowerAssertModuleCall(expr, alias, loc) : null;
       if (served) return served;
     }
@@ -1410,8 +1449,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // `new Symbol()` throws in Node and is a checker error — the
     // generic new fence keeps it.
     if (
-      expr.expression.text === "Symbol" &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+      named.text === "Symbol" &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
     ) {
       if (expr.arguments.nodes.length > 1) {
         lowerer.noLowering(`Symbol with ${expr.arguments.nodes.length} arguments`, expr);
@@ -1445,19 +1484,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // ToNumber to any argument, then test like Number.isNaN /
     // Number.isFinite.
     if (
-      (expr.expression.text === "parseInt" ||
-        expr.expression.text === "isNaN" ||
-        expr.expression.text === "parseFloat" ||
-        expr.expression.text === "isFinite") &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+      (named.text === "parseInt" ||
+        named.text === "isNaN" ||
+        named.text === "parseFloat" ||
+        named.text === "isFinite") &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
     ) {
-      const parsed = lowerStaticNumberGlobal(
-        lowerer,
-        expr.expression.text,
-        expr,
-        expr.arguments.nodes,
-        loc,
-      );
+      const parsed = lowerStaticNumberGlobal(lowerer, named.text, expr, expr.arguments.nodes, loc);
       if (parsed !== null) return parsed;
     }
     // STATIC encodeURIComponent/encodeURI/decodeURIComponent
@@ -1471,13 +1504,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // THROWS the spec's URIError ("URI malformed") catchably and keeps
     // the string-only argument rule.
     if (
-      (expr.expression.text === "encodeURIComponent" ||
-        expr.expression.text === "encodeURI" ||
-        expr.expression.text === "decodeURI" ||
-        expr.expression.text === "decodeURIComponent") &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+      (named.text === "encodeURIComponent" ||
+        named.text === "encodeURI" ||
+        named.text === "decodeURI" ||
+        named.text === "decodeURIComponent") &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
     ) {
-      const name = expr.expression.text;
+      const name = named.text;
       if (expr.arguments.nodes.length !== 1) {
         lowerer.noLowering(
           `${name} with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
@@ -1516,18 +1549,18 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // Provenance like parseInt: a shadowing user function has a
     // different, non-stdlib symbol.
     if (
-      (expr.expression.text === "atob" || expr.expression.text === "btoa") &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+      (named.text === "atob" || named.text === "btoa") &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
     ) {
-      return lowerBase64Call(lowerer, expr, expr.expression.text, loc);
+      return lowerBase64Call(lowerer, expr, named.text, loc);
     }
 
     // global function executes — callFn(globalGet(name)) — and the
     // result exits to the declared static type. A user function
     // shadowing the name has a different, non-stdlib symbol.
-    const islFn = lowerer.stdlibGlobalFnOf(expr.expression);
+    const islFn = lowerer.stdlibGlobalFnOf(named);
     if (islFn && expr.arguments.nodes.length !== islFn.args.length) {
-      const name = expr.expression.text;
+      const name = named.text;
       lowerer.noLowering(
         `${name} with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
         expr,
@@ -1540,7 +1573,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // reading as if the global itself were unsupported.
       const argText = loweredArgumentText(lowerer, expr.arguments.nodes[0]!);
       lowerer.refuseUnsupportedApi(
-        `'${expr.expression.text}' with a '${argText}' argument`,
+        `'${named.text}' with a '${argText}' argument`,
         expr,
         "only a string argument compiles statically: convert the argument explicitly first (for example String(x), or narrow the union)",
       );

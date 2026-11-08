@@ -2776,6 +2776,7 @@ export function lowerDestructuringDecl(
     const tokenBound = stdlibGlobalTokenDestructure(lowerer, decl, isLet);
     if (tokenBound !== null) return tokenBound;
   }
+  refuseValuelessGlobalDestructure(lowerer, decl);
   let init =
     importMetaBindingSource(lowerer, decl.name, decl.initializer) ??
     nullishEmptyPatternSource(lowerer, decl.name, decl.initializer) ??
@@ -15379,5 +15380,52 @@ function refuseAssertionViewWrite(lowerer: Lowerer, decl: ts.VariableDeclaration
     "SC1090",
     decl,
     `writing '${write.text}' through '${decl.name.getText()}', a copy of the '${copy.source}' value the assertion views as '${copy.target}' (the write would land on the copy; write through the original binding, or declare the member on the value's type)`,
+  );
+}
+
+/** `const { setTimeout } = globalThis` in a TypeScript source. The global
+ * object answers `fetch` and `console` when the binding is read; a
+ * built-in function or constructor without a value of its own would end
+ * the program at that read ("reading globalThis.setTimeout through a
+ * stored global object"). Like `const f = setTimeout`, the binding is
+ * refused where it is written. */
+function refuseValuelessGlobalDestructure(lowerer: Lowerer, decl: ts.VariableDeclaration): void {
+  if (!ts.isObjectBindingPattern(decl.name) || decl.initializer === undefined) return;
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl))) return;
+  // The spelling first: most patterns have another source.
+  const source = withoutParenthesesTypeWrappers(decl.initializer);
+  if (!ts.isIdentifier(source) || (source.text !== "globalThis" && source.text !== "global"))
+    return;
+  if (stdlibGlobalNameOf(lowerer, source) !== "globalThis") return;
+  const globalType = lowerer.typeOf(source);
+  for (const el of decl.name.elements.nodes) {
+    const key = el.propertyName ?? el.name;
+    if (!ts.isIdentifier(key)) continue;
+    const member = lowerer.checker.getPropertyOfType(globalType, key.text);
+    if (member === undefined || !lowerer.isStdlibSymbol(member)) continue;
+    const canonical = ts.symbolName(member);
+    if (GLOBAL_OBJECT_ANSWERS.has(canonical) || !builtinMemberIsCallable(lowerer, member)) continue;
+    const use =
+      lowerer.checker.getConstructSignatures(lowerer.checker.getTypeOfSymbol(member)).length !== 0
+        ? `construct it through its name, 'new ${canonical}(...)' or 'new globalThis.${canonical}(...)'`
+        : `call it through its name, '${canonical}(...)' or 'globalThis.${canonical}(...)'`;
+    lowerer.unsupported(
+      "SC1031",
+      el,
+      `destructuring the built-in '${canonical}' from the global object (it has no value a compiled program can hold: ${use})`,
+    );
+  }
+}
+
+/** The members the global object answers itself when a binding of it is
+ * read (scr_node_builtin.c). */
+const GLOBAL_OBJECT_ANSWERS: ReadonlySet<string> = new Set(["console", "fetch"]);
+
+/** Whether a member of the global object is a function or a constructor. */
+function builtinMemberIsCallable(lowerer: Lowerer, member: ts.Symbol): boolean {
+  const type = lowerer.checker.getTypeOfSymbol(member);
+  return (
+    lowerer.checker.getCallSignatures(type).length !== 0 ||
+    lowerer.checker.getConstructSignatures(type).length !== 0
   );
 }

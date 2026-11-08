@@ -59,9 +59,11 @@ import {
   STR_METHODS,
   DYN_COLLECTION_CLASSES,
   type DynCollectionClass,
+  globalObjectMemberName,
   isChildSurfaceMember,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
+import { lowerIdentifierExpr } from "./identifiers.js";
 import {
   isGenericCallableMemberType,
   isLegacyUrlSymbol,
@@ -1181,6 +1183,29 @@ export function lowerPropertyAccessExpr(
     stdlibGlobalNameOf(lowerer, expr) === "crypto"
   ) {
     return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+  }
+  // In a TypeScript source, a built-in function or constructor read from
+  // the global object (`globalThis.setTimeout`, `global.URL`) is the read
+  // of its bare name: the value where the name has one, and where it has
+  // none the refusal the bare name gets when the program is built, not an
+  // error when the read runs. A program that assigns the member reads its
+  // own value back. A name Node does not define on the global object
+  // (Temporal, the CommonJS module bindings) is not concerned: its member
+  // read answers undefined where its bare name throws.
+  if (!expr.questionDotToken && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const member = globalObjectMemberName(lowerer, expr);
+    if (
+      member !== null &&
+      member.text !== TEMPORAL_GLOBAL &&
+      !COMMONJS_MODULE_BINDINGS.has(member.text) &&
+      builtinGlobalIsCallable(lowerer, member) &&
+      !globalThisWrittenNames(
+        lowerer,
+        lowerer.typeOf(staticallySelected(lowerer, expr.expression)),
+      ).has(member.text) &&
+      !lowerer.globalThisComputedWrite
+    )
+      return lowerIdentifierExpr(lowerer, member, loc);
   }
   // `globalThis.<name>` that no lowering above claimed
   // (globalThis.SubtleCrypto, globalThis.localStorage
@@ -6585,9 +6610,18 @@ function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | "varie
   return ts.isFunctionExpression(fn) ? contextualCallCount(lowerer, fn) : null;
 }
 
+/** Whether the built-in global `name` names is a function or a constructor. */
+function builtinGlobalIsCallable(lowerer: Lowerer, name: ts.Identifier): boolean {
+  const type = lowerer.typeOf(name);
+  return (
+    lowerer.checker.getCallSignatures(type).length !== 0 ||
+    lowerer.checker.getConstructSignatures(type).length !== 0
+  );
+}
+
 /** The property names the program assigns on the global object, through
  * `globalThis` or a binding of its type (`(_a = globalThis).x = v`). */
-function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<string> {
+export function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<string> {
   const known = lowerer.globalThisWrittenNames;
   if (known) return known;
   const names = new Set<string>();

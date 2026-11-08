@@ -218,6 +218,7 @@ import {
 import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
+  fenceHeldLoaderMember,
 } from "../builtins/module-resolution.js";
 import {
   builtinMethodValue,
@@ -428,6 +429,7 @@ export function lowerPropertyAccessExpr(
   // decides: the receiver may be a checked-dynamic value.
   if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.buffersMutable = true;
+  fenceHeldLoaderMember(lowerer, expr);
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `x.constructor`, `x.constructor.name` and a static read through

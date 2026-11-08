@@ -402,7 +402,7 @@ export class LlDyn {
       case "dyn.jsonParseHelper":
         return this.jsonParseHelper(args[0] as IrType)!;
       case "dyn.dynCheckHelper":
-        return this.dynCheckHelper(args[0] as IrType, args[1] as boolean);
+        return this.dynCheckHelper(args[0] as IrType, args[1] as boolean, args[2] === true);
       case "dyn.toDynHelper":
         return this.toDynHelper(args[0] as IrType);
       case "dyn.promiseDynAdapterHelper":
@@ -1475,6 +1475,79 @@ export class LlDyn {
     return arms === undefined || !arms.every(value);
   }
 
+  /** A collection that takes its typed layout in place holds the typed
+   * values its entries convert to. A plain untyped object or array converts
+   * by copy, at every depth of an entry, so one that anything else still
+   * references would leave the program with two objects where it had one:
+   * the named failure. `node` is the value about to convert to `type`,
+   * `own` the references the conversion itself accounts for (the holder's,
+   * and the read's when the read took one), `owner` names the collection
+   * in the message. */
+  private soleOwnerGuard(
+    B: BlockBuilder,
+    type: IrType,
+    node: string,
+    own: string,
+    path: string,
+    owner: string,
+    cleanup: () => void,
+  ): void {
+    if (!this.entryKeepsReferences(type)) return;
+    const host = this.host;
+    const kind = this.kindOf(B, node);
+    const isArr = B.tmp();
+    const isObj = B.tmp();
+    const plain = B.tmp();
+    const rc = B.tmp();
+    const held = B.tmp();
+    const shared = B.tmp();
+    B.line(`${isArr} = icmp eq i32 ${kind}, ${DYN_KIND.ARR}`);
+    B.line(`${isObj} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
+    B.line(`${plain} = or i1 ${isArr}, ${isObj}`);
+    B.line(`${rc} = load ${this.S}, ptr ${node}`);
+    B.line(`${held} = icmp ugt ${this.S} ${rc}, ${own}`);
+    B.line(`${shared} = and i1 ${plain}, ${held}`);
+    const lShared = B.newLabel("dc.shared");
+    const lSole = B.newLabel("dc.sole");
+    B.condBr(shared, lShared, lSole);
+    B.startBlock(lShared);
+    const wanted = host.cstr(
+      `${dynDesc(type, host.recordsById, host.unionsById)} that nothing else references (a typed ${owner} takes its entries without copying them)`,
+    );
+    host.declare(`declare void @scr_dyn_check_fail(ptr, ptr, ptr)`);
+    B.line(`call void @scr_dyn_check_fail(ptr ${path}, ptr ${wanted}, ptr ${node})`);
+    cleanup();
+    B.terminate(`ret ptr null`);
+    B.startBlock(lSole);
+  }
+
+  /** The references soleOwnerGuard accounts for in `value`, the member
+   * `key` of `%d` as a member read answered it (+1): two when the object's
+   * own data slot holds that value, one when a getter, a prototype or a
+   * proxy answered it (whatever else holds such a value shares it). */
+  private memberOwners(B: BlockBuilder, key: string, value: string): string {
+    const isObj = B.tmp();
+    B.line(`${isObj} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.OBJ}`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ${this.S}`);
+    B.line(`store ${this.S} 1, ptr ${slot}`);
+    const lOwn = B.newLabel("dc.ownslot");
+    const lJoin = B.newLabel("dc.owners");
+    B.condBr(isObj, lOwn, lJoin);
+    B.startBlock(lOwn);
+    const stored = this.objGetLit(B, "%d", key);
+    const same = B.tmp();
+    const count = B.tmp();
+    B.line(`${same} = icmp eq ptr ${stored}, ${value}`);
+    B.line(`${count} = select i1 ${same}, ${this.S} 2, ${this.S} 1`);
+    B.line(`store ${this.S} ${count}, ptr ${slot}`);
+    B.br(lJoin);
+    B.startBlock(lJoin);
+    const owners = B.tmp();
+    B.line(`${owners} = load ${this.S}, ptr ${slot}`);
+    return owners;
+  }
+
   /** The entry count of `map`, removed entries included, as a size. */
   private mapEntryCount(B: BlockBuilder, map: string): string {
     const count = this.loadMapHeaderField(B, map, MAP_HEADER.nentries);
@@ -1536,19 +1609,40 @@ export class LlDyn {
       B.startBlock(lDead);
       brNext();
       B.startBlock(lLive);
-      const side = (accessor: "key" | "value", match: string): void => {
-        if (accessor === "value") host.declare(`declare ptr @scr_map_dyn_value(ptr, double)`);
-        const d = B.tmp();
-        const ok = B.tmp();
-        B.line(`${d} = call ptr @scr_map_dyn_${accessor}(ptr ${s}, double ${at})`);
-        B.line(`${ok} = call zeroext i1 @${match}(ptr ${d})`);
-        B.line(`call void @scr_dyn_release(ptr ${d})`);
-        const lOk = B.newLabel("dmc.ok");
-        B.condBr(ok, lOk, lDrop);
-        B.startBlock(lOk);
-      };
-      side("key", keyMatch);
-      if (valueMatch !== null) side("value", valueMatch);
+      // Both sides are read before either is matched: a match can run the
+      // program's code (a getter), which may remove this entry.
+      const kd = B.tmp();
+      const vd = B.tmp();
+      B.line(`${kd} = call ptr @scr_map_dyn_key(ptr ${s}, double ${at})`);
+      if (valueMatch !== null) {
+        host.declare(`declare ptr @scr_map_dyn_value(ptr, double)`);
+        B.line(`${vd} = call ptr @scr_map_dyn_value(ptr ${s}, double ${at})`);
+      }
+      const keyOk = B.tmp();
+      B.line(`${keyOk} = call zeroext i1 @${keyMatch}(ptr ${kd})`);
+      B.line(`call void @scr_dyn_release(ptr ${kd})`);
+      let ok = keyOk;
+      if (valueMatch !== null) {
+        // A value is matched only behind a matching key, as before.
+        const lValue = B.newLabel("dmc.value");
+        const lJoin = B.newLabel("dmc.sides");
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca i1`);
+        B.line(`store i1 false, ptr ${slot}`);
+        B.condBr(keyOk, lValue, lJoin);
+        B.startBlock(lValue);
+        const valueOk = B.tmp();
+        B.line(`${valueOk} = call zeroext i1 @${valueMatch}(ptr ${vd})`);
+        B.line(`store i1 ${valueOk}, ptr ${slot}`);
+        B.br(lJoin);
+        B.startBlock(lJoin);
+        B.line(`call void @scr_dyn_release(ptr ${vd})`);
+        ok = B.tmp();
+        B.line(`${ok} = load i1, ptr ${slot}`);
+      }
+      const lOk = B.newLabel("dmc.ok");
+      B.condBr(ok, lOk, lDrop);
+      B.startBlock(lOk);
     });
     B.line(`call void @scr_map_release(ptr ${s})`);
     B.br(lYes);
@@ -1620,11 +1714,13 @@ export class LlDyn {
     const built = B.tmp();
     B.line(`${built} = ${construct}`);
     const count = this.mapEntryCount(B, s);
-    const keyCheck = this.dynCheckHelper(keyType, this.entryKeepsReferences(keyType));
+    // An entry converts for a sole owner: nothing at any depth of it is a
+    // copy of an object the program still reaches another way.
+    const keyKeeps = this.entryKeepsReferences(keyType);
+    const keyCheck = this.dynCheckHelper(keyType, keyKeeps, keyKeeps);
+    const valueKeeps = valueType !== null && this.entryKeepsReferences(valueType);
     const valueCheck =
-      valueType === null
-        ? null
-        : this.dynCheckHelper(valueType, this.entryKeepsReferences(valueType));
+      valueType === null ? null : this.dynCheckHelper(valueType, valueKeeps, valueKeeps);
     const kAcc = mapKeyAccess(keyType);
     const vAcc = valueType === null ? "f64" : elemAccess(valueType);
     const kTy = mapKeyParamType(kAcc);
@@ -1656,41 +1752,19 @@ export class LlDyn {
     const drop = (type: IrType, value: string): void => {
       if (isRefCounted(type)) B.line(`call void ${releaseSym(host, type)}(ptr ${value})`);
     };
+    // The untyped values of the entries as they are checked, in order (a
+    // key, and a value for a Map): held until the collection takes its
+    // layout, so the look after the checks finds each one by identity.
+    host.declare(`declare ptr @scr_dyn_new_arr()`);
+    host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+    const checkedValues = B.tmp();
+    B.line(`${checkedValues} = call ptr @scr_dyn_new_arr()`);
     const dropStorages = (): void => {
+      B.line(`call void @scr_dyn_release(ptr ${checkedValues})`);
       B.line(`call void @scr_map_release(ptr ${built})`);
       B.line(`call void @scr_map_release(ptr ${s})`);
     };
-    // A plain untyped object or array converts to a typed value by copy.
-    // One that something else still references would leave the collection
-    // holding another object than the program's: the named failure. (The
-    // storage holds one reference and this walk a second.)
-    const sharedPlainFails = (type: IrType, d: string, path: string, cleanup: () => void): void => {
-      if (type.kind === "dyn") return;
-      const node = this.kindOf(B, d);
-      const isArr = B.tmp();
-      const isObj = B.tmp();
-      const plain = B.tmp();
-      const rc = B.tmp();
-      const held = B.tmp();
-      const shared = B.tmp();
-      B.line(`${isArr} = icmp eq i32 ${node}, ${DYN_KIND.ARR}`);
-      B.line(`${isObj} = icmp eq i32 ${node}, ${DYN_KIND.OBJ}`);
-      B.line(`${plain} = or i1 ${isArr}, ${isObj}`);
-      B.line(`${rc} = load ${this.S}, ptr ${d}`);
-      B.line(`${held} = icmp ugt ${this.S} ${rc}, 2`);
-      B.line(`${shared} = and i1 ${plain}, ${held}`);
-      const lShared = B.newLabel("dcc.shared");
-      const lOwn = B.newLabel("dcc.own");
-      B.condBr(shared, lShared, lOwn);
-      B.startBlock(lShared);
-      const wanted = host.cstr(
-        `${dynDesc(type, host.recordsById, host.unionsById)} that nothing else references (a typed ${isMap ? "Map" : "Set"} takes its entries without copying them)`,
-      );
-      B.line(`call void @scr_dyn_check_fail(ptr ${path}, ptr ${wanted}, ptr ${d})`);
-      cleanup();
-      B.terminate(`ret ptr null`);
-      B.startBlock(lOwn);
-    };
+    const owner = isMap ? "Map" : "Set";
     this.i64Loop(B, "dcc", count, (i, brNext) => {
       const at = B.tmp();
       const live = B.tmp();
@@ -1710,65 +1784,110 @@ export class LlDyn {
       storePath(entryPath, "%path", ordinal);
       const keyPath = isMap ? sidePath : entryPath;
       if (isMap) storePath(sidePath, entryPath, "0");
+      // Both sides are read before either is checked: a check can run the
+      // program's code (a getter), which may remove this entry. The handles
+      // move into the held list, which also counts as the walk's reference
+      // in soleOwnerGuard (the storage holds the other).
       const kd = B.tmp();
-      const k = B.tmp();
       B.line(`${kd} = call ptr @scr_map_dyn_key(ptr ${s}, double ${at})`);
+      B.line(`call void @scr_dyn_arr_push(ptr ${checkedValues}, ptr ${kd})`);
+      const vd = B.tmp();
+      if (valueType !== null) {
+        host.declare(`declare ptr @scr_map_dyn_value(ptr, double)`);
+        B.line(`${vd} = call ptr @scr_map_dyn_value(ptr ${s}, double ${at})`);
+        B.line(`call void @scr_dyn_arr_push(ptr ${checkedValues}, ptr ${vd})`);
+      }
+      const k = B.tmp();
       B.line(`${k} = call ${this.valTy(keyType)} @${keyCheck}(ptr ${kd}, ptr ${keyPath})`);
-      const dropKeySource = (): void => {
-        B.line(`call void @scr_dyn_release(ptr ${kd})`);
-        dropStorages();
-      };
-      this.pendingBail(B, "dcc.key", dropKeySource, "ptr null", keyType, k);
+      this.pendingBail(B, "dcc.key", dropStorages, "ptr null", keyType, k);
       const dropKey = (): void => {
         drop(keyType, k);
-        dropKeySource();
+        dropStorages();
       };
-      sharedPlainFails(keyType, kd, keyPath, dropKey);
+      this.soleOwnerGuard(B, keyType, kd, "2", keyPath, owner, dropKey);
       let v = f64Lit(0);
       if (valueType !== null && valueCheck !== null) {
-        host.declare(`declare ptr @scr_map_dyn_value(ptr, double)`);
         storePath(sidePath, entryPath, "1");
-        const vd = B.tmp();
         v = B.tmp();
-        B.line(`${vd} = call ptr @scr_map_dyn_value(ptr ${s}, double ${at})`);
         B.line(`${v} = call ${this.valTy(valueType)} @${valueCheck}(ptr ${vd}, ptr ${sidePath})`);
-        const dropValueSource = (): void => {
-          B.line(`call void @scr_dyn_release(ptr ${vd})`);
-          dropKey();
-        };
-        this.pendingBail(B, "dcc.value", dropValueSource, "ptr null", valueType, v);
+        this.pendingBail(B, "dcc.value", dropKey, "ptr null", valueType, v);
         const made = v;
-        sharedPlainFails(valueType, vd, sidePath, () => {
+        this.soleOwnerGuard(B, valueType, vd, "2", sidePath, owner, () => {
           drop(valueType, made);
-          dropValueSource();
+          dropKey();
         });
-        B.line(`call void @scr_dyn_release(ptr ${vd})`);
       }
       // The key is borrowed (the storage retains what it keeps); the value
       // moves in.
       B.line(`call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${k}, ${vTy} ${v})`);
       drop(keyType, k);
-      B.line(`call void @scr_dyn_release(ptr ${kd})`);
     });
-    // Two entries that became one key, or a collection that changed while
-    // its entries were checked (a getter ran): the named failure.
-    const builtLive = this.loadMapHeaderField(B, built, MAP_HEADER.nlive);
-    const sourceLive = this.loadMapHeaderField(B, s, MAP_HEADER.nlive);
-    const sourceCount = this.mapEntryCount(B, s);
-    const sameLive = B.tmp();
-    const sameCount = B.tmp();
-    const steady = B.tmp();
-    B.line(`${sameLive} = icmp eq i32 ${builtLive}, ${sourceLive}`);
-    B.line(`${sameCount} = icmp eq ${this.S} ${sourceCount}, ${count}`);
-    B.line(`${steady} = and i1 ${sameLive}, ${sameCount}`);
+    // The collection must still be, entry for entry, what was checked: a
+    // check can run the program's code (a getter), which may have written,
+    // removed or added entries meanwhile, and the typed layout holds what
+    // the checks saw. Every live entry is compared by identity with the
+    // held values; nothing runs between this look and the exchange below.
+    // Two entries that became one key fail here too. The named failure.
     const lTake = B.newLabel("dcc.take");
     const lChanged = B.newLabel("dcc.changed");
+    const checkedItems = this.itemsOf(B, checkedValues);
+    const checkedLength = this.lenOf(B, checkedValues);
+    B.line(`store ${this.S} 0, ptr ${ordinalSlot}`);
+    this.i64Loop(B, "dcs", this.mapEntryCount(B, s), (i, brNext) => {
+      const at = B.tmp();
+      const live = B.tmp();
+      B.line(`${at} = ${sizeToDouble(this.S)} ${this.S} ${i} to double`);
+      B.line(`${live} = call zeroext i1 @scr_map_iter_live(ptr ${s}, double ${at})`);
+      const lLive = B.newLabel("dcs.live");
+      const lDead = B.newLabel("dcs.dead");
+      B.condBr(live, lLive, lDead);
+      B.startBlock(lDead);
+      brNext();
+      B.startBlock(lLive);
+      const position = B.tmp();
+      const known = B.tmp();
+      B.line(`${position} = load ${this.S}, ptr ${ordinalSlot}`);
+      B.line(`${known} = icmp ult ${this.S} ${position}, ${checkedLength}`);
+      const lKnown = B.newLabel("dcs.known");
+      B.condBr(known, lKnown, lChanged);
+      B.startBlock(lKnown);
+      const side = (accessor: "key" | "value", offset: number): void => {
+        const index = B.tmp();
+        const now = B.tmp();
+        const same = B.tmp();
+        B.line(`${index} = add ${this.S} ${position}, ${offset}`);
+        B.line(`${now} = call ptr @scr_map_dyn_${accessor}(ptr ${s}, double ${at})`);
+        B.line(`${same} = icmp eq ptr ${now}, ${this.itemAt(B, checkedItems, index)}`);
+        B.line(`call void @scr_dyn_release(ptr ${now})`);
+        const lSame = B.newLabel("dcs.same");
+        B.condBr(same, lSame, lChanged);
+        B.startBlock(lSame);
+      };
+      side("key", 0);
+      if (isMap) side("value", 1);
+      const following = B.tmp();
+      B.line(`${following} = add ${this.S} ${position}, ${isMap ? 2 : 1}`);
+      B.line(`store ${this.S} ${following}, ptr ${ordinalSlot}`);
+    });
+    const compared = B.tmp();
+    const complete = B.tmp();
+    const sameLive = B.tmp();
+    const steady = B.tmp();
+    B.line(`${compared} = load ${this.S}, ptr ${ordinalSlot}`);
+    B.line(`${complete} = icmp eq ${this.S} ${compared}, ${checkedLength}`);
+    B.line(
+      `${sameLive} = icmp eq i32 ${this.loadMapHeaderField(B, built, MAP_HEADER.nlive)}, ${this.loadMapHeaderField(B, s, MAP_HEADER.nlive)}`,
+    );
+    B.line(`${steady} = and i1 ${complete}, ${sameLive}`);
     B.condBr(steady, lTake, lChanged);
     B.startBlock(lChanged);
     dropStorages();
-    B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${typeArg}, ptr %d)`);
+    B.line(
+      `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr(`${dynDesc(t, host.recordsById, host.unionsById)} whose entries stay as they are while they are checked`)}, ptr %d)`,
+    );
     B.terminate(`ret ptr null`);
     B.startBlock(lTake);
+    B.line(`call void @scr_dyn_release(ptr ${checkedValues})`);
     // The collection takes the typed layout: the two headers exchange
     // their kinds, adapters, counts and tables. The collection keeps its
     // own reference count, flags and iteration depth, and its collector
@@ -2951,15 +3070,23 @@ export class LlDyn {
     return name;
   }
 
-  dynCheckHelper(t: IrType, preserveRefs = false): string {
+  dynCheckHelper(t: IrType, preserveRefs = false, soleOwner = false): string {
     // A `(T | undefined)[]` stored as T elements also takes undefined ones.
     const key = checkedConversionKey(t);
-    const builderKey = preserveRefs ? `identity:${key}` : key;
+    // A conversion for a sole owner (an entry of a collection that takes its
+    // typed layout in place) differs only where a plain object or array is
+    // copied member by member (soleOwnerGuard).
+    const sole = soleOwner && (t.kind === "record" || t.kind === "array" || t.kind === "union");
+    const builderKey = sole ? `sole:${key}` : preserveRefs ? `identity:${key}` : key;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
     const name = `sc_dc_${this.dynBuilders.size}`;
     this.dynBuilders.set(builderKey, name);
-    this.host.journalAllocated?.(name, "dyn.dynCheckHelper", [t, preserveRefs]);
+    this.host.journalAllocated?.(
+      name,
+      "dyn.dynCheckHelper",
+      sole ? [t, preserveRefs, true] : [t, preserveRefs],
+    );
     const recursive = this.isRecursiveShape(t);
     const memo = !recursive && this.holdsRecursiveShape(t) && this.valTy(t) === "ptr";
     const host = this.host;
@@ -3556,9 +3683,14 @@ export class LlDyn {
           byIndex.forEach((f, i) => {
             setPath(null, `${i}`);
             const e = this.itemAt(B, items, `${i}`);
+            if (sole)
+              this.soleOwnerGuard(B, f.type, e, "1", pathSlot, "Map or Set", () => {
+                releaseR();
+                this.releaseIslandSource(B, source, owned);
+              });
             const v = B.tmp();
             B.line(
-              `${v} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs)}(ptr ${e}, ptr ${pathSlot})`,
+              `${v} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs, sole)}(ptr ${e}, ptr ${pathSlot})`,
             );
             storeInto(f.name, f.type, v);
             releaseInline(f.type, v);
@@ -3649,9 +3781,23 @@ export class LlDyn {
             "ptr null",
           );
           setPath(f.name, "0");
+          if (sole && this.entryKeepsReferences(f.type))
+            this.soleOwnerGuard(
+              B,
+              f.type,
+              m,
+              this.memberOwners(B, f.name, m),
+              pathSlot,
+              "Map or Set",
+              () => {
+                B.line(`call void @${release}(ptr ${m})`);
+                releaseR();
+                this.releaseIslandSource(B, src, srcOwned);
+              },
+            );
           const value = B.tmp();
           B.line(
-            `${value} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs)}(ptr ${m}, ptr ${pathSlot})`,
+            `${value} = call ${this.valTy(f.type)} @${this.dynCheckHelper(f.type, preserveRefs, sole)}(ptr ${m}, ptr ${pathSlot})`,
           );
           B.line(`call void @${release}(ptr ${m})`);
           storeInto(f.name, f.type, value);
@@ -3748,9 +3894,14 @@ export class LlDyn {
               ev = this.retainDyn(B, ent.value);
             } else {
               setPathKeyPtr(ent.key);
+              if (sole)
+                this.soleOwnerGuard(B, iv, ent.value, "1", pathSlot, "Map or Set", () => {
+                  releaseR();
+                  this.releaseIslandSource(B, src, srcOwned);
+                });
               ev = B.tmp();
               B.line(
-                `${ev} = call ${this.valTy(iv)} @${this.dynCheckHelper(iv, preserveRefs)}(ptr ${ent.value}, ptr ${pathSlot})`,
+                `${ev} = call ${this.valTy(iv)} @${this.dynCheckHelper(iv, preserveRefs, sole)}(ptr ${ent.value}, ptr ${pathSlot})`,
               );
               this.pendingBail(
                 B,
@@ -3802,7 +3953,7 @@ export class LlDyn {
       }
       case "array": {
         const elem = t.elem;
-        const c = this.dynCheckHelper(elem, preserveRefs);
+        const c = this.dynCheckHelper(elem, preserveRefs, sole);
         const { source, owned } = this.arraySource(B, () => B.terminate(`ret ptr null`));
         requireKind(DYN_KIND.ARR, "dca", source);
         const n = this.lenOf(B, source);
@@ -3861,6 +4012,12 @@ export class LlDyn {
             B.br(doneLabel);
             B.startBlock(checkLabel);
           }
+          if (sole)
+            this.soleOwnerGuard(B, elem, e, "1", pathSlot, "Map or Set", () => {
+              host.declare(`declare void @scr_arr_release(ptr)`);
+              B.line(`call void @scr_arr_release(ptr ${a})`);
+              this.releaseIslandSource(B, source, owned);
+            });
           const v = B.tmp();
           B.line(`${v} = call ${this.valTy(elem)} @${c}(ptr ${e}, ptr ${pathSlot})`);
           this.pendingBail(
@@ -3914,7 +4071,7 @@ export class LlDyn {
             const x = B.tmp();
             const u = B.tmp();
             B.line(
-              `${x} = call double @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+              `${x} = call double @${this.dynCheckHelper(arm, preserveRefs, sole)}(ptr %d, ptr %path)`,
             );
             B.line(`${u} = call ptr @scr_union_new_f64(i32 ${i}, double ${x})`);
             B.terminate(`ret ptr ${u}`);
@@ -3923,7 +4080,7 @@ export class LlDyn {
             const x = B.tmp();
             const u = B.tmp();
             B.line(
-              `${x} = call zeroext i1 @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+              `${x} = call zeroext i1 @${this.dynCheckHelper(arm, preserveRefs, sole)}(ptr %d, ptr %path)`,
             );
             B.line(`${u} = call ptr @scr_union_new_bool(i32 ${i}, i1 ${x})`);
             B.terminate(`ret ptr ${u}`);
@@ -3932,7 +4089,7 @@ export class LlDyn {
             const x = B.tmp();
             trustedCall(() =>
               B.line(
-                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs, sole)}(ptr %d, ptr %path)`,
               ),
             );
             B.terminate(`ret ptr ${x}`);
@@ -3943,7 +4100,7 @@ export class LlDyn {
             const u = B.tmp();
             trustedCall(() =>
               B.line(
-                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs, sole)}(ptr %d, ptr %path)`,
               ),
             );
             B.line(

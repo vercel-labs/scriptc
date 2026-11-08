@@ -2507,4 +2507,102 @@ attempt("first view after that loop", () => invoke(total, pruned));
     );
     expect(r.stderr).toBe("");
   });
+
+  test("an entry of an untyped Map or Set converts only when nothing else holds what it holds, and the collection must not change while it is checked", async () => {
+    // A typed collection takes its entries without copying them: a plain
+    // object or array converts to a typed value, so one that the program
+    // still reaches another way, at any depth of an entry, would become
+    // two objects. Node, which converts nothing, runs these; here they
+    // throw by name with the path of the held value. So does a collection
+    // that a getter of an entry writes to while the entries are checked.
+    const r = await compileAndRun(
+      "untyped-collection-typed-slot-held-members",
+      `function invoke(callee: unknown, argument: unknown): unknown {
+  if (typeof callee === "function") return callee(argument);
+  return undefined;
+}
+function attempt(label: string, body: () => unknown): void {
+  try {
+    console.log(label + ": " + String(body()));
+  } catch (error) {
+    console.log(label + ": " + (error instanceof TypeError) + " " + (error as Error).message);
+  }
+}
+interface Stay {
+  room: number;
+  guests: string[];
+}
+interface Pair {
+  first: Stay;
+  second: Stay;
+}
+function rooms(byGuest: Map<string, Stay>): number {
+  let sum = 0;
+  for (const [, stay] of byGuest) sum += stay.room;
+  return sum;
+}
+function listed(all: Set<Stay[]>): number {
+  return all.size;
+}
+function paired(all: Map<string, Pair>): number {
+  return all.size;
+}
+function stayWith(guests: unknown): unknown {
+  const stay: any = JSON.parse('{"room":4}');
+  stay.guests = guests;
+  return stay;
+}
+function listOf(stay: unknown): unknown {
+  const list: any = JSON.parse("[null]");
+  list[0] = stay;
+  return list;
+}
+function twice(): unknown {
+  const pair: any = JSON.parse("{}");
+  pair.first = JSON.parse('{"room":2,"guests":[]}');
+  pair.second = pair.first;
+  return pair;
+}
+attempt("members of its own", () => invoke(rooms, new Map<unknown, unknown>([["ada", stayWith(JSON.parse('["bo"]'))]])));
+const guests: unknown = JSON.parse('["ada"]');
+attempt("a member something else holds", () => invoke(rooms, new Map<unknown, unknown>([["ada", stayWith(guests)]])));
+const kept: unknown = JSON.parse('{"room":2,"guests":[]}');
+attempt("an element something else holds", () => invoke(listed, new Set<unknown>([listOf(kept)])));
+attempt("one object under two members", () => invoke(paired, new Map<unknown, unknown>([["p", twice()]])));
+const changing = new Map<unknown, unknown>();
+let acted = false;
+function watched(): unknown {
+  const stay: any = JSON.parse('{"guests":[]}');
+  Object.defineProperty(stay, "room", {
+    enumerable: true,
+    get: () => {
+      if (!acted) {
+        acted = true;
+        changing.set("ada", JSON.parse('{"room":9,"guests":[]}'));
+      }
+      return 1;
+    },
+  });
+  return stay;
+}
+changing.set("ada", JSON.parse('{"room":4,"guests":[]}'));
+changing.set("bo", watched());
+attempt("an entry written while the entries are checked", () => invoke(rooms, changing));
+attempt("the same collection afterwards", () => invoke(rooms, changing));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "members of its own: 4",
+        "a member something else holds: true expected array that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][1].guests, got array",
+        "an element something else holds: true expected object that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][0], got object",
+        "one object under two members: true expected object that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][1].first, got object",
+        "an entry written while the entries are checked: true expected Map whose entries stay as they are while they are checked at $[0], got Map",
+        "the same collection afterwards: 10",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
+  });
 });

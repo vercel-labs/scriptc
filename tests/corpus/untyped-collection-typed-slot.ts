@@ -238,3 +238,33 @@ console.log("crossing after a removal", invoke(total, pruned), describeUntyped(p
 let after = "";
 for (const [key] of pruned) after += String(key);
 console.log("untyped iteration after", after);
+
+// An entry that holds plain objects and arrays of its own, at depth, is one
+// entry for both sides. What it holds under a member typed unknown may be
+// held elsewhere too: nothing there is converted.
+interface Stay {
+  room: number;
+  guests: string[];
+  host: { name: string; visits: number[] };
+  note: unknown;
+}
+const remark: unknown = JSON.parse('["late"]');
+function stays(): unknown {
+  const stay: any = JSON.parse('{"room":4,"guests":["ada"],"host":{"name":"bo","visits":[1]}}');
+  stay.note = remark;
+  const byGuest = new Map<unknown, unknown>();
+  byGuest.set("ada", stay);
+  return byGuest;
+}
+function extend(byGuest: Map<string, Stay>): string {
+  const stay = byGuest.get("ada");
+  if (stay === undefined) return "none";
+  stay.guests.push("cy");
+  stay.host.visits.push(stay.host.visits.length + 1);
+  return stay.guests.join("+") + " " + stay.host.name + " " + stay.host.visits.join("+") + " " + String(stay.note === remark);
+}
+const lodging = stays();
+console.log("an entry with members of its own", invoke(extend, lodging));
+console.log("seen by the untyped side", JSON.stringify((lodging as Map<unknown, unknown>).get("ada")));
+console.log("the same entry again", invoke(extend, lodging));
+console.log("held under an unknown member", JSON.stringify(remark));

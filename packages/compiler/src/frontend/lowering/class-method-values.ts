@@ -387,7 +387,7 @@ export function classMethodValue(
 /** A method declaration's own `length`, as Node counts it: the parameters
  * before the first one with a default or a rest. A `this` parameter is a
  * type, not a parameter. */
-function declaredLength(member: ts.MethodDeclaration): number {
+export function declaredLength(member: ts.MethodDeclaration): number {
   const parameters = member.parameters.nodes.filter((parameter) => !isThisParameter(parameter));
   const stop = parameters.findIndex(
     (parameter) => parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined,
@@ -453,7 +453,7 @@ function classMethodMember(
 /** Whether a method's source reads its receiver: `this` or `super` in its
  * parameters or body, outside nested functions and classes, which bind
  * their own (arrow functions see the method's). */
-function readsReceiver(member: ts.MethodDeclaration | ts.AccessorDeclaration): boolean {
+export function readsReceiver(member: ts.MethodDeclaration | ts.AccessorDeclaration): boolean {
   const reads = (node: ts.Node): boolean => {
     if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword)
       return true;

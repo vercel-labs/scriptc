@@ -56,7 +56,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
-import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
+import { mangleFunction, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llvmCommentText } from "./common.js";
 import { JS_BITS } from "./jsval-encoding.js";
@@ -261,6 +261,10 @@ export interface DynHost extends WalkerHost {
    * arguments as `className`'s (classValueAbiEquals): the class values a
    * checked `classval` slot accepts besides its own class. */
   classValueSubtypes(className: string): readonly string[];
+  /** The helper that defines the static members of `className` in the
+   * table of its constructor seen as a dynamic value
+   * (IrClassDef.staticsHelper), when the class has one. */
+  classStaticsHelper?(className: string): string | undefined;
   /** emitter.ts's pendingTestLines: the inline pending-exception test. */
   pendingTestLines(dest: string): string[];
   /** The closures with a jsval body (IrFunction.jsEntry) on targets with
@@ -4130,6 +4134,29 @@ export class LlDyn {
         host.declare(`declare ptr @scr_dyn_new_class(ptr, ptr)`);
         const r = B.tmp();
         B.line(`${r} = call ptr @scr_dyn_new_class(ptr %v, ptr ${host.cstr(key)})`);
+        const statics = host.classStaticsHelper?.(t.className);
+        if (statics !== undefined) {
+          // The first conversion of the constructor defines its class's
+          // static members in the table the runtime just created.
+          host.declare(`declare zeroext i1 @scr_dyn_class_statics_begin(ptr)`);
+          const begin = B.tmp();
+          B.line(`${begin} = call zeroext i1 @scr_dyn_class_statics_begin(ptr ${r})`);
+          const define = B.newLabel("cs.define");
+          const done = B.newLabel("cs.done");
+          B.condBr(begin, define, done);
+          B.startBlock(define);
+          B.line(`call void @${mangleFunction(statics)}()`);
+          // The helper may have made the class stand for another one as a
+          // dynamic value (an instantiation of a generic class, whose
+          // declaration is one class object in JavaScript): the value made
+          // before it ran does not carry that identity, a new one does.
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_release(ptr ${r})`);
+          const again = B.tmp();
+          B.line(`${again} = call ptr @scr_dyn_new_class(ptr %v, ptr ${host.cstr(key)})`);
+          B.terminate(`ret ptr ${again}`);
+          B.startBlock(done);
+        }
         B.terminate(`ret ptr ${r}`);
         break;
       }

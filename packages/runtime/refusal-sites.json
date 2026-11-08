@@ -991,7 +991,13 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_dyn_namespace_member_fence",
+  "function": "scr_dyn_class_static_fence",
+  "message": "scriptc: replacing, redefining or deleting a compiled class's member through unknown is not supported",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_member_fence",
   "message": "Replacing or deleting a Math, JSON or Reflect member is not supported",
   "code": "SC1090"
  },

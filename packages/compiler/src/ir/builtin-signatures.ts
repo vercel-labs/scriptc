@@ -4747,6 +4747,13 @@ function buildLibFnSignatures() {
     "dyn.classPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.classBasePrototype": { argTypes: [DYN], result: DYN },
     "dyn.classInherit": { argTypes: [DYN, DYN], result: DYN },
+    /** Marks a member of a compiled class's static table as backed by
+     * native storage (scr_dyn_class_static_slot); answers the constructor. */
+    "dyn.classStaticSlot": { argTypes: [DYN, DYN], result: DYN },
+    /** Makes the constructor of an instantiation of a generic class answer
+     * with the static table of another of that class, and the two one value
+     * to identity (scr_dyn_class_share); answers the constructor. */
+    "dyn.classShare": { argTypes: [DYN, DYN], result: DYN },
     /** EventEmitter (0), Stream (1), Readable (2), Writable (3), Duplex (4),
      * Transform (5) and PassThrough (6) as untyped constructor values, one
      * per thread (scr_dyn_builtin_class.c). */

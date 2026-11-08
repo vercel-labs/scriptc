@@ -56,7 +56,17 @@ SCR_TL const ScrHandleStreamHooks *scr_handle_stream_hooks = NULL;
 /* Static member calls (`Math.abs(x)`) do not read the namespace objects,
  * so replacing or deleting one of their function members would not reach
  * those calls: the change throws instead. */
-static void scr_dyn_namespace_member_fence(void) {
+static void scr_dyn_class_static_fence(void) {
+  static const char message[] =
+      "scriptc: replacing, redefining or deleting a compiled class's member through unknown is not supported";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "SC1090");
+}
+
+static void scr_dyn_member_fence(const ScrDynEntry *entry) {
+  if (entry->native_data) {
+    scr_dyn_class_static_fence();
+    return;
+  }
   static const char message[] = "Replacing or deleting a Math, JSON or Reflect member is not supported";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");
 }
@@ -2556,7 +2566,7 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
   if (existing) {
     if (existing->fenced) {
       scr_dyn_release(value);
-      scr_dyn_namespace_member_fence();
+      scr_dyn_member_fence(existing);
       return;
     }
     if (existing->accessor || !existing->writable) {
@@ -2600,6 +2610,7 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
   e->setter = NULL;
   e->accessor = false;
   e->fenced = false;
+  e->native_data = false;
   e->writable = true;
   e->enumerable = true;
   e->configurable = true;
@@ -4020,6 +4031,19 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   if (value->kind == SCR_DYN_OBJ) {
     ScrDynEntry *entry = scr_dyn_entry((ScrDyn *)value, key);
     if (!entry || entry->class_view) return scr_dyn_retain(scr_dyn_undefined());
+    if (entry->accessor && entry->native_data) {
+      /* A compiled class's static field: the data property it is. A field
+       * TypeScript declares readonly is writable in JavaScript, and its
+       * descriptor says so; a write to it throws for the missing setter. */
+      ScrDyn *held = scr_dyn_call(entry->getter, NULL, 0, "static field");
+      if (!held) return NULL;
+      ScrDyn *out = scr_dyn_new_obj();
+      scr_dyn_obj_set(out, "value", 5, held);
+      scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(true));
+      scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(entry->enumerable));
+      scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(entry->configurable));
+      return out;
+    }
     ScrDyn *out = scr_dyn_new_obj();
     if (entry->accessor) {
       scr_dyn_obj_set(out, "get", 3, scr_dyn_retain(entry->getter ? entry->getter : scr_dyn_undefined()));
@@ -7824,12 +7848,31 @@ static ScrDyn *scr_dyn_class_call(ScrClosure *closure, ScrDyn *const *args, size
 
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key) {
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  if (cls->static_data) closure->props = scr_box_retain(cls->static_data);
+  /* The class object as a dynamic value: itself, or for an instantiation
+   * of a generic class the class object its table slot names
+   * (scr_dyn_class_share), which is a module-level class and outlives every
+   * value. That one carries the identity and the static table. */
+  ScrClassObj *identity = cls;
+  if (cls->static_data) {
+    ScrDyn *held = scr_box_get_ref(cls->static_data);
+    if (held && held->kind == SCR_DYN_FUNC && held->v.fn.class_obj) identity = held->v.fn.class_obj;
+    scr_dyn_release(held);
+  }
+  if (identity->static_data) closure->props = scr_box_retain(identity->static_data);
   closure->caps[0] = scr_box_new_obj(scr_classobj_retain_v, scr_classobj_release_v, scr_classobj_trace_v);
   scr_box_set_ref(closure->caps[0], scr_classobj_retain(cls));
   ScrDyn *value = scr_dyn_new_func(closure, scr_dyn_class_call, (uint32_t)cls->length, type_key, cls->name->data);
-  value->v.fn.class_obj = cls; /* borrowed from the closure */
+  value->v.fn.class_obj = identity; /* borrowed: the closure's, or a module-level class */
   return value;
+}
+
+/* The class object a constructor value constructs and casts to (borrowed
+ * from its closure): its own, which for an instantiation of a generic
+ * class is not the one that carries its identity. */
+static ScrClassObj *scr_dyn_class_own(const ScrDyn *value) {
+  ScrClassObj *own = scr_box_get_ref(value->v.fn.clo->caps[0]);
+  scr_classobj_release(own); /* the closure keeps it */
+  return own;
 }
 
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key) {
@@ -7846,7 +7889,7 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
     scr_dyn_check_fail(path, "class constructor", value);
     return NULL;
   }
-  return scr_classobj_retain(value->v.fn.class_obj);
+  return scr_classobj_retain(scr_dyn_class_own(value));
 }
 
 /* The compiler exposes this data view only for named data accesses and
@@ -8771,7 +8814,7 @@ void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn 
                                            : scr_dyn_find_linear_entry(obj, key, key_len);
   if (existing && existing->fenced) {
     scr_dyn_release(value);
-    scr_dyn_namespace_member_fence();
+    scr_dyn_member_fence(existing);
     return;
   }
   if (existing && !existing->accessor) {
@@ -9063,6 +9106,66 @@ ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
   scr_dyn_release(table);
   scr_dyn_release(result);
   return scr_exc_pending() ? NULL : scr_dyn_retain(constructor);
+}
+
+/* The static table of a compiled class, on the first conversion of its
+ * constructor to a dynamic value. Creating it here, before the compiler's
+ * helper defines the members, is what ends the recursion: the helper
+ * converts the constructor again to define them on it. */
+bool scr_dyn_class_statics_begin(ScrDyn *constructor) {
+  if (constructor->kind != SCR_DYN_FUNC || !constructor->v.fn.class_obj ||
+      constructor->v.fn.class_obj->static_data)
+    return false;
+  scr_dyn_release(scr_dyn_fn_table(constructor));
+  return true;
+}
+
+/* Makes the class object of `constructor`, an instantiation of a generic
+ * class, stand for `first` as a dynamic value: `first` is the first
+ * constructor of that class that became one (itself when it is the first).
+ * JavaScript has one class object per declaration, so every constructor
+ * value made from this class object afterwards carries the identity and the
+ * static table of `first` (scr_dyn_new_class) and keeps its own type key
+ * and class object for construction and the checked cast. The class
+ * object's table slot holds `first` from here on; the constructor values
+ * made before this call keep the table they had and are dropped by the
+ * conversion that made them. Returns the constructor (+1). */
+ScrDyn *scr_dyn_class_share(ScrDyn *constructor, ScrDyn *first) {
+  if (constructor->kind != SCR_DYN_FUNC || !constructor->v.fn.class_obj || first->kind != SCR_DYN_FUNC ||
+      !first->v.fn.class_obj) {
+    static const char message[] = "Sharing a static table requires native constructors";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrClassObj *cls = scr_dyn_class_own(constructor);
+  if (cls != first->v.fn.class_obj) {
+    scr_dyn_release(scr_dyn_fn_table(first));
+    ScrBox *alias = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
+    scr_box_set_ref(alias, scr_dyn_retain(first));
+    ScrBox *old = cls->static_data;
+    cls->static_data = alias;
+    scr_box_release(old);
+  }
+  return scr_dyn_retain(constructor);
+}
+
+/* Marks the member the helper just defined as backed by native storage: a
+ * field's accessor pair, or a method's value (which also fences, since typed
+ * calls reach the method without reading the table). Returns the
+ * constructor (+1). */
+ScrDyn *scr_dyn_class_static_slot(ScrDyn *constructor, ScrDyn *key) {
+  /* A prototype object's method is marked the same way: typed calls bypass
+   * it too. */
+  if ((constructor->kind == SCR_DYN_FUNC || constructor->kind == SCR_DYN_OBJ) && key->kind == SCR_DYN_STR) {
+    ScrDyn *table = constructor->kind == SCR_DYN_OBJ ? scr_dyn_retain(constructor) : scr_dyn_fn_table(constructor);
+    ScrDynEntry *entry = scr_dyn_entry(table, key->v.str);
+    if (entry) {
+      entry->native_data = true;
+      if (!entry->accessor) entry->fenced = true;
+    }
+    scr_dyn_release(table);
+  }
+  return scr_dyn_retain(constructor);
 }
 
 /* Defines `key` on target as a writable, configurable, non-enumerable data
@@ -11376,11 +11479,17 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
     return NULL;
   }
+  if (prior && prior->native_data && prior->accessor) {
+    scr_dyn_descriptor_fields_drop(fields);
+    scr_str_release(name);
+    scr_dyn_class_static_fence();
+    return NULL;
+  }
   if (prior && prior->fenced &&
       (accessor || (value && !scr_dyn_property_same_value(prior->value, value)))) {
     scr_dyn_descriptor_fields_drop(fields);
     scr_str_release(name);
-    scr_dyn_namespace_member_fence();
+    scr_dyn_member_fence(prior);
     return NULL;
   }
   if (prior) {
@@ -14226,7 +14335,7 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
       return;
     }
     if (entry->fenced) {
-      scr_dyn_namespace_member_fence();
+      scr_dyn_member_fence(entry);
       return;
     }
     scr_dyn_region_store(recv, value);
@@ -14258,6 +14367,14 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
         current = scr_dyn_proto_next(object);
         scr_dyn_release(table);
         continue;
+      }
+      if (inherited->native_data) {
+        /* A member a base class keeps in native storage. JavaScript gives
+         * the receiver its own property; typed reads through the subclass
+         * would still answer the base's, so the write is refused. */
+        scr_dyn_release(table);
+        scr_dyn_class_static_fence();
+        return;
       }
       if (inherited->accessor && inherited->setter) {
         ScrDyn *args[] = {value};
@@ -16634,8 +16751,8 @@ static void scr_json_delete_member(ScrDyn *object, const ScrStr *key) {
   for (size_t i = 0; i < object->v.obj.len; i++) {
     ScrDynEntry *entry = &scr_dyn_obj_dict_entries(object)[i];
     if (entry->key_len != key->len || memcmp(entry->key, key->data, key->len) != 0) continue;
-    if (entry->fenced) {
-      scr_dyn_namespace_member_fence();
+    if (entry->fenced || entry->native_data) {
+      scr_dyn_member_fence(entry);
       return;
     }
     ScrDynEntry removed = *entry;
@@ -18904,7 +19021,7 @@ bool scr_dyn_reflect_define(ScrDyn *receiver, ScrDyn *raw_key, ScrDyn *value) {
       : receiver->kind == SCR_DYN_OBJ ? scr_dyn_entry(receiver, key->v.str)
       : receiver->kind == SCR_DYN_ARR && receiver->v.arr.properties ? scr_dyn_entry(receiver->v.arr.properties, key->v.str) : NULL;
     if (entry && entry->fenced) {
-      scr_dyn_namespace_member_fence();
+      scr_dyn_member_fence(entry);
     } else if (!(entry && (entry->accessor || !entry->writable)) && !(receiver->non_extensible && !scr_dyn_has_own_computed(receiver, key))) {
       if (entry) {
         ScrDyn *old = entry->value;

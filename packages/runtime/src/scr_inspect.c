@@ -3371,10 +3371,21 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
     }
   }
   ScrStr *tag = ib_take(&out);
-  if (cls && !props && cls->own_static_fields) {
+  /* A compiled class's static field in the table of its constructor is an
+   * accessor over the class's native storage (ScrDynEntry.native_data).
+   * Node prints the field's value; the printer below would print the
+   * accessor. */
+  bool native_fields = false;
+  if (cls && table && table->kind == SCR_DYN_OBJ)
+    for (size_t i = 0; i < scr_dyn_obj_count(table) && !native_fields; i++) {
+      const ScrDynEntry *entry = &scr_dyn_obj_dict_entries(table)[i];
+      native_fields = entry->accessor && entry->native_data && entry->enumerable;
+    }
+  if (cls && (native_fields || (!props && cls->own_static_fields))) {
     /* Node prints the static fields after the tag; the class object
      * does not hold them (the reflection fence's stance). */
     scr_str_release(tag);
+    scr_dyn_release(table);
     static const char message[] = "util.inspect of a class with static fields through unknown is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return scr_str_new("", 0);

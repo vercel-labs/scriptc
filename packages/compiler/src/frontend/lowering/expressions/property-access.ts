@@ -5276,7 +5276,7 @@ function readOnlyAccess(access: ts.PropertyAccessExpression): boolean {
  * member (ClassInfo.erasedFields): JavaScript emits no field for it, so
  * the name is an own property only when something assigned one, and a
  * real field of the same name anywhere on the chain owns the storage. */
-function erasedDeclareField(lowerer: Lowerer, className: string, field: string): boolean {
+export function erasedDeclareField(lowerer: Lowerer, className: string, field: string): boolean {
   const start = lowerer.classes.get(className) ?? lowerer.flushDeferredClass(className);
   for (let info = start ?? null; info; info = info.base) {
     if (info.fields.has(field)) return false;

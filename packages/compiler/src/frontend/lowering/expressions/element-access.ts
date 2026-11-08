@@ -77,7 +77,12 @@ import {
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { assertedMemberRead, classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
+import {
+  assertedMemberRead,
+  classFieldTarget,
+  erasedDeclareField,
+  lowerUnionKeyedRead,
+} from "./property-access.js";
 import {
   assertedOnlyMemberWrite,
   assertedProbeAccessOf,
@@ -2870,8 +2875,15 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         // `instance["name"] = v` with a literal key the class does not
         // declare is the bracket spelling of the dot write `instance.name =
         // v` (which a class with an index signature admits): the same own
-        // property of the instance, through its checked-dynamic view.
-        if (isDynTypedRefType(receiver.type)) {
+        // property of the instance, through its checked-dynamic view. A
+        // name the class declares with `declare` keeps the refusal: on a
+        // class rooted in a runtime class the write by name can address the
+        // runtime object's own member of that name, and the two spellings
+        // must reach one place.
+        if (
+          isDynTypedRefType(receiver.type) &&
+          !erasedDeclareField(lowerer, receiver.type.className, key)
+        ) {
           const info = lowerer.classes.get(receiver.type.className);
           if (
             info &&

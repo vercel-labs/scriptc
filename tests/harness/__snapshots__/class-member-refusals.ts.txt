@@ -70,104 +70,104 @@ class-member-refusals.ts:34:25 - error SC2004: uses of 'Store.watch' inherit the
 
   hint: the declaration of 'Store.watch' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:45:3 - error SC1090: overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass) is not supported yet
+class-member-refusals.ts:47:3 - error SC1090: overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass) is not supported yet
 
-  44 | class Plotter extends Printer {
-  45 |   print(): string {
+  46 | class Plotter extends Printer {
+  47 |   print(): string {
      |   ^~~~~
-  46 |     return "plotter";
+  48 |     return `plotter ${arguments.length}`;
 
-class-member-refusals.ts:50:27 - error SC2004: uses of 'Plotter.print' inherit the blocker on its declaration
+class-member-refusals.ts:52:27 - error SC2004: uses of 'Plotter.print' inherit the blocker on its declaration
 
-  49 | console.log(new Printer().print("a", 1));
-  50 | console.log(new Plotter().print());
+  51 | console.log(new Printer().print("a", 1));
+  52 | console.log(new Plotter().print());
      |                           ^~~~~
-  51 | 
+  53 | 
 
   hint: the declaration of 'Plotter.print' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:59:7 - error SC1090: getter/setter pairs with different types (the property 'v' must have one type) are not supported yet
+class-member-refusals.ts:61:7 - error SC1090: getter/setter pairs with different types (the property 'v' must have one type) are not supported yet
 
-  58 |   }
-  59 |   set v(x: string | number) {
+  60 |   }
+  61 |   set v(x: string | number) {
      |       ^
-  60 |     this.raw = String(x);
+  62 |     this.raw = String(x);
 
-class-member-refusals.ts:65:6 - error SC2004: uses of 'Cell.v' inherit the blocker on its declaration
+class-member-refusals.ts:67:6 - error SC2004: uses of 'Cell.v' inherit the blocker on its declaration
 
-  64 | console.log(cell.v);
-  65 | cell.v = 3;
+  66 | console.log(cell.v);
+  67 | cell.v = 3;
      |      ^
-  66 | // a compound assignment reads the getter and writes the setter
+  68 | // a compound assignment reads the getter and writes the setter
 
   hint: the declaration of 'Cell.v' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:68:1 - error SC2004: uses of 'Cell.v' inherit the blocker on its declaration
+class-member-refusals.ts:70:1 - error SC2004: uses of 'Cell.v' inherit the blocker on its declaration
 
-  67 | const other = new Cell();
-  68 | other.v += "!";
+  69 | const other = new Cell();
+  70 | other.v += "!";
      | ^~~~~~~
-  69 | 
+  71 | 
 
   hint: the declaration of 'Cell.v' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:73:7 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+class-member-refusals.ts:75:7 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
 
-  72 |   n = 1;
-  73 |   get held(): WeakRef<object> {
+  74 |   n = 1;
+  75 |   get held(): WeakRef<object> {
      |       ^~~~
-  74 |     throw new Error("never");
+  76 |     throw new Error("never");
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-class-member-refusals.ts:78:23 - error SC2004: uses of 'Holder.held' inherit the blocker on its declaration
+class-member-refusals.ts:80:23 - error SC2004: uses of 'Holder.held' inherit the blocker on its declaration
 
-  77 | const holder = new Holder();
-  78 | console.log(holder.n, holder.held);
+  79 | const holder = new Holder();
+  80 | console.log(holder.n, holder.held);
      |                       ^~~~~~~~~~~
-  79 | 
+  81 | 
 
   hint: the declaration of 'Holder.held' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:84:16 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+class-member-refusals.ts:86:16 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
 
-  83 |   static count = 0;
-  84 |   static watch(target: WeakRef<object>): number {
+  85 |   static count = 0;
+  86 |   static watch(target: WeakRef<object>): number {
      |                ^~~~~~
-  85 |     return target.deref() === undefined ? 0 : 1;
+  87 |     return target.deref() === undefined ? 0 : 1;
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-class-member-refusals.ts:89:38 - error SC2004: uses of 'Registry.watch' inherit the blocker on its declaration
+class-member-refusals.ts:91:38 - error SC2004: uses of 'Registry.watch' inherit the blocker on its declaration
 
-  88 | class Local extends Registry {}
-  89 | console.log(Registry.count, Registry.watch(ref));
+  90 | class Local extends Registry {}
+  91 | console.log(Registry.count, Registry.watch(ref));
      |                                      ^~~~~
-  90 | console.log(Local.watch(ref));
+  92 | console.log(Local.watch(ref));
 
   hint: the declaration of 'Registry.watch' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:90:19 - error SC2004: uses of 'Registry.watch' inherit the blocker on its declaration
+class-member-refusals.ts:92:19 - error SC2004: uses of 'Registry.watch' inherit the blocker on its declaration
 
-  89 | console.log(Registry.count, Registry.watch(ref));
-  90 | console.log(Local.watch(ref));
+  91 | console.log(Registry.count, Registry.watch(ref));
+  92 | console.log(Local.watch(ref));
      |                   ^~~~~
-  91 | 
+  93 | 
 
   hint: the declaration of 'Registry.watch' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:97:3 - error SC1071: generators are not supported yet
+class-member-refusals.ts:99:3 - error SC1071: generators are not supported yet
 
-  96 |   n = 1;
-  97 |   each = function* <T>(x: T): Generator<T> {
-     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  98 |     yield x;
+   98 |   n = 1;
+   99 |   each = function* <T>(x: T): Generator<T> {
+      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  100 |     yield x;
 
-class-member-refusals.ts:103:17 - error SC2004: uses of 'Feed.each' inherit the blocker on its declaration
+class-member-refusals.ts:105:17 - error SC2004: uses of 'Feed.each' inherit the blocker on its declaration
 
-  102 | console.log(feed.n);
-  103 | console.log([...feed.each("a")].length);
+  104 | console.log(feed.n);
+  105 | console.log([...feed.each("a")].length);
       |                 ^~~~~~~~~~~~~~
-  104 | 
+  106 | 
 
   hint: the declaration of 'Feed.each' did not compile — fix the diagnostic reported there and these sites clear with it

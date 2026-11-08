@@ -5,4 +5,6 @@
   An override may declare a narrower parameter than the method it overrides: one arm or some arms of the base's union, a required parameter where the base's is optional, or a subclass of the base's class.
   A call through the override's own class is direct; a call through the base class, an interface, or an untyped value checks each such argument and throws a `TypeError` naming the method and the parameter when the value is outside the type the override declares.
   Node.js runs the override with that value; a compiled override reads its parameter as the declared type, so the call is refused instead of running with a value the type does not describe.
-  An override with fewer parameters than its base, or with a tuple where the base declares an array, is refused as a member.
+  An override may also declare fewer parameters than its base: the arguments past its last parameter are dropped, as in Node.js.
+  A call through an untyped value must still pass the base's arguments, and a shorter override that a subclass overrides again is callable through its own class only when the dropped parameters are optional.
+  An override with fewer parameters whose body reads `arguments`, or with a tuple where the base declares an array, is refused as a member.

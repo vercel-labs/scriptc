@@ -35,7 +35,9 @@ console.log(new Shelf().watch(ref));
 console.log(new Shelf().viaSuper());
 console.log(store.self());
 
-// an override whose signature the inherited slot cannot carry
+// an override whose signature the inherited slot cannot carry (fewer
+// parameters and a body that reads `arguments`, which the slot's dropped
+// arguments would be missing from)
 class Printer {
   print(text: string, copies: number): string {
     return `${text} x${copies}`;
@@ -43,7 +45,7 @@ class Printer {
 }
 class Plotter extends Printer {
   print(): string {
-    return "plotter";
+    return `plotter ${arguments.length}`;
   }
 }
 console.log(new Printer().print("a", 1));

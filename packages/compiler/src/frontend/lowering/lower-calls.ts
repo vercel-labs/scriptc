@@ -341,6 +341,7 @@ import {
   checkedRestCallArgs,
   lowerSpreadArgsCall,
   completeArgs,
+  omittedArgFor,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { dynamicOverloadChoice } from "./overload-choice.js";
@@ -12760,7 +12761,7 @@ export function lowerObjectMethodCall(
     const own =
       widened !== undefined &&
       !virtual &&
-      widened.params.length > found.sig.params.length &&
+      widened.params.length !== found.sig.params.length &&
       !(found.declarer.decl && isJsSourceFile(ts.getSourceFileOfNode(found.declarer.decl)))
         ? widened
         : null;
@@ -12874,7 +12875,29 @@ export function lowerObjectMethodCall(
   if (lowerer.overrideBelow(info, method)) lowerer.noteVirtualEdge(info, method);
   else lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
   const receiver = lowerReceiver();
-  const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, locOf(call), call);
+  // The nearest declaration is an override with FEWER parameters than the
+  // slot, and a subclass overrides it again: the call was checked against
+  // the shorter list, and the virtual slot still takes every inherited
+  // argument. Each dropped one travels as the omitted value (what a deeper
+  // override that declares it again receives in Node); a slot parameter
+  // that cannot hold it has nothing to pass.
+  const slotParams =
+    adapted &&
+    adapted.params.length < found.sig.params.length &&
+    !(declarerDecl && isJsSourceFile(ts.getSourceFileOfNode(declarerDecl)))
+      ? found.sig.params.map((p, i): ParamShape => {
+          if (i < adapted.params.length) return p;
+          if (p.mode === "omittable") return p;
+          if (omittedArgFor(lowerer, p.type, locOf(call)) === null)
+            lowerer.unsupported(
+              "SC1090",
+              call,
+              `calling '${method}' through a class whose override declares fewer parameters than the inherited method while a subclass overrides it again (the inherited parameter ${i + 1} has no omitted value to pass through the slot)`,
+            );
+          return { type: p.type, mode: "omittable" };
+        })
+      : found.sig.params;
+  const args = lowerer.completeArgs(call.arguments.nodes, slotParams, locOf(call), call);
   if (lowerer.overrideBelow(info, method)) {
     return reconcileOverloadReturn(lowerer, call, {
       kind: "virtualCall",

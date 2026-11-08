@@ -50,10 +50,11 @@ class RetypedRepeat extends Animal {
 }
 
 // an override must fit the inherited slot: a narrower parameter is checked
-// at the slot, but a signature with fewer parameters has no adapter
+// at the slot and a shorter parameter list drops the rest there, but a
+// shorter list whose body reads `arguments` has no adapter
 class Shorter extends Animal {
   feed(): string {
-    return this.name;
+    return this.name + arguments.length;
   }
 }
 
@@ -112,3 +113,28 @@ new RetypedRepeat();
 // compiles, and the call through the class is what reports it.
 const shorter = new Shorter();
 shorter.feed();
+
+// A shorter override that a subclass overrides again, called through its
+// own class: the virtual slot still takes every inherited argument, and a
+// parameter that cannot be omitted has no value to pass.
+class Needs {
+  need(name: string, weight: number): string {
+    return `${name} ${weight}`;
+  }
+}
+class NeedsNone extends Needs {
+  need(): string {
+    return "mid";
+  }
+}
+class NeedsNoneBelow extends NeedsNone {
+  need(): string {
+    return "low";
+  }
+}
+const needsNone: NeedsNone = new NeedsNoneBelow();
+needsNone.need();
+// A shorter override read as a value through its own class: the value is
+// the slot function, which takes the inherited parameters.
+const neededValue = new NeedsNoneBelow().need;
+neededValue.call(needsNone);

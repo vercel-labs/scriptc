@@ -79,7 +79,7 @@ class Printer implements Output {
   print(text: string, copies: number): string { return "printer " + text + " x" + copies + " " + this.sheets; }
 }
 class Plotter extends Printer {
-  print(): string { return "plotter"; }
+  print(): string { return "plotter " + arguments.length; }
   twice(): number { return this.sheets * 2; }
 }
 function viaBase(p: Printer): string { return p.print("a", 2); }
@@ -136,7 +136,7 @@ console.log(holder.n);
 test("an uncaught refusal ends the program with the member's diagnostic", async () => {
   const { stdout, stderr, code } = await run(`
 class Printer { print(text: string): string { return text; } }
-class Plotter extends Printer { print(): string { return "plotter"; } }
+class Plotter extends Printer { print(): string { return "plotter " + arguments.length; } }
 const all: Printer[] = [new Printer(), new Plotter()];
 for (const each of all) console.log(each.print("a"));
 `);

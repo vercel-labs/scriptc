@@ -164,3 +164,34 @@ cell("mid boolean", () => midAsBase.step(false));
   expect(stderr).toBe("");
   expect(code).toBe(0);
 });
+
+test("fewer parameters: an untyped call that passes fewer arguments than the slot takes throws", async () => {
+  const { stdout, stderr, code } = await run(`${cell}
+class Courier {
+  deliver(parcel: string, floor: number): string { return "courier " + parcel + " " + floor; }
+}
+class Drone extends Courier {
+  deliver(): string { return "drone"; }
+}
+const drone = new Drone();
+const asCourier: Courier = drone;
+const untyped: any = drone;
+cell("direct", () => drone.deliver());
+cell("base", () => asCourier.deliver("x", 1));
+cell("any full", () => untyped.deliver("z", 2));
+cell("any none", () => untyped.deliver());
+cell("length", () => drone.deliver.length);
+`);
+  expect(stdout.split("\n")).toEqual([
+    'direct "drone"',
+    'base "drone"',
+    'any full "drone"',
+    // The untyped call enters through the slot, whose parameters are the
+    // base's: Node calls the override, which declares none.
+    "any none threw TypeError: expected string at $[0], got undefined",
+    "length 0",
+    "",
+  ]);
+  expect(stderr).toBe("");
+  expect(code).toBe(0);
+});

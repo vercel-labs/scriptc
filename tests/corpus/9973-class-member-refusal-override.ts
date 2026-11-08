@@ -1,7 +1,7 @@
-// An override whose signature the inherited slot cannot carry (fewer parameters) is refused
-// without rejecting its class: instances of the subclass are constructed, their other members
-// work, and the base method keeps working on base instances. The refused override is never
-// called here. The override with a narrower parameter beside it compiles.
+// An override whose signature the inherited slot cannot carry (fewer parameters and a body that
+// reads `arguments`) is refused without rejecting its class: instances of the subclass are
+// constructed, their other members work, and the base method keeps working on base instances. The
+// refused override is never called here. The override with a narrower parameter beside it compiles.
 class Printer {
   sheets = 1;
   print(text: string, copies: number): string {
@@ -16,7 +16,7 @@ class Printer {
 }
 class Plotter extends Printer {
   print(): string {
-    return "plotter";
+    return `plotter ${arguments.length}`;
   }
   pad(width: string): string {
     return `plotter pad ${width.length}`;

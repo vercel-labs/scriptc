@@ -4102,24 +4102,32 @@ export function collectClassShapeInner(
             // Node does for a call that passes only the base arguments. A
             // body reading `arguments` would see the completed count, so it
             // keeps the fence.
-            shapes.length >= overridden.sig.params.length &&
+            // An override may also declare FEWER parameters than its base
+            // (a TypeScript class): the slot drops the arguments past the
+            // override's last parameter, as Node does for a function called
+            // with more arguments than it declares. A body reading
+            // `arguments` would miss them, so it keeps the fence.
+            (shapes.length >= overridden.sig.params.length || confinesMemberRefusals) &&
             (shapes.length === overridden.sig.params.length || !bodyReadsArguments(member)) &&
             shapes.slice(overridden.sig.params.length).every((p) => p.mode === "omittable") &&
             overridden.sig.params.every(
               (p, i) =>
                 (p.mode === "required" || p.mode === "omittable") &&
-                // Each inherited argument converts into the override's
-                // parameter: equal, a checked extraction from an `any`
-                // slot, or a widening (a contravariant parameter).
-                ((p.mode === shapes[i]!.mode &&
-                  (typeEquals(p.type, shapes[i]!.type) ||
-                    (p.type.kind === "dyn" &&
-                      canDynCheckTo(
-                        shapes[i]!.type,
-                        (id) => lowerer.shapes.get(id),
-                        (id) => lowerer.unions.get(id),
-                      )) ||
-                    lowerer.coercibleValue(p.type, shapes[i]!.type))) ||
+                // An inherited argument the override does not declare is
+                // dropped at the slot.
+                (i >= shapes.length ||
+                  // Each inherited argument converts into the override's
+                  // parameter: equal, a checked extraction from an `any`
+                  // slot, or a widening (a contravariant parameter).
+                  (p.mode === shapes[i]!.mode &&
+                    (typeEquals(p.type, shapes[i]!.type) ||
+                      (p.type.kind === "dyn" &&
+                        canDynCheckTo(
+                          shapes[i]!.type,
+                          (id) => lowerer.shapes.get(id),
+                          (id) => lowerer.unions.get(id),
+                        )) ||
+                      lowerer.coercibleValue(p.type, shapes[i]!.type))) ||
                   // Or a NARROWING (method parameters are bivariant): the
                   // override declares an arm of the inherited union, the
                   // value without `undefined` of an optional parameter, or
@@ -9850,7 +9858,9 @@ function lowerClassMethodMemberInner(
       const call: IrExpr = {
         kind: "call",
         callee: own.name,
-        args: params.map((p, i): IrExpr => {
+        // An override with fewer parameters than the slot takes the leading
+        // arguments; the rest are dropped here.
+        args: params.slice(0, adapter.params.length + 1).map((p, i): IrExpr => {
           const ref: IrExpr = { kind: "varRef", localId: p.localId, type: p.type, loc };
           // `this` passes through; each inherited argument converts into
           // the override's declared parameter (checked where it narrows).
@@ -10855,9 +10865,11 @@ export function lowerSuperMethodCall(
   lowerer.noteEdge(`%${found.declarer.def.name}.${access.name.text}`);
   // `super.m(...)` dispatches statically above the lexical class, so an
   // adapted override answers with its own body: that is the only entry that
-  // carries a parameter past the inherited slot arity.
+  // carries a parameter past the inherited slot arity, and the entry whose
+  // parameter list is the one the call was checked against when the
+  // override declares fewer parameters than the slot.
   const superAdapted = found.declarer.returnAdapters?.get(access.name.text);
-  if (superAdapted && superAdapted.params.length > found.sig.params.length) {
+  if (superAdapted && superAdapted.params.length !== found.sig.params.length) {
     const ownArgs = lowerer.completeArgs(call.arguments.nodes, superAdapted.params, loc, call);
     return {
       kind: "call",

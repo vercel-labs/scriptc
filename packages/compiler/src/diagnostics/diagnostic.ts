@@ -297,10 +297,12 @@ export function widthCopyDivergenceDiag(
 
 /** SC6012 — a JavaScript statement that does not compile (a deferred
  * refusal) sits in the `try` block of a `try`/`catch` of the same function.
- * It throws when it runs, so the program's `catch` clause runs where Node's
- * would not. The program handles that itself, so the binary does not report
- * the site on stderr as it does for other deferred refusals; this warning is
- * where the site is named. */
+ * It throws when it runs, so the program's `catch` clause runs, also where
+ * the statement would have completed under Node (where Node throws there
+ * too, a missing module behind a guarded require, the two agree). The
+ * program handles the throw itself, so the binary does not report the site
+ * on stderr as it does for other deferred refusals; this warning is where
+ * the site is named. */
 export function guardedDeferredFenceDiag(
   code: string,
   refusal: string,
@@ -308,7 +310,7 @@ export function guardedDeferredFenceDiag(
 ): ScrDiagnostic {
   return {
     code: "SC6012",
-    message: `this statement does not compile (${code}: ${refusal}) and sits inside its own try block: when it runs it throws, so the catch clause runs where it would not under Node, and the program's output can differ from Node's from there on. The binary prints nothing about it when it runs`,
+    message: `this statement does not compile (${code}: ${refusal}) and sits inside its own try block: when it runs it throws and the catch clause runs, also where the statement would have completed under Node, so the program's output can differ from Node's from there on. The binary prints nothing about it when it runs`,
     loc,
     hint: "rewrite the statement so that it compiles, or accept the catch path; SCRIPTC_DEFERRED_REPORT=all in the program's environment makes the binary name each such site on stderr the first time it throws",
   };

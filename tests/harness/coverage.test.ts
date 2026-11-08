@@ -1328,8 +1328,16 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     const { coverage } = analyze(file, {});
     expect.soft(coverage.diagnostics, file).toEqual([]);
     // Corpus programs match Node by definition: a divergence warning on one
-    // is a false positive.
-    expect.soft(coverage.divergences ?? [], file).toEqual([]);
+    // is a false positive. SC6012 is the exception: it names a refused
+    // statement inside its own try block, and a corpus program that has one
+    // is written so that Node throws there too (a guarded require of a
+    // module that is not there), which is how it matches.
+    expect
+      .soft(
+        (coverage.divergences ?? []).filter((d) => d.code !== "SC6012"),
+        file,
+      )
+      .toEqual([]);
     expect.soft(coverage.stats.statementsFailed, file).toBe(deferred ? Number(deferred[1]) : 0);
     if (++n % 10 === 0) await new Promise((r) => setImmediate(r));
   }

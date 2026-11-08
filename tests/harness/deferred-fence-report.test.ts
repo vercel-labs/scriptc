@@ -181,7 +181,7 @@ test("a refusal inside its own try/catch prints nothing: stdout and stderr equal
   expect(built.guarded[0]!.message).toContain("SC2020");
   expect(built.guarded[0]!.message).toContain("inside its own try block");
   expect(built.guarded[0]!.message).toContain(
-    "the catch clause runs where it would not under Node",
+    "the catch clause runs, also where the statement would have completed under Node",
   );
 }, 300_000);
 

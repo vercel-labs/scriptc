@@ -37,8 +37,8 @@ export function isDeferredDiagnosticFence(code: string, message: string, file: s
  *
  * `try { optional() } catch { … }` is how a JavaScript program asks for
  * something that may not be there. When the statement in the `try` block is
- * one the compiler deferred, the program's `catch` runs although Node's would
- * not, and the program's own handler deals with it: its output may be the
+ * one the compiler deferred, the program's `catch` runs, also where Node's
+ * would not, and the program's own handler deals with it: its output may be the
  * same as under Node (the handler ignores the failure) or differ (the handler
  * takes another path). Reporting the site on stderr at every run would make
  * the first kind of program differ from Node where it otherwise does not, so

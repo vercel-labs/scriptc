@@ -819,6 +819,56 @@ describe("what a load reads of the machine and the moment", () => {
     }
   });
 
+  test("a key the load generates, a signature and the command line are not constants", () => {
+    // Each of these answered from the build when its function was listed
+    // among those that compute from their arguments: an executable would
+    // have carried the build's private key, or the build's command line.
+    const sources: { [name: string]: [string, string] } = {
+      "ecdh-key": [
+        `require("crypto").createECDH("prime256v1").generateKeys("hex")`,
+        "crypto.createECDH() (",
+      ],
+      "group-key": [
+        `require("crypto").getDiffieHellman("modp14").generateKeys("hex")`,
+        "crypto.getDiffieHellman() (",
+      ],
+      "ecdh-class": [
+        `new (require("crypto").ECDH)("prime256v1").generateKeys("hex")`,
+        "crypto.ECDH() (",
+      ],
+      signer: [`typeof require("crypto").createSign("SHA256").sign`, "crypto.createSign() ("],
+    };
+    const inputSources: { [name: string]: [string, string] } = {
+      "parse-args": [
+        `require("util").parseArgs({ options: { verbose: { type: "boolean" } }, strict: false }).values.verbose === true`,
+        "util.parseArgs() (",
+      ],
+      "cache-dir": [
+        `require("module").getCompileCacheDir() === undefined`,
+        "module.getCompileCacheDir() (",
+      ],
+      "file-iterated": [
+        `(function () { var o = { lastModified: 5 }; var parts = ["a"]; parts[Symbol.iterator] = function* () { delete o.lastModified; yield "a"; }; return typeof new File(parts, "a", o).lastModified; })()`,
+        "an argument of new File() that only the load's own code can answer",
+      ],
+    };
+    const recorded = recordSources(
+      Object.fromEntries(
+        Object.entries({ ...sources, ...inputSources }).map(([name, [source]]) => [name, source]),
+      ),
+    );
+    for (const [name, [, expected]] of Object.entries(sources)) {
+      const record = recorded.of(name);
+      expect(record.throws, name).toBeUndefined();
+      expect(record.volatile.join("\n"), name).toContain(expected);
+    }
+    for (const [name, [, expected]] of Object.entries(inputSources)) {
+      const record = recorded.of(name);
+      expect(record.throws, name).toBeUndefined();
+      expect(record.inputs.join("\n"), name).toContain(expected);
+    }
+  });
+
   test("the recorder leaves the process as it found it", () => {
     const recorded = recordSources({ any: `new Date(2020, 0, 1).getHours() + Date.now()` });
     expect(recorded.after).toEqual({ tz: null, native: true, stdout: true });

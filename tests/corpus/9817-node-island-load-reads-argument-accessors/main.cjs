@@ -14,7 +14,14 @@
 // own getter or conversion takes the zone, or the list of tags, away
 // before the call gets to them. It is loaded and read first, before
 // anything has started Node, so that a recorded answer would be the one
-// printed.
+// printed. Before it, a package whose load generates key pairs: the
+// functions that make them were listed among those that compute from their
+// arguments, so the executable carried the keys the build generated and
+// every run answered with them. The keys themselves are printed only when
+// asked, so that the program's output is the same in every run.
+const keys = require("key-kit");
+console.log("keys:", keys.publicKey.length, keys.groupKey.length);
+if (process.env.SHOW_GENERATED_KEYS === "1") console.log("generated:", keys.publicKey, keys.groupKey);
 const shifting = require("shifting-kit");
 console.log("removed:", shifting.byGetter, shifting.byConversion, shifting.order);
 const options = require("options-kit");

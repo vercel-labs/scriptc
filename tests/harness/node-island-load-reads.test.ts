@@ -211,6 +211,21 @@ describe.skipIf(skip)("island loads that read the machine or the moment", () => 
     }
     const moved = await run(binary, { TZ: "America/St_Johns", LC_ALL: "sv_SE.UTF-8" });
     expect(moved.stdout).toContain("removed: America/St_Johns America/St_Johns 1\n");
+    // A load that generates a key pair generates it in every run: nothing
+    // of the build's pair is in the executable.
+    expect(decision("key-kit")).toMatch(/^eager /);
+    expect(decision("key-kit")).toContain("its load reads crypto.createECDH() (");
+    const generated = async (): Promise<string> => {
+      const line = (await run(binary, { SHOW_GENERATED_KEYS: "1" })).stdout
+        .split("\n")
+        .find((l) => l.startsWith("generated: "));
+      expect(line).toMatch(/^generated: [0-9a-f]{130} [0-9a-f]{64}$/);
+      return line!;
+    };
+    const first = await generated();
+    const second = await generated();
+    expect(second).not.toBe(first);
+    expect(second.split(" ")[2]).not.toBe(first.split(" ")[2]);
   }, 300_000);
 
   test("a locale variable set at build time is not recorded, and the run's locale still answers", async () => {

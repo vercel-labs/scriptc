@@ -502,6 +502,9 @@ exports.probe = function probe(input) {
     if (tags === null) { opaque("a locales argument"); return false; }
     try { return applyFn(supportedLocalesOf.get(service), service, [tags]).length === 0; } catch { return false; }
   };
+  const arrayIterator = Array.prototype[Symbol.iterator];
+  const arrayIteratorProto = prototypeOf([][Symbol.iterator]());
+  const arrayIteratorNext = arrayIteratorProto.next;
   // A value a builtin takes without running the load's code: a primitive.
   const inert = (v) => v === null || (typeof v !== "object" && typeof v !== "function");
   // What the built-in prototypes held before any load: a member added to one
@@ -851,7 +854,11 @@ exports.probe = function probe(input) {
   const fileMade = (a) => {
     // The parts and the name are converted before the options are read.
     const parts = a[0];
-    let plain = isArray(parts) && !types.isProxy(parts) && parts.length <= 1024 && typeof a[1] === "string" && inertOptions(a[2]);
+    // The parts are read through the array's iterator: the engine's own,
+    // as it was before any load, or the load's code runs there too.
+    let plain = isArray(parts) && !types.isProxy(parts) && parts.length <= 1024 && typeof a[1] === "string" && inertOptions(a[2]) &&
+      prototypeOf(parts) === Array.prototype && !hasOwn.call(parts, Symbol.iterator) &&
+      Array.prototype[Symbol.iterator] === arrayIterator && arrayIteratorProto.next === arrayIteratorNext;
     for (let i = 0; plain && i < parts.length; i++) {
       const d = descriptorOf(parts, i);
       plain = d !== undefined && hasOwn.call(d, "value") && (typeof d.value === "string" || types.isAnyArrayBuffer(d.value) || types.isArrayBufferView(d.value));
@@ -945,9 +952,20 @@ exports.probe = function probe(input) {
       undo.push(() => { utilModule[k] = original; });
     }
   }
+  // Members of the modules on the second list that answer from something
+  // else than their arguments, through Node's own code where no wrapper
+  // here sees the read: the command line, and where the compile cache is.
+  wrapFn(require("node:util"), "parseArgs", inputs, "util.parseArgs()");
+  wrapFn(Module, "getCompileCacheDir", inputs, "module.getCompileCacheDir()");
   // What the module loader does for a program besides loading.
   for (const k of ["register", "registerHooks", "enableCompileCache", "flushCompileCache", "syncBuiltinESMExports", "setSourceMapsSupport", "runMain", "findPackageJSON", "findSourceMap"])
     wrapFn(Module, k, effects, "module." + k + "()");
+  // A function is here only when what it answers, and what the object it
+  // makes can answer, follows from its arguments and the pack. Not here, so
+  // a reading no run repeats like the rest of crypto: createECDH,
+  // getDiffieHellman and createDiffieHellman (their objects generate a
+  // private key), createSign and sign (a signature draws a nonce for most
+  // key types), publicEncrypt (random padding), every generate* and random*.
   const pureFns = new Set(["os.platform", "os.homedir", "os.tmpdir", "os.type", "os.arch", "os.machine", "os.endianness",
     "tty.isatty", "net.isIP", "net.isIPv4", "net.isIPv6", "tls.getCiphers", "tls.checkServerIdentity",
     // Marks on an object the caller holds: Node's own Headers, Request and
@@ -956,10 +974,9 @@ exports.probe = function probe(input) {
     "crypto.createHash", "crypto.createHmac", "crypto.getHashes", "crypto.getCiphers", "crypto.getCurves",
     "crypto.createCipheriv", "crypto.createDecipheriv", "crypto.hash", "crypto.createSecretKey", "crypto.createPublicKey",
     "crypto.createPrivateKey", "crypto.pbkdf2Sync", "crypto.scryptSync", "crypto.hkdfSync", "crypto.timingSafeEqual",
-    "crypto.createSign", "crypto.createVerify", "crypto.verify", "crypto.getCipherInfo", "crypto.createECDH",
-    "crypto.getDiffieHellman", "crypto.privateDecrypt", "crypto.publicDecrypt", "vm.isContext", "fs.existsSync__never",
-    "async_hooks.AsyncLocalStorage", "async_hooks.AsyncResource", "async_hooks.executionAsyncId",
-    "async_hooks.triggerAsyncId", "async_hooks.executionAsyncResource", "diagnostics_channel.channel",
+    "crypto.createVerify", "crypto.verify", "crypto.getCipherInfo",
+    "crypto.privateDecrypt", "crypto.publicDecrypt", "vm.isContext", "fs.existsSync__never",
+    "async_hooks.AsyncLocalStorage", "async_hooks.AsyncResource", "diagnostics_channel.channel",
     "diagnostics_channel.tracingChannel", "diagnostics_channel.hasSubscribers", "perf_hooks.createHistogram"]);
   // The members of a module on the first list that are not functions and are the same
   // in every run: constants, and objects whose own members have their rules.
@@ -975,6 +992,9 @@ exports.probe = function probe(input) {
   };
   // The modules whose classes are sources themselves: a context of its own
   // globals, a stream on a descriptor, a thread, a debugger.
+  // Classes of the other modules whose instances draw random numbers: a key
+  // pair, a prime, a signature's nonce.
+  const sourceClassNames = new Set(["crypto.ECDH", "crypto.DiffieHellman", "crypto.DiffieHellmanGroup", "crypto.Sign"]);
   const sourceClasses = new Set(["vm", "tty", "worker_threads", "child_process", "inspector", "inspector/promises", "repl", "cluster", "trace_events", "v8", "readline", "readline/promises"]);
   // Synchronous reads of the module's own package (its files are boot
   // guards, by size and mtime) are guarded inputs, not inputs.
@@ -1068,7 +1088,7 @@ exports.probe = function probe(input) {
       // A class (Node makes some on first use, behind an accessor) is a
       // source where what it makes is one; elsewhere it computes, or the
       // async hook below sees the handle it opens.
-      if (/^[A-Z]/.test(key) && !constant && (fn || !("value" in d)) && !sourceClasses.has(name)) continue;
+      if (/^[A-Z]/.test(key) && !constant && (fn || !("value" in d)) && !sourceClasses.has(name) && !sourceClassNames.has(name + "." + key)) continue;
       if (fn) wrapFn(m, key, list, name + "." + key + "()");
       // A member this platform does not have (fs.lchmod) is absent in every run.
       else if ("value" in d && d.value === undefined) continue;

@@ -6,6 +6,8 @@ A second preflight using the project's declarations distinguishes those sites fr
 Declared APIs without a compiler implementation, such as unsupported console members, produce `SC2020`.
 
 From the nearest `tsconfig.json`, scriptc takes the strictness flags, `paths` and `baseUrl`, the JSX settings, the declaration files that `files` and `include` name, the packages that `types` names, `typeRoots`, and `verbatimModuleSyntax`, `isolatedModules` and `preserveConstEnums` for [import elision](/docs/dependencies#package-resolution).
+A declaration file of the project that declares types only, such as a shared `types.d.ts` or a workspace package of types, declares data types the program builds, like the same types written in a `.ts` file.
+A declaration file of the project that also declares values, such as the typings it writes for an untyped package, describes that package's values, which keep the form the package gives them.
 A project that sets `typeRoots` and no `types` has every package directory of a type root outside `node_modules` loaded, as tsc does through TypeScript 5.9.
 A type root also answers a `/// <reference types>` directive, and an import of a module for which no `node_modules` directory holds declarations.
 In a project that compiles under `moduleResolution: node10` (also spelled `node`, and tsc's choice through TypeScript 5.9 for `module: commonjs` when the setting is absent), a specifier that only the type checker reads (in a declaration file, an `import type` or an `export type`) can name a file that a package's `exports` map does not list, and a package's declarations are also found by path where the map names none, as that project's tsc resolves them.

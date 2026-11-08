@@ -1966,10 +1966,24 @@ export function orderErrorOwnMembers(lowerer: Lowerer, functions: readonly IrFun
   let late = false;
   const visitor = {
     expr: (expr: IrExpr): boolean => {
-      if (expr.kind === "libCall")
+      if (
+        expr.kind === "libCall" &&
+        (REFLECTIVE_WRITES.has(expr.fn) ||
+          (expr.fn === "dyn.keySet" && expr.args[1]?.kind !== "strLit"))
+      ) {
+        // A target boxed from a value whose static type is not an error
+        // (a record, an array, another class) cannot be one of these
+        // instances.
+        const target = expr.args[0];
+        const boxedFrom = target?.kind === "dynFrom" ? target.value.type : undefined;
         late =
-          REFLECTIVE_WRITES.has(expr.fn) ||
-          (expr.fn === "dyn.keySet" && expr.args[1]?.kind !== "strLit");
+          boxedFrom === undefined ||
+          boxedFrom.kind === "dyn" ||
+          boxedFrom.kind === "union" ||
+          (boxedFrom.kind === "object" &&
+            (boxedFrom.className === "%Error" ||
+              lowerer.isSubclassOf(boxedFrom.className, "%Error")));
+      }
       return !late;
     },
     stmt: (): boolean => !late,
@@ -5039,11 +5053,6 @@ export class ClassDynamicDispatch {
         // by-name dispatch does.
         const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
         if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
-        // `cause` and `code` are read and written through their slots too,
-        // and a write records the member in the instance's property list.
-        if (!dispatch.probe && !dispatch.reflect)
-          for (const slot of ["cause", "code"])
-            if (errorSlotMember(lowerer, info, slot)) names.add(slot);
         if (info.builtinStream)
           for (const name of [
             ...STREAM_BOOL_PROPERTIES,

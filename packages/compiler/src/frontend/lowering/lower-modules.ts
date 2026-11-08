@@ -163,6 +163,7 @@ import {
 } from "./lower-namespaces.js";
 import { collectEnumObjects, registerEnumObjectGlobals } from "./enum-objects.js";
 import { collectExpandoMembers } from "./lower-expando.js";
+import { funduleMemberOf, isFunduleMemberStatement, lowerFunduleFnStore } from "./lower-fundule.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -387,8 +388,17 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
       // instantiated bodies FLATTEN into this file's parts (functions/
       // classes hoist under namespace-qualified names, statements join
       // the init body in source order) — lower-namespaces.ts.
-      else if (ts.isModuleDeclaration(stmt)) collectNamespaceStmt(lowerer, stmt, fp);
-      else if (
+      else if (ts.isModuleDeclaration(stmt)) {
+        try {
+          collectNamespaceStmt(lowerer, stmt, fp);
+        } catch (error) {
+          // A collection-time refusal (a merged namespace exporting a member
+          // this lowering cannot store on the function object) already
+          // pushed its diagnostic; the block contributes nothing and the
+          // compilation stops on that diagnostic.
+          if (!(error instanceof PoisonError)) throw error;
+        }
+      } else if (
         ts.isInterfaceDeclaration(stmt) ||
         ts.isTypeAliasDeclaration(stmt) ||
         ts.isImportDeclaration(stmt) ||
@@ -2107,9 +2117,10 @@ export function collectGlobals(
         continue;
       }
     }
-    // `import x = N.y` where the target is a MUTABLE binding: Node's
-    // transform emits `var x = N.y` — a SNAPSHOT taken when the alias
-    // statement runs — so the alias gets its own const storage, keyed by
+    // `import x = N.y` where the target is a MUTABLE binding, or a member
+    // of a function+namespace merge (a property, always replaceable):
+    // Node's transform emits `var x = N.y` — a SNAPSHOT taken when the
+    // alias statement runs — so the alias gets its own const storage, keyed by
     // the alias's PRE-alias symbol (resolveValueSymbol stops at alias
     // symbols with registered storage instead of chasing them to the
     // live target). lowerImportEquals assigns it at the statement's
@@ -2133,7 +2144,12 @@ export function collectGlobals(
         ts.isVariableDeclaration(vd) &&
         !ts.getSourceFileOfNode(vd).isDeclarationFile &&
         (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
-      if (!mutableVar) continue;
+      // A member of a function+namespace merge is a property of the
+      // function object, and a property can be replaced whatever its
+      // declaration says (`Object.assign(fmt, { digits: 4 })` for a
+      // `const`, for a function): its alias is a snapshot too, of the
+      // property rather than of a module global (lower-fundule.ts).
+      if (!mutableVar && funduleMemberOf(lowerer, target) === null) continue;
       const diagsBefore = lowerer.diags.length;
       try {
         let type = lowerer.irTypeOf(stmt.name);
@@ -2209,6 +2225,10 @@ export function collectGlobals(
       continue;
     const list = stmt.declarationList;
     if ((list.flags & ts.NodeFlags.Using) !== 0) continue; // fenced at the statement lowering
+    // An EXPORTED member of a function+namespace merge has no module global:
+    // its storage is the merged function's own-property table, written at
+    // the statement's position (lower-fundule.ts).
+    if (isFunduleMemberStatement(lowerer, stmt)) continue;
     const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     // `var` registers a mutable module global exactly like `let` — the
     // hoisting difference (binding exists from module entry, undefined
@@ -3840,8 +3860,27 @@ export function lowerFileInit(
       if (ms && ms.sf === sf) statics.push({ pos: ms.pos, info: c });
     }
     statics.sort((a, b) => a.pos - b.pos);
+    // Function+namespace merges: the merged block's exported FUNCTIONS
+    // join the function object at their declaration's source position
+    // (`fmt.helper = helper` in Node's emit), which fixes the members'
+    // own-key order among a block's statements (lower-fundule.ts).
+    const funduleFns = [...(lowerer.funduleFnStores.get(sf) ?? [])].sort(
+      (a, b) => ts.tokenStartOfNode(a) - ts.tokenStartOfNode(b),
+    );
+    // A member function whose type has no value form (badType) has pushed
+    // its diagnostic: the store contributes nothing and the compilation
+    // stops on that diagnostic, as for a statement.
+    const funduleFnStoreAt = (decl: ts.FunctionDeclaration): IrStmt[] => {
+      try {
+        return lowerFunduleFnStore(lowerer, decl);
+      } catch (e) {
+        if (!(e instanceof PoisonError)) throw e;
+        return [];
+      }
+    };
     const body = [...header, ...islandUnplaced, ...prelude];
     let at = 0;
+    let funduleAt = 0;
     for (const stmt of stmts) {
       // `<=`: a mixin instantiation's position IS its statement's start
       // — its statics run mid-statement in JS (the call), before
@@ -3851,6 +3890,15 @@ export function lowerFileInit(
       while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
         body.push(...lowerStaticsAt(statics[at]!));
         at++;
+      }
+      // A hoisted function member's property assignment runs where its
+      // declaration stands, before the next statement's own code.
+      while (
+        funduleAt < funduleFns.length &&
+        ts.tokenStartOfNode(funduleFns[funduleAt]!) <= ts.tokenStartOfNode(stmt)
+      ) {
+        body.push(...funduleFnStoreAt(funduleFns[funduleAt]!));
+        funduleAt++;
       }
       // A constant the island evaluates loads its generated module where
       // it is declared, and a statement the island evaluates is that load
@@ -3878,6 +3926,10 @@ export function lowerFileInit(
     while (at < statics.length) {
       body.push(...lowerStaticsAt(statics[at]!));
       at++;
+    }
+    while (funduleAt < funduleFns.length) {
+      body.push(...funduleFnStoreAt(funduleFns[funduleAt]!));
+      funduleAt++;
     }
     for (const { at, g } of unionEntryInits) {
       if (g.type.kind !== "dyn") continue;

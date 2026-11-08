@@ -342,6 +342,11 @@ export class ShapeRegistry {
    * writer after all priority candidates have closed. */
   private readonly derivedDeclaredOrderFinalizers: (() => void)[] = [];
   private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
+  /** The rank a shape interned now offers its key order under: a mapping
+   * repeated under another rank offers the order again (the walk memo). */
+  declaredOrderRank(): DeclaredOrderPriority {
+    return this.currentDeclaredOrderPriority;
+  }
   /** The declared-order candidates and the attached names the registry
    * holds, counted as they are added (journalSizes). */
   private candidateCount = 0;
@@ -497,6 +502,7 @@ export class ShapeRegistry {
     let id = this.recIds.get(t);
     if (id === undefined) {
       id = recursivePlaceholderName(this, "r", describe(), (name) => this.byId.has(name));
+      walkRecursiveChanged(PROGRESS_RECORD, t);
       const shape: IrRecordShape = { id, fields: [] };
       this.byId.set(id, shape);
       this.shapes.push(shape);
@@ -536,6 +542,7 @@ export class ShapeRegistry {
         "shape registry bug: finalizeRecursive without a placeholder",
       );
     if (this.pendingRec.has(id)) {
+      walkRecursiveChanged(PROGRESS_RECORD, t);
       const shape = this.byId.get(id)!;
       shape.fields = fields;
       if (indexValue) shape.indexValue = indexValue;
@@ -877,6 +884,7 @@ export class UnionRegistry {
     let id = this.recIds.get(t);
     if (id === undefined) {
       id = recursivePlaceholderName(this, "u", describe(), (name) => this.byId.has(name));
+      walkRecursiveChanged(PROGRESS_UNION, t);
       const def: IrUnionDef = { id, arms: [] };
       this.byId.set(id, def);
       this.unions.push(def);
@@ -915,6 +923,7 @@ export class UnionRegistry {
         "union registry bug: finalizeRecursive without a placeholder",
       );
     if (this.pendingRec.has(id)) {
+      walkRecursiveChanged(PROGRESS_UNION, t);
       const def = this.byId.get(id)!;
       def.arms.push(...arms);
       if (discriminant) def.discriminant = discriminant;
@@ -1712,6 +1721,11 @@ export interface TypeMapperCtx {
    * are therefore only good outside bindings. */
   typeMemoShared?: Map<number, IrType>;
   canMemoizeType?: () => boolean;
+  /** Whether the walk memo may hold this context's nested answers; absent,
+   * canMemoizeType decides. A throwaway context that keeps its answers out
+   * of the memos above (the lenient mapping) still maps each type it reaches
+   * once. */
+  canMemoizeWalk?: () => boolean;
   /** True for files the Lowerer actually compiles (its module order). A
    * class type can reach the entry through the TYPE world alone — a jsdoc
    * `typeof import('./mod')` over a module never imported at value level
@@ -1856,6 +1870,464 @@ if (verifyMemoMode === "stats") {
 /** Set while verifying, so the recomputation bypasses every memo and does
  * not verify itself. */
 let bypassTypeMemo = false;
+
+// ---------------------------------------------------------------------------
+// The walk memo: one mapping maps each type it reaches once.
+//
+// The memos above hold the answer of a whole mapping (the type mapType was
+// called with). The types that mapping reaches on the way are mapped by
+// nested frames, and a nested frame's answer is not a function of its type
+// alone, so it cannot enter those memos. Without a memo of its own, though, a
+// mapping walks a nested type once for every path that reaches it: a chain of
+// records that each name the next one in two members costs 2^depth.
+//
+// A nested frame's answer is a function of:
+//  - the type, the context object it is mapped under (the mode: strict or
+//    lenient, an erased signature, an instantiation's resolvers) and the
+//    binding scope (typeMemoFor), which key an entry;
+//  - which of the types it reaches are being mapped right now. A record or
+//    union met while its own mapping is in progress answers a recursive
+//    placeholder instead of being mapped (the knot), so the same type maps
+//    differently below different ancestors. An entry lists the in-progress
+//    types its frame answered from and serves only while each of them is in
+//    progress again or has become the finished recursive type the placeholder
+//    named; and it does not serve below a type that the frame itself mapped
+//    in full, where mapping again would meet that type in progress;
+//  - the recursive placeholders the registries hold: one minted or finished
+//    for a type changes how that type maps from then on, so entries that hold
+//    an earlier answer of it are dropped;
+//  - how deep the frame sat when its walk met MAP_TYPE_MAX_DEPTH;
+//  - the key-order rank the shapes it interned were offered under.
+// What a frame does besides answering (the context and scope counters it
+// moves) is replayed when its entry serves.
+//
+// The memo lives for one top-level mapType call, or for a withTypeWalk scope
+// that makes several of them one walk. Nothing in it outlives the lowerer
+// state it was computed under, and that includes the type memos above: a
+// top-level mapping that succeeds writes its answer there, the nested frames
+// of the next mapping read it, and an answer computed before the write is
+// not the one a mapping gives after it (a type that met MAP_TYPE_MAX_DEPTH
+// maps once a part of it is in the memo). So only mappings that keep nothing
+// in the type memos share a walk, and a write inside a walk drops its
+// entries.
+// ---------------------------------------------------------------------------
+
+/** SCRIPTC_TYPE_WALK_MEMO=0 maps without the walk memo, as every mapping did
+ * before it: for comparisons. `=verify` maps
+ * again each time an entry serves and fails when the two answers differ: it
+ * proves on a corpus that the memo changes no mapping. `=stats` counts. */
+const walkMemoMode = process.env["SCRIPTC_TYPE_WALK_MEMO"] ?? "";
+let walkMemoEnabled = walkMemoMode !== "0";
+let walkMemoVerify = walkMemoMode === "verify";
+
+/** Sets how type walks run from now on and answers the settings replaced:
+ * for tests and measurements, which compare a mapping with the memo, without
+ * it and with every served entry verified. Not while a mapping is in
+ * progress. */
+export function configureTypeWalk(settings: { memo?: "on" | "off" | "verify" }): {
+  memo: "on" | "off" | "verify";
+} {
+  const previous = {
+    memo: !walkMemoEnabled
+      ? ("off" as const)
+      : walkMemoVerify
+        ? ("verify" as const)
+        : ("on" as const),
+  };
+  if (mapTypeDepth !== 0 || activeWalk !== null)
+    throw new InternalCompilerError("configureTypeWalk during a type mapping");
+  if (settings.memo !== undefined) {
+    walkMemoEnabled = settings.memo !== "off";
+    walkMemoVerify = settings.memo === "verify";
+  }
+  idleWalk.reset();
+  idleWalk.root = null;
+  return previous;
+}
+
+const PROGRESS_RECORD = 0;
+const PROGRESS_UNION = 1;
+const PROGRESS_OVERLOADS = 2;
+
+/** One mapping in progress of a record or union (ShapeRegistry.inProgress,
+ * UnionRegistry.inProgress), or one overload set being expanded
+ * (overloadExpansion). */
+class ProgressFrame {
+  /** The dependency a frame takes when it answers from this one. */
+  readonly dep: WalkDep;
+  /** The same for an answer that only holds while this is in progress. */
+  readonly strictDep: WalkDep;
+  constructor(
+    readonly kind: number,
+    readonly key: ts.Type | ts.Symbol,
+    /** The walk's clock when the mapping started. */
+    readonly start: number,
+    /** When earlier mappings of the same type started in this walk. */
+    readonly earlier: number[] | undefined,
+    /** The frame of the same key this one started inside. */
+    readonly outer: ProgressFrame | undefined,
+  ) {
+    this.dep = new WalkDep(this, false);
+    this.strictDep = new WalkDep(this, true);
+  }
+}
+
+class WalkDep {
+  constructor(
+    readonly frame: ProgressFrame,
+    /** The answer was "it is in progress", not a recursive placeholder: the
+     * finished recursive type does not stand in for it. */
+    readonly strict: boolean,
+  ) {}
+}
+
+class WalkEntry {
+  constructor(
+    readonly result: IrType | null,
+    readonly movedContext: boolean,
+    readonly movedScope: boolean,
+    readonly deps: readonly WalkDep[] | null,
+    /** The clock spans the answer was computed in, as [from, to] pairs in
+     * rising order: the frame's own span last, before it the spans of the
+     * entries that served inside it. A record or union whose mapping started
+     * inside one of them was mapped in full for this answer. */
+    readonly spans: readonly number[],
+    readonly depth: number,
+    /** How far below `depth` the deepest frame of the walk sat. */
+    readonly height: number,
+    readonly metDepthLimit: boolean,
+    readonly keyOrderRank: DeclaredOrderPriority,
+    /** The erased member's "consulted an enclosing binding" flag at entry:
+     * it decides whether an erased answer counts as a context resolution. */
+    readonly outerConsulted: boolean,
+  ) {}
+}
+
+class TypeWalk {
+  /** Frames computed so far. Entries and progress frames are stamped with
+   * it. */
+  clock = 0;
+  /** Set when the walk met something the bookkeeping does not describe (a
+   * second registry): it then maps without the memo. */
+  opaque = false;
+  /** Entries computed at or before this clock may hold an answer of a type
+   * whose recursive placeholder was minted or finished since. */
+  staleBefore = 0;
+  shapes: ShapeRegistry | null = null;
+  unions: UnionRegistry | null = null;
+  /** What the walk was started for (the statistics name it). */
+  root: ts.Type | null = null;
+  rootLenient = false;
+  readonly entries = new Map<TypeMapperCtx, Map<unknown, Map<number, WalkEntry>>>();
+  private lastCtx: TypeMapperCtx | null = null;
+  private lastScope: unknown = undefined;
+  private lastEntries: Map<number, WalkEntry> | null = null;
+  readonly active: Map<ts.Type | ts.Symbol, ProgressFrame>[] = [new Map(), new Map(), new Map()];
+  readonly finished: Map<ts.Type | ts.Symbol, number[]>[] = [new Map(), new Map(), new Map()];
+  /** The frames in progress whose type was mapped in full earlier in this
+   * walk: an entry computed around one of those mappings holds an answer
+   * that a mapping below this frame would not give. */
+  readonly reentered: ProgressFrame[] = [];
+
+  entriesFor(ctx: TypeMapperCtx, scope: unknown): Map<number, WalkEntry> {
+    if (this.lastCtx === ctx && this.lastScope === scope) return this.lastEntries!;
+    let scopes = this.entries.get(ctx);
+    if (scopes === undefined) this.entries.set(ctx, (scopes = new Map()));
+    let entries = scopes.get(scope);
+    if (entries === undefined) scopes.set(scope, (entries = new Map()));
+    this.lastCtx = ctx;
+    this.lastScope = scope;
+    this.lastEntries = entries;
+    return entries;
+  }
+
+  reset(): void {
+    if (this.clock === 0) return;
+    this.clock = 0;
+    this.opaque = false;
+    this.staleBefore = 0;
+    this.shapes = null;
+    this.unions = null;
+    this.root = null;
+    this.rootLenient = false;
+    this.entries.clear();
+    this.lastCtx = null;
+    this.lastScope = undefined;
+    this.lastEntries = null;
+    for (const table of this.active) table.clear();
+    for (const table of this.finished) table.clear();
+    this.reentered.length = 0;
+  }
+}
+
+/** The walk in progress: from a top-level mapType call to its return, or a
+ * withTypeWalk scope. */
+let activeWalk: TypeWalk | null = null;
+/** The walk object top-level mappings take turns using. */
+const idleWalk = new TypeWalk();
+/** What the frame being computed has gathered for its entry: the frames in
+ * progress it answered from, the spans of the entries that served inside it
+ * ([from, to] pairs, unsorted), and the deepest frame below it. A frame saves
+ * its parent's, starts its own, and folds its own into the parent's when it
+ * ends. */
+let frameDeps: Set<WalkDep> | null = null;
+let frameSpans: number[] | null = null;
+let frameDeepest = 0;
+
+/** The most span pairs an entry keeps; past it they become one span that
+ * covers them all, which refuses more than it must and never less. */
+const WALK_ENTRY_SPANS = 32;
+
+/** An entry's spans: `served` (pairs gathered from the entries that served
+ * inside the frame) that end before the frame started, sorted and joined
+ * where they touch, then the frame's own span. The ones inside the frame's
+ * own span were computed, or served, inside it already. */
+function walkEntrySpans(served: number[] | null, started: number, ended: number): number[] {
+  if (served === null) return [started, ended];
+  const pairs: [number, number][] = [];
+  for (let i = 0; i < served.length; i += 2)
+    if (served[i + 1]! < started) pairs.push([served[i]!, served[i + 1]!]);
+  if (pairs.length === 0) return [started, ended];
+  pairs.sort((a, b) => a[0] - b[0]);
+  const out: number[] = [];
+  for (const [from, to] of pairs) {
+    const last = out.length - 1;
+    if (last >= 0 && from <= out[last]! + 1) {
+      if (to > out[last]!) out[last] = to;
+    } else out.push(from, to);
+  }
+  if (out.length > WALK_ENTRY_SPANS * 2) return [out[0]!, out[out.length - 1]!, started, ended];
+  out.push(started, ended);
+  return out;
+}
+/** Bumped whenever a mapping is refused for MAP_TYPE_MAX_DEPTH: a frame that
+ * saw it move answers for its own depth only. */
+let depthLimitHits = 0;
+/** Bumped whenever a record, union or overload set starts mapping: only a
+ * frame that saw it move is worth an entry. */
+let progressStarts = 0;
+let walkEntriesServed = 0;
+let walkEntriesVerified = 0;
+/** SCRIPTC_TYPE_WALK_MEMO=stats: why entries that were found did not serve
+ * (stale, depth, erasure, rank, dependency, re-entered), the frames all
+ * walks computed, and the longest walk. */
+const walkStats = walkMemoMode === "stats";
+const walkRefusals = [0, 0, 0, 0, 0, 0];
+let walkFrames = 0;
+let walkLongest = 0;
+let walkLongestRoot = "";
+if (walkStats || walkMemoVerify) {
+  process.on("exit", () => {
+    process.stderr.write(
+      `[type-walk] ${walkEntriesServed} entries served, ${walkEntriesVerified} verified, ` +
+        `${walkFrames} frames, longest walk ${walkLongest} (${walkLongestRoot}), entries not ` +
+        `served: stale ${walkRefusals[0]}, depth ${walkRefusals[1]}, erasure ${walkRefusals[2]}, ` +
+        `rank ${walkRefusals[3]}, dependency ${walkRefusals[4]}, re-entered ${walkRefusals[5]}\n`,
+    );
+  });
+}
+
+function walkEnded(walk: TypeWalk, ctx: TypeMapperCtx): void {
+  walkFrames += walk.clock;
+  if (walk.clock <= walkLongest) return;
+  walkLongest = walk.clock;
+  walkLongestRoot =
+    (walk.root === null ? "?" : ctx.checker.typeToString(walk.root)) +
+    (walk.rootLenient ? ", lenient" : "");
+}
+
+/** Runs `fn` with every top-level mapping inside it sharing one walk memo:
+ * a mapping that asks mapType once per component (the canonical form asks
+ * for each object node) maps each type it reaches once. Only under a context
+ * that keeps nothing in the type memos (canMemoizeType answers false; see
+ * above), and only for a stretch that leaves the lowerer's state alone (no
+ * binding scope entered or left, nothing degraded, no collection phase
+ * ended): the memo's answers are the ones that state gives. */
+export function withTypeWalk<T>(root: ts.Type, ctx: TypeMapperCtx, fn: () => T): T {
+  if (activeWalk !== null || !walkMemoEnabled || mapTypeDepth !== 0) return fn();
+  if (ctx.canMemoizeType?.() ?? true) return fn();
+  const walk = idleWalk;
+  walk.reset();
+  walk.root = root;
+  walk.rootLenient = ctx.lenient === true;
+  activeWalk = walk;
+  try {
+    return fn();
+  } finally {
+    activeWalk = null;
+    if (walkStats) walkEnded(walk, ctx);
+  }
+}
+
+/** A record, union or overload set starts mapping (beside the registry's own
+ * inProgress entry). Null outside a walk. */
+function walkEnter(
+  kind: number,
+  key: ts.Type | ts.Symbol,
+  ctx: TypeMapperCtx,
+): ProgressFrame | null {
+  progressStarts++;
+  const walk = activeWalk;
+  if (walk === null) return null;
+  if (walk.shapes === null) {
+    walk.shapes = ctx.shapes;
+    walk.unions = ctx.unions;
+  } else if (walk.shapes !== ctx.shapes || walk.unions !== ctx.unions) {
+    walk.opaque = true;
+  }
+  const table = walk.active[kind]!;
+  const outer = table.get(key);
+  // An overload set can start expanding again inside its own expansion (the
+  // caller that asks first refuses it; one that does not ask expands it).
+  // The inner frame stands for both until it ends.
+  if (outer !== undefined) {
+    const inner = new ProgressFrame(kind, key, outer.start, outer.earlier, outer);
+    table.set(key, inner);
+    return inner;
+  }
+  const earlier = walk.finished[kind]!.get(key);
+  const frame = new ProgressFrame(kind, key, walk.clock, earlier, undefined);
+  table.set(key, frame);
+  if (earlier !== undefined) walk.reentered.push(frame);
+  return frame;
+}
+
+function walkLeave(frame: ProgressFrame | null): void {
+  const walk = activeWalk;
+  if (frame === null || walk === null) return;
+  const table = walk.active[frame.kind]!;
+  if (table.get(frame.key) !== frame) return;
+  if (frame.outer !== undefined) {
+    table.set(frame.key, frame.outer);
+    return;
+  }
+  table.delete(frame.key);
+  if (frame.earlier !== undefined) {
+    frame.earlier.push(frame.start);
+    const at = walk.reentered.lastIndexOf(frame);
+    if (at >= 0) walk.reentered.splice(at, 1);
+  } else {
+    walk.finished[frame.kind]!.set(frame.key, [frame.start]);
+  }
+}
+
+/** The frame being computed answered from a mapping in progress: a recursive
+ * placeholder (`strict` false), or a rule that reads "in progress" itself. */
+function walkBackReference(kind: number, key: ts.Type | ts.Symbol, strict: boolean): void {
+  const walk = activeWalk;
+  if (walk === null) return;
+  const frame = walk.active[kind]!.get(key);
+  // In progress since before the walk: so for all of it.
+  if (frame === undefined) return;
+  if (frameDeps === null) frameDeps = new Set();
+  frameDeps.add(strict ? frame.strictDep : frame.dep);
+}
+
+/** A recursive placeholder was minted or finished for `key`: the type maps
+ * differently from now on, so no entry computed around an earlier mapping of
+ * it serves again. */
+function walkRecursiveChanged(kind: number, key: ts.Type): void {
+  const walk = activeWalk;
+  if (walk === null) return;
+  const earlier = walk.finished[kind]!.get(key);
+  if (earlier === undefined) return;
+  const last = earlier[earlier.length - 1]!;
+  if (last > walk.staleBefore) walk.staleBefore = last;
+}
+
+/** The key of an entry that holds for one depth only. Entry keys are
+ * non-negative; these are negative. */
+function depthEntryKey(key: number, depth: number): number {
+  return -(key * MAP_TYPE_MAX_DEPTH + depth) - 1;
+}
+
+/** Whether `entry` is the answer mapping its type again would give now, at
+ * `depth`, under `ctx`. */
+function walkEntryServes(
+  walk: TypeWalk,
+  entry: WalkEntry,
+  depth: number,
+  ctx: TypeMapperCtx,
+): boolean {
+  const refusal = walkEntryRefusal(walk, entry, depth, ctx);
+  if (refusal < 0) return true;
+  if (walkStats) walkRefusals[refusal]!++;
+  return false;
+}
+
+/** Why `entry` does not serve (an index into walkRefusals), or -1. */
+function walkEntryRefusal(
+  walk: TypeWalk,
+  entry: WalkEntry,
+  depth: number,
+  ctx: TypeMapperCtx,
+): number {
+  const spans = entry.spans;
+  if (spans[0]! <= walk.staleBefore) return 0;
+  if (
+    depth !== entry.depth &&
+    (entry.metDepthLimit || depth + entry.height + 1 >= MAP_TYPE_MAX_DEPTH)
+  )
+    return 1;
+  if ((ctx.erasedMember?.outerConsulted ?? false) !== entry.outerConsulted) return 2;
+  // By identity: a rank can be a reference whose value settles later.
+  if (ctx.shapes.declaredOrderRank() !== entry.keyOrderRank) return 3;
+  const deps = entry.deps;
+  if (deps !== null) {
+    for (const dep of deps) {
+      const frame = dep.frame;
+      if (walk.active[frame.kind]!.has(frame.key)) continue;
+      if (dep.strict) return 4;
+      if (frame.kind === PROGRESS_RECORD) {
+        if (ctx.shapes.recursiveShapeFor(frame.key as ts.Type) === undefined) return 4;
+      } else if (frame.kind === PROGRESS_UNION) {
+        if (ctx.unions.recursiveUnionFor(frame.key as ts.Type) === undefined) return 4;
+      } else {
+        return 4;
+      }
+    }
+  }
+  for (const frame of walk.reentered) {
+    // An earlier mapping of a type in progress now that started inside one
+    // of the entry's spans: the entry holds that type mapped in full.
+    // Both lists rise; a type mapped again and again has a long one, so each
+    // span looks up the first earlier mapping that started at or after it.
+    const earlier = frame.earlier!;
+    for (let i = 0; i < spans.length; i += 2) {
+      const from = spans[i]!;
+      let low = 0;
+      let high = earlier.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (earlier[middle]! < from) low = middle + 1;
+        else high = middle;
+      }
+      if (low < earlier.length && earlier[low]! <= spans[i + 1]!) return 5;
+    }
+  }
+  return -1;
+}
+
+/** Folds an entry that serves into the frame being computed, as mapping the
+ * type again would have: the counters it moved, the frames in progress it
+ * answered from, its span and its depth. */
+function walkEntryTaken(walk: TypeWalk, entry: WalkEntry, depth: number): void {
+  walkEntriesServed++;
+  if (entry.movedContext) contextResolutions++;
+  if (entry.movedScope) scopeSensitivity++;
+  if (entry.metDepthLimit) depthLimitHits++;
+  const spans = (frameSpans ??= []);
+  for (const bound of entry.spans) spans.push(bound);
+  if (depth + entry.height > frameDeepest) frameDeepest = depth + entry.height;
+  const deps = entry.deps;
+  if (deps === null) return;
+  for (const dep of deps) {
+    const now = walk.active[dep.frame.kind]!.get(dep.frame.key);
+    if (now === undefined) continue;
+    if (frameDeps === null) frameDeps = new Set();
+    frameDeps.add(dep.strict ? now.strictDep : now.dep);
+  }
+}
 
 /** node:url's legacy record interfaces: url.parse()'s Url instance (and
  * its two query-typed refinements), url.format()'s UrlObject input, the
@@ -2479,7 +2951,10 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
 }
 
 function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
-  if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
+  if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) {
+    depthLimitHits++;
+    return null;
+  }
   // These intrinsic domains cannot depend on generic bindings, declaration
   // provenance, or recursive shape state. Enum literals retain the ordinary
   // widening path, including mixed numeric/string enum representations.
@@ -2529,92 +3004,234 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   const sensitivityAtEntry = contextResolutions;
   const scopeReadsAtEntry = scopeSensitivity;
-  mapTypeDepth++;
-  try {
-    let mapped: IrType | null;
-    try {
-      mapped = mapTypeInner(type, ctx);
-    } catch (e) {
-      // typescript-go's API can panic serializing a union's members (an
-      // empty tuple cloned as an array literal, `s.match(re) || []`): a
-      // union the checker cannot describe has no representation.
-      if (!topLevel || !ts.isUnreadableConstituentsPanic(e)) throw e;
-      mapped = null;
-    }
-    // A generic alias the body spells over its own type parameters (`x as
-    // Catalog<G, P>`) stays symbolic in the checker; when that form does not
-    // map, the instance's concrete instantiation of the same alias does.
-    if (mapped === null && ctx.resolveBoundAliasTs) {
-      const concrete = ctx.resolveBoundAliasTs(type);
-      if (concrete !== null && concrete !== type) {
-        mapped = mapType(concrete, ctx);
-        if (mapped !== null) contextResolutions++;
-      }
-    }
-    // A PACKAGE DATA SHAPE the structural rules cannot map: `import type`
-    // from a package whose implementation is not part of the compiled
-    // module graph declares data the program itself builds, and a
-    // declaration the compiled graph never loads cannot produce a value of
-    // its own. A shape with no native mapping is then exactly the
-    // checked-dynamic value — the same answer `unknown` gets — never the
-    // package's story (there is no package value here to disagree with).
-    //
-    // The fallback reads the type's declarations and nothing of the binding
-    // context, so it is not a context resolution of its own: when the
-    // structural attempt consulted the context, that read counted itself,
-    // and when it did not, the type has this answer wherever it is mapped.
-    // Counting it kept every type that holds such a shape out of the memo:
-    // an SDK configuration type whose answer is the checked-dynamic value
-    // was mapped from scratch at each of its uses (pi's
-    // `BedrockRuntimeClientConfig`: forty mappings of half a second each in
-    // one function).
-    if (mapped === null && packageTypeIsData(type, ctx)) mapped = DYN;
-    // Localized failure: a type that failed at a committed slot maps to its
-    // lenient form. It counts as a context resolution so neither it nor a
-    // type containing it is memoized: the strict form may map elsewhere.
-    if (mapped === null && ctx.degradedType) {
-      const lenient = ctx.degradedType(type);
-      if (lenient !== null) {
-        mapped = lenient;
-        contextResolutions++;
-      }
-    }
-    // Push-down (stage L3): in a lenient mapping, the smallest failing
-    // component is the checked dynamic.
-    if (mapped === null && ctx.lenient === true && !topLevel) {
-      mapped = DYN;
-      contextResolutions++;
-      ctx.onLenientPiece?.(type);
-    }
-    if (
-      mapped !== null &&
-      memoKey !== null &&
-      topLevel &&
-      !bypassTypeMemo &&
-      contextResolutions === sensitivityAtEntry &&
-      ctx.erasingSignature === undefined &&
-      (ctx.canMemoizeType?.() ?? true)
-    ) {
-      // Read the hook again rather than reusing the entry's memo: the write
-      // condition rechecks the binding context, and a hook is what keeps a
-      // context copy made inside a binding scope pointed at that scope.
-      const liveMemo = ctx.typeMemoFor?.() ?? ctx.typeMemo;
-      // A scope that changed mid-frame cannot own this answer. (It cannot
-      // happen today; the identity check keeps it a proof rather than an
-      // assumption.)
-      if (liveMemo === contextMemo) {
-        liveMemo?.set(memoKey, mapped);
-        // An answer that read no scope state is every scope's answer, so it
-        // also serves the shared memo — including the scopes entered later.
-        const shared = ctx.typeMemoShared;
-        if (shared !== undefined && shared !== liveMemo && scopeSensitivity === scopeReadsAtEntry)
-          shared.set(memoKey, mapped);
-      }
-    }
-    return mapped;
-  } finally {
-    mapTypeDepth--;
+  const depth = mapTypeDepth;
+  // The walk this frame belongs to: a top-level frame outside a withTypeWalk
+  // scope starts one, and has no entry to look for or to leave.
+  let walk = activeWalk;
+  let startsWalk = false;
+  if (walk === null && walkMemoEnabled && topLevel) {
+    idleWalk.reset();
+    walk = activeWalk = idleWalk;
+    startsWalk = true;
   }
+  let entries: Map<number, WalkEntry> | null = null;
+  let walkKey = 0;
+  let walkScope: unknown = undefined;
+  let served: WalkEntry | undefined;
+  const walkMemoizable =
+    walk !== null &&
+    typeId !== undefined &&
+    !walk.opaque &&
+    !bypassTypeMemo &&
+    (ctx.canMemoizeWalk?.() ?? ctx.canMemoizeType?.() ?? true);
+  if (walkMemoizable) {
+    walkScope = contextMemo ?? ctx.typeMemoFor?.() ?? ctx.typeMemo;
+    // A lenient mapping answers the checked dynamic for a nested type that
+    // does not map and "does not map" for the top-level one.
+    walkKey =
+      typeId * 4 + (ctx.emptyLiteralArm ? 1 : 0) + (topLevel && ctx.lenient === true ? 2 : 0);
+    if (startsWalk) {
+      // Nothing to look for yet.
+      walk!.root = type;
+      walk!.rootLenient = ctx.lenient === true;
+    } else {
+      entries = walk!.entriesFor(ctx, walkScope);
+      const entry = entries.get(walkKey);
+      if (entry !== undefined && walkEntryServes(walk!, entry, depth, ctx)) served = entry;
+      else {
+        const atDepth = entries.get(depthEntryKey(walkKey, depth));
+        if (atDepth !== undefined && walkEntryServes(walk!, atDepth, depth, ctx)) served = atDepth;
+      }
+    }
+  }
+  let mapped: IrType | null = null;
+  if (served !== undefined && !walkMemoVerify) {
+    walkEntryTaken(walk!, served, depth);
+    mapped = served.result;
+  } else {
+    const parentDeps = frameDeps;
+    const parentSpans = frameSpans;
+    const parentDeepest = frameDeepest;
+    const limitHitsAtEntry = depthLimitHits;
+    const progressAtEntry = progressStarts;
+    const outerConsulted = ctx.erasedMember?.outerConsulted ?? false;
+    let started = 0;
+    let recordable = false;
+    mapTypeDepth++;
+    try {
+      let refused = false;
+      try {
+        if (walk !== null) {
+          started = ++walk.clock;
+          frameDeps = null;
+          frameSpans = null;
+          frameDeepest = depth;
+        }
+        mapped = mapTypeInner(type, ctx);
+      } catch (e) {
+        // typescript-go's API can panic serializing a union's members (an
+        // empty tuple cloned as an array literal, `s.match(re) || []`): a
+        // union the checker cannot describe has no representation.
+        if (!topLevel || !ts.isUnreadableConstituentsPanic(e)) throw e;
+        mapped = null;
+        refused = true;
+      }
+      // A generic alias the body spells over its own type parameters (`x as
+      // Catalog<G, P>`) stays symbolic in the checker; when that form does not
+      // map, the instance's concrete instantiation of the same alias does.
+      if (mapped === null && ctx.resolveBoundAliasTs) {
+        const concrete = ctx.resolveBoundAliasTs(type);
+        if (concrete !== null && concrete !== type) {
+          mapped = mapType(concrete, ctx);
+          if (mapped !== null) contextResolutions++;
+        }
+      }
+      // A PACKAGE DATA SHAPE the structural rules cannot map: `import type`
+      // from a package whose implementation is not part of the compiled
+      // module graph declares data the program itself builds, and a
+      // declaration the compiled graph never loads cannot produce a value of
+      // its own. A shape with no native mapping is then exactly the
+      // checked-dynamic value — the same answer `unknown` gets — never the
+      // package's story (there is no package value here to disagree with).
+      //
+      // The fallback reads the type's declarations and nothing of the binding
+      // context, so it is not a context resolution of its own: when the
+      // structural attempt consulted the context, that read counted itself,
+      // and when it did not, the type has this answer wherever it is mapped.
+      // Counting it kept every type that holds such a shape out of the memo:
+      // an SDK configuration type whose answer is the checked-dynamic value
+      // was mapped from scratch at each of its uses (pi's
+      // `BedrockRuntimeClientConfig`: forty mappings of half a second each in
+      // one function).
+      if (mapped === null && packageTypeIsData(type, ctx)) mapped = DYN;
+      // Localized failure: a type that failed at a committed slot maps to its
+      // lenient form. It counts as a context resolution so neither it nor a
+      // type containing it is memoized: the strict form may map elsewhere.
+      if (mapped === null && ctx.degradedType) {
+        const lenient = ctx.degradedType(type);
+        if (lenient !== null) {
+          mapped = lenient;
+          contextResolutions++;
+        }
+      }
+      // Push-down (stage L3): in a lenient mapping, the smallest failing
+      // component is the checked dynamic.
+      if (mapped === null && ctx.lenient === true && !topLevel) {
+        mapped = DYN;
+        contextResolutions++;
+        ctx.onLenientPiece?.(type);
+      }
+      recordable = !refused;
+    } finally {
+      mapTypeDepth--;
+      if (walk !== null && started !== 0) {
+        // What the frame answered from that started before it: its entry
+        // depends on those, and so does its parent's.
+        let deps: WalkDep[] | null = null;
+        if (frameDeps !== null)
+          for (const dep of frameDeps) if (dep.frame.start < started) (deps ??= []).push(dep);
+        const spans = walkEntrySpans(frameSpans, started, walk.clock);
+        const deepest = frameDeepest;
+        frameDeps = parentDeps;
+        if (deps !== null) {
+          frameDeps ??= new Set();
+          for (const dep of deps) frameDeps.add(dep);
+        }
+        // The parent's own span covers this frame's; what served in here
+        // from before the parent started is the parent's to keep.
+        frameSpans = parentSpans;
+        if (spans.length > 2) {
+          frameSpans ??= [];
+          for (let i = 0; i < spans.length - 2; i++) frameSpans.push(spans[i]!);
+        }
+        frameDeepest = deepest > parentDeepest ? deepest : parentDeepest;
+        if (walkMemoizable) {
+          // Only a frame that mapped a record, a union or an overload set
+          // below it is worth an entry; the others are one step to repeat.
+          // (Verifying, every frame an entry was about to answer for is
+          // compared with it.)
+          if (recordable && (progressStarts !== progressAtEntry || served !== undefined)) {
+            entries ??= walk.entriesFor(ctx, walkScope);
+            const entry = new WalkEntry(
+              mapped,
+              contextResolutions !== sensitivityAtEntry,
+              scopeSensitivity !== scopeReadsAtEntry,
+              deps,
+              spans,
+              depth,
+              deepest - depth,
+              depthLimitHits !== limitHitsAtEntry,
+              ctx.shapes.declaredOrderRank(),
+              outerConsulted,
+            );
+            if (served !== undefined) verifyWalkEntry(type, ctx, served, entry);
+            // An answer that met the depth limit is the answer at this depth
+            // only, and the same type is mapped at several depths (a member's
+            // type directly and as a union's arm): one entry per depth.
+            entries.set(entry.metDepthLimit ? depthEntryKey(walkKey, depth) : walkKey, entry);
+          }
+        }
+      }
+      if (startsWalk) {
+        activeWalk = null;
+        if (walkStats) walkEnded(walk!, ctx);
+      }
+    }
+  }
+  if (
+    mapped !== null &&
+    memoKey !== null &&
+    topLevel &&
+    !bypassTypeMemo &&
+    contextResolutions === sensitivityAtEntry &&
+    ctx.erasingSignature === undefined &&
+    (ctx.canMemoizeType?.() ?? true)
+  ) {
+    // Read the hook again rather than reusing the entry's memo: the write
+    // condition rechecks the binding context, and a hook is what keeps a
+    // context copy made inside a binding scope pointed at that scope.
+    const liveMemo = ctx.typeMemoFor?.() ?? ctx.typeMemo;
+    // A scope that changed mid-frame cannot own this answer. (It cannot
+    // happen today; the identity check keeps it a proof rather than an
+    // assumption.)
+    if (liveMemo === contextMemo) {
+      // The walk this frame is part of (a top-level frame that started its
+      // own has ended it) computed its entries without this answer.
+      if (activeWalk !== null) activeWalk.staleBefore = activeWalk.clock;
+      liveMemo?.set(memoKey, mapped);
+      // An answer that read no scope state is every scope's answer, so it
+      // also serves the shared memo — including the scopes entered later.
+      const shared = ctx.typeMemoShared;
+      if (shared !== undefined && shared !== liveMemo && scopeSensitivity === scopeReadsAtEntry)
+        shared.set(memoKey, mapped);
+    }
+  }
+  return mapped;
+}
+
+/** SCRIPTC_TYPE_WALK_MEMO=verify: `served` was about to answer for `type`,
+ * and `fresh` is what mapping it again gave. They must agree in the answer
+ * and in the counters the frame moves. */
+function verifyWalkEntry(
+  type: ts.Type,
+  ctx: TypeMapperCtx,
+  served: WalkEntry,
+  fresh: WalkEntry,
+): void {
+  walkEntriesVerified++;
+  const key = (t: IrType | null): string => (t === null ? "<unmapped>" : typeKey(t));
+  if (
+    key(served.result) === key(fresh.result) &&
+    served.movedContext === fresh.movedContext &&
+    served.movedScope === fresh.movedScope
+  )
+    return;
+  throw new InternalCompilerError(
+    `walk memo entry does not match a fresh mapping: type ` +
+      `${checkerTypeDescription(type, ctx)} answered ${key(served.result)} from the memo ` +
+      `(context ${served.movedContext}, scope ${served.movedScope}) and ${key(fresh.result)} ` +
+      `when mapped again (context ${fresh.movedContext}, scope ${fresh.movedScope})`,
+  );
 }
 
 /** SCRIPTC_TYPE_MEMO_VERIFY: recomputes a shared memo entry in the scope
@@ -6175,12 +6792,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const knownRecursive = unions.recursiveUnionFor(widened);
     if (knownRecursive !== undefined) return { kind: "union", unionId: knownRecursive };
     if (unions.inProgress.has(widened)) {
+      walkBackReference(PROGRESS_UNION, widened, false);
       return {
         kind: "union",
         unionId: unions.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
       };
     }
     unions.inProgress.add(widened);
+    const progress = walkEnter(PROGRESS_UNION, widened, ctx);
     const sensitivityAtEntry = contextResolutions;
     try {
       const byKey = new Map<string, IrType>();
@@ -6410,6 +7029,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return { kind: "union", unionId: unions.intern(mergedArms, discriminant) };
     } finally {
       unions.inProgress.delete(widened);
+      walkLeave(progress);
     }
   }
   return null;
@@ -6541,7 +7161,10 @@ function overloadSetKey(type: ts.Type): ts.Symbol | ts.Type {
  * mapping that is already in progress, so the set has no single compiled
  * signature (see overloadExpansion). */
 function overloadSetBeingExpanded(type: ts.Type): boolean {
-  return overloadExpansion.includes(overloadSetKey(type));
+  const key = overloadSetKey(type);
+  if (!overloadExpansion.includes(key)) return false;
+  walkBackReference(PROGRESS_OVERLOADS, key, true);
+  return true;
 }
 
 /** The one signature `sigs` agree on, or null when they disagree or any of
@@ -6553,7 +7176,9 @@ function mapAgreeingOverloadSignature(
   set: ts.Type,
   ctx: TypeMapperCtx,
 ): IrType | null {
-  overloadExpansion.push(overloadSetKey(set));
+  const key = overloadSetKey(set);
+  overloadExpansion.push(key);
+  const progress = walkEnter(PROGRESS_OVERLOADS, key, ctx);
   try {
     const first = mapCallSignature(sigs[0]!, ctx);
     if (first === null) return null;
@@ -6564,6 +7189,7 @@ function mapAgreeingOverloadSignature(
     return first;
   } finally {
     overloadExpansion.pop();
+    walkLeave(progress);
   }
 }
 
@@ -6994,6 +7620,7 @@ function mapClassView(
       viewCtx = {
         ...ctx,
         canMemoizeType: () => false,
+        canMemoizeWalk: () => ctx.canMemoizeWalk?.() ?? ctx.canMemoizeType?.() ?? true,
         resolveTypeParam: (param) => {
           const index = params.indexOf(param);
           const arg = index >= 0 ? args[index] : undefined;
@@ -7111,6 +7738,7 @@ function mapCollectionView(
   const baseCtx: TypeMapperCtx = {
     ...ctx,
     canMemoizeType: () => false,
+    canMemoizeWalk: () => ctx.canMemoizeWalk?.() ?? ctx.canMemoizeType?.() ?? true,
     resolveTypeParam: (param) => {
       const index = params.indexOf(param);
       const arg = index >= 0 ? args[index] : undefined;
@@ -9605,12 +10233,14 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // frame completes (finalizeRecursive below). Backends represent records
   // as heap references, so the self-reference is an ordinary pointer.
   if (shapes.inProgress.has(widened)) {
+    walkBackReference(PROGRESS_RECORD, widened, false);
     return {
       kind: "record",
       shapeId: shapes.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
     };
   }
   shapes.inProgress.add(widened);
+  const progress = walkEnter(PROGRESS_RECORD, widened, ctx);
   const sensitivityAtEntry = contextResolutions;
   try {
     const inner = mapRecordTypeInner(widened, ctx);
@@ -9659,6 +10289,7 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "record", shapeId };
   } finally {
     shapes.inProgress.delete(widened);
+    walkLeave(progress);
   }
 }
 
@@ -9967,7 +10598,11 @@ function refinedConstituentShape(
   const names = checker.getPropertiesOfType(widened).map((prop) => ts.symbolName(prop));
   let found: string | null = null;
   for (const part of ts.constituentTypes(widened)) {
-    if ((part.flags & ts.TypeFlags.Object) === 0 || shapes.inProgress.has(part)) continue;
+    if ((part.flags & ts.TypeFlags.Object) === 0) continue;
+    if (shapes.inProgress.has(part)) {
+      walkBackReference(PROGRESS_RECORD, part, true);
+      continue;
+    }
     const own = new Set(checker.getPropertiesOfType(part).map((prop) => ts.symbolName(prop)));
     if (own.size !== names.length || !names.every((name) => own.has(name))) continue;
     const mapped = mapType(part, ctx);

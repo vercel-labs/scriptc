@@ -431,6 +431,7 @@ import {
   containsUnion,
   describeComponentBlocker,
   describeRecordMemberBlocker,
+  withTypeWalk,
   erasedOverloadMemberType,
   formatIrType,
   FETCH_AMBIENT_TYPES,
@@ -14465,6 +14466,9 @@ export class Lowerer {
       ...strict,
       lenient: true,
       canMemoizeType: () => false,
+      // Nothing of it enters the strict memos; the mapping itself still
+      // maps each type it reaches once.
+      canMemoizeWalk: () => strict.canMemoizeType?.() ?? true,
       onLenientPiece: (piece) => {
         const id = (piece as { id?: number }).id;
         if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
@@ -14513,7 +14517,14 @@ export class Lowerer {
       if (c.k === "opaque" || c.k === "param") return null;
       const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
       const notes: CanonMapNotes = { collapsedToDynamic: false };
-      const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false }, 0, notes);
+      // One walk for the whole form: each object node whose members do not
+      // map structurally asks mapType for its own type.
+      const canonCtx: TypeMapperCtx = {
+        ...strict,
+        canMemoizeType: () => false,
+        canMemoizeWalk: () => strict.canMemoizeType?.() ?? true,
+      };
+      const mapped = withTypeWalk(type, canonCtx, () => mapCanonical(c, canonCtx, 0, notes));
       if (notes.collapsedToDynamic) return null;
       return mapped === null || mapped.kind === "void" || mapped.kind === "dyn" ? null : mapped;
     } catch {

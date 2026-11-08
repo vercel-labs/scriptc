@@ -97,3 +97,58 @@ console.log("keys", Object.keys(held).length, Object.isFrozen(held), Reflect.del
   );
   expect(code).toBe(0);
 });
+
+// The same rule for the whole process object a JavaScript source holds
+// (node-value-reads.ts, defineNodeObject): the spelled members
+// (`process.pid`, `process.nextTick(f)`) are compiled where they are
+// written and never read that object, so the object is frozen once built.
+// Node lets a program redefine `pid`, replace `nextTick` and add keys; a
+// compiled binary throws a TypeError at each, and the spelled reads and the
+// object agree afterwards.
+test("a held process object cannot be redefined, and each attempt throws where it is made", async () => {
+  const { stdout, stderr, code } = await run(`const attempt = (label, write) => {
+  let outcome = "no error";
+  try {
+    write();
+  } catch (error) {
+    outcome = error.constructor.name;
+  }
+  console.log(label, outcome);
+};
+const pass = (value) => value;
+const held = pass(process);
+const pid = process.pid;
+const tick = process.nextTick;
+attempt("defineProperty pid", () => {
+  Object.defineProperty(held, "pid", { value: 1 });
+});
+attempt("defineProperty platform", () => {
+  Object.defineProperty(held, "platform", { value: "other", configurable: true });
+});
+attempt("replace nextTick", () => {
+  held.nextTick = () => {};
+});
+attempt("new key", () => {
+  held.added = 1;
+});
+console.log("pid", held.pid === pid, process.pid === pid);
+console.log("platform", held.platform === process.platform);
+console.log("nextTick", held.nextTick === tick, process.nextTick === tick);
+console.log("added", "added" in held, Object.isFrozen(held));
+`);
+  expect(stderr).toBe("");
+  expect(stdout).toBe(
+    [
+      "defineProperty pid TypeError",
+      "defineProperty platform TypeError",
+      "replace nextTick TypeError",
+      "new key TypeError",
+      "pid true true",
+      "platform true",
+      "nextTick true true",
+      "added false true",
+      "",
+    ].join("\n"),
+  );
+  expect(code).toBe(0);
+});

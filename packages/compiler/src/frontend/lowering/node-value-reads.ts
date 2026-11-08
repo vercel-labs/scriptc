@@ -179,7 +179,10 @@ function programReadsGlobalValue(lowerer: Lowerer, name: string): boolean {
  * Node process is undefined (`exitCode`): the program can assign it, and a
  * value fixed when the object was built would go stale. A write to a data
  * member through the object is refused by name too: the state is the
- * runtime's, written where the member is spelled. So `typeof`, identity
+ * runtime's, written where the member is spelled. The object is frozen:
+ * redefining a member, replacing a function member or adding a key throws
+ * a TypeError, because the spelled members never read this object and
+ * could not follow the change. So `typeof`, identity
  * (`perf === performance`, membership in the harness's known-globals Set),
  * `in` and the `typeof` of each function member are Node's, a name Node's
  * object does not have reads undefined, and nothing the object cannot
@@ -301,7 +304,26 @@ function defineNodeObject(lowerer: Lowerer, name: string, helper: string, node: 
       loc,
     });
   }
+  // The object is frozen once it is built. The spelled members
+  // (`process.pid`, `process.nextTick(f)`) are lowered where they are
+  // written and never consult this object, so a member the program could
+  // redefine or replace through a held reference would make the object and
+  // the spelled read disagree, silently. Frozen, a redefinition, a
+  // replaced function member and a new key each throw a TypeError where
+  // they are made; a write to a data member is still refused by name by
+  // the setter above.
   body.push(
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.freeze",
+        args: [varRef(storage, DYN, loc)],
+        type: DYN,
+        loc,
+      },
+      loc,
+    },
     { kind: "assign", localId: ready, value: boolLit(true, loc), loc },
     { kind: "return", value: varRef(storage, DYN, loc), loc },
   );

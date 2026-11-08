@@ -3225,11 +3225,11 @@ server.listen(0, () => {
 });
 
 describe("inspecting error subclasses with properties created at run time (JS lane)", () => {
-  test("an instance whose constructor created a property is a named fence", async () => {
-    // Node prints `[Conditional [Error]: m] { extra: 'x' }`. The property
-    // lives in the instance's property bag, which the error rendering does
-    // not read, so the instance refuses instead of printing a partial
-    // object. One without such a property prints as Node prints it.
+  test("an instance whose constructor created a property prints it", async () => {
+    // The property lives in the instance's property list, which the static
+    // error rendering does not read: such an instance is rendered from its
+    // checked-dynamic view, which lists its own properties in creation
+    // order. One without such a property prints as before.
     const r = await compileAndRun(
       "error-subclass-runtime-properties",
       `import * as util from "node:util";
@@ -3248,10 +3248,10 @@ console.log(util.inspect(extra));
 `,
       "mjs",
     );
-    expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("[Conditional [Error]: plain]\n");
-    expect(r.stderr).toMatch(
-      /^Uncaught Error: inspecting a 'Conditional' error with properties created at run time is not supported yet \[SC2020[^\]]*\]\n$/,
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "[Conditional [Error]: plain]\n[Conditional [Error]: extra] { extra: 'x' }\n",
     );
   });
 });

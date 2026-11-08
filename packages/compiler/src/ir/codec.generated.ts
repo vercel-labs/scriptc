@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "772ae1c67381f949";
+export const IR_CODEC_LAYOUT = "ffc1e88f464bee8e";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -80,7 +80,7 @@ const KEYS52: readonly string[] = ["kind"];
 const KEYS53: readonly string[] = ["kind"];
 const KEYS54: readonly string[] = ["file","start","end"];
 const KEYS55: readonly string[] = ["yieldT","nextT","resultType","closesSource","tag","inheritsTag","bindAtCall"];
-const KEYS56: readonly string[] = ["name","localCaptures","localBaseCapture","baseValueGlobal","jsName","jsLength","ownStaticFields","prototypeDataHelper","instancePrototypeHelper","stringTagHelper","viewAccessors","tracksOwnFields","errorNameAfter","errorBagOrder","symbolFields","runtime","arrayElem","arrayFields","arraySpecies","base","fields","methods","prototypeNames","abstract","abstractMethods","genericOf","loc"];
+const KEYS56: readonly string[] = ["name","localCaptures","localBaseCapture","baseValueGlobal","jsName","jsLength","ownStaticFields","prototypeDataHelper","instancePrototypeHelper","stringTagHelper","viewAccessors","tracksOwnFields","errorNameAfter","errorCauseAfter","errorBagOrder","errorOwnOrder","symbolFields","runtime","arrayElem","arrayFields","arraySpecies","base","fields","methods","prototypeNames","abstract","abstractMethods","genericOf","loc"];
 const KEYS57: readonly string[] = ["id","name","type","mutable","tdz","initFlag","source"];
 const KEYS58: readonly string[] = ["id","fields","tuple","indexValue","freezable","declaredOrder","accessorOrder","orderVariants"];
 const KEYS59: readonly string[] = ["id","arms","discriminant"];
@@ -1493,10 +1493,21 @@ function encIrClassDef(w: IrWriter, v: IrClassDef): void {
     w.byte(2);
     w.str(v.errorNameAfter);
   }
+  if (v.errorCauseAfter === undefined) w.byte(0);
+  else if (v.errorCauseAfter === null) w.byte(1);
+  else {
+    w.byte(2);
+    w.str(v.errorCauseAfter);
+  }
   if (v.errorBagOrder === undefined) w.byte(0);
   else {
     w.byte(1);
     w.bool(v.errorBagOrder);
+  }
+  if (v.errorOwnOrder === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.bool(v.errorOwnOrder);
   }
   if (v.symbolFields === undefined) w.byte(0);
   else {
@@ -1570,21 +1581,23 @@ function decIrClassDef(r: IrReader): IrClassDef {
   const f10 = r.tag(2, "IrModule.classes[].viewAccessors") === 0 ? undefined : decT43(r);
   const f11 = r.tag(2, "IrModule.classes[].tracksOwnFields") === 0 ? undefined : r.bool();
   const f12 = r.tag(3, "IrModule.classes[].errorNameAfter") === 0 ? undefined : r.lastTag === 1 ? null : r.str();
-  const f13 = r.tag(2, "IrModule.classes[].errorBagOrder") === 0 ? undefined : r.bool();
-  const f14 = r.tag(2, "IrModule.classes[].symbolFields") === 0 ? undefined : decT44(r);
-  const f15 = r.tag(2, "IrModule.classes[].runtime") === 0 ? undefined : (r.bool() as NonNullable<IrClassDef["runtime"]>);
-  const f16 = r.tag(2, "IrModule.classes[].arrayElem") === 0 ? undefined : decIrType(r);
-  const f17 = r.tag(2, "IrModule.classes[].arrayFields") === 0 ? undefined : r.str();
-  const f18 = r.tag(2, "IrModule.classes[].arraySpecies") === 0 ? undefined : r.str();
-  const f19 = r.tag(2, "IrModule.classes[].base") === 0 ? undefined : r.str();
-  const f20 = decT45(r);
-  const f21 = r.tag(2, "IrModule.classes[].methods") === 0 ? undefined : decT8(r);
-  const f22 = r.tag(2, "IrModule.classes[].prototypeNames") === 0 ? undefined : decT8(r);
-  const f23 = r.tag(2, "IrModule.classes[].abstract") === 0 ? undefined : (r.bool() as NonNullable<IrClassDef["abstract"]>);
-  const f24 = r.tag(2, "IrModule.classes[].abstractMethods") === 0 ? undefined : decT8(r);
-  const f25 = r.tag(2, "IrModule.classes[].genericOf") === 0 ? undefined : r.str();
-  const f26 = decSrcLoc(r);
-  const o: IrClassDef = { name: f0, ...(f1 !== undefined ? { localCaptures: f1 } : {}), ...(f2 !== undefined ? { localBaseCapture: f2 } : {}), ...(f3 !== undefined ? { baseValueGlobal: f3 } : {}), ...(f4 !== undefined ? { jsName: f4 } : {}), ...(f5 !== undefined ? { jsLength: f5 } : {}), ...(f6 !== undefined ? { ownStaticFields: f6 } : {}), ...(f7 !== undefined ? { prototypeDataHelper: f7 } : {}), ...(f8 !== undefined ? { instancePrototypeHelper: f8 } : {}), ...(f9 !== undefined ? { stringTagHelper: f9 } : {}), ...(f10 !== undefined ? { viewAccessors: f10 } : {}), ...(f11 !== undefined ? { tracksOwnFields: f11 } : {}), ...(f12 !== undefined ? { errorNameAfter: f12 } : {}), ...(f13 !== undefined ? { errorBagOrder: f13 } : {}), ...(f14 !== undefined ? { symbolFields: f14 } : {}), ...(f15 !== undefined ? { runtime: f15 } : {}), ...(f16 !== undefined ? { arrayElem: f16 } : {}), ...(f17 !== undefined ? { arrayFields: f17 } : {}), ...(f18 !== undefined ? { arraySpecies: f18 } : {}), ...(f19 !== undefined ? { base: f19 } : {}), fields: f20, ...(f21 !== undefined ? { methods: f21 } : {}), ...(f22 !== undefined ? { prototypeNames: f22 } : {}), ...(f23 !== undefined ? { abstract: f23 } : {}), ...(f24 !== undefined ? { abstractMethods: f24 } : {}), ...(f25 !== undefined ? { genericOf: f25 } : {}), loc: f26 };
+  const f13 = r.tag(3, "IrModule.classes[].errorCauseAfter") === 0 ? undefined : r.lastTag === 1 ? null : r.str();
+  const f14 = r.tag(2, "IrModule.classes[].errorBagOrder") === 0 ? undefined : r.bool();
+  const f15 = r.tag(2, "IrModule.classes[].errorOwnOrder") === 0 ? undefined : r.bool();
+  const f16 = r.tag(2, "IrModule.classes[].symbolFields") === 0 ? undefined : decT44(r);
+  const f17 = r.tag(2, "IrModule.classes[].runtime") === 0 ? undefined : (r.bool() as NonNullable<IrClassDef["runtime"]>);
+  const f18 = r.tag(2, "IrModule.classes[].arrayElem") === 0 ? undefined : decIrType(r);
+  const f19 = r.tag(2, "IrModule.classes[].arrayFields") === 0 ? undefined : r.str();
+  const f20 = r.tag(2, "IrModule.classes[].arraySpecies") === 0 ? undefined : r.str();
+  const f21 = r.tag(2, "IrModule.classes[].base") === 0 ? undefined : r.str();
+  const f22 = decT45(r);
+  const f23 = r.tag(2, "IrModule.classes[].methods") === 0 ? undefined : decT8(r);
+  const f24 = r.tag(2, "IrModule.classes[].prototypeNames") === 0 ? undefined : decT8(r);
+  const f25 = r.tag(2, "IrModule.classes[].abstract") === 0 ? undefined : (r.bool() as NonNullable<IrClassDef["abstract"]>);
+  const f26 = r.tag(2, "IrModule.classes[].abstractMethods") === 0 ? undefined : decT8(r);
+  const f27 = r.tag(2, "IrModule.classes[].genericOf") === 0 ? undefined : r.str();
+  const f28 = decSrcLoc(r);
+  const o: IrClassDef = { name: f0, ...(f1 !== undefined ? { localCaptures: f1 } : {}), ...(f2 !== undefined ? { localBaseCapture: f2 } : {}), ...(f3 !== undefined ? { baseValueGlobal: f3 } : {}), ...(f4 !== undefined ? { jsName: f4 } : {}), ...(f5 !== undefined ? { jsLength: f5 } : {}), ...(f6 !== undefined ? { ownStaticFields: f6 } : {}), ...(f7 !== undefined ? { prototypeDataHelper: f7 } : {}), ...(f8 !== undefined ? { instancePrototypeHelper: f8 } : {}), ...(f9 !== undefined ? { stringTagHelper: f9 } : {}), ...(f10 !== undefined ? { viewAccessors: f10 } : {}), ...(f11 !== undefined ? { tracksOwnFields: f11 } : {}), ...(f12 !== undefined ? { errorNameAfter: f12 } : {}), ...(f13 !== undefined ? { errorCauseAfter: f13 } : {}), ...(f14 !== undefined ? { errorBagOrder: f14 } : {}), ...(f15 !== undefined ? { errorOwnOrder: f15 } : {}), ...(f16 !== undefined ? { symbolFields: f16 } : {}), ...(f17 !== undefined ? { runtime: f17 } : {}), ...(f18 !== undefined ? { arrayElem: f18 } : {}), ...(f19 !== undefined ? { arrayFields: f19 } : {}), ...(f20 !== undefined ? { arraySpecies: f20 } : {}), ...(f21 !== undefined ? { base: f21 } : {}), fields: f22, ...(f23 !== undefined ? { methods: f23 } : {}), ...(f24 !== undefined ? { prototypeNames: f24 } : {}), ...(f25 !== undefined ? { abstract: f25 } : {}), ...(f26 !== undefined ? { abstractMethods: f26 } : {}), ...(f27 !== undefined ? { genericOf: f27 } : {}), loc: f28 };
   return o;
 }
 

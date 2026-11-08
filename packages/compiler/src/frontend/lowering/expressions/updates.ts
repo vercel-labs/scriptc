@@ -58,7 +58,8 @@ import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
-import { errorPropertyWrite } from "../error-methods.js";
+import { errorNameAssign, errorPropertyWrite, errorSlotAssign } from "../error-methods.js";
+import { lowerErrorMemberWrite } from "../builtins/errors.js";
 import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
@@ -801,6 +802,17 @@ function bigintStep(op: "+" | "-", old: IrExpr, loc: SrcLoc): IrExpr {
 /** The write statement for a field target (fieldSet / recordSet / setter
  * call). A write to a getter-only property never gets here in a clean
  * program (tsc's TS2540 is the fence); the rejection is the backstop. */
+/** Whether `node` is a statement of a constructor's own body (arrow
+ * functions included, as for the class's name placement): a `this.name = …`
+ * there creates the name while the instance is constructed. */
+function constructorOwnStatement(node: ts.Node): boolean {
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    if (ts.isConstructorDeclaration(current)) return true;
+    if (ts.isFunctionLike(current) && !ts.isArrowFunction(current)) return false;
+  }
+  return false;
+}
+
 export function fieldSetStmt(
   lowerer: Lowerer,
   target: FieldTarget,
@@ -921,7 +933,11 @@ export function fieldSetStmt(
     (target.field === "message" || target.field === "name") &&
     (target.className === "%Error" || lowerer.isSubclassOf(target.className, "%Error"))
   )
-    return errorPropertyWrite(lowerer, target.obj, value, target.field);
+    return target.field === "name" &&
+      !isJsSourceFile(ts.getSourceFileOfNode(blame)) &&
+      !constructorOwnStatement(blame)
+      ? errorNameAssign(lowerer, target.obj, value)
+      : errorPropertyWrite(lowerer, target.obj, value, target.field);
   if (target.container === "errorStackLimit") {
     return {
       kind: "exprStmt",
@@ -930,6 +946,23 @@ export function fieldSetStmt(
     };
   }
   if (target.container === "errorCause") {
+    // An instance of a program Error class records a cause the write
+    // creates among its own properties.
+    // JavaScript files keep the plain slot write (their reads use the
+    // error's checked-dynamic node).
+    const typed = !isJsSourceFile(ts.getSourceFileOfNode(blame));
+    const recorded = typed
+      ? lowerErrorMemberWrite(
+          lowerer,
+          target.obj,
+          "cause",
+          value,
+          (error, written) => errorSlotAssign(lowerer, "cause", error, written),
+          loc,
+        )
+      : null;
+    if (recorded) return recorded;
+    if (typed) return errorSlotAssign(lowerer, "cause", target.obj, value);
     return {
       kind: "exprStmt",
       expr: { kind: "libCall", fn: "error.setCause", args: [target.obj, value], type: VOID, loc },

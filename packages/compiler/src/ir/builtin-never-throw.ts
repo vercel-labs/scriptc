@@ -18,6 +18,17 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
+  // scr_error_assign_code_value stores the string in the error's code slot
+  // and, for an error that has its own-property object, sets the data
+  // property there with the raw store; building that object from the slots
+  // runs no program code.
+  "error.assignCode",
+  // scr_error_note_name sets the data property on the error's own-property
+  // object with the raw store, when the error has one.
+  "error.noteName",
+  // scr_error_store_cause swaps the error's cause slot: one retain, one
+  // release of a value no program code observes being dropped here.
+  "error.storeCause",
   // scr_resolve_adopt queues a job; a promise resolved with itself is
   // rejected, not thrown.
   "promise.adopt",

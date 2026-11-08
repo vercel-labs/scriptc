@@ -7,6 +7,7 @@
 // is compiled for that layout.
 import {
   concise,
+  countdown,
   depth,
   flag,
   host,
@@ -67,3 +68,4 @@ console.log(inCallback(priced), lastName(named));
 // read from the value passed.
 console.log(price({ id: "half", amount: 0.5 }), flag({ id: "shut", open: false }));
 console.log(lastName({ id: "one", names: ["only"] }), inCallback({ id: "half", amount: 0.5 }));
+console.log(countdown({ left: 3 }));

@@ -3506,11 +3506,15 @@ export function internImplicitInstanceOr(
       const firstAttempt = lowerer.diags.slice(diagsBefore);
       lowerer.dropAttemptDiags(diagsBefore);
       lowerer.setBindingTypedRetry(true);
+      // The body is lowering again: a call of this instance from inside it
+      // (recursion) finds it in progress, as in the first lowering.
+      inst.implicitState = "lowering";
       try {
         lowerer.implicitFns.push(lowerer.lowerGenericInstance(info, inst));
         retried = true;
       } catch (again) {
         if (again instanceof InternalCompilerError) noteCrashSite(again, () => locOf(info.decl));
+        inst.implicitState = "failed";
         lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt);
       } finally {
         lowerer.setBindingTypedRetry(false);

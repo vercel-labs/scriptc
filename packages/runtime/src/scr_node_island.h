@@ -181,6 +181,13 @@ ScrPromise *scr_node_island_await_copy(ScrDyn *value);
  * when it has none), the pairing of a generator the program just made over
  * an island iterator, the dynamic value of a generator in a program with
  * islands, and the iterator such a generator steps. */
+/* for-in over a dynamic value in a program with islands
+ * (scr_node_island_handle.c): the key snapshot and the test of a key at
+ * its visit, Node's for an island value and the native entries' for every
+ * other. */
+ScrDyn *scr_node_island_for_in_keys(const ScrDyn *v);
+ScrArr *scr_node_island_for_in_key_strs(const ScrDyn *v);
+bool scr_node_island_for_in_has(const ScrDyn *v, const ScrStr *key);
 ScrDyn *scr_node_island_iter_view(ScrDyn *source, const ScrStr *key);
 ScrDyn *scr_node_island_iterator(const ScrDyn *source, const ScrStr *spell);
 void scr_node_island_iter_pair(ScrDyn *source, ScrDyn *box);

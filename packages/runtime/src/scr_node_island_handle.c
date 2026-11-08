@@ -3313,6 +3313,84 @@ ScrDyn *scr_node_island_iterator(const ScrDyn *source, const ScrStr *spell) {
   return iterator;
 }
 
+/* The host's for-in helpers (scr_node_island_host.cjs), loaded once per
+ * thread. */
+static SCR_TL ScrDyn *nh_for_in_keys_fn = NULL;
+static SCR_TL ScrDyn *nh_for_in_has_fn = NULL;
+
+/* A host helper by its module name, loaded at its first use on this thread.
+ * Borrowed, or NULL with the exception pending. */
+static ScrDyn *nh_host_helper(ScrDyn **slot, const char *name) {
+  if (*slot == NULL) {
+    ScrStr *path = scr_str_new(name, strlen(name));
+    *slot = nh_load(path, 0);
+    scr_str_release(path);
+  }
+  return *slot;
+}
+
+/* for-in's key snapshot of a dynamic value in a program with islands, as
+ * scr_dyn_for_in_keys answers it (+1: a dyn array of strings; NULL with
+ * the exception pending). An island value's keys are Node's: the
+ * enumerable string keys of the object and of its prototype chain, in
+ * Node's order, taken by the host in one call and handed back as one JSON
+ * text. Every other value's are scr_dyn_for_in_keys's. */
+ScrDyn *scr_node_island_for_in_keys(const ScrDyn *v) {
+  if (!scr_ni_is_handle(v)) return scr_dyn_for_in_keys(v);
+  ScrDyn *helper = nh_host_helper(&nh_for_in_keys_fn, "scriptc:forInKeys");
+  if (helper == NULL) return NULL;
+  ScrDyn *args[1] = {(ScrDyn *)v};
+  ScrDyn *text = scr_ni_call(helper, scr_dyn_undefined(), args, 1);
+  if (text == NULL) return NULL;
+  if (text->kind != SCR_DYN_STR) {
+    /* The host answers no list for the namespace require() gives an ES
+     * module with a default export: Node's facade of the module, with an
+     * `__esModule` key the module's own namespace does not have. */
+    scr_dyn_release(text);
+    static const char msg[] =
+        "for-in over the namespace of an ES module that a Node island loaded with require() is "
+        "not supported yet (the namespace carries the '__esModule' key Node adds, which the "
+        "module's own namespace does not have)";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC1090");
+    return NULL;
+  }
+  ScrDyn *keys = scr_json_parse(text->v.str);
+  scr_dyn_release(text);
+  return keys;
+}
+
+/* The same snapshot as a native string[] (+1), as scr_dyn_for_in_key_strs
+ * answers it. */
+ScrArr *scr_node_island_for_in_key_strs(const ScrDyn *v) {
+  if (!scr_ni_is_handle(v)) return scr_dyn_for_in_key_strs(v);
+  ScrDyn *keys = scr_node_island_for_in_keys(v);
+  if (keys == NULL) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, keys->v.arr.len);
+  for (size_t i = 0; i < keys->v.arr.len; i++)
+    scr_arr_push_ref(out, scr_str_retain(keys->v.arr.items[i]->v.str));
+  scr_dyn_release(keys);
+  return out;
+}
+
+/* for-in's test of a key when the loop reaches it: whether Node still
+ * visits `key` of an island value (the host's test: a key that is gone is
+ * skipped, and a Proxy is asked for the key's descriptor). Every other
+ * value's is scr_dyn_has_key's. False with the exception pending when the
+ * island threw. */
+bool scr_node_island_for_in_has(const ScrDyn *v, const ScrStr *key) {
+  if (!scr_ni_is_handle(v)) return scr_dyn_has_key(v, key);
+  ScrDyn *helper = nh_host_helper(&nh_for_in_has_fn, "scriptc:forInHas");
+  if (helper == NULL) return false;
+  ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+  ScrDyn *args[2] = {(ScrDyn *)v, k};
+  ScrDyn *answer = scr_ni_call(helper, scr_dyn_undefined(), args, 2);
+  scr_dyn_release(k);
+  if (answer == NULL) return false;
+  bool found = answer->kind == SCR_DYN_BOOL && answer->v.b;
+  scr_dyn_release(answer);
+  return found;
+}
+
 /* The host's structuredClone, loaded once per thread. */
 static SCR_TL ScrDyn *nh_clone_fn = NULL;
 
@@ -3397,6 +3475,14 @@ static void nh_caches_release(void) {
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
     nh_spread_fn = NULL;
+  }
+  if (nh_for_in_keys_fn != NULL) {
+    scr_dyn_release(nh_for_in_keys_fn);
+    nh_for_in_keys_fn = NULL;
+  }
+  if (nh_for_in_has_fn != NULL) {
+    scr_dyn_release(nh_for_in_has_fn);
+    nh_for_in_has_fn = NULL;
   }
 }
 

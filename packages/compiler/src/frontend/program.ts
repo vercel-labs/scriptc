@@ -1575,14 +1575,12 @@ function loadProgram7(
       // A type-only import the program itself uses as a value is the
       // program's own error (TS1361, TS1362 in the file as written; the gate
       // reports it): the check after the rewrite must not take it for a
-      // binding the elision dropped.
+      // binding the elision dropped. The gate's diagnostics are the files as
+      // written and are already computed: nothing is checked a second time.
       const writtenTypeOnlyValueUses = new Set<string>();
-      for (const file of elisions.keys()) {
-        const written = before.getSourceFile(file);
-        if (written === undefined) continue;
-        for (const d of before.getSemanticDiagnostics(written)) {
-          if (d.code === 1361 || d.code === 1362) writtenTypeOnlyValueUses.add(`${file}:${d.pos}`);
-        }
+      for (const d of gateWorld.diagnostics()) {
+        if ((d.code === 1361 || d.code === 1362) && d.fileName !== undefined)
+          writtenTypeOnlyValueUses.add(`${d.fileName}:${d.pos}`);
       }
       for (const [file, text] of elisions) {
         // The text is carried, not inspected: what the elision took from it
@@ -1711,8 +1709,9 @@ export interface ProgramLoadOptions {
  * (TS1361, TS1362) where the file as written has none. That is a compiler
  * bug to report, never a program to lower with the import missing. A use
  * the file as written already reports (`written`, by file and offset: the
- * rewrite keeps every offset) is the program's own type-only import used as
- * a value, which the gate reports as the program's error. */
+ * rewrite keeps every offset; taken from the gate's diagnostics) is the
+ * program's own type-only import used as a value, which the gate reports
+ * as the program's error. */
 function assertElisionKeptValues7(
   program: ts.Program,
   files: Iterable<string>,
@@ -1723,7 +1722,7 @@ function assertElisionKeptValues7(
     if (sf === undefined) continue;
     for (const d of program.getSemanticDiagnostics(sf)) {
       if (d.code !== 1361 && d.code !== 1362) continue;
-      if (written.has(`${file}:${d.pos}`)) continue;
+      if (written.has(`${d.fileName ?? file}:${d.pos}`)) continue;
       throw new InternalCompilerError(
         `import elision dropped a binding that ${file} uses as a value: ${ts.flattenDiagnosticMessageText(d, "\n")}`,
       );

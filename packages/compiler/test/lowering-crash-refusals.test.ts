@@ -90,9 +90,11 @@ watcher.close();
 });
 
 // A binding declared \`unknown\` keeps the checked dynamic when its
-// initializer can hold undefined: no union with a dynamic arm is built.
-test("an undefined value through unknown inside a generic is refused by name", async () => {
-  await expectRefusal(
+// initializer can hold undefined: no union with a dynamic arm is built, and
+// the assertion back to a type argument that is undefined is the checked
+// cast to undefined.
+test("an undefined value through unknown inside a generic compiles", async () => {
+  const result = await compileSource(
     `function throughUnknown<T>(value: T): T {
   const held: unknown = value;
   return held as T;
@@ -100,9 +102,8 @@ test("an undefined value through unknown inside a generic is refused by name", a
 const result: unknown = throughUnknown(undefined);
 console.log(result ? "t" : "f");
 `,
-    "SC1090",
-    "a checked cast of 'unknown' to 'void'",
   );
+  expect(result.ok ? [] : result.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
 });
 
 const GENERATORS = `function* count(from: number): Generator<number> {

@@ -124,11 +124,13 @@ import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import {
   ambientDtsPath,
+  domExceptionDtsPath,
   fallbackDtsPath,
   fallbackModulesNamedIn,
   isFallbackDtsPath,
   isNodeTypesPath,
   overridesDtsPath,
+  packageShimRoot,
   tsgoPath,
 } from "./dts-paths.js";
 import {
@@ -1076,6 +1078,26 @@ function erasedSpecifier(specifier: ts.Node): boolean {
   return ts.isLiteralTypeNode(parent);
 }
 
+/** A global the runtime provides and scriptc's own package implementations
+ * (packages/compiler/shims) name, which the project's @types/node is too old
+ * to declare: DOMException, absent from @types/node 20.11 and earlier. Such a
+ * project's own code cannot name the global (its tsc rejects it), but
+ * scriptc's implementation of a package it imports does, and would not lower
+ * (an aborted undici fetch rejects with one). The declaration joins the
+ * program exactly then: a program file belongs to a package implementation
+ * and no file of the adopted Node types declares the global. Decided from the
+ * program's files, like the fallback module roots. */
+function nodeTypesSupplementRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
+  const names = program.getSourceFileNames();
+  const shims = tsgoPath(packageShimRoot()) + "/";
+  if (!names.some((name) => tsgoPath(name).startsWith(shims))) return [];
+  for (const name of names) {
+    if (isNodeTypesPath(name) && /\bvar\s+DOMException\b/.test(host.sourceText(name) ?? ""))
+      return [];
+  }
+  return [domExceptionDtsPath()];
+}
+
 /** Program roots hidden behind canonical createRequire bindings. tsgo
  * discovers ordinary import/require edges itself, but a source binding
  * returned by createRequire is intentionally just a function to the type
@@ -1493,7 +1515,9 @@ function loadProgram7(
   try {
     for (let pass = 0; pass < 32; pass++) {
       const candidates = [
-        ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
+        ...(nodeTypes === null
+          ? fallbackModuleRoots7(program, host)
+          : nodeTypesSupplementRoots7(program, host)),
         ...entryPackageProgramRoots7(program, entryPath, packageRoots),
         ...createRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),

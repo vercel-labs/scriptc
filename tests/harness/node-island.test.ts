@@ -1641,6 +1641,114 @@ test("a host-global fence inside a function body keeps its package native", asyn
     expect(warm.diagnostics.map((d) => d.code)).toEqual(islanded.diagnostics.map((d) => d.code));
 }, 300_000);
 
+// The body of a function that is called where it is written runs when its
+// module evaluates, so a refusal there throws before the module finishes, as
+// one in top-level code does. The classic UMD wrapper is such a function, and
+// the statement it holds is the module's export (`module.exports = factory()`),
+// which a build reads from top-level statements only: the package runs in a
+// Node island, and a default import of it is the function it exports. A
+// generator's body does not run at the call, so the same refusal there keeps
+// its package native. Needs no libnode pack for the decision: the island
+// build stops before linking without one.
+test("a refusal in a function called where it is written makes its package a Node island", async () => {
+  const dir = join(outDir, "called-where-written");
+  rmSync(dir, { recursive: true, force: true });
+  const writePackage = (name: string, type: "module" | "commonjs", body: string[]): void => {
+    const at = join(dir, "node_modules", name);
+    mkdirSync(at, { recursive: true });
+    writeFileSync(
+      join(at, "package.json"),
+      JSON.stringify({ name, version: "1.0.0", type, main: "./index.js", types: "./index.d.ts" }),
+    );
+    writeFileSync(join(at, "index.js"), [...body, ""].join("\n"));
+    writeFileSync(
+      join(at, "index.d.ts"),
+      type === "commonjs"
+        ? "declare function plural(word: string, count: number): string;\nexport = plural;\n"
+        : "export declare function answer(): string;\n",
+    );
+  };
+  const entry = (name: string, body: string): string => {
+    const file = join(dir, `${name}.mjs`);
+    writeFileSync(file, body);
+    return file;
+  };
+  const umd = (assign: string): string[] => [
+    "(function (root, factory) {",
+    '  if (typeof require === "function" && typeof exports === "object" && typeof module === "object") {',
+    `    ${assign}`,
+    "  } else {",
+    "    root.plural = factory();",
+    "  }",
+    "})(this, function () {",
+    "  function plural(word, count) {",
+    '    return count === 1 ? word : word + "s";',
+    "  }",
+    "  return plural;",
+    "});",
+  ];
+  writePackage("umd-wrapped", "commonjs", umd("module.exports = factory();"));
+  writePackage("called-with-this", "module", [
+    "(function () {",
+    "  new FormData();",
+    "}).call(undefined);",
+    'export function answer() { return "island"; }',
+  ]);
+  writePackage("generator-body", "module", [
+    "const pending = (function* () {",
+    "  yield new FormData();",
+    "})();",
+    'export function answer() { return typeof pending === "object" ? "native" : "none"; }',
+  ]);
+  const islandNotes = (result: Awaited<ReturnType<typeof compile>>): string[] =>
+    result.ok
+      ? (result.warnings ?? []).filter((d) => d.code === "SC8001").map((d) => d.message)
+      : [];
+  const build = (name: string, body: string): Promise<Awaited<ReturnType<typeof compile>>> =>
+    compile(entry(name, body), { outPath: join(dir, name), outDir: dir, sanitize });
+
+  const wrapped = await build(
+    "umd-wrapped",
+    'import plural from "umd-wrapped";\nconsole.log(plural("item", 2), plural("item", 1), typeof plural);\n',
+  );
+  if (wrapped.ok) {
+    expect(islandNotes(wrapped)).toEqual([
+      expect.stringContaining("'umd-wrapped@1.0.0' runs in a Node island"),
+    ]);
+    if (!skip)
+      expect(await run(wrapped.binaryPath, [])).toEqual({
+        stdout: "items item function\n",
+        stderr: "",
+        code: 0,
+      });
+  } else expect(wrapped.diagnostics.map((d) => d.code)).toContain("SC8005");
+
+  const withThis = await build(
+    "called-with-this",
+    'import { answer } from "called-with-this";\nconsole.log(answer());\n',
+  );
+  if (withThis.ok)
+    expect(islandNotes(withThis)).toEqual([
+      expect.stringContaining("'called-with-this@1.0.0' runs in a Node island"),
+    ]);
+  else expect(withThis.diagnostics.map((d) => d.code)).toContain("SC8005");
+
+  const generator = await build(
+    "generator-body",
+    'import { answer } from "generator-body";\nconsole.log(answer());\n',
+  );
+  expect(generator.ok ? [] : generator.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual(
+    [],
+  );
+  if (!generator.ok) return;
+  expect(islandNotes(generator)).toEqual([]);
+  // The generator is never resumed, and a sanitized build says on stderr
+  // that it skipped its reference-count audit for that: the answer and the
+  // exit status are what this checks.
+  const ran = await run(generator.binaryPath, []);
+  expect({ stdout: ran.stdout, code: ran.code }).toEqual({ stdout: "native\n", code: 0 });
+}, 300_000);
+
 // Compiling a package natively leaves every other package typed as it is
 // without it. plugboard runs in a Node island and declares its plugin
 // subpaths from an ambient block, while the plugin's own JSDoc requires the

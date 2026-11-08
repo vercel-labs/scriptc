@@ -258,6 +258,19 @@ function buildLibFnSignatures() {
      * promise's value). */
     "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
     "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** The operand of a dynamic await or PromiseResolve in a program with
+     * Node islands: an island thenable as the promise V8 adopts it into,
+     * any other value as itself. */
+    "nodeIsland.adoptThenable": { argTypes: [DYN], result: DYN },
+    /** `Promise.resolve(v)` over a dynamic value in a program with Node
+     * islands: PromiseResolve, so an island thenable is adopted. */
+    "nodeIsland.promiseResolve": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** process.exitCode in a program with Node islands: Node's property
+     * once Node is loaded, the runtime's own value before
+     * (island-process-state.ts). */
+    "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
+    "nodeIsland.exitCode": { argTypes: [], result: F64 },
+    "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An
@@ -306,6 +319,14 @@ function buildLibFnSignatures() {
      * or whose key is shorter than four bytes. The table switches on it and
      * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
     "dyn.classHash": { argTypes: [DYN], result: F64 },
+    /** The index of a table of class values (`dyn.classIs` branches: `x
+     * instanceof C`, `new C()` and static members of an untyped
+     * constructor): a function value's signature key folded to one of
+     * 2^bits slots (the second argument, a literal), or -1 for a value that
+     * is not a function or whose key is shorter than four bytes. A function
+     * that is not a compiled class selects a slot only by coincidence, and
+     * that slot's exact key guards are false for it. */
+    "dyn.classValueHash": { argTypes: [DYN, F64], result: F64 },
     /** Destructuring pack over a dyn source — `const [a, b] = d`, a
      * destructured dyn callback param (args: the source and the STATIC
      * TypeError spelling, "" when the source has none — both borrowed;

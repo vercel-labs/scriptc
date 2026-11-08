@@ -1022,8 +1022,12 @@ export function fenceStaticHeadersMember(
     );
 
   const headersCalls = staticFetchMembers().headersCalls;
-  if (use === "call" && members.every((member) => headersCalls.has(member))) return null;
-  const member = members.find((candidate) => use !== "call" || !headersCalls.has(candidate))!;
+  // A symbol-keyed member the profile calls static is called like the named
+  // ones (`headers[Symbol.iterator]()`).
+  const callable = (member: string): boolean =>
+    headersCalls.has(member) || (member.startsWith("[Symbol.") && status(member) === "static");
+  if (use === "call" && members.every(callable)) return null;
+  const member = members.find((candidate) => use !== "call" || !callable(candidate))!;
   if (status(member) === "unsupported") {
     lowerer.noLowering(
       `Headers.${member}`,
@@ -1035,7 +1039,7 @@ export function fenceStaticHeadersMember(
   lowerer.noLowering(
     `Headers.${member} in a static build`,
     access,
-    "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach; keys()/values()/entries(), symbol-keyed iteration, and construction remain unsupported",
+    "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach, keys()/values()/entries() and iteration, each as a call; a method read as a value is unsupported",
     sym,
   );
 }
@@ -1228,6 +1232,8 @@ export function fenceStaticHeadersIteration(lowerer: Lowerer, node: ts.Node): vo
   const value = ts.isExpression(source) ? withoutParenthesesTypeWrappers(source) : source;
   const sym = isStdlibFetchInterface(lowerer, value, "Headers");
   if (!sym) return;
+  // The profile decides: a static row iterates the handle's live step.
+  if (fetchInventoryStatus("Headers", "[Symbol.iterator]", "prototype-symbol") === "static") return;
   lowerer.noLowering(
     "Headers.[Symbol.iterator] in a static build",
     node,

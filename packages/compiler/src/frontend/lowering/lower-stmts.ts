@@ -4331,7 +4331,11 @@ function patternSourceValue(
     present.length === arms.length ||
     (present.length > 1 &&
       !(arrayPattern
-        ? present.every((arm) => arm.kind === "array")
+        ? present.every(
+            (arm) =>
+              arm.kind === "array" ||
+              (arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.tuple === true),
+          )
         : present.every((arm) => arm.kind === "record" || arm.kind === "object")))
   )
     return value;

@@ -242,15 +242,13 @@ export interface DynHost extends WalkerHost {
    * elements past its dense prefix, so the keyed read answers `length`
    * from the array's own length rather than the prefix field. */
   jsObjectModel?(): boolean;
-  /** The program has Node islands: a kind in ISLAND_ADOPTED_KINDS converts
-   * through its island-aware functions. */
-  nodeIslands?(): boolean;
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
   declBoundary?(): boolean;
   /** The program links Node islands (IrModule.nodeIsland): a value an
    * island made is a handle whose members live in Node, and a checked
-   * conversion reads them there. */
+   * conversion reads them there; a kind in ISLAND_ADOPTED_KINDS converts
+   * through its island-aware functions. */
   nodeIslands?(): boolean;
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;

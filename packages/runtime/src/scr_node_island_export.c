@@ -2003,7 +2003,7 @@ void scr_node_island_clear_timer(ScrDyn *value, double which) {
   if (value == NULL || !scr_ni_is_handle(value)) return;
   ScrDyn *w = scr_dyn_new_num(which);
   ScrDyn *args[] = {w, value};
-  ScrDyn *r = ni_helper("clearTimer", args, 2);
+  ScrDyn *r = scr_ni_helper("clearTimer", args, 2);
   scr_dyn_release(w);
   scr_dyn_release(r);
 }

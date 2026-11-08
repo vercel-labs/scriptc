@@ -77,7 +77,13 @@ export type {
 import { compilePackedLibrary } from "./backend/library-pack.js";
 import { node24FetchCompatProfile } from "./compat/fetch-profile.js";
 import { libFnSignatures } from "./ir/builtin-signatures.js";
-import { type FunctionLayout, parseFunctionLayout } from "./backend/llvm/function-layout.js";
+import {
+  type FunctionLayout,
+  hasStartupTier,
+  parseFunctionLayout,
+  startupCalleesOf,
+  startupSymbolsOf,
+} from "./backend/llvm/function-layout.js";
 import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -168,7 +174,13 @@ import {
   nodeIslandModuleDiag,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
-import { libnodeCacheKey, libnodeProbePack, libnodeRecord } from "./node-islands/libnode.js";
+import {
+  libnodeCacheKey,
+  libnodeProbePack,
+  libnodeRecord,
+  nodeIslandPackHint,
+} from "./node-islands/libnode.js";
+import { planNodeIslandLoads } from "./node-islands/load-plan.js";
 import { placeNodeIslandModules, readNodeIslandModules } from "./node-islands/modules.js";
 import { finalizeDeferredIslands } from "./node-islands/snapshot.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
@@ -798,6 +810,7 @@ async function compileExecutableNative(
   llvmVisiblePath?: string,
   profileLayout = false,
   hugeText = true,
+  startupSymbols: readonly string[] = [],
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(llvmPath);
   const runtimePackTarget = programIsObject && !sanitize ? nativeCodegenTarget() : null;
@@ -816,6 +829,7 @@ async function compileExecutableNative(
       ...(profileGenerate ? { profileGenerate: true } : {}),
       ...(profileLayout ? { profileLayout: true } : {}),
       ...(hugeText ? {} : { hugeText: false }),
+      ...(startupSymbols.length === 0 ? {} : { startupSymbols }),
       programObjectDependencies,
     });
     const cacheableLinker =
@@ -871,13 +885,13 @@ async function compileExecutableNative(
     ...(features.promiseRejectDyn ? { promiseRejectDyn: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
-    ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
-    ...(features.stdioWriteSlot ? { stdioWriteSlot: true } : {}),
+    ...(features.stdioObject ? { stdioObject: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
@@ -927,6 +941,7 @@ async function compileExecutableNative(
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
     ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
+    ...(features.deferredFence ? { deferredFence: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
     ...(features.builtinMethodValue ? { builtinMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
@@ -1083,6 +1098,18 @@ async function readNativeProfile(
     use,
     ...(recordBlocks === undefined ? {} : { recordBlocks: resolve(recordBlocks) }),
   };
+}
+
+/** The start-up symbols the module a build links carries (function-layout.ts).
+ * A layout without a start-up tier has none, and then the module text need not
+ * be read at all. */
+async function startupSymbolsOfModule(
+  opts: CompileRequestOptions,
+  path: string,
+): Promise<string[]> {
+  if (!hasStartupTier((await readFunctionLayout(opts)).functionLayout)) return [];
+  const parts = await readTextParts(path);
+  return [...startupSymbolsOf(parts), ...startupCalleesOf(parts)];
 }
 
 /** The program functions a `--cpu-dispatch` build's profile names, when the
@@ -1289,7 +1316,13 @@ async function prepareExecutableInput(
     } else if (outputKind === "exe") {
       const recorded = libnodeRecord(opts.libnode, opts.outPath, process.env, dirname(entryPath));
       if (typeof recorded === "string")
-        return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
+        return {
+          ok: false,
+          diagnostics: [
+            nodeIslandNodeDiag(recorded, entryPath, nodeIslandPackHint(prepared.nodeIslandUse)),
+          ],
+          sourceTexts,
+        };
       mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
       // Deferred island modules (scope-B NI-7): probed in the same pack.
       finalizeDeferredIslands(
@@ -1307,8 +1340,15 @@ async function prepareExecutableInput(
   let nodeIslandModuleData: Uint8Array | undefined;
   const islandModules = mod.nodeIsland?.modules;
   if (islandModules !== undefined && outputKind !== "ir") {
+    // What Node's resolver answers for the tree, computed here once and
+    // shipped as one more of its files (node-islands/load-plan.ts).
+    const generated = planNodeIslandLoads(islandModules);
     if (outputKind === "exe" && opts.libnode === "beside") {
-      const problem = placeNodeIslandModules(islandModules, `${opts.outPath}.libnode/modules`);
+      const problem = placeNodeIslandModules(
+        islandModules,
+        `${opts.outPath}.libnode/modules`,
+        generated,
+      );
       if (problem !== null)
         return {
           ok: false,
@@ -1317,7 +1357,7 @@ async function prepareExecutableInput(
         };
       islandModules.location = `$ORIGIN/${basename(opts.outPath)}.libnode/modules`;
     } else {
-      const data = readNodeIslandModules(islandModules);
+      const data = readNodeIslandModules(islandModules, generated);
       if (typeof data === "string")
         return {
           ok: false,
@@ -1373,6 +1413,7 @@ async function prepareExecutableInput(
         // Textual output shows the code an executable gets; objects keep
         // the pending flag, since their link may not add an unwinder.
         unwindAbi: buildPlatform === "linux" && outputKind !== "obj",
+        startupSection: buildPlatform === "linux",
         timing,
         ...(opts.exceptions === "rare" ? { rareExceptions: true } : {}),
         objectAudit: opts.sanitize === true,
@@ -1459,6 +1500,7 @@ async function prepareExecutableInput(
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
       unwindAbi: buildPlatform === "linux",
+      startupSection: buildPlatform === "linux",
       objectAudit: opts.sanitize === true,
       sanitizeAttributes: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
@@ -2376,6 +2418,7 @@ async function compileTracked(
         nativeSources = staged.sources;
         nativeInputPath = nativeSources.llvmSourcePath;
       }
+      const startupSymbols = await startupSymbolsOfModule(opts, nativeSources.llvmSourcePath);
       await compileExecutableNative(
         earlyHit.native,
         nativeInputPath,
@@ -2411,6 +2454,7 @@ async function compileTracked(
         hitSources.llvmPath,
         nativeProfileLayout(profile),
         opts.hugeText !== false,
+        startupSymbols,
       );
       if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
         await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
@@ -2531,6 +2575,7 @@ async function compileTracked(
       stagedDir = staged.dir;
       ({ llvmSourcePath, irSourcePath } = staged.sources);
     }
+    const startupSymbols = await startupSymbolsOfModule(opts, llvmSourcePath);
     await compileExecutableNative(
       nativeFeatures,
       nativeProgramObject?.linkPath ?? llvmSourcePath,
@@ -2564,6 +2609,7 @@ async function compileTracked(
       llvmPath,
       nativeProfileLayout(profile),
       opts.hugeText !== false,
+      startupSymbols,
     );
     timing("native-link");
     if (nativeProgramObject !== null && opts.nativeProgramObject === true) {

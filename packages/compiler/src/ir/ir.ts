@@ -1088,8 +1088,10 @@ export function isRefCounted(t: IrType): boolean {
 export interface IrNodeIslandModules {
   root: string;
   /** `placeholder`: a program module the islands share, shipped as
-   * providedModulePlaceholder (node-islands/modules.ts), not its source. */
-  files: { path: string; size: number; sha256: string; placeholder?: true }[];
+   * providedModulePlaceholder (node-islands/modules.ts), not its source.
+   * `generated`: the text of a module the build wrote (node-islands/
+   * generated.ts); no file at `root` holds it. */
+  files: { path: string; size: number; sha256: string; placeholder?: true; generated?: string }[];
   links: { path: string; target: string }[];
   /** Where the executable finds the tree: absent when it carries the tree
    * itself, else a `$ORIGIN/` path (`--libnode=beside`). */
@@ -2237,11 +2239,15 @@ export interface IrLocal {
 export type IrStmt =
   /** First initialization of a local at its source position. `init: null`
    * means "declared, uninitialized" (`let x: number;`) — the local must be
-   * `mutable`. SOUNDNESS: tsc strict-mode definite-assignment analysis
-   * (TS2454 "used before being assigned") rejects any READ before an
-   * assignment on every path, so backends never need a runtime
-   * initialized-check; refcounted locals simply stay NULL until the first
-   * `assign`. */
+   * `mutable`. SOUNDNESS: the frontend emits it only for a binding no read
+   * can reach before a store. tsc's definite-assignment analysis (TS2454
+   * "used before being assigned") rejects such a read in the declaring
+   * function's own code; a binding that a nested function or an unchecked
+   * declaration (`let x!: number`) can read earlier is declared with an
+   * undefined-armed type and an undefined `init` instead
+   * (frontend/lowering/var-hoisting.ts). Backends therefore never need a
+   * runtime initialized-check; refcounted locals simply stay NULL until
+   * the first `assign`. */
   | { kind: "varDecl"; localId: string; init: IrExpr | null; loc: SrcLoc }
   /** `initializes` marks a TDZ binding's declaration, whose store may
    * initialize an empty box. Ordinary assignments must check it first. */
@@ -2435,7 +2441,11 @@ export type IrStmt =
    * TypeScript sources produce it only as the tsc-unreachable fallthrough
    * trap (appendImplicitUndefinedReturn's SC9002) and for a typed-array
    * store through an element index that is undefined at run time
-   * (undefined-index.ts); their construct fences stay compile errors. */
+   * (undefined-index.ts); their construct fences stay compile errors.
+   * In a JavaScript source, a message that ends with its diagnostic's tag
+   * ("[SC2020 at file:line]") marks a diagnostic deferred from a
+   * statement, which the program reports on stderr the first time the site
+   * fires (deferred-fence.ts). */
   | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,
@@ -3357,7 +3367,10 @@ export type IrExpr =
    * case so `f === f` is true (JS function identity). `adapts` marks a
    * signature adapter: captures[0] holds the function it forwards to, and
    * the new closure takes that function's identity (JS sees one function,
-   * so `===`, SameValue and searches compare identity roots). `length` is
+   * so `===`, SameValue and searches compare identity roots). An adapter
+   * whose captures[0] is checked-dynamic holds a boxed function and is a
+   * checked adapter: boxing the closure answers that boxed function
+   * itself, so untyped code calls the original. `length` is
    * the function's own `length` where the type's parameter list does not
    * give it: a function literal lowered with the parameter list of the slot
    * it is written into receives the slot's remaining arguments in

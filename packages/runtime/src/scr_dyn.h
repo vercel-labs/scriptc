@@ -254,9 +254,13 @@ typedef enum {
   X(WS_WRITABLE, 95) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
   X(WS_WRITER, 96) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
-/* Tags added since the last pin, by name only (see above). Every tag is
- * pinned for now: the LLVM backend names each of them. */
-#define SCR_DYNH_NEW_TAGS(Y)
+/* Tags added since the last pin, by name only (see above). The words
+ * segmenter and its result are pinned above (97, 98); the byte-stream
+ * objects are new. */
+#define SCR_DYNH_NEW_TAGS(Y) \
+  Y(WS_BYOB_CONTROLLER) /* ReadableByteStreamController (scr_webstreams.c) */ \
+  Y(WS_BYOB_READER) /* ReadableStreamBYOBReader (scr_webstreams.c) */ \
+  Y(WS_BYOB_REQUEST) /* ReadableStreamBYOBRequest (scr_webstreams.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -1005,8 +1009,9 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value);
  * index in `values` of the string `d`'s own data property `key` holds, or
  * -1 when every literal test above fails (`d` is not an object, or its own
  * data property `key` holds no string among `values`), or -2 when only the
- * tests themselves can tell (a typed capsule, an accessor, or a property
- * `d` does not own). Borrowed args. */
+ * tests themselves can tell (an accessor, a property `d` does not own, a
+ * typed capsule that is not a record, or an island object, whose members
+ * live in Node). Borrowed args. */
 int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *const *values,
                                   size_t count);
 
@@ -1015,6 +1020,17 @@ int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *co
  * member nodes. null/undefined receivers throw Node's catchable
  * TypeError. */
 ScrDyn *scr_dyn_obj_keys(const ScrDyn *v);
+/* A checked conversion's view of a value an island made (scr_json.c): the
+ * array's elements read through the handle into a native array, holes left
+ * absent; the object's own enumerable string keys read into a native object,
+ * leaving out the record's declared fields (`names`, `lens`, `count`) because
+ * the conversion reads those as ordinary property reads, so a getter runs
+ * once. Both answer +1, or NULL with an exception pending from a getter or a
+ * proxy trap. An array view of a value that is not an array answers NULL with
+ * nothing pending. */
+ScrDyn *scr_dyn_island_array(ScrDyn *value);
+ScrDyn *scr_dyn_island_object(ScrDyn *value, const char *const *names, const size_t *lens,
+                              size_t count);
 ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v);
 /* for-in keys as a native string[] (+1); NULL with an exception pending. */
 ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v);
@@ -1270,6 +1286,8 @@ ScrStr *scr_dyn_string_constructor(const ScrDyn *value);
 ScrDyn *scr_dyn_property_key_value(const ScrDyn *value);
 ScrDyn *scr_dyn_to_numeric(const ScrDyn *value);
 ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment);
+/* Unary minus: ToNumeric, then the negation of that number or BigInt. */
+ScrDyn *scr_dyn_negate(const ScrDyn *value);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);
@@ -2447,6 +2465,10 @@ typedef struct ScrDynHandleOps {
    * stream unit builds the handle's Transform from these operations on its
    * first stream use. NULL = the class is not a stream. */
   const struct ScrDynHandleTransform *transform;
+  /* A handle that is also a Node Writable (Sign, Verify): the stream unit
+   * builds the handle's Writable from these operations on its first stream
+   * use. NULL = the class is not a stream. */
+  const struct ScrDynHandleWritable *writable;
   /* The class's methods as values, terminated by a NULL name; NULL = a
    * property read answers no methods (member calls still reach invoke).
    * See ScrDynHandleMethod. */
@@ -2573,8 +2595,8 @@ ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *ke
  * NULL with the exception pending. */
 ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
                                          ScrDyn *const *args, size_t argc);
-/* The class operations scr_json.c's handle paths reach (instanceof, and a
- * method value's receiver and call). scr_dyn_handle_class.c installs them
+/* The class operations scr_json.c's handle paths reach (instanceof, a method
+ * value's receiver and call, and `in`); scr_dyn_handle_class.c installs them
  * from a constructor, so scr_json.c builds one object whether or not a
  * program links that unit; NULL in programs without handle classes. */
 typedef struct ScrDynHandleClassOps {
@@ -2582,6 +2604,10 @@ typedef struct ScrDynHandleClassOps {
   bool (*receiver)(ScrDynHandleTag klass_tag, ScrDyn *self, ScrDyn **out);
   ScrDyn *(*method_call)(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
                          ScrDyn *const *args, size_t argc);
+  /* The class's getters (its ScrDynHandleClass accessors), or NULL for a
+   * handle whose class declares none; an alias tag answers its class's
+   * table. */
+  const ScrDynHandleAccessor *(*accessors)(const ScrDyn *handle);
 } ScrDynHandleClassOps;
 extern const ScrDynHandleClassOps *scr_dyn_handle_class_ops;
 
@@ -2597,6 +2623,20 @@ typedef struct ScrDynHandleTransform {
   struct ScrBytes *(*final)(void *h);
   ScrTraceFn trace;
 } ScrDynHandleTransform;
+
+/* A handle that is a Node Writable (Sign, Verify): the stream unit builds
+ * the handle's Writable from these operations on its first stream use, and
+ * each write() hands update() the chunk's bytes exactly as Node's _write
+ * does. There is no _final: Node's Sign and Verify finish as soon as their
+ * last write completes. The steps hold the handle, so the handle is a
+ * collector-headered object whose trace visits its stream (the pair is
+ * reclaimed as a cycle). */
+typedef struct ScrDynHandleWritable {
+  void *(*stream)(void *h);
+  void (*set_stream)(void *h, void *stream, void (*release)(void *));
+  void (*write)(void *h, struct ScrBytes *chunk);
+  ScrTraceFn trace;
+} ScrDynHandleWritable;
 
 /* Checked-dynamic member calls and property reads on a Transform handle,
  * installed by the stream unit (scr_stream_install); NULL in a program

@@ -3,7 +3,6 @@ import type { CompileFailure, CompileRequestOptions } from "../compile-types.js"
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
-  checkerPanicDiag,
   nodeIslandEntryMarkDiag,
   nodeIslandEntryPatchDiag,
   nodeIslandEntryReadDiag,
@@ -19,10 +18,9 @@ import {
   npmStaticRefusalDiag,
   nativePackageDiag,
   iceDiag,
-  isCheckerPanic,
-  stdioPatchAcrossIslandsDiag,
   type ScrDiagnostic,
 } from "../diagnostics/diagnostic.js";
+import { compilerCrashDiag, isCompilerCrash } from "../diagnostics/crash-site.js";
 import type { IrModule, SrcLoc } from "../ir/ir.js";
 import { validateModule } from "../ir/validate.js";
 import { checkContracts } from "../contracts/check.js";
@@ -74,6 +72,9 @@ export interface PreparedExecutableModule {
    * reasons): packages by name, modules by file. A cached build repeats
    * them. */
   islands?: { packages: string[]; modules: string[] };
+  /** The first place the program reached into Node (LowerResult), for
+   * SC8005's hint when no pack can be recorded. */
+  nodeIslandUse?: { file: string; api: string };
 }
 
 /** Release the parser/checker before native object generation begins.
@@ -262,10 +263,11 @@ export function prepareExecutableModule(
       // The last-resort panic fence: an upstream tsgo panic that crossed a
       // checker call no statement/collection fence wrapped still becomes a
       // clean failed compile (anchored at the entry), never a crashed CLI.
-      if (!isCheckerPanic(e)) throw e;
-      return fail([
-        checkerPanicDiag(e.message.split("\n", 1)[0]!, { file: entryPath, start: 0, end: 0 }),
-      ]);
+      // An internal compiler error no fence reported takes the same exit.
+      // Both carry the innermost node the lowering had reached when one
+      // was noted (diagnostics/crash-site.ts); the entry is the last resort.
+      if (!isCompilerCrash(e)) throw e;
+      return fail([compilerCrashDiag(e, { file: entryPath, start: 0, end: 0 })]);
     }
     if (lowered.module === null) {
       // Packages whose own modules refused to lower run in Node islands
@@ -332,14 +334,6 @@ export function prepareExecutableModule(
       return fail(lowered.diagnostics);
     }
 
-    // A program that replaces a process output stream's write method has
-    // nowhere to route an island's writes: the island's process.stdout is
-    // its own object. Until islands share the native stream object (H2),
-    // refuse the combination instead of silently missing the patch.
-    if (islandDecision !== null && lowered.stdioPatches !== undefined) {
-      return fail(lowered.stdioPatches.map((p) => stdioPatchAcrossIslandsDiag(p.stream, p.loc)));
-    }
-
     const validation = validateModule(lowered.module);
     timing("ir-validate");
     if (validation.length > 0) {
@@ -392,6 +386,7 @@ export function prepareExecutableModule(
     mod: lowered.module!,
     sourceTexts,
     stats: lowered.stats,
+    ...(lowered.nodeIslandUse !== undefined ? { nodeIslandUse: lowered.nodeIslandUse } : {}),
     warnings: [
       ...(islandDecision?.notes ?? []),
       ...(fe.warnings ?? []),
@@ -559,6 +554,7 @@ function moduleIslands(
             : 'marked "node" in scriptc.nodeIslands.modules'
           : describe(reason),
       decision: marked === null ? "auto" : "marked",
+      ...(patches.length > 0 ? { patchesBuiltin: true as const } : {}),
     });
   }
   for (const mark of unmatched.values())

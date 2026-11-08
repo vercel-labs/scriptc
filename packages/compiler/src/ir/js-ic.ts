@@ -61,16 +61,22 @@ function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
   if (!body.some(isClassDispatch)) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassDispatch(stmt))
-      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
-    else branches.push(stmt);
+    if (isClassDispatch(stmt)) {
+      // A case of branches that can complete ends with a `break`.
+      for (const { body: caseBody } of stmt.cases)
+        for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
+    } else branches.push(stmt);
   }
   return branches;
 }
 
 /** The switch the lowering builds over a generated class table's branches. */
 function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
-  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
+  return (
+    stmt.kind === "switch" &&
+    stmt.disc.kind === "libCall" &&
+    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+  );
 }
 
 /** Classifies the helpers of a module once. */

@@ -498,7 +498,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
     });
     expect(result.code).toBe(1);
     expect(result.stderr).toBe(
-      `scriptc: the libnode pack at ${dir} has an incompatible bridge (ABI 999; this program needs 13)\n`,
+      `scriptc: the libnode pack at ${dir} has an incompatible bridge (ABI 999; this program needs 19)\n`,
     );
   });
 
@@ -842,17 +842,27 @@ export function readProbe(): string {
       expect(stripped).toContain("enum");
     }, 300_000);
 
-    test("replacing process.stdout.write beside an island is an SC8006 error", async () => {
-      // The planner refuses the combination (the island's process.stdout is
-      // its own object), so it is an error. It used to be SC8020, which the
-      // renderer prints as a warning and the planner still failed the build
-      // on: a diagnostic is a warning or an error, never both.
+    test("replacing process.stdout.write beside an island builds, and the island's write is the program's", async () => {
+      // The island's process.stdout.write is the program's write slot
+      // (scr_node_island_stdio.c), so the combination needs no refusal; it
+      // used to be SC8006. What Node does differently is pinned here rather
+      // than in the differential corpus: in the island `write` is an own
+      // accessor that cannot be redefined or deleted, so island code cannot
+      // end up with a private write the program never sees.
       const dir = copyCorpus(
         "stdio-patch",
-        `import { installPatch } from "./patch.ts";
+        `import { installPatch, probe } from "./patch.ts";
 installPatch();
-process.stdout.write = (() => true) as unknown as typeof process.stdout.write;
-console.log("ok");
+const lines: string[] = [];
+const original = process.stdout.write;
+process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+  lines.push(typeof chunk === "string" ? chunk.trimEnd() : "bytes");
+  return true;
+}) as typeof process.stdout.write;
+const probed = probe();
+process.stdout.write = original;
+console.log(probed);
+console.log(lines.join("|"));
 `,
         {
           "patch.ts": `import { createRequire } from "node:module";
@@ -865,16 +875,40 @@ export function installPatch(): void {
     configurable: true,
   });
 }
+// An ES module, so strict code: the delete throws. The indirect eval runs
+// the same delete as sloppy code, where it answers false.
+export function probe(): string {
+  const out: unknown[] = [Object.hasOwn(process.stdout, "write")];
+  try {
+    delete (process.stdout as { write?: unknown }).write;
+    out.push("deleted");
+  } catch (error) {
+    out.push((error as Error).constructor.name);
+  }
+  try {
+    Object.defineProperty(process.stdout, "write", { value: () => true });
+    out.push("redefined");
+  } catch (error) {
+    out.push((error as Error).constructor.name);
+  }
+  out.push((0, eval)("delete process.stdout.write"));
+  console.log("island line");
+  return out.join(" ");
+}
 `,
         },
       );
       const result = await buildDir(dir, "main");
-      expect(result.ok).toBe(false);
-      const refusal = messages(result).find(
-        (m) => m.startsWith("SC8006:") && m.includes("process.stdout.write"),
-      );
-      expect(refusal).toBeDefined();
-      expect(messages(result).filter((m) => m.startsWith("SC8020:"))).toEqual([]);
+      expect(messages(result).filter((m) => m.includes("process.stdout.write"))).toEqual([]);
+      expect(result.ok).toBe(true);
+      // The island module is TypeScript, which Node does not strip below a
+      // node_modules directory: the module cache goes beside the program.
+      const env = { ...process.env, XDG_CACHE_HOME: join(dir, "cache") };
+      expect(await run(join(dir, "main"), [], env)).toEqual({
+        stdout: "true TypeError TypeError false\nisland line\n",
+        stderr: "",
+        code: 0,
+      });
     }, 300_000);
 
     // A package that reads the patched member joins the island set, where the
@@ -1053,10 +1087,11 @@ export function patchAndBump(): number {
     }, 300_000);
   });
 
-  // The build-time probe evaluates modules to decide their deferral. A
-  // program module that runs in an island loads eagerly, so the build never
-  // evaluates the program's own source; the executable evaluates it when
-  // the entry requires it.
+  // The build-time probe evaluates modules to decide their deferral. It
+  // evaluates a program module that runs in an island only when the static
+  // gate proves its top level free of effects; this one writes a file, so
+  // it loads eagerly and the build never evaluates it: the executable does,
+  // when the entry requires it.
   test("the build does not evaluate a program module that runs in an island", async () => {
     const dir = sloppyModuleProject("probe");
     const cache = mkdtempSync(join(tmpdir(), "scriptc-sloppy-probe-cache-"));
@@ -1278,11 +1313,11 @@ function sloppyModuleProject(name: string): string {
   return dir;
 }
 
-// A program module that runs in an island never reaches the deferral
-// decision, whose probe evaluates the modules it decides: lowering loads it
-// eagerly. SCRIPTC_NODE_ISLANDS_TRACE=defer prints every decision; IR
-// output needs no libnode pack.
-test("a program module that runs in an island is never a deferral candidate", async () => {
+// A program module that runs in an island and whose top level has effects
+// is never evaluated by the build: the decision keeps it eager.
+// SCRIPTC_NODE_ISLANDS_TRACE=defer prints every decision; IR output needs
+// no libnode pack, and without one every island module is eager.
+test("a program module with top-level effects that runs in an island stays eager", async () => {
   const dir = sloppyModuleProject("defer");
   const previous = process.env["SCRIPTC_NODE_ISLANDS_TRACE"];
   process.env["SCRIPTC_NODE_ISLANDS_TRACE"] = "defer";
@@ -1296,7 +1331,9 @@ test("a program module that runs in an island is never a deferral candidate", as
     const result = await compile(join(dir, "main.js"), { outPath, outDir: dir, outputKind: "ir" });
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    expect(written.filter((line) => line.includes("sloppy.js"))).toEqual([]);
+    const decisions = written.filter((line) => line.includes("sloppy.js"));
+    expect(decisions.length).toBeGreaterThan(0);
+    expect(decisions.every((line) => line.startsWith("[node-islands] eager "))).toBe(true);
     const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
     expect(ir).toContain("nodeIsland.require");
     expect(ir).not.toContain("nodeIsland.defer");
@@ -1537,6 +1574,44 @@ test("recursive JSON types cross into Node", async () => {
     throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
   const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
   expect(ir).toContain("nodeIsland.callSync");
+}, 300_000);
+
+// A view member declared with an instantiation that grows at every level
+// (`next: Chain<T[]>`) has no type that repeats, so only the depth bound ends
+// the walk over its members. IR output needs no libnode pack.
+test("a view that names itself with a growing instantiation crosses into Node", async () => {
+  const dir = join(outDir, "growing-view");
+  rmSync(dir, { recursive: true, force: true });
+  cpSync(
+    join(repoRoot, "tests/diagnostics/node-island-view-member/node_modules"),
+    join(dir, "node_modules"),
+    { recursive: true },
+  );
+  cpSync(
+    join(repoRoot, "tests/diagnostics/node-island-view-member/package.json"),
+    join(dir, "package.json"),
+  );
+  writeFileSync(
+    join(dir, "main.ts"),
+    [
+      'import { make } from "view-pkg";',
+      "",
+      "interface Chain<T> {",
+      "  label: string;",
+      "  next: Chain<T[]>;",
+      "}",
+      "",
+      "const head = make<Chain<number>>();",
+      "console.log(head.label);",
+      "",
+    ].join("\n"),
+  );
+  const outPath = join(dir, "main.ir.json");
+  const result = await compile(join(dir, "main.ts"), { outPath, outDir: dir, outputKind: "ir" });
+  if (!result.ok)
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  const ir = JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
+  expect(ir).toContain("nodeIsland.apply");
 }, 300_000);
 
 // When a build fails and the packages it compiled with runtime fences then

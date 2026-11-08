@@ -10,7 +10,6 @@ import { legacyUrlClassValue } from "../builtins/url.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { globalFunctionValue } from "../global-function-values.js";
-import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
@@ -42,7 +41,11 @@ import {
   wholeExportValueOfModuleBinding,
 } from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
-import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
+import {
+  argumentsOwner,
+  forwardedOnlyTupleValue,
+  typedArgumentsCandidate,
+} from "../typed-arguments.js";
 import { argumentCountValue } from "../argument-counts.js";
 import {
   isCjsExportTableLiteral,
@@ -60,6 +63,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
+import { requiredLibraryCallbackRead } from "./library-callbacks.js";
 import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
@@ -173,8 +177,33 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // type and lowerLambda declared the local.
   if (expr.text === "arguments") {
     const binding = captureContextArguments(lowerer.fnStack);
-    if (binding && lowerer.ctx.pureTuples.has(binding.id)) {
-      throw new InternalCompilerError("lowerer bug: forwarded-only 'arguments' read as a value");
+    // A forwarded-only `arguments` read as a value after all (a call path
+    // that takes its spread operand as a list): the tuple is built here
+    // from its slots (typed-arguments.ts forwardedOnlyTupleValue).
+    const forwardedSlots = binding ? lowerer.ctx.pureTuples.get(binding.id) : undefined;
+    if (binding && forwardedSlots) {
+      // A position that may be undefined, or holds an untyped value, may
+      // also be absent at the call: the native signature always passes it,
+      // so the tuple built from the slots would hand the callee an argument
+      // the caller did not pass (a rest parameter one element longer). The
+      // rest tuple with optional positions is refused the same way
+      // (forwardedOnlyTupleValue), and so is `arguments.length`
+      // (typedArgumentsArity).
+      if (
+        forwardedSlots.some(
+          (slot) =>
+            slot.type.kind === "dyn" ||
+            (slot.type.kind === "union" &&
+              lowerer.armTag(slot.type.unionId, { kind: "undefinedT" }) >= 0),
+        )
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "'arguments' with positions that may be omitted, used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on)",
+        );
+      }
+      return lowerer.tupleOfSlots(forwardedSlots, binding.type, expr, loc);
     }
     if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };
     const owner = argumentsOwner(expr);
@@ -259,6 +288,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       );
     }
   }
+  // A forwarded-only rest tuple read as a value after all.
+  const forwardedTuple = forwardedOnlyTupleValue(lowerer, expr, loc);
+  if (forwardedTuple) return forwardedTuple;
   // Union-typed bindings read through tsc's control-flow narrowing:
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
@@ -383,6 +415,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         }
         return runtimeOptionalReceiverRead(lowerer, expr, local, null, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, local, loc);
+      if (callback) return callback;
       if (runtimeOptionalObjectWalkerArg(lowerer, expr)) {
         const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
         if (local.type.kind === "union" && narrowed) {
@@ -499,6 +533,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         const helper = lowerer.narrowedArmHelper(g.type.unionId, narrowed, loc);
         if (helper) return lowerer.checkedNarrowCall(helper, ref, narrowed, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, g, loc);
+      if (callback) return callback;
       const use = runtimeOptionalUseOf(expr);
       // The enclosing logical/conditional expression consumes the union
       // before any member operation runs (`(value ?? fallback).length`).
@@ -664,7 +700,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     const bi = lowerer.builtinImportOf(expr);
     if (bi) {
       if (bi.module === "worker_threads") {
-        const value = lowerWorkerMetadata(bi.member, loc);
+        const value = lowerWorkerMetadata(lowerer, bi.member, loc);
         if (value) return value;
       }
       // A named import of defaultMaxListeners reads the ES module
@@ -976,6 +1012,25 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       const t =
         ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
       return nsUndefRead(lowerer, expr.text, expr, t);
+    }
+    // `require` in an ES module: Node defines no `require` binding there, so
+    // the READ throws its catchable ReferenceError "require is not defined"
+    // (probed on Node 24.22.0 for `.ts`, `.mts` and `.mjs` ES modules; the
+    // CommonJS "in ES module scope" suffix belongs to Node's `createRequire`
+    // shim, not to the bare global). The read always throws, so the dummy is
+    // dynamic and never observed.
+    if (
+      expr.text === "require" &&
+      lowerer.isStdlibGlobal(expr, "require") &&
+      isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
+    ) {
+      return {
+        kind: "libCall",
+        fn: "global.undefRead",
+        args: [{ kind: "strLit", value: "require", type: STRING, loc }],
+        type: DYN,
+        loc,
+      };
     }
     if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;

@@ -1,4 +1,5 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
+import { isDeferredDiagnosticFence } from "../../ir/deferred-fence.js";
 import { emitInlineArrayInit, inlineFieldTail } from "./inline-arrays.js";
 import { emitLoopBytesHeaders } from "./bytes-headers.js";
 import { noteBytesReceiver } from "./expr-bytes.js";
@@ -16,6 +17,7 @@ import {
   STRING,
   isRefCounted,
   keyedRecordFields,
+  typeEquals,
 } from "../../ir/ir.js";
 import { emitStringSliceSnapshot } from "./string-slices.js";
 import {
@@ -105,7 +107,7 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
-import { emitLaneLoop, laneLoopPlan } from "./lanes.js";
+import { emitLaneLoop, emitLaneOuter, laneLoopPlan, outerLanePlan } from "./lanes.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
@@ -127,9 +129,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const b = emitter.binding(s.localId);
+      // A binding whose captures copy its value (value-captures.ts) owns
+      // that value like the box it replaces did: closures created later
+      // read the slot, so it takes none of the borrowed forms below.
+      const owning = emitter.valueBindings.has(s.localId);
       if (
         emitter.borrowedMapGets.has(s.localId) &&
         b.kind === "local" &&
+        !owning &&
         s.init?.kind === "mapIntrinsic"
       ) {
         // The map entry's own reference: no retain now, no release at scope
@@ -140,7 +147,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           break;
         }
       }
-      if (emitter.walkBorrows.has(s.localId) && b.kind === "local") {
+      if (emitter.walkBorrows.has(s.localId) && b.kind === "local" && !owning) {
         // A borrowed walk pointer: no retain now, no release at scope exit.
         const v = s.init === null ? "null" : emitter.emitReadReceiver(s.init).name;
         B.line(`store ptr ${v}, ptr ${b.slot}`);
@@ -290,14 +297,17 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         if (isRefCounted(b.type)) {
           B.line(`store ptr null, ptr ${b.slot}`);
           emitter.scopes[emitter.scopes.length - 1]!.push({ slot: b.slot, type: b.type });
+        } else if (owning) {
+          // The box this slot replaces started zeroed.
+          B.line(`store ${emitter.llType(b.type)} zeroinitializer, ptr ${b.slot}`);
         }
         break;
       }
-      if (emitter.loopArrayBorrows.has(s) && s.init.kind === "arrayGet") {
+      if (!owning && emitter.loopArrayBorrows.has(s) && s.init.kind === "arrayGet") {
         emitBorrowedArrayRead(emitter, s.init, b.slot);
         break;
       }
-      const holeRead = emitter.loopArrayBorrows.has(s) ? dynHoleRead(s.init) : null;
+      const holeRead = !owning && emitter.loopArrayBorrows.has(s) ? dynHoleRead(s.init) : null;
       if (holeRead && s.init.kind === "ternary") {
         // A hole reads as the immortal undefined value, which needs no owner.
         const present = emitter.emitExpr(s.init.cond);
@@ -317,6 +327,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(done);
         break;
       }
+      // The copy of an immutable local that this scope owns (the form
+      // ir/capture-values.ts gives a stable captured binding: reads use the
+      // source, closures name the copy). Both die with the scope, and the
+      // source's last read never moves it away while a closure still names
+      // the copy (local-extents.ts counts the copy as derived), so the copy
+      // borrows instead of holding a second reference.
+      if (owning && b.kind === "local" && isRefCounted(b.type) && s.init.kind === "varRef") {
+        const source = emitter.binding(s.init.localId);
+        const scope = emitter.scopes[emitter.scopes.length - 1]!;
+        if (
+          source.kind === "local" &&
+          source.local !== undefined &&
+          !source.local.mutable &&
+          !source.local.boxed &&
+          !source.local.tdz &&
+          !emitter.isTreeValue(b.type) &&
+          typeEquals(source.type, b.type) &&
+          scope.some(
+            (entry) =>
+              entry.slot === source.slot &&
+              entry.boxed !== true &&
+              entry.lazy !== true &&
+              entry.arena !== true &&
+              typeEquals(entry.type, b.type),
+          )
+        ) {
+          B.line(`store ptr ${emitter.emitReadReceiver(s.init).name}, ptr ${b.slot}`);
+          break;
+        }
+      }
       // A stable lexical alias cannot outlive its unchanged local owner.
       // Whole-value uses still retain their own copies, so returning or
       // storing the alias preserves the ordinary heap representation.
@@ -326,6 +366,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       if (
         b.kind === "local" &&
         b.local &&
+        !owning &&
         isRefCounted(b.type) &&
         !emitter.isTreeValue(b.type) &&
         emitter.stableCallBindings.has(s.localId) &&
@@ -405,7 +446,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const b = emitter.binding(s.localId);
-      if (emitter.walkBorrows.has(s.localId) && b.kind === "local") {
+      if (
+        emitter.walkBorrows.has(s.localId) &&
+        b.kind === "local" &&
+        !emitter.valueBindings.has(s.localId)
+      ) {
         // Rebinding a borrowed walk pointer releases nothing.
         B.line(`store ptr ${emitter.emitReadReceiver(s.value).name}, ptr ${b.slot}`);
         break;
@@ -1575,11 +1620,17 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // (lanes.ts). The plan is consulted here, before any copy is chosen:
       // the speculative, int32 and strip-mined copies keep their values in
       // layouts the lane body does not write.
+      const outer = !stripMined && capturedLets.length === 0 ? outerLanePlan(emitter, s) : null;
       const lane =
-        integerLoop !== null && integerSlot !== null && !stripMined && capturedLets.length === 0
+        outer === null &&
+        integerLoop !== null &&
+        integerSlot !== null &&
+        !stripMined &&
+        capturedLets.length === 0
           ? laneLoopPlan(emitter, s)
           : null;
-      if (lane !== null)
+      if (outer !== null) emitLaneOuter(emitter, outer, B.newLabel("lane.after"));
+      else if (lane !== null)
         emitLaneLoop(
           emitter,
           lane,
@@ -1982,14 +2033,33 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "runtimeFence": {
-      // The deferred JS compile fence: throw a catchable Error naming
-      // the construct (message) with the SC code stamped on `code`,
-      // then unwind exactly like `throw`. SCR_ERR_ERROR = 0.
+      // Throw a catchable Error naming the construct (message) with the
+      // SC code stamped on `code`, then unwind exactly like `throw`.
+      // SCR_ERR_ERROR = 0. A fence that stands for a diagnostic the
+      // compiler deferred (ir/deferred-fence.ts) throws through the
+      // runtime's reporter, which names the site on stderr the first time
+      // it fires, keyed by the interned message constant: a handler that
+      // catches the Error cannot hide the refusal. A library keeps the
+      // plain throw: its archive carries no reporter, and what a library
+      // tells its host goes through the host's sink, not the process's
+      // stderr.
       const bytes = Buffer.byteLength(s.message, "utf8");
-      emitter.declare(`declare void @scr_throw_error_msg_code(i32, ptr, ${emitter.sizeType}, ptr)`);
-      B.line(
-        `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
-      );
+      if (
+        emitter.mod.lib === undefined &&
+        isDeferredDiagnosticFence(s.code, s.message, s.loc.file)
+      ) {
+        emitter.declare(`declare void @scr_deferred_fence(ptr, ${emitter.sizeType}, ptr)`);
+        B.line(
+          `call void @scr_deferred_fence(ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+        );
+      } else {
+        emitter.declare(
+          `declare void @scr_throw_error_msg_code(i32, ptr, ${emitter.sizeType}, ptr)`,
+        );
+        B.line(
+          `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+        );
+      }
       emitter.emitUnwind();
       break;
     }
@@ -2084,6 +2154,7 @@ function storeIntegerTemp(
     local.mutable ||
     local.tdz === true ||
     emitter.captureIds.has(localId) ||
+    emitter.valueBindings.has(localId) ||
     !v.integer
   ) {
     emitter.integerTemps.delete(localId);

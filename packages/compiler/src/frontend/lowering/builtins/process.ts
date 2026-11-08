@@ -38,6 +38,7 @@ import { canonicalBuiltinModule } from "../../builtin-modules.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
 import { isCheckerPanic } from "../../../diagnostics/diagnostic.js";
+import { refuseCallbackThis } from "../callback-arg.js";
 
 /** Whether the process has an IPC channel, Node's test for defining
  * process.send and process.disconnect: a channel this fork child opened
@@ -177,38 +178,29 @@ export function programReadsExitCode(lowerer: Lowerer): boolean {
   return found;
 }
 
-/** A write-method replacement on a process output stream, its source site.
- * `stream` is null when the receiver is a first-class alias, whose type does
- * not say which of the two output streams it holds. */
-export interface StdioPatchSite {
-  stream: "stdout" | "stderr" | null;
-  loc: SrcLoc;
-}
-
 /** Whether any program file replaces a process output stream's write
  * method: `process.stdout.write = …` / `process.stderr.write = …`, or the
  * same assignment through a first-class alias of the stream (a value whose
  * type maps to the process stream). Such a program routes its typed
  * stdout/stderr writes through the stream object, so the replacement sees
- * them with their arguments, as in Node. Cached per program; the first
- * site found is recorded for the executable planner's SC8006 refusal. */
+ * them with their arguments, as in Node. Cached per program. Node islands
+ * need no such scan: a program that holds the stream object at all shares
+ * its write slot with them (the stdioObject runtime feature). */
 export function programPatchesStdio(lowerer: Lowerer): boolean {
   if (lowerer.patchesStdio !== null) return lowerer.patchesStdio;
   let found = false;
-  // undefined: not an output stream; null: a first-class alias of one.
-  const streamOf = (recv: ts.Expression): "stdout" | "stderr" | null | undefined => {
+  const isStream = (recv: ts.Expression): boolean => {
     if (ts.isPropertyAccessExpression(recv)) {
       const direct = lowerer.stdlibGlobalMember(recv, "process");
-      if (direct === "stdout" || direct === "stderr") return direct;
+      if (direct === "stdout" || direct === "stderr") return true;
     }
     // An arbitrary receiver's mapping is a query, never a commit: a checker
-    // panic (the type has no readable form) is not a patch site. The type
-    // cannot say WHICH output stream an alias holds.
+    // panic (the type has no readable form) is not a patch site.
     try {
-      return lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "procStream" ? null : undefined;
+      return lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "procStream";
     } catch (e) {
       if (!isCheckerPanic(e)) throw e;
-      return undefined;
+      return false;
     }
   };
   const walk = (node: ts.Node): void => {
@@ -219,14 +211,8 @@ export function programPatchesStdio(lowerer: Lowerer): boolean {
       ts.isPropertyAccessExpression(node.left) &&
       node.left.name.text === "write"
     ) {
-      const recv = node.left.expression;
-      const direct = ts.isPropertyAccessExpression(recv)
-        ? lowerer.stdlibGlobalMember(recv, "process")
-        : null;
-      const stream = direct === "stdout" || direct === "stderr" ? direct : streamOf(recv);
-      if (stream !== undefined) {
+      if (isStream(node.left.expression)) {
         found = true;
-        lowerer.stdioPatchSites.push({ stream, loc: locOf(node) });
         return;
       }
     }
@@ -258,8 +244,16 @@ export function lowerProcStreamMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
-  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "procStream") return null;
-  if (!lowerer.isStdlibMember(access)) return null;
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  const stored =
+    declared?.kind === "procStream" || !ts.isIdentifier(access.expression)
+      ? undefined
+      : (lowerer.peekLocal(access.expression)?.type ?? lowerer.globalOf(access.expression)?.type);
+  // A binding that kept the descriptor of a stream under a record
+  // annotation (`const sink: Sink = process.stdout`) still names that
+  // stream: its `write` member is the stream's own method.
+  if (declared?.kind !== "procStream" && stored?.kind !== "procStream") return null;
+  if (!lowerer.isStdlibMember(access) && access.name.text !== "write") return null;
   const name = access.name.text;
   const loc = locOf(call);
   if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
@@ -1880,6 +1874,7 @@ export function lowerProcessMethodCall(
         "chaining process listener registration (the result is void here — register each listener as its own statement)",
       );
     }
+    refuseCallbackThis(lowerer, call.arguments.nodes[1]!, "a process listener", "'process'");
     let cb = lowerer.lowerExpr(call.arguments.nodes[1]!);
     // The checked-dynamic listener (test/common's `process.on('exit',
     // runCallChecks)` — an implicit-any JS function, func(dyn)=>dyn, or

@@ -48,6 +48,8 @@ scriptc finds packages in `node_modules` with Node.js's resolution rules, includ
 
 Type-only imports follow Node.js's type stripping. `import type` and `export type … from` statements are erased, so a package or module named only by them supplies types and isn't compiled or loaded; it can even be a package with no JavaScript, such as `type-fest`. A clause whose specifiers are all marked `type`, such as `import { type Options } from "./config.ts"`, still loads its module, as it does under Node.js.
 
+A project that tsc compiles follows tsc instead. When the nearest `tsconfig.json` above a TypeScript file doesn't set `verbatimModuleSyntax`, scriptc drops the imports and exports that tsc drops for that file: an import whose bindings are never used as values, a clause of `type` specifiers only, and a re-export of a type. A module imported only in those ways isn't loaded, exactly as in the JavaScript tsc emits, so it doesn't run and doesn't take part in an import cycle. `isolatedModules` and `preserveConstEnums` decide whether a use of a const enum keeps its import, as they do for tsc. With `verbatimModuleSyntax: true`, or with no `tsconfig.json`, the type-stripping rule applies; a plain import of a type then fails when the program starts, as it does under Node.js, and the build warns about it with `SC6201`.
+
 ## Which packages compile
 
 scriptc compiles a package automatically when it:
@@ -142,6 +144,15 @@ Some package entries choose a module by an environment variable, as React's `ind
 ## Unsupported code inside a package
 
 A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. These don't fail the build: each one compiles to code that throws a runtime error if it ever runs. Coverage reports list them as deferred sites, so review the list and test the parts of the package your program uses. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
+
+When a deferred operation runs, the error it throws can be caught by your code or by a framework's error handler. So that a caught error doesn't look like an application bug, the program writes to stderr the first time each such site runs, naming the operation, its diagnostic code, and its source position when the site has one. A program that calls `v5` from `uuid` 14.0.3 prints:
+
+```text
+scriptc: this program reached code that scriptc could not compile; each such operation throws where it runs and is reported here once ('scriptc coverage' lists them, SCRIPTC_DEFERRED_REPORT=0 silences these lines)
+scriptc: not compiled: 'unescape' is part of the standard library types but has no scriptc lowering yet [SC2020]
+```
+
+Set `SCRIPTC_DEFERRED_REPORT=0` in the program's environment to silence these lines. A program with no deferred operations never prints them. A library built with `scriptc build --lib` doesn't print them either: a deferred operation in a library throws its error, and nothing is written to the host process's stderr.
 
 ## Fix a package's types
 

@@ -785,13 +785,27 @@ export function emitCallExpr(
       }
       // Lifted async lambdas enter through their spawn wrapper (which
       // takes sc_env first, like every lifted function).
-      host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
+      // An environment that holds values (value-captures.ts) has its boxes
+      // first, so `caps[]` and its count describe only those.
+      const layout = e.adapts === true ? null : host.valueCaptures.layout(e.fnName);
       const c = B.tmp();
-      B.line(
-        `${c} = call ptr @scr_closure_new(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${e.captures.length})`,
-      );
+      if (layout === null) {
+        host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
+        B.line(
+          `${c} = call ptr @scr_closure_new(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${e.captures.length})`,
+        );
+      } else {
+        const type = host.environmentType(layout);
+        host.declare(
+          `declare ptr @scr_closure_new_values(ptr, ${host.sizeType}, ptr, ${host.sizeType})`,
+        );
+        B.line(
+          `${c} = call ptr @scr_closure_new_values(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${layout.boxes}, ptr ${host.environmentValues(layout)}, ${host.sizeType} ptrtoint (ptr getelementptr (${type}, ptr null, i32 1) to ${host.sizeType}))`,
+        );
+      }
       const out = host.own({ name: c, type: e.type });
-      const functionKind = host.closureFunctionKind(target);
+      const functionKind =
+        host.closureFunctionKind(target) | (layout === null ? 0 : CLOSURE_KIND.VALUES);
       if (functionKind) {
         const kindPtr = B.tmp();
         B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
@@ -817,16 +831,39 @@ export function emitCallExpr(
         B.line(`store ptr ${c}, ptr ${identityPtr}`);
       }
       e.captures.forEach((localId, i) => {
+        const slot = layout?.slots[i];
+        if (slot !== undefined && slot.kind !== "box") {
+          host.storeEnvironmentValue(layout!, c, i, localId, true, e.loc);
+          return;
+        }
+        const index = slot?.index ?? i;
         const box = host.captureBox(localId);
         const retained = host.retainBox(box);
         const caps = B.tmp();
         const capp = B.tmp();
         B.line(`${caps} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 1 ; caps`);
         B.line(
-          `${capp} = getelementptr inbounds ptr, ptr ${caps}, ${host.sizeType} ${i} ; caps[${i}]`,
+          `${capp} = getelementptr inbounds ptr, ptr ${caps}, ${host.sizeType} ${index} ; caps[${index}]`,
         );
         B.line(`store ptr ${retained}, ptr ${capp}`);
-        if (i === 0 && e.adapts === true) {
+        if (i === 0 && e.adapts === true && target.captures?.[0]?.type.kind === "dyn") {
+          // A checked adapter over a boxed function: it stands for that
+          // function, and a box of it is that function again
+          // (scr_dyn_new_func reads caps[0] of a closure of this kind).
+          const slot = B.tmp();
+          const original = B.tmp();
+          const kindPtr = B.tmp();
+          const own = B.tmp();
+          const kind = B.tmp();
+          B.line(`${slot} = getelementptr inbounds %ScrBox, ptr ${box}, i64 0, i32 5`);
+          B.line(`${original} = load ptr, ptr ${slot}`);
+          B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
+          B.line(`${own} = load i32, ptr ${kindPtr}`);
+          B.line(`${kind} = or i32 ${own}, ${CLOSURE_KIND.CHECKED_ADAPTER}`);
+          B.line(`store i32 ${kind}, ptr ${kindPtr}`);
+          host.declare(`declare void @scr_dyn_adopt_identity(ptr, ptr)`);
+          B.line(`call void @scr_dyn_adopt_identity(ptr ${c}, ptr ${original})`);
+        } else if (i === 0 && e.adapts === true) {
           // A signature adapter stands for the function it forwards to.
           const slot = B.tmp();
           const original = B.tmp();

@@ -152,7 +152,7 @@ function enumObjectUsed(
         const key = `${n}:${sf.fileName}`;
         if (scanned.has(key)) continue;
         scanned.add(key);
-        if (sf !== home && !sf.text.includes(name)) continue;
+        if (sf !== home && !ts.sourceTextIncludes(sf, name)) continue;
         const candidates = identifiersNamed(lowerer, sf, name).filter(
           (id) =>
             !inTypePosition(id) &&

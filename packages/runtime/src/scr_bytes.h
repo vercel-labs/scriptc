@@ -169,6 +169,9 @@ void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
 ScrDyn *scr_worker_get_environment_data(ScrDyn *key);
 ScrDyn *scr_worker_resource_limits(void);
 ScrDyn *scr_worker_thread_name_current(void);
+/* worker_threads.SHARE_ENV (+1): the symbol the Worker env option
+ * compares against (scr_worker_events.c). */
+ScrSym *scr_worker_share_env(void);
 /* markAsUntransferable(value) and isMarkedAsUntransferable(value)
  * (scr_worker_events.c); both borrow the value. */
 void scr_worker_mark_untransferable(ScrDyn *value);
@@ -224,6 +227,9 @@ ScrStr *scr_strdec_write(const ScrStr *enc, double pending, const ScrBytes *chun
 ScrStr *scr_strdec_write_dyn(const ScrStr *enc, double pending, const ScrDyn *chunk);
 double scr_strdec_next_dyn(const ScrStr *enc, double pending, const ScrDyn *chunk);
 double scr_strdec_next(const ScrStr *enc, double pending, const ScrBytes *chunk);
+/* write and next in one walk of pending+chunk: the decoded prefix (+1), with
+ * *pending left holding the state that follows it. */
+ScrStr *scr_strdec_stream_write(const ScrStr *enc, const ScrBytes *chunk, double *pending);
 ScrStr *scr_strdec_end(const ScrStr *enc, double pending);
 ScrStr *scr_strdec_encoding(const ScrDyn *enc); /* +1, or NULL with ERR_UNKNOWN_ENCODING pending */
 /* A Buffer encoding name known only at run time, Node's getEncodingOps: the

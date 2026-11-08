@@ -1,6 +1,12 @@
+import { refuseCallbackThis } from "./callback-arg.js";
 import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr, boolLit, numLit, strLit } from "../../ir/build.js";
-import { isValueStream, valueStreamOf } from "./builtins/hash-stream.js";
+import {
+  isValueStream,
+  isWritableValueStream,
+  valueStreamOf,
+  writableStreamOf,
+} from "./builtins/hash-stream.js";
 import { InternalCompilerError } from "../../errors.js";
 /* The node:stream lowering (the spoke-module pattern, like
  * lower-event-emitter.ts): construction of the five runtime stream classes
@@ -367,6 +373,14 @@ function lowerStreamCallback(
   const { shapes, funcType } = lowerer.lambdaSignature(node);
   if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
     lowerer.unsupported("SC1090", node, `async stream '${which}' callbacks`);
+  }
+  // The stream calls the closure with the parameters it names.
+  if (funcType.rest === true || lowerer.typedArgumentsLambdas.has(node)) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `a stream '${which}' callback that takes a rest parameter or reads 'arguments' (name the parameters the callback uses)`,
+    );
   }
   if (funcType.params.length > fullTuple.length) {
     lowerer.noLowering(
@@ -1067,6 +1081,14 @@ function parseStreamOptions(
             "write the callback inline (method shorthand or an inline function/arrow), or pass a function value",
           );
         }
+        // A callback written in place is bound to the stream; a value is
+        // called through the function boundary, without one.
+        refuseCallbackThis(
+          lowerer,
+          valueNode,
+          `the ${ctorName} option '${name}' as a function value`,
+          "the stream",
+        );
         present.set(
           name,
           lowerStreamCallbackValue(lowerer, ctorName, name, valueNode, tuples[name]!.length),
@@ -6914,15 +6936,18 @@ export function lowerStreamMethodCall(
         "the supported forms are (destination) and (destination, { end })",
       );
     }
-    // A Hash, Hmac, Cipheriv or Decipheriv destination pipes into its
-    // Transform, and pipe() answers the value itself (the receiver
-    // evaluates first, as in JS).
-    if (isValueStream(lowerer, args[0]!)) {
+    // A Hash, Hmac, Cipheriv, Decipheriv, Sign or Verify destination pipes
+    // into its native stream, and pipe() answers the value itself (the
+    // receiver evaluates first, as in JS).
+    const writableDst = isWritableValueStream(lowerer, args[0]!);
+    if (writableDst || isValueStream(lowerer, args[0]!)) {
       const receiverValue = streamReceiverExpr(lowerer, access.expression);
       const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
       const hashValue = lowerer.lowerExpr(args[0]!);
       const hash = lowerer.declareHiddenLocal("%pipeHash", hashValue.type);
       const end = pipeEndOption(lowerer, args[1], loc);
+      const destination: IrExpr = { kind: "varRef", localId: hash.id, type: hashValue.type, loc };
+      const stream = writableDst ? writableStreamOf(destination) : valueStreamOf(destination, true);
       return {
         kind: "seqExpr",
         stmts: [
@@ -6935,13 +6960,10 @@ export function lowerStreamMethodCall(
               fn: "readable.pipe",
               args: [
                 { kind: "varRef", localId: source.id, type: receiverValue.type, loc },
-                valueStreamOf(
-                  { kind: "varRef", localId: hash.id, type: hashValue.type, loc },
-                  true,
-                ),
+                stream,
                 end,
               ],
-              type: { kind: "object", className: "%Transform" },
+              type: stream.type,
               loc,
             },
             loc,

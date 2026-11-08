@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-namespace-nested-exports/shapes.ts",
+  "<repo>/tests/corpus/module-namespace-nested-exports/kit.ts",
+  "<repo>/tests/corpus/module-namespace-nested-exports/main.ts"
+ ],
+ "diags": []
+}

@@ -128,6 +128,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A computed read of the global object, or `… in globalThis`
    * (scr_global_host_absent.c). */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic
+   * (scr_deferred_fence.c). */
+  deferredFence?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -145,13 +148,13 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
    * JavaScript source resizes, grows or detaches an ArrayBuffer. */
   mutableBuffers?: boolean;
-  stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
-  /** The program reaches the process output streams' write slot: the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot: boolean;
+  /** The program holds a process output stream as a value: with Node
+   * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c. */
+  stdioObject: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -396,6 +399,7 @@ export function effectiveRuntimeFeatures(
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
+    deferredFence: features.deferredFence === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
@@ -404,9 +408,8 @@ export function effectiveRuntimeFeatures(
     jsObjectModel,
     mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
-    stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
-    stdioWriteSlot: features.stdioWriteSlot === true,
+    stdioObject: features.stdioObject === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,
@@ -513,6 +516,41 @@ export function runtimePackFlavorKey(
     return optimized === "release" ? "library-thread-release" : "library-thread-dev";
   if (optimization === "speed" && manifest.flavors.speed !== undefined) return "speed";
   return optimized;
+}
+
+/** The warning for a build that asks for the speed posture from a pack that
+ * ships no `speed` flavor: it links the release runtime objects instead
+ * (runtimePackFlavorKey), which costs run time. Null when the pack has the
+ * flavor or the build is a library one, where speed is not a posture. The
+ * pack gains the flavor when it is built on a host that has the LLVM codegen
+ * helper (runtime-pack-common/scripts/build.mjs). */
+export function speedFlavorFallbackWarning(
+  manifest: RuntimePackManifest,
+  optimization: NativeOptimization,
+  mode: RuntimePackMode = "executable",
+): string | null {
+  if (mode !== "executable" || optimization !== "speed" || manifest.flavors.speed !== undefined)
+    return null;
+  return (
+    `scriptc: warning: --optimization=speed, but runtime pack ${manifest.package}@${manifest.version} ` +
+    `has no "speed" flavor; linking its release runtime objects instead, which costs run time. ` +
+    `Build the pack on a host with the LLVM codegen helper ` +
+    `(packages/llvm-linux-x64-gnu/bin/scriptc-llvm-codegen, or name one with SCRIPTC_LLVM_CODEGEN) ` +
+    `to include the flavor.\n`
+  );
+}
+
+/** Pack directories whose speed-flavor fallback has been reported, so a build
+ * that selects more than once prints it once. */
+const reportedSpeedFallbacks = new Set<string>();
+
+/** Print the speed-flavor fallback warning for one selection, once per pack
+ * directory. The caller passes the warning it computed (or read from a stored
+ * selection), so a build that skips the manifest still reports it. */
+export function reportSpeedFlavorFallback(root: string, warning: string | null): void {
+  if (warning === null || reportedSpeedFallbacks.has(root)) return;
+  reportedSpeedFallbacks.add(root);
+  process.stderr.write(warning);
 }
 
 /** The units a flavor links for `features`, each with its selected

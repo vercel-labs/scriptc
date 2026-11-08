@@ -1,0 +1,7 @@
+typings-directory-not-named/main.ts:4:23 - error SC0001: Could not find a declaration file for module 'tiny-lines'. 'typings-directory-not-named/node_modules/tiny-lines/index.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/tiny-lines` if it exists or add a new declaration (.d.ts) file containing `declare module 'tiny-lines';`
+
+  3 | // does not read them, and neither does any load of the build.
+  4 | import tinyLines from "tiny-lines";
+    |                       ^~~~~~~~~~~~
+  5 | import * as termCodes from "term-codes";

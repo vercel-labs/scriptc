@@ -1,12 +1,14 @@
 import type { IrLibFn } from "./builtin-signatures.js";
 
 /** The may-throw seed: libCall members that can raise. Every fs.* member
- * EXCEPT existsSync (which, like Node's, swallows errors and returns false)
- * throws a catchable error on failure; json.parse throws a catchable
- * SyntaxError-shaped string on malformed input. Backends' may-throw analyses must treat a function containing one
- * of these as throwing, exactly like a `throw` statement (and must ALSO
- * seed on `dynCheck` and `awaitExpr` nodes, which throw on validation
- * failure / promise rejection). */
+ * except existsSync (which, like Node's, swallows path errors and returns
+ * false) throws a catchable error on failure; fs.existsSyncValue is here
+ * because reporting DEP0187 for an invalid argument type runs
+ * process.emitWarning, whose replacement may throw. json.parse throws a
+ * catchable SyntaxError-shaped string on malformed input. Backends' may-throw
+ * analyses must treat a function containing one of these as throwing, exactly
+ * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
+ * nodes, which throw on validation failure / promise rejection). */
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The copied error of a synchronous call into Node (@scriptc/node).
   "nodeIsland.callSync",
@@ -32,6 +34,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.promisify",
   "nodeIsland.classMethodsOf",
   "nodeIsland.copyArrays",
+  "nodeIsland.adoptThenable",
+  "nodeIsland.promiseResolve",
+  // A code that is not a safe integer throws, as process.setExitCode does.
+  "nodeIsland.setExitCode",
+  // Both read Node's process.exitCode through an island helper once Node is
+  // loaded, which is island JavaScript (the property can be redefined
+  // there). The runtime drops what that read throws today and answers its
+  // own value; the check keeps the call right if it ever delivers one.
+  "nodeIsland.exitCode",
+  "nodeIsland.hasExitCode",
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",
   // Node's curve, key, point, encoding and format errors.
@@ -131,6 +143,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unboxDynStage",
   "stream.dynTransformResult",
   "stream.handleStream",
+  "stream.handleWritable",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "weakMap.new",
@@ -364,6 +377,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.listenersDyn",
   "emitter.emitError",
   "emitter.on",
+  "emitter.onNamed",
   "emitter.off",
   "emitter.checkListener",
   "emitter.onDyn",
@@ -373,6 +387,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.onData",
   "emitter.onDataDyn",
   "emitter.emitData",
+  // The event name's ToPropertyKey conversion runs an object name's own
+  // toString/valueOf (user code, which may throw), and an object that
+  // answers no primitive throws the spec's TypeError.
+  "emitter.nameDyn",
   "readable.nextChunk",
   "readable.nextChunkDyn",
   // The checked-dynamic chunk forms throw Node's ERR_INVALID_ARG_TYPE
@@ -573,6 +591,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyKey",
   "dyn.toNumeric",
   "dyn.increment",
+  "dyn.negate",
   // The dynamic-tier operators run the same coercions (scr_js_value.c), and
   // js.toF64 throws dynCheck's TypeError for a non-number.
   "js.toF64",
@@ -582,6 +601,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "js.compare",
   "js.toNumeric",
   "js.increment",
+  "js.negate",
   "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
@@ -918,6 +938,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.loadEnvFile",
   "fs.realpathSync",
   "fs.realpathNativeSync",
+  "fs.existsSyncValue",
   "fs.readFileSync",
   "fs.writeFileSync",
   "fs.appendFileSync",
@@ -1229,6 +1250,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readlinkSyncBuffer",
   "fs.writeFileModeSync",
   "fs.writeFileFlagsSync",
+  "fs.writeFileOptionsSync",
+  "fs.appendFileOptionsSync",
+  "fs.writeFileBytesOptionsSync",
+  "fs.appendFileBytesOptionsSync",
   "fs.mkdirModeSync",
   "fs.mkdirRecursiveModeSync",
   "fs.openSync",
@@ -1269,6 +1294,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  // ReadableStream.from's iterability and iterator-method errors, which
+  // Node raises from the call itself.
+  "webstream.from",
 ]);
 
 /** libCall members that always throw. Their result type is the replaced

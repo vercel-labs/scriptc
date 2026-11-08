@@ -176,20 +176,29 @@ declare module "net" {
     dropMaxConnection: boolean | undefined;
     /* cb(null, count) on the next tick. */
     getConnections(callback: (error: Error | null, count: number) => void): Server;
-    /* Node answers the server itself (`return this` chaining). */
-    listen(port: number, callback?: () => void): Server;
+    /* Node answers the server itself (`return this` chaining). An
+     * undefined port is an arbitrary unused one; a string is the port
+     * when it reads as a number (`process.env.PORT || 3000`) and a
+     * Unix-socket path otherwise. */
+    listen(port?: number | string, callback?: () => void): Server;
     /* No port: an arbitrary unused one. */
     listen(callback?: () => void): Server;
     /* The positional bind address (the options form's host in argument
-     * spelling). */
-    listen(port: number, host: string, callback?: () => void): Server;
+     * spelling); an undefined host is every interface. */
+    listen(port?: number | string, host?: string, callback?: () => void): Server;
     /* A Unix-socket server; the socket file is removed when it closes. */
     listen(path: string, callback?: () => void): Server;
-    /* The explicit-interface bind: host is an IP literal (absent = the
-     * host-less dual-stack any); ipv6Only sets IPV6_V6ONLY and reusePort
-     * requests kernel connection distribution where Node supports it. */
+    /* The explicit-interface bind: host is an IP literal (absent or
+     * undefined = the host-less dual-stack any); ipv6Only sets IPV6_V6ONLY
+     * and reusePort requests kernel connection distribution where Node
+     * supports it. */
     listen(
-      options: { port: number; host?: string; ipv6Only?: boolean; reusePort?: boolean },
+      options: {
+        port: number | undefined;
+        host?: string | undefined;
+        ipv6Only?: boolean;
+        reusePort?: boolean;
+      },
       callback?: () => void,
     ): Server;
     close(callback?: () => void): void;

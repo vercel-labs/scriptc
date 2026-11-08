@@ -258,6 +258,19 @@ function buildLibFnSignatures() {
      * promise's value). */
     "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
     "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** The operand of a dynamic await or PromiseResolve in a program with
+     * Node islands: an island thenable as the promise V8 adopts it into,
+     * any other value as itself. */
+    "nodeIsland.adoptThenable": { argTypes: [DYN], result: DYN },
+    /** `Promise.resolve(v)` over a dynamic value in a program with Node
+     * islands: PromiseResolve, so an island thenable is adopted. */
+    "nodeIsland.promiseResolve": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** process.exitCode in a program with Node islands: Node's property
+     * once Node is loaded, the runtime's own value before
+     * (island-process-state.ts). */
+    "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
+    "nodeIsland.exitCode": { argTypes: [], result: F64 },
+    "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An
@@ -306,6 +319,14 @@ function buildLibFnSignatures() {
      * or whose key is shorter than four bytes. The table switches on it and
      * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
     "dyn.classHash": { argTypes: [DYN], result: F64 },
+    /** The index of a table of class values (`dyn.classIs` branches: `x
+     * instanceof C`, `new C()` and static members of an untyped
+     * constructor): a function value's signature key folded to one of
+     * 2^bits slots (the second argument, a literal), or -1 for a value that
+     * is not a function or whose key is shorter than four bytes. A function
+     * that is not a compiled class selects a slot only by coincidence, and
+     * that slot's exact key guards are false for it. */
+    "dyn.classValueHash": { argTypes: [DYN, F64], result: F64 },
     /** Destructuring pack over a dyn source — `const [a, b] = d`, a
      * destructured dyn callback param (args: the source and the STATIC
      * TypeError spelling, "" when the source has none — both borrowed;
@@ -751,6 +772,13 @@ function buildLibFnSignatures() {
     "fs.writeFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.appendFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.existsSync": { argTypes: [STRING], result: BOOL },
+    /** existsSync over a path value that is not statically a string: the
+     * string case is fs.existsSync, and any other value answers false with
+     * Node's one DEP0187 report (scr_fs_exists_dyn.c). */
+    "fs.existsSyncValue": { argTypes: [DYN], result: BOOL },
+    /** existsSync over a statically typed byte path: the bytes decode to the
+     * path and the probe runs (scr_lib.c), no boxing and no dynamic tier. */
+    "fs.existsSyncBytes": { argTypes: [BYTES_U8], result: BOOL },
     "fs.mkdirSync": { argTypes: [STRING], result: VOID },
     "fs.rmSync": { argTypes: [STRING], result: VOID },
     "fs.rmdirSync": { argTypes: [STRING], result: VOID },
@@ -1420,6 +1448,7 @@ function buildLibFnSignatures() {
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
+    "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
     "webstream.install": { argTypes: [], result: VOID },
     "mime.typeNew": { argTypes: [DYN, DYN], result: DYN },
@@ -1663,6 +1692,21 @@ function buildLibFnSignatures() {
      * with the disposition flag — flag 1 is "wx" (O_EXCL: EEXIST when the
      * path exists), 0 is "w" (the default truncate-or-create). */
     "fs.writeFileFlagsSync": { argTypes: [STRING, STRING, F64, F64], result: VOID },
+    /** writeFileSync(path, data, { encoding, mode, flag }): the same open(2)
+     * write with the data encoded for `encoding` and the flag table Node
+     * documents (scr_fs_flags.c). appendFileOptionsSync is appendFileSync's
+     * three-argument form, whose default flag is "a"; the Bytes twins write
+     * a Buffer/TypedArray argument with the mode and flag options. */
+    "fs.writeFileOptionsSync": { argTypes: [STRING, STRING, STRING, F64, STRING], result: VOID },
+    "fs.appendFileOptionsSync": { argTypes: [STRING, STRING, STRING, F64, STRING], result: VOID },
+    "fs.writeFileBytesOptionsSync": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING],
+      result: VOID,
+    },
+    "fs.appendFileBytesOptionsSync": {
+      argTypes: [STRING, BYTES_U8, STRING, F64, STRING],
+      result: VOID,
+    },
     "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },
     "fs.mkdirRecursiveModeSync": { argTypes: [STRING, F64], result: VOID },
     "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
@@ -1677,6 +1721,9 @@ function buildLibFnSignatures() {
     "worker.root": { argTypes: [], result: F64 },
     "worker.data": { argTypes: [], result: DYN },
     "worker.parentPort": { argTypes: [], result: DYN },
+    /** worker_threads.SHARE_ENV: the env option's share marker symbol
+     * (scr_worker_events.c). */
+    "worker.shareEnv": { argTypes: [], result: SYMBOL_T },
     /** worker_threads.resourceLimits: {} in the main thread; a refusal in a
      * worker (scr_worker_events.c). */
     "worker.resourceLimits": { argTypes: [], result: DYN },
@@ -3342,6 +3389,12 @@ function buildLibFnSignatures() {
       argTypes: [DYN],
       result: { kind: "object", className: "%Transform" },
     },
+    /** stream.handleWritable for a value typed as a Writable handle class
+     * (a Sign or Verify): the value's native Writable (+1). */
+    "stream.handleWritable": {
+      argTypes: [DYN],
+      result: { kind: "object", className: "%Writable" },
+    },
     /** Checked-dynamic stream slots (dyn-streams.ts): the native stream a
      * checked-dynamic value boxes (+1) — a runtime stream with the readable
      * (1) or writable (2) side — or null for any other value. Never throws;
@@ -4124,8 +4177,7 @@ function buildLibFnSignatures() {
     "process.stdio": { argTypes: [F64], result: DYN },
     /** The same stream object, reached by the typed write-slot lowering
      * (the write method as a value, its replacement, a patched program's
-     * typed writes): identical at run time, and the link switch for the
-     * SCR_STDIO_WRITE_SLOT build of the events unit. */
+     * typed writes): identical at run time. */
     "process.stdioSlot": { argTypes: [F64], result: DYN },
     /** process.stdout/stderr.write(chunk) with a run-time chunk: Node's
      * Writable validation, then a synchronous write. */
@@ -4210,6 +4262,8 @@ function buildLibFnSignatures() {
     "dyn.propertyKey": { argTypes: [DYN], result: DYN },
     "dyn.toNumeric": { argTypes: [DYN], result: DYN },
     "dyn.increment": { argTypes: [DYN, BOOL], result: DYN },
+    /** Unary minus: ToNumeric, then the negation of that number or BigInt. */
+    "dyn.negate": { argTypes: [DYN], result: DYN },
     /** JS ToNumber over a dyn value WITH the object protocol (number-hint
      * valueOf/toString ordering; user throws propagate). Borrowed dyn;
      * f64 result, or a throw. Used by statically lowered numeric coercions
@@ -4244,6 +4298,7 @@ function buildLibFnSignatures() {
     "js.compare": { argTypes: [JSVAL, JSVAL, STRING], result: BOOL },
     "js.toNumeric": { argTypes: [JSVAL], result: JSVAL },
     "js.increment": { argTypes: [JSVAL, BOOL], result: JSVAL },
+    "js.negate": { argTypes: [JSVAL], result: JSVAL },
     "js.toNumberCoerce": { argTypes: [JSVAL], result: F64 },
     // Always throws; the result is the READ's declared type (a typed dummy
     // the unwind abandons) — the libCall case skips the result check.
@@ -4740,6 +4795,11 @@ function buildLibFnSignatures() {
     "emitter.className": { argTypes: [null], result: STRING },
     "emitter.ctor": { argTypes: [null], result: VOID },
     "emitter.on": { argTypes: [null, STRING, null, BOOL, BOOL], result: VOID },
+    /** emitter.on for a name whose ARGUMENT value is not the registry key
+     * it converts to (`on(null)` keys the table as "null" but warns with
+     * `type: null`): (recv, name key, name value dyn, cb /moves/, once,
+     * prepend). Only the leak warning reads the value. */
+    "emitter.onNamed": { argTypes: [null, STRING, DYN, null, BOOL, BOOL], result: VOID },
     "emitter.off": { argTypes: [null, STRING, null], result: VOID },
     // The dyn-adapted registration family (JS-lane checked-dynamic
     // listeners): checkListener has NO receiver (it validates the listener
@@ -4775,7 +4835,10 @@ function buildLibFnSignatures() {
     "emitter.count": { argTypes: [null, STRING], result: F64 },
     "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
     "emitter.countDyn": { argTypes: [null, STRING, DYN], result: F64 },
-    "emitter.names": { argTypes: [null], result: VOID },
+    /** eventNames(): the registered event keys as a checked-dynamic array —
+     * string names first in Node's _events property order, then symbols
+     * (which a string array cannot carry). */
+    "emitter.names": { argTypes: [null], result: DYN },
     "emitter.listeners": { argTypes: [null, STRING], result: VOID },
     /** listeners()/rawListeners() through an untyped value: a checked-
      * dynamic array (throws when a listener has typed parameters). */
@@ -4801,6 +4864,14 @@ function buildLibFnSignatures() {
     /** The events.errorMonitor event key: an immortal string the runtime
      * registry matches by identity, so no string event name reaches it. */
     "emitter.errorMonitor": { argTypes: [], result: STRING },
+    /** A symbol event name's registry key (the scr_str_symbol_key of
+     * scr_string.h): Node's listener table is keyed by property keys, so a
+     * symbol name matches by identity and never by bytes. No receiver.
+     * emitter.nameDyn is the same conversion for an untyped name —
+     * ToPropertyKey: a symbol's key, or ToString of every other value,
+     * which runs an object name's own toString/valueOf and may throw. */
+    "emitter.symName": { argTypes: [SYMBOL_T], result: STRING },
+    "emitter.nameDyn": { argTypes: [DYN], result: STRING },
     // node:stream: receivers are stream-hierarchy objects and several
     // results are program-dependent (the receiver's class, unions) — the
     // libCall case owns those checks. The constructors and a few methods
@@ -5369,6 +5440,7 @@ function buildLibFnSignatures() {
     /** The render's maxArrayLength, which the array, Map and Set traversals
      * read: the option applies at every nesting level. */
     "insp.maxArrayLength": { argTypes: [], result: F64 },
+    "insp.numericSeparator": { argTypes: [BOOL], result: BOOL },
     /** ctx.maxStringLength for the renders that follow; answers the previous
      * value so the call site can restore it. */
     "insp.maxStringLength": { argTypes: [F64], result: F64 },

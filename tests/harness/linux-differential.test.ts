@@ -18,7 +18,7 @@ import { npmCases } from "./npm-cases.js";
 import { normalizeNodeTestOutput } from "./node-test-normalize.js";
 import { eventLoopCases, type StdinScript } from "./event-loop-cases.js";
 import { requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
 import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
@@ -66,7 +66,7 @@ function wantsTscDecorators(file: string): boolean {
  * programs) its deterministic ES2022 downlevel — differential.test.ts's
  * nodeOracleFile, with the identical transform and cache key. */
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {

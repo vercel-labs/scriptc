@@ -127,6 +127,17 @@ export function builtinPrototypeMethod(
   return owner;
 }
 
+/** Whether `expr` reads a member of the `Reflect` namespace object — one of
+ * the checked-dynamic member function values builtin-namespaces.ts installs
+ * for it. */
+export function reflectMemberValueRead(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
+  if (!expr) return false;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(expr) && lowerer.stdlibGlobalMember(expr, "Reflect") !== null
+  );
+}
+
 /** These native callables own their argument checks. Unannotated JS aliases
  * keep the checked value instead of narrowing it to the ambient signature.
  * This selects storage only: reassignment still updates a real runtime slot. */
@@ -199,7 +210,7 @@ export function isNativeBuiltinValueInitializer(
         lowerer.stdlibGlobalMember(expr.expression, "process") === "hrtime") ||
       lowerer.stdlibGlobalMember(expr, "Array") === "isArray" ||
       lowerer.stdlibGlobalMember(expr, "Array") === "from" ||
-      lowerer.stdlibGlobalMember(expr, "Reflect") === "ownKeys" ||
+      lowerer.stdlibGlobalMember(expr, "Reflect") !== null ||
       ["fromCharCode", "fromCodePoint"].includes(
         lowerer.stdlibGlobalMember(expr, "String") ?? "",
       ) ||
@@ -636,7 +647,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
       if (callable) add(member, lowerer.checkedBuiltinValue(callable));
     }
     for (const member of Object.keys(BUILTIN_MODULE_CONSTS[module] ?? {})) {
-      const worker = module === "worker_threads" ? lowerWorkerMetadata(member, loc) : null;
+      const worker = module === "worker_threads" ? lowerWorkerMetadata(lowerer, member, loc) : null;
       const value = builtinModuleConstOf(lowerer, module, member);
       if (worker) add(member, worker);
       else if (value !== undefined) add(member, builtinConstLit(value, loc));
@@ -650,7 +661,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
     }
     if (module === "worker_threads") {
       for (const member of ["isInternalThread", "parentPort", "workerData"])
-        add(member, lowerWorkerMetadata(member, loc)!);
+        add(member, lowerWorkerMetadata(lowerer, member, loc)!);
     }
     // A path family, like node:sea, is the whole of Node's object, so
     // another key is absent there too.

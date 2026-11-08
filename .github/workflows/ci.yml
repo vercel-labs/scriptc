@@ -77,8 +77,8 @@ jobs:
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
   # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
-  # every lane except macos and islands, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs
-  # run every lane.
+  # every lane except macos, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every
+  # lane.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -115,7 +115,7 @@ jobs:
         run: |
           every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"; }
           if [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
           elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -387,9 +387,12 @@ jobs:
   # package program under Node, as its default build, and with each package
   # forced into a Node island. It builds each program several times, so it
   # runs in a pull request only when the change touches island code or the
-  # programs it runs (scripts/ci-lanes.mjs), and in the nightly sweep and
-  # manual runs; not on pushes to main. Linux x64 only: known-failures.json
-  # pins that platform's results.
+  # programs it runs (scripts/ci-lanes.mjs). It also runs on every push to
+  # main, in the nightly sweep and in manual runs: its list pins what a
+  # program prints, and a change outside the island paths (the wording of a
+  # refusal, the uncaught report) moves entries without running the lane in
+  # its own pull request. Linux x64 only: known-failures.json pins that
+  # platform's results.
   island_conformance:
     needs: [validation_scope, lanes, native_linux]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.islands == 'true' }}
@@ -1031,8 +1034,9 @@ jobs:
     name: test (macOS arm64 LLVM artifacts, no clang, contracts)
     runs-on: macos-15
     # The no-clang object, helper parity, packaged helper and packed npm
-    # installation contracts: about 12 minutes, which used to run in front
-    # of shard 1's differential slice and took that job to 45-50 minutes.
+    # installation contracts (which also install the host libnode pack): about
+    # 12 minutes, which used to run in front of shard 1's differential slice
+    # and took that job to 45-50 minutes.
     # Its native CLI build alone can pass 30 minutes on a busy runner.
     timeout-minutes: 50
     steps:
@@ -1051,6 +1055,11 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      # The packed installation smoke below also installs the host's libnode
+      # pack, so the opt-in Node island story is exercised from an npm
+      # installation: the same build succeeds with the pack and fails with
+      # SC8005 without it.
+      - uses: ./.github/actions/libnode
       - name: No-clang assembly/object contract
         run: pnpm test packages/cli/test/native-output.test.ts
       - name: Helper diagnostics and object/link parity
@@ -1094,6 +1103,20 @@ jobs:
           node examples/native-object/link.mjs cc \
             "$RUNNER_TEMP/installed-link.json" "$RUNNER_TEMP/installed-program"
           test "$("$RUNNER_TEMP/installed-program")" = 'hello world'
+          # The libnode pack is opt-in: it publishes from its package
+          # directory, which the action fills in the workspace only when it
+          # restores the cached libnode build, and names in $SCRIPTC_LIBNODE
+          # otherwise. That other pack is CI's development fallback: it is
+          # never published and records none of the release identity the
+          # prepack verification and an installed pack's check read, so the
+          # smoke test packs it from a copy that drops that one script and
+          # completes the identity (its tarballs are checksum-verified
+          # against dev-pack.json as it assembles them).
+          if [ "$SCRIPTC_LIBNODE" != "$PWD/packages/libnode-darwin-arm64" ]; then
+            cp -R "$SCRIPTC_LIBNODE/." packages/libnode-darwin-arm64/
+          fi
+          node scripts/smoke-libnode-opt-in.mjs \
+            packages/cli-darwin-arm64 packages/libnode-darwin-arm64
 
   llvm_artifacts_macos_x64:
     needs: [validation_scope, lanes]

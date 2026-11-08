@@ -114,7 +114,7 @@ function chainRoot(expr: ts.Expression): ts.Identifier | null {
 
 /** Whether every call argument of the chain can be lowered once per arm. */
 function plainOperands(expr: ts.Expression, root: ts.Identifier): boolean {
-  for (let node = skipWrappers(expr); node !== root; ) {
+  for (let node = skipWrappers(expr); node !== root;) {
     if (ts.isCallExpression(node)) {
       if (!node.arguments.nodes.every((argument) => plainOperand(argument, root))) return false;
       node = skipWrappers(node.expression);
@@ -157,8 +157,7 @@ function readPosition(node: ts.Expression): boolean {
     parent = parent.parent;
   }
   if (parent === undefined) return true;
-  if (ts.isCallExpression(parent) || ts.isNewExpression(parent))
-    return parent.expression !== child;
+  if (ts.isCallExpression(parent) || ts.isNewExpression(parent)) return parent.expression !== child;
   if (ts.isTaggedTemplateExpression(parent)) return parent.tag !== child;
   if (ts.isBinaryExpression(parent) && parent.left === child)
     return !(
@@ -240,7 +239,13 @@ export function lowerNarrowedClassChain(lowerer: Lowerer, expr: ts.Expression): 
     } finally {
       state.dynamicArm.delete(symbol);
     }
-    const instance: IrExpr = { kind: "dynCheck", value, exact: true, type: narrowed, loc: value.loc };
+    const instance: IrExpr = {
+      kind: "dynCheck",
+      value,
+      exact: true,
+      type: narrowed,
+      loc: value.loc,
+    };
     const typed = lowerer.withExpressionOverride(root, instance, () =>
       tryLowerExpression(lowerer, expr),
     );

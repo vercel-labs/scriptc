@@ -4684,6 +4684,26 @@ export function isDynTypedRefType(t: IrType): t is Extract<IrType, { kind: "obje
   return t.kind === "object" && !RUNTIME_ERROR_CLASSES.has(t.className);
 }
 
+/** Whether a conversion to the untyped value can be a live reference
+ * (`dynFrom` with `liveRef`): the value is a record, an array, bytes or a
+ * class instance, or a union with such an arm. A union of scalars only has
+ * no object whose identity a reference could keep, so it converts by value;
+ * the validator rejects a live conversion of one. */
+export function isLiveDynRefType(
+  t: IrType,
+  getUnion: (unionId: string) => IrUnionDef | undefined,
+  seen = new Set<string>(),
+): boolean {
+  if (t.kind === "record" || t.kind === "array" || t.kind === "bytes" || isDynTypedRefType(t))
+    return true;
+  if (t.kind !== "union" || seen.has(t.unionId)) return false;
+  seen.add(t.unionId);
+  const def = getUnion(t.unionId);
+  if (!def) return false;
+  for (const arm of def.arms) if (isLiveDynRefType(arm, getUnion, seen)) return true;
+  return false;
+}
+
 /** Whether a class layout field is an ECMAScript own enumerable property.
  * `#private` slots and `%`-prefixed compiler storage exist only in the native
  * layout; TypeScript `private`/`protected` fields keep ordinary names and are

@@ -17,6 +17,7 @@ import {
   classDynViewSupported,
   isClassOwnEnumerableFieldName,
   isDynTypedRefType,
+  isLiveDynRefType,
   type IrExpr,
   STRING,
   type SrcLoc,
@@ -203,14 +204,18 @@ export function lowerJsonMethodCall(
       }
       // Keep the original containers live while the runtime visits them:
       // a toJSON callback can mutate a later field, and shared/cyclic
-      // references must retain their identities throughout traversal.
+      // references must retain their identities throughout traversal. A
+      // union of scalars only (`bigint | number`, `symbol | string`) holds
+      // no container: it converts by value.
       const boxed: IrExpr =
         value.type.kind === "dyn"
           ? value
           : {
               kind: "dynFrom",
               value,
-              ...(value.type.kind === "url" ? {} : { liveRef: true }),
+              ...(isLiveDynRefType(value.type, (id) => lowerer.unions.get(id))
+                ? { liveRef: true }
+                : {}),
               type: DYN,
               loc,
             };

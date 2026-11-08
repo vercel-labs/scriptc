@@ -405,6 +405,10 @@ export async function readSemanticLibraryCache(
       ),
     );
     if (semantic === null || semantic.changed.length === 0) return null;
+    // The locations of the cached IR are moved to the edited text below. A
+    // location in what a rewrite appended to a file (import-elision.ts) is
+    // past the end of the text that says where it moves: built again.
+    if (semantic.changed.some((change) => change.appended === true)) return null;
     const mod = deserializeV8(irJson) as IrModule;
     if (mod.irVersion !== IR_VERSION) return null;
     rebaseSourceLocations(mod, previousSources, semantic.currentSources);

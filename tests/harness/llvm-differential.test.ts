@@ -18,7 +18,7 @@ import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
 import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
 
 type TargetCpu = NonNullable<NonNullable<Parameters<typeof compile>[1]>["targetCpu"]>;
 
@@ -186,7 +186,7 @@ function wantsTscDecorators(file: string): boolean {
 }
 
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {

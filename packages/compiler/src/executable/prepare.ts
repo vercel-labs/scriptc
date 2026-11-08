@@ -3,7 +3,6 @@ import type { CompileFailure, CompileRequestOptions } from "../compile-types.js"
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
-  checkerPanicDiag,
   nodeIslandEntryMarkDiag,
   nodeIslandEntryPatchDiag,
   nodeIslandEntryReadDiag,
@@ -19,9 +18,9 @@ import {
   npmStaticRefusalDiag,
   nativePackageDiag,
   iceDiag,
-  isCheckerPanic,
   type ScrDiagnostic,
 } from "../diagnostics/diagnostic.js";
+import { compilerCrashDiag, isCompilerCrash } from "../diagnostics/crash-site.js";
 import type { IrModule, SrcLoc } from "../ir/ir.js";
 import { validateModule } from "../ir/validate.js";
 import { checkContracts } from "../contracts/check.js";
@@ -258,10 +257,11 @@ export function prepareExecutableModule(
       // The last-resort panic fence: an upstream tsgo panic that crossed a
       // checker call no statement/collection fence wrapped still becomes a
       // clean failed compile (anchored at the entry), never a crashed CLI.
-      if (!isCheckerPanic(e)) throw e;
-      return fail([
-        checkerPanicDiag(e.message.split("\n", 1)[0]!, { file: entryPath, start: 0, end: 0 }),
-      ]);
+      // An internal compiler error no fence reported takes the same exit.
+      // Both carry the innermost node the lowering had reached when one
+      // was noted (diagnostics/crash-site.ts); the entry is the last resort.
+      if (!isCompilerCrash(e)) throw e;
+      return fail([compilerCrashDiag(e, { file: entryPath, start: 0, end: 0 })]);
     }
     if (lowered.module === null) {
       // Packages whose own modules refused to lower run in Node islands
@@ -548,6 +548,7 @@ function moduleIslands(
             : 'marked "node" in scriptc.nodeIslands.modules'
           : describe(reason),
       decision: marked === null ? "auto" : "marked",
+      ...(patches.length > 0 ? { patchesBuiltin: true as const } : {}),
     });
   }
   for (const mark of unmatched.values())

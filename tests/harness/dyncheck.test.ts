@@ -2253,15 +2253,10 @@ try {
       `
       function fixed(a: string, digits?: number): string { return a + (digits === undefined ? "" : (1).toFixed(digits)); }
       function plain(a: string): string { return a + "!"; }
-      function count(...xs: number[]): number { return xs.length; }
       function narrowOf(f: (a: string) => string): (a: string) => string { return f; }
       function widen(f: (a: string) => string): (a: string, b: string) => string { return f; }
-      function one(f: (a: number) => number): (a: number) => number { return f; }
-      function two(f: (a: number) => number): (a: number, b: string) => number { return f; }
       console.log(widen(narrowOf(plain))("x", "y"), narrowOf(fixed)("x"));
       try { console.log(widen(narrowOf(fixed))("x", "y")); }
-      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
-      try { console.log(two(one(count))(1, "y")); }
       catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
     `,
     );
@@ -2270,7 +2265,6 @@ try {
       [
         "x! x",
         "true a '(string, number | undefined) => string' function invoked through a '(string, string) => string' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)",
-        "true a '(number[]) => number' function invoked through a '(number, string) => number' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)",
         "",
       ].join("\n"),
     );

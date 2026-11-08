@@ -180,6 +180,7 @@ import {
   libnodeRecord,
   nodeIslandPackHint,
 } from "./node-islands/libnode.js";
+import { planNodeIslandLoads } from "./node-islands/load-plan.js";
 import { placeNodeIslandModules, readNodeIslandModules } from "./node-islands/modules.js";
 import { finalizeDeferredIslands } from "./node-islands/snapshot.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
@@ -942,6 +943,7 @@ async function compileExecutableNative(
     ...(features.stdlibPrototypeValue ? { stdlibPrototypeValue: true } : {}),
     ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
+    ...(features.deferredFence ? { deferredFence: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
     ...(features.builtinMethodValue ? { builtinMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),
@@ -1340,8 +1342,15 @@ async function prepareExecutableInput(
   let nodeIslandModuleData: Uint8Array | undefined;
   const islandModules = mod.nodeIsland?.modules;
   if (islandModules !== undefined && outputKind !== "ir") {
+    // What Node's resolver answers for the tree, computed here once and
+    // shipped as one more of its files (node-islands/load-plan.ts).
+    const generated = planNodeIslandLoads(islandModules);
     if (outputKind === "exe" && opts.libnode === "beside") {
-      const problem = placeNodeIslandModules(islandModules, `${opts.outPath}.libnode/modules`);
+      const problem = placeNodeIslandModules(
+        islandModules,
+        `${opts.outPath}.libnode/modules`,
+        generated,
+      );
       if (problem !== null)
         return {
           ok: false,
@@ -1350,7 +1359,7 @@ async function prepareExecutableInput(
         };
       islandModules.location = `$ORIGIN/${basename(opts.outPath)}.libnode/modules`;
     } else {
-      const data = readNodeIslandModules(islandModules);
+      const data = readNodeIslandModules(islandModules, generated);
       if (typeof data === "string")
         return {
           ok: false,

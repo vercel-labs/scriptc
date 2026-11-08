@@ -3,6 +3,7 @@ import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isThisParameter } from "../call-signatures.js";
+import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { primitiveElement } from "../array-values.js";
 import { varRef } from "../../../ir/build.js";
 import { typeKey } from "../../type-mapper.js";
@@ -53,12 +54,47 @@ function arrayCallbackDeclaresRest(lowerer: Lowerer, call: ts.CallExpression): b
   });
 }
 
+/** Whether `callback` names a constant that holds, under a declared type
+ * with fewer parameters, a function that observes every argument (a rest
+ * parameter, or `arguments`): `const one: (v: object) => number = counted`.
+ * The constant holds an adapter that a native loop would call with the
+ * declared parameters, and that is the original function again once it is
+ * boxed, so the view calls the original with every argument the method
+ * passes, as it did when these lists were checked-dynamic arrays. A
+ * function that reaches the method any other way under such a type (a
+ * parameter, a field) is not known here; the store check refuses it
+ * (variadic-functions.ts). */
+function namesVariadicConstant(lowerer: Lowerer, callback: ts.Expression): boolean {
+  let node = callback;
+  for (let hops = 0; hops < 8 && ts.isIdentifier(node); hops++) {
+    let declarations: readonly ts.Node[];
+    try {
+      declarations = lowerer.resolveValueSymbol(node)?.declarations ?? [];
+    } catch {
+      return false;
+    }
+    const declaration = declarations.length === 1 ? declarations[0]! : undefined;
+    if (
+      declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 ||
+      declaration.initializer === undefined
+    )
+      return false;
+    node = declaration.initializer;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (callbackTakesEveryArgument(lowerer, node)) return true;
+  }
+  return false;
+}
+
 /** Whether the callback handed to an array method is one a native helper's
  * loop cannot call, so that a list which has a checked-dynamic view runs
  * the method there, where the callback is called as any function value is.
  * The loop calls a closure of fixed arity with typed arguments. It does not
  * take a callback with a rest parameter (above, and a function value whose
- * compiled type keeps one), a generator function (its results have no array
+ * compiled type keeps one), a constant that holds such a function under a
+ * type with fewer parameters (namesVariadicConstant), a generator function (its results have no array
  * element kind), a function held as `any`, or a standard-library function,
  * whose compiled value takes one input type (`Number` as a value takes a
  * string). A standard-library function is known by its type, whose call
@@ -82,6 +118,7 @@ export function arrayCallbackNeedsDynamicView(lowerer: Lowerer, call: ts.CallExp
     lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(callback) ?? undefined)
   )
     return false;
+  if (namesVariadicConstant(lowerer, callback)) return true;
   const checkerType = lowerer.typeOf(callback);
   if ((checkerType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
   if (

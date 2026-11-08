@@ -1,0 +1,34 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Module '\"shapes-kit/cli\"' has no exported member 'CliCommand'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
+    "start": 259,
+    "end": 269
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"shapes-kit/cli\"' has no exported member 'commands'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
+    "start": 271,
+    "end": 279
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"shapes-kit/cli\"' has no exported member 'run'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
+    "start": 281,
+    "end": 284
+   }
+  }
+ ]
+}

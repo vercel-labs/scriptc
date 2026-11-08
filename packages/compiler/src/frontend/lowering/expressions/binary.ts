@@ -72,7 +72,11 @@ import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { errorToStringCall } from "../error-methods.js";
-import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
+import {
+  classToStringConversion,
+  classUnionToString,
+  type StringConversionHint,
+} from "../class-to-primitive.js";
 import {
   genericDeclarationBehindValue,
   noteDynamicIdentityComparison,
@@ -754,11 +758,18 @@ export function lowerNullishPair(
   // signature would lose the callback's result shape.
   if (present?.kind === "func" && present.rest !== true) {
     const raw = lowerer.lowerExpr(expr.right);
+    // `present` is the optional callback's own declared type, so the
+    // default is called with that type's parameters (function-adapters.ts,
+    // THE RULE).
+    const rawType = raw.type;
     if (
-      raw.type.kind === "func" &&
-      (typeEquals(raw.type, present) || cleanFuncAdaptable(lowerer, raw.type, present))
+      rawType.kind === "func" &&
+      (typeEquals(rawType, present) ||
+        lowerer.withDeclaredCallList(() => cleanFuncAdaptable(lowerer, rawType, present)))
     ) {
-      const right = lowerer.coerceInto(expr.right, raw, present);
+      const right = lowerer.withDeclaredCallList(() =>
+        lowerer.coerceInto(expr.right, raw, present),
+      );
       lowerer.nullishFuncResults.add(expr);
       return { kind: "nullish", left, right, type: present, loc };
     }
@@ -879,12 +890,17 @@ function lowerConstructorGlobalTypeofTest(
   return null;
 }
 
-export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+export function ensureString(
+  lowerer: Lowerer,
+  e: IrExpr,
+  node: ts.Node,
+  hint: StringConversionHint = "string",
+): IrExpr {
   // A primitive deferred-init field converts its slot, so an unassigned one
   // reads "undefined" as in Node instead of failing the checked read.
   if (e.type.kind === "string" || e.type.kind === "f64" || e.type.kind === "bool") {
     const slot = lowerer.deferredFieldSlot(e);
-    if (slot) return ensureString(lowerer, slot, node);
+    if (slot) return ensureString(lowerer, slot, node, hint);
   }
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
@@ -1001,7 +1017,12 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
           node,
         );
     }
-    const viaClasses = classUnionToString(lowerer, e, "string", node);
+    // A union with a record or array arm reaches here only when every rule
+    // above declined; its arms convert under the operator's own hint (`+`
+    // passes "default" through concatOperand).
+    const plainArms =
+      def?.arms.some((arm) => arm.kind === "record" || arm.kind === "array") === true;
+    const viaClasses = classUnionToString(lowerer, e, plainArms ? hint : "string", node, true);
     if (viaClasses) return viaClasses;
     lowerer.unsupported(
       "SC1090",

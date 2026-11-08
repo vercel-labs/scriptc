@@ -1,3 +1,4 @@
+import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
@@ -518,14 +519,22 @@ function lowerJsonCallback(
   role: "replacer" | "reviver",
 ): IrExpr {
   const callback = lowerer.lowerExpr(node);
-  if (callback.type.kind === "dyn") return callback;
+  // Node passes a reviver three arguments: the key, the value and the
+  // source context, which has no native form. A reviver that names two
+  // parameters cannot tell; one that takes every argument can, whatever
+  // type its value arrives as (held untyped by a constant, or lowered
+  // against the two-parameter signature), so it takes the refusal below.
+  const context = role === "reviver" && callbackTakesEveryArgument(lowerer, node);
+  if (callback.type.kind === "dyn" && !context) return callback;
   if (
+    !context &&
     role === "replacer" &&
     callback.type.kind === "array" &&
     lowerer.dynConvertible(callback.type)
   )
     return lowerer.coerceToExpected(callback, DYN);
   if (
+    !context &&
     callback.type.kind === "union" &&
     lowerer.dynConvertible(callback.type) &&
     lowerer.unions
@@ -541,6 +550,7 @@ function lowerJsonCallback(
   )
     return lowerer.coerceToExpected(callback, DYN);
   if (
+    !context &&
     callback.type.kind === "func" &&
     callback.type.params.length <= 2 &&
     (role !== "reviver" || (!callback.type.rest && !callback.type.argumentsAll)) &&

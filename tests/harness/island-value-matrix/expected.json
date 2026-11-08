@@ -1739,48 +1739,28 @@
   "clo-i2n/U.json": "wrong"
  },
  "island-class.i": {
-  "n2i/N.read@isl.ctor": "refused:SC2020",
-  "i2n/cb.ctor": "refused:SC2020",
-  "i2n/N.read.ctor": "refused:SC2020",
   "i2n/U.forin": "unsupported",
-  "i2n/N.read@isl.ctor": "refused:SC2020",
-  "n2i2n/N.read.ctor": "refused:SC2020",
   "n2i2n/U.forin": "unsupported",
-  "n2i2n/P.read@back.ctor": "refused:SC2020",
-  "n2i2n/N.read@isl.ctor": "refused:SC2020",
-  "clo-n2i/cb.ctor": "refused:SC2020",
-  "clo-i2n/N.read.ctor": "refused:SC2020",
   "clo-i2n/U.forin": "unsupported"
  },
  "island-class.u": {
-  "n2i/P.read@isl.ctor": "refused:SC2020",
   "i2n/U.forin": "unsupported",
-  "i2n/N.cast.read.ctor": "refused:SC2020",
-  "i2n/N.cast.read@isl.ctor": "refused:SC2020",
   "n2i2n/U.forin": "unsupported",
   "clo-n2i/N.callback": "forin=unsupported",
   "clo-i2n/U.forin": "unsupported"
  },
  "island-class.w": {
-  "n2i/P.read@isl.ctor": "refused:SC2020",
   "i2n/U.forin": "unsupported",
   "n2i2n/U.forin": "unsupported",
-  "n2i2n/P.read@back.ctor": "refused:SC2020",
   "clo-i2n/U.forin": "unsupported"
  },
  "island-error-class.i": {
-  "i2n/cb.ctor": "refused:SC2020",
-  "i2n/N.read.ctor": "refused:SC2020",
   "i2n/U.forin": "unsupported",
-  "n2i2n/N.read.ctor": "refused:SC2020",
   "n2i2n/U.forin": "unsupported",
-  "clo-n2i/cb.ctor": "refused:SC2020",
-  "clo-i2n/N.read.ctor": "refused:SC2020",
   "clo-i2n/U.forin": "unsupported"
  },
  "island-error-class.u": {
   "i2n/U.forin": "unsupported",
-  "i2n/N.cast.read.ctor": "refused:SC2020",
   "n2i2n/U.forin": "unsupported",
   "clo-n2i/N.callback": "clone=wrong,forin=wrong,json=wrong,keys=wrong",
   "clo-i2n/U.forin": "unsupported"
@@ -1796,21 +1776,12 @@
   "clo-i2n/S.widen": "exit"
  },
  "island-subclass.i": {
-  "n2i/N.read@isl.ctor": "refused:SC2020",
-  "n2i2n/N.read.ctor": "refused:SC2020",
-  "n2i2n/U.forin": "unsupported",
-  "n2i2n/P.read@back.ctor": "refused:SC2020",
-  "n2i2n/N.read@isl.ctor": "refused:SC2020"
+  "n2i2n/U.forin": "unsupported"
  },
  "island-subclass.p": {
-  "n2i/N.read@isl.ctor": "refused:SC2020",
-  "n2i2n/N.read.ctor": "refused:SC2020",
-  "n2i2n/U.forin": "unsupported",
-  "n2i2n/P.read@back.ctor": "refused:SC2020",
-  "n2i2n/N.read@isl.ctor": "refused:SC2020"
+  "n2i2n/U.forin": "unsupported"
  },
  "island-subclass.u": {
-  "n2i/P.read@isl.ctor": "refused:SC2020",
   "n2i2n/U.forin": "unsupported"
  },
  "iter-array.control.-": {

@@ -768,6 +768,38 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(module()).hostAbsentGlobals).toBe(false);
   });
 
+  test("links the stderr reporter for a fence that stands for a deferred diagnostic", () => {
+    // A runtimeFence whose message carries its diagnostic's tag throws
+    // through scr_deferred_fence.c; the traps the lowering writes itself
+    // (no tag) leave the program without the unit.
+    const fenced = (message: string, file = "/app/a.js") => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "runtimeFence",
+        code: "SC2020",
+        message,
+        loc: { ...loc, file },
+      });
+      return moduleRuntimeFeatures(mod).deferredFence;
+    };
+    expect(fenced("'unescape' has no scriptc lowering yet [SC2020 at /app/a.js:4]")).toBe(true);
+    expect(fenced("'unescape' has no scriptc lowering yet [SC2020]")).toBe(true);
+    expect(fenced("reading 'x' through an untyped value is not supported")).toBe(false);
+    // A TypeScript source's fences keep the plain throw.
+    expect(fenced("an undefined index [SC2020 at /app/a.ts:4]", "/app/a.ts")).toBe(false);
+    expect(moduleRuntimeFeatures(module()).deferredFence).toBe(false);
+    // So do a library's: its archive carries no reporter.
+    const library = module();
+    library.lib = { profileName: "p" } as NonNullable<IrModule["lib"]>;
+    library.functions[0]!.body.push({
+      kind: "runtimeFence",
+      code: "SC2020",
+      message: "'unescape' has no scriptc lowering yet [SC2020 at /app/a.js:4]",
+      loc: { ...loc, file: "/app/a.js" },
+    });
+    expect(moduleRuntimeFeatures(library).deferredFence).toBe(false);
+  });
+
   test("gates the BigInt typed-array element kinds on the constructor name", () => {
     // The two BigInt kinds have no double-backed element, so their code lives
     // in the JavaScript object model build (t262-da §J); every other typed

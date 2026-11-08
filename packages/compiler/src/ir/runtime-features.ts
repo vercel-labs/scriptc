@@ -1440,6 +1440,9 @@ const RUNTIME_FEATURE_RULES = {
    * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
    * the global object, or `… in globalThis` (host-globals.ts). */
   hostAbsentGlobals: rule({ fns: ["global.hostAbsent", "dyn.globalHas"] }),
+  /** `fn.constructor = value` where the checker sees a function: the write
+   * into the function's own property table (scr_dyn_fn_own.c). */
+  functionOwnWrite: rule({ fns: ["dyn.fnOwnSet"] }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -2050,6 +2053,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdlibPrototypeValue: false,
     dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
+    functionOwnWrite: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,

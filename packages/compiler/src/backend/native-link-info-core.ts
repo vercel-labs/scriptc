@@ -200,6 +200,9 @@ export interface NativeLinkFeatures {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c; absent (false) otherwise. */
   hostAbsentGlobals?: boolean;
+  /** `fn.constructor = value` on a function value links scr_dyn_fn_own.c;
+   * absent (false) otherwise. */
+  functionOwnWrite?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

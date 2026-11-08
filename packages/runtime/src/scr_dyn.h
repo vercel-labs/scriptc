@@ -2902,4 +2902,12 @@ void scr_record_marked_freeze(void *record);
 void *scr_dyn_record_view_kept(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
                                const char *key, size_t key_len, void *(*alloc)(void));
 
+/* `fn.constructor = value` where the compiler sees a function receiver
+ * (dyn.fnOwnSet): the write into the function's own property table, past
+ * the refusal scr_dyn_key_set keeps for a receiver known only at run time
+ * (scr_dyn_fn_own.c, linked only into programs with such a write).
+ * Declared last: a line added above would move every later line of this
+ * header in the units that include it. */
+void scr_dyn_fn_own_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+
 #endif /* SCR_DYN_H */

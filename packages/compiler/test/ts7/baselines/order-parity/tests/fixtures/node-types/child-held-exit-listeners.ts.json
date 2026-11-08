@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/child-held-exit-listeners.ts"
+ ],
+ "diags": []
+}

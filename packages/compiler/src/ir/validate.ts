@@ -5458,11 +5458,14 @@ function validateFunction(
         const p = cbT.params[0]!;
         if (e.fn === "child.onExit" || e.fn === "child.onClose") {
           const def = p.kind === "union" ? unions.get(p.unionId) : undefined;
+          // A bare `number` code is a held listener's declared type: the
+          // adapter checks the null Node passes for a signal's end.
           ok =
-            def !== undefined &&
-            def.arms.length === 2 &&
-            def.arms[0]!.kind === "f64" &&
-            def.arms[1]!.kind === "nullT";
+            p.kind === "f64" ||
+            (def !== undefined &&
+              def.arms.length === 2 &&
+              def.arms[0]!.kind === "f64" &&
+              def.arms[1]!.kind === "nullT");
           if (ok && cbT.params.length === 2) {
             const s = cbT.params[1]!;
             const sdef = s.kind === "union" ? unions.get(s.unionId) : undefined;

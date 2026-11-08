@@ -6516,6 +6516,7 @@ export class Lowerer {
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
       runtimeClassValue: (type) => runtimeClassValueOfType(this, type),
+      adoptedLayout: (type) => this.facts.layoutAdoptions().layoutOf(type),
       localClassValue: (type) =>
         this.instanceResultClass !== null && this.instanceResultClass.declared === type.id
           ? (noteScopeSensitiveMapping(), this.instanceResultClass.value)
@@ -6700,6 +6701,16 @@ export class Lowerer {
 
   registerBuiltinErrorClasses(): void {
     return registerBuiltinErrorClasses(this);
+  }
+
+  /** Whether `source` is the literal type of a constant table that takes a
+   * structural type's layout (layout-adoption.ts) and `target` has that
+   * layout: a value of `source` enters a `target` slot as itself. */
+  adoptsLayoutOf(source: ts.Type, target: ts.Type): boolean {
+    if (this.facts.layoutAdoptions().layoutOf(source) === undefined) return false;
+    const from = this.mapTypeOf(source);
+    const to = this.mapTypeOf(target);
+    return from !== null && to !== null && typeEquals(from, to);
   }
 
   classImplementedProtocol(type: ts.Type): boolean {

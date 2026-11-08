@@ -1628,6 +1628,10 @@ export interface TypeMapperCtx {
   /** Live class protocols retain identity and receiver dispatch rather than
    * copying an instance into an unrelated record layout. */
   classImplementedProtocol?: (type: ts.Type) => boolean;
+  /** The structural type whose record layout values of `type` take, for
+   * the literal type of a constant table the program reads through that
+   * one type (layout-adoption.ts). Asked only for object-literal types. */
+  adoptedLayout?: (type: ts.Type) => ts.Type | undefined;
   /** MIXIN instance INTERSECTIONS (`Tagged.C & Derived` — values built
    * through a mixin result): resolved by chain structure to the unique
    * pinned instantiation they describe; null when ambiguous or when no
@@ -2292,6 +2296,20 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return BOOL;
   }
   if (ctx.foreignType !== undefined && ctx.foreignType(type)) return FOREIGN;
+  // A constant table built in the layout of the structural type the program
+  // reads it through: its literal type maps to that type's record, so no
+  // crossing converts and the table stays one object.
+  if (
+    ctx.adoptedLayout !== undefined &&
+    (flags & ts.TypeFlags.Object) !== 0 &&
+    ((type.getSymbol()?.flags ?? 0) & ts.SymbolFlags.ObjectLiteral) !== 0
+  ) {
+    const adopted = ctx.adoptedLayout(type);
+    if (adopted !== undefined) {
+      const layout = mapType(adopted, ctx);
+      if (layout?.kind === "record") return layout;
+    }
+  }
   const localValue = ctx.localClassValue?.(type);
   if (localValue) {
     contextResolutions++;

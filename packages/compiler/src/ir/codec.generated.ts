@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "55ff1cab7c8d559b";
+export const IR_CODEC_LAYOUT = "608f8e3b136f13e7";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -115,7 +115,7 @@ const KEYS87: readonly string[] = ["kind","obj","shapeId","key","value","overflo
 const KEYS88: readonly string[] = ["kind","obj","shapeId","field","value","loc"];
 const KEYS89: readonly string[] = ["kind","localId","loc"];
 const KEYS90: readonly string[] = ["kind","value","awaited","loc"];
-const KEYS91: readonly string[] = ["kind","code","message","loc"];
+const KEYS91: readonly string[] = ["kind","code","message","guarded","loc"];
 const KEYS92: readonly string[] = ["kind","disc","cases","labels","loc"];
 const KEYS93: readonly string[] = ["kind","value","loc"];
 const KEYS94: readonly string[] = ["kind","tryBody","catchBody","catchLocalId","dropFinallyErrors","finallyBody","suppressFinallyErrors","loc"];
@@ -2212,6 +2212,11 @@ function encIrStmt(w: IrWriter, v: IrStmt): void {
       w.keys(Object.keys(v), KEYS91);
       w.str(v.code);
       w.str(v.message);
+      if (v.guarded === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.guarded);
+      }
       encSrcLoc(w, v.loc);
       return;
     }
@@ -2464,8 +2469,9 @@ function decIrStmt(r: IrReader): IrStmt {
     case 21: {
       const f0 = r.str();
       const f1 = r.str();
-      const f2 = decSrcLoc(r);
-      const o: Extract<IrStmt, { kind: "runtimeFence" }> = { kind: "runtimeFence", code: f0, message: f1, loc: f2 };
+      const f2 = r.tag(2, "IrFunction.body[]<runtimeFence>.guarded") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrStmt, { kind: "runtimeFence" }>["guarded"]>);
+      const f3 = decSrcLoc(r);
+      const o: Extract<IrStmt, { kind: "runtimeFence" }> = { kind: "runtimeFence", code: f0, message: f1, ...(f2 !== undefined ? { guarded: f2 } : {}), loc: f3 };
       return o;
     }
     case 22: {

@@ -1,5 +1,10 @@
 import { expect, test } from "vitest";
-import { isDeferredDiagnosticFence } from "./deferred-fence.js";
+import {
+  guardedDeferredFences,
+  isDeferredDiagnosticFence,
+  markGuardedDeferredFences,
+} from "./deferred-fence.js";
+import type { IrModule, IrStmt, SrcLoc } from "./ir.js";
 
 test("a message that ends with its diagnostic's tag is a deferred diagnostic", () => {
   expect(
@@ -46,4 +51,64 @@ test("a fence in a TypeScript source keeps the plain throw", () => {
       "/app/a.ts",
     ),
   ).toBe(false);
+});
+
+const at = (file: string): SrcLoc => ({ file, start: 0, end: 1 });
+const fence = (message: string, file = "/app/a.js"): IrStmt & { kind: "runtimeFence" } => ({
+  kind: "runtimeFence",
+  code: "SC2020",
+  message,
+  loc: at(file),
+});
+
+test("marking reaches a deferred fence through nested statements and leaves the others", () => {
+  const deferred = fence("'x' has no lowering [SC2020 at /app/a.js:4]");
+  const nested = fence("'y' has no lowering [SC2020 at /app/a.js:6]");
+  const trap = fence("unreachable: a non-void function completed without returning");
+  const typed = fence("a typed-array write [SC2020 at /app/a.ts:9]", "/app/a.ts");
+  const body: IrStmt[] = [
+    deferred,
+    {
+      kind: "tryCatch",
+      tryBody: [nested],
+      catchBody: null,
+      catchLocalId: null,
+      finallyBody: [],
+      loc: at("/app/a.js"),
+    },
+    trap,
+    typed,
+  ];
+  markGuardedDeferredFences(body);
+  expect([deferred.guarded, nested.guarded, trap.guarded, typed.guarded]).toEqual([
+    true,
+    true,
+    undefined,
+    undefined,
+  ]);
+});
+
+test("a module lists each guarded site once, with the refusal and without its tag", () => {
+  const guarded = fence("'x' has no lowering [SC2020 at /app/a.js:4]");
+  guarded.guarded = true;
+  const again = { ...guarded };
+  const reported = fence("'y' has no lowering [SC2020 at /app/a.js:6]");
+  const mod = {
+    sourceFile: "/app/a.js",
+    functions: [
+      {
+        name: "main",
+        params: [],
+        returnType: { kind: "void" },
+        locals: [],
+        body: [guarded, again, reported],
+        loc: at("/app/a.js"),
+      },
+    ],
+    entry: "main",
+  } as unknown as IrModule;
+  expect(guardedDeferredFences(mod)).toEqual([
+    { code: "SC2020", refusal: "'x' has no lowering", loc: at("/app/a.js") },
+  ]);
+  expect(guardedDeferredFences({ ...mod, lib: {} } as unknown as IrModule)).toEqual([]);
 });

@@ -15573,6 +15573,18 @@ export class Lowerer {
         );
         throw new PoisonError();
       }
+      // The empty literal of no element type (`[]` where no array type
+      // reaches it: a default against an `any[]`, the initializer of one)
+      // is the dynamic empty array in a checked-dynamic slot. Boxed live it
+      // would be an array of nothing, which no later `push` could enter.
+      // The literal is fresh, so no typed holder reads it back.
+      if (
+        expr.kind === "arrayLit" &&
+        expr.elems.length === 0 &&
+        expr.type.kind === "array" &&
+        this.unitOnlyElem(expr.type.elem)
+      )
+        return { kind: "dynArrLit", elems: [], type: DYN, loc: expr.loc };
       if (expr.kind === "unitLit" || this.dynConvertible(expr.type)) {
         // Records and arrays keep their identity as untyped values, including
         // when they arrive through a union, so `unknown` views, weak

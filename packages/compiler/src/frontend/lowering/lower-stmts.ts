@@ -77,7 +77,10 @@ import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { lowerDeclaredMemberLiteral, viewTargetOf } from "./view-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
-import { nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
+import {
+  nullishEmptyPatternSource,
+  nullishEmptyTuplePatternSource,
+} from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
 import { notIterableSpelling } from "./iterable-spelling.js";
@@ -359,6 +362,7 @@ import {
   isUnitOnlyTsType,
   jsOpenObjectType,
   unitOnlyUnion,
+  isAnyArrayType,
 } from "../type-mapper.js";
 import { canonicalBuiltinModule } from "../builtin-modules.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
@@ -2819,6 +2823,7 @@ export function lowerDestructuringDecl(
   let init =
     importMetaBindingSource(lowerer, decl.name, decl.initializer) ??
     nullishEmptyPatternSource(lowerer, decl.name, decl.initializer) ??
+    nullishEmptyTuplePatternSource(lowerer, decl.name, decl.initializer) ??
     lowerer.lowerExpr(decl.initializer);
   // `const { table } = console`: each element names a console key as a
   // value, which only the output members are (console-records.ts).
@@ -7273,16 +7278,18 @@ export function lowerVarDecl(
         ? lowerer.lowerExprExpecting(decl.initializer, DYN)
         : immediatelyGuardedAbsenceProbe(lowerer, decl)
           ? (lowerAbsenceProbe(lowerer, decl.initializer) ?? lowerer.lowerExpr(decl.initializer))
-          : lowerVariableInitializer(
-              lowerer,
-              decl.initializer,
-              decl.type &&
-                (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Never) === 0 &&
-                !annotatedKeepsLayoutTarget(decl)
-                ? annotatedInitializerTarget(lowerer, decl.name)
-                : undefined,
-              bindingSlot(lowerer, decl),
-            );
+          : emptyAnyArrayInitializer(lowerer, decl)
+            ? lowerer.lowerExprExpecting(decl.initializer, DYN)
+            : lowerVariableInitializer(
+                lowerer,
+                decl.initializer,
+                decl.type &&
+                  (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Never) === 0 &&
+                  !annotatedKeepsLayoutTarget(decl)
+                  ? annotatedInitializerTarget(lowerer, decl.name)
+                  : undefined,
+                bindingSlot(lowerer, decl),
+              );
   } catch (e) {
     if (e instanceof PoisonError) {
       const salvaged = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
@@ -8121,6 +8128,21 @@ function bindingSlot(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | u
 /** The destination an annotated declaration builds its initializer for:
  * the declared type, or the record layout the optional-read analysis
  * widened for fields a missing element can leave undefined. */
+/** `const list: any[] = []`: the annotation has no mapping of its own and
+ * the literal no element type, so the binding took the literal's
+ * element-less array and every later `push` failed. The declared type is
+ * what the program stores, as for `unknown[]`: the binding holds the
+ * dynamic empty array. A filled literal keeps its own element type. */
+function emptyAnyArrayInitializer(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (!decl.type || !decl.initializer || isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
+  const literal = withoutParentheses(decl.initializer);
+  return (
+    ts.isArrayLiteralExpression(literal) &&
+    literal.elements.nodes.length === 0 &&
+    isAnyArrayType(lowerer.typeOf(decl.name), lowerer.checker)
+  );
+}
+
 function annotatedInitializerTarget(lowerer: Lowerer, name: ts.Identifier): IrType | undefined {
   const declared = lowerer.mapTypeOf(lowerer.typeOf(name));
   if (!declared) return undefined;

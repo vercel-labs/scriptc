@@ -1,4 +1,12 @@
-import { BOOL, type IrExpr, type IrType, isUnitType, sortArms } from "../../ir/ir.js";
+import {
+  BOOL,
+  type IrExpr,
+  type IrStmt,
+  type IrType,
+  UNDEFINED_T,
+  isUnitType,
+  sortArms,
+} from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
@@ -129,4 +137,172 @@ export function nullishEmptyPatternSource(
     type: resultType,
     loc,
   };
+}
+
+/** `const [a, b] = table[key] ?? []` (also `|| []`, `cond ? pair : []` and
+ * `cond ? [] : pair`) where the other operand is a tuple. The pattern
+ * destructures either the tuple or an empty array, every position of which
+ * reads undefined, so the checker types the bindings `T | undefined` and
+ * the empty literal, from the pattern, as a tuple of undefined. The literal
+ * has no element type of its own to build with: the source lowers to one
+ * fresh tuple of the pattern's positions, each holding the tuple's element
+ * or undefined, and the ordinary tuple pattern binds it (defaults in the
+ * pattern apply where a position is undefined, as in Node). The tuple
+ * operand is evaluated once and only its positions are read, so the fresh
+ * tuple cannot be told from the operand.
+ *
+ * Null (the caller keeps its current lowering) for JavaScript files, a
+ * pattern with a rest element or a nested pattern, other initializer forms,
+ * and an operand that is not one tuple beside nullish arms: an array
+ * operand already takes the empty literal as its own array type. */
+export function nullishEmptyTuplePatternSource(
+  lowerer: Lowerer,
+  pattern: ts.BindingName,
+  initializer: ts.Expression,
+): IrExpr | null {
+  if (!ts.isArrayBindingPattern(pattern)) return null;
+  if (isJsSourceFile(ts.getSourceFileOfNode(initializer))) return null;
+  for (const element of pattern.elements.nodes) {
+    // A hole binds nothing.
+    if (
+      ts.isOmittedExpression(element) ||
+      (element.name as ts.BindingName | undefined) === undefined
+    )
+      continue;
+    if (element.dotDotDotToken !== undefined || !ts.isIdentifier(element.name)) return null;
+  }
+  const emptyLiteral = (node: ts.Expression): boolean => {
+    const literal = withoutParentheses(node);
+    return ts.isArrayLiteralExpression(literal) && literal.elements.nodes.length === 0;
+  };
+  const init = withoutParentheses(initializer);
+  let operand: ts.Expression;
+  let condition: { node: ts.Expression; emptyWhen: boolean } | null = null;
+  if (
+    ts.isBinaryExpression(init) &&
+    (init.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      init.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
+    emptyLiteral(init.right)
+  ) {
+    operand = init.left;
+  } else if (ts.isConditionalExpression(init) && emptyLiteral(init.whenFalse)) {
+    operand = init.whenTrue;
+    condition = { node: init.condition, emptyWhen: false };
+  } else if (ts.isConditionalExpression(init) && emptyLiteral(init.whenTrue)) {
+    operand = init.whenFalse;
+    condition = { node: init.condition, emptyWhen: true };
+  } else return null;
+  const loc = locOf(init);
+  // Decide from the checker's view of the operand before lowering it once.
+  const declared = lowerer.mapTypeOf(lowerer.checker.getNonNullableType(lowerer.typeOf(operand)));
+  if (declared?.kind !== "record") return null;
+  const tuple = lowerer.shapes.get(declared.shapeId);
+  if (!tuple?.tuple || pattern.elements.nodes.length > tuple.fields.length) return null;
+  const positions = tuple.fields.map((_, index) => {
+    const field = tuple.fields.find((candidate) => candidate.name === String(index));
+    return field === undefined ? null : lowerer.runtimeOptionalType(field.type);
+  });
+  if (positions.some((type) => type === null)) return null;
+  const padded: IrType & { kind: "record" } = {
+    kind: "record",
+    shapeId: lowerer.shapes.intern(
+      positions.map((type, index) => ({ name: String(index), type: type! })),
+      true,
+    ),
+  };
+  const undefinedAt = (index: number): IrExpr =>
+    lowerer.coerceToExpected(
+      { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      positions[index]!,
+    );
+  const emptyTuple = (): IrExpr => ({
+    kind: "recordLit",
+    fields: positions.map((_, index) => ({ name: String(index), value: undefinedAt(index) })),
+    type: padded,
+    loc,
+  });
+  const filledTuple = (present: IrExpr): IrExpr => ({
+    kind: "recordLit",
+    fields: positions.map((type, index) => ({
+      name: String(index),
+      value: lowerer.coerceToExpected(
+        {
+          kind: "recordGet",
+          obj: present,
+          shapeId: declared.shapeId,
+          field: String(index),
+          type: tuple.fields.find((candidate) => candidate.name === String(index))!.type,
+          loc,
+        },
+        type!,
+      ),
+    })),
+    type: padded,
+    loc,
+  });
+  const cond = condition === null ? null : lowerer.lowerCondition(condition.node);
+  const left = lowerer.lowerExpr(operand);
+  const stmts: IrStmt[] = [];
+  const tmp = lowerer.declareHiddenLocal("%nullishEmptyTuple", left.type);
+  const ref: IrExpr = { kind: "varRef", localId: tmp.id, type: left.type, loc };
+  let source: IrExpr;
+  if (left.type.kind === "record" && left.type.shapeId === declared.shapeId) {
+    // The stored operand is never nullish: its positions, as they are.
+    source = filledTuple(ref);
+  } else if (left.type.kind === "union") {
+    const sourceId = left.type.unionId;
+    const arms = lowerer.unions.get(sourceId)?.arms ?? [];
+    const tag = arms.findIndex((arm) => arm.kind === "record" && arm.shapeId === declared.shapeId);
+    if (tag < 0 || !arms.every((arm, index) => index === tag || isUnitType(arm))) {
+      lowerer.unsupported(
+        "SC1031",
+        init,
+        "destructuring a tuple or `[]` where the stored tuple operand is not one tuple or nullish (narrow first)",
+      );
+    }
+    source = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: sourceId,
+        tag,
+        negated: false,
+        value: ref,
+        type: BOOL,
+        loc,
+      },
+      then: filledTuple({
+        kind: "unionNarrow",
+        unionId: sourceId,
+        tag,
+        value: ref,
+        type: declared,
+        loc,
+      }),
+      else_: emptyTuple(),
+      type: padded,
+      loc,
+    };
+  } else {
+    lowerer.unsupported(
+      "SC1031",
+      init,
+      "destructuring a tuple or `[]` where the stored tuple operand is not one tuple or nullish (narrow first)",
+    );
+  }
+  if (cond === null) {
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: left, loc });
+    return { kind: "seqExpr", stmts, result: source, type: padded, loc };
+  }
+  // A conditional evaluates its tuple arm only when the condition picks it.
+  const picked: IrExpr = {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: tmp.id, init: left, loc }],
+    result: source,
+    type: padded,
+    loc,
+  };
+  return condition!.emptyWhen
+    ? { kind: "ternary", cond, then: emptyTuple(), else_: picked, type: padded, loc }
+    : { kind: "ternary", cond, then: picked, else_: emptyTuple(), type: padded, loc };
 }

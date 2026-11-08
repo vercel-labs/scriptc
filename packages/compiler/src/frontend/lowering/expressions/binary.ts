@@ -96,7 +96,7 @@ import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
-import { emptyArrayLiteralArm } from "./array-literals.js";
+import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
 import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
@@ -499,7 +499,9 @@ export function lowerNullishPair(
     // Both sides live in the checked-dynamic tree — the right converts through
     // the usual boundary and evaluates lazily in its branch; a default
     // with no dyn representation keeps the fence.
-    const right = lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN);
+    const right =
+      dynamicArrayOperand(lowerer, expr.right, expr) ??
+      lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN);
     if (right.type.kind !== "dyn") {
       lowerer.unsupported(
         "SC1100",
@@ -3233,7 +3235,9 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   }
   if (left.kind === "unitLit" && op === ts.SyntaxKind.AmpersandAmpersandToken) return left;
   if (op === ts.SyntaxKind.BarBarToken && REF_TRUTHY_KINDS.has(left.type.kind)) return left;
-  let right = lowerer.lowerExpr(expr.right);
+  let right =
+    (left.type.kind === "dyn" ? dynamicArrayOperand(lowerer, expr.right, expr) : null) ??
+    lowerer.lowerExpr(expr.right);
   // `logger || console` over an optional record: console flows into the
   // record the left operand holds (console-records.ts), so the pair stays
   // typed, as the checker's own result type is.

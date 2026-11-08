@@ -38,6 +38,7 @@ import {
   isOptionalProcessVersionsRead,
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
+import { dynamicArrayOperand } from "./array-literals.js";
 import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
@@ -205,6 +206,12 @@ export function lowerTernary(
       }
       const lit = armLiteral(e);
       if (lit && ctxArray) return lowerer.lowerArrayLiteral(lit, ctxArray);
+      // An arm of a conditional whose own value is the checked-dynamic
+      // array (`list ? list : []` over an `unknown[]`): the dynamic array.
+      if (lit) {
+        const dynamic = dynamicArrayOperand(lowerer, lit, expr);
+        if (dynamic) return dynamic;
+      }
       if (lit && siblingType?.kind === "array") {
         if (emptyUntypedArrayArm(e)) {
           return { kind: "arrayLit", elems: [], type: siblingType, loc: locOf(lit) };

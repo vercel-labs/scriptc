@@ -20621,6 +20621,13 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     bool out;
     if (SCR_HP(v) && scr_dyn_handle_props_hooks->has_own(v, key, false, &out)) return out;
 #endif
+    /* An island object: Node answers, by its own intrinsic. */
+    if (scr_ni_dyn_handle(v)) {
+      ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+      int found = scr_ni_dyn_ops->has_own((ScrDyn *)v, k, 0);
+      scr_dyn_release(k);
+      return found == 1;
+    }
     const char *m = "Own-property checks on this checked-dynamic kind are not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, m, strlen(m), "SC1090");
     return false;
@@ -20657,6 +20664,15 @@ bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
   if (value->kind == SCR_DYN_BYTES)
     return (!value->v.bytes->is_data_view && scr_dyn_canonical_own_index(key, value->v.bytes->len)) ||
       (value->v.bytes->properties && scr_dyn_obj_enumerable(value->v.bytes->properties, key->data, key->len));
+  /* An island object: Node answers, by its own intrinsic. The test stands
+   * last, behind every native kind, so that the paths above compile as
+   * they did. */
+  if (scr_ni_dyn_handle(value)) {
+    ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+    int found = scr_ni_dyn_ops->has_own((ScrDyn *)value, k, 1);
+    scr_dyn_release(k);
+    return found == 1;
+  }
   return false;
 }
 ScrDyn *scr_dyn_obj_values(const ScrDyn *v) { return scr_dyn_objwalk(v, SCR_OBJWALK_VALUES); }

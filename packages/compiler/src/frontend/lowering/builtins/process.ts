@@ -6,6 +6,7 @@ import { timerStyleCallback } from "../lower-timers.js";
 import * as ts from "../../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
+import { isGeneralNodeStreamInterface } from "../../type-mapper.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
@@ -292,6 +293,8 @@ export function lowerProcStreamMethodCall(
       lowerer.irTypeOf(call),
     );
   }
+  const viaObject = lowerProcStreamObjectCall(lowerer, call, access);
+  if (viaObject !== null) return viaObject;
   if (name === "write" && call.arguments.nodes.length === 1) {
     const receiver = lowerer.lowerExpr(access.expression);
     const data = lowerer.lowerExpr(call.arguments.nodes[0]!);
@@ -309,9 +312,114 @@ export function lowerProcStreamMethodCall(
   lowerer.noLowering(
     `WritableStream.${name}`,
     call,
-    "write(data) with one string and getWindowSize() are the supported stream-value methods",
+    isGeneralNodeStreamInterface(
+      lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression)),
+      lowerer.typeCtx,
+    )
+      ? "write(data) with one string and getWindowSize() are the supported stream-value methods"
+      : "write(data[, encoding][, callback]), listeners for 'resize' and 'error' (as literals), and getWindowSize() are the supported stream-value methods",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** The event names the runtime's process stream object takes listeners
+ * for on stdout and stderr. */
+const PROC_STREAM_EVENTS: ReadonlySet<string> = new Set(["resize", "error"]);
+
+/** The listener methods of the runtime's process stream object. */
+const PROC_STREAM_LISTENER_METHODS: ReadonlySet<string> = new Set([
+  "on",
+  "once",
+  "off",
+  "addListener",
+  "removeListener",
+]);
+
+/** Whether a written chunk is one the stream object's write takes: a
+ * string, a byte view, or a union of the two. */
+function isProcStreamChunk(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "string") return true;
+  if (type.kind === "bytes") return type.elem === "u8";
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  return arms.length > 0 && arms.every((arm) => isProcStreamChunk(lowerer, arm));
+}
+
+/** Calls on a process stream value that the runtime's stream object serves
+ * with Node's own semantics: `on` / `once` / `off` / `addListener` /
+ * `removeListener` for 'resize' and 'error', and `write` with a byte chunk,
+ * an encoding or a completion callback. The call is made on the stream
+ * object, as a JavaScript source's is; the one-string write keeps its
+ * direct form. A receiver declared as one of the general stream interfaces
+ * is left to the general representation (general-streams.ts). Null for any
+ * other call. */
+function lowerProcStreamObjectCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const name = access.name.text;
+  const args = call.arguments.nodes;
+  if (args.some(ts.isSpreadElement)) return null;
+  const listener = PROC_STREAM_LISTENER_METHODS.has(name);
+  if (listener) {
+    if (args.length !== 2) return null;
+    const event = lowerer.typeOf(args[0]!);
+    if (!event.isStringLiteralType() || !PROC_STREAM_EVENTS.has(event.value)) return null;
+  } else if (name !== "write" || args.length < 1 || args.length > 3) {
+    return null;
+  }
+  const declared = lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression));
+  if (isGeneralNodeStreamInterface(declared, lowerer.typeCtx)) return null;
+  const loc = locOf(call);
+  const stream = lowerer.lowerExpr(access.expression);
+  if (stream.type.kind !== "procStream") return null;
+  let lowered: IrExpr[];
+  if (listener) {
+    lowered = args.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  } else {
+    const chunk = lowerer.lowerExpr(args[0]!);
+    // The one-string write is the direct descriptor write.
+    if (args.length === 1 && chunk.type.kind === "string") {
+      return { kind: "libCall", fn: "procStream.write", args: [stream, chunk], type: BOOL, loc };
+    }
+    if (!isProcStreamChunk(lowerer, chunk.type)) {
+      lowerer.noLowering(
+        `write of '${lowerer.fmt(chunk.type)}' data on a stream value`,
+        args[0]!,
+        "a string or a Uint8Array is the supported data here — narrow unions first",
+      );
+    }
+    lowered = [
+      lowerer.coerceToExpected(chunk, DYN),
+      ...args.slice(1).map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    ];
+  }
+  const invoke = (recv: IrExpr): IrExpr => ({
+    kind: "dynInvoke",
+    recv: { kind: "dynFrom", value: recv, type: DYN, loc: recv.loc },
+    method: name,
+    calleeName: ts.getTextOfNode(call.expression),
+    args: lowered,
+    type: DYN,
+    loc,
+  });
+  if (resultIsDiscarded(call)) return invoke(stream);
+  // write answers Node's boolean.
+  if (!listener) return lowerer.coerceToExpected(invoke(stream), BOOL);
+  // A listener method answers the stream it was called on.
+  const kept = lowerer.declareHiddenLocal("%procStream", PROCSTREAM_T);
+  const receiver = varRef(kept.id, PROCSTREAM_T, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: kept.id, init: stream, loc },
+      { kind: "exprStmt", expr: invoke(receiver), loc },
+    ],
+    result: receiver,
+    type: PROCSTREAM_T,
+    loc,
+  };
 }
 
 /** Standard streams expose optional terminal properties: pipes have no

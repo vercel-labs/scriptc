@@ -8,8 +8,8 @@
  * the standard library or an external type surface, a symbol's declaration
  * provenance, whether a type is an island handle, the admitted-opinion site
  * index, the package-file and declaration-boundary flags, the JavaScript
- * dynamic-declaration set, and the class protocol index) would be computed
- * again identically in every pass.
+ * dynamic-declaration set, the class protocol index, the names each file's
+ * identifiers spell) would be computed again identically in every pass.
  *
  * This object computes each of them once per round. The rule for what may
  * live here: the answer must be a pure function of (program, island set,
@@ -129,6 +129,9 @@ export class LoweringFacts {
   private jsDynamicVerified = false;
   private protocols: ClassProtocols | null = null;
   private asyncProtocols: AsyncProtocolHolders | null = null;
+  /** maySpellIdentifier's index: by file, the hashes of the names its
+   * identifiers spell. */
+  private readonly identifierNames = new Map<ts.SourceFile, Set<number>>();
 
   /** Whether hits are recomputed and compared (SCRIPTC_LOWERING_FACTS_VERIFY). */
   readonly verify: boolean;
@@ -314,6 +317,33 @@ export class LoweringFacts {
     );
   }
 
+  /** False only when no identifier of `sf` is spelled `name`. A search for
+   * every use of one name over the whole program (deadUnmappableBinding)
+   * asks each file before it walks it: the walk of a file that answers false
+   * meets no identifier of that name, so it reads nothing and decides
+   * nothing. The index holds a hash per name, and two names can share one,
+   * so true means only that the file must be walked.
+   *
+   * A file is indexed by the walk those searches make (forEachChild from the
+   * file), so the index sees exactly the identifiers they see. */
+  maySpellIdentifier(sf: ts.SourceFile, name: string): boolean {
+    let names = this.identifierNames.get(sf);
+    if (names === undefined) {
+      names = identifierNameHashes(sf);
+      this.identifierNames.set(sf, names);
+    }
+    if (names.has(nameHash(name))) return true;
+    if (this.verify) {
+      this.countVerified("maySpellIdentifier");
+      if (spellsIdentifier(sf, name))
+        throw new InternalCompilerError(
+          `shared lowering fact maySpellIdentifier does not match a fresh walk: ` +
+            `'${name}' is spelled in ${sf.fileName}`,
+        );
+    }
+    return false;
+  }
+
   /** The program's class protocol index (class-protocols.ts). Each pass
    * asking its own questions must get the same answers; the Lowerer's verify
    * mode compares them against a fresh index per pass, so a pass that
@@ -384,6 +414,36 @@ export class LoweringFacts {
   verifiedHits(fact: string): number {
     return this.verified.get(fact) ?? 0;
   }
+}
+
+/** FNV-1a over the name's UTF-16 code units, as a 32-bit integer. */
+function nameHash(name: string): number {
+  let hash = 0x811c9dc5 | 0;
+  for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ name.charCodeAt(i), 0x01000193);
+  return hash;
+}
+
+/** The hashes of the names `sf`'s identifiers spell. */
+function identifierNameHashes(sf: ts.SourceFile): Set<number> {
+  const hashes = new Set<number>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) hashes.add(nameHash(node.text));
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sf, visit);
+  return hashes;
+}
+
+/** Whether an identifier of `sf` is spelled `name`, by the same walk. */
+function spellsIdentifier(sf: ts.SourceFile, name: string): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isIdentifier(node) && node.text === name) found = true;
+    else ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sf, visit);
+  return found;
 }
 
 function buildOpinionIndex(opinions: readonly AdmittedOpinion[]): OpinionIndex {

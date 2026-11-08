@@ -11,6 +11,7 @@ Explicit TypeScript `any` class fields, other checked-value static fields, stati
 Program class instances retain identity through `unknown` and casts back to their exact class or a base class, including classes with internal collections.
 Inspecting dynamic properties throws a catchable `TypeError` if the class's fields cannot pass through checked storage.
 Supported native handles also retain identity.
+An instance of a class that declares `toString`, converted to a string where its class is not known (an untyped array's `join`, `String()` or a template over such an array, the default sort order), throws `SC2020` instead of running the method; convert the instance where its class is known.
 JavaScript argument and return conversions preserve native array references; other JSON-shaped record and array conversions can copy values.
 
 Supported operations on `unknown` include truthiness, `typeof` narrowing, property access, `+`, `switch`, and `throw`.

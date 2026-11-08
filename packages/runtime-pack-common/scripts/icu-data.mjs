@@ -4,7 +4,8 @@
  * source tarball and ships its data as a FILE the executable loads at run
  * time — never embedded in the binary. The release's data file is 31.6 MiB;
  * the pack's copy keeps the locale data, break rules and dictionaries,
- * currency data and time-zone rules the Intl forms read, 11.1 MiB, and
+ * currency data, unit, time-zone and region names and time-zone rules the
+ * Intl forms read, 18.7 MiB, and
  * leaves out the categories in ICU_DATA_DROPPED (filterIcuData below,
  * pinned by ICU_PACK_DATA_SHA256). Neither input is vendored:
  * both come from unicode-org/icu's official GitHub release for the pinned

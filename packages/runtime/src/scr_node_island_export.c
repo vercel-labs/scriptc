@@ -1431,7 +1431,10 @@ typedef struct {
 
 static NiShared *ni_shared = NULL;
 static uint32_t ni_nshared = 0, ni_shared_cap = 0;
-static uint32_t ni_shared_bound = 0; /* bound slots over all modules */
+/* Bound slots over all modules. The island's thread writes it; every
+ * thread's entry into Node reads it first (scr_ni_shared_refresh), so it is
+ * atomic: a relaxed load is the plain load it was. */
+static _Atomic uint32_t ni_shared_bound = 0;
 static bool ni_refreshing = false;
 static ScrDyn *ni_tdz = NULL;
 
@@ -1619,8 +1622,9 @@ void scr_ni_shared_refresh(void) {
   /* The shared binding tables belong to the island's thread, like every
    * other island-side structure; a worker thread's entry sees the values
    * the last entry on that thread pushed. */
+  if (atomic_load_explicit(&ni_shared_bound, memory_order_relaxed) == 0) return;
   if (!scr_ni_main_thread()) return;
-  if (ni_shared_bound == 0 || ni_refreshing || scr_ni_bridge_loaded() == NULL) return;
+  if (ni_refreshing || scr_ni_bridge_loaded() == NULL) return;
   ni_refreshing = true;
   bool pending = scr_exc_pending();
   ScrCaught *saved = pending ? scr_exc_take() : NULL;

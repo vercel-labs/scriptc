@@ -1559,6 +1559,15 @@ static int nh_then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *thro
 /* The outcome of a call as a dyn value (+1), or NULL with the thrown
  * value pending. */
 static ScrDyn *nh_outcome(NhCall *c) {
+  /* The island's thread has no routed answer to release: its conversion is
+   * the tail call it was. */
+  if (nh_on_island()) {
+    if (c->threw) {
+      nh_throw_value(c->out);
+      return NULL;
+    }
+    return nh_from_node(c->out);
+  }
   ScrDyn *out = NULL;
   if (c->threw) nh_throw_value(c->out);
   else out = nh_from_node(c->out);

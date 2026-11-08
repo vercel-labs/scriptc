@@ -2034,7 +2034,13 @@ export function collectGlobals(
           const vSym = lowerer.checker.getSymbolAtLocation(rhs);
           const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
           const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
-          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+          if (
+            vSym &&
+            vDecl &&
+            vG &&
+            vG.mutable &&
+            !bindingNeverReassigned(lowerer.bindingScope(), vSym, vDecl)
+          ) {
             const g: IrGlobal = {
               id: `%g.${tag}exports`,
               name: "exports",
@@ -2470,7 +2476,9 @@ export function collectGlobals(
           stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
           (() => {
             const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
-            return symbol !== undefined && bindingNeverReassigned(lowerer, symbol, decl);
+            return (
+              symbol !== undefined && bindingNeverReassigned(lowerer.bindingScope(), symbol, decl)
+            );
           })());
       if (stableStdlibAlias && stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer))
         continue;

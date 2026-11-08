@@ -139,7 +139,7 @@ function reassignedBinding(
 ): boolean {
   const list = declaration.parent;
   if (ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0) return false;
-  return !bindingNeverReassigned(lowerer, symbol, declaration);
+  return !bindingNeverReassigned(lowerer.bindingScope(), symbol, declaration);
 }
 
 /** True iff `node` is THE ambient `process.env` object, looking through

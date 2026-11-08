@@ -3396,14 +3396,14 @@ function aliasTypeofArmOf(
     if (!ts.isTypeOfExpression(init)) continue;
     const opnd = strip(init.expression);
     if (!ts.isIdentifier(opnd)) continue;
-    if (!bindingNeverReassigned(lowerer, aliasSym, aliasDecl)) continue;
+    if (!bindingNeverReassigned(lowerer.bindingScope(), aliasSym, aliasDecl)) continue;
     const valSym = lowerer.resolveValueSymbol(opnd);
     const valDecl = valSym ? valSym.valueDeclaration : undefined;
     if (!valSym || !valDecl) continue;
     // v1: identifier PARAMETERS only — initialized at function entry,
     // before any alias can capture their typeof.
     if (!ts.isParameter(valDecl) || !ts.isIdentifier(valDecl.name)) continue;
-    if (!bindingNeverReassigned(lowerer, valSym, valDecl)) continue;
+    if (!bindingNeverReassigned(lowerer.bindingScope(), valSym, valDecl)) continue;
     const fn = valDecl.parent;
     if (fn === undefined || !(e.pos >= fn.pos && e.end <= fn.end)) continue;
     const valT = lowerer.typeOf(opnd); // override-aware: implicit bindings compose
@@ -3823,7 +3823,8 @@ export function matchAllCallbackRegexOf(
   // A reassigned parameter can hold a row of another regex.
   if (ts.isIdentifier(param.name)) {
     const sym = lowerer.checker.getSymbolAtLocation(param.name);
-    if (sym === undefined || !bindingNeverReassigned(lowerer, sym, param)) return null;
+    if (sym === undefined || !bindingNeverReassigned(lowerer.bindingScope(), sym, param))
+      return null;
   }
   let site: ts.Node = fn;
   while (ts.isParenthesizedExpression(site.parent)) site = site.parent;

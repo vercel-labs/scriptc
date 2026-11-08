@@ -95,6 +95,12 @@
       "signature": "SC8006"
     }
   },
+  "corpus/9961-package-callback-optional-member": {
+    "island:kiln-kit": {
+      "category": "build",
+      "signature": "SC1090"
+    }
+  },
   "corpus/declared-types-in-other-forms": {
     "island:shape-entry": {
       "category": "build",

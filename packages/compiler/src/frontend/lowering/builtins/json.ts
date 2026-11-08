@@ -10,6 +10,7 @@ import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
   isJsonStringifyDynamicType,
+  isJsonStringifyRuntimeScalarType,
   BOOL,
   DYN,
   type IrType,
@@ -180,6 +181,11 @@ export function lowerJsonMethodCall(
       value.type.kind === "bytes" ||
       toJsonClass ||
       isJsonStringifyDynamicType(
+        value.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      ) ||
+      isJsonStringifyRuntimeScalarType(
         value.type,
         (id) => lowerer.shapes.get(id),
         (id) => lowerer.unions.get(id),

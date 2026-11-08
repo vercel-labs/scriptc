@@ -813,6 +813,8 @@ function widthCopyBetween(
   if (!classSource && !plainSource && arms === null) return null;
   // A class-backed protocol view keeps the original value.
   if (lowerer.classImplementedProtocol(t)) return null;
+  // So does a constant table that is built in the target's own layout.
+  if (lowerer.adoptsLayoutOf(s, t)) return null;
   const sourceProps = checker.getPropertiesOfType(s);
   if (!classSource) {
     // Accessor members write through to captured state, so a copy of them

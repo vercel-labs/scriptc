@@ -1893,6 +1893,10 @@ static const ScrNodeBridgeHost ni_host = {
     &scr_ni_host_shared_tdz,
     &scr_ni_host_export_op,
     &scr_ni_host_gc_analyze,
+    &scr_ni_host_bound,
+    &scr_ni_host_bind,
+    &scr_ni_host_holds,
+    &scr_ni_host_export_symbol,
 };
 
 typedef struct {

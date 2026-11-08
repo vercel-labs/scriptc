@@ -111,6 +111,7 @@ import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
+import { ownEscapingLocals } from "../../ir/local-scopes.js";
 import { FunctionViews } from "./function-views.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
 import { checkedClassAssertion } from "./class-assertions.js";
@@ -12707,6 +12708,10 @@ export class Lowerer {
         module.recordSourcesFolded = folded;
         module.functions = withoutUnreachedFunctions(module, lifted).functions;
       }
+      // A hidden local that a later expression of another statement reads
+      // again (a branch reading what its condition saved) is owned by the
+      // statement list around both, not by the expression that declared it.
+      for (const fn of module.functions) ownEscapingLocals(fn);
     }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     // Before the origin table is compacted: the claims index the lowering's.

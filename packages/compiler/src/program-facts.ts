@@ -685,6 +685,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "references to one class of an import cycle",
   ),
   scan(
+    "frontend/lowering/cycle-initialization.ts#registerCalledBindingFlag",
+    1,
+    "closed-world",
+    "references to one storage-less binding of an import cycle: every one has to be a call",
+  ),
+  scan(
     "frontend/lowering/enum-objects.ts#enumObjectUsed",
     1,
     "closed-world",

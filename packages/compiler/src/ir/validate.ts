@@ -36,6 +36,7 @@ import {
   ffiSourceParamTypes,
   isDirentShape,
   isDynTypedRefType,
+  isLiveDynRefType,
   isFfiCallbackParam,
   isFfiContextParam,
   isFfiReleaseParam,
@@ -1240,20 +1241,6 @@ function validateFunction(
   // Optional chains open a binding scope: chainRecv is valid only inside
   // the body of the optChain whose id it names.
   const activeChains = new Map<string, IrType>();
-
-  const liveDynRefEligible = (type: IrType, seen = new Set<string>()): boolean => {
-    if (
-      type.kind === "record" ||
-      type.kind === "array" ||
-      type.kind === "bytes" ||
-      isDynTypedRefType(type)
-    ) {
-      return true;
-    }
-    if (type.kind !== "union" || seen.has(type.unionId)) return false;
-    seen.add(type.unionId);
-    return unions.get(type.unionId)?.arms.some((arm) => liveDynRefEligible(arm, seen)) ?? false;
-  };
 
   function checkNullishOperands(e: IrExpr & { kind: "nullish" }): void {
     expectType(e.right, e.type, "nullish right operand");
@@ -3623,7 +3610,7 @@ function validateFunction(
         ) {
           err(`dynFrom of non-dyn-convertible type ${vt.kind}`, e.loc);
         }
-        if (e.liveRef && !liveDynRefEligible(vt)) {
+        if (e.liveRef && !isLiveDynRefType(vt, (id) => unions.get(id))) {
           err(`live dynFrom of unsupported type ${vt.kind}`, e.loc);
         }
         break;

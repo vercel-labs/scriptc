@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-listener-captures-emitter.cjs"
+ ],
+ "diags": []
+}

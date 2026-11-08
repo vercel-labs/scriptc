@@ -8288,7 +8288,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.traced = tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
       tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT || tag == SCR_DYNH_DISPOSABLE_STACK ||
       tag == SCR_DYNH_CIPHER || tag == SCR_DYNH_DECIPHER || tag == SCR_DYNH_SIGN ||
-      tag == SCR_DYNH_VERIFY ||
+      tag == SCR_DYNH_VERIFY || tag == SCR_DYNH_HTTP_RES ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
        ((ScrMap *)h)->traced != 0);
   return d;

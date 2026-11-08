@@ -222,6 +222,7 @@ enum {
   SCR_CYC_KIND_STREAM,
   SCR_CYC_KIND_UNION,
   SCR_CYC_KIND_WORKER_VIEW,
+  SCR_CYC_KIND_HTTP_RES,
   SCR_CYC_KIND_EMITTED = 32
 };
 /* Eight bytes in front of the object: the descriptor's registry id, the

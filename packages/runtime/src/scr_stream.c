@@ -3173,9 +3173,12 @@ static void scr_stream_dynopt_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError
   if (r != NULL) scr_dyn_release(r);
 }
 
+/* The box is traced: an option callback that captures its own stream forms
+ * a cycle the collector must see through when the stream is dropped
+ * without closing. */
 static ScrClosure *scr_stream_dynopt_clo(ScrDyn *fn, void *inv) {
   ScrClosure *c = scr_closure_new(inv, 1);
-  c->caps[0] = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+  c->caps[0] = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
   scr_box_set_ref(c->caps[0], scr_dyn_retain(fn));
   return c;
 }
@@ -8409,9 +8412,8 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
         scr_stream_notify_finished(s);
         /* Fully closed: nothing calls the option callbacks again (Node's
          * contract), so drop them here — this breaks the reference cycle
-         * a callback capturing its own stream forms, including the dyn-
-         * options closures whose stream edge rides through a dyn function
-         * value the cycle collector cannot traverse. */
+         * a callback capturing its own stream forms now, without waiting
+         * for the cycle collector. */
               if (st->r.read_cb) { scr_closure_release(st->r.read_cb); st->r.read_cb = NULL; }
         if (st->w.write_cb) { scr_closure_release(st->w.write_cb); st->w.write_cb = NULL; }
         if (st->w.final_cb) { scr_closure_release(st->w.final_cb); st->w.final_cb = NULL; }

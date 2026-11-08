@@ -2066,9 +2066,12 @@ static bool scr_h2_stream_local_closed(ScrH2Stream *st) {
 }
 
 static void scr_h2_stream_mark_local_closed(ScrH2Stream *st) {
+  bool was = scr_h2_stream_local_closed(st);
   st->state = st->state == SCR_H2_S_CLOSED_REMOTE || st->state == SCR_H2_S_CLOSED
       ? SCR_H2_S_CLOSED
       : SCR_H2_S_CLOSED_LOCAL;
+  /* END_STREAM went out: the compat response's stream finished. */
+  if (!was && st->compat_res != NULL) scr_http_h2_res_local_end(st->compat_res);
 }
 
 /* Both halves are done: settle once the read side was delivered. A server

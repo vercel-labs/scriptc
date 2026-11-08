@@ -1,6 +1,7 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
+import { lowerChildArgsArg, windowsOnlyOption, withChildArgsCheck } from "./child-process.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -162,10 +163,21 @@ export function lowerExecFileAsyncCall(
           timeout = lowerer.lowerExprExpecting(m.value, F64);
           break;
         case "maxBuffer":
-          lowerer.lowerExpr(m.value); // accepted, not enforced (divergence 50)
+          // Accepted, not enforced (divergence 50). This form binds no
+          // option values, so a value whose evaluation can be observed has
+          // no place to run and is refused by name instead of dropped.
+          if (!isSafeToDiscard(lowerer.lowerExpr(m.value))) {
+            lowerer.noLowering(
+              `${what} option 'maxBuffer' with a value that must be evaluated`,
+              p,
+              "pass a literal or a plain binding (this form has no place to run the expression)",
+            );
+          }
           break;
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+          // Node reads it on Windows only; a value that must be evaluated
+          // is refused by name, as for maxBuffer.
+          windowsOnlyOption(lowerer, what, m.name, p, m.value, null);
           break;
         case "killSignal": {
           const t = lowerer.typeOf(m.value);

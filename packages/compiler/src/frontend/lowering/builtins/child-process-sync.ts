@@ -1,11 +1,12 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
+import { lowerChildArgsArg, windowsOnlyOption, withChildArgsCheck } from "./child-process.js";
 import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
   F64,
@@ -73,7 +74,7 @@ export function lowerExecSyncCall(
   }
   // The shell command itself is /bin/sh; the "command" string rides as
   // the argv[1] the display formatter reads.
-  const cmdArg: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : cmd;
+  let cmdArg: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : cmd;
 
   const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
   const emptyPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
@@ -97,6 +98,16 @@ export function lowerExecSyncCall(
   // A conditional env spread (`...(c ? { env: ... } : {})`): the call
   // itself splits into a ternary of the two env-nesses at the tail.
   let condEnvSpread: { cond: IrExpr; pairs: IrExpr; whenTrue: boolean } | null = null;
+  // The option members whose values the call evaluates, in source order,
+  // and the values of members the launch does not read (`windowsHide`,
+  // `maxBuffer`, execSync's `shell`) whose evaluation can be observed (a
+  // call, a getter). With one of the latter, the call's prelude evaluates
+  // the command, the arguments and every member where it sits, as Node
+  // does; without one the call is built as before.
+  const evalOrder: ("cwd" | "input" | "env" | "timeout" | { effect: IrExpr })[] = [];
+  const evaluated = (value: IrExpr): void => {
+    if (!isSafeToDiscard(value)) evalOrder.push({ effect: value });
+  };
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -256,6 +267,7 @@ export function lowerExecSyncCall(
         }
         case "cwd":
           cwd = lowerer.lowerExprExpecting(m.value, STRING);
+          evalOrder.push("cwd");
           break;
         case "input": {
           // string | undefined, Node's exact member semantics: the
@@ -316,11 +328,13 @@ export function lowerExecSyncCall(
           }
           input = lowerer.lowerExprExpecting(m.value, STRING);
           hasInput = boolLit(true, loc);
+          evalOrder.push("input");
           break;
         }
         case "env": {
           hasEnv = boolLit(true, loc);
           envPairs = recordToEnvPairs(lowerer, m.value);
+          evalOrder.push("env");
           // A later inline env member overrides an earlier conditional
           // spread (JS object-literal order); an earlier member stays
           // the spread's false-arm fallback.
@@ -329,14 +343,15 @@ export function lowerExecSyncCall(
         }
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
+          evalOrder.push("timeout");
           break;
         case "stdio":
           applyStdio(m.value);
           break;
         case "maxBuffer":
           // Accepted, not enforced (the capture grows unbounded — no
-          // real corpus hits the cap); evaluate for side effects.
-          lowerer.lowerExpr(m.value);
+          // real corpus hits the cap); evaluated where the member sits.
+          evaluated(lowerer.lowerExpr(m.value));
           break;
         case "killSignal": {
           const t = lowerer.typeOf(m.value);
@@ -350,11 +365,20 @@ export function lowerExecSyncCall(
           break;
         }
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+          // Node reads it on Windows only; the value is still evaluated
+          // where the member sits.
+          windowsOnlyOption(
+            lowerer,
+            shell ? "execSync" : "execFileSync",
+            member,
+            p,
+            m.value,
+            (value) => evalOrder.push({ effect: value }),
+          );
           break;
         case "shell":
           if (shell) {
-            lowerer.lowerExpr(m.value);
+            evaluated(lowerer.lowerExpr(m.value));
           } else {
             const t = lowerer.typeOf(m.value);
             if (
@@ -408,6 +432,52 @@ export function lowerExecSyncCall(
       (a) => ({ cwd: a[5], envPairs: a[7] }),
       loc,
     );
+  if (evalOrder.some((step) => typeof step !== "string")) {
+    if (condEnvSpread !== null) {
+      lowerer.noLowering(
+        `${shell ? "execSync" : "execFileSync"} with a conditional env spread beside an option value that must be evaluated`,
+        optsNode!,
+        "bind the computed option value to a constant before the call",
+      );
+    }
+    // Node evaluates the command, the argument list, then the options
+    // object's members in source order. Each lands in a hidden local the
+    // call reads; a value the launch does not read runs as a statement at
+    // its member's place. Literals need no local.
+    const prelude: IrStmt[] = [];
+    const bind = (name: string, value: IrExpr): IrExpr => {
+      if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
+        return value;
+      const local = lowerer.declareHiddenLocal(name, value.type);
+      prelude.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return varRef(local.id, value.type, loc);
+    };
+    if (shell) {
+      argvExpr = {
+        kind: "arrayLit",
+        elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, bind("%execSyncCommand", cmd)],
+        type: arrayOf(STRING),
+        loc,
+      };
+    } else {
+      cmdArg = bind("%execSyncFile", cmd);
+      argvExpr = bind("%execSyncArgs", argvExpr);
+    }
+    for (const step of evalOrder) {
+      if (step === "cwd") cwd = bind("%execSyncCwd", cwd);
+      else if (step === "input") input = bind("%execSyncInput", input);
+      else if (step === "env") envPairs = bind("%execSyncEnv", envPairs);
+      else if (step === "timeout") timeout = bind("%execSyncTimeout", timeout);
+      else prelude.push({ kind: "exprStmt", expr: step.effect, loc });
+    }
+    return {
+      kind: "seqExpr",
+      stmts: prelude,
+      result: execCall(hasEnv, envPairs),
+      type: STRING,
+      loc,
+    };
+  }
   if (condEnvSpread !== null) {
     // The conditional env spread: ONE cond evaluation picks between two
     // copies of the call — every other argument expression is shared

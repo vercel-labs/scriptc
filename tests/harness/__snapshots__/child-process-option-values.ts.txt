@@ -1,17 +1,53 @@
-child-process-option-values.ts:10:47 - error SC2020: 'execFile option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+child-process-option-values.ts:11:47 - error SC2020: 'execFile option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
 
-   9 | 
-  10 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
+  10 | 
+  11 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
      |                                               ^~~~~~~~~~~~~~~~~~~~~
-  11 | exec("echo", { windowsHide: hidden() }, () => {});
+  12 | exec("echo", { windowsHide: hidden() }, () => {});
 
   hint: pass a literal or a plain binding (this form has no place to run the expression)
 
-child-process-option-values.ts:11:16 - error SC2020: 'exec option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+child-process-option-values.ts:12:16 - error SC2020: 'exec option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
 
-  10 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
-  11 | exec("echo", { windowsHide: hidden() }, () => {});
+  11 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
+  12 | exec("echo", { windowsHide: hidden() }, () => {});
      |                ^~~~~~~~~~~~~~~~~~~~~
-  12 | 
+  13 | 
 
   hint: pass a literal or a plain binding (this form has no place to run the expression)
+
+child-process-option-values.ts:24:29 - error SC2020: 'the promisified execFile option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  23 | 
+  24 | void run("/bin/echo", [], { windowsHide: hidden() });
+     |                             ^~~~~~~~~~~~~~~~~~~~~
+  25 | void run("/bin/echo", [], { maxBuffer: limit() });
+
+  hint: pass a literal or a plain binding (this form has no place to run the expression)
+
+child-process-option-values.ts:25:29 - error SC2020: 'the promisified execFile option 'maxBuffer' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  24 | void run("/bin/echo", [], { windowsHide: hidden() });
+  25 | void run("/bin/echo", [], { maxBuffer: limit() });
+     |                             ^~~~~~~~~~~~~~~~~~
+  26 | execFileSync("/bin/echo", [], { windowsHide: hidden(), ...(spare ? { env: { TRAY: "x" } } : {}) });
+
+  hint: pass a literal or a plain binding (this form has no place to run the expression)
+
+child-process-option-values.ts:26:31 - error SC2020: 'execFileSync with a conditional env spread beside an option value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  25 | void run("/bin/echo", [], { maxBuffer: limit() });
+  26 | execFileSync("/bin/echo", [], { windowsHide: hidden(), ...(spare ? { env: { TRAY: "x" } } : {}) });
+     |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  27 | spawnSync("/bin/echo", [], { stdio: mode, windowsHide: hidden() });
+
+  hint: bind the computed option value to a constant before the call
+
+child-process-option-values.ts:27:28 - error SC2020: 'spawnSync with a runtime stdio value and a windowsHide value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  26 | execFileSync("/bin/echo", [], { windowsHide: hidden(), ...(spare ? { env: { TRAY: "x" } } : {}) });
+  27 | spawnSync("/bin/echo", [], { stdio: mode, windowsHide: hidden() });
+     |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  28 | 
+
+  hint: pass stdio as a "pipe"/"ignore"/"inherit" literal, or bind the windowsHide value to a constant before the call

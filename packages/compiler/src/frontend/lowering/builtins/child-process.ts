@@ -192,7 +192,7 @@ function stdioModeChain(
  * `evaluate` takes a value whose evaluation can be observed (a call, a
  * getter) to run where the member sits; a form with no place for it (null)
  * refuses such a value by name instead of dropping it. */
-function windowsOnlyOption(
+export function windowsOnlyOption(
   lowerer: Lowerer,
   what: string,
   name: string,
@@ -346,7 +346,11 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // The options whose values reach the call, in source order: the
   // extended entry point's prelude evaluates them in this order. `stdio`
   // stands for a tuple whose slots resolve at the call.
-  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input")[] = [];
+  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input" | "windowsHide")[] = [];
+  // A `windowsHide` value whose evaluation can be observed (a call, a
+  // getter): it runs where the member sits, through the extended entry
+  // point's ordered prelude.
+  const windowsHideValues: IrExpr[] = [];
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -541,7 +545,14 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           plain = false;
           break;
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+          // Node reads it on Windows only; the value is still evaluated
+          // where the member sits.
+          windowsOnlyOption(lowerer, "spawnSync", m.name, p, m.value, (value) => {
+            windowsHideValues.push(value);
+            optionOrder.push("windowsHide");
+            extOptions = true;
+            plain = false;
+          });
           break;
         case "env":
           // A REPLACEMENT environment, as for spawn and execFileSync.
@@ -666,6 +677,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     );
   }
   if (stdioStr !== null) {
+    if (windowsHideValues.length > 0) {
+      lowerer.noLowering(
+        "spawnSync with a runtime stdio value and a windowsHide value that must be evaluated",
+        optsNode!,
+        'pass stdio as a "pipe"/"ignore"/"inherit" literal, or bind the windowsHide value to a constant before the call',
+      );
+    }
     if (extOptions) {
       lowerer.noLowering(
         "spawnSync with a runtime stdio value and cwd, input, or shell",
@@ -734,6 +752,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         if (inputRead !== null)
           prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
         else inputArg = bind("%spawnSyncInput", input);
+      } else if (option === "windowsHide") {
+        const value = windowsHideValues.shift();
+        if (value !== undefined) bind("%spawnSyncWindowsHide", value);
       }
     }
     // An `input` option makes the call read the stdin slot's runtime mode
@@ -1757,7 +1778,10 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
           // already compiled into this artifact, so no loader starts.
           break;
         case "windowsHide":
-          lowerer.lowerExpr(member.value); // accepted platform presentation option
+          // Node reads it on Windows only. This form binds no option
+          // values, so a value whose evaluation can be observed is refused
+          // by name instead of dropped.
+          windowsOnlyOption(lowerer, "fork", member.name, property, member.value, null);
           break;
         default:
           lowerer.noLowering(

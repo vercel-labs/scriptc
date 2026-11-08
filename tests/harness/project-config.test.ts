@@ -112,6 +112,10 @@ for (const [name, title] of [
     "child-windows-only-options",
     "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
   ],
+  [
+    "child-sync-option-evaluation",
+    "option values a synchronous child launch does not read are evaluated in place under @types/node",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);

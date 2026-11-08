@@ -17780,7 +17780,7 @@ static ScrDyn *scr_fn_inherited_to_string_call(ScrClosure *closure, ScrDyn *cons
   if (!receiver) return NULL;
   scr_dyn_release(receiver);
   static const char message[] = "'Function.prototype.toString' on a dynamic value is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return NULL;
 }
 

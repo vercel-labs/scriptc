@@ -2089,6 +2089,20 @@ bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name) {
   return yes;
 }
 
+/* clearTimeout (which 0), clearInterval (1) or clearImmediate (2) of a
+ * checked-dynamic value that is not a number: a timer island code created
+ * is cleared by Node's own function, and every other value is ignored, as
+ * Node ignores values that are not timers. A handle exists only once Node
+ * is loaded, so this never starts it. */
+void scr_node_island_clear_timer(ScrDyn *value, double which) {
+  if (value == NULL || !scr_ni_is_handle(value)) return;
+  ScrDyn *w = scr_dyn_new_num(which);
+  ScrDyn *args[] = {w, value};
+  ScrDyn *r = scr_ni_helper("clearTimer", args, 2);
+  scr_dyn_release(w);
+  scr_dyn_release(r);
+}
+
 /* util.promisify of an island function: Node's own, in the island. */
 ScrDyn *scr_node_island_promisify(ScrDyn *fn) {
   ScrDyn *args[] = {fn};

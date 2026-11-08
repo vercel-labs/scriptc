@@ -1,4 +1,6 @@
 `WeakMap` and `WeakSet` accept checked native objects and arrays, functions, numeric typed arrays, ArrayBuffers, native weak collections, and typed records, arrays, tuples, and classes that preserve identity through checked storage.
+A promise is a key too: the same promise is one key whether it is held through its typed binding, a wider promise type, or an untyped value.
+Entries keyed by a promise are released some time after the promise is gone, when later promise keys are added.
 Copied values, other native handles, and symbol keys are unsupported.
 Constructor seeds support arrays; custom iterators and detached methods are unsupported.
 Weak collections do not retain their keys, but values that refer back to a key can keep it alive until deletion or collection release.

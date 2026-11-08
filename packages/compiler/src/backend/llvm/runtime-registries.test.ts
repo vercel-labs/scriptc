@@ -10,7 +10,15 @@ import {
 } from "./common.js";
 import { DYN_KIND, MESSAGE_KIND } from "./dyn.js";
 import { mapKeyKindNum } from "./shapes.js";
-import { BOOL, DYN, F64, STRING, type IrType } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  DYN_HANDLE_KINDS,
+  F64,
+  ISLAND_ADOPTED_KINDS,
+  STRING,
+  type IrType,
+} from "../../ir/ir.js";
 
 // The backend writes the numbers of several runtime enums and flag sets
 // into the IR it emits, and the IR layer names the methods a runtime
@@ -185,4 +193,61 @@ test("mapKeyKindNum matches ScrMapKeyKind", () => {
   const union: IrType = { kind: "union", unionId: "u" };
   expect(mapKeyKindNum(union, [record, record])).toBe(kinds.get("SCR_MAP_KEY_UNION_REF"));
   expect(mapKeyKindNum(union, [STRING, F64])).toBe(kinds.get("SCR_MAP_KEY_UNION_VALUE"));
+});
+
+test("ISLAND_ADOPTED_KINDS names conversions the runtime defines", () => {
+  // A kind whose island-made instances a native slot holds converts through
+  // its unit's own functions in a program with islands (dyn.ts
+  // islandConversion). The unit is named after the kind's handle.
+  for (const [kind, adoption] of ISLAND_ADOPTED_KINDS) {
+    expect(DYN_HANDLE_KINDS.has(kind), kind).toBe(true);
+    if (adoption.at !== "conversion") continue;
+    const unit = source(`scr_node_island_${kind}.c`);
+    const defined = (signature: RegExp, name: string) =>
+      expect(signature.test(unit), `${name} in scr_node_island_${kind}.c`).toBe(true);
+    defined(
+      new RegExp(
+        `^\\w+ \\*${adoption.unbox}\\(const ScrDyn \\*\\w+, const ScrDynPath \\*\\w+, const char \\*\\w+\\) \\{`,
+        "m",
+      ),
+      adoption.unbox,
+    );
+    defined(new RegExp(`^ScrDyn \\*${adoption.box}\\(\\w+ \\*\\w+\\) \\{`, "m"), adoption.box);
+    defined(new RegExp(`^bool ${adoption.is}\\(const ScrDyn \\*\\w+\\) \\{`, "m"), adoption.is);
+  }
+});
+
+test("every entry point that takes a child handle hands an island's to the island", () => {
+  // A ChildProcess slot can hold a child a Node island made
+  // (scr_node_island_child.c). It has no native state, so an entry point that
+  // read its fields would answer for a child that does not exist: each one
+  // that takes a child, one of its streams or its writer starts with the
+  // island guard. Reference counting is the same for both.
+  const counted =
+    /^scr_child(?:_stream|_writer)?_(?:retain|release)_v$|^scr_child(?:_stream|_writer)?_retain$/;
+  const made = /^scr_child(?:_stream|_writer)?_island_new$/;
+  for (const file of ["scr_child.c", "scr_child_lifecycle.c"]) {
+    const text = source(file);
+    // scr_child.c's Windows arm has no islands; the POSIX arm and the code
+    // both arms share follow it.
+    const posix =
+      file === "scr_child.c" ? text.slice(text.search(/#else\s*\n\s*#include <errno\.h>/)) : text;
+    expect(posix.length, file).toBeGreaterThan(1000);
+    const entry =
+      /^(?!static)[\w ]+[ *](scr_child\w*)\(Scr(?:Child|ChildStream|ChildWriter) \*\w+[^)]*\) \{/gm;
+    const unguarded: string[] = [];
+    let seen = 0;
+    for (const match of posix.matchAll(entry)) {
+      const name = match[1]!;
+      if (counted.test(name) || made.test(name)) continue;
+      seen++;
+      const start = match.index! + match[0].length;
+      const body = posix.slice(start, posix.indexOf("\n}", start) + 1);
+      const oneLine = posix.slice(start, posix.indexOf("\n", start));
+      if (!(oneLine.trimEnd().endsWith("}") ? oneLine : body).includes("SCR_IF_ISLAND("))
+        unguarded.push(name);
+    }
+    expect(seen, file).toBeGreaterThan(file === "scr_child.c" ? 35 : 5);
+    expect(unguarded, file).toEqual([]);
+  }
 });

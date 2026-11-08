@@ -106,8 +106,11 @@ test("CI restores each seed only into its matching instrumented bootstrap lane",
   for (const job of [seed, checks]) {
     expect(Object.values(job.env).some((value) => value.includes("runner."))).toBe(false);
   }
-  const upload = seed.steps.find((step) => step.uses === "actions/upload-artifact@v4")!;
-  const download = checks.steps.find((step) => step.uses === "actions/download-artifact@v4")!;
+  // The actions are pinned to commits (tests/harness/ci-supply-chain.test.ts), so select them by name.
+  const upload = seed.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"))!;
+  const download = checks.steps.find((step) =>
+    step.uses?.startsWith("actions/download-artifact@"),
+  )!;
   expect(upload.with?.name).toBe("bootstrap-seed-${{ matrix.flavor }}-${{ github.sha }}");
   expect(download.with?.name).toBe(upload.with?.name);
   expect(upload.with?.["if-no-files-found"]).toBe("error");

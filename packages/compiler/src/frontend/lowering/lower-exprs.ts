@@ -180,7 +180,7 @@ export {
   lowerPrefixUnary,
 } from "./expressions/updates.js";
 import { lowerDeleteExpression } from "./primitive-throws.js";
-import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
+import { awaitDynThenable, awaitTypedThenable, programMayDefineThenables } from "./thenables.js";
 import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
@@ -942,6 +942,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
 
       if (awaitsChildThenable(lowerer, expr, value)) {
         return awaitDynThenable(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+      }
+      // A TYPED operand whose static type has a callable `then`: the
+      // await calls it, as it does for a checked-dynamic thenable.
+      {
+        const adopted = awaitTypedThenable(lowerer, expr, value, loc);
+        if (adopted !== null) return adopted;
       }
       // A TYPED non-promise operand (`await 42`, an awaited record):
       // JS awaits non-thenables through exactly one microtask turn and

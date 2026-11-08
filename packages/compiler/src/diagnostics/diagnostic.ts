@@ -198,6 +198,7 @@ export type TypeFailureFamily =
   | "intersection"
   | "component"
   | "stdlib-nominal"
+  | "thenable"
   | "record-member"
   | "unsupported"
   | "dyn-field-policy";
@@ -341,6 +342,22 @@ export function widthCopyDivergenceDiag(
   };
 }
 
+/** SC6001, the wording for a copy that is not made — `rows[at] ?? wide` or
+ * `rows[at] || wide`: an element or key read whose type holds no undefined
+ * and can be absent at run time all the same, defaulted to a value of a
+ * wider type that reaches the read's type only as a copy. Under Node the
+ * result is then the default itself. The compiled program answers the left
+ * side as it is where it is present and stops with a TypeError where it is
+ * absent, instead of answering a copy. */
+export function absentDefaultStopDiag(from: string, to: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6001",
+    message: `the left side of this default can be absent at run time although its type '${to}' holds no undefined, and the default has the wider type '${from}', which reaches the left side's type only as a copy (a conversion to another layout builds a new object), while under Node the result is the default itself: where the left side is absent the program stops here with a TypeError instead of answering a copy`,
+    loc,
+    hint: `give both sides one type: declare the left side's elements as '${from}', or give the default the type '${to}'`,
+  };
+}
+
 /** SC6012 — a JavaScript statement that does not compile (a deferred
  * refusal) sits in the `try` block of a `try`/`catch` of the same function.
  * It throws when it runs, so the program's `catch` clause runs, also where
@@ -376,6 +393,25 @@ export function deferredRefusalDiag(refusal: string, loc: SrcLoc, hint: string):
     message: `this statement throws when it runs (${refusal}), where it would have completed under Node; a program that never reaches it runs as it does under Node`,
     loc,
     hint,
+  };
+}
+
+/** SC6013 — a statement writes a member that the program added to the
+ * library Promise type (`Promise<T> & { status?: ... }`, an interface that
+ * extends Promise). Node adds the member to the promise object. A compiled
+ * promise holds no members of its own, so the write throws a TypeError when
+ * it runs on a promise the program made; a promise a Node island handed
+ * over keeps its members. The program builds either way. */
+export function promiseMemberWriteDivergenceDiag(
+  member: string,
+  type: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6013",
+    message: `writing '${member}' on a promise (declared '${type}'): a compiled promise holds no members of its own, so this statement throws a TypeError when it runs on a promise the program made, while Node adds the member to the promise object`,
+    loc,
+    hint: "keep the state beside the promise: a wrapper record such as { promise, status, value, reason }, or a WeakMap keyed by the promise",
   };
 }
 
@@ -1527,6 +1563,22 @@ export function componentTypeDiag(typeText: string, detail: string, loc: SrcLoc)
     loc,
     milestone: "M2",
     hint: "the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')",
+  };
+}
+
+/** A type whose mapping took more steps than one mapping may take
+ * (frontend/type-mapper.ts, the walk memo's step limit). A mapping maps each
+ * type it reaches once, so a type that gets here reaches a graph of types
+ * that map differently below every ancestor, and the mapping would run for
+ * minutes or without end. The build ends here, in every tier: `loc` is the
+ * type's declaration. */
+export function typeWalkBudgetDiag(typeText: string, steps: number, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2016",
+    message: `type '${typeText}' cannot be compiled: mapping the types it reaches takes more than ${steps} steps`,
+    loc,
+    milestone: "M2",
+    hint: "the type reaches a large graph of types that refer to each other, or members with their own type parameters nested many levels deep; declare the value with a narrower type (the members the program reads), or cut the graph with 'unknown' where it closes",
   };
 }
 

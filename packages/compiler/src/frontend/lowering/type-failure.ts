@@ -26,13 +26,16 @@ import * as ts from "../ts7/adapter.js";
  * name values the compiler cannot produce (opaque stdlib and @types/node
  * types, engine-backed ambient types), package value types that scope B
  * routes to Node islands, enum objects with no runtime value, and generic
- * implementations without an erased instance. */
+ * implementations without an erased instance. The library's PromiseLike is
+ * no such type: its values are the program's promises and its own objects
+ * with a `then` method. */
 const DEGRADABLE_FAMILIES: ReadonlySet<TypeFailureFamily> = new Set<TypeFailureFamily>([
   "index-signature",
   "overloads",
   "intersection",
   "component",
   "record-member",
+  "thenable",
   "unsupported",
   "dyn-field-policy",
 ]);

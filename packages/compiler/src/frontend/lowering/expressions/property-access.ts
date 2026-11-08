@@ -1610,12 +1610,11 @@ export function lowerPropertyAccessExpr(
       // keeps its length when that is not its adapter's parameter count
       // (`Math.max.length` is 2).
       const builtinName = builtinValueNameOf(expr.expression, lowerer);
-      // A `name` read answers the static spelling only when the read reaches
-      // a definition: a member or a parameter holds whatever function was
-      // stored in it (`column.parse.name` is "String"), and the box then takes
-      // the function's own name. The other members never observe the name.
-      const fnName =
-        builtinName ?? jsFuncNameOf(expr.expression, lowerer, expr.name.text === "name");
+      // The static name is the one the source proves (jsFuncNameOf): a
+      // member or a parameter holds whatever function was stored in it
+      // (`column.parse.name` is "String"), and the box then takes the
+      // function's own name.
+      const fnName = builtinName ?? jsFuncNameOf(expr.expression, lowerer);
       const identity = lowerer.builtinFunctionIdentity(probed);
       const fnLength = identity.fnLength;
       const boxed: IrExpr = {

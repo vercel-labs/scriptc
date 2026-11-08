@@ -4377,7 +4377,7 @@ export function lowerInspectValue(
     isJsSourceFile(valueNode.getSourceFile()) &&
     lowerer.dynConvertible(value.type)
   ) {
-    const name = jsFuncNameOf(valueNode);
+    const name = jsFuncNameOf(valueNode, lowerer);
     value = { kind: "dynFrom", value, type: DYN, ...(name !== null ? { fnName: name } : {}), loc };
   }
   if (dirPreview?.showHidden) {

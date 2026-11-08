@@ -1393,7 +1393,7 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     const { coverage } = analyze(file, {});
     expect.soft(coverage.diagnostics, file).toEqual([]);
     // Corpus programs match Node on the path the corpus runs: a divergence
-    // warning on one is a false positive, except SC6001 and SC6012. SC6001
+    // warning on one is a false positive, except SC6001, SC6012 and SC6013. SC6001
     // is sound rather than exact: it names every conversion that copies a
     // value the program could tell from the original
     // (lowering/width-copies.ts), and a corpus program can hold one on a
@@ -1402,14 +1402,22 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // that copy and the warnings that were not needed. SC6012 names a
     // refused statement inside its own try block, and a corpus program that
     // has one is written so that Node throws there too (a guarded require
-    // of a module that is not there), which is how it matches. SC6015
-    // names a TypeScript statement that throws when it runs, and a corpus
-    // program that has one does not reach it (`new` through a held
-    // constructor in a function the program never calls).
+    // of a module that is not there), which is how it matches. SC6013 names
+    // a member written on a promise, a statement that throws when it runs
+    // on a promise the program made: a corpus program that has one keeps it
+    // on a path the corpus does not take
+    // (9523-promise-intersection-plain.ts). SC6015 names a TypeScript
+    // statement that throws when it runs, and a corpus program that has one
+    // does not reach it (`new` through a held constructor on a path the
+    // corpus does not take).
     expect
       .soft(
         (coverage.divergences ?? []).filter(
-          (d) => d.code !== "SC6001" && d.code !== "SC6012" && d.code !== "SC6015",
+          (d) =>
+            d.code !== "SC6001" &&
+            d.code !== "SC6012" &&
+            d.code !== "SC6013" &&
+            d.code !== "SC6015",
         ),
         file,
       )

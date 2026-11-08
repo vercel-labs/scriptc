@@ -1,0 +1,27 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/project-lib-unlisted/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'HTMLElement'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/project-lib-unlisted/main.ts",
+    "start": 162,
+    "end": 173
+   },
+   "typeWorld": true,
+   "hint": "'HTMLElement' comes from the DOM library, which the project's tsconfig does not name in \"lib\" (scriptc checks with the ES2025 library, Node types and the names of the libraries \"lib\" lists) — add \"dom\" to \"lib\": the name then type-checks as under the project's tsc, and at run time it is absent as under Node.js (a read throws ReferenceError, typeof answers \"undefined\"); or declare the shape you need locally"
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'document'. Do you need to change your target library? Try changing the 'lib' compiler option to include 'dom'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/project-lib-unlisted/main.ts",
+    "start": 251,
+    "end": 259
+   }
+  }
+ ]
+}

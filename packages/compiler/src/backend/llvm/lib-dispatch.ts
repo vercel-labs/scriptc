@@ -1726,6 +1726,7 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
           `  %failed = call zeroext i1 @scr_exc_pending()`,
           `  br i1 %failed, label %reject, label %fulfill`,
           `reject:`,
+          ...host.pendingBailReleaseLines(tuple, "%tuple"),
           `  call void @scr_promise_reject_pending(ptr %dst)`,
           `  ret void`,
           `fulfill:`,

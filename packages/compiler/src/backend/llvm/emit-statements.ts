@@ -928,7 +928,16 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           const pend = B.tmp();
           for (const line of emitter.pendingTestLines(pend)) B.line(line.trimStart());
           const lw = B.newLabel("rks.w");
-          B.condBr(pend, join, lw);
+          const dropped = emitter.pendingBailReleaseLines(f.type, nv);
+          if (dropped.length === 0) {
+            B.condBr(pend, join, lw);
+          } else {
+            const lp = B.newLabel("rks.p");
+            B.condBr(pend, lp, lw);
+            B.startBlock(lp);
+            for (const line of dropped) B.line(line.trimStart());
+            B.br(join);
+          }
           B.startBlock(lw);
           const { ptr, type, inline } = emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
           if (inline) {

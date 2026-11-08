@@ -14,9 +14,15 @@
  *   Object.assign(G, { name: v })
  *
  * where G is any spelling of the global object: `globalThis`, `global`, a
- * binding or an expression the checker types as the global object. A name
- * that is not written out (a computed key, a spread, a value that is no
- * literal) may be any name. */
+ * binding or an expression the checker types as the global object.
+ *
+ * A name that is not written out may be any name where nothing else
+ * stops it: the key of a defining call, a spread or a value that is no
+ * literal in one. An ASSIGNMENT by a computed key (`G[key] = v`, how a
+ * package keeps its own state on the global object) does not count: the
+ * runtime refuses such a write when the key names a built-in, where it
+ * runs ("setting 'setTimeout' on a dynamic Object is not supported"), so
+ * it cannot replace one. */
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
@@ -58,7 +64,7 @@ export function globalObjectWrites(lowerer: Lowerer, globalType: ts.Type): Globa
       key(written.name);
     else if (ts.isElementAccessExpression(written) && isGlobalObject(written.expression)) {
       const argument = withoutParenthesesTypeWrappers(written.argumentExpression);
-      key(ts.isStringLiteralLike(argument) ? argument : undefined);
+      if (ts.isStringLiteralLike(argument)) key(argument);
     }
   };
   const literalMembers = (value: ts.Expression | undefined): void => {

@@ -48,7 +48,7 @@ import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-l
 import { builtinConstantsEsmNamespace } from "./lower-builtin-values.js";
 import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
-import { builtinCalleeName } from "./lower-calls.js";
+import { builtinCalleeName, refuseWrittenBuiltin } from "./lower-calls.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
@@ -604,6 +604,7 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
   const symbol = lowerer.resolveValueSymbol(callee);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   if (call.arguments.nodes.length < 1) return null;
+  refuseWrittenBuiltin(lowerer, call, callee);
   const loc = locOf(call);
   const initNode = call.arguments.nodes[1];
   if (initNode !== undefined) fenceRequestInitValue(lowerer, initNode);
@@ -1944,6 +1945,7 @@ export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression
   if (named === null) return null;
   const symbol = lowerer.resolveValueSymbol(named);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  refuseWrittenBuiltin(lowerer, expr, named);
   const args = expr.arguments?.nodes ?? [];
   if (args.some((argument) => ts.isSpreadElement(argument))) return null;
   const loc = locOf(expr);

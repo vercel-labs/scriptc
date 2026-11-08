@@ -501,12 +501,7 @@ function lowerCallableMemberCall(lowerer: Lowerer, call: ts.CallExpression): IrE
 /** The identifier that names the built-in global a call calls: the bare
  * identifier (`fetch(…)`), or the member name of a direct read of the
  * global object (`globalThis.fetch(…)`, `global.fetch(…)`:
- * globalObjectMemberName), which calls the same function. A program that
- * writes that member (`globalThis.fetch = mine`, `global.fetch = mine`,
- * `Object.defineProperty(globalThis, "fetch", …)`) means its own function
- * there, and a compiled program has only the built-in to call, so the
- * call is refused by name. The writes are the census of
- * global-object-writes.ts: every spelling, in every source. */
+ * globalObjectMemberName), which calls the same function. */
 export function builtinCalleeName(
   lowerer: Lowerer,
   call: ts.CallExpression | ts.NewExpression,
@@ -514,25 +509,40 @@ export function builtinCalleeName(
   const callee = call.expression;
   if (ts.isIdentifier(callee)) return callee;
   if (ts.isCallExpression(call) && call.questionDotToken) return null;
-  const member = globalObjectMemberName(lowerer, callee);
-  if (member === null) return null;
-  const receiver = (callee as ts.PropertyAccessExpression).expression;
+  return globalObjectMemberName(lowerer, callee);
+}
+
+/** A call or construction that compiles because its callee is a built-in
+ * named through the global object (`named` is that member's name, not the
+ * callee itself). A program that writes that member (`globalThis.fetch =
+ * mine`, `global.fetch = mine`, `Object.defineProperty(globalThis,
+ * "fetch", …)`) means its own function there, and a compiled program has
+ * only the built-in to call, so the call is refused by name. The writes
+ * are the census of global-object-writes.ts: every spelling, in every
+ * source. The spellings main compiled before this rule (the timers, and
+ * the constructors and conversions that go by the receiver) do not ask:
+ * they are as they were. */
+export function refuseWrittenBuiltin(
+  lowerer: Lowerer,
+  call: ts.CallExpression | ts.NewExpression,
+  named: ts.Identifier,
+): void {
+  const callee = call.expression;
+  if (named === callee || !ts.isPropertyAccessExpression(callee)) return;
   const written = globalObjectWrites(
     lowerer,
-    lowerer.typeOf(staticallySelected(lowerer, receiver)),
+    lowerer.typeOf(staticallySelected(lowerer, callee.expression)),
   );
-  if (written.names.has(member.text) || written.computed) {
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      `${ts.isCallExpression(call) ? "calling" : "constructing"} the built-in '${member.text}' through the global object in a program that writes ${
-        written.names.has(member.text)
-          ? `'${member.text}' on the global object`
-          : "a member of the global object by a computed name"
-      } (it would reach the built-in, not the written value)`,
-    );
-  }
-  return member;
+  if (!written.names.has(named.text) && !written.computed) return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    `${ts.isCallExpression(call) ? "calling" : "constructing"} the built-in '${named.text}' through the global object in a program that writes ${
+      written.names.has(named.text)
+        ? `'${named.text}' on the global object`
+        : "a member of the global object by a name it computes"
+    } (it would reach the built-in, not the written value)`,
+  );
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
@@ -1013,6 +1023,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     named.text === "queueMicrotask" &&
     lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
   ) {
+    refuseWrittenBuiltin(lowerer, expr, named);
     if (expr.arguments.nodes.length === 0) {
       // Node: queueMicrotask() throws ERR_INVALID_ARG_TYPE at runtime
       // (the undefined callback) — the Dyn form delivers exactly that.
@@ -1064,6 +1075,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     named.text === "structuredClone" &&
     lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
   ) {
+    refuseWrittenBuiltin(lowerer, expr, named);
     if (expr.arguments.nodes.length === 0) {
       return { kind: "libCall", fn: "dyn.cloneMissing", args: [], type: DYN, loc };
     }
@@ -1344,6 +1356,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // supported form is fenced here per site. Members with no lowering at
   // all (fs.watch, os.cpus, ...) fence with the module-qualified name.
   if (named !== null) {
+    refuseWrittenBuiltin(lowerer, expr, named);
     if (named.text === "Array" && lowerer.isStdlibGlobal(named, "Array")) {
       return lowerArrayConstructor(lowerer, expr, expr.arguments.nodes);
     }

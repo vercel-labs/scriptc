@@ -739,15 +739,13 @@ export function lowerLambda(
     }
     lowerer.liftedFns.push(lifted);
     noteObjectMethodName(lowerer, node, fnName);
+    // An adopted literal has the slot's parameter list and its own length.
+    const length = adoption !== null ? adoption.length : ownLength(node, funcType);
     return {
       kind: "closure",
       fnName,
       captures: ctx.captureSources,
-      ...(adoption !== null
-        ? adoption.length !== undefined
-          ? { length: adoption.length }
-          : {}
-        : ownLength(node, funcType)),
+      ...(length !== undefined ? { length } : {}),
       type: funcType,
       loc,
     };

@@ -630,11 +630,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     const declared = decl && ts.isFunctionDeclaration(decl) ? decl : undefined;
     // The interned closure carries the declaration's own `length` where the
     // type counts a parameter Node does not (one with a default).
+    const length = declared ? ownLength(declared, funcType) : undefined;
     const closure = {
       kind: "closure" as const,
       fnName: sig.name,
       captures: [],
-      ...(declared ? ownLength(declared, funcType) : {}),
+      ...(length !== undefined ? { length } : {}),
       type: funcType,
       loc,
     };

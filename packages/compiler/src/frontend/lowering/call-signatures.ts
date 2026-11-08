@@ -553,18 +553,18 @@ export function declaredLength(node: ts.SignatureDeclaration): number {
 }
 
 /** The `length` the value of the function `node` declares records on its
- * closure, to spread into the closure expression: present where the
- * declaration's own length is not the count of the value type's parameters
- * (a parameter with a default and the ones after it are positions of the
- * type that Node does not count; so are the positions of a fixed-tuple
- * rest), absent otherwise, so a function without one compiles as before. */
+ * closure: the declaration's own length where that is not the count of the
+ * value type's parameters (a parameter with a default and the ones after it
+ * are positions of the type that Node does not count; so are the positions
+ * of a fixed-tuple rest), undefined otherwise, so a function without one
+ * compiles as before. */
 export function ownLength(
   node: ts.SignatureDeclaration,
   type: IrType & { kind: "func" },
-): { length?: number } {
+): number | undefined {
   const typeLength = type.params.length - (type.restAbi === "typed" ? 1 : 0);
   const own = declaredLength(node);
-  return own === typeLength ? {} : { length: own };
+  return own === typeLength ? undefined : own;
 }
 
 /** A TypeScript rest parameter bound to a name whose type is a fixed tuple

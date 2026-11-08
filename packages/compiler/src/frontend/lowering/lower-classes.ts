@@ -6355,11 +6355,15 @@ function staticMethodValue(
   // The interned closure carries the declaration's own `length` where the
   // type counts a parameter Node does not (one with a default).
   const member = classMethodMember(lowerer, declarer, name, true);
+  const length =
+    member !== undefined && ts.isMethodDeclaration(member)
+      ? ownLength(member, funcType)
+      : undefined;
   return {
     kind: "closure",
     fnName,
     captures: [],
-    ...(member !== undefined && ts.isMethodDeclaration(member) ? ownLength(member, funcType) : {}),
+    ...(length !== undefined ? { length } : {}),
     type: funcType,
     loc,
   };

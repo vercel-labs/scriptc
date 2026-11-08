@@ -428,15 +428,17 @@ export function islandValueCopyDivergenceDiag(
 
 /** SC6007 — an untyped value a Node island made is stored where the
  * compiler no longer follows it (a member, an element, a reassigned binding,
- * a container). An assertion applied to it where it is read back is the
- * checked conversion, which copies an island's object into a native record:
- * writes through the copy and its identity are not the island's, where Node
- * keeps one object. */
+ * a container). Where it is read back and given a record type the program's
+ * own source declares (an assertion, a typed slot), the checked conversion
+ * copies the island's object into a native record: writes through the copy
+ * and its identity are not the island's, where Node keeps one object. A type
+ * a declaration file declares stays a view there (class-protocols.ts,
+ * markUnplacedConversions). */
 export function islandValueUntrackedDivergenceDiag(loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC6007",
     message:
-      "this untyped value from a Node island is stored where the compiler no longer follows it: natively an assertion applied to it after it is read back copies the island's object into a record, so writes through that record and its identity are not the island's, while Node keeps one object",
+      "this untyped value from a Node island is stored where the compiler no longer follows it: natively, giving it a record type of the program's own source after it is read back copies the island's object, so writes through that copy and its identity are not the island's, while Node keeps one object",
     loc,
     hint: "assert its type where the island hands it over ('value as T') so it stays a view of the island's object, or copy it there with 'structuredClone(value)'",
   };

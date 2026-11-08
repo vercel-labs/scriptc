@@ -6738,7 +6738,9 @@ export class Lowerer {
     const answer = ask(this.facts.classProtocols());
     if (!this.facts.verify) return answer;
     if (this.ownClassProtocols === null) {
-      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder);
+      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder, (file) =>
+        this.isStdlibFile(file),
+      );
     }
     const fresh = ask(this.ownClassProtocols);
     this.facts.noteVerified("classProtocols");

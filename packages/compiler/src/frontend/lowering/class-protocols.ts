@@ -53,6 +53,10 @@ export class ClassProtocols {
   constructor(
     private readonly checker: ts.TypeChecker,
     private readonly sources: readonly ts.SourceFile[],
+    /** True for the standard library's declaration files: a type any other
+     * declaration file declares is a data type the program takes from a
+     * file with no implementation (markUnplacedConversions). */
+    private readonly isStdlibFile: (file: ts.SourceFile) => boolean,
   ) {}
 
   private index(): Set<ts.Symbol> {
@@ -277,6 +281,69 @@ export class ClassProtocols {
     for (const value of handed) this.markIslandCallbacks(value, islands, add, 0);
     traceIslandViews(crossings);
     for (const node of sites) this.noteIslandEscapes(node, islands);
+    if (this.islandEscapes.length > 0) this.markUnplacedConversions(sites, islands, add);
+  }
+
+  /** Marks the declaration-file types an untyped value of unknown origin is
+   * given, in a program that stores an untyped island value out of sight
+   * (noteIslandEscapes found a store). The stored value is read back with no
+   * origin, so any assertion applied to an untyped value, and any typed
+   * binding of an `any`, may be the one that receives it. A type a
+   * declaration file declares has no implementation of its own: until such
+   * types were mapped to native records, a value asserted to one stayed the
+   * dynamic value it was, an island's object included. Marking the type a
+   * view keeps that: the island's object stays the island's, and a native
+   * value under the type is read with the same checks. A type the program's
+   * own source declares keeps the checked conversion, as it always had (it
+   * copies an island's object; SC6007 names the store). */
+  private markUnplacedConversions(
+    sites: readonly ts.Node[],
+    islands: NodeIslandSet,
+    add: (type: ts.Type) => void,
+  ): void {
+    for (const node of sites) {
+      let operand: ts.Expression;
+      let untyped: number = ts.TypeFlags.Any;
+      if (ts.isAssertionExpression(node)) {
+        operand = node.expression;
+        untyped |= ts.TypeFlags.Unknown;
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        node.type !== undefined &&
+        node.initializer !== undefined
+      ) {
+        operand = node.initializer;
+      } else continue;
+      // An island value the analysis follows was marked where it crossed.
+      if (this.islandValue(operand, islands)) continue;
+      const from = attempt(() => this.checker.getTypeAtLocation(operand));
+      if (from === undefined || (from.flags & untyped) === 0) continue;
+      const target = attempt(() => this.checker.getTypeAtLocation(node));
+      if (target === undefined || !this.declarationFileType(target, 0)) continue;
+      this.markOriginView(target, islands, add, 0);
+    }
+  }
+
+  /** Whether `type`, an arm of it or its element type is an object type
+   * whose every declaration is in a declaration file outside the standard
+   * library. */
+  private declarationFileType(type: ts.Type, depth: number): boolean {
+    if (depth > DECLARATION_FILE_TYPE_DEPTH) return false;
+    if (type.isUnionType() || type.isIntersectionType())
+      return ts.constituentTypes(type).some((part) => this.declarationFileType(part, depth + 1));
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) {
+      const elements = attempt(() => this.checker.getTypeArguments(type as ts.TypeReference));
+      return (elements ?? []).some((element) => this.declarationFileType(element, depth + 1));
+    }
+    const declarations = type.getSymbol()?.declarations ?? [];
+    return (
+      declarations.length > 0 &&
+      declarations.every((declaration) => {
+        const file = ts.getSourceFileOfNode(declaration);
+        return file.isDeclarationFile && !this.isStdlibFile(file);
+      })
+    );
   }
 
   /** The untyped island values the program stores where their origin is no
@@ -2544,6 +2611,9 @@ const VIEWED_LIBRARY_OBJECTS: ReadonlySet<string> = new Set([
   "BigInt64Array",
   "BigUint64Array",
 ]);
+
+/** How deep declarationFileType looks into unions and element types. */
+const DECLARATION_FILE_TYPE_DEPTH = 4;
 
 /** The operators whose value is one of their operands. */
 const VALUE_SELECTING: ReadonlySet<ts.SyntaxKind> = new Set([

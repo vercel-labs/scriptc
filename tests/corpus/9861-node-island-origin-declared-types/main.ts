@@ -83,3 +83,18 @@ const clone = structuredClone(entry);
 const spread = { ...entry, extra: true };
 bump();
 console.log(clone.count, spread.count, spread.extra, entry.count, same(clone), JSON.stringify(entry));
+
+// A value stored where its origin is not followed (an element of an untyped
+// array) and asserted after it is read back. These interfaces come from
+// declaration files, so they stay views of the island's object there too;
+// an interface of the program's own source would be converted, and so
+// copied, which is why the build names the store (SC6007).
+const bag: unknown[] = [];
+bag.push(raw("stored"));
+const stored = bag[0] as Item;
+stored.count = 15;
+bump();
+console.log(show(stored), read(stored), same(stored), stored.label());
+const storedEntry = bag[0] as Entry;
+storedEntry.nested.level = 21;
+console.log(showEntry(storedEntry), read(stored), same(storedEntry));

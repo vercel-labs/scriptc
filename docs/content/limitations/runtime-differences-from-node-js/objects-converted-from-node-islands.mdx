@@ -4,6 +4,7 @@
   Every value of such a record type then uses checked dynamic storage, which is slower than native record fields, including the records the program builds itself.
   Where the program converts the value to an array type, or to a record type that declares a string-keyed dictionary or a library object such as a `Date`, a `Map` or a `Set`, itself or in a member, the conversion reads the members that type declares and builds a native value from them.
   That value is a copy: a later change made by the island does not show through it, a write made through it does not reach the island, it is not `===` to the island's object, and it holds only the members the type declares.
-  An untyped value that the program stores in a member, an array element, a reassigned binding or a container before it gives it a type is copied the same way where it is read back and converted.
+  An untyped value that the program stores in a member, an array element, a reassigned binding or a container before it gives it a type is copied the same way where it is read back and given a record type that the program's own source files declare.
+  A type that a declaration file declares stays a view of the island's object there.
   scriptc reports each conversion it can see, and each such store, as an `SC6007` warning.
   Assert the type where the island hands the value over or declare it in the island package's declarations to keep the island's object, or write the copy yourself (`structuredClone(value) as Item[]`) so that Node.js copies too.

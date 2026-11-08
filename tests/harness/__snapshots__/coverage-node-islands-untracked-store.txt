@@ -14,7 +14,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-untracked-store/main.ts
   fully static — all analyzed statements compile to native code.
 
   differs from Node   9 sites (compiles; the native program can behave differently)
-      ×9  SC6007  this untyped value from a Node island is stored where the compiler no longer follows it: natively an assertion applied to it after it is read back copies the island's object into a record, so writes …
+      ×9  SC6007  this untyped value from a Node island is stored where the compiler no longer follows it: natively, giving it a record type of the program's own source after it is read back copies the island's object…
           at tests/coverage-fixtures/node-islands-untracked-store/main.ts:26:10, tests/coverage-fixtures/node-islands-untracked-store/main.ts:28:17, tests/coverage-fixtures/node-islands-untracked-store/main.ts:29:23 (+6 more)
           hint: assert its type where the island hands it over ('value as T') so it stays a view of the island's object, or copy it there with 'structuredClone(value)'
 

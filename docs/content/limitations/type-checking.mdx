@@ -12,7 +12,12 @@ In a project that compiles under `moduleResolution: node10` (also spelled `node`
 A value import of a file the map does not list is refused, as Node.js refuses it at startup.
 A project whose `target` is below ES2022, or that sets `useDefineForClassFields` to `false`, has its parameter properties assigned before its class field initializers run, as in tsc's output; a field declared without an initializer is still an own property that holds `undefined`.
 The other settings keep one meaning.
-`lib` does not change the library above, and the DOM library is never loaded.
+`lib` does not change the library above, and no other library is loaded into the program that is compiled.
+A library that `lib` names beside it, such as `dom`, decides only which names type-check.
+A name that only such a library declares is an opaque type in compiled code, and a value of that type is checked dynamically.
+As a value the name is absent at run time, as under Node.js: a read throws `ReferenceError`, `typeof` answers `"undefined"`, and `globalThis.document` is `undefined`.
+A global that Node.js defines is never treated as absent.
+A `/// <reference lib="dom" />` directive in a source file does load the library into the compiled program, where it conflicts with the declarations scriptc bundles for a project without `@types/node`; name the library in `lib` instead.
 TypeScript files are ES modules or CommonJS by Node.js's rules (the file extension and the nearest `package.json`), whatever `module` and `moduleResolution` say, so `import x = require()` and `export =` are refused with `SC0016` in a project that sets `module` to `commonjs`.
 Legacy decorators (`experimentalDecorators`) are refused with `SC0016`, except a class decorator of one parameter, which behaves the same under both decorator semantics.
 A project that does not enable `strict` or `strictNullChecks` is refused with `SC0002`.

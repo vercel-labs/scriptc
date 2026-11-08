@@ -6810,6 +6810,17 @@ export class Lowerer {
     return list.some((site) => start <= site.pos && site.end <= node.end);
   }
 
+  /** Whether `name` is a name only the project's libraries declare, in a
+   * TypeScript source: preflight admitted its "cannot find name" error
+   * (program.ts, projectLibraryName), so the project's own tsc resolves it
+   * and Node, which defines no such global, resolves it at run time. */
+  projectLibraryNameAt(name: ts.Identifier): boolean {
+    return (
+      this.admittedOpinions.length > 0 &&
+      (this.opinionAt(name, 2304) || this.opinionAt(name, 2584) || this.opinionAt(name, 2552))
+    );
+  }
+
   /** opinionAt's index: admitted sites by file and code (one index per
    * admitted-opinions list, shared by the round). */
   private admittedOpinionSites(): ReadonlyMap<string, readonly AdmittedOpinion[]> {

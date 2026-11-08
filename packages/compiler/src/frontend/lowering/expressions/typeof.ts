@@ -554,15 +554,17 @@ export function lowerDynTypeofTest(
     // preserving both operands' evaluation order without a narrowing test.
     if (!ts.isStringLiteral(b)) continue;
     const declared = lowerer.mapTypeOf(lowerer.typeOf(a.expression));
-    // `typeof undeclared === "..."` in a JavaScript source: nothing declares
-    // the name, so Node answers "undefined" without ever reading it — the
+    // `typeof undeclared === "..."` in a JavaScript source, or of a name
+    // only a library of the project's `lib` declares: nothing defines the
+    // name, so Node answers "undefined" without ever reading it — the
     // test is that constant's comparison, never a read (a read throws).
     {
       let operand = a.expression;
       while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
       if (
         ts.isIdentifier(operand) &&
-        isJsSourceFile(ts.getSourceFileOfNode(operand)) &&
+        (isJsSourceFile(ts.getSourceFileOfNode(operand)) ||
+          lowerer.projectLibraryNameAt(operand)) &&
         lowerer.resolveValueSymbol(operand) === null
       )
         return {

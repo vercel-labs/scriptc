@@ -1295,7 +1295,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // read always unwinds before any of them observes it. A WRITE to the same
   // name is not a read: it reaches rejectUnresolved and its SC1091 story.
   // Typed sources keep the compile error (preflight's JS relaxation is
-  // `isJsSourceFileName`-gated, so no TS file reaches this branch).
+  // `isJsSourceFileName`-gated), except a name that only a library of the
+  // project's `lib` declares and Node does not define (the DOM's
+  // `document`): the project's own tsc resolves it, preflight admits it
+  // (projectLibraryNameAt), and the read is Node's, as in a `.js` file.
   // In shorthand position (`{ x }`) `resolveValueSymbol` answers the
   // PROPERTY symbol, so the declaration test there is the checker's
   // shorthand-VALUE symbol.
@@ -1304,7 +1307,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
       ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
       : lowerer.resolveValueSymbol(expr) === null;
-  if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  if (
+    undeclared &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) || lowerer.projectLibraryNameAt(expr))
+  ) {
     return nsUndefRead(lowerer, expr.text, expr, contextualUndefReadType(lowerer, expr) ?? DYN);
   }
   // Preflight guarantees no unresolved identifiers; anything else here

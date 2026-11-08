@@ -8337,8 +8337,9 @@ interface BadEsmImport {
   spec: string;
   nameNode: ts.Node;
   sf: ts.SourceFile;
-  /** The module the request names. */
-  dep: ts.SourceFile;
+  /** The module the request names: a source file, or a builtin module by
+   * its name. */
+  dep: ts.SourceFile | string;
 }
 
 interface EsmNamedImportLinkAnalysis {
@@ -8564,12 +8565,12 @@ function analyzeEsmNamedImportLinks(
   const bad = isNodeEsmFile7(entry, program) ? dfs(entry) : null;
   if (bad !== null) {
     // The usual cause: the name is a type, which Node's type stripping
-    // leaves in a plain import.
+    // leaves in a plain import. A builtin module has no source file to ask.
+    const dep = bad.dep;
     const declaresType =
-      checker
-        .getSymbolAtLocation(bad.dep)
-        ?.getExports()
-        .get(ts.escapedSymbolName(bad.exportName)) !== undefined;
+      typeof dep !== "string" &&
+      checker.getSymbolAtLocation(dep)?.getExports().get(ts.escapedSymbolName(bad.exportName)) !==
+        undefined;
     return {
       crash: {
         message: `The requested module '${bad.spec}' does not provide an export named '${bad.exportName}'`,

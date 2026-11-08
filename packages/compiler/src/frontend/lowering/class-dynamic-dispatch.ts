@@ -70,6 +70,8 @@ import {
 import { runtimeStaticDefines } from "./class-runtime-statics.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
+  ERROR_NAME_ASSIGN,
+  errorNameAssign,
   errorPropertyRead,
   errorPropertyWrite,
   errorToStringCall,
@@ -1699,9 +1701,9 @@ export function errorSlotAssignHelper(
 }
 
 /** Gives each `%error.<name>.assign:<class>` helper of a class that has a
- * property list its direct body: a write that creates the member keeps a
- * place for it in the instance's list (creating the list for the first
- * late member), then stores the error's slot. No value is boxed and no
+ * property list its direct body: a write that creates the member enters it
+ * in the instance's list (creating the list for the first late member),
+ * then stores the error's slot. No value is boxed and no
  * class table is consulted, so a `this.cause = reason` in a constructor
  * costs a few stores and, once per instance, the list. A `cause` the
  * constructor's options created, or one the class declares, is stored in
@@ -1729,6 +1731,14 @@ function assignErrorSlotMembers(lowerer: Lowerer, functions: readonly IrFunction
       init: { kind: "fieldGet", obj: self(), className, field: PROPERTY_BAG, type: DYN, loc },
       loc,
     };
+    // The list's entry holds the value too, so a read under a computed key,
+    // which asks the list, answers it; every write keeps the copy current.
+    const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+    const record: IrStmt = {
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn: "dyn.keySet", args: [bag, key, value], type: VOID, loc },
+      loc,
+    };
     const place: IrStmt[] = [
       {
         kind: "if",
@@ -1737,17 +1747,7 @@ function assignErrorSlotMembers(lowerer: Lowerer, functions: readonly IrFunction
         else_: null,
         loc,
       },
-      {
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: "dyn.bagCreateField",
-          args: [bag, { kind: "strLit", value: name, type: STRING, loc }],
-          type: BOOL,
-          loc,
-        },
-        loc,
-      },
+      record,
     ];
     if (name === "code") {
       fn.body = [
@@ -1789,7 +1789,29 @@ function assignErrorSlotMembers(lowerer: Lowerer, functions: readonly IrFunction
               loc,
             },
             then: place,
-            else_: null,
+            else_: [
+              {
+                kind: "if",
+                cond: {
+                  kind: "logical",
+                  op: "&&",
+                  left: {
+                    kind: "dynTest",
+                    test: "undefined",
+                    negated: true,
+                    value: bag,
+                    type: BOOL,
+                    loc,
+                  },
+                  right: { kind: "libCall", fn: "dyn.hasOwn", args: [bag, key], type: BOOL, loc },
+                  type: BOOL,
+                  loc,
+                },
+                then: [record],
+                else_: null,
+                loc,
+              },
+            ],
             loc,
           },
           store,
@@ -1862,9 +1884,12 @@ function constructorCanAddProperties(
  *    list when the list exists by then, and the class and its subclasses
  *    are marked.
  * 2. Every class with a list, in a program that can give an instance a
- *    `cause` or a `code` after its fields exist: a store to the error's
- *    cause slot outside the runtime (the property dispatch's branch), one
- *    of the reflective writes, or a write under a computed key. */
+ *    `cause` or a `code` after its fields exist: a write by name (the
+ *    per-class helpers, the property dispatch's branch), one of the
+ *    reflective writes or a write under a computed key whose target can be
+ *    an error. In such a program a `name` assigned by name to an instance
+ *    of a marked class whose construction does not set it is recorded in
+ *    the list as well (recordLateErrorNames). */
 export function orderErrorOwnMembers(lowerer: Lowerer, functions: readonly IrFunction[]): void {
   const candidates = [...lowerer.classes.values()].filter(
     (info) =>
@@ -1994,9 +2019,9 @@ export function orderErrorOwnMembers(lowerer: Lowerer, functions: readonly IrFun
   }
   if (late) for (const info of candidates) info.def.errorOwnOrder = true;
   // 3. A class whose construction does not set `name`, in a program that
-  //    assigns an error's `name` by name: the assignment creates a property
-  //    after whatever the list already holds.
-  else if (byName.has("%error.name.write"))
+  //    assigns an error's `name` outside a constructor: the assignment
+  //    creates a property after whatever the list already holds.
+  else if (byName.has(ERROR_NAME_ASSIGN))
     for (const info of candidates)
       if (info.def.errorNameAfter === undefined) info.def.errorOwnOrder = true;
   recordLateErrorNames(lowerer, candidates, byName);
@@ -2007,14 +2032,14 @@ export function orderErrorOwnMembers(lowerer: Lowerer, functions: readonly IrFun
  * it records it in the instance's property list, so the view lists it
  * where it was created among the others. Classes whose construction sets
  * `name` keep the class's own placement (IrClassDef.errorNameAfter). The
- * shared name write (`%error.name.write`) gains one branch for the
- * instances of the marked classes. */
+ * helper of name assignments outside constructors (ERROR_NAME_ASSIGN) gains
+ * one branch for the instances of the marked classes. */
 function recordLateErrorNames(
   lowerer: Lowerer,
   candidates: readonly ClassInfo[],
   functions: ReadonlyMap<string, IrFunction>,
 ): void {
-  const write = functions.get("%error.name.write");
+  const write = functions.get(ERROR_NAME_ASSIGN);
   const properties = functions.get("%dyn.class.properties");
   const marked = candidates.filter(
     (info) => info.def.errorOwnOrder === true && info.def.errorNameAfter === undefined,
@@ -5053,6 +5078,12 @@ export class ClassDynamicDispatch {
         // by-name dispatch does.
         const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
         if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
+        // `cause` and `code` are read and written through their slots too
+        // (a write records the member in the instance's property list): a
+        // computed key that names one must not stop at the list alone.
+        if (!dispatch.probe && !dispatch.reflect)
+          for (const slot of ["cause", "code"])
+            if (errorSlotMember(lowerer, info, slot)) names.add(slot);
         if (info.builtinStream)
           for (const name of [
             ...STREAM_BOOL_PROPERTIES,
@@ -7511,12 +7542,20 @@ export class ClassDynamicDispatch {
     if ((name === "message" || name === "name") && lowerer.isSubclassOf(info.def.name, "%Error"))
       return write
         ? [
-            errorPropertyWrite(
-              lowerer,
-              receiver,
-              lowerer.coerceToExpected(varRef("p.1", DYN, loc), STRING),
-              name,
-            ),
+            // A name written through an untyped reference is assigned after
+            // construction.
+            name === "name" && !info.def.runtime && !info.builtinError
+              ? errorNameAssign(
+                  lowerer,
+                  receiver,
+                  lowerer.coerceToExpected(varRef("p.1", DYN, loc), STRING),
+                )
+              : errorPropertyWrite(
+                  lowerer,
+                  receiver,
+                  lowerer.coerceToExpected(varRef("p.1", DYN, loc), STRING),
+                  name,
+                ),
             { kind: "return", value: null, loc },
           ]
         : [

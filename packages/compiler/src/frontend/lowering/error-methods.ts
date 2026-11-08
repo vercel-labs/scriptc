@@ -147,6 +147,57 @@ export function errorSlotAssign(
   };
 }
 
+/** The helper through which a program assigns an error's `name` anywhere
+ * but in a constructor's own `this.name = …`. */
+export const ERROR_NAME_ASSIGN = "%error.name.assign";
+
+/** `error.name = value` outside a constructor's own statement: the shared
+ * name write, through one helper whose presence says the program can create
+ * an error's own `name` after construction. The instance of a class whose
+ * property list keeps its own order then records the name there
+ * (class-dynamic-dispatch.ts, recordLateErrorNames), and an error that
+ * already has its own-property object takes it there too
+ * (refreshErrorPropertyDispatch). A constructor's `this.name = …` keeps the
+ * plain write: the class places that name itself. */
+export function errorNameAssign(lowerer: Lowerer, receiver: IrExpr, value: IrExpr): IrStmt {
+  const loc = receiver.loc;
+  lowerer.shareHelper(ERROR_NAME_ASSIGN);
+  if (lowerer.liftedFnNamed(ERROR_NAME_ASSIGN) === undefined)
+    lowerer.liftedFns.push({
+      name: ERROR_NAME_ASSIGN,
+      params: [
+        { localId: "error.0", name: "error", type: errorType },
+        { localId: "value", name: "value", type: STRING },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "error.0", name: "error", type: errorType, mutable: false },
+        { id: "value", name: "value", type: STRING, mutable: false },
+      ],
+      body: [
+        errorPropertyWrite(
+          lowerer,
+          varRef("error.0", errorType, loc),
+          varRef("value", STRING, loc),
+          "name",
+        ),
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    });
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "call",
+      callee: ERROR_NAME_ASSIGN,
+      args: [lowerer.upcastTo(receiver, "%Error"), value],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+}
+
 export function refreshErrorPropertyDispatch(
   lowerer: Lowerer,
   functions: readonly IrFunction[],
@@ -183,11 +234,13 @@ export function refreshErrorPropertyDispatch(
         : 0,
   );
   // An error's own-property object can exist before its `name` is assigned
-  // when the program assigns `cause` or `code` by name: the name write then
-  // reaches that object too.
-  const noted = ERROR_ASSIGN_HELPERS.some(
-    (form) => lowerer.liftedFnNamed(`%error.${form}.assign`) !== undefined,
-  );
+  // when the program assigns `cause` or `code` by name, or a `name` outside
+  // a constructor: the name write then reaches that object too.
+  const noted =
+    lowerer.liftedFnNamed(ERROR_NAME_ASSIGN) !== undefined ||
+    ERROR_ASSIGN_HELPERS.some(
+      (form) => lowerer.liftedFnNamed(`%error.${form}.assign`) !== undefined,
+    );
   const revision = JSON.stringify([
     readers.map((fn) => fn.name),
     overrides.map((info) => [info.def.name, hasClassPrototypeData(info)]),

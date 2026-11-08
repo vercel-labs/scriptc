@@ -236,6 +236,11 @@ async function coverageFastPath(
     firstCliOptionOutside(values, CLI_FAST_PATHS.coverage.options) !== undefined ||
     (print !== undefined && print !== "diagnostics") ||
     (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
+    // `--coverage=reached` keys its own verdicts; any other value is the
+    // full CLI's to validate.
+    (values.coverage !== undefined &&
+      values.coverage !== "full" &&
+      values.coverage !== "reached") ||
     // --fail-on=divergences checks the warning --no-copy-warning leaves out:
     // the full CLI refuses the pair, and a replayed verdict must not pass it.
     (failOn === "divergences" && values["copy-warning"] === false)
@@ -247,7 +252,12 @@ async function coverageFastPath(
   } catch {
     return null;
   }
-  const hit = await startup.readCoverageVerdict(resolve(inputArg), {}).catch(() => null);
+  const hit = await startup
+    .readCoverageVerdict(
+      resolve(inputArg),
+      values.coverage === "reached" ? { coverage: "reached" } : {},
+    )
+    .catch(() => null);
   if (hit === null) return null;
   const { coverage, sourceTexts } = hit;
   if (values["dynamic-tier-warning"] === false) delete coverage.performance;

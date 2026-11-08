@@ -68,6 +68,13 @@ async function main(): Promise<void> {
   await closeWith("feed, object", feed, frost);
   await closeWith("log, a real error", log, new RangeError("too dry"));
 
+  // A falsy reason is no reason: the stream closes and no 'error' follows.
+  await closeWith("log, zero", log, 0);
+  await closeWith("log, false", log, false);
+  await closeWith("log, empty string", log, "");
+  await closeWith("feed, zero", feed, 0);
+  await closeWith("feed, false", feed, false);
+
   // Equal values that were never handed to a stream.
   const count: unknown = 17;
   const note: unknown = "valve stuck";

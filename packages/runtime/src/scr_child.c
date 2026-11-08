@@ -3869,26 +3869,56 @@ static int scr_spawn_resolved(pid_t *pid, const char *file, const posix_spawn_fi
   return denied ? EACCES : ENOENT;
 }
 
-/* scr_spawn_resolved with the child's SIGPIPE and SIGXFSZ at their default
- * actions, as libuv's spawns start them: executables ignore both
- * (scr_init), and an exec keeps ignored dispositions. `attr` may be NULL. */
+/* The highest standard signal number. Linux and Darwin both number the
+ * standard signals 1..31; Linux's real-time signals start above them. */
+#define SCR_CHILD_LAST_STANDARD_SIGNAL 31
+
+/* scr_spawn_resolved with the signal state a child of Node starts with,
+ * whatever state this process has: every standard signal at its default
+ * action and an empty signal mask. An exec keeps ignored dispositions and
+ * the mask, so without this a child would inherit SIGPIPE and SIGXFSZ
+ * ignored (scr_init), any signal this process was itself started with
+ * ignored or blocked (SIGINT and SIGQUIT in a background job of a
+ * non-interactive shell, SIGHUP under nohup), and could then not be ended
+ * by that signal. The dispositions of real-time signals are inherited, as
+ * under Node; the mask is emptied for them too. Every launch of the
+ * child_process functions comes through here. `attr` may be NULL. */
 static int scr_spawn_command(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
                              posix_spawnattr_t *attr, char *const *argv, char *const *envp,
                              const char *cwd) {
   (void)cwd; /* the file actions change into it before the exec */
+  /* A process that ignores SIGCHLD keeps no exit status for its children:
+   * the kernel reaps them and waitpid answers ECHILD. A program started
+   * that way (its parent ignored SIGCHLD and the exec kept it) would report
+   * a null exit code for every child, so the default action, which keeps
+   * the status, is restored before a child exists. A listener's handler is
+   * neither and stays. */
+  struct sigaction reaping;
+  if (sigaction(SIGCHLD, NULL, &reaping) == 0 && !(reaping.sa_flags & SA_SIGINFO) &&
+      reaping.sa_handler == SIG_IGN) {
+    memset(&reaping, 0, sizeof reaping);
+    reaping.sa_handler = SIG_DFL;
+    sigemptyset(&reaping.sa_mask);
+    (void)sigaction(SIGCHLD, &reaping, NULL);
+  }
   posix_spawnattr_t local;
   if (attr == NULL) {
     posix_spawnattr_init(&local);
     attr = &local;
   }
-  sigset_t defaults;
+  sigset_t defaults, unblocked;
   sigemptyset(&defaults);
-  sigaddset(&defaults, SIGPIPE);
-  sigaddset(&defaults, SIGXFSZ);
+  for (int number = 1; number <= SCR_CHILD_LAST_STANDARD_SIGNAL; number++) {
+    /* SIGKILL and SIGSTOP have no disposition to set. */
+    if (number != SIGKILL && number != SIGSTOP) sigaddset(&defaults, number);
+  }
+  sigemptyset(&unblocked);
   short flags = 0;
   (void)posix_spawnattr_getflags(attr, &flags);
   (void)posix_spawnattr_setsigdefault(attr, &defaults);
-  (void)posix_spawnattr_setflags(attr, (short)(flags | POSIX_SPAWN_SETSIGDEF));
+  (void)posix_spawnattr_setsigmask(attr, &unblocked);
+  (void)posix_spawnattr_setflags(
+      attr, (short)(flags | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK));
   int err = scr_spawn_resolved(pid, file, fa, attr, argv, envp);
   if (attr == &local) posix_spawnattr_destroy(&local);
   return err;
@@ -8995,7 +9025,9 @@ static ScrDyn *scr_child_dyn_invoke(
   ScrChild *child = h;
   if (!strcmp(method, "ref") || !strcmp(method, "unref")) {
     if (!strcmp(method, "ref")) scr_child_ref(child); else scr_child_unref(child);
-    return scr_dyn_retain(self);
+    /* Node's ChildProcess answers undefined here (a socket, a server and
+     * a timer answer themselves). */
+    return scr_dyn_retain(scr_dyn_undefined());
   }
   if (!strcmp(method, "kill")) {
     const ScrDyn *signal = argc ? args[0] : scr_dyn_undefined();

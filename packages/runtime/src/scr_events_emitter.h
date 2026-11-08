@@ -236,6 +236,12 @@ bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err);
  * the unhandled form throws its +1. */
 bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
                                   ScrDyn *const *args, size_t argc);
+/* emit('error') of a value that is not an Error where the emitting unit
+ * holds it as one: args[0] is the value and `err` stands for it. Typed
+ * listeners with a checked-dynamic call receive the value through it; only
+ * the runtime's own listeners receive `err`. Both borrowed. */
+bool scr_emitter_emit_error_carried(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                    ScrDyn *const *args, size_t argc);
 double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn);
 double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *fn);

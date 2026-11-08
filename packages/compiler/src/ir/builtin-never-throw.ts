@@ -12,6 +12,8 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // scr_dyn_native_search_params_is compares the value's kind and handle tag.
+  "dyn.nativeSearchParamsIs",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.

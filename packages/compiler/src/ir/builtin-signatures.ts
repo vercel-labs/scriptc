@@ -417,6 +417,7 @@ function buildLibFnSignatures() {
     "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
+    "dyn.nativeSearchParamsIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeDateIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeDateHandleIs": { argTypes: [DYN], result: BOOL },
     /** A builtin constructor (`Object`, `Date`, `RegExp`, `Map`, `Set`,

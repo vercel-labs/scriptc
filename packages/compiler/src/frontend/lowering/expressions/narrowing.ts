@@ -739,6 +739,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     if (narrowed?.kind === "bytes" || narrowed?.kind === "url") {
       return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
     }
+    // The same for a URLSearchParams. The operand of an assertion is left
+    // to the assertion, which makes the same check.
+    if (
+      narrowed?.kind === "searchParams" &&
+      !(
+        node.parent !== undefined &&
+        (ts.isAsExpression(node.parent) || ts.isTypeAssertion(node.parent)) &&
+        node.parent.expression === node
+      )
+    ) {
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+    }
     // An `instanceof Error` narrow: the checked-dynamic tree's error encoding rebuilds a
     // fresh %Error (name/message/code from the marker object — a COPY,
     // the unknown boundary's stance; SEMANTICS.md 67), validated like

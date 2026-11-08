@@ -74,6 +74,7 @@ const DYN_KIND_TESTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.nativeSetIs",
   "dyn.nativeMapIs",
   "dyn.nativeUrlIs",
+  "dyn.nativeSearchParamsIs",
   "dyn.nativeDateIs",
   "dyn.nativeDateHandleIs",
   "dyn.nativeRegexIs",

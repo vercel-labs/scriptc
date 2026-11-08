@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   islandModuleOfFile,
+  islandOfModuleName,
   islandOwnerOfFile,
   islandPackageOfFile,
   type IslandModule,
@@ -142,6 +143,32 @@ describe("islandPackageOfFile", () => {
     expect(islandPackageOfFile(a, file)).toBe(first);
     // The third answer repeats the first set's memo, and the first set's
     // entry is the island object itself.
+  });
+});
+
+describe("the island a `declare module` block's name belongs to", () => {
+  test("the package's own name, a subpath, and a scoped package", () => {
+    const set = islands([pkg("plain"), pkg("@scope/pkg")]);
+    expect(islandOfModuleName(set, "plain")?.name).toBe("plain");
+    expect(islandOfModuleName(set, "plain/lib/core.js")?.name).toBe("plain");
+    expect(islandOfModuleName(set, "@scope/pkg")?.name).toBe("@scope/pkg");
+    expect(islandOfModuleName(set, "@scope/pkg/sub")?.name).toBe("@scope/pkg");
+  });
+
+  test("a pattern names modules of the package its first segments spell", () => {
+    const set = islands([pkg("plain")]);
+    expect(islandOfModuleName(set, "plain/lib/languages/*.js")?.name).toBe("plain");
+    expect(islandOfModuleName(set, "*.css")).toBeNull();
+    expect(islandOfModuleName(set, "*")).toBeNull();
+  });
+
+  test("another package, a longer name, and a relative module are not the island", () => {
+    const set = islands([pkg("plain")], [module("/p/src/legacy.js")]);
+    expect(islandOfModuleName(set, "other")).toBeNull();
+    expect(islandOfModuleName(set, "plain-extras")).toBeNull();
+    expect(islandOfModuleName(set, "@scope/plain")).toBeNull();
+    expect(islandOfModuleName(set, "./legacy.js")).toBeNull();
+    expect(islandOfModuleName(set, "../plain")).toBeNull();
   });
 });
 

@@ -194,6 +194,18 @@ export function renderConfigWarnings(
   );
 }
 
+/** A build's SC6201 warning: the program fails at start-up, as under Node. */
+export function renderStartupWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+  opts: RenderOptions = {},
+): string {
+  return (
+    renderDiagnostics([...diags], sourceTextByFile, opts) +
+    "\n\n1 warning: the program compiled, but it fails at start-up, as it does under Node."
+  );
+}
+
 export function renderWarnings(
   diags: readonly ScrDiagnostic[],
   sourceTextByFile: Map<string, string>,

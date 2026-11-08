@@ -54,7 +54,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
 const enabled = process.env["SCRIPTC_WIN"] === "1";
@@ -352,8 +352,8 @@ async function scpToLane(paths: string[]): Promise<void> {
  * type-strips .ts natively (same pinned version as the macOS lanes). */
 async function runWindowsNode(file: string): Promise<RunResult> {
   const name = laneName(file);
-  const entry = wantsTscJsx(directiveHead(file))
-    ? `${basename(dirname(tscJsxOracleEntry(file, cacheDir)))}\\main.js`
+  const entry = wantsTscOracle(directiveHead(file))
+    ? `${basename(dirname(tscOracleEntry(file, cacheDir)))}\\main.js`
     : wantsTscDecorators(file)
       ? decOracleName(file)
       : name === basename(file)
@@ -417,8 +417,8 @@ async function shipProgram(file: string): Promise<void> {
   const programRoot = /\/main\.(ts|js|mjs|cjs)$/.test(file) ? join(file, "..") : file;
   // Decorator programs additionally ship the tsc downlevel the oracle
   // executes (the compiler still eats the real source above).
-  const oracleExtra = wantsTscJsx(directiveHead(file))
-    ? [dirname(tscJsxOracleEntry(file, cacheDir))]
+  const oracleExtra = wantsTscOracle(directiveHead(file))
+    ? [dirname(tscOracleEntry(file, cacheDir))]
     : wantsTscDecorators(file)
       ? [decOraclePath(file)]
       : [];

@@ -67,6 +67,7 @@ import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
   findGenericMethodOn,
+  parameterPropertiesFirst,
   type ClassInfo,
   storedClassValueType,
 } from "../lower-classes.js";
@@ -2056,7 +2057,11 @@ function declaredMembership(
   for (let base = info.base; base; base = base.base) if (base.fields.has(key)) return true;
   // A parameter property is assigned in the constructor body, after every
   // field initializer has run (Node's transform), so it is not on `this` yet.
-  if (info.paramProps?.some((pp) => pp.name === key)) return false;
+  // A file whose tsconfig compiles class fields in the constructor assigns
+  // its parameter properties first (ownFieldAndParamPropInitStmts): there
+  // every one of them is on `this` when the first initializer runs.
+  if (info.paramProps?.some((pp) => pp.name === key))
+    return parameterPropertiesFirst(lowerer, info);
   const own = info.fieldOrder.findIndex((f) => f.name === key);
   if (own < 0) {
     if (generic === null) return false;

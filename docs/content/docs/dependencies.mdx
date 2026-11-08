@@ -48,6 +48,8 @@ scriptc finds packages in `node_modules` with Node.js's resolution rules, includ
 
 Type-only imports follow Node.js's type stripping. `import type` and `export type … from` statements are erased, so a package or module named only by them supplies types and isn't compiled or loaded; it can even be a package with no JavaScript, such as `type-fest`. A clause whose specifiers are all marked `type`, such as `import { type Options } from "./config.ts"`, still loads its module, as it does under Node.js.
 
+A project that tsc compiles follows tsc instead. When the nearest `tsconfig.json` above a TypeScript file doesn't set `verbatimModuleSyntax`, scriptc drops the imports and exports that tsc drops for that file: an import whose bindings are never used as values, a clause of `type` specifiers only, and a re-export of a type. A module imported only in those ways isn't loaded, exactly as in the JavaScript tsc emits, so it doesn't run and doesn't take part in an import cycle. `isolatedModules` and `preserveConstEnums` decide whether a use of a const enum keeps its import, as they do for tsc. With `verbatimModuleSyntax: true`, or with no `tsconfig.json`, the type-stripping rule applies; a plain import of a type then fails when the program starts, as it does under Node.js, and the build warns about it with `SC6201`.
+
 ## Which packages compile
 
 scriptc compiles a package automatically when it:

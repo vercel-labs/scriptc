@@ -1,0 +1,1 @@
+{ "name": "node-island-typeroots-attypes", "private": true, "type": "module", "scriptc": { "packages": { "paint-kit": "node" } } }

@@ -2290,21 +2290,35 @@ void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *
 /* Settlement with callback waiters: combinator jobs enter the microtask
  * queue interleaved with the waking fibers in subscription order, then
  * the conversions run in place (they settle their destinations now, so
- * those destinations' waiters queue behind this promise's). */
+ * those destinations' waiters queue behind this promise's).
+ *
+ * The callback waiters leave the promise before the first of them runs:
+ * a job envelope takes over its waiter's references and a conversion
+ * releases its destination, and either can reach a collection (a release
+ * that leaves its object alive buffers a candidate), whose trace of this
+ * promise must not name a destination whose reference is already given
+ * up (unlink before release, scr_cycle.c). The waiters not yet run are
+ * held by the detached list, which nothing traces, so the collector
+ * counts their destinations as referenced from outside. */
 static void scr_promise_settle_wake_cbs(ScrPromise *p) {
+  struct ScrPromiseCbWaiter *cbs = p->cbs;
+  size_t ncbs = p->ncbs;
+  p->cbs = NULL;
+  p->ncbs = 0;
+  p->cbs_cap = 0;
   size_t w = 0;
-  for (size_t i = 0; i < p->ncbs; i++) {
-    const struct ScrPromiseCbWaiter *cb = &p->cbs[i];
+  for (size_t i = 0; i < ncbs; i++) {
+    const struct ScrPromiseCbWaiter *cb = &cbs[i];
     if (cb->job_at == SCR_CB_SYNC) continue;
     for (; w < cb->job_at && w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
     scr_promise_cb_queue(cb, p);
   }
   for (; w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
   p->nwaiters = 0;
-  for (size_t i = 0; i < p->ncbs; i++) {
-    if (p->cbs[i].job_at == SCR_CB_SYNC) scr_promise_cb_run(&p->cbs[i], p);
+  for (size_t i = 0; i < ncbs; i++) {
+    if (cbs[i].job_at == SCR_CB_SYNC) scr_promise_cb_run(&cbs[i], p);
   }
-  p->ncbs = 0;
+  free(cbs);
 }
 
 /* Settle helpers wake waiters into the microtask queue and dispatch the

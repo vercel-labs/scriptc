@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/json-stringify-function-hooks.ts"
+ ],
+ "diags": []
+}

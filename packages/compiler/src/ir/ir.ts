@@ -4429,8 +4429,47 @@ export function isJsonStringifySafeType(
   t: IrType,
   getRecord: (shapeId: string) => IrRecordShape | undefined,
   getUnion: (unionId: string) => IrUnionDef | undefined,
+  linkSources?: (shapeId: string) => readonly string[] | undefined,
 ): boolean {
-  return isJsonSafeAt(t, getRecord, getUnion, true, false, new Set());
+  return isJsonSafeAt(
+    t,
+    getRecord,
+    getUnion,
+    true,
+    false,
+    new Set(),
+    false,
+    linkSources === undefined ? undefined : { sources: linkSources, within: false },
+  );
+}
+
+/** The record links a stringified type is checked under: a copy linked to
+ * its source (IrModule.recordLinks) serializes as the composed record, a
+ * record of the source's type. `within` is true below such a source, where
+ * the type-directed writer writes a checked-dynamic member itself. */
+interface JsonLinks {
+  sources: (shapeId: string) => readonly string[] | undefined;
+  within: boolean;
+}
+
+/** True when a record's `toJSON` member can hold a function: JSON.stringify
+ * calls it and serializes its result in place of the record, which only
+ * the runtime JSON traversal does. */
+export function recordHasJsonHook(
+  shape: IrRecordShape,
+  getUnion: (unionId: string) => IrUnionDef | undefined,
+): boolean {
+  if (shape.tuple) return false;
+  for (const field of shape.fields) {
+    if (field.name !== "toJSON") continue;
+    const t = field.type;
+    if (t.kind === "func" || t.kind === "dyn") return true;
+    if (t.kind !== "union") return false;
+    for (const arm of getUnion(t.unionId)?.arms ?? [])
+      if (arm.kind === "func" || arm.kind === "dyn") return true;
+    return false;
+  }
+  return false;
 }
 
 /** A JSON-shaped container with unknown payloads, or a class instance at
@@ -4443,11 +4482,13 @@ export function isJsonStringifyDynamicType(
   t: IrType,
   getRecord: (shapeId: string) => IrRecordShape | undefined,
   getUnion: (unionId: string) => IrUnionDef | undefined,
+  linkSources?: (shapeId: string) => readonly string[] | undefined,
 ): boolean {
+  const links = linkSources === undefined ? undefined : { sources: linkSources, within: false };
   return (
     (t.kind === "record" || t.kind === "array" || t.kind === "union" || isDynTypedRefType(t)) &&
-    isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), true) &&
-    !isJsonStringifySafeType(t, getRecord, getUnion)
+    isJsonSafeAt(t, getRecord, getUnion, true, false, new Set(), true, links) &&
+    !isJsonStringifySafeType(t, getRecord, getUnion, linkSources)
   );
 }
 
@@ -4463,11 +4504,12 @@ function isJsonSafeAt(
   undefinedAllowed: boolean,
   visiting: Set<string>,
   nativeFields = false,
+  links?: JsonLinks,
 ): boolean {
   if (HANDLE_KINDS.has(t.kind)) return false;
   switch (t.kind) {
     case "dyn":
-      return nativeFields;
+      return nativeFields || links?.within === true;
     case "f64":
     case "string":
     case "bool":
@@ -4484,6 +4526,7 @@ function isJsonSafeAt(
         stringify,
         visiting,
         nativeFields,
+        links,
       );
     case "record": {
       const shape = getRecord(t.shapeId);
@@ -4492,6 +4535,9 @@ function isJsonSafeAt(
       // Accessor slots are not function-valued properties: Node's
       // JSON.stringify invokes the getter (see accessorSlotProp).
       if (shapeHasAccessorSlots(shape)) return false;
+      // A toJSON member replaces the record with its result: the runtime
+      // traversal calls it, the type-directed writer cannot.
+      if (stringify && !nativeFields && recordHasJsonHook(shape, getUnion)) return false;
       // The recursive knot: answer true and let the rest of the graph
       // decide (any unsafe constituent ends the traversal immediately).
       if (visiting.has(t.shapeId)) return true;
@@ -4508,9 +4554,32 @@ function isJsonSafeAt(
             !shape.tuple || stringify,
             visiting,
             nativeFields,
+            links,
           )
         )
           return false;
+      }
+      // A linked copy serializes as a record of its source's type.
+      if (links !== undefined) {
+        const sources = links.sources(t.shapeId);
+        if (sources !== undefined && sources.length > 0) {
+          const within: JsonLinks = links.within ? links : { sources: links.sources, within: true };
+          for (const from of sources) {
+            if (
+              !isJsonSafeAt(
+                { kind: "record", shapeId: from },
+                getRecord,
+                getUnion,
+                stringify,
+                true,
+                visiting,
+                nativeFields,
+                within,
+              )
+            )
+              return false;
+          }
+        }
       }
       // Overflow values sit in record-key position too: dyn is JSON-safe
       // HERE (the checked-dynamic tree serializes itself; undefined-valued entries drop
@@ -4525,6 +4594,7 @@ function isJsonSafeAt(
           true,
           visiting,
           nativeFields,
+          links,
         );
       }
       return true;
@@ -4547,6 +4617,7 @@ function isJsonSafeAt(
                 undefinedAllowed,
                 visiting,
                 nativeFields,
+                links,
               ))
         )
           return false;
@@ -4566,7 +4637,13 @@ function isJsonSafeAt(
     case "object":
       if (nativeFields && stringify && isDynTypedRefType(t)) return true;
       return false;
+    // JSON.stringify drops a function exactly where it drops undefined: a
+    // property holding one is omitted and an array or tuple slot writes
+    // null, unless the function carries a toJSON property of its own,
+    // which is called. The runtime JSON traversal does all of it; the
+    // type-directed writer only omits a required function member.
     case "func":
+      return stringify && undefinedAllowed && nativeFields;
     // Class values stringify as "{}" husks in Node (own enumerable statics
     // aside — not representable type-directedly); rejected like Maps.
     case "classval":

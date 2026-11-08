@@ -22,7 +22,7 @@ switch (JSON.parse("5")) {
 const typedIntoUnknown: unknown = new Map<string, number>();
 function wantsUnknown(x: unknown): void {}
 wantsUnknown(new Map<string, number>());
-const stringifyClosure = JSON.stringify((x: number) => x + 1);
+// JSON.stringify of a function compiles: it answers undefined (corpus json-stringify-function-elements).
 class Point {
   x: number = 0;
 }

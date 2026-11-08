@@ -1026,7 +1026,6 @@
  "f64.p": {},
  "f64.u": {},
  "fn-async.control.-": {
-  "T.json": "refused:SC1090",
   "T.clone": "message",
   "U.tag": "wrong",
   "U.clone": "message"

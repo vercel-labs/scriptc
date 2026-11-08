@@ -24,8 +24,6 @@ const COMPLETION_CALLBACKS: ReadonlyMap<IrLibFn, CallbackPosition> = new Map<
   CallbackPosition
 >([
   ["cp.execFile", 2],
-  ["cp.execFileOpts", 2],
-  ["cp.execFileSignal", 2],
   ["crypto.generateKeyCb", 2],
   ["crypto.hkdfCb", 5],
   ["crypto.pbkdf2Cb", 5],

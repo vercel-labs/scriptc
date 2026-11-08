@@ -108,21 +108,6 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["createsWrappers"],
   },
   {
-    name: "process-ipc-channel",
-    file: `${SRC}/frontend/fork-target.ts`,
-    symbol: "usesProcessChannel",
-    source: "symbols",
-    scope: "runtime-build",
-    setBy:
-      "a call of `process.send` or `process.disconnect`, or a 'message' or 'disconnect' listener registered on `process`, where `process` is Node's global",
-    gates:
-      "the program takes over the IPC channel its parent named in NODE_CHANNEL_FD at the start of main and removes the variable; every test of `process.send` in it asks the runtime instead of the environment; the options build of the child unit",
-    narrower:
-      "none wanted: Node takes the channel over before any program code runs. A program that never uses the channel keeps the environment test, which links no runtime code",
-    tracked: "DECISIONS.md, 2026-11-08, cli-child-process-2",
-    lowererFields: [],
-  },
-  {
     name: "typed-web-streams",
     file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
     symbol: "programUsesTypedWebStreams",
@@ -596,7 +581,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "finds the modules a fork() can start, which become program roots",
   ),
-  decides("frontend/fork-target.ts#usesProcessChannel", 1, "process-ipc-channel"),
   scan(
     "frontend/import-elision.ts#elideProgramImports",
     1,

@@ -63,13 +63,6 @@ const available =
  * object. */
 const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_builtin_values.c -> scr_symbol.c": ["scr_dyn_new_symbol", "scr_sym_new", "scr_sym_release"],
-  // execFile's and exec's `signal`: cp.execFileSignal selects the
-  // EventTarget unit, and no other launch reaches the abort listener.
-  "scr_child.c -> scr_event_target.c": [
-    "scr_et_remove_listener",
-    "scr_et_signal_core_fn",
-    "scr_events_add_abort_listener",
-  ],
   "scr_dyn_builtin_stream.c -> scr_stream_dyn.c": ["scr_stream_dyn_native"],
   "scr_dyn_handle_props.c -> scr_async_dyn.c": ["scr_dyn_promise_resolve"],
   "scr_dyn_handle_props.c -> scr_dyn_invoke.c": [

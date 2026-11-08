@@ -206,8 +206,6 @@ export function lowerExecFileAsyncCall(
       }
     }
   }
-  const timeoutPasses =
-    timeout.kind === "numLit" && Number.isInteger(timeout.value) && timeout.value >= 0;
   // Node's promisified function calls execFile before it returns its
   // promise, so an argument execFile refuses, or an invalid maxBuffer,
   // throws from the call itself; the checks therefore sit at the call,
@@ -239,25 +237,6 @@ export function lowerExecFileAsyncCall(
           loc,
         },
         maxBuffer: { value: a[5]!, arm: false, sync: false },
-        // execFile's validateTimeout, before the limit's check. A literal
-        // that passes needs none.
-        ...(timeoutPasses
-          ? {}
-          : {
-              validateFirst: [
-                {
-                  kind: "exprStmt" as const,
-                  expr: {
-                    kind: "libCall" as const,
-                    fn: "cp.checkTimeout" as const,
-                    args: [a[4]!],
-                    type: VOID,
-                    loc,
-                  },
-                  loc,
-                },
-              ],
-            }),
       };
     },
     loc,

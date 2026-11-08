@@ -15,7 +15,6 @@ import {
 import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { resultIsDiscarded } from "../call-position.js";
 import { processHasIpc } from "./process.js";
-import { usesProcessChannel } from "../../fork-target.js";
 
 /** Method calls on ChildProcess receivers: `child.on("exit"|"error", cb)`
  * registers a listener with the event loop's child registry. The event
@@ -74,16 +73,7 @@ export function ipcDisconnectListener(lowerer: Lowerer, node: ts.Expression): Ir
 
 export function ipcSendCallback(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const cb = lowerer.lowerExpr(node);
-  if (cb.type.kind !== "func") {
-    // send(message, sendHandle) and send(message, options): Node passes a
-    // socket or a server to the other process through an internal message.
-    lowerer.noLowering(
-      "send with a handle or an options argument (a socket or a server passed over the IPC channel)",
-      node,
-      "send(message[, callback]) is lowered; a transferred handle needs Node's handle passing",
-    );
-  }
-  if (cb.type.params.length > 1 || cb.type.ret.kind !== "void") {
+  if (cb.type.kind !== "func" || cb.type.params.length > 1 || cb.type.ret.kind !== "void") {
     lowerer.unsupported(
       "SC1090",
       node,
@@ -109,16 +99,13 @@ export function ipcSendCallback(lowerer: Lowerer, node: ts.Expression): IrExpr {
   return cb;
 }
 
-/** process.send in a program without fork targets. This binary opens no
- * channel of its own then, so only a parent's NODE_CHANNEL_FD can define
- * process.send. A program that uses the channel (usesProcessChannel) took
- * it over when it started and sends over it. Without any channel the calls
- * behave as Node's do on an undefined member: `process.send?.(...)` skips
- * its arguments and answers undefined, and `process.send(...)` evaluates
- * them and throws a TypeError (the message is serialized before the test,
- * which a `toJSON` method could observe). A call the source scan does not
- * count as a use keeps the fence: its message is never sent, so its type is
- * not checked. */
+/** process.send in a program without fork targets. This binary never opens
+ * a channel then, so only a Node.js parent's NODE_CHANNEL_FD can define
+ * process.send, and that channel has no lowering: a call fences when it runs.
+ * Without any channel the calls behave as Node's do on an undefined member:
+ * `process.send?.(...)` skips its arguments and answers undefined, and
+ * `process.send(...)` evaluates them and throws a TypeError. The message is
+ * never sent, so its type is not checked. */
 function lowerChannelLessSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
   const loc = locOf(call);
   const fence = (type: IrType): IrExpr =>
@@ -129,7 +116,6 @@ function lowerChannelLessSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr
       type,
       loc,
     );
-  const channel = usesProcessChannel(lowerer.program);
   const hasIpc = processHasIpc(lowerer, loc);
   if (call.questionDotToken) {
     const type = lowerer.mapTypeOf(lowerer.typeOf(call)) ?? BOOL;
@@ -140,36 +126,7 @@ function lowerChannelLessSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr
             { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
             type,
           );
-    const sent = channel
-      ? lowerer.coerceToExpected(processSendCall(lowerer, call), type)
-      : fence(type);
-    return { kind: "ternary", cond: hasIpc, then: sent, else_: absent, type, loc };
-  }
-  if (channel) {
-    // The message and the callback are evaluated once, before the test.
-    const send = processSendCall(lowerer, call);
-    if (send.kind !== "libCall") return send;
-    const stmts: IrStmt[] = [];
-    const args = send.args.map((arg) => {
-      const held = lowerer.declareHiddenLocal("%sendArg", arg.type);
-      stmts.push({ kind: "varDecl", localId: held.id, init: arg, loc });
-      const read: IrExpr = { kind: "varRef", localId: held.id, type: arg.type, loc };
-      return read;
-    });
-    return {
-      kind: "seqExpr",
-      stmts,
-      result: {
-        kind: "ternary",
-        cond: hasIpc,
-        then: { ...send, args },
-        else_: nodeThrowExpr(1, "", "process.send is not a function", BOOL, loc),
-        type: BOOL,
-        loc,
-      },
-      type: BOOL,
-      loc,
-    };
+    return { kind: "ternary", cond: hasIpc, then: fence(type), else_: absent, type, loc };
   }
   const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
     kind: "exprStmt",
@@ -191,9 +148,8 @@ function lowerChannelLessSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr
  * Node defines the method only in a process that has an IPC channel, as it
  * does process.send: without one the call throws Node's TypeError for an
  * undefined member, and the optional call answers undefined. A fork child
- * closes the channel it opened, and a program that uses the channel the
- * one it took over from its parent; a call the source scan does not count
- * as a use fences when it runs under a parent's channel. */
+ * closes the channel it opened; the channel a Node.js parent opened
+ * (NODE_CHANNEL_FD) has no lowering and fences when the call runs. */
 export function lowerProcessIpcDisconnect(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
   const loc = locOf(call);
   if (call.arguments.nodes.length !== 0) {
@@ -207,7 +163,7 @@ export function lowerProcessIpcDisconnect(lowerer: Lowerer, call: ts.CallExpress
     );
   }
   const present: IrExpr =
-    lowerer.forkTargets.length === 0 && !usesProcessChannel(lowerer.program)
+    lowerer.forkTargets.length === 0
       ? nodeThrowExpr(
           0,
           "SC2020",
@@ -243,13 +199,8 @@ export function lowerProcessIpcDisconnect(lowerer: Lowerer, call: ts.CallExpress
 }
 
 export function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
-  if (lowerer.forkTargets.length === 0) return lowerChannelLessSend(lowerer, call);
-  return processSendCall(lowerer, call);
-}
-
-/** process.send(message[, callback]) over the process's channel. */
-function processSendCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
   const loc = locOf(call);
+  if (lowerer.forkTargets.length === 0) return lowerChannelLessSend(lowerer, call);
   if (
     call.arguments.nodes.length < 1 ||
     call.arguments.nodes.length > 2 ||

@@ -4223,23 +4223,6 @@ export function buildMain(lowerer: Lowerer): IrFunction {
   const loc: SrcLoc = { file: lowerer.entry.fileName, start: 0, end: 0 };
   const body: IrStmt[] = [
     ...lowerer.mainPrelude,
-    // A program that uses the process's IPC channel takes over the one a
-    // parent opened for it before any of its code runs, as Node does.
-    ...(lowerer.program.analysis.usesProcessChannel === true
-      ? [
-          {
-            kind: "exprStmt" as const,
-            expr: {
-              kind: "libCall" as const,
-              fn: "process.nodeChannel" as const,
-              args: [],
-              type: VOID,
-              loc,
-            },
-            loc,
-          },
-        ]
-      : []),
     ...cjsModuleRegistryPrelude(lowerer, loc),
     ...handleEventReaderPrelude(lowerer, loc),
     ...dateClassOperationPrelude(lowerer, loc),

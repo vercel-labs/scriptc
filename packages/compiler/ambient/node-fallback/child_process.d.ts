@@ -198,12 +198,7 @@ declare module "child_process" {
      * ["ignore", logFd, logFd]) — and "pipe" there too (child.stdout/
      * child.stderr streams); "pipe" in the stdin slot exposes
      * child.stdin. */
-    stdio?: "ignore" | "inherit" | "pipe" | ("ignore" | "inherit" | "pipe" | "ipc" | number)[];
-    /* A fourth stdio entry "ipc" opens Node's JSON IPC channel to the
-     * child (child.send, 'message', disconnect, connected): a socket pair
-     * the child finds through NODE_CHANNEL_FD. serialization may only be
-     * "json": the native runtime has no V8 serializer. */
-    serialization?: "json" | "advanced";
+    stdio?: "ignore" | "inherit" | "pipe" | ("ignore" | "inherit" | "pipe" | number)[];
     /* detached gives the child its own session and process group
      * (POSIX_SPAWN_SETSID); env REPLACES the child environment; cwd
      * sets its working directory; windowsHide is a POSIX no-op; shell
@@ -226,10 +221,6 @@ declare module "child_process" {
       cwd?: string;
       env?: { [k: string]: string | undefined };
       execArgv?: string[];
-      /* With execPath the module is a script file that executable runs
-       * (execPath, ...execArgv, modulePath, ...args) over Node's JSON IPC
-       * channel; without it the module is compiled into this executable. */
-      execPath?: string;
       silent?: boolean;
       stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit" | "ipc")[];
       serialization?: "json" | "advanced";
@@ -281,26 +272,6 @@ declare module "child_process" {
   export function execFileSync(file: string, args?: string[], options?: ExecSyncOptions): string;
   export function execSync(command: string, options?: ExecSyncOptions): string;
   export type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
-  /* The callback forms' options: the capture's members, and the ones
-   * that involve a timer or an AbortSignal. env REPLACES the child
-   * environment; a timeout above 0 kills with killSignal (a signal's name,
-   * SIGTERM without one), as a reached maxBuffer does; an aborted signal
-   * kills with SIGTERM and hands the callback an AbortError whose cause is
-   * the signal's reason. input and stdio are named so that the lowering
-   * refuses them where they are written. */
-  interface ExecFileOptions {
-    encoding?: "utf8" | "utf-8";
-    cwd?: string;
-    env?: { [k: string]: string | undefined };
-    input?: string;
-    timeout?: number | undefined;
-    stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
-    maxBuffer?: number;
-    killSignal?: string | undefined;
-    signal?: AbortSignal | undefined;
-    windowsHide?: boolean;
-    shell?: boolean;
-  }
   /* The callback form starts an asynchronous child and captures utf8
    * stdout/stderr. The no-callback overload remains for util.promisify's
    * static target recognition; reached no-callback calls still fence. */
@@ -313,7 +284,7 @@ declare module "child_process" {
   export function execFile(
     file: string,
     args: string[] | null,
-    options: ExecFileOptions,
+    options: ExecSyncOptions,
     callback: ExecFileCallback,
   ): ChildProcess;
   export function execFile(
@@ -327,7 +298,7 @@ declare module "child_process" {
    * fence at their site. */
   export function exec(
     command: string,
-    options?: ExecFileOptions | ((error: Error | null, stdout: string, stderr: string) => void),
+    options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
     callback?: (error: Error | null, stdout: string, stderr: string) => void,
   ): ChildProcess;
 }

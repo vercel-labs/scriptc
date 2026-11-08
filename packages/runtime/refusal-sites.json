@@ -187,12 +187,6 @@
  },
  {
   "file": "scr_child.c",
-  "function": "scr_process_node_channel",
-  "message": "an IPC channel opened with serialization: \"advanced\" is not supported (the native runtime has no V8 serializer); start this process with serialization: \"json\"",
-  "code": "SC2020"
- },
- {
-  "file": "scr_child.c",
   "function": "scr_child_dyn_invoke",
   "message": "This ChildProcess method or event has no native lowering",
   "code": "SC2020"

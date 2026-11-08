@@ -28,7 +28,7 @@ beforeAll(async () => {
   const { ensureIcuSources } = (await import(
     pathToFileURL(join(repoRoot, "packages/runtime-pack-common/scripts/icu-data.mjs")).href
   )) as { ensureIcuSources: (cacheDir: string) => Promise<string> };
-  const root = await pinnedInput("ICU's pinned sources", () =>
+  const root = await pinnedInput("ICU's pinned source archive", () =>
     ensureIcuSources(join(repoRoot, "node_modules", ".cache", "scriptc-icu-sources")),
   );
   icuIncludeFlags = () => [

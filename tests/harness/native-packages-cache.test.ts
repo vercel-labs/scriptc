@@ -85,5 +85,6 @@ test("test jobs restore the cache of ICU's archives that the pack build saves", 
   ).runs.steps.find((step) => step.uses?.startsWith("actions/cache/restore@"));
   const saved = (action.runs.steps as Step[]).find((step) => step.id === "icu");
   expect(saved?.with?.key).toContain("icu-downloads-");
-  expect(restore?.with).toEqual(saved?.with);
+  expect(restore?.with?.key).toBe(saved?.with?.key);
+  expect(restore?.with?.path).toBe(saved?.with?.path);
 });

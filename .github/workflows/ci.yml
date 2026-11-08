@@ -1301,6 +1301,7 @@ jobs:
       - name: Build Windows helper
         run: pnpm --filter @scriptc/llvm-win32-x64-msvc build:native
       - uses: ./.github/actions/zig
+      - uses: ./.github/actions/icu-downloads
       - name: Build Windows runtime pack
         run: pnpm --filter @scriptc/runtime-win32-x64-msvc build:native
       - run: pnpm build

@@ -1,4 +1,4 @@
-builtin-through-global-object.ts:8:13 - error SC1090: calling the built-in 'structuredClone' through the global object in a program that assigns 'globalThis.structuredClone' (it would reach the built-in, not the assigned value) is not supported yet
+builtin-through-global-object.ts:8:13 - error SC1090: calling the built-in 'structuredClone' through the global object in a program that writes 'structuredClone' on the global object (it would reach the built-in, not the written value) is not supported yet
 
   7 | globalThis.structuredClone = (<T,>(value: T): T => value) as typeof structuredClone;
   8 | console.log(globalThis.structuredClone({ a: 1 }).a);

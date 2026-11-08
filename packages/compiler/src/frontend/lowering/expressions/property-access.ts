@@ -64,6 +64,7 @@ import {
   stdlibGlobalNameOf,
 } from "../surfaces.js";
 import { lowerIdentifierExpr } from "./identifiers.js";
+import { globalObjectWrites } from "../global-object-writes.js";
 import {
   isGenericCallableMemberType,
   isLegacyUrlSymbol,
@@ -1199,11 +1200,7 @@ export function lowerPropertyAccessExpr(
       member.text !== TEMPORAL_GLOBAL &&
       !COMMONJS_MODULE_BINDINGS.has(member.text) &&
       builtinGlobalIsCallable(lowerer, member) &&
-      !globalThisWrittenNames(
-        lowerer,
-        lowerer.typeOf(staticallySelected(lowerer, expr.expression)),
-      ).has(member.text) &&
-      !lowerer.globalThisComputedWrite
+      !writesGlobalMember(lowerer, expr.expression, member.text)
     )
       return lowerIdentifierExpr(lowerer, member, loc);
   }
@@ -6610,6 +6607,13 @@ function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | "varie
   return ts.isFunctionExpression(fn) ? contextualCallCount(lowerer, fn) : null;
 }
 
+/** Whether the program writes `name` on the global object `receiver`
+ * spells, by any spelling (global-object-writes.ts). */
+function writesGlobalMember(lowerer: Lowerer, receiver: ts.Expression, name: string): boolean {
+  const writes = globalObjectWrites(lowerer, lowerer.typeOf(staticallySelected(lowerer, receiver)));
+  return writes.computed || writes.names.has(name);
+}
+
 /** Whether the built-in global `name` names is a function or a constructor. */
 function builtinGlobalIsCallable(lowerer: Lowerer, name: ts.Identifier): boolean {
   const type = lowerer.typeOf(name);
@@ -6621,7 +6625,7 @@ function builtinGlobalIsCallable(lowerer: Lowerer, name: ts.Identifier): boolean
 
 /** The property names the program assigns on the global object, through
  * `globalThis` or a binding of its type (`(_a = globalThis).x = v`). */
-export function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<string> {
+function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<string> {
   const known = lowerer.globalThisWrittenNames;
   if (known) return known;
   const names = new Set<string>();

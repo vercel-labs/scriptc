@@ -161,11 +161,8 @@ import {
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
-import {
-  builtinGlobalValue,
-  globalThisWrittenNames,
-  isPrimitivePrototypeRead,
-} from "./expressions/property-access.js";
+import { builtinGlobalValue, isPrimitivePrototypeRead } from "./expressions/property-access.js";
+import { globalObjectWrites } from "./global-object-writes.js";
 import { staticallySelected } from "./static-typeof.js";
 import {
   lowerBufferConstruct,
@@ -505,11 +502,11 @@ function lowerCallableMemberCall(lowerer: Lowerer, call: ts.CallExpression): IrE
  * identifier (`fetch(…)`), or the member name of a direct read of the
  * global object (`globalThis.fetch(…)`, `global.fetch(…)`:
  * globalObjectMemberName), which calls the same function. A program that
- * assigns that member (`globalThis.fetch = mine`) means its own function
+ * writes that member (`globalThis.fetch = mine`, `global.fetch = mine`,
+ * `Object.defineProperty(globalThis, "fetch", …)`) means its own function
  * there, and a compiled program has only the built-in to call, so the
- * call is refused by name. The assignments are the ones
- * globalThisWrittenNames finds: `globalThis.name = …` and
- * `globalThis["name"] = …` in a source that spells `globalThis`. */
+ * call is refused by name. The writes are the census of
+ * global-object-writes.ts: every spelling, in every source. */
 export function builtinCalleeName(
   lowerer: Lowerer,
   call: ts.CallExpression | ts.NewExpression,
@@ -520,19 +517,19 @@ export function builtinCalleeName(
   const member = globalObjectMemberName(lowerer, callee);
   if (member === null) return null;
   const receiver = (callee as ts.PropertyAccessExpression).expression;
-  const written = globalThisWrittenNames(
+  const written = globalObjectWrites(
     lowerer,
     lowerer.typeOf(staticallySelected(lowerer, receiver)),
   );
-  if (written.has(member.text) || lowerer.globalThisComputedWrite) {
+  if (written.names.has(member.text) || written.computed) {
     lowerer.unsupported(
       "SC1090",
       call,
-      `${ts.isCallExpression(call) ? "calling" : "constructing"} the built-in '${member.text}' through the global object in a program that assigns ${
-        written.has(member.text)
-          ? `'globalThis.${member.text}'`
-          : "a computed member of the global object"
-      } (it would reach the built-in, not the assigned value)`,
+      `${ts.isCallExpression(call) ? "calling" : "constructing"} the built-in '${member.text}' through the global object in a program that writes ${
+        written.names.has(member.text)
+          ? `'${member.text}' on the global object`
+          : "a member of the global object by a computed name"
+      } (it would reach the built-in, not the written value)`,
     );
   }
   return member;

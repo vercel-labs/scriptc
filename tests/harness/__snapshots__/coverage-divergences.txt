@@ -13,12 +13,12 @@ scriptc coverage tests/coverage-fixtures/divergences.ts
       ×1  SC6002  this object's keys enumerate as 'x, y' natively (the declaration order of 'Point') but as 'y, x' under Node (insertion order), and the program observes the order (JSON.stringify, Object.keys, for-in …
           at tests/coverage-fixtures/divergences.ts:34:22
           hint: write the properties in the declaration order of 'Point' (or reorder the declaration to match how objects are built)
-      ×1  SC6002  every '{ label: string | undefined; x: number; y: number }' value enumerates its keys as 'x, y, label' natively, but objects of this type create their keys in different orders, here by a spread or an…
-          at tests/coverage-fixtures/divergences.ts:36:24
-          hint: create every property in one object literal, in the order wanted (set a property that comes later to undefined), or do not rely on the key order of these objects
       ×1  SC6003  localeCompare over 'яблоко' compares characters outside the built-in collation (Latin letters, digits, punctuation and symbols) by code point natively, while Node applies ICU's full collation
           at tests/coverage-fixtures/divergences.ts:40:70
           hint: results agree with Node for Latin-script text; for other scripts compare explicitly (for example by code point with < and >) so both runtimes agree
       ×1  SC6004  this 'Circle' reaches a cast to the unrelated class 'Square' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally
           at tests/coverage-fixtures/divergences.ts:55:20
           hint: narrow with 'instanceof Square' before casting, or cast to a base class or interface both classes share
+      ×1  SC6014  objects of this type enumerate their keys as 'x, y, label' natively, but the program creates them in more than one order (object literals, spreads, or assignments that add an optional property an obj…
+          at tests/coverage-fixtures/divergences.ts:36:24
+          hint: create every property in one object literal, in the order wanted (set a property that comes later to undefined), or do not rely on the key order of these objects

@@ -1963,13 +1963,14 @@ function lowerToIrWithIslands(
   const divergences = [
     ...widthCopyDivergences(resultLowerer, widthCopies),
     ...scanned,
-    // Key orders the witness pass could not follow, except where the scan
-    // already names the same construction.
+    // Key orders the witness pass could not follow (SC6014), except where
+    // the scan already names the same construction for its own order
+    // (SC6002).
     ...resultLowerer.keyOrder.warnings.filter(
       (warning) =>
         !scanned.some(
           (found) =>
-            found.code === warning.code &&
+            found.code === "SC6002" &&
             found.loc.file === warning.loc.file &&
             found.loc.start === warning.loc.start,
         ),

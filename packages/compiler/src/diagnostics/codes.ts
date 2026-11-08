@@ -114,6 +114,7 @@ export const DIAGNOSTIC_CODES = {
   SC6007: "divergence: island value crosses as a copy",
   SC6008: "divergence: import kept that tsc's output drops",
   SC6012: "divergence: refused statement inside its own try",
+  SC6014: "divergence: key order of a record type not followed per object",
   SC6101: "performance: likely-hot function with untyped values",
   SC6102: "performance: declaration-typed boundary note",
   SC6103: "performance: shape inference overlay report",

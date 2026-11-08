@@ -1,4 +1,4 @@
-// SC6002 from the key-order pass: record types whose key order the program
+// SC6014 from the key-order pass: record types whose key order the program
 // observes and whose values create their keys in an order the compiler does
 // not follow. Each type is reported once, at a construction its order
 // depends on. The first two types are reported; the others report nothing.

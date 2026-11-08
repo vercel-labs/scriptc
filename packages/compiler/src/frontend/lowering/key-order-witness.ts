@@ -183,7 +183,7 @@ export class KeyOrderNotes {
    * (lower-calls.ts) stay static for every other shape, and the pass reads
    * it back as a spread source that can already hold one. */
   readonly keptSourceShapes = new Set<string>();
-  /** SC6002 for each observed shape whose values create their keys in an
+  /** SC6014 for each observed shape whose values create their keys in an
    * order this pass could not follow: the shape kept one table for every
    * value (applyKeyOrderWitnesses). */
   readonly warnings: ScrDiagnostic[] = [];
@@ -1694,7 +1694,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const mirrors = new Map<string, Template>();
   /** Shapes whose source's orders all agree over their keys: one table. */
   const agreed = new Set<string>();
-  /** SC6002 for each observed shape that kept one table for every value
+  /** SC6014 for each observed shape that kept one table for every value
    * although its values create their keys in an order nothing above could
    * follow: no resolved order, and no per-instance orders (`ordered`).
    * A warning only: it changes nothing the program is compiled to. */
@@ -1710,14 +1710,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       // Fewer than two keys have one order.
       if (!inScope(shape) || tableOf(shape).length < 2) continue;
       warned.add(id);
-      notes.warnings.push(
-        keyOrderUntracedDiag(
-          lowerer.fmt({ kind: "record", shapeId: id }),
-          tableOf(shape).join(", "),
-          why.cause,
-          why.loc,
-        ),
-      );
+      notes.warnings.push(keyOrderUntracedDiag(tableOf(shape).join(", "), why.cause, why.loc));
     }
     // Object.assign's helper copies its source's fields in the order the
     // source's type stores them, unless it was put in its source's order
@@ -1741,14 +1734,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         added.set(w.fn, keys);
         if (keys.size !== 2) continue;
         warned.add(id);
-        notes.warnings.push(
-          keyOrderUntracedDiag(
-            lowerer.fmt({ kind: "record", shapeId: id }),
-            tableOf(shape).join(", "),
-            "assign",
-            w.loc,
-          ),
-        );
+        notes.warnings.push(keyOrderUntracedDiag(tableOf(shape).join(", "), "assign", w.loc));
         break;
       }
     }

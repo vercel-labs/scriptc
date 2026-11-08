@@ -676,7 +676,8 @@ exports.probe = function probe(input) {
   {
     const proto = Intl.DateTimeFormat.prototype;
     const d = Object.getOwnPropertyDescriptor(proto, "format");
-    const made = new WeakMap();
+    // By the format function an instance hands out (the same one each time).
+    const made = new Map();
     if (d !== undefined && d.configurable && typeof d.get === "function") {
       Object.defineProperty(proto, "format", {
         configurable: true,

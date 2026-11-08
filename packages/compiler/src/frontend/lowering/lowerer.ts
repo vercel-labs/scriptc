@@ -14785,6 +14785,25 @@ export class Lowerer {
    * lowers again (at most MAX_DECLARATION_RETRIES times). Null when it
    * still poisons; its diagnostics are then committed as before. */
   lowerUnitDegrading<T>(lower: () => T): T | null {
+    try {
+      return this.lowerUnitRetrying(lower);
+    } catch (e) {
+      if (!(e instanceof PoisonError)) throw e;
+      return null;
+    }
+  }
+
+  /** lowerUnitDegrading for a unit whose caller answers the poison itself
+   * (a method, a constructor: the member is omitted): the same commit
+   * point, and the poison of the last attempt is thrown when the unit
+   * still poisons. The statements of a body have a commit point of their
+   * own (lowerStmts); this one serves what lowers outside every statement,
+   * the bindings and defaults of the parameters (declareParams), so a
+   * binding of a destructured parameter degrades as the same binding in a
+   * declaration statement does. Declared functions, static methods,
+   * constructors and methods lower under it; a function expression's
+   * poison reaches the statement that holds it. */
+  lowerUnitRetrying<T>(lower: () => T): T {
     const slots: DynamicSlot[] = [];
     for (let attempt = 0; ; attempt++) {
       const mark = this.diags.length;
@@ -14795,9 +14814,9 @@ export class Lowerer {
         return result;
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
-        if (attempt >= MAX_DECLARATION_RETRIES) return null;
+        if (attempt >= MAX_DECLARATION_RETRIES) throw e;
         const slot = this.degradeAtCommit(e, DECLARATION_SLOTS);
-        if (slot === null && !this.widenPartials(hits)) return null;
+        if (slot === null && !this.widenPartials(hits)) throw e;
         if (slot !== null) slots.push(slot);
         this.dropAttemptDiags(mark);
       }
@@ -19679,14 +19698,14 @@ export class Lowerer {
   }
 
   lowerClassCtor(info: ClassInfo): IrFunction {
-    return lowerClassCtor(this, info);
+    return this.lowerUnitRetrying(() => lowerClassCtor(this, info));
   }
 
   lowerClassMethodMember(
     info: ClassInfo,
     fnLike: ts.MethodDeclaration | ts.AccessorDeclaration,
   ): IrFunction | null {
-    return lowerClassMethodMember(this, info, fnLike);
+    return this.lowerUnitRetrying(() => lowerClassMethodMember(this, info, fnLike));
   }
 
   throwingSetterFn(info: ClassInfo, prop: string): IrFunction {
@@ -19712,7 +19731,9 @@ export class Lowerer {
   }
 
   lowerFunction(decl: ts.FunctionDeclaration): IrFunction | null {
-    return lowerFunction(this, decl);
+    // A TypeScript function's body-level poison is thrown to the commit
+    // point here; a JavaScript function answers its own (a runtime fence).
+    return this.lowerUnitDegrading(() => lowerFunction(this, decl));
   }
 
   collectGlobals(sf: ts.SourceFile, topStmts: ts.Statement[]): void {

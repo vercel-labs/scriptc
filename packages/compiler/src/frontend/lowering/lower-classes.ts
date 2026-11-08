@@ -10276,6 +10276,20 @@ export function lowerStaticMethod(
   info: ClassInfo,
   name: string,
 ): IrFunction | null {
+  // A poison OUTSIDE the per-statement catches (the this/super fence, a
+  // fenced parameter default, a binding of a destructured parameter): the
+  // diagnostic is recorded. Localized failure's commit point degrades a
+  // failing declaration slot and lowers the method again; otherwise the
+  // method skips like a signature-blocked function (lowerFunction's rule)
+  // instead of killing the whole analysis.
+  return lowerer.lowerUnitDegrading(() => lowerStaticMethodAttempt(lowerer, info, name));
+}
+
+function lowerStaticMethodAttempt(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  name: string,
+): IrFunction | null {
   const entry = info.staticMethods?.get(name);
   if (!entry?.member.body) return null;
   const isAsync =
@@ -10333,13 +10347,6 @@ export function lowerStaticMethod(
     if (isAsync) fn.async = true;
     if (genCh !== null) fn.generator = bindsAtCall ? { ...genCh, bindAtCall: true } : genCh;
     return fn;
-  } catch (e) {
-    // A poison OUTSIDE the per-statement catches (the this/super fence,
-    // a fenced parameter default): the diagnostic is recorded — the
-    // method skips like a signature-blocked function (lowerFunction's
-    // rule) instead of killing the whole analysis.
-    if (!(e instanceof PoisonError)) throw e;
-    return null;
   } finally {
     lowerer.fnStack.pop();
   }

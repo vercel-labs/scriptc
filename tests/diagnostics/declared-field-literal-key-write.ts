@@ -1,23 +1,17 @@
 // A `declare` field has no storage of its own: its name is an own property
-// of the instance once something assigns it. The assignment by name
-// compiles (`gauge.unit = "bar"`). The bracket spelling with a key the
-// compiler can read is refused where it is written, on any class,
-class Gauge {
-  declare unit: string;
-  level = 0;
-}
-const gauge = new Gauge();
-gauge["unit"] = "bar";
-const key = "unit" as const;
-gauge[key] = "psi";
-console.log(gauge.unit, gauge.level);
-// and on an Error subclass for every declared name, `code` included.
+// of the instance once something assigns it, by name or by a key the
+// compiler can read (corpus 9431). One name stays refused in the bracket
+// spelling on an Error subclass: `stack` is a member the runtime error
+// keeps itself, and the bracket write would add a second property under
+// the same name.
 class Overflow extends Error {
-  declare code: string;
+  declare stack: string;
   declare channel: number;
   limit = 10;
 }
 const overflow = new Overflow("past the limit");
-overflow["code"] = "E_OVERFLOW";
+overflow["stack"] = "trace";
+const key = "stack" as const;
+overflow[key] = "shorter trace";
 overflow["channel"] = 3;
-console.log(overflow.code, overflow.channel, overflow.limit);
+console.log(overflow.channel, overflow.limit);

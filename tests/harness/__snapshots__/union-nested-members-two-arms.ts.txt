@@ -1,0 +1,8 @@
+union-nested-members-two-arms.ts:14:34 - error SC2003: union conversion has no unambiguous layout mapping: expected '{ shape: { height: number; tint: string | undefined; width: number } } | { shape: { frame: number | undefined; height: number; width: number } }', got '{ shape: { height: number; width: number } }' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts) — the record fits 2 arms by width and the union has no discriminant member to choose one
+
+  13 | 
+  14 | const picture: Tinted | Framed = box();
+     |                                  ^~~~~
+  15 | console.log(picture.shape.width);
+
+  hint: a union value is one arm at run time, and nothing in this record says which: type the slot with the record type itself (one record that declares every member), or give each arm a member with its own literal value

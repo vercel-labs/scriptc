@@ -110,6 +110,13 @@ function zlibInput(
       dyn: false,
     };
   }
+  // A value that is one of several kinds (`string | Buffer`, or a string
+  // that may be undefined): the runtime reads the kind the value has, with
+  // Node's TypeError for one that is no byte input.
+  if (value.type.kind === "union" && lowerer.dynConvertible(value.type)) {
+    const boxed = lowerer.coerceToExpected(value, DYN);
+    if (boxed.type.kind === "dyn") return { value: boxed, dyn: true };
+  }
   lowerer.noLowering(
     `zlib byte input of '${lowerer.fmt(value.type)}' values`,
     node,

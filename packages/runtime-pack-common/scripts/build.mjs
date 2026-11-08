@@ -16,6 +16,7 @@ import {
 } from "./artifact-policy.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
 import { buildRuntimeUnit, hostHelperPath, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { probeHardeningSupport, runtimeHardeningFlags } from "./hardening.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
@@ -79,6 +80,11 @@ async function build() {
   const compilerArgs = config.compilerArgs ?? [];
   const archiver = process.env.AR ?? config.archiver ?? "ar";
   const archiverArgs = config.archiverArgs ?? [];
+  // Optional hardening flags follow what this compiler accepts.
+  const hardeningSupport = await probeHardeningSupport({
+    compiler,
+    args: [...compilerArgs, ...config.targetArgs, ...(config.compilerFlags ?? [])],
+  });
   const commonFlags = [
     ...config.targetArgs,
     ...(config.compilerFlags ?? []),
@@ -503,6 +509,11 @@ async function build() {
               ...variant.defines.map((define) => `-D${define}`),
               ...tlsFlags,
               ...includeFlags,
+              // After RUNTIME_COMPILE_FLAGS, so the bounds checks stay enabled.
+              ...runtimeHardeningFlags(config, {
+                optimized: flavorSpec.optimization !== "-O0",
+                ...hardeningSupport,
+              }),
             ];
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
             let unitBuild = false;
@@ -591,6 +602,9 @@ async function build() {
       ...codeAlignment,
       ...(config.runtimeDefines ?? []).map((define) => `-D${define}`),
     ];
+    // zlib, brotli and mbedtls parse untrusted input and are hardened like the
+    // runtime units; QuickJS and libregexp are not (see hardening.mjs).
+    const vendorHardening = runtimeHardeningFlags(config, { optimized: true, vendor: true, ...hardeningSupport });
     const requestedArchives = new Set(matrix.archives.map((entry) => entry.id));
     const archives =
       config.vendorArchives === false
@@ -620,6 +634,7 @@ async function build() {
                     ...zlibBuild.defines.map((define) => `-D${define}`),
                     "-I",
                     zlib,
+                    ...vendorHardening,
                   ]),
                 ]
               : []),
@@ -631,6 +646,7 @@ async function build() {
                     "-Os",
                     "-I",
                     join(brotli, "include"),
+                    ...vendorHardening,
                   ]),
                 ]
               : []),
@@ -642,6 +658,7 @@ async function build() {
                     "-O3",
                     ...zstdBuild.defines.map((define) => `-D${define}`),
                     ...zstdBuild.compileFlags,
+                    ...vendorHardening,
                     ...codeAlignment,
                     "-I",
                     zstd,
@@ -659,6 +676,7 @@ async function build() {
                     join(mbedtls, "include"),
                     "-I",
                     join(mbedtls, "library"),
+                    ...vendorHardening,
                   ]),
                 ]
               : []),

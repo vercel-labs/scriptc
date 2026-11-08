@@ -216,7 +216,6 @@ import {
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
 import { siteDiscriminantConversion } from "./coercions/site-discriminant.js";
-import { refuseClassRecordCopy } from "./coercions/class-records.js";
 import {
   boxBuiltinValuesChecked,
   shareBuiltinValueIdentities,
@@ -6808,16 +6807,22 @@ export class Lowerer {
     const unionClasses = this.facts.unionClasses();
     if (unionClasses.size > 0) {
       const states = new Map<readonly ts.Type[], UnionClassState>();
+      for (const members of unionClasses.values()) {
+        if (states.has(members)) continue;
+        states.set(members, {
+          members,
+          state: "unmapped",
+          record: null,
+          owning: null,
+          reentered: false,
+          memberNames: null,
+        });
+      }
       this.typeCtx.unionClassRecords = new Map();
+      this.typeCtx.unionClassStates = [...states.values()];
       this.typeCtx.unionClassOf = (type) => {
         const members = unionClasses.get(type);
-        if (members === undefined) return undefined;
-        let state = states.get(members);
-        if (state === undefined) {
-          state = { members, state: "unmapped", record: null, owning: null, reentered: false };
-          states.set(members, state);
-        }
-        return state;
+        return members === undefined ? undefined : states.get(members);
       };
     }
     this.registerBuiltinErrorClasses();
@@ -16864,7 +16869,6 @@ export class Lowerer {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
     const proxy = expected.kind === "dyn" ? null : nativeProxyEntering(this, expr);
     if (proxy) refuseProxyInTypedSlot(this, expr.loc, expected, proxy.trapless);
-    refuseClassRecordCopy(this, node, expr.type, expected);
     // The CommonJS module object is a handle (a number) wherever its type
     // is known; an untyped slot would hold that number, where Node holds
     // the object (`typeof` of it is "object", its keys are the module's).

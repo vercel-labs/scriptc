@@ -57,7 +57,12 @@ import {
 import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
-import { classMemberLayout, classRecord, type UnionClassState } from "./union-classes.js";
+import {
+  classMemberLayout,
+  classRecord,
+  memberNamesKey,
+  type UnionClassState,
+} from "./union-classes.js";
 
 import { isJsSourceFile, isNodeTypesPath } from "./program.js";
 import { isProvenanceSourceFile } from "./provenance-registry.js";
@@ -1529,6 +1534,9 @@ export interface TypeMapperCtx {
   /** With unionClassOf: each class record that merges two or more layouts,
    * with the layouts its types have on their own. */
   unionClassRecords?: Map<string, ReadonlySet<string>>;
+  /** With unionClassOf: every class of the pass, for the types that belong
+   * to none and have the layout of one's member (classRecordOfLayout). */
+  unionClassStates?: readonly UnionClassState[];
   /** Whether the program creates primitive wrapper objects
    * (primitive-wrappers.ts): then the boxed interface types (`String`,
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
@@ -2555,6 +2563,8 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (!topLevel || !ts.isUnreadableConstituentsPanic(e)) throw e;
       mapped = null;
     }
+    if (mapped?.kind === "record" && ctx.unionClassStates !== undefined)
+      mapped = classRecordOfLayout(type, mapped, ctx);
     // A generic alias the body spells over its own type parameters (`x as
     // Catalog<G, P>`) stays symbolic in the checker; when that form does not
     // map, the instance's concrete instantiation of the same alias does.
@@ -2762,6 +2772,52 @@ function mapUnionClassRecord(
   unionClass.record = { kind: "record", shapeId };
   unionClass.state = "merged";
   return unionClass.record;
+}
+
+/** The record of the class one of whose types has the layout `own`, for a
+ * `type` that belongs to no class: an inferred literal type, a member's
+ * type written a second time, the type an assertion names. Where layouts
+ * decide a union's arms such a value is the arm that member is, the same
+ * object under both types, so here it is the class's record too, from the
+ * place it is built: it enters the union with no conversion.
+ *
+ * A class is decided the first time one of its types is mapped, and a type
+ * with a member's property names can be mapped before that: it decides the
+ * class then, so that it has one answer in the pass. Inside the mapping of
+ * the class itself (a member that holds such a type) no answer exists yet;
+ * the class stays separate, as for a member that holds the class. */
+function classRecordOfLayout(
+  type: ts.Type,
+  own: IrType & { kind: "record" },
+  ctx: TypeMapperCtx,
+): IrType {
+  if (ctx.unionClassOf?.(type) !== undefined) return own;
+  const shape = ctx.shapes.get(own.shapeId);
+  if (!classMemberLayout(shape)) return own;
+  let names: string | null = null;
+  for (const unionClass of ctx.unionClassStates ?? []) {
+    if (unionClass.state === "separate") continue;
+    if (unionClass.state !== "merged") {
+      names ??= memberNamesKey(shape.fields.map((field) => field.name));
+      unionClass.memberNames ??= new Set(
+        unionClass.members.map((member) =>
+          memberNamesKey(ctx.checker.getPropertiesOfType(member).map((p) => ts.symbolName(p))),
+        ),
+      );
+      if (!unionClass.memberNames.has(names)) continue;
+      if (unionClass.state === "mapping") {
+        unionClass.reentered = true;
+        continue;
+      }
+      // A signature being erased and a lenient mapping decide no class.
+      if (ctx.erasingSignature !== undefined || ctx.lenient === true) continue;
+      mapType(unionClass.members[0]!, ctx);
+    }
+    const record = unionClass.record;
+    if (record !== null && ctx.unionClassRecords?.get(record.shapeId)?.has(own.shapeId) === true)
+      return record;
+  }
+  return own;
 }
 
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {

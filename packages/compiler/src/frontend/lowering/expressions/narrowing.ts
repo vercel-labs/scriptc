@@ -992,13 +992,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
 }
 
 /** A read of a member that its receiver's type requires, where that type
- * belongs to a class of record types and the class's record holds the
- * member as optional. */
+ * belongs to a class of record types, or has the layout of one of the
+ * class's types and so its record, and the class's record holds the member
+ * as optional. */
 function classRecordMemberRead(lowerer: Lowerer, node: ts.Node, expr: IrExpr): boolean {
   if (expr.kind !== "recordGet" || lowerer.typeCtx.unionClassOf === undefined) return false;
   if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return false;
   const receiver = lowerer.checker.getNonNullableType(lowerer.typeOf(node.expression));
-  if (lowerer.typeCtx.unionClassOf(receiver)?.state !== "merged") return false;
+  if (
+    lowerer.typeCtx.unionClassOf(receiver)?.state !== "merged" &&
+    lowerer.typeCtx.unionClassRecords?.has(expr.shapeId) !== true
+  )
+    return false;
   const property = lowerer.checker.getPropertyOfType(receiver, expr.field);
   return property !== undefined && (property.flags & ts.SymbolFlags.Optional) === 0;
 }

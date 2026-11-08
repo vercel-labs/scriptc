@@ -6164,8 +6164,14 @@ function objectRestValue(
     }
     return { kind: "call", callee: helper, args: [srcRef()], type: restT, loc };
   }
+  // A rest type with the layout of one type of a class of record types is
+  // the class's record (union-classes.ts): the members only the class's
+  // other types declare are absent in it.
+  const classRecord = lowerer.typeCtx.unionClassRecords?.has(restT.shapeId) === true;
   const fields = restShape.fields.map((f) => {
     const srcField = shape.fields.find((s) => s.name === f.name);
+    const absent = srcField || !classRecord ? null : lowerer.absentFieldValue(f, loc);
+    if (absent) return { name: f.name, value: absent };
     if (!srcField) {
       lowerer.unsupported(
         "SC1031",

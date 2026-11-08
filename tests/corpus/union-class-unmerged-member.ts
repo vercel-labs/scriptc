@@ -1,7 +1,7 @@
 // A union whose members that share a discriminant value are one record,
 // beside a member that is in no such class and has the layout one member
-// of the class has on its own. A value of that member's type enters the
-// union as the object it is: its discriminant names its own arm.
+// of the class has on its own: it is that record too. A value of that
+// member's type enters the union as the object it is.
 type Leaf = { kind: "node"; id: string };
 type Branch = { kind: "node"; id: string; parent: string };
 type Mark = { kind: "mark"; id: string };

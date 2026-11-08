@@ -27,7 +27,13 @@
  *    wherever that type is written (a parameter, a binding, an `as`): it
  *    enters and leaves the union as the same object, with no conversion;
  *  - a member the constituent requires and the record holds as optional is
- *    read through the checked extraction of the slot's undefined arm.
+ *    read through the checked extraction of the slot's undefined arm;
+ *  - a type that belongs to no class and has the layout of one of a
+ *    class's types (an inferred literal type, the type written a second
+ *    time, the type an assertion names) is the class's record as well
+ *    (classRecordOfLayout in type-mapper.ts). Layouts decided a union's
+ *    arms before the classes, so such a value was the arm, the one object
+ *    under both types; converting it into the class's record would copy it.
  *
  * The classes are found once, before any type is mapped, from the union
  * types the program writes down (collectUnionClasses), so a constituent
@@ -61,6 +67,15 @@ export interface UnionClassState {
    * contains its own class, which stays separate. */
   owning: ts.Type | null;
   reentered: boolean;
+  /** memberNamesKey of each member, once a type outside the class asked
+   * whether it can have a member's layout. */
+  memberNames: Set<string> | null;
+}
+
+/** The property names of one record type as a key: two types with one
+ * layout have the same names. */
+export function memberNamesKey(names: readonly string[]): string {
+  return [...names].sort().join("\0");
 }
 
 /** A union type node two of whose members can be record types. Primitive,
@@ -185,7 +200,57 @@ export function collectUnionClasses(
       for (const members of sharedLiteralClasses(type, checker)) join(members);
     });
   }
+  // A member written a second time in another union is another type with
+  // the same layout, and a value of one is a value of the other: their
+  // classes are one class, so that the value is one record in both unions.
+  // Where no one record holds both classes (a member name the two declare
+  // with different types) neither is a class: each type keeps its own
+  // layout, the one the two unions share.
+  const byNames = new Map<string, ts.Type[]>();
+  for (const member of [...classOf.keys()]) {
+    const key = memberNamesKey(checker.getPropertiesOfType(member).map((p) => ts.symbolName(p)));
+    const twins = byNames.get(key) ?? [];
+    byNames.set(key, twins);
+    for (const twin of twins) {
+      const own = classOf.get(member);
+      const other = classOf.get(twin);
+      if (own === undefined || other === undefined || own === other) continue;
+      if (!checker.isTypeAssignableTo(member, twin) && !checker.isTypeAssignableTo(twin, member))
+        continue;
+      if (classesAgree(own, other, checker)) join([member, twin]);
+      else for (const type of [...own, ...other]) classOf.delete(type);
+    }
+    twins.push(member);
+  }
   return classOf;
+}
+
+/** Whether one record can hold the types of two classes: every member name
+ * a type of each declares has the same type and the same optionality in
+ * both (classRecord gives up on a name two layouts declare differently). */
+function classesAgree(
+  a: readonly ts.Type[],
+  b: readonly ts.Type[],
+  checker: ts.TypeChecker,
+): boolean {
+  for (const left of a) {
+    for (const prop of checker.getPropertiesOfType(left)) {
+      for (const right of b) {
+        const twin = checker.getPropertyOfType(right, ts.symbolName(prop));
+        if (twin === undefined) continue;
+        if ((prop.flags & ts.SymbolFlags.Optional) !== (twin.flags & ts.SymbolFlags.Optional))
+          return false;
+        const leftType = checker.getTypeOfSymbol(prop);
+        const rightType = checker.getTypeOfSymbol(twin);
+        if (
+          !checker.isTypeAssignableTo(leftType, rightType) ||
+          !checker.isTypeAssignableTo(rightType, leftType)
+        )
+          return false;
+      }
+    }
+  }
+  return true;
 }
 
 export interface UnionClassEnv {

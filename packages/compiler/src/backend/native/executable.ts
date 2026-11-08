@@ -340,6 +340,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ],
   ),
   unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
+  // getColorDepth and hasColors of the process stream object, for a program
+  // that holds a process stream as a value and names one of them.
+  unit((u) => u.opts.events && u.opts.ttyColors === true, "scr_tty_colors.c"),
   // readline's terminal mode: rl.terminal sets the regex unit it
   // measures with.
   unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),
@@ -598,6 +601,9 @@ const RUNTIME_DEFINES: readonly {
   // scr_node_island.c's bootstrap carries the stdio accessor and calls
   // scr_node_island_stdio.c when Node has started.
   { define: "SCR_NODE_ISLAND_STDIO", when: (opts) => opts.nodeIsland && opts.stdioObject },
+  // scr_events.c's stream object asks scr_tty_colors.c for getColorDepth
+  // and hasColors on a terminal.
+  { define: "SCR_TTY_COLORS", when: (opts) => opts.events && opts.ttyColors },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {

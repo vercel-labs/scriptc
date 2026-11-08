@@ -5287,8 +5287,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (d) =>
           (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
           ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-          (isDeclaredInAmbientModule(d, "tty") ||
-            (isDeclaredInAmbientModule(d, "process") && isDeclaredInAmbientNamespace(d, "NodeJS"))),
+          // NodeJS.WriteStream is the type of process.stdout itself, in
+          // @types/node (inside its "process" module) and in the fallback
+          // declarations (at the top level).
+          (isDeclaredInAmbientModule(d, "tty") || isDeclaredInAmbientNamespace(d, "NodeJS")),
       )) ||
     nodeWritableInterface
   ) {

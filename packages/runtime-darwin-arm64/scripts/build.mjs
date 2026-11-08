@@ -371,6 +371,7 @@ async function build() {
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
           "SCR_CHILD_STREAM_FLOW",
+          "SCR_TTY_COLORS",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",

@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "43f67203d9e867ce";
+export const IR_CODEC_LAYOUT = "55ff1cab7c8d559b";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -227,7 +227,7 @@ const KEYS199: readonly string[] = ["kind","value","awaited","delegated","captur
 const KEYS200: readonly string[] = ["member","helper"];
 const KEYS201: readonly string[] = ["name","type"];
 const KEYS202: readonly string[] = ["name","type","optional"];
-const KEYS203: readonly string[] = ["path","size","sha256","placeholder"];
+const KEYS203: readonly string[] = ["path","size","sha256","placeholder","generated"];
 const KEYS204: readonly string[] = ["path","target"];
 const KEYS205: readonly string[] = ["diff","skipPrototype"];
 const KEYS206: readonly string[] = ["returnType"];
@@ -4845,13 +4845,19 @@ function encT63(w: IrWriter, v: NonNullable<NonNullable<IrNodeIslandModules["fil
     w.byte(1);
     w.bool(v.placeholder);
   }
+  if (v.generated === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.str(v.generated);
+  }
 }
 function decT63(r: IrReader): NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> {
   const f0 = r.str();
   const f1 = r.num();
   const f2 = r.str();
   const f3 = r.tag(2, "IrModule.nodeIsland.modules.files[].placeholder") === 0 ? undefined : (r.bool() as NonNullable<NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]>["placeholder"]>);
-  const o: NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> = { path: f0, size: f1, sha256: f2, ...(f3 !== undefined ? { placeholder: f3 } : {}) };
+  const f4 = r.tag(2, "IrModule.nodeIsland.modules.files[].generated") === 0 ? undefined : r.str();
+  const o: NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> = { path: f0, size: f1, sha256: f2, ...(f3 !== undefined ? { placeholder: f3 } : {}), ...(f4 !== undefined ? { generated: f4 } : {}) };
   return o;
 }
 

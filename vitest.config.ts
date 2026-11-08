@@ -87,6 +87,12 @@ export default defineConfig({
       // that session; cc.test.ts removes this flag to keep exercising
       // production's fresh-probe invalidation guarantees.
       SCRIPTC_TEST_STABLE_TOOLCHAIN: process.env["SCRIPTC_TEST_STABLE_TOOLCHAIN"] ?? "1",
+      // A compiled program names a deferred diagnostic on stderr the first
+      // time its site fires (scr_deferred_fence.c). The suites compare a
+      // binary's stderr with Node's, or with the error a fence throws, byte
+      // for byte, so the binaries they spawn run with the report off;
+      // tests/harness/deferred-fence-report.test.ts turns it back on.
+      SCRIPTC_DEFERRED_REPORT: "0",
     },
     ...(workers !== undefined && workers !== ""
       ? { maxWorkers: Number(workers), minWorkers: 1 }

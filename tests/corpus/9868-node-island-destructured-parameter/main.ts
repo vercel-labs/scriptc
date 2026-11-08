@@ -1,3 +1,4 @@
+// @requires-libnode
 // A binding of a destructured parameter whose type names a class that only
 // a package declares, in a program that reaches the package through a
 // type-only import and an `import()` inside a function. The binding lowers

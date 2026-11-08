@@ -8,13 +8,16 @@
  * checker type is FOREIGN when it is an object type declared in an island
  * package (its .d.ts, or its @types twin): a class, interface, type alias
  * or type literal there, the type of an exported function or class value,
- * or an island module's namespace. Values of foreign types are held as
+ * or an island module's namespace. A `declare module "<name>"` block that
+ * names a module of an island package declares that package too, wherever
+ * it is written (islandOfModuleBlock). Values of foreign types are held as
  * island handles (the `foreign` IR type, represented as a dyn value), and
  * member operations on them compile from the declarations into bridge
  * calls. A union is foreign when every arm that is not null or undefined
  * is foreign (the dyn representation holds null and undefined). */
 import * as ts from "../frontend/ts7/adapter.js";
 import { trackedRealpath } from "../frontend/input-tracker.js";
+import { isRelativeSpecifier, packageNameOfSpecifier } from "../frontend/workspace-registry.js";
 import { packageDirOf } from "./origin.js";
 
 /** One package the build runs in a Node island. */
@@ -71,6 +74,10 @@ export interface NodeIslandSet {
   /** The directory index for islands installed outside node_modules, and
    * the answers already given from it (see `IslandDirIdentity`). */
   linked: IslandDirIdentity;
+  /** Whether a file outside the islands holds a `declare module` block
+   * that names a module of an island package (islandOfModuleBlock), by
+   * file spelling (same lifetime as packagesOfFile). */
+  moduleBlocksOfFile?: Map<string, boolean>;
 }
 
 /** An island set with the boundary's directory index in place. */
@@ -214,13 +221,61 @@ export function isIslandSubclassDecl(decl: ts.Node | undefined): boolean {
   return decl !== undefined && islandSubclassDecls.has(decl);
 }
 
+/** The island package whose module a `declare module "<name>"` block
+ * names, or null: `"pkg"`, `"@scope/pkg/sub.js"`, and a pattern such as
+ * `"pkg/lib/*.js"` name modules of the package their first segments spell. */
+export function islandOfModuleName(islands: NodeIslandSet, name: string): IslandPackage | null {
+  if (isRelativeSpecifier(name)) return null;
+  return islands.packages.get(packageNameOfSpecifier(name)) ?? null;
+}
+
+/** The island package that a declaration written OUTSIDE the island's own
+ * files belongs to, or null. A `declare module "<name>"` block declares the
+ * module it names: an ambient declaration types a module the package ships
+ * no declarations for (in the project's own .d.ts, or in a package under one
+ * of its typeRoots), and an augmentation adds members to the ones it ships.
+ * When `<name>` is a module of an island package, the block describes values
+ * that island makes, exactly as the package's own .d.ts does, so its
+ * declarations are the island's: the module's namespace, the interfaces and
+ * aliases declared there, and the members an augmentation adds to an
+ * interface of the package (whose other declarations the package holds).
+ * Such blocks are top-level statements, so one pass over a file's statements
+ * says whether any declaration in it can be inside one. */
+function islandOfModuleBlock(islands: NodeIslandSet, decl: ts.Node): IslandPackage | null {
+  if (islands.packages.size === 0) return null;
+  const sf = ts.getSourceFileOfNode(decl);
+  let answers = islands.moduleBlocksOfFile;
+  if (answers === undefined) {
+    answers = new Map();
+    islands.moduleBlocksOfFile = answers;
+  }
+  let holds = answers.get(sf.fileName);
+  if (holds === undefined) {
+    holds = sf.statements.nodes.some(
+      (s) =>
+        ts.isModuleDeclaration(s) &&
+        ts.isStringLiteral(s.name) &&
+        islandOfModuleName(islands, s.name.text) !== null,
+    );
+    answers.set(sf.fileName, holds);
+  }
+  if (!holds) return null;
+  for (let n: ts.Node | undefined = decl; n !== undefined && !ts.isSourceFile(n); n = n.parent) {
+    if (ts.isModuleDeclaration(n) && ts.isStringLiteral(n.name))
+      return islandOfModuleName(islands, n.name.text);
+  }
+  return null;
+}
+
 function declaredInIsland(islands: NodeIslandSet, symbol: ts.Symbol | null | undefined): boolean {
   if (!symbol) return false;
   const decls = symbol.declarations;
   if (decls.length === 0) return false;
   if (islandSubclassDecls.size > 0 && decls.some((d) => islandSubclassDecls.has(d))) return true;
   return decls.every(
-    (d) => islandOwnerOfFile(islands, ts.getSourceFileOfNode(d).fileName) !== null,
+    (d) =>
+      islandOwnerOfFile(islands, ts.getSourceFileOfNode(d).fileName) !== null ||
+      islandOfModuleBlock(islands, d) !== null,
   );
 }
 

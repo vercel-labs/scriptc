@@ -22,7 +22,8 @@
 
 import * as ts from "./ts7/adapter.js";
 import type { Lowerer } from "./lowering/lowerer.js";
-import { bindingNeverReassigned, stripValueWrappers } from "./binding-writes.js";
+import { bindingNeverReassigned } from "./binding-writes.js";
+import { withoutParenthesesTypeWrappers } from "./outer-expressions.js";
 
 /** At most this many values: beyond it the cartesian products are no longer
  * a catalogue a selector should spell out. */
@@ -80,7 +81,7 @@ function bound(
   expression: ts.Expression,
   inProgress: Set<ts.Symbol>,
 ): SpecifierBound {
-  const expr = stripValueWrappers(expression);
+  const expr = withoutParenthesesTypeWrappers(expression);
   if (ts.isStringLiteralLike(expr)) return { kind: "set", values: [expr.text] };
   if (ts.isTemplateExpression(expr)) {
     // The head, then one cartesian step per span (its expression) with the

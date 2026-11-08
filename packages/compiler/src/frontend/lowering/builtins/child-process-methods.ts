@@ -1,6 +1,6 @@
 import { boolLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -140,7 +140,7 @@ export function lowerChildMethodCall(
         loc,
       });
     }
-    const listenerNode = withoutParenthesesAssertionsNonNull(call.arguments.nodes[1]!);
+    const listenerNode = withoutParenthesesTypeWrappers(call.arguments.nodes[1]!);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(listenerNode)) &&
       (ts.isArrowFunction(listenerNode) || ts.isFunctionExpression(listenerNode)) &&

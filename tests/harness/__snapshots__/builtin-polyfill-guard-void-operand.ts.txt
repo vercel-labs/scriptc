@@ -1,0 +1,34 @@
+builtin-polyfill-guard-void-operand.ts:13:28 - error SC1090: 'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile) is not supported yet
+
+  12 | 
+  13 | if (Array.prototype.at === void note("if-equal")) {
+     |                            ^~~~~~~~~~~~~~~~~~~~~
+  14 |   Array.prototype.at = function () {
+
+builtin-polyfill-guard-void-operand.ts:19:28 - error SC1090: 'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile) is not supported yet
+
+  18 | 
+  19 | if (Array.prototype.at !== void note("if-unequal")) {
+     |                            ^~~~~~~~~~~~~~~~~~~~~~~
+  20 |   console.log("present");
+
+builtin-polyfill-guard-void-operand.ts:27:5 - error SC1090: 'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile) is not supported yet
+
+  26 | 
+  27 | if (void note("left") == Array.prototype.at) {
+     |     ^~~~~~~~~~~~~~~~~
+  28 |   Array.prototype.at = function () {
+
+builtin-polyfill-guard-void-operand.ts:33:24 - error SC1090: 'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile) is not supported yet
+
+  32 | 
+  33 | Array.prototype.at !== void note("or") ||
+     |                        ^~~~~~~~~~~~~~~
+  34 |   (Array.prototype.at = function () {
+
+builtin-polyfill-guard-void-operand.ts:38:24 - error SC1090: 'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile) is not supported yet
+
+  37 | 
+  38 | Array.prototype.at === void note("and") &&
+     |                        ^~~~~~~~~~~~~~~~
+  39 |   (Array.prototype.at = function () {

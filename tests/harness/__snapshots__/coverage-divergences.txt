@@ -7,12 +7,9 @@ scriptc coverage tests/coverage-fixtures/divergences.ts
   fully static — all analyzed statements compile to native code.
 
   differs from Node   5 sites (compiles; the native program can behave differently)
-      ×1  SC6001  passing a 'Tagged' where 'Labeled' is expected copies the object (converting to a record type with other properties compiles as a field copy): the write to 'target.label' updates only the copy, while…
-          at tests/coverage-fixtures/divergences.ts:19:16
-          hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
-      ×1  SC6001  storing a 'Tagged' in a 'Labeled' binding copies the object (converting to a record type with other properties compiles as a field copy): 'view === tagged' compares the copy, which is never the origi…
-          at tests/coverage-fixtures/divergences.ts:23:23
-          hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
+      ×2  SC6001  converting this '{ label: string; tag: string }' to '{ label: string }' copies it (a conversion to another layout builds a new object), while under Node both names refer to one object: the program wr…
+          at tests/coverage-fixtures/divergences.ts:19:16, tests/coverage-fixtures/divergences.ts:23:23
+          hint: keep the value at its own type ('{ label: string; tag: string }') where it is passed or stored, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too
       ×1  SC6002  this object's keys enumerate as 'x, y' natively (the declaration order of 'Point') but as 'y, x' under Node (insertion order), and the program observes the order (JSON.stringify, Object.keys, for-in …
           at tests/coverage-fixtures/divergences.ts:34:22
           hint: write the properties in the declaration order of 'Point' (or reorder the declaration to match how objects are built)

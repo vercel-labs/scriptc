@@ -37,6 +37,7 @@
 #include "scr_node_bridge.h"
 #include "scr_node_island.h"
 
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +59,22 @@ typedef struct {
 
 static NiExport *ni_exports = NULL; /* index = id; id 0 unused */
 static uint32_t ni_exports_len = 1, ni_exports_cap = 0;
+/* Worker threads read the table (a result that is a native value), while
+ * the island's thread mints entries and the table grows. */
+static pthread_mutex_t ni_exports_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* The lock is taken once another thread uses the island (the handle
+ * unit's shared mode, which is set only between operations). */
+static inline bool ni_exports_take(void) {
+  if (!atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed)) return false;
+  pthread_mutex_lock(&ni_exports_lock);
+  return true;
+}
+
+static inline void ni_exports_give(bool held) {
+  if (held) pthread_mutex_unlock(&ni_exports_lock);
+}
+
 static uint32_t *ni_free = NULL;
 static uint32_t ni_nfree = 0, ni_free_cap = 0;
 
@@ -427,10 +444,17 @@ bool scr_ni_exportable(const ScrDyn *v) {
 }
 
 
-/* The export id of `v` (borrowed), minting one on first crossing. */
-uint32_t scr_ni_export_id(ScrDyn *v) {
+/* The export id of `v` (borrowed), minting one on first crossing (`fresh`).
+ * Called with the table's lock. The twin fields of an entry (twin,
+ * attachment, adopts, adopted) are read and written on the island's thread
+ * only, which is also the only thread that changes the table, so that
+ * thread reads them without the lock; a twin class's callbacks (attach,
+ * detach, adopt, hear) run outside the lock, since they are a class's own
+ * code and may come back to the table. */
+static uint32_t ni_export_id_locked(ScrDyn *v, bool *fresh) {
   const void *identity = ni_identity(v);
   uint32_t id = ni_ids_get(identity);
+  *fresh = id == 0;
   if (id != 0) return id;
   if (ni_nfree > 0) {
     id = ni_free[--ni_nfree];
@@ -456,23 +480,40 @@ uint32_t scr_ni_export_id(ScrDyn *v) {
   ni_exports[id].adopts = 0;
   ni_exports[id].adopted = false;
   ni_ids_put(identity, id);
+  return id;
+}
+
+/* Export `id` of `v` was just made: its native object starts telling its
+ * twin what changes. After the lock was given back (ni_export_id_locked). */
+static void ni_twin_attach(uint32_t id, ScrDyn *v) {
   const ScrNiTwinClass *twin = ni_exports[id].twin;
-  if (twin != NULL && twin->attach != NULL) {
-    void *attachment = twin->attach(id, v->v.handle.ptr);
-    ni_exports[id].attachment = attachment;
-  }
+  if (twin == NULL || twin->attach == NULL) return;
+  void *attachment = twin->attach(id, v->v.handle.ptr);
+  if (ni_exports[id].value == v) ni_exports[id].attachment = attachment;
+}
+
+uint32_t scr_ni_export_id(ScrDyn *v) {
+  bool fresh;
+  bool held = ni_exports_take();
+  uint32_t id = ni_export_id_locked(v, &fresh);
+  ni_exports_give(held);
+  if (fresh) ni_twin_attach(id, v);
   return id;
 }
 
 /* The value of export `id` (borrowed), or NULL. */
 ScrDyn *scr_ni_export_value(uint32_t id) {
-  if (id == 0 || id >= ni_exports_len) return NULL;
-  return ni_exports[id].value;
+  bool held = ni_exports_take();
+  ScrDyn *v = id != 0 && id < ni_exports_len ? ni_exports[id].value : NULL;
+  ni_exports_give(held);
+  return v;
 }
 
 /* Fills `out` with the export of `v` (borrowed). */
 void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
-  uint32_t id = scr_ni_export_id(v);
+  bool fresh;
+  bool held = ni_exports_take();
+  uint32_t id = ni_export_id_locked(v, &fresh);
   memset(out, 0, sizeof *out);
   out->tag = SCR_NV_EXPORT;
   out->flags = ni_exports[id].flags;
@@ -488,6 +529,8 @@ void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
     out->u.exp.name_len = strlen(ni_exports[id].twin->name);
     out->u.exp.length = ni_exports[id].adopts;
   }
+  ni_exports_give(held);
+  if (fresh) ni_twin_attach(id, v);
 }
 
 /* NI-8: the exports whose twins stand for native object `object`: one per
@@ -503,13 +546,17 @@ size_t scr_ni_twin_exports(const void *object, uint32_t ids[2]) {
 /* NI-8: the identity of export `id` (the referent its representative
  * stands for), or NULL for a free id. */
 const void *scr_ni_export_identity(uint32_t id) {
-  if (id == 0 || id >= ni_exports_len) return NULL;
-  return ni_exports[id].identity;
+  bool held = ni_exports_take();
+  const void *identity = id != 0 && id < ni_exports_len ? ni_exports[id].identity : NULL;
+  ni_exports_give(held);
+  return identity;
 }
 
 uint32_t scr_ni_live_exports(void) {
   uint32_t n = 0;
+  bool held = ni_exports_take();
   for (uint32_t i = 1; i < ni_exports_len; i++) n += ni_exports[i].value != NULL;
+  ni_exports_give(held);
   return n;
 }
 
@@ -1222,9 +1269,16 @@ void scr_ni_twin_detached(uint32_t id) {
 }
 
 void scr_ni_host_export_release(uint32_t id) {
+  /* The island's thread, which alone changes the table: the twin stops
+   * telling first, outside the lock (its class's code). */
   if (id == 0 || id >= ni_exports_len || ni_exports[id].value == NULL) return;
-  ScrDyn *v = ni_exports[id].value;
   ni_twin_detach(id);
+  bool held = ni_exports_take();
+  if (ni_exports[id].value == NULL) {
+    ni_exports_give(held);
+    return;
+  }
+  ScrDyn *v = ni_exports[id].value;
   ni_ids_del(ni_exports[id].identity);
   if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[id].identity);
   ni_exports[id].value = NULL;
@@ -1237,6 +1291,8 @@ void scr_ni_host_export_release(uint32_t id) {
     ni_free_cap = cap;
   }
   ni_free[ni_nfree++] = id;
+  ni_exports_give(held);
+  /* Outside the lock: a destructor may mint another export. */
   scr_dyn_release(v);
 }
 
@@ -1541,7 +1597,11 @@ static void ni_push_job(void *p) {
 /* Pushes the bound exports whose native values changed since the last
  * push. Cheap when nothing is bound. */
 void scr_ni_shared_refresh(void) {
+  /* The shared binding tables belong to the island's thread, like every
+   * other island-side structure; a worker thread's entry sees the values
+   * the last entry on that thread pushed. */
   if (ni_shared_bound == 0 || ni_refreshing || scr_ni_bridge_loaded() == NULL) return;
+  if (!scr_context_is_main()) return;
   ni_refreshing = true;
   bool pending = scr_exc_pending();
   ScrCaught *saved = pending ? scr_exc_take() : NULL;
@@ -1584,12 +1644,19 @@ void scr_ni_shared_refresh(void) {
  * tables and the shared modules hold (the RC audit counts them). */
 void scr_ni_exports_release_all(void) {
   ni_keep_set(NULL);
+  /* Each value is detached from the table under the lock and released after
+   * it is dropped: a destructor may mint another export. */
   for (uint32_t i = 1; i < ni_exports_len; i++) {
-    ScrDyn *v = ni_exports[i].value;
-    if (v == NULL) continue;
-    ni_twin_detach(i);
-    if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[i].identity);
-    ni_exports[i].value = NULL;
+    ScrDyn *v;
+    /* The twin stops telling first, outside the lock (its class's code). */
+    if (ni_exports[i].value != NULL) ni_twin_detach(i);
+    bool held = ni_exports_take();
+    v = ni_exports[i].value;
+    if (v != NULL) {
+      if (v->kind == SCR_DYN_PROMISE) scr_promise_identity_drop(ni_exports[i].identity);
+      ni_exports[i].value = NULL;
+    }
+    ni_exports_give(held);
     scr_dyn_release(v);
   }
   ni_exports_len = 1;
@@ -1628,10 +1695,14 @@ void scr_ni_exports_release_all(void) {
  * (scr_node_island_host.cjs, module "scriptc:island-helpers"); its
  * constructor, field initializers, methods and accessors are native
  * closures exported into Node, and its instances are island objects. */
-static ScrDyn *ni_helpers = NULL;
+/* One handle box of the helpers module per thread: a box belongs to the
+ * heap of the thread that made it, and a worker thread reaches the helpers
+ * too (instanceof against a global class, promisify, a subclass). */
+static SCR_TL ScrDyn *ni_helpers = NULL;
 
-/* At exit the helpers module is the unit's own reference, not the
- * program's: release it so the reference audit sees only program objects. */
+/* At the thread's exit the helpers module is the unit's own reference, not
+ * the program's: release it so the reference audit sees only program
+ * objects. */
 static void ni_helpers_cleanup(void) {
   if (ni_helpers == NULL) return;
   scr_dyn_release(ni_helpers);

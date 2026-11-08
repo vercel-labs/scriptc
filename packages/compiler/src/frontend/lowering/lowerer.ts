@@ -331,6 +331,9 @@ import {
   intersectionTypeDiag,
   noLoweringDiag,
   nodeIslandNativeUseDiag,
+  nodeIslandWorkerInstanceDiag,
+  nodeIslandWorkerThreadDiag,
+  nodeIslandWorkerValueDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
   stdlibSnapshotValueUseDiag,
@@ -476,6 +479,7 @@ import {
   appendDynamicImportModules,
   appendForkModules,
   appendWorkerModules,
+  workerThreadModules,
 } from "./lower-modules.js";
 import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
@@ -1369,6 +1373,10 @@ export interface LowererMode {
   /** LowerOptions.tierMode, shared by every pass. */
   tierMode?: TierMode;
   workerTargets?: readonly ts.SourceFile[];
+  /** The modules only worker entries reach (see Lowerer.workerOnlyModules). */
+  workerOnlyModules?: ReadonlySet<ts.SourceFile>;
+  /** Every module a worker entry reaches (see Lowerer.workerModules). */
+  workerModules?: ReadonlySet<ts.SourceFile>;
   /** The program facts every pass of ONE island round shares
    * (lowering-facts.ts): the same program and moduleOrder, so a pass that
    * omits it simply gets a private copy. lowerToIrWithIslands builds one and
@@ -1536,6 +1544,10 @@ function lowerToIrWithIslands(
   const cycleKeys = new Set<string>();
   const forkTargets: ts.SourceFile[] = [];
   const workerTargets: ts.SourceFile[] = [];
+  // The modules the worker entries add to the order: no module the program's
+  // entry, a literal import() or a fork entry reaches is among them, so
+  // their code runs on worker threads only.
+  const workerOnlyModules = new Set<ts.SourceFile>();
   const onExtraCycle = (cycle: string, reason: string): void => {
     const key = `${cycle}\0${reason}`;
     if (cycleKeys.has(key)) return;
@@ -1560,10 +1572,18 @@ function lowerToIrWithIslands(
     const before = moduleOrder.length;
     appendDynamicImportModules(program, moduleOrder, onExtraCycle, graph);
     appendForkModules(program, moduleOrder, forkTargets, onExtraCycle, graph);
+    const beforeWorkers = moduleOrder.length;
+    const last = moduleOrder[beforeWorkers - 1];
     appendWorkerModules(program, moduleOrder, workerTargets, onExtraCycle, graph);
+    // The added modules sit in front of the order's last module, the entry
+    // (appendEntryModules).
+    if (moduleOrder[moduleOrder.length - 1] === last)
+      for (let i = beforeWorkers - 1; i < moduleOrder.length - 1; i++)
+        workerOnlyModules.add(moduleOrder[i]!);
     if (moduleOrder.length === before) break;
     if (pass === 31) throw new Error("dynamic import and fork module discovery did not converge");
   }
+  const workerModules = workerThreadModules(program, workerTargets, graph);
   const ffiImports = options.ffiImports ?? [];
   const libraryCallbacks = options.libraryCallbacks ?? false;
   const externalTypes = options.externalTypes ?? new Map<string, string>();
@@ -1606,6 +1626,8 @@ function lowerToIrWithIslands(
     libraryCallbacks,
     forkTargets,
     workerTargets,
+    workerOnlyModules,
+    workerModules,
     externalTypes,
     externalTypeSpecifiersByFile,
     abortOnStreamFlags: abortReplacedPasses,
@@ -1637,6 +1659,8 @@ function lowerToIrWithIslands(
           libraryCallbacks,
           forkTargets,
           workerTargets,
+          workerOnlyModules,
+          workerModules,
           externalTypes,
           externalTypeSpecifiersByFile,
           tierMode,
@@ -1705,6 +1729,8 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
+      workerOnlyModules,
+      workerModules,
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
@@ -1742,6 +1768,8 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
+      workerOnlyModules,
+      workerModules,
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
@@ -1821,6 +1849,8 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
+      workerOnlyModules,
+      workerModules,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
@@ -1861,6 +1891,8 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
+      workerOnlyModules,
+      workerModules,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
@@ -2031,6 +2063,8 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
+      workerOnlyModules,
+      workerModules,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
@@ -4413,6 +4447,16 @@ export class Lowerer {
   /** Embedded fork roots and their private startup ids. */
   readonly forkTargets: readonly ts.SourceFile[];
   readonly workerTargets: readonly ts.SourceFile[];
+  /** The modules only worker entries reach: their code never runs on the
+   * main thread, so what a worker thread cannot do with a Node island is
+   * known at build time there (lower-node-island.ts, SC8012). A module the
+   * main thread loads as well is not in it, whichever thread a call in it
+   * runs on. */
+  readonly workerOnlyModules: ReadonlySet<ts.SourceFile>;
+  /** Every module a worker entry reaches, the ones the main thread loads
+   * too among them: an island module one of them loads is the one instance
+   * the whole program has (SC6010). */
+  readonly workerModules: ReadonlySet<ts.SourceFile>;
   readonly workerTargetIdByPath = new Map<string, number>();
   usesWorkers = false;
   /** The program uses the WebAssembly API (builtins/webassembly.ts): the
@@ -5246,6 +5290,8 @@ export class Lowerer {
       checkedTable("fileTag", () => this.fileTag.size),
       checkedTable("forkTargets", () => this.forkTargets.length),
       checkedTable("workerTargets", () => this.workerTargets.length),
+      checkedTable("workerOnlyModules", () => this.workerOnlyModules.size),
+      checkedTable("workerModules", () => this.workerModules.size),
       checkedTable("workerTargetIdByPath", () => this.workerTargetIdByPath.size),
       checkedTable("experimentalFiles", () => this.experimentalFiles.size),
       checkedTable("internTableNames", () => this.internTableNames.size),
@@ -6441,6 +6487,8 @@ export class Lowerer {
     this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
     this.workerTargets = mode.workerTargets ?? [];
+    this.workerOnlyModules = mode.workerOnlyModules ?? new Set<ts.SourceFile>();
+    this.workerModules = mode.workerModules ?? new Set<ts.SourceFile>();
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
     });
@@ -13752,6 +13800,24 @@ export class Lowerer {
         this.nodeIslandModules.generatedLoadPath(path) ??
         NodeIslandModuleCollector.loadPath(modules, path);
     return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
+  }
+
+  refuseIslandWorkerUse(node: ts.Node): never {
+    this.pushDiag(nodeIslandWorkerThreadDiag(locOf(node)));
+    throw new PoisonError();
+  }
+
+  /** SC6010 for a Node island module loaded at `node`, when a worker thread
+   * runs the module that loads it. */
+  noteIslandOnWorkerThread(module: string, node: ts.Node): void {
+    if (this.workerModules.size === 0) return;
+    if (!this.workerModules.has(ts.getSourceFileOfNode(node))) return;
+    this.pushDiag(nodeIslandWorkerInstanceDiag(module, locOf(node)));
+  }
+
+  refuseIslandWorkerValue(node: ts.Node, kind: string): never {
+    this.pushDiag(nodeIslandWorkerValueDiag(locOf(node), kind));
+    throw new PoisonError();
   }
 
   unsupported(

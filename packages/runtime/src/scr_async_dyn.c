@@ -1902,10 +1902,14 @@ ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader) {
    * (scr_dyn_call calls an island function with the ambient receiver), so
    * every resolution adopts it: Promise.resolve, a combinator's entry, an
    * async function's return, an executor's resolve, and the operand of
-   * `await` (scr_node_island_adopt_thenable). Node runs on the main thread
-   * only. */
+   * `await` (scr_node_island_adopt_thenable). A worker thread holds island
+   * values too: its read of `then` is routed to the island's thread like
+   * every read, and its thenable job rejects by name, because the resolving
+   * functions it would pass are this thread's and cannot cross
+   * (ERR_SCRIPTC_ISLAND_WORKER_VALUE). Answering "not a thenable" there
+   * would fulfil with the thenable itself, where Node adopts it. */
   if (scr_ni_dyn_handle(value)) {
-    if (scr_ni_dyn_ops == NULL || !scr_context_is_main()) return NULL;
+    if (scr_ni_dyn_ops == NULL) return NULL;
     ScrDyn *island_then = scr_ni_dyn_ops->get_str((ScrDyn *)value, "then", 4);
     if (island_then != NULL && scr_dyn_is_callable(island_then)) return island_then;
     scr_dyn_release(island_then);

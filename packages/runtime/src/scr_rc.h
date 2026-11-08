@@ -754,6 +754,20 @@ static inline void scr_cyc_free_inline(void *obj) {
   if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
   scr_mem_free(scr_cyc_hdr(obj));
 }
+/* The free of a block that is no JS value: a capture box or a union box.
+ * No dispose observer can hold one. A weak collection or a finalization
+ * registry is keyed by what scr_weak_key derives from a value (a dynamic
+ * node, a closure, a buffer, a handle's object, or the object a typed
+ * reference wraps: a record, array, class instance, map, set or
+ * generator), and a union reaches dynamic code as its arm, never as its
+ * box; kept record sources and record links are keyed by records, the
+ * buffers registry by views and their owners. So the free does not
+ * report. */
+static inline void scr_cyc_free_unobserved_inline(void *obj) {
+  scr_cyc_live--;
+  if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
+  scr_mem_free(scr_cyc_hdr(obj));
+}
 _Static_assert(SCR_CYC_NURSERY == 0, "zeroed cycle headers start in the nursery");
 _Static_assert(sizeof(((ScrCycHdr *)0)->gen) == 1 && SCR_CYC_OLD == 2,
                "LLVM backend's inline free compares an i8 generation against 2");

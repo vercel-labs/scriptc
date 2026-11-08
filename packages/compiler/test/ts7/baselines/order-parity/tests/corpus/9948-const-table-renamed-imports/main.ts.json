@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9948-const-table-renamed-imports/routes.ts",
+  "<repo>/tests/corpus/9948-const-table-renamed-imports/relay.ts",
+  "<repo>/tests/corpus/9948-const-table-renamed-imports/express.ts",
+  "<repo>/tests/corpus/9948-const-table-renamed-imports/main.ts"
+ ],
+ "diags": []
+}

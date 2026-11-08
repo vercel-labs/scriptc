@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9949-const-table-local-names.ts"
+ ],
+ "diags": []
+}

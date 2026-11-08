@@ -1353,6 +1353,11 @@ static void scr_hosted_timer_push(ScrTimer t);
 /* The hosted timer, immediate and tick operations (defined with the
  * hosted loop below). Each answers false when the handle names nothing. */
 enum { SCR_HOSTED_CLEAR, SCR_HOSTED_REF, SCR_HOSTED_UNREF, SCR_HOSTED_REFRESH, SCR_HOSTED_HAS_REF };
+/* A scr_loop_hosted_run kind beyond the SCR_NODE_JOB_* jobs: island code
+ * cleared one of the program's timers, or immediates, by its number. Bits 8
+ * and up hold the bits of the id's offset above the token's 32. */
+#define SCR_HOSTED_ISLAND_CLEAR 16u
+#define SCR_HOSTED_ISLAND_IMMEDIATE 8u
 static bool scr_hosted_timer_op(unsigned long id, int op);
 static double scr_hosted_set_immediate(ScrClosure *cb);
 static bool scr_hosted_immediate_op(unsigned long id, int op);
@@ -1499,7 +1504,20 @@ void scr_set_timeout(ScrClosure *cb, double ms) {
  * its callback runs, so the run loop re-pushes it only if the callback
  * did not clear it. */
 
-static SCR_TL unsigned long scr_interval_next_id = 1;
+/* The first timer and immediate id is 1 above this base, and both kinds
+ * take their ids from that one sequence: a number names at most one handle,
+ * whichever side created it. A program with Node islands starts the
+ * sequence at 2^52, a range Node's own timer ids (async ids, counted from
+ * 1) do not reach, so island code that clears a number clears the program's
+ * handle or one of its own, never the other side's, and clearTimeout of an
+ * Immediate (or clearImmediate of a Timeout) finds nothing to clear, as in
+ * Node. */
+#if defined(SCR_NODE_ISLANDS) && __SIZEOF_LONG__ >= 8
+#define SCR_TIMER_ID_BASE (1UL << 52)
+#else
+#define SCR_TIMER_ID_BASE 0UL
+#endif
+static SCR_TL unsigned long scr_interval_next_id = SCR_TIMER_ID_BASE + 1;
 static SCR_TL unsigned long scr_firing_id = 0; /* interval currently running */
 /* The immediate whose callback is running (0 outside one). */
 static SCR_TL unsigned long scr_immediate_firing = 0;
@@ -1840,8 +1858,9 @@ void scr_clear_interval(double handle) {
  * FIFO order — and immediates queued while the phase runs wait for the
  * NEXT turn (the phase snapshots its end index). The queue is an
  * append-only array with a head cursor; clearImmediate NULLs the slot in
- * place (order and indices stay stable mid-phase). Ids ride their own
- * space — clearTimeout of an Immediate is a no-op, like Node. */
+ * place (order and indices stay stable mid-phase). An immediate's id comes
+ * from the sequence timers use, so its number never names a timeout:
+ * clearTimeout of an Immediate is a no-op, like Node. */
 typedef struct {
   unsigned long id;
   ScrClosure *cb; /* owned; NULL once fired or cleared */
@@ -1850,7 +1869,6 @@ typedef struct {
 
 static SCR_TL ScrImmediate *scr_immediates = NULL;
 static SCR_TL size_t scr_nimmediates = 0, scr_immediates_head = 0, scr_immediates_cap = 0;
-static SCR_TL unsigned long scr_immediate_seq = 0;
 /* Pending (queued, uncleared) immediates and the reffed subset — the
  * loop's no-sleep signal and liveness count respectively. */
 static SCR_TL size_t scr_pending_immediates = 0;
@@ -1865,7 +1883,7 @@ double scr_set_immediate(ScrClosure *cb) {
     scr_immediates = realloc(scr_immediates, scr_immediates_cap * sizeof *scr_immediates);
     if (!scr_immediates) scr_oom();
   }
-  unsigned long id = ++scr_immediate_seq;
+  unsigned long id = scr_interval_next_id++;
   scr_immediates[scr_nimmediates].id = id;
   scr_immediates[scr_nimmediates].cb = cb; /* ownership moves in */
   scr_immediates[scr_nimmediates].reffed = true;
@@ -5811,7 +5829,7 @@ static bool scr_hosted_timer_op(unsigned long id, int op) {
 }
 
 static double scr_hosted_set_immediate(ScrClosure *cb) {
-  unsigned long id = ++scr_immediate_seq;
+  unsigned long id = scr_interval_next_id++;
   uint32_t token = scr_hjob_new(SCR_HJ_IMMEDIATE, cb);
   scr_hjobs[token - 1].id = id;
   scr_hjobs[token - 1].reffed = true;
@@ -5969,6 +5987,17 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     scr_hosted_turn_ran = true;
     return;
   default:
+    /* Island code cleared one of the program's handles by its number
+     * (scr_node_island_host.cjs): the runtime's own clear of that handle,
+     * as if the program had called it, so its callback is released and the
+     * count of live timers stays right. Timers and immediates draw from one
+     * id sequence, so the other kind's clear finds nothing here, as in
+     * Node. */
+    if ((kind & SCR_HOSTED_ISLAND_CLEAR) != 0) {
+      double id = (double)((uint64_t)SCR_TIMER_ID_BASE + (((uint64_t)(kind >> 8)) << 32) + token);
+      if ((kind & SCR_HOSTED_ISLAND_IMMEDIATE) != 0) scr_clear_immediate(id);
+      else scr_clear_interval(id);
+    }
     return;
   }
   scr_hosted_settle_exception();

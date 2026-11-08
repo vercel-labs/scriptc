@@ -931,6 +931,17 @@ function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrEx
     return raw;
   }
   if (mapped.kind === "void") return raw;
+  // A timer the island created stays the island's Timeout or Immediate (the
+  // program's own handles are numbers): the program clears it, calls its
+  // methods and passes it back through the handle.
+  if (islandTimerType(lowerer, tsType)) {
+    if (handleUseOk(lowerer, node)) return raw;
+    boundaryFail(
+      lowerer,
+      `an island value of type '${lowerer.checker.typeToString(tsType)}' used as a native value (a timer created by island code stays the island's object: keep it in a const, clear it, call its methods or pass it back to the island)`,
+      node,
+    );
+  }
   // An island promise is the same promise on both sides (the runtime keeps
   // one ScrPromise per V8 promise): PromiseResolve of the dyn value, whose
   // settlement value meets the declared type when it is awaited.
@@ -1258,12 +1269,61 @@ function isForeignExpr(lowerer: Lowerer, node: ts.Expression): boolean {
   return isIslandHandleExpr(lowerer, inner);
 }
 
+/** Whether `type` is the Timeout or Immediate of the standard library or
+ * @types/node (nullish arms aside). A timer island code created is the
+ * island's object: the program's own timer handles are numbers, which it is
+ * not, so it stays a handle the program clears, calls methods on and passes
+ * back. */
+function islandTimerType(lowerer: Lowerer, type: ts.Type): boolean {
+  if (type.isUnionType()) {
+    const parts = ts
+      .constituentTypes(type)
+      .filter(
+        (t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) === 0,
+      );
+    return parts.length > 0 && parts.every((t) => islandTimerType(lowerer, t));
+  }
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  if (symbol === undefined) return false;
+  const name = ts.symbolName(symbol);
+  if (name !== "Timeout" && name !== "Immediate") return false;
+  return symbol.declarations.some(
+    (d) =>
+      (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+      lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
+  );
+}
+
+/** Whether `callee` names clearTimeout, clearInterval or clearImmediate: the
+ * globals or the node:timers functions. Their argument may be an island's
+ * timer, which Node's own function clears (lower-timers.ts). */
+function isTimerClearCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
+  const c = withoutParenthesesTypeWrappers(callee);
+  const clear = (name: string): boolean =>
+    name === "clearTimeout" || name === "clearInterval" || name === "clearImmediate";
+  if (ts.isPropertyAccessExpression(c)) {
+    const member = lowerer.builtinMemberOf(c);
+    return member !== null && member.module === "timers" && clear(member.member);
+  }
+  if (!ts.isIdentifier(c)) return false;
+  const imported = lowerer.builtinImportOf(c);
+  if (imported) return imported.module === "timers" && clear(imported.member);
+  if (!clear(c.text)) return false;
+  const declarations = lowerer.checker.getSymbolAtLocation(c)?.declarations ?? [];
+  return (
+    declarations.length > 0 &&
+    declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)
+  );
+}
+
 /** Whether a value of TypeScript type `type` coming out of an island is
  * an object the island does not declare and the program cannot take by
- * reference natively (arrays, tuples, Maps, Sets): it stays a handle. */
+ * reference natively (arrays, tuples, Maps, Sets, timers): it stays a
+ * handle. */
 function undeclaredHandleType(lowerer: Lowerer, type: ts.Type): boolean {
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
   if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return false;
+  if (islandTimerType(lowerer, type)) return true;
   const mapped = lowerer.mapTypeOf(type);
   // No native representation at all: the island's object is the only one
   // there is. A function object keeps its own rule (fromIsland).
@@ -1584,8 +1644,16 @@ function handleUseOk(lowerer: Lowerer, node: ts.Expression): boolean {
       return isForeignExpr(lowerer, c.expression);
     return isForeignExpr(lowerer, c);
   };
-  if (ts.isCallExpression(p) || ts.isNewExpression(p))
-    return p.expression === n || islandCallee(p.expression);
+  if (ts.isCallExpression(p) || ts.isNewExpression(p)) {
+    if (p.expression === n || islandCallee(p.expression)) return true;
+    // clearTimeout(islandTimer): Node's own clear function clears it.
+    return (
+      ts.isCallExpression(p) &&
+      p.arguments.nodes[0] === n &&
+      islandTimerType(lowerer, lowerer.typeOf(node)) &&
+      isTimerClearCallee(lowerer, p.expression)
+    );
+  }
   if (ts.isSpreadElement(p)) {
     const q = p.parent;
     if (ts.isArrayLiteralExpression(q)) return true;

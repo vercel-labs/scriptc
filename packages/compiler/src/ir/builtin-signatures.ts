@@ -242,6 +242,10 @@ function buildLibFnSignatures() {
     "nodeIsland.superMethod": { argTypes: [DYN, DYN, STRING, DYN], result: DYN },
     "nodeIsland.defineField": { argTypes: [DYN, STRING, DYN], result: VOID },
     "nodeIsland.promisify": { argTypes: [DYN], result: DYN },
+    /** clearTimeout (0), clearInterval (1) or clearImmediate (2) of a
+     * checked-dynamic value that is not a number: an island's timer is
+     * cleared by Node's own function, any other value is ignored. */
+    "nodeIsland.clearTimer": { argTypes: [DYN, F64], result: VOID },
     /** NI-6 shared modules: registers a module the program shares with its
      * islands (real path, exports JSON, accessor); the TDZ sentinel an
      * accessor answers; the method table and constructor helper of an

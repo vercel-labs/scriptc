@@ -38,6 +38,7 @@ import { canonicalBuiltinModule } from "../../builtin-modules.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
 import { isCheckerPanic } from "../../../diagnostics/diagnostic.js";
+import { refuseCallbackThis } from "../callback-arg.js";
 
 /** Whether the process has an IPC channel, Node's test for defining
  * process.send and process.disconnect: a channel this fork child opened
@@ -1873,6 +1874,7 @@ export function lowerProcessMethodCall(
         "chaining process listener registration (the result is void here — register each listener as its own statement)",
       );
     }
+    refuseCallbackThis(lowerer, call.arguments.nodes[1]!, "a process listener", "'process'");
     let cb = lowerer.lowerExpr(call.arguments.nodes[1]!);
     // The checked-dynamic listener (test/common's `process.on('exit',
     // runCallChecks)` — an implicit-any JS function, func(dyn)=>dyn, or

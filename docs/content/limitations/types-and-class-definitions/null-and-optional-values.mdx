@@ -2,3 +2,12 @@
   Optional record and class fields and optional, default, and rest parameters also compile, including rest parameters typed `unknown[]` or `any[]`, whose functions take any number of arguments.
   A function value whose fixed parameters are all `unknown` or `any`, or that has none, can be stored where such a variadic function type without fixed parameters is expected: each call passes the arguments in order, `undefined` for the ones the caller left out.
   Other function values with fixed parameters cannot be stored there.
+  A function value of such a variadic type can be stored where the program declares a function type with fixed parameters (a typed binding, parameter, result, field, member, or element): each call passes the declared arguments, a `void` result is discarded, and any other result is checked.
+  That store is refused when the expected type's last parameter is optional, is `unknown` or `any`, or includes `undefined`, because the function would receive `undefined` where the call passes nothing.
+  It is also refused with `SC1090` when the program hands a function of the expected type to a caller that can pass more arguments than the type names: a function type with more parameters, or a library function whose callback takes more.
+  The stored function would not receive those arguments.
+  Untyped code that receives the stored function calls the original, with every argument it passes.
+  A variadic function passed directly to a library function that calls its callback with a fixed argument list is refused with `SC1090`.
+  Event listeners, promise executors, timers, and `process.nextTick` pass such a function every argument, as do the methods of arrays whose elements are `unknown`.
+  In a function expression written where a callback or listener is expected, `arguments.length` is the number of parameters that slot's function type declares.
+  Handed where no function type is expected (an `any` or `unknown` slot, a JavaScript module's function, `Reflect.apply`), such a function expression is refused with `SC1090`.

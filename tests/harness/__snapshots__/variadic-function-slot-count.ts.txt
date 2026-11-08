@@ -1,0 +1,13 @@
+variadic-function-slot-count.ts:11:40 - error SC1090: variadic function values where another signature is expected ('(...unknown[]) => unknown' into '(number | undefined) => void': the last parameter of the expected type can hold an omitted argument, which the function would receive as 'undefined' where a call passes nothing) is not supported yet
+
+  10 | // (1) An optional parameter: `optional()` passes nothing under Node.
+  11 | const optional: (x?: number) => void = make();
+     |                                        ^~~~~~
+  12 | optional();
+
+variadic-function-slot-count.ts:15:44 - error SC1090: variadic function values where another signature is expected ('(...unknown[]) => unknown' into '(unknown) => void': the last parameter of the expected type can hold an omitted argument, which the function would receive as 'undefined' where a call passes nothing) is not supported yet
+
+  14 | // (2) A required parameter typed `unknown` has the same slot type.
+  15 | const required: (error: unknown) => void = make();
+     |                                            ^~~~~~
+  16 | required("x");

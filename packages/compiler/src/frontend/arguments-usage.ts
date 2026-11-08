@@ -1,7 +1,7 @@
 import * as ts from "./ts7/adapter.js";
 
 /** Whether an identifier in a function body reads the runtime arguments object. */
-function isArgumentsRead(id: ts.Identifier): boolean {
+export function isArgumentsRead(id: ts.Identifier): boolean {
   const parent = id.parent;
   // A shorthand object property reads its value, but other `name` positions
   // declare a binding or spell a property (including `o.arguments`).
@@ -35,7 +35,7 @@ export function bodyReadsArguments(fn: ts.Node): boolean {
 }
 
 /** Whether an expression is assigned, updated or deleted. */
-function isWritten(expr: ts.Node): boolean {
+export function isWritten(expr: ts.Node): boolean {
   let node = expr;
   while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
   const parent = node.parent;

@@ -1890,6 +1890,12 @@ export class ClassProtocols {
     return value !== undefined && this.dictionaryViews.has(this.sameness.canonical(value));
   }
 
+  /** Whether any dictionary type of the program keeps checked identity. */
+  hasDictionaryViews(): boolean {
+    this.index();
+    return this.dictionaryViews.size > 0;
+  }
+
   private protocol(type: ts.Type): boolean {
     const protocols = this.index();
     const symbol = type.getSymbol();

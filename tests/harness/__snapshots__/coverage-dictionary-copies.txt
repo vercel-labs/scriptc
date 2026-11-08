@@ -1,0 +1,15 @@
+scriptc coverage tests/coverage-fixtures/dictionary-copies.ts
+
+  statements analyzed   15
+  compile statically    15  (100%)
+    in dynamic tier     5  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  fully static — all analyzed statements compile to native code.
+
+  differs from Node   3 sites (compiles; the native program can behave differently)
+      ×2  SC6001  converting this '{ [key: string]: number }' to '{ [key: string]: number | string }' copies it (a dictionary that holds the object it was given is copied entry by entry into a dictionary type with ano…
+          at tests/coverage-fixtures/dictionary-copies.ts:21:51, tests/coverage-fixtures/dictionary-copies.ts:28:7
+          hint: declare the parameter or binding with the value's own dictionary type ('{ [key: string]: number }'), or copy it explicitly (a spread, 'structuredClone') so that Node copies it too
+      ×1  SC6001  converting this '{ [key: string]: { n: number } }' to '{ [key: string]: { m: string | undefined; n: number } }' copies it (a dictionary that holds the object it was given is copied entry by entry int…
+          at tests/coverage-fixtures/dictionary-copies.ts:14:61
+          hint: declare the parameter or binding with the value's own dictionary type ('{ [key: string]: { n: number } }'), or copy it explicitly (a spread, 'structuredClone') so that Node copies it too

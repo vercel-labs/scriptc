@@ -100,6 +100,8 @@ import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/co
 import { scanDivergences } from "./divergences.js";
 import {
   collectWidthCopies,
+  noteDictionaryCopy,
+  type DictionaryCopy,
   refuseObservedClassCopies,
   traceWidthCopies,
   widthCopyDivergences,
@@ -2897,6 +2899,10 @@ export class Lowerer {
   /** Arguments and const initializers whose array or record layout the
    * lowering kept instead of copying (divergences.ts reports no copy there). */
   readonly layoutKeptNodes = new Set<ts.Node>();
+  /** The slot conversions that copy a dictionary which keeps the object it
+   * was given into a native dictionary (noteDictionaryCopy; the width copy
+   * scan reports them from the lowered program). */
+  readonly dictionaryCopies: DictionaryCopy[] = [];
   /** Object-literal GENERIC methods (`{ m<T>(x: T) {...} }`), interned by
    * their function-like node — instances ride the same monomorphization
    * queue (objLitGenericFnInfoOf). */
@@ -5437,6 +5443,7 @@ export class Lowerer {
       checkedTable("structuralFnInfos", () => this.structuralFnInfos.size),
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
+      checkedTable("dictionaryCopies", () => this.dictionaryCopies.length),
       checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
       checkedTable("pinnedTypeParams", () => this.pinnedTypeParams.length),
       checkedTable("castGlobalAliases", () => this.castGlobalAliases.size),
@@ -6854,6 +6861,11 @@ export class Lowerer {
     return this.verifyProtocol("dictionaryView", type, (protocols) =>
       protocols.dictionaryView(type),
     );
+  }
+
+  /** Whether any dictionary type of the program keeps checked identity. */
+  hasDictionaryViews(): boolean {
+    return this.facts.classProtocols().hasDictionaryViews();
   }
 
   /** The round's shared class protocol index (lowering-facts.ts): a pure
@@ -16700,7 +16712,9 @@ export class Lowerer {
     this.slotSiteNode = node;
     this.slotSiteType = expected;
     try {
-      return this.coerceIntoOrigin(node, expr, expected, payloadSite);
+      const converted = this.coerceIntoOrigin(node, expr, expected, payloadSite);
+      if (converted !== expr) noteDictionaryCopy(this, node, expr, converted);
+      return converted;
     } finally {
       this.slotSiteNode = outerNode;
       this.slotSiteType = outerType;

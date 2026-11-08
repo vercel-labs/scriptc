@@ -1,4 +1,13 @@
-import type { IrClassDef, IrExpr, IrFunction, IrGlobal, IrModule, IrStmt, IrType } from "./ir.js";
+import type {
+  IrClassDef,
+  IrExpr,
+  IrFunction,
+  IrGlobal,
+  IrModule,
+  IrStmt,
+  IrType,
+  SrcLoc,
+} from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   analyzeIntegerRanges,
@@ -727,10 +736,13 @@ function walkFunction(
  * (typed-ref capsules) can write: every name when `all` (a dynamic store
  * whose key is not a literal), otherwise the
  * literal keys of `dyn.keySet`/`dyn.keyDelete`. A view commits a store back
- * into the instance's native field slots, which the IR does not show. */
+ * into the instance's native field slots, which the IR does not show.
+ * `first` is the first such store the walk met, for a message that names
+ * one (width-copies.ts). */
 export interface DynamicFieldStores {
   all: boolean;
   names: Set<string>;
+  first: { fn: IrLibFn; loc: SrcLoc } | null;
 }
 
 /** Computes DynamicFieldStores with one walk of every function. Analyses of
@@ -777,6 +789,7 @@ export function dynamicFieldStores(
   };
   const dynWritten = new Set<string>();
   let dynWritesAll = false;
+  const stores: { fn: IrLibFn; loc: SrcLoc }[] = [];
   // A store whose key is not a literal names every field: later stores add
   // nothing, so the walk stops there.
   const scan = nodes?.scan(LIB_CALL_KINDS);
@@ -794,11 +807,12 @@ export function dynamicFieldStores(
           if ((e.fn === "dyn.keySet" || e.fn === "dyn.keyDelete") && key?.kind === "strLit")
             dynWritten.add(key.value);
           else dynWritesAll = true;
+          if (stores.length === 0) stores.push({ fn: e.fn, loc: e.loc });
         }
       },
     });
   }
-  return { all: dynWritesAll, names: dynWritten };
+  return { all: dynWritesAll, names: dynWritten, first: stores[0] ?? null };
 }
 
 /** The f64 class field families a runtime store through a live dynamic view

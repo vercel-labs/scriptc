@@ -8328,14 +8328,22 @@ ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p)) {
   return scr_dyn_alloc(SCR_DYN_PROMISE);
 }
 
+/* strcmp(name, "object") == 0 without the call: this runs for every `typeof`
+ * test of a capsule, usually twice (the object question, then the callable
+ * one), and "function" differs at the first character. */
+static inline bool scr_typeof_name_is_object(const char *name) {
+  return name[0] == 'o' && name[1] == 'b' && name[2] == 'j' && name[3] == 'e' &&
+         name[4] == 'c' && name[5] == 't' && name[6] == '\0';
+}
+
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name) {
-  if (scr_dyn_generator(d)) return strcmp(name, "object") == 0;
+  if (scr_dyn_generator(d)) return scr_typeof_name_is_object(name);
   if (d->kind == SCR_DYN_TYPED_REF) {
     /* Bound records and arrays always view as an ordinary object/array. */
     if ((d->v.typed_ref.type_key_len >= 7 &&
          memcmp(d->v.typed_ref.type_key, "object:", 7) == 0) ||
         scr_typed_ref_record_ops(d) || scr_dyn_typed_ref_array_ops(d))
-      return strcmp(name, "object") == 0;
+      return scr_typeof_name_is_object(name);
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     bool out;
     {

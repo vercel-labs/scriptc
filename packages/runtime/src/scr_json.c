@@ -21834,6 +21834,7 @@ static void *scr_weak_promise_cell(ScrPromise *promise) {
     head->identity->rc = 1;
     head->identity->observed = false;
     head->identity->transferred = false;
+    head->identity->reported = false;
   }
   return head->identity;
 }

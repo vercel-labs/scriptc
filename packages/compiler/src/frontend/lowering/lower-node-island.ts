@@ -752,7 +752,8 @@ function islandImportSite(
       if (spec === null) return null;
       const file = ts.getSourceFileOfNode(decl).fileName;
       const path = islandModuleFile(islands, file, spec, "require");
-      if (path === null || !keepsRequiredModule(islands, checker, property.declaration)) return null;
+      if (path === null || !keepsRequiredModule(islands, checker, property.declaration))
+        return null;
       return { path, form: { name: property.name } };
     }
     // `const x = require("pkg")` (a CommonJS module of a native package

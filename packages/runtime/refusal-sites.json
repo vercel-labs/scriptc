@@ -1075,6 +1075,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_typed_ref_string_view",
+  "message": "String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_bytes_instanceof_at",
   "message": "instanceof against this native constructor is not supported yet",
   "code": "SC1090"

@@ -2921,6 +2921,7 @@ export class LlEmitter {
         return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
       },
       classSubtypes: (name) => this.classSubtypes(name),
+      classStaticsHelper: (name) => this.classMeta.get(name)?.def.staticsHelper,
       classValueSubtypes: (name) => {
         // A classval may name a class with no lowering at all: a JS
         // instance field initializer's per-evaluation class expression

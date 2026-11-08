@@ -1646,6 +1646,11 @@ export interface IrClassDef {
   /** Native instance to the string its inherited Symbol.toStringTag getter
    * answers, read by the runtime for an instance seen as `unknown`. */
   stringTagHelper?: string;
+  /** Zero-argument native helper that defines the class's static members
+   * and `prototype` in the property table of its constructor seen as a
+   * dynamic value. The conversion of the constructor calls it once, when
+   * the runtime creates that table. */
+  staticsHelper?: string;
   /** The class's accessor-backed members, nearest declaration first: one
    * helper per name a `get` accessor at or above the class answers, which
    * an instance's checked view installs so a field behind an accessor

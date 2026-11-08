@@ -751,11 +751,18 @@ export function lowerNullishPair(
   // signature would lose the callback's result shape.
   if (present?.kind === "func" && present.rest !== true) {
     const raw = lowerer.lowerExpr(expr.right);
+    // `present` is the optional callback's own declared type, so the
+    // default is called with that type's parameters (function-adapters.ts,
+    // THE RULE).
+    const rawType = raw.type;
     if (
-      raw.type.kind === "func" &&
-      (typeEquals(raw.type, present) || cleanFuncAdaptable(lowerer, raw.type, present))
+      rawType.kind === "func" &&
+      (typeEquals(rawType, present) ||
+        lowerer.withDeclaredCallList(() => cleanFuncAdaptable(lowerer, rawType, present)))
     ) {
-      const right = lowerer.coerceInto(expr.right, raw, present);
+      const right = lowerer.withDeclaredCallList(() =>
+        lowerer.coerceInto(expr.right, raw, present),
+      );
       lowerer.nullishFuncResults.add(expr);
       return { kind: "nullish", left, right, type: present, loc };
     }

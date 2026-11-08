@@ -1,3 +1,4 @@
+import { adaptedFunction } from "./function-adapters.js";
 import { fieldOrigin } from "../decl-origin.js";
 import { keyedHelperName } from "../stable-names.js";
 import { constructedValue } from "../constructor-returns.js";
@@ -167,7 +168,7 @@ export function applyWidthLift(
           throw new InternalCompilerError(
             "lowerer bug: planned checked funcAdapt lift failed to intern",
           );
-        return { kind: "call", callee: adapter, args: [value], type: dst, loc };
+        return adaptedFunction(adapter, value, dst, loc);
       } finally {
         lowerer.coercions.checkedRetags--;
       }
@@ -395,7 +396,7 @@ export function applyWidthLift(
       const adapter = lowerer.funcCoerceAdapter(value.type, dst, loc);
       if (!adapter)
         throw new InternalCompilerError("lowerer bug: planned funcAdapt lift failed to intern");
-      return { kind: "call", callee: adapter, args: [value], type: dst, loc };
+      return adaptedFunction(adapter, value, dst, loc);
     }
     case "promiseWiden": {
       if (dst.kind !== "promise" || value.type.kind !== "promise")

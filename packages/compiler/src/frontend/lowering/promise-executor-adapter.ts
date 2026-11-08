@@ -28,6 +28,21 @@ export function adaptPromiseExecutor(
   loc: SrcLoc,
 ): IrExpr | null {
   const execT = executor.type;
+  // A variadic executor takes the two settling functions JavaScript passes:
+  // the slot here is that whole list, a declared one (function-adapters.ts,
+  // THE RULE). One the adapter does not serve stays variadic and is refused
+  // where the promise would call it (variadic-functions.ts).
+  if (execT.kind === "func" && execT.rest === true && execT.restAbi === undefined) {
+    const settle = funcOf(
+      [
+        funcOf(inner.kind === "void" ? [] : [inner], VOID),
+        funcOf([inner.kind === "dyn" ? DYN : { kind: "object", className: "%Error" }], VOID),
+      ],
+      VOID,
+    );
+    const adapted = lowerer.withDeclaredCallList(() => lowerer.coerceToExpected(executor, settle));
+    return adapted.type.kind === "func" && adapted.type.rest !== true ? adapted : null;
+  }
   if (execT.kind !== "func" || execT.rest || execT.params.length > 2) return null;
   if (!execT.params.some((p) => p.kind === "dyn")) return null;
   const resolveT = funcOf(inner.kind === "void" ? [] : [inner], VOID);

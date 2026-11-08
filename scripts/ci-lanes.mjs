@@ -33,7 +33,7 @@
 // Every lane is on when the change touches CI configuration, the workspace manifests or lockfile, vitest
 // configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pushes to main,
 // merge queue groups, the nightly sweep and manual runs do not use this script: pushes to main and merge queue groups
-// run every lane except macos and islands, and the others run every lane.
+// run every lane except macos, and the others run every lane.
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
@@ -57,7 +57,8 @@ const darwinPath = /darwin|macos|ios|apple|mach-?o|kqueue/i;
 // Native code generation and runtime packs every platform shares.
 const sharedNative = /^native\/|^packages\/(llvm-[^/]+|runtime-pack-common)\//;
 // The darwin suite's files (darwinCorpusFiles and darwinFiles in scripts/ci-test-plan.mjs), the LLVM differential
-// the macOS artifact jobs run, and the runtime's platform header.
+// the macOS artifact jobs run, the runtime's platform header, and the installation check only the macOS contracts
+// job runs.
 const darwinFiles = [
   "packages/cli/test/bootstrap.test.ts",
   "packages/cli/test/native-link-info.test.ts",
@@ -70,6 +71,7 @@ const darwinFiles = [
   "packages/runtime/src/scr_alloc.test.ts",
   "packages/runtime/src/scr_platform.h",
   "packages/runtime/test/string.test.ts",
+  "scripts/smoke-libnode-opt-in.mjs",
   "tests/harness/differential.test.ts",
   "tests/harness/executable-hardening.test.ts",
   "tests/harness/ffi-callback-pool.test.ts",

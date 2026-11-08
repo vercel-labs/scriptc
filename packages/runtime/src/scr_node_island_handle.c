@@ -15,13 +15,17 @@
  * Boundary rules (DESIGN §2.5.1): undefined, null, booleans, numbers
  * (exact: -0, NaN), strings (WTF-8, lone surrogates kept) and BigInt are
  * copied; everything else is a handle. Island promises cross as scriptc
- * promises settled by a V8 reaction, one per V8 promise while it lives.
+ * promises, one mirror per V8 promise while it lives, which reacts to the
+ * V8 promise once native code reacts to it and runs the native reactions
+ * inside V8's reaction job.
  * Typed arrays and Buffers cross as ScrBytes over the same memory (the V8
  * backing store, kept alive by the bridge while the runtime holds the
  * bytes), and runtime bytes cross into V8 as a backing store over the
  * runtime's memory. Island errors thrown into the program become ScrErrors
  * with V8's name, message, stack and code, and become the original V8
- * error again when they cross back.
+ * error again when they cross back. Native errors cross by reference the
+ * other way: one V8 Error per native error (an export), which is the
+ * native error again when it crosses back.
  *
  * Runtime objects that represent a V8 value (a promise, an error, bytes)
  * are "pinned": the table below holds the object and its ref, and a lazy
@@ -74,7 +78,9 @@ static const ScrNodeBridge *nh_bridge(void) { return scr_ni_bridge(); }
 
 /* ── pinned runtime objects ──────────────────────────────────────────── */
 
-enum { NH_PIN_PROMISE = 1, NH_PIN_ERROR = 2, NH_PIN_BYTES = 3 };
+/* NH_PIN_NATIVE_ERROR: an error native code made, pinned to the V8 error it
+ * crossed as (scr_ni_error_link). The other three are views of V8 values. */
+enum { NH_PIN_PROMISE = 1, NH_PIN_ERROR = 2, NH_PIN_BYTES = 3, NH_PIN_NATIVE_ERROR = 4 };
 
 typedef struct {
   void *obj; /* retained; its reference count is the first word */
@@ -90,7 +96,8 @@ static void nh_ref_release(ScrNodeRef *ref);
 static void nh_pin_release_obj(NhPin *pin) {
   switch (pin->kind) {
   case NH_PIN_PROMISE: scr_promise_release((ScrPromise *)pin->obj); break;
-  case NH_PIN_ERROR: scr_error_release((ScrError *)pin->obj); break;
+  case NH_PIN_ERROR:
+  case NH_PIN_NATIVE_ERROR: scr_error_release((ScrError *)pin->obj); break;
   case NH_PIN_BYTES: scr_bytes_release((ScrBytes *)pin->obj); break;
   }
 }
@@ -105,7 +112,8 @@ static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
   }
   switch (kind) {
   case NH_PIN_PROMISE: scr_promise_retain((ScrPromise *)obj); break;
-  case NH_PIN_ERROR: scr_error_retain((ScrError *)obj); break;
+  case NH_PIN_ERROR:
+  case NH_PIN_NATIVE_ERROR: scr_error_retain((ScrError *)obj); break;
   case NH_PIN_BYTES: scr_bytes_retain((ScrBytes *)obj); break;
   }
   ref->rc++;
@@ -431,24 +439,49 @@ static ScrStr *nh_str(const char *data, size_t len) {
   return scr_str_new(data, len);
 }
 
-/* An island promise as a scriptc promise: one per V8 promise while the
- * program holds it, settled by a reaction on the V8 side. */
+/* An island promise as a scriptc promise, its mirror: one per V8 promise
+ * while the program holds it. Crossing adds no reaction to the V8 promise:
+ * the mirror subscribes when native code first reacts to it
+ * (nh_promise_subscribe), so a promise only island code handles keeps
+ * exactly its island reactions and V8 decides whether it is unhandled. */
 static ScrDyn *nh_promise_box(ScrNodeRef *ref) {
   ScrPromise *p = nh_pinned_obj(ref, NH_PIN_PROMISE);
   if (p == NULL) {
     p = scr_promise_new();
+    scr_promise_mark_island_mirror(p);
     nh_pin(p, NH_PIN_PROMISE, ref);
-    ScrNodeValue value = {.tag = SCR_NV_HANDLE, .flags = ref->flags};
-    value.u.handle = ref->id;
-    ScrNodeValue thrown;
-    uint32_t token = nh_wait(p);
-    if (nh_then(&value, token, &thrown) != 0) {
-      nh_throw_value(&thrown);
-      scr_promise_reject_pending(p);
-    }
     scr_promise_release(p); /* the pin holds it */
   }
   return scr_dyn_new_promise(p);
+}
+
+/* The first native reaction to a mirror (scr_async.c calls this once per
+ * mirror, after the reaction attached): one reaction on the V8 promise,
+ * whose job settles the mirror and runs the native reactions
+ * (scr_ni_settle_value). After Node stopped nothing can settle it. */
+static void nh_promise_subscribe(ScrPromise *p) {
+  ScrNodeRef *ref = nh_pinned(p, NH_PIN_PROMISE);
+  if (ref == NULL || ni_stopped || ref->id == 0 || scr_ni_bridge_loaded() == NULL) return;
+  ScrNodeValue value = {.tag = SCR_NV_HANDLE, .flags = ref->flags};
+  value.u.handle = ref->id;
+  ScrNodeValue thrown;
+  uint32_t token = nh_wait(p);
+  if (nh_then(&value, token, &thrown) == 0) return;
+  for (size_t i = 0; i < nh_nwaiters; i++) {
+    if (nh_waiters[i].token != token) continue;
+    nh_waiters[i] = nh_waiters[--nh_nwaiters];
+    scr_promise_release(p);
+    break;
+  }
+  /* The caller may have an exception of its own pending: the rejection
+   * takes what `then` threw and leaves that one as it was. */
+  ScrCaught *outer = scr_exc_pending() ? scr_exc_take() : NULL;
+  nh_throw_value(&thrown);
+  scr_promise_reject_pending(p);
+  if (outer != NULL) {
+    scr_rethrow(outer);
+    scr_caught_release(outer);
+  }
 }
 
 /* Bytes from V8: an external root over the V8 store's memory, one per V8
@@ -497,6 +530,17 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
     uint32_t handle = v->u.handle;
     bool twin = (v->flags & SCR_NVF_TWIN) != 0;
     ScrNodeRef *ref = nh_ref(handle, v->flags);
+    if (ref->flags & SCR_NVF_ERROR) {
+      /* An island error the program already holds as an error (it caught
+       * it, or took it as a callback's argument) is that error again
+       * however it arrives, so the round trip of an island error through
+       * the program and back is the identity, as a native error's is. */
+      ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
+      if (pinned != NULL) {
+        nh_ref_release(ref);
+        return scr_dyn_from_error(pinned);
+      }
+    }
     ScrDyn *d = (ref->flags & SCR_NVF_PROMISE) ? nh_promise_box(ref)
                                                 : scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
     nh_ref_release(ref);
@@ -547,6 +591,8 @@ static void nh_error_info(uint32_t h, ScrNodeErrorInfo *out) {
 static ScrError *nh_error_of(const ScrNodeValue *v) {
   ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
   ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
+  /* The V8 error of a linked native error: that error. */
+  if (pinned == NULL) pinned = nh_pinned_obj(ref, NH_PIN_NATIVE_ERROR);
   if (pinned != NULL) {
     nh_ref_release(ref);
     return scr_error_retain(pinned);
@@ -621,22 +667,27 @@ static void nh_throw_value(const ScrNodeValue *v) {
   scr_dyn_throw(d);
 }
 
-/* A V8 reaction settled an awaited thenable. */
+/* V8's reaction job for a promise native code reacted to (a mirror, or the
+ * promise of an awaited island value). This job is the turn the native
+ * reactions take in Node, so they run here, in the order they attached:
+ * the settlement collects the jobs it queues and they run before the job
+ * returns. */
 void scr_ni_settle_value(uint32_t token, int rejected, const ScrNodeValue *value) {
   for (size_t i = 0; i < nh_nwaiters; i++) {
     if (nh_waiters[i].token != token) continue;
     ScrPromise *p = nh_waiters[i].promise;
     nh_waiters[i] = nh_waiters[--nh_nwaiters];
-    if (rejected) {
-      nh_throw_value(value);
-      scr_promise_reject_pending(p);
-    } else {
-      ScrDyn *d = nh_from_node(value);
-      if (d != NULL)
-        scr_promise_fulfill_ref(p, d, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-      scr_promise_reject_pending(p); /* no-op unless a conversion error is pending */
-    }
+    /* The value converts first (reading an island Error may run its
+     * getters): only the settlement's own jobs are collected. */
+    ScrDyn *d = NULL;
+    if (rejected) nh_throw_value(value);
+    else d = nh_from_node(value);
+    scr_loop_hosted_settle_begin();
+    if (d != NULL)
+      scr_promise_fulfill_ref(p, d, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_promise_reject_pending(p); /* the rejection, or a conversion error; else a no-op */
     scr_promise_release(p);
+    scr_loop_hosted_settle_run();
     return;
   }
 }
@@ -731,10 +782,10 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   }
 }
 
-/* The nearest intrinsic class V8 has (subclasses included). */
+/* The nearest class the island has a constructor for: V8's intrinsic
+ * error classes and Node's DOMException (subclasses included). */
 static uint32_t nh_error_kind(const ScrError *e) {
-  for (int k = 1; k <= SCR_ERR_URI; k++) {
-    if (k == SCR_ERR_DOMEX) continue;
+  for (int k = 1; k <= SCR_ERR_AGGREGATE; k++) {
     if (scr_error_vts[k].pre <= e->vt->pre && e->vt->pre <= scr_error_vts[k].post)
       return (uint32_t)k;
   }
@@ -810,6 +861,7 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   ScrError *e = scr_errdyn_err_of(v);
   if (e != NULL) {
     ScrNodeRef *ref = nh_pinned(e, NH_PIN_ERROR);
+    if (ref == NULL) ref = nh_pinned(e, NH_PIN_NATIVE_ERROR);
     if (ref != NULL) {
       scr_error_release(e);
       out->tag = SCR_NV_HANDLE;
@@ -817,28 +869,21 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
       out->u.handle = ref->id;
       return true;
     }
-    ScrStr *name = e->name != NULL ? scr_str_retain(e->name) : scr_error_default_name(e);
-    ScrStr *message = e->message != NULL ? scr_str_retain(e->message) : scr_str_new("", 0);
-    ScrStr *stack = scr_error_stack(e);
-    nh_keep(keep, name, nh_str_release_v);
-    nh_keep(keep, message, nh_str_release_v);
-    if (stack != NULL) nh_keep(keep, stack, nh_str_release_v);
+    /* A native error crosses by reference, like every native object: its
+     * dyn node is an export, and the bridge keeps one V8 Error per export,
+     * of the error's intrinsic class. That V8 Error crossing back is
+     * SCR_NV_EXPORT, so the program gets the error it threw: the same
+     * object, with its class and fields. The V8 Error's own properties are
+     * the native error's: the bridge asks the export which exist
+     * (SCR_NODE_EXPORT_OWN) and reads and writes each through it, so island
+     * code and the program read and write one set of values, `stack`
+     * among them (formatted only when one side reads it). An instance of a
+     * program class also answers its class's members there. */
     out->tag = SCR_NV_ERROR;
+    out->flags = SCR_NVF_ERROR;
+    out->u.error.export_id = scr_ni_export_id(v);
     out->u.error.kind = nh_error_kind(e);
-    out->u.error.name = name->data;
-    out->u.error.name_len = name->len;
-    out->u.error.message = message->data;
-    out->u.error.message_len = message->len;
-    if (stack != NULL) {
-      out->u.error.stack = stack->data;
-      out->u.error.stack_len = stack->len;
-    }
-    if (e->code != NULL) {
-      ScrStr *code = scr_str_retain(e->code);
-      nh_keep(keep, code, nh_str_release_v);
-      out->u.error.code = code->data;
-      out->u.error.code_len = code->len;
-    }
+    out->u.error.class_instance = v->kind == SCR_DYN_TYPED_REF;
     scr_error_release(e);
     return true;
   }
@@ -1181,20 +1226,41 @@ int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor) {
   return out.tag == SCR_NV_BOOL && out.u.boolean ? 1 : 0;
 }
 
-/* NI-4: the `constructor` an error thrown by island code keeps. The
- * runtime's error view answers the interned native constructor, but this
- * error IS a V8 error: in the island's realm its `constructor` is V8's
- * TypeError — the very value the island's own `TypeError` crosses as — so
- * `e.constructor === TypeError` holds as it does in one realm, agreeing
- * with the bridge's instanceof. 0 for an error the runtime made itself. */
-static int nh_error_constructor(const struct ScrError *err, ScrDyn **out) {
+/* NI-4: what the native view of an error island code threw does not hold.
+ * The view carries the name, message, stack and string code every error
+ * has; this error IS a V8 error, so every other property the program reads
+ * (an own `status` or `errno`, `cause`, an AggregateError's `errors`, a
+ * method of its class, and `constructor`, which in the island's realm is
+ * V8's TypeError, the very value the island's own `TypeError` crosses as)
+ * is read from it. Errors among the results are native views themselves.
+ * 0 for an error the runtime made itself. */
+static int nh_error_get(const struct ScrError *err, const char *key, size_t len, ScrDyn **out) {
   ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
   if (ref == NULL) return 0;
-  ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND); /* retains */
-  ScrDyn *ctor = scr_ni_get_str(handle, "constructor", 11);
-  scr_dyn_release(handle);
-  *out = ctor;
+  *out = NULL;
+  if (!nh_live(ref)) return 1;
+  nh_enter();
+  ScrNodeValue k = {.tag = SCR_NV_STRING}, value;
+  k.u.str.data = key;
+  k.u.str.len = len;
+  NhCall c = {.op = NH_GET, .h = ref->id, .a = &k, .out = &value};
+  nh_run(&c);
+  if (c.threw) nh_throw_value(&value);
+  else *out = scr_ni_arg_in(&value);
   return 1;
+}
+
+static int nh_error_has(const struct ScrError *err, const char *key, size_t len) {
+  ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
+  if (ref == NULL) return -1;
+  ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND); /* retains */
+  ScrStr *name = scr_str_new(key, len);
+  ScrDyn *k = scr_dyn_new_str(name);
+  scr_str_release(name);
+  int found = scr_ni_has(handle, k);
+  scr_dyn_release(k);
+  scr_dyn_release(handle);
+  return found == 1 ? 1 : 0;
 }
 
 ScrDyn *scr_ni_own_keys(ScrDyn *obj, int mode) {
@@ -1250,6 +1316,29 @@ ScrPromise *scr_ni_await(ScrDyn *value) {
     scr_promise_reject_pending(p);
   }
   return p;
+}
+
+/* PromiseResolve of a value the program awaits, for the island values the
+ * dynamic await does not know: an island object or function is resolved as
+ * every promise resolution resolves it (scr_dyn_promise_resolve: a callable
+ * `then` makes it a thenable, which the runtime's thenable job adopts; a
+ * `then` getter that throws rejects with what it threw), and the program
+ * awaits that promise. A value without a callable `then` fulfils it, and
+ * awaiting the fulfilled promise takes the one turn awaiting the value
+ * takes. Every other value is itself. +1. */
+ScrDyn *scr_node_island_adopt_thenable(ScrDyn *value) {
+  if (nh_ref_of(value) == NULL || !scr_context_is_main()) return scr_dyn_retain(value);
+  ScrPromise *resolved = scr_dyn_promise_resolve(value, NULL);
+  ScrDyn *box = scr_dyn_new_promise(resolved);
+  scr_promise_release(resolved);
+  return box;
+}
+
+/* Promise.resolve(value) in a program with Node islands: the runtime's
+ * PromiseResolve, which adopts an island thenable (and any other) and
+ * answers a promise as itself. +1. */
+ScrPromise *scr_node_island_promise_resolve(ScrDyn *value) {
+  return scr_dyn_promise_resolve(value, NULL);
 }
 
 bool scr_ni_is_function(const ScrDyn *value) {
@@ -1452,6 +1541,7 @@ uint32_t scr_ni_live_handles(void) {
 }
 
 void scr_ni_stop(void) { ni_stopped = true; }
+bool scr_ni_running(void) { return !ni_stopped && scr_ni_bridge_loaded() != NULL; }
 
 /* ── the handle tag (dynamic code over island values) ────────────────── */
 
@@ -1735,6 +1825,28 @@ bool scr_ni_report_uncaught(ScrError *error) {
   return true;
 }
 
+/* A native error the runtime raises as a process event (an uncaught error,
+ * the reason of a rejection Node tracks, a warning) is one V8 error for as
+ * long as native code holds it: the first crossing makes the V8 error, and
+ * from then on the native error crosses as that error and that error
+ * crosses back as the native one, so a native listener registered on
+ * Node's `process` receives the error that was thrown, with its class and
+ * fields, not a view of a copy. Any other value is left alone. */
+void scr_ni_error_link(ScrDyn *value) {
+  if (scr_exc_pending()) return; /* the caller's exception stays as it is */
+  ScrError *e = value != NULL ? scr_errdyn_err_of(value) : NULL;
+  if (e == NULL) return;
+  if (nh_pinned(e, NH_PIN_ERROR) == NULL && nh_pinned(e, NH_PIN_NATIVE_ERROR) == NULL) {
+    ScrDyn *args[1] = {value};
+    ScrDyn *copy = scr_ni_helper("same", args, 1);
+    if (copy != NULL && scr_ni_is_handle(copy))
+      nh_pin(e, NH_PIN_NATIVE_ERROR, (ScrNodeRef *)copy->v.handle.ptr);
+    scr_dyn_release(copy);
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+  scr_error_release(e);
+}
+
 /* ── NI-4a: libCall entry points of compiled island code ─────────────────
  * The compiler (frontend/lowering/lower-node-island.ts) lowers member
  * operations on island values to `nodeIsland.*` libCalls, which pass
@@ -1759,6 +1871,55 @@ ScrDyn *scr_dyn_reflect_get(ScrDyn *target, ScrDyn *raw_key, ScrDyn *receiver);
 
 static bool ni_lc_island(const ScrDyn *v) { return v != NULL && scr_ni_is_handle(v); }
 
+/* An island promise is an island object as well: an island class that
+ * extends Promise adds members of its own (an SDK's request promise with
+ * `withResponse()`), while the program holds the promise as its mirror, a
+ * plain promise. A member a promise does not have itself is the island
+ * object's, which the pin table names; `then`, `catch` and `finally` stay
+ * the mirror's, so reactions keep the runtime's rules. The island object
+ * of mirror `obj` for member `key` (+1 handle box), or NULL. */
+static ScrDyn *nh_promise_object(const ScrDyn *obj, const char *key, size_t len) {
+  if (obj == NULL || obj->kind != SCR_DYN_PROMISE) return NULL;
+  if ((len == 4 && memcmp(key, "then", 4) == 0) || (len == 5 && memcmp(key, "catch", 5) == 0) ||
+      (len == 7 && memcmp(key, "finally", 7) == 0))
+    return NULL;
+  ScrNodeRef *ref = nh_pinned(obj->v.promise, NH_PIN_PROMISE);
+  return ref != NULL ? scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND) : NULL;
+}
+
+static ScrDyn *nh_promise_object_key(const ScrDyn *obj, const ScrDyn *key) {
+  if (key == NULL || key->kind != SCR_DYN_STR) return NULL;
+  return nh_promise_object(obj, key->v.str->data, key->v.str->len);
+}
+
+static int nh_promise_has(const ScrDyn *promise, const char *key, size_t len) {
+  ScrDyn *island = nh_promise_object(promise, key, len);
+  if (island == NULL) return -1;
+  ScrStr *name = scr_str_new(key, len);
+  ScrDyn *k = scr_dyn_new_str(name);
+  scr_str_release(name);
+  int found = scr_ni_has(island, k);
+  scr_dyn_release(k);
+  scr_dyn_release(island);
+  return found == 1 ? 1 : 0;
+}
+
+static int nh_promise_set(const ScrDyn *promise, const char *key, size_t len, ScrDyn *value) {
+  ScrDyn *island = nh_promise_object(promise, key, len);
+  if (island == NULL) return 0;
+  (void)scr_ni_set_str(island, key, len, value);
+  scr_dyn_release(island);
+  return 1;
+}
+
+static int nh_promise_get(const ScrDyn *promise, const char *key, size_t len, ScrDyn **out) {
+  ScrDyn *island = nh_promise_object(promise, key, len);
+  if (island == NULL) return 0;
+  *out = scr_ni_get_str(island, key, len);
+  scr_dyn_release(island);
+  return 1;
+}
+
 /* A NUL-terminated copy of `key` for the dyn invoke path (heap only for long names). */
 static ScrDyn *ni_lc_native_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *const *items, size_t argc) {
   char small[128];
@@ -1773,6 +1934,12 @@ static ScrDyn *ni_lc_native_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *const *item
 
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key) {
   if (ni_lc_island(obj)) return scr_ni_get_str(obj, key->data, key->len);
+  ScrDyn *island = nh_promise_object(obj, key->data, key->len);
+  if (island != NULL) {
+    ScrDyn *member = scr_ni_get_str(island, key->data, key->len);
+    scr_dyn_release(island);
+    return member;
+  }
   ScrDyn *k = scr_dyn_new_str(key);
   ScrDyn *value = scr_dyn_reflect_get(obj, k, obj);
   scr_dyn_release(k);
@@ -1781,23 +1948,49 @@ ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key) {
 
 ScrDyn *scr_node_island_get_key(ScrDyn *obj, ScrDyn *key) {
   if (ni_lc_island(obj)) return scr_ni_get(obj, key);
+  ScrDyn *island = nh_promise_object_key(obj, key);
+  if (island != NULL) {
+    ScrDyn *member = scr_ni_get(island, key);
+    scr_dyn_release(island);
+    return member;
+  }
   return scr_dyn_reflect_get(obj, key, obj);
 }
 
 void scr_node_island_set(ScrDyn *obj, ScrStr *key, ScrDyn *value) {
-  if (ni_lc_island(obj)) (void)scr_ni_set_str(obj, key->data, key->len, value);
-  else scr_dyn_key_set(obj, key, value);
+  ScrDyn *island = ni_lc_island(obj) ? NULL : nh_promise_object(obj, key->data, key->len);
+  if (island != NULL) {
+    (void)scr_ni_set_str(island, key->data, key->len, value);
+    scr_dyn_release(island);
+  } else if (ni_lc_island(obj)) {
+    (void)scr_ni_set_str(obj, key->data, key->len, value);
+  } else {
+    scr_dyn_key_set(obj, key, value);
+  }
 }
 
 void scr_node_island_set_key(ScrDyn *obj, ScrDyn *key, ScrDyn *value) {
-  if (ni_lc_island(obj)) (void)scr_ni_set(obj, key, value);
-  else scr_dyn_key_set_computed(obj, key, value);
+  ScrDyn *island = ni_lc_island(obj) ? NULL : nh_promise_object_key(obj, key);
+  if (island != NULL) {
+    (void)scr_ni_set(island, key, value);
+    scr_dyn_release(island);
+  } else if (ni_lc_island(obj)) {
+    (void)scr_ni_set(obj, key, value);
+  } else {
+    scr_dyn_key_set_computed(obj, key, value);
+  }
 }
 
 ScrDyn *scr_node_island_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   if (ni_lc_island(obj)) return scr_ni_call_method(obj, key->data, key->len, items, argc);
+  ScrDyn *island = nh_promise_object(obj, key->data, key->len);
+  if (island != NULL) {
+    ScrDyn *result = scr_ni_call_method(island, key->data, key->len, items, argc);
+    scr_dyn_release(island);
+    return result;
+  }
   return ni_lc_native_invoke(obj, key, items, argc);
 }
 
@@ -1847,7 +2040,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .instance_of = scr_ni_instanceof,
     .to_primitive = scr_ni_to_primitive,
     .is_function = scr_ni_is_function,
-    .error_constructor = nh_error_constructor,
+    .error_get = nh_error_get,
     .object_tag = nh_object_tag,
     .function_identity = nh_function_identity,
     .function_of_identity = nh_function_of_identity,
@@ -1856,8 +2049,15 @@ static const ScrNiDynOps nh_dyn_ops = {
     .weak_get = scr_ni_weak_get,
     .weak_test = scr_ni_weak_test,
     .weak_set = scr_ni_weak_set,
+    .error_has = nh_error_has,
+    .promise_get = nh_promise_get,
+    .promise_has = nh_promise_has,
+    .promise_set = nh_promise_set,
 };
 
-__attribute__((constructor)) static void nh_install(void) { scr_ni_dyn_ops = &nh_dyn_ops; }
+__attribute__((constructor)) static void nh_install(void) {
+  scr_ni_dyn_ops = &nh_dyn_ops;
+  scr_promise_subscribe_fn = nh_promise_subscribe;
+}
 
 #endif /* !_WIN32 && !__wasi__ */

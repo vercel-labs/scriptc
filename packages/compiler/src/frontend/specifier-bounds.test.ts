@@ -56,6 +56,9 @@ function local(specifier: string): Promise<unknown> {
 function withDefault(specifier = "node:path"): Promise<unknown> {
   return import(specifier);
 }
+function computed(): string {
+  return "node:path";
+}
 async function main(): Promise<void> {
   await import("node:path");
   await import(template);
@@ -69,11 +72,56 @@ async function main(): Promise<void> {
   await local("node:path");
   await local(flag ? "node:os" : "node:path");
   await withDefault();
+  await import(computed());
 }
 void main();
 export {};
 `),
   ).toEqual([]);
+});
+
+test("the whitelisted String methods fold a bounded receiver and arguments", () => {
+  expect(
+    features(`
+const NAME = "PATH";
+const spaced = " node:os ".trim();
+async function main(): Promise<void> {
+  await import("node:" + NAME.toLowerCase());
+  await import("NODE:PATH".toUpperCase().toLowerCase());
+  await import("node:PATH".replace("PATH", "path"));
+  await import("node:pa_th".replaceAll("_", ""));
+  await import("node_os".replace(/node_/, "node:"));
+  await import(spaced);
+  await import("node:os-extra".slice(0, 7));
+  await import("node:os-extra".slice(0, -6));
+  await import("node:".concat("os"));
+  await import("node:".concat(NAME.toLowerCase()));
+}
+void main();
+export {};
+`),
+  ).toEqual([]);
+});
+
+test("a String call the fold cannot evaluate names the source that stops it", () => {
+  expect(
+    unboundedWhys(`
+const pad = process.env.SCRIPTC_PAD ?? "0";
+async function main(): Promise<void> {
+  await import("node:path".padEnd(9));
+  await import("node:path".slice(process.argv.length));
+  await import("node:path".replace(process.env.SCRIPTC_SPEC ?? "p", "x"));
+  await import("node:path".concat(pad));
+}
+void main();
+export {};
+`),
+  ).toEqual([
+    "(a value read from `process.env`)",
+    "(the result of `padEnd(...)`)",
+    "(the result of `replace(...)`)",
+    "(the result of `slice(...)`)",
+  ]);
 });
 
 test("every unbounded form names the first source that stops it", () => {
@@ -86,8 +134,8 @@ export const load = (specifier: string): Promise<unknown> => import(specifier);
 export async function run(specifier: string): Promise<void> {
   await import(specifier);
 }
-function computed(): string {
-  return "node:path";
+function computedUnbounded(): string {
+  return process.env.SCRIPTC_SPEC!;
 }
 function exportedByClause(specifier: string): Promise<unknown> {
   return import(specifier);
@@ -104,7 +152,7 @@ const table = { viaShorthand };
 async function main(specifier: string): Promise<void> {
   await import(fromArgv);
   await import(reassigned);
-  await import(computed());
+  await import(computedUnbounded());
   await import(\`node:\${process.argv[2]}\`);
   await import(process.env.SCRIPTC_SPEC ?? "node:path");
   await import(process.env.SCRIPTC_SPEC || "node:path");
@@ -127,8 +175,8 @@ void table.viaShorthand("node:os");
     "(a value read from `process.argv`)",
     "(a value read from `process.env`)",
     "(a value read from `process.env`)",
+    "(a value read from `process.env`)",
     "(the function value 'viaShorthand', which is used other than as a direct call)",
-    "(the result of `computed(...)`)",
   ]);
 });
 

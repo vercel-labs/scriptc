@@ -295,8 +295,14 @@ function tunnelConnector(
       pending = null;
       if (cb !== null) cb(err, socket);
     };
+    // The URL of an IPv6 literal keeps the brackets in its hostname; the
+    // connector dials the address inside them, as undici's client does.
+    let proxyHostname = proxy.hostname;
+    if (proxyHostname.startsWith("[")) {
+      proxyHostname = proxyHostname.slice(1, proxyHostname.indexOf("]"));
+    }
     return dialProxy(
-      { hostname: proxy.hostname, host: proxy.host, protocol: proxy.protocol, port: proxy.port },
+      { hostname: proxyHostname, host: proxy.host, protocol: proxy.protocol, port: proxy.port },
       (err: Error | null, tunnel: Socket | null): void => {
         if (err !== null || tunnel === null) {
           settle(err ?? new SocketError("proxy connect failed"), null);

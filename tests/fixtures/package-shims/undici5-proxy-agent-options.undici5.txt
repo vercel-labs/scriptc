@@ -1,6 +1,7 @@
 uri as a string: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
 uri in options: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close
 uri with credentials: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: 127.0.0.1:PORT / connection: close / proxy-authorization: Basic dXNlcjpwYXNzIHdvcmQ=
+uri with an IPv6 literal: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: [::1]:PORT / connection: close
 uri socks5: threw NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici ProxyAgent tunnels through http: and https: proxies, not 'socks5:' | proxy saw nothing
 uri empty: threw InvalidArgumentError UND_ERR_INVALID_ARG: Proxy opts.uri is mandatory | proxy saw nothing
 uri not a URL: threw TypeError ERR_INVALID_URL: Invalid URL | proxy saw nothing

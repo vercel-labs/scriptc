@@ -645,10 +645,14 @@ describe("package shims", () => {
       "utf8",
     );
     expect(await run(binary, [], dir)).toBe(expected);
-    // Among the cells that are the same: a line break in a token or a
-    // header fails the request before the proxy is dialed, and an https
-    // origin's certificate is checked against the origin's name.
-    expect(cellsAgainst(undici, expected)).toEqual({ same: 42, refused: 13, different: [] });
+    // Among the cells that are the same: a proxy URL that is an IPv6 literal
+    // reaches the proxy, a line break in a token or a header fails the
+    // request before the proxy is dialed, and an https origin's certificate
+    // is checked against the origin's name.
+    expect(cellsAgainst(undici, expected)).toEqual({ same: 43, refused: 13, different: [] });
+    expect(expected).toContain(
+      "uri with an IPv6 literal: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: [::1]:PORT / connection: close",
+    );
     expect(expected).toContain(
       "token with a line break: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid proxy-authorization header | proxy saw nothing",
     );

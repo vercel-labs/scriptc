@@ -24,7 +24,7 @@ const local = https.createServer({ key: pem("local.key"), cert: pem("local.pem")
 const byAddress = https.createServer({ key: pem("address.key"), cert: pem("address.pem") }, answer("address"));
 
 const seen: string[] = [];
-const proxy = net.createServer((socket) => {
+const tunnel = (socket: net.Socket): void => {
   let head = "";
   let tunnelled = false;
   socket.on("data", (chunk: Buffer) => {
@@ -44,7 +44,10 @@ const proxy = net.createServer((socket) => {
     socket.on("error", () => upstream.destroy());
   });
   socket.on("error", () => {});
-});
+};
+const proxy = net.createServer(tunnel);
+// The same proxy on the IPv6 loopback address, for a proxy URL that is an IPv6 literal.
+const proxy6 = net.createServer(tunnel);
 
 function say(line: string): void {
   console.log(line.replace(/:\d{4,5}\b/g, ":PORT").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\u0000/g, "\\0"));
@@ -70,9 +73,9 @@ async function cell(label: string, target: string, make: () => ProxyAgent, wordi
   say(`${label}: ${line} | proxy saw ${seen.length === 0 ? "nothing" : seen.join(" / ")}`);
 }
 
-function listen(server: net.Server): Promise<number> {
+function listen(server: net.Server, host = "127.0.0.1"): Promise<number> {
   return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve((server.address() as net.AddressInfo).port));
+    server.listen(0, host, () => resolve((server.address() as net.AddressInfo).port));
   });
 }
 
@@ -82,6 +85,7 @@ async function main(): Promise<void> {
   const localPort = await listen(local);
   const addressPort = await listen(byAddress);
   const proxyPort = await listen(proxy);
+  const proxy6Port = await listen(proxy6, "::1");
   proxyUri = `http://127.0.0.1:${proxyPort}`;
   const plain = `http://127.0.0.1:${plainPort}/p`;
   const uri = proxyUri;
@@ -89,6 +93,7 @@ async function main(): Promise<void> {
   await cell("uri as a string", plain, () => new ProxyAgent(uri));
   await cell("uri in options", plain, () => new ProxyAgent({ uri }));
   await cell("uri with credentials", plain, () => new ProxyAgent(`http://user:pass%20word@127.0.0.1:${proxyPort}`));
+  await cell("uri with an IPv6 literal", plain, () => new ProxyAgent(`http://[::1]:${proxy6Port}`));
   await cell("uri socks5", plain, () => new ProxyAgent(`socks5://127.0.0.1:${proxyPort}`));
   await cell("uri empty", plain, () => new ProxyAgent({ uri: "" }));
   await cell("uri not a URL", plain, () => new ProxyAgent({ uri: "not a url" }));
@@ -151,6 +156,7 @@ async function main(): Promise<void> {
   await cell("tls, empty requestTls", namedUrl, () => new ProxyAgent({ uri, requestTls: {} }), false);
 
   proxy.close();
+  proxy6.close();
   origin.close();
   named.close();
   local.close();

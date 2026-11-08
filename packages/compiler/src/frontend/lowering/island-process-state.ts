@@ -4,7 +4,8 @@
  * writes directly, and the program's native reads and writes go to it
  * through the island unit (scr_node_island_events.c). Until Node is loaded
  * the island unit answers from the runtime's own value, as the calls it
- * replaces do. */
+ * replaces do. `process.chdir` goes the same way: the directory is the
+ * process's, and Node is told to drop its cached `process.cwd()`. */
 import type { IrExpr, IrFunction, IrLibFn } from "../../ir/ir.js";
 import { everyStmt } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
@@ -17,10 +18,14 @@ const EXIT_CODE_CALLS: ReadonlyMap<IrLibFn, IrLibFn> = new Map<IrLibFn, IrLibFn>
   ["process.setExitCodeTracked", "nodeIsland.setExitCode"],
   ["process.currentExitCode", "nodeIsland.exitCode"],
   ["process.hasExitCode", "nodeIsland.hasExitCode"],
+  // The working directory is the process's too, and Node caches its answer
+  // to process.cwd(): the program's change tells Node to read it again.
+  ["process.chdir", "nodeIsland.chdir"],
 ]);
 
-/** Routes the exit-code calls through the island unit, over the final
- * functions, in place. Programs without islands are left as they are. */
+/** Routes the exit-code calls and process.chdir through the island unit,
+ * over the final functions, in place. Programs without islands are left as
+ * they are. */
 export function shareIslandProcessState(lowerer: Lowerer, functions: IrFunction[]): void {
   if (!lowerer.usesNodeIsland) return;
   const visitor = {

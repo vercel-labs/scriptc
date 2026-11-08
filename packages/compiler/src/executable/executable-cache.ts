@@ -113,6 +113,7 @@ export interface EarlyExecutableNativeFeatures {
   childLifecycle?: boolean;
   /** process.features as a value: scr_process_features.c. */
   processFeatures?: boolean;
+  islandChild?: boolean;
   childOptionExt?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;

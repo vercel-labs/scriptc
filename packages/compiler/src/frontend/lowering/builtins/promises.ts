@@ -1,6 +1,7 @@
 import { keyedHelperName } from "../stable-names.js";
 import { checkedPromiseAll, thenReader } from "../checked-promise-all.js";
 import { mayResolveThroughThen } from "../promise-resolution.js";
+import { promiseResolveThenable, thenableParts } from "../thenables.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
@@ -939,7 +940,10 @@ export function lowerPromiseStaticCall(
       return resultArms.some((a) => typeEquals(a, inner));
     };
     const entries = elements.map((el, i) => {
-      const entry = lowered?.[i] ?? lowerer.lowerExpr(el);
+      const made = lowered?.[i] ?? lowerer.lowerExpr(el);
+      // An entry whose static type has a thenable part joins as the promise
+      // PromiseResolve makes of it.
+      const entry = promiseResolveThenable(lowerer, el, made, locOf(el)) ?? made;
       if (entry.type.kind !== "promise") {
         lowerer.noLowering(
           "Promise.race over non-promise entries",
@@ -1429,6 +1433,23 @@ export function lowerPromiseStaticCall(
           "the promise arm passes through identically, so it must already be the result's promise type",
         );
       }
+      // A value whose static type has a thenable part (a slot declared
+      // PromiseLike<T>, an object of the program with a `then` method):
+      // PromiseResolve asks the value. A promise is answered as it is, a
+      // thenable is adopted through its `then`.
+      {
+        const wanted = lowerer.mapTypeOf(lowerer.typeOf(call));
+        if (wanted?.kind === "promise" && thenableParts(lowerer, argT, argNode).length > 0) {
+          const adopted = promiseResolveThenable(
+            lowerer,
+            argNode,
+            lowerer.lowerExpr(argNode),
+            loc,
+            wanted,
+          );
+          if (adopted !== null) return adopted;
+        }
+      }
       if (
         argIr?.kind === "union" &&
         (lowerer.unions.get(argIr.unionId)?.arms ?? []).some((a) => a.kind === "promise")
@@ -1543,7 +1564,10 @@ function typedPromiseEntries(
     !argNode.elements.nodes.some(ts.isSpreadElement) &&
     argNode.elements.nodes.length > 0
   ) {
-    const elems = argNode.elements.nodes.map((el) => lowerer.lowerExpr(el));
+    const elems = argNode.elements.nodes.map((el) => {
+      const made = lowerer.lowerExpr(el);
+      return promiseResolveThenable(lowerer, el, made, locOf(el)) ?? made;
+    });
     const first = elems[0]!.type;
     if (
       first.kind !== "promise" ||

@@ -38,6 +38,13 @@ const calls = (): (IrExpr & { kind: "libCall" })[] => [
   { kind: "libCall", fn: "process.currentExitCode", args: [], type: F64, loc },
   { kind: "libCall", fn: "process.hasExitCode", args: [], type: BOOL, loc },
   { kind: "libCall", fn: "process.cwd", args: [], type: { kind: "string" }, loc },
+  {
+    kind: "libCall",
+    fn: "process.chdir",
+    args: [{ kind: "strLit", value: "..", type: { kind: "string" }, loc }],
+    type: VOID,
+    loc,
+  },
 ];
 const body = (exprs: IrExpr[]): IrStmt[] => exprs.map((expr) => ({ kind: "exprStmt", expr, loc }));
 
@@ -52,6 +59,7 @@ test("a program with Node islands reads and writes process.exitCode through the 
     "nodeIsland.exitCode",
     "nodeIsland.hasExitCode",
     "process.cwd",
+    "nodeIsland.chdir",
   ]);
 });
 
@@ -66,5 +74,6 @@ test("a program without Node islands keeps the runtime's exit-code calls", () =>
     "process.currentExitCode",
     "process.hasExitCode",
     "process.cwd",
+    "process.chdir",
   ]);
 });

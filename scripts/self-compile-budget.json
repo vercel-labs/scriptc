@@ -15,6 +15,12 @@
     "value": 146,
     "reason": "Measured with --check on this branch merged with main e8c933e5d: 3205 MB reachable at the end of the second lowering pass for 23.0 MB of source. --native-build, which CI runs, read 3249 MB (148) at c8767817e. It was 212 at 618fdb8eb, where the first pass ran to its end and its program stayed reachable through the second; #3147 ends that pass early and #3149 interns the failure-message texts."
   },
+  "neverDynamicClasses": {
+    "value": [
+      "Lowerer"
+    ],
+    "reason": "The Lowerer is the receiver of the whole frontend, and its fields reach most of the compiler's classes. When one call hands it over where an interface it satisfies is declared, it becomes a dynamic value and the compiler's own build gains about 9,000 functions (6%): #2878, #3192 and #2567 each did that through one helper's parameter type, and #3394 took the last one out. tests/harness/compiler-host-arguments.test.ts reads the source for such calls in every pull request; this is the build's own answer."
+  },
   "sourceCostAllowance": {
     "value": 0,
     "reason": ""

@@ -164,6 +164,7 @@ import {
   classStaticsProjection,
 } from "./coercions/structural.js";
 import { checkVariadicFunctions, type FinishedBodies } from "./variadic-functions.js";
+import { reportDynamicClasses, watchedDynamicClasses } from "./dynamic-class-report.js";
 import {
   callbackReadsThis,
   callbackTakesEveryArgument,
@@ -12040,13 +12041,13 @@ export class Lowerer {
     // index loops run to the joint fixpoint. Same-key recursion re-uses
     // its own entry; polymorphic recursion is cut off by
     // the recursive instantiation demand path.
+    const classDispatch = new ClassDynamicDispatch();
     {
       let ec = 0;
       let gc = 0;
       let gi = 0;
       let es = 0;
       let rd = 0;
-      const classDispatch = new ClassDynamicDispatch();
       let dispatchChanged = !this.remainder;
       while (
         dispatchChanged ||
@@ -12148,13 +12149,18 @@ export class Lowerer {
       };
     }
 
-    return this.finishModule(functions);
+    return this.finishModule(functions, false, undefined, classDispatch);
   }
 
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
-  finishModule(functions: IrFunction[], library = false, bodies?: FinishedBodies): LowerResult {
+  finishModule(
+    functions: IrFunction[],
+    library = false,
+    bodies?: FinishedBodies,
+    dispatch?: ClassDynamicDispatch,
+  ): LowerResult {
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
@@ -12371,6 +12377,11 @@ export class Lowerer {
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
     if (module) checkCycleBindingAccesses(this, module);
     if (module) bindCompletionCallbacks(module);
+    // SCRIPTC_DYNAMIC_CLASSES: where the finished program makes instances of
+    // the named classes dynamic values (dynamic-class-report.ts).
+    const watchedClasses = watchedDynamicClasses();
+    if (module && watchedClasses.length > 0)
+      reportDynamicClasses(this, module.functions, dispatch?.boxedClasses(), watchedClasses);
     // Execution tiers from the final bodies (ir/tiers.ts). Assigned with or
     // without a module: coverage reports the dynamic tier of programs that
     // still have blockers.
@@ -13334,7 +13345,10 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    return { reachable, result: this.finishModule(functions, extraRoots !== undefined, bodies) };
+    return {
+      reachable,
+      result: this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
+    };
   }
 
   /** What the steps before the worklist settled for a top-level

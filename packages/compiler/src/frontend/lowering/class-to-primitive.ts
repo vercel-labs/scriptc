@@ -17,6 +17,7 @@ import { TO_STRING_TAG_FIELD } from "./symbol-fields.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { DATE_TIME_FIELD, dateRootOf } from "./builtins/date-classes.js";
 import { dateValueMethod } from "./builtins/dates.js";
+import { concatOperand } from "./lower-exprs.js";
 
 /** The ToPrimitive hint of a conversion: `String(x)` and template literals
  * take "string", `+` "default", `Number(x)` "number". */
@@ -383,6 +384,30 @@ function refuseReplacedConversions(lowerer: Lowerer, info: ClassInfo, node: ts.N
   }
 }
 
+/** Whether ensureString converts a value of this record or array type by
+ * itself: a record that is not a tuple and declares no `toString` member
+ * (Object.prototype.toString's text, or the conversion of the source it
+ * keeps), and an array whose elements its join prints (numbers, strings,
+ * booleans, dates, checked-dynamic values, and unions of the scalars with
+ * unit arms). The other shapes keep ensureString's refusal. */
+function convertsAloneToString(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "record") {
+    const shape = lowerer.shapes.get(type.shapeId);
+    return shape !== undefined && !shape.tuple && !shape.fields.some((f) => f.name === "toString");
+  }
+  if (type.kind !== "array") return false;
+  const elem = type.elem;
+  const scalar = (t: IrType): boolean =>
+    t.kind === "f64" || t.kind === "string" || t.kind === "bool" || t.kind === "date";
+  if (scalar(elem) || elem.kind === "dyn") return true;
+  if (elem.kind !== "union") return false;
+  const arms = lowerer.unions.get(elem.unionId)?.arms;
+  return (
+    arms !== undefined &&
+    arms.every((arm) => scalar(arm) || arm.kind === "undefinedT" || arm.kind === "nullT")
+  );
+}
+
 function refuse(lowerer: Lowerer, node: ts.Node, info: ClassInfo, what: string): never {
   lowerer.unsupported(
     "SC1090",
@@ -394,21 +419,31 @@ function refuse(lowerer: Lowerer, node: ts.Node, info: ClassInfo, what: string):
 /** ToString(ToPrimitive(value, hint)) of a union whose arms are program
  * class instances, URLs, typed arrays, dates, regular expressions and
  * primitives (`Box | undefined`, `string | URL`, `URL | Uint8Array`): each
- * arm converts as it would alone. Null for other unions. */
+ * arm converts as it would alone. With `plainArms`, which ensureString
+ * passes once its own rules have declined, plain records and arrays are
+ * arms too (`{ limit?: number } | undefined`, `number[] | string`). Null
+ * for other unions. */
 export function classUnionToString(
   lowerer: Lowerer,
   value: IrExpr,
   hint: StringConversionHint,
   node: ts.Node,
+  plainArms = false,
 ): IrExpr | null {
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
   if (!arms || arms.every((arm) => PRIMITIVE_KINDS.has(arm.kind))) return null;
+  const plain = (arm: IrType): boolean => arm.kind === "record" || arm.kind === "array";
   // Without class or URL arms both hints give the same text, and
   // ensureString, which tries the checker's narrowed arm first, converts
-  // the union with the string hint.
-  if (hint === "default" && !arms.some((arm) => arm.kind === "object" || arm.kind === "url"))
+  // the union with the string hint. A record arm keeps the hint: a record
+  // that kept its source adds as the source does, which can prefer valueOf.
+  if (
+    hint === "default" &&
+    !arms.some((arm) => arm.kind === "object" || arm.kind === "url") &&
+    !(plainArms && arms.some(plain))
+  )
     return null;
   const convertible = (arm: IrType): boolean => {
     if (PRIMITIVE_KINDS.has(arm.kind)) return true;
@@ -417,6 +452,7 @@ export function classUnionToString(
     // through its join, a date through toString, a regular expression
     // through its source and flags.
     if (OBJECT_ARMS_TO_STRING.has(arm.kind)) return true;
+    if (plain(arm)) return plainArms && convertsAloneToString(lowerer, arm);
     if (arm.kind !== "object") return false;
     const info = lowerer.classes.get(arm.className);
     return info !== undefined && plainProgramClass(info);
@@ -441,6 +477,7 @@ export function classUnionToString(
       };
     const narrowed: IrExpr = { kind: "unionNarrow", unionId, tag, value: stable, type: arm, loc };
     if (arm.kind === "object") return classToStringConversion(lowerer, narrowed, hint, node)!;
+    if (arm.kind === "record" && hint === "default") return concatOperand(lowerer, narrowed, node);
     return lowerer.ensureString(narrowed, node);
   };
   let result = convertArm(arms.length - 1);

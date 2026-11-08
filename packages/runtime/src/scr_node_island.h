@@ -437,7 +437,6 @@ bool scr_ni_boot_plain_class(void *stub);
 bool scr_ni_boot_snapshot_valid(void *stub); /* its module has not evaluated */
 const char *scr_ni_pack_dir(void); /* the libnode pack directory this run uses */
 void scr_ni_boot_stub_failed(void *stub); /* raises the module's load error */
-void scr_ni_boot_materialize(void *stub); /* evaluates the stub's module (component) */
 /* Called at the end of Node's start (scr_node_island.c), set by the boot unit. */
 extern void (*scr_ni_started_hook)(void);
 

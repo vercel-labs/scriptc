@@ -45,6 +45,10 @@ export interface IslandModule {
   /** Marked by the user (`--node-island`, `nodeIslands.modules`) or
    * detected by the pre-scan under `--node-islands=auto`. */
   decision: "marked" | "auto";
+  /** The module patches a builtin module's export (the pre-scan's
+   * `builtin-patch` marker): from where it runs, Node's own loader reads
+   * module files through whatever the patch left in place. */
+  patchesBuiltin?: true;
 }
 
 /** The islands a build installed outside node_modules (a linked or hoisted

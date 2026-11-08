@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9893-node-island-load-order-as-probed/later.mjs",
+  "<repo>/tests/corpus/9893-node-island-load-order-as-probed/main.mjs"
+ ],
+ "diags": []
+}

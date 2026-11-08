@@ -93,7 +93,7 @@ static pthread_mutex_t nh_refs_lock = PTHREAD_MUTEX_INITIALIZER;
 atomic_bool scr_ni_threads_shared = false;
 
 static inline bool nh_shared(void) {
-  return atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed);
+  return SCR_NI_THREADS && atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed);
 }
 
 /* Takes `m` when the tables are shared; answers whether it did. */
@@ -140,7 +140,7 @@ SCR_COLD static void nh_thread_first(void) {
   /* The handle values this thread receives are dispatched by the dynamic
    * core through the thread's own tag table. */
   scr_ni_handles_install();
-  if (scr_context_is_main()) {
+  if (scr_ni_main_thread()) {
     nh_thread = NH_THREAD_ISLAND;
     return;
   }
@@ -162,7 +162,7 @@ static inline void nh_share(void) {
 /* Whether this thread is the island's, once nh_share ran on it (and on any
  * thread while the tables are unshared: only the island's thread reaches
  * them then). */
-static inline bool nh_on_island(void) { return nh_thread != NH_THREAD_OTHER; }
+static inline bool nh_on_island(void) { return !SCR_NI_THREADS || nh_thread != NH_THREAD_OTHER; }
 
 SCR_COLD static void nh_oom(void) { scr_trap("scriptc: out of memory\n"); }
 
@@ -244,7 +244,8 @@ static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
 static ScrNodeRef *nh_pinned(const void *obj, int kind) {
   /* A thread that never used the island holds no island value (and must
    * not read the table the island's thread is changing unlocked). */
-  if ((nh_thread == NH_THREAD_UNSEEN && !scr_context_is_main()) || nh_cut_off) return NULL;
+  if (SCR_NI_THREADS && ((nh_thread == NH_THREAD_UNSEEN && !scr_ni_main_thread()) || nh_cut_off))
+    return NULL;
   ScrNodeRef *ref = NULL;
   bool held = nh_lock(&nh_pins_lock);
   const void *self = nh_self();
@@ -362,7 +363,7 @@ static SCR_TL const struct ScrNodeRef *nh_site_fn; /* below, with the refusals *
 /* Housekeeping at every operation: bytes V8 freed, and the pin sweep once
  * the table has grown. */
 static void nh_enter(void) {
-  if (nh_thread != NH_THREAD_ISLAND) {
+  if (SCR_NI_THREADS && nh_thread != NH_THREAD_ISLAND) {
     nh_share();
     /* The island's thread does the bridge's housekeeping, for every
      * thread; a thread's pins are its own to sweep. */
@@ -894,7 +895,7 @@ SCR_COLD static void nh_worker_await_refusal(ScrPromise *p) {
   static const char name[] = "ERR_SCRIPTC_ISLAND_WORKER_ASYNC";
   static const char text[] =
       "awaiting an island value from a worker thread is not supported; "
-      "await it on the main thread, which owns the Node island";
+      "await it on the main thread, which owns the Node island [SC8012]";
   ScrStr *code = scr_str_new(name, sizeof name - 1);
   ScrStr *message = scr_str_new(text, sizeof text - 1);
   scr_throw_node_coded(0, code, message);
@@ -1806,7 +1807,8 @@ ScrDyn *scr_ni_call(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc)
   uint32_t id;
   if (!nh_receiver(fn, &id, "a call")) return NULL;
   /* The function a member read just answered: the call is that member's. */
-  bool named = nh_site_member == NULL && nh_site_fn != NULL && nh_site_fn == nh_ref_of(fn);
+  bool named = !nh_on_island() && nh_site_member == NULL && nh_site_fn != NULL &&
+               nh_site_fn == nh_ref_of(fn);
   if (named) nh_site_member = nh_site_fn_name;
   ScrDyn *result = nh_call(NH_INVOKE, id, this_, NULL, args, argc);
   if (named) nh_site_member = NULL;
@@ -1955,7 +1957,7 @@ ScrPromise *scr_ni_await(ScrDyn *value) {
   }
   /* An island value settles on the island's thread (nh_wait's table and the
    * V8 reaction): a worker thread has no route for that and refuses. */
-  if (!scr_context_is_main()) {
+  if (!scr_ni_main_thread()) {
     nh_worker_await_refusal(p);
     return p;
   }
@@ -2486,7 +2488,7 @@ void scr_ni_handles_install(void) {
   if (installed) return;
   installed = true;
   scr_dyn_handle_install(SCR_DYNH_NODE_ISLAND, &nh_ops);
-  scr_atexit(scr_context_is_main() ? nh_cleanup : nh_thread_exit);
+  scr_atexit(scr_ni_main_thread() ? nh_cleanup : nh_thread_exit);
 }
 
 /* ── NI-4d: util.types, Array.isArray and uncaught reports ─────────────── */
@@ -2566,7 +2568,7 @@ void scr_ni_error_link(ScrDyn *value) {
   /* The process events are raised on the island's thread only
    * (scr_node_island_events.c): another thread has registries of its own,
    * and its native error could not cross by reference (nh_to_node). */
-  bool island = scr_context_is_main();
+  bool island = scr_ni_main_thread();
   ScrNodeRef *linked = island ? nh_pinned(e, NH_PIN_ERROR) : NULL;
   if (linked == NULL && island) linked = nh_pinned(e, NH_PIN_NATIVE_ERROR);
   if (linked != NULL) {

@@ -1087,7 +1087,7 @@ static void ni_lost_file_job(void *p) {
 void scr_ni_tree_lost_file(const char *code, size_t code_len, const char *message,
                            size_t message_len, const char *stack, size_t stack_len) {
   NiLostFile e = {code, message, stack, code_len, message_len, stack_len};
-  if (scr_context_is_main()) ni_lost_file_job(&e);
+  if (scr_ni_main_thread()) ni_lost_file_job(&e);
   else ni_on_node_stack(ni_lost_file_job, &e);
 }
 
@@ -1417,7 +1417,6 @@ static pthread_mutex_t ni_route_lock = PTHREAD_MUTEX_INITIALIZER;
 static NiRoute *ni_route_head = NULL, *ni_route_tail = NULL;
 static atomic_size_t ni_route_pending;
 static int ni_route_wake[2] = {-1, -1};
-static SCR_TL bool ni_route_serving = false;
 
 static void ni_route_noop(void *p) { (void)p; }
 
@@ -1504,17 +1503,20 @@ static void ni_route(void (*job)(void *), void *arg) {
   if (scr_ni_unserved) NI_STOP_PENDING();
 }
 
+#if SCR_NI_THREADS
+static SCR_TL bool ni_route_serving = false;
+
 bool scr_ni_remote_pending(void) {
   /* Posted operations are the island's thread's work: a worker thread's
    * loop has none of its own to run. */
-  if (!scr_context_is_main()) return false;
+  if (!scr_ni_main_thread()) return false;
   return atomic_load_explicit(&ni_route_pending, memory_order_acquire) > 0;
 }
 
 int scr_ni_remote_pollfd(void) {
   /* The wake fd belongs to the island's thread: another thread's loop has
    * no posted work of its own to wake for. */
-  if (!scr_context_is_main()) return -1;
+  if (!scr_ni_main_thread()) return -1;
   pthread_mutex_lock(&ni_route_lock);
   ni_route_open();
   int fd = ni_route_wake[0];
@@ -1546,7 +1548,7 @@ static uint64_t ni_route_left_at = 0;
  * served operation may call back into the runtime, whose loop then asks
  * again). */
 void scr_ni_remote_dispatch(void) {
-  if (!scr_context_is_main() || ni_route_serving) return;
+  if (!scr_ni_main_thread() || ni_route_serving) return;
   ni_route_serving = true;
   int fd = scr_ni_remote_pollfd();
   if (fd >= 0) {
@@ -1597,6 +1599,7 @@ void scr_ni_remote_dispatch(void) {
   if (slice_end != 0) ni_route_left_at = scr_hrtime_ns();
   ni_route_serving = false;
 }
+#endif /* SCR_NI_THREADS */
 
 /* ── Node's stack ─────────────────────────────────────────────────────── */
 
@@ -1759,7 +1762,7 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
  * thread but the island's, the job runs on that thread instead, with this
  * one waiting for it (ni_route). */
 static void ni_on_node_stack(void (*job)(void *), void *arg) {
-  if (!scr_context_is_main()) {
+  if (!scr_ni_main_thread()) {
     ni_route(job, arg);
     return;
   }
@@ -2172,8 +2175,10 @@ static ScrNodeBridge ni_hosted;
 void (*scr_ni_started_hook)(void) = NULL;
 
 static void ni_start(void) {
-  if (ni_bridge != NULL && atomic_load_explicit(&ni_started, memory_order_acquire)) return;
-  if (!scr_context_is_main()) {
+  if (ni_bridge != NULL &&
+      (!SCR_NI_THREADS || atomic_load_explicit(&ni_started, memory_order_acquire)))
+    return;
+  if (!scr_ni_main_thread()) {
     /* Only the island's thread may load Node: it runs ni_start itself, then
      * the posted no-op. When this returns, ni_started is set. */
     ni_route(ni_route_noop, NULL);
@@ -2337,11 +2342,11 @@ static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, Sc
  * not implemented. A call from a worker thread rejects, naming the limit,
  * instead of settling a promise that belongs to another thread. */
 static bool ni_async_main_thread(void) {
-  if (scr_context_is_main()) return true;
+  if (scr_ni_main_thread()) return true;
   static const char name[] = "ERR_SCRIPTC_ISLAND_WORKER_ASYNC";
   static const char text[] =
       "asynchronous island calls from a worker thread are not supported; "
-      "call the island synchronously (@scriptc/node callSync) from the worker";
+      "call the island synchronously (@scriptc/node callSync) from the worker [SC8012]";
   ScrStr *code = scr_str_new(name, sizeof name - 1);
   ScrStr *message = scr_str_new(text, sizeof text - 1);
   scr_throw_node_coded(0, code, message);
@@ -2448,9 +2453,11 @@ SCR_COLD static void ni_unsupported(void) {
 
 /* No islands here, so nothing is ever posted (the compiler refuses them on
  * this target; scr_async.c's island build still references the hooks). */
+#if SCR_NI_THREADS
 bool scr_ni_remote_pending(void) { return false; }
 int scr_ni_remote_pollfd(void) { return -1; }
 void scr_ni_remote_dispatch(void) {}
+#endif
 
 ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
   (void)file;

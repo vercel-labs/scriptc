@@ -479,7 +479,7 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
    * stubs for the same objects would not reconcile ("no longer matches its
    * build-time interface snapshot"), and the first set's boxes belong to
    * another thread's heap. */
-  if (!scr_context_is_main()) return nb_eager(path, "a worker thread imports it");
+  if (!scr_ni_main_thread()) return nb_eager(path, "a worker thread imports it");
   /* Island code has run: the module loads at its position, as in Node. */
   if (scr_ni_bridge_loaded() != NULL) return nb_eager(path, "Node is already running");
   nb_install();

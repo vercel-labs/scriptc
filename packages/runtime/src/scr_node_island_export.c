@@ -66,7 +66,8 @@ static pthread_mutex_t ni_exports_lock = PTHREAD_MUTEX_INITIALIZER;
 /* The lock is taken once another thread uses the island (the handle
  * unit's shared mode, which is set only between operations). */
 static inline bool ni_exports_take(void) {
-  if (!atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed)) return false;
+  if (!SCR_NI_THREADS || !atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed))
+    return false;
   pthread_mutex_lock(&ni_exports_lock);
   return true;
 }
@@ -864,7 +865,16 @@ static ScrDyn *ni_methods_of(const ScrDyn *v) {
   return NULL;
 }
 
+/* The tables below belong to the island's thread: its host callbacks read
+ * them (ni_class_method, ni_class_ctor) and call what they hold, and a
+ * table is made of method values of the thread that built it. A worker
+ * thread runs the same crossing sites, and its instance is refused crossing
+ * by name right after (ERR_SCRIPTC_ISLAND_WORKER_VALUE, nh_to_node), so it
+ * registers nothing: a table built there would be a worker's objects in a
+ * list the island's thread reads without a lock and keeps after that
+ * worker has ended. */
 ScrDyn *scr_node_island_class_methods(ScrDyn *value, ScrDyn *builder) {
+  if (!scr_ni_main_thread()) return scr_dyn_retain(value);
   if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key != NULL &&
       ni_methods_of(value) == NULL) {
     ScrDyn *table = scr_dyn_call(builder, NULL, 0, "class methods");
@@ -904,6 +914,9 @@ static NiMethods *ni_methods_of_class(const ScrDyn *cls) {
 }
 
 ScrDyn *scr_node_island_class_methods_of(ScrDyn *cls, ScrDyn *builder, ScrDyn *ctor) {
+  /* The island's thread only, as above (a shared module's accessor runs
+   * there; nothing else calls this). */
+  if (!scr_ni_main_thread()) return scr_dyn_retain(cls);
   if (cls->kind != SCR_DYN_FUNC || cls->v.fn.class_obj == NULL || cls->v.fn.sig == NULL ||
       strncmp(cls->v.fn.sig, "classval:", 9) != 0)
     return scr_dyn_retain(cls);
@@ -1434,6 +1447,12 @@ ScrDyn *scr_node_island_shared_tdz(void) { return scr_dyn_retain(ni_tdz_value())
 /* nodeIsland.share(path, exports JSON, accessor): registers a shared
  * module before any island code runs. Never loads Node. */
 void scr_node_island_share(ScrStr *path, ScrStr *exports, ScrDyn *accessor) {
+  /* The island's thread registers, once, before any other thread exists. A
+   * worker whose entry is the program's entry runs the same registrations
+   * in its own %init: its accessor reads that worker's instance of the
+   * module, and the island has one instance of every module it imports, the
+   * main thread's (the build says so, SC6011). */
+  if (!scr_ni_main_thread()) return;
   for (uint32_t i = 0; i < ni_nshared; i++)
     if (ni_shared[i].path->len == path->len &&
         memcmp(ni_shared[i].path->data, path->data, path->len) == 0)
@@ -1600,8 +1619,8 @@ void scr_ni_shared_refresh(void) {
   /* The shared binding tables belong to the island's thread, like every
    * other island-side structure; a worker thread's entry sees the values
    * the last entry on that thread pushed. */
+  if (!scr_ni_main_thread()) return;
   if (ni_shared_bound == 0 || ni_refreshing || scr_ni_bridge_loaded() == NULL) return;
-  if (!scr_context_is_main()) return;
   ni_refreshing = true;
   bool pending = scr_exc_pending();
   ScrCaught *saved = pending ? scr_exc_take() : NULL;

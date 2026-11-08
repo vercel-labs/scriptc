@@ -49,6 +49,16 @@ export function npmStaticLiveExportTable(path: string): boolean {
   return liveExportFiles.has(path.split("\\").join("/"));
 }
 
+/** Rewritten files whose whole export stands for an accessor installed as
+ * `module.exports` (npm-static-cjs-exports-accessor.ts): Node runs the
+ * getter for every `require()` of the module, so the rewrite is exact only
+ * for a module whose export the program evaluates once. */
+const accessorExportFiles = new Set<string>();
+
+export function npmStaticAccessorExport(path: string): boolean {
+  return accessorExportFiles.has(path.split("\\").join("/"));
+}
+
 /** Names Node's lexer detects in a rewritten file's original text that
  * its rewrite spells only as accessors (the lexer skips those). */
 const lexerNames = new Map<string, readonly string[]>();
@@ -100,6 +110,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   fileDegrades.clear();
   rewriteCache.clear();
   liveExportFiles.clear();
+  accessorExportFiles.clear();
   lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
@@ -575,6 +586,13 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // through that function.
           const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
           if (fnExports !== null) original = fnExports;
+          // A module that installs an accessor as its export object exports
+          // the getter's value.
+          const accessor = original === null ? null : services.cjsExportsAccessor(original, path);
+          if (accessor !== null) {
+            original = accessor;
+            accessorExportFiles.add(path.split("\\").join("/"));
+          }
           // TypeScript's enum IIFEs with literal members become the object
           // literals they build.
           const enums = original === null ? null : services.enumIifes(original, path);
@@ -595,6 +613,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
             esm !== null ||
             aliased !== null ||
             fnExports !== null ||
+            accessor !== null ||
             enums !== null ||
             namespaces !== null ||
             exportsVar !== null;

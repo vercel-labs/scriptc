@@ -3,7 +3,7 @@ import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js"
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
-import { constructedValue } from "./constructor-returns.js";
+import { constructedDynValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   DATE_PROTOTYPE_METHOD_NAMES,
@@ -1613,6 +1613,15 @@ function computedTableOperation(shape: {
   ].join(":");
 }
 
+/** The name prefix of every helper this pass generates for untyped code's
+ * use of class instances: keyed tables, member dispatch, checked casts. */
+export const DISPATCH_HELPER_PREFIX = "%dyn.class.";
+
+/** The name prefix of a class's checked cast helper (`%dyn.class.cast:C`):
+ * the one function that checks a dynamic value into class `C`, which every
+ * such check in the program calls. */
+export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
+
 /** Calls on native class capsules keep the instance's compiled methods. The
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
@@ -1633,6 +1642,11 @@ export class ClassDynamicDispatch {
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
+  /** The classes whose instances the program makes dynamic values, as this
+   * pass found them (dynamic-class-report.ts reads them). */
+  boxedClasses(): ReadonlySet<string> {
+    return this.boxed;
+  }
   private readonly boxedConstructors = new Set<string>();
   /** Every class a boxed value was statically typed as, runtime error
    * classes included: the value's capsule can be any of its subclasses. */
@@ -1755,6 +1769,8 @@ export class ClassDynamicDispatch {
     const toPrimitiveSites = new Set<IrFunction>();
     const hasKeySites = new Set<IrFunction>();
     const caughtSites = new Set<IrFunction>();
+    // dynamic-class-report.ts follows the same parts of a type to say where
+    // a class became a dynamic value: a part added here is added there.
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -2608,7 +2624,7 @@ export class ClassDynamicDispatch {
           if (!cast) {
             const loc = expr.loc;
             const fn: IrFunction = {
-              name: `%dyn.class.cast:${type.className}`,
+              name: `${CHECKED_CAST_PREFIX}${type.className}`,
               params: [{ localId: "value", name: "value", type: DYN }],
               locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
               returnType: type,
@@ -4776,7 +4792,7 @@ export class ClassDynamicDispatch {
         }
         if (!supported || !info.decl) continue;
         const cls = classValueRef(lowerer, info, info.decl);
-        const result = constructedValue(lowerer, info, {
+        const result = constructedDynValue(lowerer, info, {
           kind: "new",
           className: name,
           args,
@@ -4792,7 +4808,7 @@ export class ClassDynamicDispatch {
             type: BOOL,
             loc,
           },
-          then: [{ kind: "return", value: lowerer.coerceToExpected(result, DYN), loc }],
+          then: [{ kind: "return", value: result, loc }],
           else_: null,
           loc,
         });

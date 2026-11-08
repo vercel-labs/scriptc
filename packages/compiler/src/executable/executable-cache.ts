@@ -151,6 +151,8 @@ export interface EarlyExecutableNativeFeatures {
   /** A runtimeFence that stands for a deferred diagnostic:
    * scr_deferred_fence.c. */
   deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value: scr_dyn_fn_own.c. */
+  functionOwnWrite?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;

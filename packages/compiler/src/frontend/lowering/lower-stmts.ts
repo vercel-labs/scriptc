@@ -103,7 +103,12 @@ import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
-import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
+import {
+  PROCESS_STREAM_VALUE_MEMBERS,
+  processDataMemberValue,
+  processStreamValueMember,
+  programReadsExitCode,
+} from "./builtins/process.js";
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
@@ -114,6 +119,8 @@ import type { DynamicSlot, Lowerer } from "./lowerer.js";
 import type { ScrDiagnostic, TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
 import {
+  accessorExportIsExact,
+  cjsExportEvaluations,
   cjsExportValueByName,
   cjsNamespaceDestructureOf,
   cjsTableExportNamesInOrder,
@@ -376,7 +383,8 @@ import { canonicalBuiltinModule } from "../builtin-modules.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import { probeNodeRequireRefusal } from "../npm.js";
 import { constituentTypes } from "../ts7/checker.js";
-import { npmStaticPackageOfPath } from "../npm-static.js";
+import { npmStaticAccessorExport, npmStaticPackageOfPath } from "../npm-static.js";
+import { constructorStaticValue } from "./builtin-statics.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
@@ -4097,6 +4105,10 @@ export function lowerBindingPattern(
     lowerUnionObjectPattern(lowerer, pattern, srcRef, srcType, isLet, out);
     return;
   }
+  if (srcType.kind === "procStream") {
+    lowerProcessStreamObjectPattern(lowerer, pattern, srcRef, isLet, out);
+    return;
+  }
   if (srcType.kind !== "record") {
     lowerer.unsupported(
       "SC1031",
@@ -4586,6 +4598,56 @@ const URL_PATTERN_GETTERS: Record<string, IrLibFn> = {
 /** An object pattern over a URL: each element reads its getter in pattern
  * order, as `url.name` does; `searchParams` binds the URL's live view.
  * Methods and rest elements stay fenced. */
+/** `const { isTTY, columns } = stream` over a process stream value
+ * (`process.stdout`, `process.stderr`, a parameter or alias of that type):
+ * each element is the member read `stream.<name>` of that value
+ * (processStreamValueMember), so a pattern and the spelled reads answer
+ * alike: the terminal members are undefined off a terminal, and the
+ * bindings carry that arm (the optional-read pass widens them). Members
+ * the stream value does not answer as data, methods among them (a
+ * detached method loses the stream it writes to), keep a fence that names
+ * them. */
+function lowerProcessStreamObjectPattern(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  srcRef: () => IrExpr,
+  isLet: boolean,
+  out: IrStmt[],
+): void {
+  for (const el of pattern.elements.nodes) {
+    if (el.name === undefined) continue;
+    if (el.dotDotDotToken) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        "rest bindings over a process stream (its properties belong to the stream object, which a rest element would have to copy)",
+      );
+    }
+    const prop = el.propertyName ?? el.name;
+    const propName =
+      ts.isIdentifier(prop) ||
+      ts.isComputedPropertyName(prop) ||
+      ts.isStringLiteralLike(prop) ||
+      ts.isNumericLiteral(prop)
+        ? patternKeyNameOf(lowerer, prop as ts.PropertyName)
+        : null;
+    const loc = locOf(el);
+    let value =
+      propName === null ? null : processStreamValueMember(lowerer, propName, srcRef(), loc);
+    if (value === null) {
+      lowerer.unsupported(
+        "SC1031",
+        el,
+        propName === null
+          ? "destructuring with computed keys that do not fold to one property name"
+          : `destructuring '${propName}' from a process stream (${PROCESS_STREAM_VALUE_MEMBERS.join(", ")} are the members a stream value answers; call methods through the stream)`,
+      );
+    }
+    if (el.initializer) value = applyBindingDefault(lowerer, el, value);
+    lowerer.bindPatternTarget(el.name, value, isLet, out);
+  }
+}
+
 function lowerUrlObjectPattern(
   lowerer: Lowerer,
   pattern: ts.ObjectBindingPattern,
@@ -5467,6 +5529,13 @@ function stdlibGlobalMemberDestructure(
     ) {
       // process.cwd reads the directory when it is called, so the detached
       // function is the same one every other spelling reads.
+    } else if (
+      (value = constructorStaticValue(lowerer, globalName, propName, locOf(el))) !== null
+    ) {
+      // A static member that reads as a function value (`const { isArray }
+      // = Array`, `const { keys, entries } = Object`): the binding holds
+      // the value the spelled read `Array.isArray` answers, which takes its
+      // argument and no receiver.
     } else {
       lowerer.unsupported(
         "SC1031",
@@ -9417,6 +9486,45 @@ function unchangedAfterExport(
   return !fileWritesBinding(sym, exportFile, (ident) => lowerer.resolveValueSymbol(ident));
 }
 
+/** `fn.constructor = value` in a JavaScript source, where the checker sees
+ * that the receiver is a function (a builder library replaces the name on
+ * the function it returns): an own property of the function, as on any
+ * object. The runtime's generic write refuses the name on a function it
+ * meets only at run time, because typed code may read `constructor` of a
+ * function value without consulting its property table; a JavaScript
+ * source reads the name through the table (property-access.ts), so the
+ * write is exact there. Null for every other assignment. */
+function lowerFunctionConstructorWrite(
+  lowerer: Lowerer,
+  target: ts.PropertyAccessExpression,
+  value: ts.Expression,
+): IrExpr | null {
+  if (target.questionDotToken || target.name.text !== "constructor") return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(target))) return null;
+  const receiverType = lowerer.typeOf(target.expression);
+  if (
+    lowerer.checker.getCallSignatures(receiverType).length === 0 ||
+    lowerer.checker.getConstructSignatures(receiverType).length > 0
+  )
+    return null;
+  const receiver = lowerer.lowerExpr(target.expression);
+  if (receiver.type.kind !== "dyn" && receiver.type.kind !== "func") return null;
+  const stored = lowerer.coerceInto(value, lowerer.lowerExpr(value), DYN);
+  if (stored.type.kind !== "dyn") return null;
+  const loc = locOf(target);
+  return {
+    kind: "libCall",
+    fn: "dyn.fnOwnSet",
+    args: [
+      lowerer.coerceInto(target.expression, receiver, DYN),
+      { kind: "strLit", value: "constructor", type: STRING, loc: locOf(target.name) },
+      stored,
+    ],
+    type: VOID,
+    loc,
+  };
+}
+
 /** A top-level CommonJS export statement (see cjsExportAssignmentOf):
  * `exports.f = <expr>` and each expression-valued property of
  * `module.exports = { ... }` assign their pre-registered export globals
@@ -9435,6 +9543,24 @@ function lowerCjsExportStatement(
     const stmt = cjs.expr.parent;
     const discarded = ts.isExpressionStatement(stmt) ? cjsExportDiscardReason(stmt) : null;
     if (discarded !== null) lowerer.unsupported("SC1090", cjs.expr, discarded);
+  }
+  // A whole export that stands for an accessor installed as `module.exports`
+  // (npm-static-cjs-exports-accessor.ts) holds the getter's value for the
+  // module's first `require()`. Node runs the getter again for every later
+  // one and answers each a value of its own: every requiring module keeps
+  // its own (accessorRequirerSlot), and the shapes that scheme does not
+  // cover are refused.
+  if (cjs.kind === "table") {
+    const sf = ts.getSourceFileOfNode(cjs.expr);
+    if (
+      npmStaticAccessorExport(sf.fileName) &&
+      !accessorExportIsExact(cjsExportEvaluations(lowerer, sf))
+    )
+      lowerer.unsupported(
+        "SC1090",
+        cjs.expr,
+        "an accessor installed as 'module.exports' in a module that is required where the call can run more than once, twice from one module, or both required and imported (Node runs the getter for every require() and answers each a value of its own)",
+      );
   }
   const assignExport = (nameNode: ts.Node, value: ts.Expression, root?: IrGlobal): IrStmt => {
     const symbol =
@@ -10198,6 +10324,11 @@ export function lowerExprStatement(
       const staticPrivateWrite = lowerStaticPrivateAssignment(lowerer, expr);
       if (staticPrivateWrite)
         return { kind: "exprStmt", expr: staticPrivateWrite, loc: locOf(expr) };
+      // `fn.constructor = value` on a function value in JavaScript.
+      if (ts.isPropertyAccessExpression(expr.left)) {
+        const own = lowerFunctionConstructorWrite(lowerer, expr.left, expr.right);
+        if (own) return { kind: "exprStmt", expr: own, loc: locOf(expr) };
+      }
       const callableWrite = lowerNativeFunctionAssignment(lowerer, expr);
       if (callableWrite) return { kind: "exprStmt", expr: callableWrite, loc: locOf(expr) };
       // Expando function members (`foo.bar = 12`, `foo[SYM] = v` on a

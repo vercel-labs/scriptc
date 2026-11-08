@@ -869,6 +869,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "regex.newChecked",
   "regex.replaceCallback",
   "dyn.keySet",
+  "dyn.fnOwnSet",
   "dyn.keySetComputed",
   "process.builtinId",
   "process.builtinModule",

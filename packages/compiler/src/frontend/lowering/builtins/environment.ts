@@ -32,7 +32,21 @@ import {
  * drops undefined env entries). Reuses the interned overflow-keys/read
  * machinery. */
 export function recordToEnvPairs(lowerer: Lowerer, node: ts.Expression): IrExpr {
-  const v = lowerer.lowerExpr(node);
+  let v = lowerer.lowerExpr(node);
+  // A checked-dynamic value (the result of a function the program does not
+  // compile, a value typed `any`): the `env` slot is declared as the
+  // environment record, a string-keyed object of `string | undefined`, so
+  // the value takes the slot's checked conversion into the record its own
+  // type names, or into that one, and a value the slot's type does not
+  // admit throws there.
+  if (v.type.kind === "dyn") {
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(node));
+    const slot: IrType =
+      declared?.kind === "record"
+        ? declared
+        : { kind: "record", shapeId: lowerer.shapes.intern([], false, lowerer.envValueType()) };
+    v = lowerer.coerceInto(node, v, slot);
+  }
   if (v.type.kind !== "record") {
     lowerer.noLowering(
       `an env option of '${lowerer.fmt(v.type)}' values`,

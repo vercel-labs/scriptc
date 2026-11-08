@@ -14172,14 +14172,19 @@ export class Lowerer {
   typeOf(node: ts.Node): ts.Type {
     if (this.speculativeTypeQueryDepth === 0 || this.speculativeCollectionDepth > 0)
       return this.typeOfNode(node);
-    // A speculative whole-program analysis (speculativeTypeQueries) asks
-    // about nodes of every file, reached or not, and the checker can panic
-    // on one. No statement or declaration owns that query, so the panic
-    // would end the build with nothing to point at. The query takes the
-    // answer the checker's own sweep gives a node it panics on (`any`,
-    // ts7/checker.ts withPanicFence): the analysis learns nothing from the
-    // node, and a statement that does lower it meets the panic inside its
-    // own fence, which reports it there.
+    return this.typeOfSpeculatively(node);
+  }
+
+  /** typeOf for a speculative whole-program analysis (speculativeTypeQueries),
+   * which asks about nodes of every file, reached or not. The checker can
+   * panic on one, and no statement or declaration owns that query, so the
+   * panic would end the build with nothing to point at. The query takes
+   * the answer the checker's own sweep gives a node it panics on (`any`,
+   * ts7/checker.ts withPanicFence): the analysis learns nothing from the
+   * node, and a statement that does lower it meets the panic inside its
+   * own fence, which reports it there. Kept out of typeOf so that the
+   * path every lowering takes stays a test and a call. */
+  private typeOfSpeculatively(node: ts.Node): ts.Type {
     try {
       return this.typeOfNode(node);
     } catch (e) {

@@ -1102,6 +1102,54 @@ export function staleReadMessage(node: ts.Node, found: IrType): string | null {
     : `Cannot read properties of ${unit} (reading '${key}')`;
 }
 
+/** The stored records of a runtime-optional slot whose binding the checker
+ * types as ONE record. A generic function iterates its type parameter as
+ * the constraint's elements (`T extends readonly R[]` reads an element as
+ * `R`), while an instantiation stores its own element records with the
+ * hidden hole arm (`A | B | undefined`). Nothing is narrowed there: the
+ * read goes through the stored records (`A | B`), as it does for a slot
+ * without the hole arm, and the caller reports the hole as Node's
+ * member-read TypeError. Null for a receiver the checker narrowed or an
+ * assertion renamed: those name a type the storage does not prove. */
+function unnarrowedStoredRecords(
+  lowerer: Lowerer,
+  expr: ts.Identifier,
+  narrowedNode: ts.Expression,
+  local: IrLocal,
+  narrowed: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (narrowedNode !== expr || narrowed.kind !== "record" || local.type.kind !== "union")
+    return null;
+  // A named member read lowers over the stored records; a keyed read
+  // (`x["k"]`) and a call still expect the checker's one record.
+  if (runtimeOptionalUseOf(expr)?.kind !== "property") return null;
+  // The receiver reads at the binding's declared type: no guard, predicate
+  // or assignment narrowed it on the way here.
+  const symbol = lowerer.checker.getSymbolAtLocation(expr);
+  if (!symbol || lowerer.checker.getTypeOfSymbol(symbol).id !== lowerer.typeOf(expr).id)
+    return null;
+  const present = lowerer.stripUndefinedArm(local.type);
+  if (present.kind !== "union") return null;
+  const arms = lowerer.unions.get(present.unionId)?.arms ?? [];
+  if (arms.length < 2 || arms.some((arm) => arm.kind !== "record")) return null;
+  const hole = lowerer.armTag(local.type.unionId, UNDEFINED_T);
+  const helper = lowerer.unionRetagHelper(
+    local.type.unionId,
+    present.unionId,
+    loc,
+    new Set([hole]),
+  );
+  if (!helper) return null;
+  return {
+    kind: "call",
+    callee: helper,
+    args: [varRef(local.id, local.type, loc)],
+    type: present,
+    loc,
+  };
+}
+
 /** A runtime-optional slot can be assigned while a truthy guard is in
  * force. TypeScript then types a direct member receiver as the plain arm,
  * even though an OOB-safe assignment may have restored undefined. Check
@@ -1288,6 +1336,8 @@ export function runtimeOptionalReceiverRead(
       if (flow && helper) extraction = { helper, target: flow };
     }
     if (!extraction) {
+      const stored = unnarrowedStoredRecords(lowerer, expr, narrowedNode, local, narrowed, loc);
+      if (stored) return holeGuarded(stored);
       lowerer.unsupported(
         "SC1090",
         expr,

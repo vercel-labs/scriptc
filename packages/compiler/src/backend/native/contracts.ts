@@ -297,6 +297,9 @@ export interface CcOptions {
   /** The program pipes or unpipes a stream: compiles
    * scr_stream_pipe_events.c (Node's pipe lifecycle). */
   streamPipeEvents?: boolean;
+  /** SCR_FS_STREAM_SIGNAL: fs.ReadStream and fs.WriteStream apply their
+   * options' `signal` (a program whose stream options can hold one). */
+  fsStreamSignal?: boolean;
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;

@@ -416,16 +416,34 @@ export function createRequireResolveFenceValue(
     : { kind: "seqExpr", stmts, result: value, type: value.type, loc };
 }
 
-/** A createRequire loader read as a value in JavaScript source (stored in
- * an object, passed on, returned): a require function over the runtime
- * resolver. Calling it resolves its request like Node up to the compiled
- * graph's boundary, where a specifier the build did not compile throws the
- * SC2020 fence — the same deferred class as a computed-specifier call. */
+/** A createRequire loader read as a value (stored in an object, passed
+ * on, returned), in JavaScript and TypeScript source: a require function
+ * over the runtime resolver. Calling it resolves its request like Node up
+ * to the compiled graph's boundary, where a specifier the build did not
+ * compile throws the SC2020 fence — the same deferred class as a
+ * computed-specifier call in JavaScript. The value is checked-dynamic: a
+ * typed slot it lands in takes it through the slot's checked conversion. */
 export function createRequireLoaderValue(
   lowerer: Lowerer,
   ident: ts.Identifier,
   loc: SrcLoc,
 ): IrExpr | null {
+  // In shorthand position (`{ load }`) the name carries the property's
+  // symbol. The loader is the binding the shorthand reads, found through
+  // its declaration's own name, which also anchors the one value every
+  // read of the binding shares.
+  const holder = ident.parent;
+  if (holder !== undefined && ts.isShorthandPropertyAssignment(holder) && holder.name === ident) {
+    const declared = lowerer.checker.getShorthandAssignmentValueSymbol(holder)?.declarations[0];
+    const name =
+      declared !== undefined &&
+      (ts.isVariableDeclaration(declared) || ts.isImportSpecifier(declared))
+        ? declared.name
+        : undefined;
+    return name !== undefined && ts.isIdentifier(name)
+      ? createRequireLoaderValue(lowerer, name, loc)
+      : null;
+  }
   const baseFile = createRequireCalleeFileOf(lowerer, ident);
   if (baseFile === null) {
     // A loader over a run-time base cannot resolve against the compiled
@@ -436,7 +454,6 @@ export function createRequireLoaderValue(
       return null;
     return createRequireFenceFunctionValue(lowerer, ident, ident.text, loc);
   }
-  if (!isJsSourceFile(ts.getSourceFileOfNode(ident))) return null;
   const name = keyedHelperName(
     lowerer,
     "%createRequire.loader",
@@ -469,6 +486,43 @@ export function createRequireLoaderValue(
     type: DYN,
     loc,
   };
+}
+
+/** The members Node's require function carries besides being callable. */
+const LOADER_OWN_MEMBERS: ReadonlySet<string> = new Set(["resolve", "cache", "main", "extensions"]);
+
+/** The declared type of a require function: @types/node's `NodeJS.Require`
+ * and its global alias, and the bundled declarations' own name. */
+const LOADER_TYPE_NAMES: ReadonlySet<string> = new Set([
+  "Require",
+  "NodeRequire",
+  "ScriptcRequire",
+]);
+
+/** A member of a createRequire loader read through a VALUE that holds it
+ * (`options.load.resolve`, `held.cache`), in TypeScript source: the loader
+ * value is a function over the runtime resolver and has none of the
+ * properties Node's require carries, so the read would answer undefined
+ * where Node answers a function or an object. It is refused by name. The
+ * binding's own `load.resolve` keeps its lowering. JavaScript has no type
+ * to tell a held loader by. */
+export function fenceHeldLoaderMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): void {
+  const member = access.name.text;
+  if (!LOADER_OWN_MEMBERS.has(member)) return;
+  if (isJsSourceFile(ts.getSourceFileOfNode(access))) return;
+  const symbol = lowerer.typeOf(access.expression).getSymbol();
+  if (
+    symbol === undefined ||
+    !LOADER_TYPE_NAMES.has(ts.symbolName(symbol)) ||
+    !lowerer.isStdlibSymbol(symbol)
+  )
+    return;
+  if (createRequireCalleeFileOf(lowerer, access.expression) !== null) return;
+  lowerer.noLowering(
+    `createRequire loader member '${member}' read through a value that holds the loader`,
+    access,
+    "a held loader is a run-time require function without the properties Node's require carries: read them through the createRequire binding itself",
+  );
 }
 
 /** A createRequire-made require over a RUN-TIME base as a value: unlike a

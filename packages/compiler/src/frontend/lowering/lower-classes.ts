@@ -23,6 +23,7 @@ import {
   lowerArraySuperCall,
 } from "./builtins/array-classes.js";
 import { lowerDateStaticCall } from "./builtins/dates.js";
+import { lowerIntlFormatterNew } from "./builtins/intl-formatters.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
@@ -11803,6 +11804,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const intl = ts.isPropertyAccessExpression(intlConstructor)
     ? lowerer.stdlibGlobalMember(intlConstructor, "Intl")
     : null;
+  if (intl === "NumberFormat" || intl === "DateTimeFormat")
+    return lowerIntlFormatterNew(lowerer, expr, intl);
   if (intl && intl !== "Segmenter")
     lowerer.noLowering(
       `new Intl.${intl}`,

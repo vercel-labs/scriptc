@@ -4,7 +4,11 @@ import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { expect, test } from "vitest";
+import { beforeAll, expect, test } from "vitest";
+import {
+  PINNED_INPUT_HOOK_TIMEOUT_MS,
+  pinnedInput,
+} from "../../runtime-pack-common/test/pinned-input.js";
 
 const execFileAsync = promisify(execFile);
 const testDir = import.meta.dirname;
@@ -14,16 +18,26 @@ const buildDir = join(testDir, "build", "common-symbols");
 const repoRoot = join(testDir, "../../..");
 
 /** scr_intl.c includes ICU's C API headers from the fetched ICU release, as
- * the runtime pack build compiles it (runtime-pack-common's icu-data.mjs). */
-async function icuIncludeFlags(): Promise<string[]> {
+ * the runtime pack build compiles it (runtime-pack-common's icu-data.mjs).
+ * The release is the pack build's own input, read from the build's download
+ * cache (which CI restores) and downloaded through the build's retry helper
+ * only when it is not there; a download that fails is reported as "download
+ * failed". */
+let icuIncludeFlags: () => string[];
+beforeAll(async () => {
   const { ensureIcuSources } = (await import(
     pathToFileURL(join(repoRoot, "packages/runtime-pack-common/scripts/icu-data.mjs")).href
   )) as { ensureIcuSources: (cacheDir: string) => Promise<string> };
-  const root = await ensureIcuSources(
-    join(repoRoot, "node_modules", ".cache", "scriptc-icu-sources"),
+  const root = await pinnedInput("ICU's pinned source archive", () =>
+    ensureIcuSources(join(repoRoot, "node_modules", ".cache", "scriptc-icu-sources")),
   );
-  return ["-I", join(root, "source", "common"), "-I", join(root, "source", "i18n")];
-}
+  icuIncludeFlags = () => [
+    "-I",
+    join(root(), "source", "common"),
+    "-I",
+    join(root(), "source", "i18n"),
+  ];
+}, PINNED_INPUT_HOOK_TIMEOUT_MS);
 
 /** COMMON globals in every runtime source compiled with `compiler`, in the
  * plain and worker configurations, as "file (defines): symbol" lines. */
@@ -36,7 +50,7 @@ async function commonSymbols(label: string, compiler: string[]): Promise<string[
   const jobs = sources.flatMap((name) =>
     [[], ["-DSCR_WORKERS"]].map((defines) => ({ name, defines })),
   );
-  const icu = await icuIncludeFlags();
+  const icu = icuIncludeFlags();
   const common: string[] = [];
   let next = 0;
   const worker = async (): Promise<void> => {

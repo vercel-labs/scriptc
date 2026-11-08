@@ -4165,6 +4165,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("SegmentData")
   )
     return DYN;
+  // Intl.NumberFormat and Intl.DateTimeFormat objects are handles the
+  // runtime builds over ICU (scr_intl.c), and their options objects are
+  // read at run time by ECMA-402's steps, as checked-dynamic values.
+  if (
+    isStdlibInterface("NumberFormat") ||
+    isStdlibInterface("DateTimeFormat") ||
+    isStdlibInterface("NumberFormatOptions") ||
+    isStdlibInterface("DateTimeFormatOptions")
+  )
+    return DYN;
   // Typed arrays: references to the lib's Uint8Array/Uint32Array/
   // Float32Array/Float64Array interfaces (provenance, not names). The es2022+ lib
   // declares them generic over the backing buffer (`Uint8Array<ArrayBuffer>`

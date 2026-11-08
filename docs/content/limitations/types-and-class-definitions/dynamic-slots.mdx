@@ -9,3 +9,6 @@
   A member that the program adds to the library `Promise` type, such as `Promise<T> & { status?: string }`, cannot be written on a promise the program made: the write throws a `TypeError` when it runs, and the build reports it as an `SC6013` warning.
   Keep such state beside the promise, in a wrapper record or in a `WeakMap` keyed by the promise.
   Values that scriptc cannot produce at all, such as `WeakRef` instances, still fail where they are created.
+  A promise typed with extra members, such as `Promise<T> & { settle(value: T): void }`, is such a slot: a promise that a Node island hands over keeps its members, while a promise the program made holds none of its own.
+  Assigning a member to a promise the program made, as in `const p = new Promise(...) as Promise<T> & { settle(value: T): void }; p.settle = finish`, builds and throws when the statement runs: an `Error` that names the write with `SC1090` where the compiler sees how the promise was made, and a `TypeError` otherwise.
+  Return the members beside the promise instead, such as `{ promise, settle }`.

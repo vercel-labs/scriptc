@@ -42,6 +42,8 @@ function done(): void {
     console.log(JSON.stringify(["flushed", problem === null]));
   });
 }
-console.log(JSON.stringify(["ready", process.stdout.isTTY === true, process.stderr.isTTY === true]));
 watch(process.stdout, "out", done);
 watch(process.stderr, "err", done);
+// The observer resizes the terminals when it reads this line, so the
+// listeners are registered first.
+console.log(JSON.stringify(["ready", process.stdout.isTTY === true, process.stderr.isTTY === true]));

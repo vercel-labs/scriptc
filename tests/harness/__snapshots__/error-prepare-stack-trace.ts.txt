@@ -1,0 +1,26 @@
+error-prepare-stack-trace.ts:15:1 - error SC2020: 'Error.prepareStackTrace' cannot be given a formatter: a compiled program has no V8 call sites (structured stack frames) to pass it, and an error's stack is always its text
+
+  14 | Error.prepareStackTrace = undefined;
+  15 | Error.prepareStackTrace = (_error, frames) => frames;
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  16 | Error.prepareStackTrace = keepFrames;
+
+  hint: code that reads a caller's file from a call site can take the module's own location instead (import.meta.url, import.meta.dirname, __filename); assigning undefined, or restoring a saved value that is undefined, compiles
+
+error-prepare-stack-trace.ts:16:1 - error SC2020: 'Error.prepareStackTrace' cannot be given a formatter: a compiled program has no V8 call sites (structured stack frames) to pass it, and an error's stack is always its text
+
+  15 | Error.prepareStackTrace = (_error, frames) => frames;
+  16 | Error.prepareStackTrace = keepFrames;
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  17 | Error.prepareStackTrace = function (_error: Error, frames: unknown[]): unknown {
+
+  hint: code that reads a caller's file from a call site can take the module's own location instead (import.meta.url, import.meta.dirname, __filename); assigning undefined, or restoring a saved value that is undefined, compiles
+
+error-prepare-stack-trace.ts:17:1 - error SC2020: 'Error.prepareStackTrace' cannot be given a formatter: a compiled program has no V8 call sites (structured stack frames) to pass it, and an error's stack is always its text
+
+  16 | Error.prepareStackTrace = keepFrames;
+  17 | Error.prepareStackTrace = function (_error: Error, frames: unknown[]): unknown {
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  18 |   return frames.length;
+
+  hint: code that reads a caller's file from a call site can take the module's own location instead (import.meta.url, import.meta.dirname, __filename); assigning undefined, or restoring a saved value that is undefined, compiles

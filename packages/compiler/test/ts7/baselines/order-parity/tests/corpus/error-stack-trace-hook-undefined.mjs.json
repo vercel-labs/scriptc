@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/error-stack-trace-hook-undefined.mjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/error-prepare-stack-trace.ts"
+ ],
+ "diags": []
+}

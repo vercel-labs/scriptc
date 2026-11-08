@@ -196,7 +196,7 @@ import {
   lowerChildWriterMethodCall,
 } from "./builtins/child-process-methods.js";
 import {
-  fenceHeldLoaderMember,
+  heldLoaderMemberThrow,
   isDirectOnlyResolveCallee,
   lowerCreateRequireCall,
   lowerImportMetaResolveCall,
@@ -819,8 +819,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (crServed) return crServed;
   }
   // `held.load.resolve(request)`: a member of a held loader, called.
-  if (ts.isPropertyAccessExpression(expr.expression))
-    fenceHeldLoaderMember(lowerer, expr.expression);
+  if (ts.isPropertyAccessExpression(expr.expression)) {
+    const held = heldLoaderMemberThrow(lowerer, expr.expression, expr);
+    if (held !== null) return held;
+  }
 
   {
     const resolved =

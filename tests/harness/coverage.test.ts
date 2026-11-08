@@ -1457,11 +1457,17 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // a member written on a promise, a statement that throws when it runs
     // on a promise the program made: a corpus program that has one keeps it
     // on a path the corpus does not take
-    // (9523-promise-intersection-plain.ts).
+    // (9523-promise-intersection-plain.ts). SC6015 names a TypeScript
+    // statement that throws when it runs, and a corpus program that has one
+    // does not reach it.
     expect
       .soft(
         (coverage.divergences ?? []).filter(
-          (d) => d.code !== "SC6001" && d.code !== "SC6012" && d.code !== "SC6013",
+          (d) =>
+            d.code !== "SC6001" &&
+            d.code !== "SC6012" &&
+            d.code !== "SC6013" &&
+            d.code !== "SC6015",
         ),
         file,
       )

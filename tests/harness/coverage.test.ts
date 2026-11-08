@@ -1349,15 +1349,19 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     const { coverage } = analyze(file, {});
     expect.soft(coverage.diagnostics, file).toEqual([]);
     // Corpus programs match Node on the path the corpus runs: a divergence
-    // warning on one is a false positive, except SC6001. That warning is
-    // sound rather than exact: it names every conversion that copies a value
-    // the program could tell from the original (lowering/width-copies.ts),
-    // and a corpus program can hold one on a path it does not take. What
-    // keeps it honest is tests/harness/copy-soundness.test.ts, which counts
-    // the conversions that copy and the warnings that were not needed.
+    // warning on one is a false positive, except SC6001 and SC6012. SC6001
+    // is sound rather than exact: it names every conversion that copies a
+    // value the program could tell from the original
+    // (lowering/width-copies.ts), and a corpus program can hold one on a
+    // path it does not take. What keeps it honest is
+    // tests/harness/copy-soundness.test.ts, which counts the conversions
+    // that copy and the warnings that were not needed. SC6012 names a
+    // refused statement inside its own try block, and a corpus program that
+    // has one is written so that Node throws there too (a guarded require
+    // of a module that is not there), which is how it matches.
     expect
       .soft(
-        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001"),
+        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001" && d.code !== "SC6012"),
         file,
       )
       .toEqual([]);

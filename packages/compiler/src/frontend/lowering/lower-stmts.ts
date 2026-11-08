@@ -62,6 +62,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import { markGuardedDeferredFences } from "../../ir/deferred-fence.js";
 import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import {
   constantDeleteKey,
@@ -8987,6 +8988,10 @@ function lowerBranchSwitch(
  * WRAPPING the catch block, like the spec's catch environment). */
 export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
   const tryBody = lowerer.lowerScopedBlock(stmt.tryBlock);
+  // A deferred refusal in the block of a `try` that has a `catch` is the
+  // program's own handler's to deal with: the build names it and the run
+  // does not report it (ir/deferred-fence.ts).
+  if (stmt.catchClause) markGuardedDeferredFences(tryBody);
   let catchBody: IrStmt[] | null = null;
   let catchLocalId: string | null = null;
   if (stmt.catchClause) {

@@ -3348,12 +3348,15 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
  *   fence, and the resolve.paths value is a function that throws one when
  *   called (module-resolution.ts), so the statement's catch clause handles
  *   them (packages that look for optional native addons).
- * - "value": in JavaScript source, the loader itself as a value (stored,
- *   passed, returned). It lowers to a run-time require function over the
- *   runtime resolver. A package compiled statically cannot prove those
- *   call sites, so npm-static refuses it (the "escaping" class there).
- * - "computed": the "runtime" and "value" uses in TypeScript source, and
- *   the "deferred" shapes outside a try block.
+ * - "value": the loader itself as a value (stored, passed, returned), in
+ *   JavaScript and TypeScript source alike. It lowers to a run-time require
+ *   function over the runtime resolver: the calls it will receive are not
+ *   in sight where the value is read, so they are answered when they run.
+ *   A package compiled statically cannot prove those call sites, so
+ *   npm-static refuses it (the "escaping" class there).
+ * - "computed": the "runtime" uses in TypeScript source (a call the
+ *   compiler can see cannot load anything, so it is refused where it is
+ *   written), and the "deferred" shapes outside a try block.
  * - "escaping": writes, optional calls, and other members. */
 const COMPUTED_CREATE_REQUIRE_REASON =
   "its createRequire result is used with a computed specifier in TypeScript, or with spread arguments or resolve.paths outside a try block (static requires need literal specifiers)";
@@ -3362,9 +3365,7 @@ type CreateRequireUse7 = "static" | "runtime" | "deferred" | "computed" | "escap
 
 function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
   const use = createRequireUseShape7(expr);
-  return (use === "runtime" || use === "value") && !isJsSourceFile(ts.getSourceFileOfNode(expr))
-    ? "computed"
-    : use;
+  return use === "runtime" && !isJsSourceFile(ts.getSourceFileOfNode(expr)) ? "computed" : use;
 }
 
 function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
@@ -3415,9 +3416,8 @@ function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
       call.expression === use
     )
       return "escaping";
-    // The loader itself as a value (stored, passed, returned). JavaScript
-    // source lowers it to a run-time require function over the runtime
-    // resolver; TypeScript source keeps the refusal (createRequireUse7).
+    // The loader itself as a value (stored, passed, returned): a run-time
+    // require function over the runtime resolver.
     return "value";
   } else if (!paths) {
     return "runtime";

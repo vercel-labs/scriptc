@@ -34,9 +34,10 @@ console.log(odd);
 // A builtin handle such as process.stdout projects into a record of
 // METHODS only: each one calls the handle's member. A data member would be
 // a copy of the stream's state, so a record that declares one stays
-// outside the projection.
+// outside the projection wherever the binding cannot hold the stream itself
+// (a `let` can be assigned a record later; a const keeps the stream).
 type TtySink = { write(text: string): boolean; isTTY: boolean };
-const tty: TtySink = process.stdout;
+let tty: TtySink = process.stdout;
 console.log(tty.isTTY);
 
 // A variadic method stays outside the projection too: the projection calls

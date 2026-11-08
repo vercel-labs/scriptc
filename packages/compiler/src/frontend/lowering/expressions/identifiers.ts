@@ -84,7 +84,7 @@ import {
   unsupportedPackageValueDiag,
 } from "../../../diagnostics/diagnostic.js";
 import { dirname } from "node:path";
-import { funcTypeFromParamShapes } from "../call-signatures.js";
+import { funcTypeFromParamShapes, ownLength } from "../call-signatures.js";
 import { threadsImportOf } from "../../threads-import.js";
 import { nodeApiBindingOf } from "../../node-api-import.js";
 import { experimentalImportOf } from "../../experimental-import.js";
@@ -624,19 +624,21 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     lowerer.noteEdge(sig.name);
     // dynRest slots stay out of the VALUE type's param list (fn.length
     // semantics); the rest marker carries the trailing dyn-array ABI.
-    const funcType: IrType = funcTypeFromParamShapes(sig.params, sig.returnType);
+    const funcType = funcTypeFromParamShapes(sig.params, sig.returnType);
     lowerer.requireExactArityValue(expr, expr, sig.params, funcType);
+    const decl = lowerer.resolveValueSymbol(expr)?.valueDeclaration;
+    const declared = decl && ts.isFunctionDeclaration(decl) ? decl : undefined;
+    // The interned closure carries the declaration's own `length` where the
+    // type counts a parameter Node does not (one with a default).
     const closure = {
       kind: "closure" as const,
       fnName: sig.name,
       captures: [],
+      ...(declared ? ownLength(declared, funcType) : {}),
       type: funcType,
       loc,
     };
-    const decl = lowerer.resolveValueSymbol(expr)?.valueDeclaration;
-    return decl && ts.isFunctionDeclaration(decl) && funcType.kind === "func"
-      ? argumentCountValue(lowerer, decl, expr, { ...closure, type: funcType })
-      : closure;
+    return declared ? argumentCountValue(lowerer, declared, expr, closure) : closure;
   }
   {
     // A generic function as a VALUE: monomorphized by flow — the

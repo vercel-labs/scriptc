@@ -43,6 +43,7 @@ import {
   generatorMeta,
   generatorParamsBindAtCall,
   isThisParameter,
+  ownLength,
   type ParamShape,
 } from "./call-signatures.js";
 import { slotSignatureAdoption } from "./slot-signatures.js";
@@ -742,7 +743,11 @@ export function lowerLambda(
       kind: "closure",
       fnName,
       captures: ctx.captureSources,
-      ...(adoption?.length !== undefined ? { length: adoption.length } : {}),
+      ...(adoption !== null
+        ? adoption.length !== undefined
+          ? { length: adoption.length }
+          : {}
+        : ownLength(node, funcType)),
       type: funcType,
       loc,
     };

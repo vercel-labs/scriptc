@@ -1442,6 +1442,22 @@ export function runtimeOptionalReceiverRead(
   if (!def || undefTag < 0)
     throw new InternalCompilerError("runtime-optional local is missing its undefined arm");
   if (def.arms.length !== 2) {
+    // The checker narrowed nothing where a generic instance's binding reads
+    // at its declared type (instanceSlotUnnarrowed): that type is the view
+    // every stored arm satisfies, also when it is itself one of the arms.
+    // The receiver keeps its value arms, and the hidden arm throws Node's
+    // TypeError for this member read or call. An erased wrapper names a
+    // type of its own and keeps the checked extraction below.
+    if (narrowedNode === expr) {
+      const unnarrowed = instanceSlotUnnarrowed(
+        lowerer,
+        expr,
+        varRef(local.id, local.type, loc),
+        lowerer.typeOf(expr),
+        narrowed,
+      );
+      if (unnarrowed) return unnarrowed;
+    }
     // The checker may narrow a runtime-optional capture to one arm of a
     // value union (`Circle | Square | undefined` -> `Circle`). The
     // two-arm fast path below cannot extract that arm safely: a later

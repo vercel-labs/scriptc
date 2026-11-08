@@ -21,6 +21,7 @@ import {
   elementMayBeForeign,
 } from "../array-values.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
+import { refuseCopiedStore } from "../structural-instances.js";
 import { staticFieldWriteTarget } from "../lower-classes.js";
 import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { globalSymbolKey } from "./global-symbols.js";
@@ -202,6 +203,9 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
         key = save(key, "%shortCircuitKey");
         storage = receiver.type.elem;
         const element = storage;
+        // An element of a kept array rebuilds the assigned value: the store
+        // this branch emits would take a later write through it (SC2021).
+        refuseCopiedStore(lowerer, target, receiver.type.elem, expr.right);
         write = (value) => arrayValueStore(lowerer, receiver, key, value, element, loc);
         const elementLoc = locOf(target);
         // A foreign element can be any value, nullish or not.
@@ -307,6 +311,10 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
   ) {
     return finish(read);
   }
+  // The write this branch emits stores the right side into the binding's
+  // slot, so a kept layout would rebuild an existing value and take a later
+  // write through it (SC2021), as the plain assignment's store does.
+  refuseCopiedStore(lowerer, target, storage, expr.right);
   const value = rhs ?? lowerer.lowerExprExpecting(expr.right, storage);
   const assigned = lowerer.declareHiddenLocal("%shortCircuitValue", value.type);
   const ref = varRef(assigned.id, value.type, loc);

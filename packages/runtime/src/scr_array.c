@@ -1961,7 +1961,7 @@ void scr_arr_subclass_construct_dyn(ScrArr *a, const ScrDyn *args, bool dyn_elem
     } else {
       static const char msg[] =
           "constructing this Array subclass with element arguments is not supported yet";
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC1090");
       return;
     }
   }
@@ -2059,7 +2059,7 @@ static ScrArr *scr_arr_species_move(ScrArr *species, ScrArr *result, bool set_le
     if (!empty || (traced && !species->cyc)) {
       static const char msg[] =
           "an Array subclass's species result of another element type is not supported yet";
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC1090");
       scr_arr_release(species);
       return result;
     }

@@ -46,6 +46,7 @@ async function build(
   name: string,
   root = fixtures,
   set: Record<string, string> = {},
+  entry = "main.ts",
 ): Promise<{ binary: string; trace: string[] }> {
   const dir = join(outDir, name);
   rmSync(dir, { recursive: true, force: true });
@@ -59,7 +60,7 @@ async function build(
   };
   const { stderr } = await execFileAsync(
     process.execPath,
-    [cli, "build", join(root, name, "main.ts"), "-o", binary],
+    [cli, "build", join(root, name, entry), "-o", binary],
     { env, encoding: "utf8" },
   );
   return { binary, trace: stderr.split("\n").filter((l) => l.startsWith("[node-islands] ")) };
@@ -98,10 +99,14 @@ async function runTraced(
 }
 
 /** stdout of the program under Node, in the same environment. */
-async function underNode(name: string, set: Record<string, string> = {}): Promise<string> {
+async function underNode(
+  name: string,
+  set: Record<string, string> = {},
+  entry = "main.ts",
+): Promise<string> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of ABSENT_ENV) delete env[key];
-  const main = join(corpus, name, "main.ts");
+  const main = join(corpus, name, entry);
   return (
     await execFileAsync(process.execPath, [main], { env: { ...env, ...set }, encoding: "utf8" })
   ).stdout;
@@ -173,6 +178,83 @@ describe.skipIf(skip)("when deferred island modules evaluate", () => {
       "[node-islands] Node started: evaluating 2 deferred module(s)",
       "[node-islands] evaluating deferred patch-pkg/index.js",
       "[node-islands] evaluating deferred reader-pkg/index.js",
+    ]);
+  }, 300_000);
+});
+
+describe.skipIf(skip)("island modules whose loads share state", () => {
+  /** The trace without the module tree's install, and without the
+   * directories in front of the package's files. */
+  const short = (trace: string[]): string[] =>
+    trace
+      .filter((l) => l !== "[node-islands] installing the module tree")
+      .map((l) => l.replace(/ \S*node_modules\/state-kit\//, " "));
+
+  test("answer from their recorded loads in a run that loads them as the probe did", async () => {
+    const name = "9893-node-island-load-order-as-probed";
+    const { binary, trace } = await build(name, corpus, {}, "main.mjs");
+    const decisions = trace.filter((l) => / (defer|eager) /.test(l));
+    expect(decisions.length).toBeGreaterThanOrEqual(9);
+    expect(decisions.every((l) => l.startsWith("[node-islands] defer "))).toBe(true);
+    // The build saw the writes; they keep nothing eager.
+    expect(decisions.some((l) => l.includes("mutates globalThis.__stateKitLevel"))).toBe(true);
+    const ran = await runTraced(binary);
+    expect(ran.stdout).toBe(await underNode(name, {}, "main.mjs"));
+    expect(ran.stdout).toContain("libnode mapped: false\n");
+    // Ten imports of nine modules, one of them from two modules of the
+    // program: each registers, none evaluates, Node never starts.
+    expect(short(ran.trace)).toEqual([
+      "[node-islands] deferred global-writer.js",
+      "[node-islands] deferred global-reader.js",
+      "[node-islands] deferred global-writer.js",
+      "[node-islands] deferred process-writer.js",
+      "[node-islands] deferred process-reader.js",
+      "[node-islands] deferred private-writer.js",
+      "[node-islands] deferred private-reader.js",
+      "[node-islands] deferred both-a.js",
+      "[node-islands] deferred both-b.js",
+      "[node-islands] deferred last-reader.js",
+    ]);
+  }, 300_000);
+
+  test("evaluate at their import in a run that skipped a load the probe took", async () => {
+    const name = "9891-node-island-load-order-not-taken";
+    const { binary, trace } = await build(name, corpus, {}, "main.cjs");
+    // Writer and reader both defer at build time: the build cannot know
+    // which branch a run takes.
+    for (const file of ["global-writer.js", "global-reader.js"])
+      expect(trace.find((l) => l.includes(`state-kit/${file}`))).toMatch(
+        /^\[node-islands\] defer /,
+      );
+    const ran = await runTraced(binary);
+    expect(ran.stdout).toBe(await underNode(name, {}, "main.cjs"));
+    // The first reader finds that the writer the probe loaded before it is
+    // not registered: it evaluates there, which starts Node.
+    expect(short(ran.trace).slice(0, 3)).toEqual([
+      "[node-islands] boot guard failed: the loads before global-reader.js",
+      "[node-islands] evaluating global-reader.js eagerly: a boot guard failed",
+      "[node-islands] starting Node",
+    ]);
+    expect(ran.trace.some((l) => l.startsWith("[node-islands] deferred "))).toBe(false);
+  }, 300_000);
+
+  test("evaluate at their import in a run that reached a load before the probe did", async () => {
+    const name = "9892-node-island-load-order-other-way";
+    const { binary, trace } = await build(name, corpus, {}, "main.cjs");
+    const order = trace
+      .filter((l) => / (defer|eager) /.test(l))
+      .map((l) => /state-kit\/([\w-]+\.js)/.exec(l)?.[1]);
+    // The probe placed the operand's writer after the reader.
+    expect(order.indexOf("global-reader.js")).toBeLessThan(order.indexOf("global-writer.js"));
+    const ran = await runTraced(binary);
+    expect(ran.stdout).toBe(await underNode(name, {}, "main.cjs"));
+    // The run registers the writer first; the probe had loaded the reader
+    // before it, so the writer's own record does not hold and it evaluates
+    // at its import.
+    expect(short(ran.trace).slice(0, 3)).toEqual([
+      "[node-islands] boot guard failed: the loads before global-writer.js",
+      "[node-islands] evaluating global-writer.js eagerly: a boot guard failed",
+      "[node-islands] starting Node",
     ]);
   }, 300_000);
 });

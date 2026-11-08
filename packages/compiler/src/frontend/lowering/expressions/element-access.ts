@@ -1,6 +1,7 @@
 /* Element reads and writes (`a[i]`, `a[i] = v`), compound element updates, and keyed record reads. */
 import { OBJECT_PROTOTYPE_MEMBERS } from "../../shape-inference/domain.js";
 import { lowerUnionTupleRead } from "./union-fields.js";
+import { keptLayoutTypeOf, refuseCopiedStore } from "../structural-instances.js";
 import { constituentTypes } from "../../ts7/checker.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -2765,7 +2766,12 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       };
     }
   }
-  let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(target.expression));
+  // A binding that kept its initializer's layout stores a different record
+  // shape than the checker's type for it: the element write resolves against
+  // the layout the receiver really has.
+  let receiverIr = lowerer.mapTypeOf(
+    keptLayoutTypeOf(lowerer, target.expression) ?? lowerer.typeOf(target.expression),
+  );
   if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && checkedReceiver) {
     const represented =
       checkedReceiver.type.kind === "union"
@@ -3291,6 +3297,10 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
   if (index.type.kind !== "f64") {
     lowerer.unsupported("SC1090", target.argumentExpression, "indexing with non-number keys");
   }
+  // An element of a kept array rebuilds an assigned existing array into its
+  // own element layout, so a later write through the assigned name would
+  // reach only the copy (SC2021), like the field store of the same binding.
+  refuseCopiedStore(lowerer, target, arr.type.elem, expr.right);
   // Optional array reads carry the source array's payload type plus an
   // undefined arm. arrayValueStore turns that arm into the runtime's
   // UNDEFINED state while keeping number[]/string[] payload storage scalar.

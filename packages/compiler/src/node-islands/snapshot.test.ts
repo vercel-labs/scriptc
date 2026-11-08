@@ -420,6 +420,129 @@ describe("the effects of a file that modules share", () => {
   });
 });
 
+/** The `P` record's hash over `loads` (snapshot.ts loadsHash). */
+function loadsHash(loads: string[]): number {
+  let h = 2166136261;
+  for (const load of loads)
+    for (const byte of Buffer.from(`${load}\n`, "utf8")) h = Math.imul(h ^ byte, 16777619) >>> 0;
+  return h;
+}
+
+describe("the loads a snapshot was recorded after", () => {
+  /** Island modules of separate packages, loaded in the order given (a name
+   * may repeat: the program imports it twice), and the probe's record of
+   * each load. The modules share no file; whatever one leaves in the
+   * probe's process (a global, a prototype, another module's state) is
+   * there for the loads after it, and no record says who read it. */
+  function sequence(
+    names: string[],
+    records: Record<string, Partial<ProbeOutput["results"][number]>> = {},
+    scriptc: unknown = {},
+  ) {
+    const root = scratch();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app", scriptc }));
+    const paths = new Map<string, string>();
+    for (const name of new Set(names)) {
+      const dir = join(root, "node_modules", name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name }));
+      writeFileSync(join(dir, "index.js"), "module.exports = {};\n");
+      paths.set(name, join(dir, "index.js"));
+    }
+    const calls = names.map((name) => ({
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: paths.get(name)! },
+        { kind: "strLit", value: "" },
+      ],
+    }));
+    const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+    const empty = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
+    const distinct = [...paths.keys()];
+    const probe: ProbeOutput = {
+      results: distinct.map((name, i) => ({
+        ...empty,
+        path: paths.get(name)!,
+        root: i + 1,
+        files: [paths.get(name)!],
+        ...records[name],
+      })),
+      objects: Object.fromEntries(
+        distinct.map((_, i) => [String(i + 1), { f: 0, p: false, m: [] }]),
+      ),
+    };
+    const seen: string[][] = [];
+    const decisions = finalizeDeferredIslands(
+      mod,
+      join(root, "main.ts"),
+      root,
+      (_pack, modules) => {
+        seen.push(modules);
+        return probe;
+      },
+    );
+    const record = (i: number): string | undefined =>
+      /^P .*$/m.exec((calls[i]!.args[1] as { value: string }).value)?.[0];
+    const before = (...loaded: string[]): string =>
+      `P ${loaded.length} ${loadsHash(loaded.map((name) => paths.get(name)!))}`;
+    return { decisions, calls, record, before, probed: seen[0]!, paths };
+  }
+
+  test("every deferred module names the loads the probe evaluated before it", () => {
+    const { decisions, record, before } = sequence(["writer", "reader", "other"]);
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true, true]);
+    expect(record(0)).toBe(before());
+    expect(record(1)).toBe(before("writer"));
+    expect(record(2)).toBe(before("writer", "reader"));
+  });
+
+  test("whatever the earlier load is recorded to have written, or not", () => {
+    // The record does not depend on the probe having noticed a write: a
+    // module's private state and a builtin's have no property to compare.
+    const noticed = sequence(["writer", "reader"], {
+      writer: { mutations: ["globalThis.level"] },
+    });
+    const unnoticed = sequence(["writer", "reader"]);
+    expect(noticed.decisions.map((d) => d.deferred)).toEqual([true, true]);
+    expect(noticed.record(1)).toBe(noticed.before("writer"));
+    expect(unnoticed.record(1)).toBe(unnoticed.before("writer"));
+  });
+
+  test("a load the build keeps eager still counts before the loads after it", () => {
+    // The probe evaluated it, so the later load computed from what it left.
+    // A run that performs it has started Node; one that skips it (a branch
+    // not taken) has not registered it, and the later snapshot stays unused.
+    const { decisions, calls, record, before } = sequence(["writer", "reader"], {
+      writer: { effects: ["process.on() (writer/index.js:1:9)"], mutations: ["globalThis.level"] },
+    });
+    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.defer"]);
+    expect(record(1)).toBe(before("writer"));
+  });
+
+  test("a module imported twice is probed once and carries one record", () => {
+    const { decisions, record, before, probed, paths } = sequence(["writer", "reader", "writer"]);
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true, true]);
+    expect(probed).toEqual([paths.get("writer"), paths.get("reader")]);
+    // Its second import passes because the load is registered already
+    // (scr_node_island_boot.c), not because the loads before it match.
+    expect(record(0)).toBe(before());
+    expect(record(2)).toBe(before());
+    expect(record(1)).toBe(before("writer"));
+  });
+
+  test('"evaluate": "lazy" defers a module whatever its load does, not whatever came before it', () => {
+    const { decisions, record, before } = sequence(
+      ["writer", "reader"],
+      { reader: { effects: ["process.on() (reader/index.js:1:9)"] } },
+      { packages: { reader: { evaluate: "lazy" } } },
+    );
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
+    expect(record(1)).toBe(before("writer"));
+  });
+});
+
 describe("state an earlier load wrote", () => {
   /** Two island modules that share no file, probed in that order, and the
    * probe's records of their loads. `ga` reads a private environment value
@@ -904,14 +1027,6 @@ describe("the order deferred loads are probed in", () => {
 });
 
 describe("generated island modules (closed-island-init.ts)", () => {
-  /** The `P` record's hash over `loads` (snapshot.ts loadsHash). */
-  function loadsHash(loads: string[]): number {
-    let h = 2166136261;
-    for (const load of loads)
-      for (const byte of Buffer.from(`${load}\n`, "utf8")) h = Math.imul(h ^ byte, 16777619) >>> 0;
-    return h;
-  }
-
   /** A project whose entry imports the package `dep` and then loads two
    * generated modules: one where the entry's own statements reach it, one
    * inside a function. The probe's stand-in records what it was given and
@@ -1036,8 +1151,7 @@ describe("generated island modules (closed-island-init.ts)", () => {
     expect(snapshot(second)).toMatch(
       new RegExp(`^P 2 ${loadsHash([loads.dep, loads.first])}$`, "m"),
     );
-    // A package's entry point is not: its load does not compute from what
-    // other modules left behind.
-    expect(snapshot(dep)).not.toMatch(/^P /m);
+    // A package's entry point too: nothing before the first load.
+    expect(snapshot(dep)).toMatch(new RegExp(`^P 0 ${loadsHash([])}$`, "m"));
   });
 });

@@ -541,6 +541,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.bagGet",
   "dyn.bitwise",
   "dyn.classHash",
+  "dyn.classValueHash",
   "dyn.compare",
   // Adoption reads the native value it was built into and turns shared
   // source nodes into capsules of it; it stores no property into a capsule.
@@ -556,6 +557,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.hasOwn",
   "dyn.in",
   "dyn.increment",
+  "dyn.negate",
   "dyn.iterator",
   "dyn.iteratorCanStep",
   "dyn.iteratorResult",
@@ -625,6 +627,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "js.compare",
   "js.fromDyn",
   "js.increment",
+  "js.negate",
   "js.toDyn",
   "js.toF64",
   "js.toNumberCoerce",

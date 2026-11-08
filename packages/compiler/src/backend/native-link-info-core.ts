@@ -69,6 +69,12 @@ export interface NativeLinkFeatures {
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
+  /** The program holds a process output stream as a value, so it can
+   * replace the stream's write method. With Node islands it links
+   * scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c, which join the island's process.stdout.write and
+   * process.stderr.write to the program's write slots. */
+  stdioObject?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;

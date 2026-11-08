@@ -513,6 +513,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.prototypeMember",
   ...DYN_COLLECTION_LIB_FNS,
   "buffer.prototypeObject",
+  // A symbol event name's registry key (scr_str_symbol_key lives in the
+  // string unit, but the emitter registry holds the symbol itself).
+  "emitter.symName",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",
@@ -1814,6 +1817,20 @@ const RUNTIME_FEATURE_RULES = {
    * publishes the error the adapter delivers. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
 
+  /** The program holds a process output stream as a value: the
+   * process.stdio lib call, process.stdioSlot for the write method's own
+   * lowering, or a value of the process stream type, which becomes the
+   * stream object when it is boxed (dyn.ts). Those are the only ways to the
+   * stream object, and a replacement of its write method is a store into
+   * that object, so this covers every program that can replace
+   * process.stdout.write or process.stderr.write, whichever spelling, alias
+   * or computed key the replacement uses. Beside
+   * `nodeIsland` it links scr_node_island_stdio.c and the
+   * SCR_NODE_ISLAND_STDIO build of scr_node_island.c, which make the
+   * island's two output streams read and write the program's write slots;
+   * every other program with islands keeps its island units unchanged. */
+  stdioObject: rule({ fns: ["process.stdio", "process.stdioSlot"], types: ["procStream"] }),
+
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1977,13 +1994,18 @@ const RUNTIME_FEATURE_RULES = {
       "tls.sockGetCertificate",
     ],
   }),
-  /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode
-   * argument: scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c.
-   * Programs that never pass either keep both units' default objects. */
+  /** writeFile's options record (`encoding`, `mode`, `flag`), appendFile's
+   * three-argument form and copyFile's mode argument: scr_fs_flags.c and
+   * the SCR_FS_FLAGS build of scr_fs_cp.c. Programs that never pass them
+   * keep both units' default objects. */
   fsFlags: rule({
     fns: [
       "fs.copyFileFlagsSync",
       "fs.writeFileFlagsSync",
+      "fs.writeFileOptionsSync",
+      "fs.appendFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
+      "fs.appendFileBytesOptionsSync",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
     ],
@@ -2101,6 +2123,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     regex: false,
     searchParams: false,
     urlIdna: false,
+    stdioObject: false,
     streamWriteErrors: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,

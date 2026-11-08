@@ -1467,12 +1467,27 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: exactValueParams(STRING, F64, F64),
       },
       // access' omitted mode and truncate's omitted len complete to 0 in
-      // lowerBuiltinModuleCall, like their sync spellings.
-      access: { fn: "fsp.access", params: [STRING, F64], result: { kind: "promise", inner: VOID } },
+      // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
+      // fixed (path plus one optional number), so they box as function values
+      // too: the bounded builtin namespace box serves them, and an omitted
+      // mode/len completes to the same 0 through the value adapter.
+      access: {
+        fn: "fsp.access",
+        params: [STRING, F64],
+        result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
+      },
       truncate: {
         fn: "fsp.truncate",
         params: [STRING, F64],
         result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
       },
       // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
       // lowerBuiltinModuleCall.
@@ -2343,7 +2358,9 @@ export const BUILTIN_MODULE_CONSTS: Record<
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
   os: { EOL: "\n", devNull: "/dev/null" },
-  worker_threads: { isMainThread: true, threadId: 0 },
+  // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
+  // in the namespace inventory, and the worker lowering supplies the value.
+  worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's
@@ -2412,17 +2429,25 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
-    // The bytes-data form and the { mode } options form.
-    // The bytes-data form, the { mode } options form, and the
-    // file-descriptor data form.
+    // The bytes-data form, the { mode } options form, the file-descriptor
+    // data form, and the { encoding, mode, flag } option-record forms over
+    // string and bytes data.
     writeFileSync: [
       "fs.writeFileSyncBytes",
       "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
+      "fs.writeFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
     ],
-    appendFileSync: ["fs.appendFileSyncBytes"],
+    // The bytes-data form and the { encoding, mode, flag } option-record
+    // forms over string and bytes data.
+    appendFileSync: [
+      "fs.appendFileSyncBytes",
+      "fs.appendFileOptionsSync",
+      "fs.appendFileBytesOptionsSync",
+    ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
       "fs.fsStreamBytes",
@@ -3309,6 +3334,22 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "readdir",
 ]);
 
+/** Members of one builtin module that the lowering tables answer as VALUES:
+ * its lowered functions and its constants, sorted. Used by the checked-
+ * dynamic namespace box (a bounded dynamic import of a builtin) to name the
+ * keys it can serve; a member outside the tables is left out of the box. */
+export function builtinModuleMemberNames(lowerer: Lowerer, module: string): string[] {
+  const names = new Set<string>();
+  const fns = builtinModuleFnsOf(lowerer, module);
+  if (fns !== undefined) {
+    for (const name of Object.keys(fns)) if (fns[name] !== undefined) names.add(name);
+  }
+  const consts = ownEntry(BUILTIN_MODULE_CONSTS, module);
+  if (consts !== undefined) {
+    for (const name of Object.keys(consts)) if (consts[name] !== undefined) names.add(name);
+  }
+  return [...names].sort();
+}
 /** The `length` Node's filesystem callback functions carry
  * (`fs.readFile.length` is 3). The value adapter reports it through
  * Function.length; the direct call accepts the arguments it always did. */

@@ -1,7 +1,0 @@
-- **Island packages loaded under a condition:** For a package that runs in a Node island, the build records what the package exports when it loads, and the compiled program starts Node.js only when it needs more than that.
-  The build loads those packages once, in the order the program loads them, so a package that reads at load time what an earlier package left in shared state, such as a property on `globalThis`, exports the same values as under Node.js.
-  Where the `require()` of such a package is written under a condition, the build guesses whether it runs.
-  In a branch of an `if`, it assumes the load happens where it is written.
-  In the right operand of `&&`, `||`, or `??`, an arm of `?:`, an optional chain, the body of a loop or of a `catch`, or a `case` after the first, it assumes the load happens after every load that always runs.
-  When a run goes the other way, a package that loads later can export values computed with a load the run skipped, or without one the run performed, and no error is reported.
-  Only programs in which one island package changes shared state while it loads, a second island package reads that state while it loads, the two share no file, and one of the two loads is written under a condition are affected.

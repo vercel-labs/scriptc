@@ -47,7 +47,11 @@
  * collector header and allocates nothing the collector sees. It refuses
  * to answer (the bridge then roots everything for that GC) while a cycle
  * collection is in progress, which it notices by a non-black header, and
- * when counts are inconsistent. */
+ * when counts are inconsistent.
+ *
+ * The unit's last section keeps the entries that native weak collections
+ * key by island objects: where they live decides when they end, which is
+ * this collector's and V8's to say. */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
 #include "scr_runtime.h"
@@ -525,9 +529,31 @@ int scr_ni_host_gc_analyze(const uint32_t *exports, size_t n, ScrNodeGcResult *o
       continue;
     }
     const void *ident = gc_referent(exports[i]);
+    /* A native error's view: the error-view cache (scr_json.c) holds the
+     * view and the error until nothing else does, so it is not a holder.
+     * An error the program still holds keeps its export a root; otherwise
+     * the cache's two references are explained like the table's. */
+    ScrDyn *v = scr_ni_export_value(exports[i]);
+    ScrError *error = v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_TYPED_REF ? scr_errdyn_err_of(v) : NULL;
+    bool cached = false;
+    if (error != NULL) {
+      cached = scr_errdyn_view_of(error) == v;
+      size_t boxed = v->kind == SCR_DYN_TYPED_REF && v->v.typed_ref.ptr == (void *)error;
+      /* This call's reference, the cache's and the capsule's. */
+      bool held = SCR_RC_COUNT(error) > 2 + boxed;
+      scr_error_release(error);
+      if (cached && held) {
+        gc_rooted[i] = 1;
+        continue;
+      }
+    }
     if (ident != NULL && !gc_skip(ident)) gc_obj_node((void *)ident)->ident = (uint32_t)i + 1;
-    gc_obj(scr_ni_export_value(exports[i]))->count--;
+    gc_obj(v)->count -= cached ? 2 : 1;
     gc_count();
+    if (cached) {
+      NiGcNode *held_error = gc_lookup(error);
+      if (held_error != NULL && held_error->kind == NI_OBJ) held_error->count--;
+    }
   }
   if (!gc_failed) gc_blacken();
   last_len = gc_len;
@@ -593,6 +619,200 @@ void scr_ni_gc_cleanup(void) {
   gc_pin_map = NULL;
   gc_cap = gc_len = gc_nwork = gc_work_cap = gc_free_cap = gc_nfree = 0;
   gc_nexp_cap = gc_nreach = gc_reach_cap = gc_pin_next_cap = gc_pin_map_cap = 0;
+}
+
+/* ── weak collections keyed by island objects ─────────────────────────────
+ * A native WeakMap, WeakSet or FinalizationRegistry (scr_json.c) keys an
+ * entry by a native pointer and ends it when the runtime frees that
+ * pointer. An object a Node island made has no such pointer. The program
+ * holds it through a handle, but the handle is not the object: it goes
+ * when the program drops it, while the object lives on for as long as
+ * island code reaches it, and comes back under a new handle. So the
+ * entries a native weak collection keys by island objects are kept where
+ * the keys are: in a WeakMap (or WeakSet) inside the island, one per
+ * native collection, made with the first such entry and held by the native
+ * collection through an ordinary handle. V8 compares the keys, and V8 ends
+ * an entry when its key dies, or when the native collection does and
+ * releases the island one.
+ *
+ * A value V8 stores must be a V8 value. undefined, null, booleans, numbers
+ * and island objects cross as what they are and are stored as they are.
+ * Every other value stays native: the entry holds a cell, a native object
+ * with the value as its one property, which crosses by reference like any
+ * native object (scr_node_island_export.c). The island never reads a cell;
+ * it only keeps the cell's representative alive for as long as the entry
+ * lives, and a lookup that answers the representative answers the cell. A
+ * cell's value that reaches the entry's own key through the island is no
+ * leak: the analysis above marks what a cell reaches only when V8 marks
+ * its representative, which V8 does only while the key is alive. V8 frees
+ * a cell's representative, and with it the cell and its value, at a major
+ * collection after the entry ended. A delete or a replacing set does not
+ * wait for that: the island side answers the cell that left the collection
+ * and the value is released here at once.
+ *
+ * The island side is one function, compiled on first use from the text
+ * below. It captures the intrinsics then, so later changes to the island's
+ * WeakMap.prototype do not reach it. It is not part of the island bootstrap
+ * (scr_node_island_host.cjs), which every island program carries and
+ * parses at every start: nothing here is linked into, or run by, a program
+ * that keys no weak collection by an island object. */
+enum {
+  NI_WEAK_NEW_MAP, NI_WEAK_NEW_SET,
+  NI_WEAK_GET, NI_WEAK_SET, NI_WEAK_SET_CELL, NI_WEAK_HAS, NI_WEAK_DELETE,
+  NI_WEAK_ADD, NI_WEAK_SET_HAS, NI_WEAK_SET_DELETE,
+};
+static const char ni_weak_source[] =
+  "(function () {\n"
+  "  const call = Function.prototype.call;\n"
+  "  const M = WeakMap, S = WeakSet;\n"
+  "  const get = call.bind(M.prototype.get), set = call.bind(M.prototype.set);\n"
+  "  const has = call.bind(M.prototype.has), del = call.bind(M.prototype.delete);\n"
+  "  const add = call.bind(S.prototype.add), setHas = call.bind(S.prototype.has);\n"
+  "  const setDel = call.bind(S.prototype.delete);\n"
+  "  // The representatives of cells, to tell a cell that leaves a map from\n"
+  "  // an island object stored as itself.\n"
+  "  const cells = new S();\n"
+  "  const cell = (old) => (old !== undefined && setHas(cells, old) ? old : undefined);\n"
+  "  return function scriptcWeak(op, collection, key, value) {\n"
+  "    switch (op) {\n"
+  "      case 0: return new M();\n"
+  "      case 1: return new S();\n"
+  "      case 2: return get(collection, key);\n"
+  "      case 3:\n"
+  "      case 4: {\n"
+  "        const old = get(collection, key);\n"
+  "        set(collection, key, value);\n"
+  "        if (op === 4) add(cells, value);\n"
+  "        return cell(old);\n"
+  "      }\n"
+  "      case 5: return has(collection, key);\n"
+  "      case 6: {\n"
+  "        const old = get(collection, key);\n"
+  "        return del(collection, key) ? cell(old) ?? true : false;\n"
+  "      }\n"
+  "      case 7: add(collection, key); return undefined;\n"
+  "      case 8: return setHas(collection, key);\n"
+  "      default: return setDel(collection, key);\n"
+  "    }\n"
+  "  };\n"
+  "})()";
+
+static ScrDyn *ni_weak_fn = NULL; /* the function above (+1), NULL until first use */
+
+static void ni_weak_cleanup(void) {
+  scr_dyn_release(ni_weak_fn);
+  ni_weak_fn = NULL;
+}
+
+/* One operation of the island side (+1), or NULL with the exception
+ * pending. */
+static ScrDyn *ni_weak_call(int op, ScrDyn *collection, ScrDyn *key, ScrDyn *value) {
+  if (ni_weak_fn == NULL) {
+    ScrStr *name = scr_str_new("node:vm", 7);
+    ScrDyn *vm = scr_ni_require(name);
+    scr_str_release(name);
+    if (vm == NULL) return NULL;
+    ScrDyn *run = scr_ni_get_str(vm, "runInThisContext", 16);
+    if (run != NULL) {
+      ScrStr *text = scr_str_new(ni_weak_source, sizeof ni_weak_source - 1);
+      ScrDyn *source = scr_dyn_new_str(text);
+      scr_str_release(text);
+      ni_weak_fn = scr_ni_call(run, vm, &source, 1);
+      scr_dyn_release(source);
+      scr_dyn_release(run);
+    }
+    scr_dyn_release(vm);
+    if (ni_weak_fn == NULL) return NULL;
+    scr_atexit(ni_weak_cleanup);
+  }
+  ScrDyn *code = scr_dyn_new_num(op);
+  ScrDyn *args[4] = {code, collection != NULL ? collection : scr_dyn_undefined(),
+                     key != NULL ? key : scr_dyn_undefined(),
+                     value != NULL ? value : scr_dyn_undefined()};
+  ScrDyn *result = scr_ni_call(ni_weak_fn, scr_dyn_undefined(), args, 4);
+  scr_dyn_release(code);
+  return result;
+}
+
+/* A cell that left its collection (the island side's answer to a delete or
+ * a replacing set, consumed): its value is released now, not when V8 frees
+ * the cell's representative. Any other answer is only released. */
+static bool ni_weak_retire(ScrDyn *left) {
+  bool cell = left->kind == SCR_DYN_OBJ;
+  if (cell) scr_dyn_obj_set(left, "value", 5, scr_dyn_retain(scr_dyn_undefined()));
+  scr_dyn_release(left);
+  return cell;
+}
+
+/* The value of the entry of island collection `collection` (NULL: the
+ * native collection has none yet) keyed by island object `key`: +1,
+ * undefined when there is no entry, or NULL with the exception pending. */
+ScrDyn *scr_ni_weak_get(ScrDyn *collection, ScrDyn *key) {
+  if (collection == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *stored = ni_weak_call(NI_WEAK_GET, collection, key, NULL);
+  /* A native object here is a cell: no native object is stored as itself. */
+  if (stored == NULL || stored->kind != SCR_DYN_OBJ) return stored;
+  ScrDyn *value = scr_dyn_retain(scr_dyn_obj_get(stored, "value", 5));
+  scr_dyn_release(stored);
+  return value;
+}
+
+/* Whether `key` has an entry in `collection` (a WeakSet when `set`),
+ * removing it when `remove`: 1 or 0, or -1 with the exception pending. */
+int scr_ni_weak_test(ScrDyn *collection, bool set, ScrDyn *key, bool remove) {
+  if (collection == NULL) return 0;
+  int op = set ? (remove ? NI_WEAK_SET_DELETE : NI_WEAK_SET_HAS)
+               : (remove ? NI_WEAK_DELETE : NI_WEAK_HAS);
+  ScrDyn *found = ni_weak_call(op, collection, key, NULL);
+  if (found == NULL) return -1;
+  /* A removed entry answers true, or the cell it held. */
+  bool answer = found->kind == SCR_DYN_BOOL && found->v.b;
+  return ni_weak_retire(found) || answer;
+}
+
+/* Enters `key` (with `value`, unless the collection is a WeakSet) into the
+ * island collection *collection, which is made first when the native
+ * collection has none (+1 in *collection). False with the exception
+ * pending. */
+bool scr_ni_weak_set(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value) {
+  if (*collection == NULL) {
+    *collection = ni_weak_call(set ? NI_WEAK_NEW_SET : NI_WEAK_NEW_MAP, NULL, NULL, NULL);
+    if (*collection == NULL) return false;
+  }
+  ScrDyn *stored = NULL;
+  int op = NI_WEAK_ADD;
+  if (!set) {
+    if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL ||
+        value->kind == SCR_DYN_BOOL || value->kind == SCR_DYN_NUM || scr_ni_is_handle(value)) {
+      stored = scr_dyn_retain(value);
+      op = NI_WEAK_SET;
+    } else {
+      stored = scr_dyn_new_obj();
+      scr_dyn_obj_set(stored, "value", 5, scr_dyn_retain(value));
+      op = NI_WEAK_SET_CELL;
+    }
+  }
+  ScrDyn *done = ni_weak_call(op, *collection, key, stored);
+  scr_dyn_release(stored);
+  if (done == NULL) {
+    /* V8 holds every island object weakly but a registered symbol, which it
+     * refuses with the TypeError a native collection has for a value it
+     * cannot hold. The program called its own WeakMap, so the error is the
+     * program's TypeError, not the island realm's with the island's frames. */
+    ScrCaught *caught = scr_exc_take();
+    ScrStr *text = scr_caught_to_string(caught);
+    const char *message = set ? "Invalid value used in weak set" : "Invalid value used as weak map key";
+    size_t len = strlen(message);
+    bool refused = text->len == len + 11 && memcmp(text->data, "TypeError: ", 11) == 0 &&
+                   memcmp(text->data + 11, message, len) == 0;
+    scr_str_release(text);
+    if (refused) scr_throw_error_msg(SCR_ERR_TYPE, message, len);
+    else scr_rethrow(caught);
+    scr_caught_release(caught);
+    return false;
+  }
+  ni_weak_retire(done); /* the cell this entry replaced, if any */
+  return true;
 }
 
 #endif

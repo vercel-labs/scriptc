@@ -218,7 +218,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ]
       : [],
   ),
-  unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
+  unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.workers, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
     (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
@@ -354,7 +354,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // net families (http implies net), so handle-free binaries keep
   // their exact size class.
   unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
-  unit((u) => u.opts.symbol, "scr_symbol.c"),
+  // The worker unit compares the env option against SHARE_ENV, its symbol
+  // (scr_worker_events.c), so a worker program links the symbol unit even
+  // when nothing else in it uses symbols.
+  unit((u) => u.opts.symbol || u.opts.workers, "scr_symbol.c"),
   unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
   unit((u) => u.opts.qs, "scr_qs.c"),
   // The legacy url unit references the regex, querystring and dyn-async
@@ -490,7 +493,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+    "scr_node_island_events.c",
   ),
+  // One process.stdout.write for the program and its islands: only a program
+  // that holds a process output stream as a value can replace the method.
+  unit((u) => u.opts.nodeIsland === true && u.opts.stdioObject === true, "scr_node_island_stdio.c"),
   // A native AbortSignal or AbortController crossing into an island: the
   // signal's twin there follows it through the signal unit's watcher list.
   unit(
@@ -564,6 +571,9 @@ const RUNTIME_DEFINES: readonly {
   // spawnargs); a program that never reads `.error` keeps the default build.
   { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
+  // scr_node_island.c's bootstrap carries the stdio accessor and calls
+  // scr_node_island_stdio.c when Node has started.
+  { define: "SCR_NODE_ISLAND_STDIO", when: (opts) => opts.nodeIsland && opts.stdioObject },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {

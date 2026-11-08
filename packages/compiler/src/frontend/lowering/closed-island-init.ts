@@ -411,6 +411,21 @@ function closedDeclaration(
   )
     return null;
   if (!islandRooted(lowerer, initializer)) return null;
+  // A closed constant is a module the build writes, which Node loads when
+  // the program reaches the declaration. A module of the program that
+  // patches a builtin module (`fs.readFileSync`, say) has run by then, and
+  // Node's loader reads the generated file through the patch: the program
+  // would evaluate what the patch returns, where Node evaluated an
+  // expression in place. Such a program keeps its initializers where they
+  // are written.
+  for (const module of lowerer.nodeIslands!.modules.values())
+    if (module.patchesBuiltin === true) {
+      traceClosed(
+        declaration,
+        `${module.file} patches a builtin module, and Node would read the generated module through the patch`,
+      );
+      return null;
+    }
   if (!sharedWithIsland(lowerer, declaration, initializer)) {
     const type = lowerer.checker.typeToString(lowerer.typeOf(declaration.name));
     traceClosed(declaration, `its value becomes native data of type '${type}'`);

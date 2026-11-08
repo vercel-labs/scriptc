@@ -25385,7 +25385,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -42285,6 +42286,7 @@
           "tests/corpus/5846-events-esm-default-max.ts",
           "tests/corpus/5847-events-cjs-default-max.cjs",
           "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43591,6 +43593,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43642,6 +43645,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43670,6 +43674,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43698,6 +43703,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43726,6 +43732,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43754,6 +43761,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43782,6 +43790,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43810,6 +43819,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43838,6 +43848,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43866,6 +43877,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43894,6 +43906,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43922,6 +43935,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43950,6 +43964,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -43978,6 +43993,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44006,6 +44022,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44034,6 +44051,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44279,6 +44297,7 @@
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
+          "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts"
         ]
       },
@@ -44582,6 +44601,7 @@
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-write-options.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
           "tests/corpus/node24-fs-links-options.cjs",
@@ -45551,7 +45571,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45827,7 +45848,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45907,7 +45929,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45989,7 +46012,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46074,7 +46098,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46131,7 +46156,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46161,7 +46187,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46276,7 +46303,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47487,7 +47515,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47761,7 +47790,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48090,7 +48120,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48120,7 +48151,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48150,7 +48182,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48180,7 +48213,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48210,7 +48244,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48647,7 +48682,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48677,7 +48713,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48782,7 +48819,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48812,7 +48850,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48897,7 +48936,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48927,7 +48967,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48983,7 +49024,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49039,7 +49081,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49069,7 +49112,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49099,7 +49143,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49129,7 +49174,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49244,7 +49290,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49302,7 +49349,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/8427-fs-copyfile-writefile-flags.ts"
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49332,7 +49380,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49362,7 +49411,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49392,7 +49442,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts"
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102608,6 +102659,7 @@
           "tests/corpus/inspect-hidden-properties.cjs",
           "tests/corpus/inspect-max-array-length.ts",
           "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/node24-deep-equality-properties.js",
@@ -103797,6 +103849,7 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/util-format-json-error.ts"
         ]
       },
@@ -103828,6 +103881,7 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/util-format-json-error.ts"
         ]
       },
@@ -104027,6 +104081,7 @@
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-hidden-properties.cjs"
         ]
       },
@@ -115211,7 +115266,9 @@
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
-          "tests/corpus/native-worker-terminate-wait.ts"
+          "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-share-env.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -115839,7 +115896,9 @@
           "tests/corpus/native-worker-messages.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-environment.ts",
-          "tests/corpus/native-worker-roots/main.ts"
+          "tests/corpus/native-worker-roots/main.ts",
+          "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-share-env.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116784,8 +116843,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.worker_threads.SHARE_ENV",
+        "tests": [
+          "tests/corpus/worker-share-env.ts",
+          "tests/corpus/worker-env-option.ts"
+        ]
       },
       "anchorSource": "chapter"
     },

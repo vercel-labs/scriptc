@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
 import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
@@ -126,6 +127,7 @@ async function runBinary(
   for (let attempt = 0; ; attempt++) {
     const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
     if (cpuLevel !== undefined) env["SCRIPTC_CPU_LEVEL"] = cpuLevel;
+    const startedAt = Date.now();
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
       ...(cpuLevel === undefined && Object.keys(extraEnv).length === 0 ? {} : { env }),
@@ -142,7 +144,9 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw spawnFailure(err);
+        // Darwin leaves a crash report for a signal death: it names the
+        // exception and the crashing stack, which the child's error cannot.
+        throw spawnFailure(err, await recentCrashReport(cmd, startedAt));
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }

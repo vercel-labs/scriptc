@@ -465,6 +465,34 @@ ScrStr *scr_str_alloc_raw(size_t len, size_t cap) {
   return s;
 }
 
+/* A symbol event name's registry key (scr_string.h): a ScrStr-shaped
+ * identity key with len == SIZE_MAX and the ScrSym* in its bytes. Emissions
+ * of a symbol-named event make one per call, so it is a plain small
+ * allocation on the ordinary string refcount — the audit's live count
+ * stays exact — and the release path's short-string, index and spare-block
+ * caches all decline it (len far above the cache window, ascii proven). */
+ScrStr *scr_str_symbol_key(ScrSym *sym) {
+  ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + sizeof sym);
+  if (!s) scr_oom();
+  s->rc = 1;
+  s->len = SIZE_MAX;
+  s->cap = 0;
+  s->ascii = 1; /* no char index to purge: the bytes are a pointer */
+#if SCR_STR_HASH_CACHE
+  s->hash = 0;
+#endif
+  memcpy(s->data, &sym, sizeof sym);
+#ifdef SCR_RC_AUDIT
+  scr_live_strings++;
+#endif
+  return s;
+}
+
+/* The symbol unit's table for the emitter's symbol-keyed buckets
+ * (scr_string.h); scr_symbol.c installs it from a constructor. NULL in a
+ * program without symbols — a symbol-keyed bucket cannot exist there. */
+const ScrSymEventOps *scr_sym_event_ops = NULL;
+
 ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
   if (newcap < s->len || newcap > SCR_STR_MAX_CAP) scr_oom();
   scr_short_forget(s);
@@ -1767,6 +1795,14 @@ static size_t scr_sidx_walk_from(const ScrStr *s, ScrSidx *e, size_t cu, size_t 
 
 static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, ScrSidx *e,
                                                              size_t u16, bool *mid) {
+  /* An index at or past a known length (the end of `s.slice(k)`, which is
+   * the length itself) is the byte length. Walking to it would index the
+   * whole string first: the rest of a text cut again and again paid one
+   * pass over that rest for every cut. An unknown length is SIZE_MAX. */
+  if (u16 >= e->u16len) {
+    *mid = false;
+    return s->len;
+  }
   if (scr_sidx_offsets(s, e)) {
     *mid = false;
     if (u16 >= e->offsets->n) return s->len;
@@ -2610,9 +2646,14 @@ static ScrStr *scr_str_slice_units(ScrStr *s, ScrSidx *e,
     ScrStr *result = scr_str_from_span(s->data + from_b, content_len);
     /* Unit boundaries already prove the exact output length. Preserve it
      * instead of decoding a potentially megabyte-sized copy on .length.
-     * Index checkpoints remain lazy and owned by the result's cache slot. */
-    if (content_len >= SCR_SIDX_MIN_BYTES && !result->ascii)
-      scr_sidx(result)->u16len = to - from;
+     * Index checkpoints remain lazy and owned by the result's cache slot;
+     * a result below the index's size keeps its length in the length
+     * table, so the next slice of it (the rest of a text, cut again) does
+     * not count it either. */
+    if (!result->ascii) {
+      if (content_len >= SCR_SIDX_MIN_BYTES) scr_sidx(result)->u16len = to - from;
+      else scr_str_note_utf16_len(result, to - from);
+    }
     return result;
   }
 

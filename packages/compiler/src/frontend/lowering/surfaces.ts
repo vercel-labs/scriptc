@@ -2218,6 +2218,36 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     v8: {
       getHeapStatistics: { fn: "process.memoryUsageTake", params: [], result: VOID },
     },
+    // node:module's compile cache family (lowerCompileCacheCall in
+    // builtins/module-resolution.ts completes a call; these rows carry the
+    // function values). A compiled program loads no JavaScript to cache:
+    // enableCompileCache validates its argument as Node does and answers the
+    // DISABLED status, getCompileCacheDir answers undefined and
+    // flushCompileCache writes nothing. The module's other members keep
+    // their own lowerings (createRequire, isBuiltin, builtinModules,
+    // syncBuiltinESMExports).
+    module: {
+      enableCompileCache: {
+        fn: "module.compileCacheEnable",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+      },
+      getCompileCacheDir: {
+        fn: "module.compileCacheDir",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      flushCompileCache: {
+        fn: "module.compileCacheFlush",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 0,
+      },
+    },
     // node:stream/web re-exports the web stream globals (the same objects);
     // its members lower through the globals' own paths.
     "stream/web": {},
@@ -3214,6 +3244,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "os.constants",
       fns: ["os.constants"],
       note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
+    },
+    // module.constants is a VALUE read too: the frozen null-prototype object
+    // that holds compileCacheStatus.
+    {
+      id: "node-builtin.module.constants",
+      kind: "node-builtin",
+      name: "module.constants",
+      fns: ["module.compileCacheConstants"],
+      note: "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED",
     },
     // fs.constants as a value, and its members beyond the baked access-mode
     // bits: the target libc's null-prototype constants object.

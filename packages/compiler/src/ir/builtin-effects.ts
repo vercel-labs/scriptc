@@ -157,6 +157,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "path.resolveValue",
   "path.parseValue",
   "path.formatValue",
+  // enableCompileCache and flushCompileCache validate their argument
+  // (scr_module_cache.c), and reading the options object can run a getter.
+  "module.compileCacheEnable",
+  "module.compileCacheFlush",
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",

@@ -721,6 +721,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (bi.module === "os" && bi.member === "constants") {
         return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
       }
+      if (bi.module === "module" && bi.member === "constants") {
+        return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
+      }
       if (bi.module === "fs" && bi.member === "constants")
         return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
       // `import { O_RDONLY } from "constants"`: the member of the frozen

@@ -941,6 +941,17 @@ function buildLibFnSignatures() {
     "path.parseValue": { argTypes: [DYN, BOOL], result: DYN },
     "path.formatValue": { argTypes: [DYN, BOOL], result: DYN },
     "path.toNamespacedValue": { argTypes: [DYN, BOOL], result: DYN },
+    /** node:module's compile cache family (scr_module_cache.c). A compiled
+     * program loads no JavaScript, so enableCompileCache validates its
+     * argument as Node does and answers a fresh { status, message } with the
+     * DISABLED status, getCompileCacheDir answers undefined, and
+     * flushCompileCache validates its argument and writes nothing. */
+    "module.compileCacheEnable": { argTypes: [DYN], result: DYN },
+    "module.compileCacheDir": { argTypes: [], result: DYN },
+    "module.compileCacheFlush": { argTypes: [DYN], result: DYN },
+    /** module.constants: the per-thread frozen null-prototype object that
+     * holds compileCacheStatus. */
+    "module.compileCacheConstants": { argTypes: [], result: DYN },
     /** Native realpath with syscall "realpath" on failure. +1 fresh string. */
     "fs.realpathNativeSync": { argTypes: [STRING], result: STRING },
     /** The os.userInfo() fields (uv_os_get_passwd's slices of the passwd

@@ -65,6 +65,7 @@ import {
 import {
   isGenericCallableMemberType,
   isLegacyUrlSymbol,
+  isModuleConstantsType,
   isOsConstantsType,
   isParseArgsDynTypeName,
 } from "../../type-mapper.js";
@@ -305,6 +306,28 @@ function isParseArgsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpress
     }
     return false;
   });
+}
+
+/** A member of module.enableCompileCache()'s result (or of its options
+ * object), which stays the checked-dynamic object the runtime built. */
+function isCompileCacheDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  if (!["status", "message", "directory", "portable"].includes(expr.name.text)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
+  return (
+    !!symbol &&
+    symbol.declarations.some((declaration) => {
+      if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
+      const parent = declaration.parent;
+      if (!ts.isInterfaceDeclaration(parent)) return false;
+      if (!["EnableCompileCacheResult", "EnableCompileCacheOptions"].includes(parent.name.text))
+        return false;
+      for (let node: ts.Node | undefined = parent.parent; node; node = node.parent) {
+        if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name))
+          return node.name.text === "module" || node.name.text === "node:module";
+      }
+      return false;
+    })
+  );
 }
 
 function isStatFsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
@@ -1583,11 +1606,16 @@ export function lowerPropertyAccessExpr(
   // every platform's names): a number member reads as `number |
   // undefined`, like an array element, and a group stays checked.
   const osConstants = isOsConstantsType(lowerer.typeOf(expr.expression), lowerer);
+  // module.constants.compileCacheStatus has the same four numbers
+  // everywhere: a member reads as the number it is declared to be.
+  const moduleConstants = isModuleConstantsType(lowerer.typeOf(expr.expression), lowerer);
   if (
     isParseArgsDynProperty(lowerer, expr) ||
     isStatFsDynProperty(lowerer, expr) ||
+    isCompileCacheDynProperty(lowerer, expr) ||
     segmentDataProperty ||
     osConstants ||
+    moduleConstants ||
     // A record, not the Lowerer itself: the compiler lowers its own source,
     // and a class instance does not width-coerce to this shape.
     isLegacyUrlSymbol(lowerer.checker.getSymbolAtLocation(expr.name), {
@@ -1616,6 +1644,11 @@ export function lowerPropertyAccessExpr(
       if (osConstants) {
         return lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64"
           ? lowerer.coerceToExpected(read, lowerer.withUndefinedArm(F64))
+          : read;
+      }
+      if (moduleConstants) {
+        return lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64"
+          ? lowerer.coerceToExpected(read, F64)
           : read;
       }
       return lowerer.maybeNarrow(read, expr);

@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "typeRoots": [
+      "typings"
+    ]
+  },
+  "include": [
+    "decls",
+    "main.ts"
+  ]
+}

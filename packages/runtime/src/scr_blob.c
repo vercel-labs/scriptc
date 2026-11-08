@@ -552,7 +552,7 @@ static ScrDyn *scr_blob_invoke(void *ptr, ScrDyn *self, const char *method, ScrD
   } else if (strcmp(method, "stream") == 0 || strcmp(method, "textStream") == 0) {
     char message[64];
     snprintf(message, sizeof message, "Blob.%s() is not supported yet", method);
-    scr_throw_error_msg(SCR_ERR_ERROR, message, strlen(message));
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
     return NULL;
   } else {
     char message[256];

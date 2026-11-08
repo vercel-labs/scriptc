@@ -1,7 +1,7 @@
 import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import { canonicalBuiltinModule, isJsSourceFile, isNodeEsmFile, locOf } from "../../program.js";
 import { isRelativeSpecifier } from "../../workspace-registry.js";
@@ -49,6 +49,74 @@ import {
 import { keyedHelperName } from "../stable-names.js";
 import { checkedIterableSpread } from "../checked-iterable-spread.js";
 
+/** node:module's compile cache calls and the runtime entry point of each
+ * (scr_module_cache.c). `value` marks the ones that hand their first
+ * argument to the runtime, which validates it as Node does. */
+const COMPILE_CACHE_CALLS = {
+  enableCompileCache: { fn: "module.compileCacheEnable", value: true, result: DYN },
+  getCompileCacheDir: { fn: "module.compileCacheDir", value: false, result: DYN },
+  flushCompileCache: { fn: "module.compileCacheFlush", value: true, result: DYN },
+} as const;
+type CompileCacheMember = keyof typeof COMPILE_CACHE_CALLS;
+
+/** enableCompileCache(options), getCompileCacheDir() and
+ * flushCompileCache(): a compiled program loads no JavaScript, so there is
+ * no code cache to enable, name or write. Every argument is evaluated in
+ * source order, then the runtime validates the first one as Node does and
+ * answers what Node answers with the cache disabled: { status: DISABLED,
+ * message }, undefined, and undefined. In typed code the answer is checked
+ * into the call's declared type (@types/node's EnableCompileCacheResult,
+ * `string | undefined`); flushCompileCache's is void, which keeps the
+ * runtime's undefined. */
+function lowerCompileCacheCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: CompileCacheMember,
+  loc: SrcLoc,
+): IrExpr {
+  const row = COMPILE_CACHE_CALLS[member];
+  const args = expr.arguments.nodes;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `module.${member} with spread arguments`,
+      expr,
+      "pass the argument itself; the call reads at most one",
+    );
+  }
+  const stmts: IrStmt[] = [];
+  let first: IrExpr | null = null;
+  args.forEach((arg, i) => {
+    const value = lowerer.lowerExpr(arg);
+    const argLoc = locOf(arg);
+    if (i > 0 || !row.value) {
+      stmts.push({ kind: "exprStmt", expr: value, loc: argLoc });
+      return;
+    }
+    const boxed = lowerer.coerceInto(arg, value, DYN);
+    if (args.length === 1) {
+      first = boxed;
+      return;
+    }
+    // Later arguments run before the runtime looks at this one.
+    const slot = lowerer.declareHiddenLocal("%compileCacheArg", DYN);
+    stmts.push({ kind: "varDecl", localId: slot.id, init: boxed, loc: argLoc });
+    first = varRef(slot.id, DYN, argLoc);
+  });
+  const call: IrExpr = {
+    kind: "libCall",
+    fn: row.fn,
+    args: row.value ? [first ?? dynUndefinedExpr(loc)] : [],
+    type: row.result,
+    loc,
+  };
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const result =
+    declared === null || declared.kind === "dyn" || declared.kind === "void"
+      ? call
+      : lowerer.coerceToExpected(call, declared);
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
  * node: spelling; prefix-only entries do not gain a bare alias).
@@ -63,6 +131,9 @@ export function lowerNodeModuleCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (bi.module !== "module") return null;
+  if (Object.hasOwn(COMPILE_CACHE_CALLS, bi.member)) {
+    return lowerCompileCacheCall(lowerer, expr, bi.member as CompileCacheMember, loc);
+  }
   if (bi.member === "syncBuiltinESMExports") {
     if (expr.arguments.nodes.length !== 0 || expr.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(
@@ -441,7 +512,7 @@ function createRequireFenceFunctionValue(
  * so side effects and throws happen there. A spread argument consumes its
  * iterator, which throws for an operand that is not iterable. */
 function createRequireBaseEffectStmts(lowerer: Lowerer, creator: ts.Expression): IrStmt[] {
-  const e = withoutParenthesesAssertionsNonNull(creator);
+  const e = withoutParenthesesTypeWrappers(creator);
   if (!ts.isCallExpression(e) || e.questionDotToken) return [];
   // An optional chain that hoisted this call into a local already ran the
   // base: the guarded read re-lowers the receiver, and must not repeat it.
@@ -512,7 +583,7 @@ export function lowerCreateRequireCall(
     // A createRequire-made require with no build-time base: its use is a
     // run-time require over a base the compiled graph cannot anchor.
     if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
-    const callee = withoutParenthesesAssertionsNonNull(call.expression);
+    const callee = withoutParenthesesTypeWrappers(call.expression);
     // The factory call itself over a run-time base — `createRequire(base)`
     // or a destructured `cr(base)`: Node evaluates the base arguments,
     // then the factory returns the loader. The compiled loader is the
@@ -693,7 +764,7 @@ export function staticString(
   depth = 0,
 ): string | null {
   if (node === undefined || depth > 8) return null;
-  const value = withoutParenthesesAssertionsNonNull(node);
+  const value = withoutParenthesesTypeWrappers(node);
   if (ts.isStringLiteralLike(value)) return value.text;
   if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const left = staticString(lowerer, value.left, depth + 1);
@@ -786,7 +857,7 @@ function staticResolveOptionPaths(
   node: ts.Expression | undefined,
 ): readonly string[] | undefined | null {
   if (node === undefined) return undefined;
-  const value = withoutParenthesesAssertionsNonNull(node);
+  const value = withoutParenthesesTypeWrappers(node);
   if (ts.isIdentifier(value) && value.text === "undefined") return undefined;
   if (!ts.isObjectLiteralExpression(value)) return null;
   let paths: readonly string[] | undefined;
@@ -795,7 +866,7 @@ function staticResolveOptionPaths(
     const name =
       ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : null;
     if (name !== "paths" || paths !== undefined) return null;
-    const init = withoutParenthesesAssertionsNonNull(prop.initializer);
+    const init = withoutParenthesesTypeWrappers(prop.initializer);
     if (!ts.isArrayLiteralExpression(init)) return null;
     const entries: string[] = [];
     for (const item of init.elements.nodes) {

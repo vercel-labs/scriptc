@@ -9,6 +9,9 @@
  */
 #include "scr_runtime.h"
 #include "scr_dyn_methods.h"
+#ifdef SCR_NODE_ISLANDS
+#include "scr_node_island.h"
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -196,7 +199,7 @@ static void dyn_throw_unsupported(const char *proto, const char *method) {
   scr_jb_puts(&b, ".prototype.");
   scr_jb_puts(&b, method);
   scr_jb_puts(&b, "' on a dynamic value is not supported yet");
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+  { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 /* ToIntegerOrInfinity over an optional index argument. Missing and
@@ -363,7 +366,7 @@ static bool dyn_borrow_length(ScrDyn *recv, size_t *out) {
 static bool dyn_borrow_iteration(size_t step) {
   if (step < 1000000) return true;
   static const char msg[] = "array-like iteration over one million entries is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return false;
 }
 
@@ -496,7 +499,7 @@ ScrDyn *scr_dyn_array_proto_call(ScrDyn *recv, ScrStr *method, ScrDyn *args) {
   bool reduce_right = dyn_borrow_is(method, "reduceRight");
   if (!(each || map || filter || some || every || find || find_index || find_last || find_last_index || reduce || reduce_right)) {
     static const char msg[] = "Array.prototype method is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
   }
   if (!dyn_cb_check(argv, argc)) return NULL;
@@ -1251,6 +1254,9 @@ static ScrDyn *scr_dyn_invoke_impl(
     if (scr_event_ref_hooks &&
         scr_event_ref_hooks->invoke(recv, method, args, argc, what, &fast))
       return fast;
+    if (scr_emitter_ref_hooks &&
+        scr_emitter_ref_hooks->invoke(recv, method, args, argc, what, &fast))
+      return fast;
     /* An inherited Date method of an instance of a class declared `extends
      * Date`. */
     ScrDyn *date_method = scr_dyn_date_class_member(recv, method, strlen(method));
@@ -1942,6 +1948,28 @@ static ScrDyn *scr_dyn_invoke_impl(
     if ((mid == DYN_M_finally)) {
       return scr_dyn_promise_then(recv->v.promise, NULL, NULL, argc >= 1 ? args[0] : NULL);
     }
+#ifdef SCR_NODE_ISLANDS
+    /* An island promise is an island object too: a method an island Promise
+     * subclass adds (a request promise's `withResponse()`) is called in
+     * Node with the promise as `this`. Only then, catch and finally are the
+     * program's promise's own. */
+    if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_get != NULL) {
+      ScrDyn *member = NULL;
+      if (scr_ni_dyn_ops->promise_get(recv, method, strlen(method), &member)) {
+        if (member == NULL) return NULL; /* the read threw */
+        if (!scr_dyn_is_callable(member)) {
+          scr_dyn_release(member);
+          dyn_throw_not_fn(what);
+          return NULL;
+        }
+        scr_dyn_this_push_dyn(recv);
+        ScrDyn *result = scr_dyn_call(member, args, argc, what);
+        scr_dyn_this_pop();
+        scr_dyn_release(member);
+        return result;
+      }
+    }
+#endif
     dyn_throw_not_fn(what);
     return NULL;
 #endif

@@ -150,6 +150,8 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** process.features as a value links scr_process_features.c. */
+  processFeatures?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
@@ -223,6 +225,9 @@ export interface CcOptions {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic: compiles
+   * scr_deferred_fence.c, its stderr reporter. */
+  deferredFence?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
@@ -250,11 +255,15 @@ export interface CcOptions {
    * %main emits. The fact ORs into jsObjectModel, so the unit's definition
    * of the JavaScript object model build is already on. */
   mutableBuffers?: boolean;
-  /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
-  stdioExtended?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
    * (scr_fs_flags.c and that build of scr_fs_cp.c). */
   fsFlags?: boolean;
+  /** fs.existsSync over a path value that may not be a string: compiles
+   * scr_fs_exists_dyn.c. */
+  fsExistsValue?: boolean;
+  /** node:module's enableCompileCache, getCompileCacheDir, flushCompileCache
+   * and constants: compiles scr_module_cache.c. */
+  moduleCompileCache?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -262,17 +271,25 @@ export interface CcOptions {
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
-   * stdin.isRaw and server.off. */
+   * stdin.isRaw and server.off (the dyn-async and net units). */
   processExtras?: boolean;
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
-  /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
-   * (the write method as a value, its replacement, run-time-typed chunks). */
-  stdioWriteSlot?: boolean;
+  /** The program holds a process output stream as a value. With
+   * `nodeIsland` it compiles scr_node_island_stdio.c and defines
+   * SCR_NODE_ISLAND_STDIO: the island's process.stdout.write and
+   * process.stderr.write are the program's write slots. */
+  stdioObject?: boolean;
+  /** The program pipes or unpipes a stream: compiles
+   * scr_stream_pipe_events.c (Node's pipe lifecycle). */
+  streamPipeEvents?: boolean;
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;
+  /** SCR_CHILD_STREAM_FLOW: a child's output streams keep Node's flowing
+   * state (pause(), resume(), isPaused(), readableFlowing). */
+  childStreamFlow?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;

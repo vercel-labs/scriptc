@@ -95,9 +95,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   streamDyn: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
+  processFeatures: boolean;
   childOptionExt: boolean;
   spawnCaptureBytes: boolean;
   childErrorFields: boolean;
+  childStreamFlow: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   conversionTrace: boolean;
@@ -128,6 +130,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A computed read of the global object, or `… in globalThis`
    * (scr_global_host_absent.c). */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic
+   * (scr_deferred_fence.c). */
+  deferredFence?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -145,13 +150,15 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
    * JavaScript source resizes, grows or detaches an ArrayBuffer. */
   mutableBuffers?: boolean;
-  stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
-  /** The program reaches the process output streams' write slot: the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot: boolean;
+  /** The program holds a process output stream as a value: with Node
+   * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c. */
+  stdioObject: boolean;
+  /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
+  streamPipeEvents: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -369,9 +376,11 @@ export function effectiveRuntimeFeatures(
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
+    processFeatures: features.processFeatures === true,
     childOptionExt: features.childOptionExt === true,
     spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,
+    childStreamFlow: features.childStreamFlow === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     conversionTrace: features.conversionTrace === true,
@@ -396,6 +405,7 @@ export function effectiveRuntimeFeatures(
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
+    deferredFence: features.deferredFence === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
@@ -404,9 +414,9 @@ export function effectiveRuntimeFeatures(
     jsObjectModel,
     mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
-    stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
-    stdioWriteSlot: features.stdioWriteSlot === true,
+    stdioObject: features.stdioObject === true,
+    streamPipeEvents: features.streamPipeEvents === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,

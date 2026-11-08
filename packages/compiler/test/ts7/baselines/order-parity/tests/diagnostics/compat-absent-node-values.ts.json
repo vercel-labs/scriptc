@@ -1,0 +1,71 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/compat-absent-node-values.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property 'setDefaultSnapshotSerializers' does not exist on type '(...args: unknown[]) => unknown'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 426,
+    "end": 455
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'setResolveSnapshotPath' does not exist on type '(...args: unknown[]) => unknown'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 470,
+    "end": 492
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'setResolveSnapshotPath' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 624,
+    "end": 634
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'mainModule' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 645,
+    "end": 657
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 706,
+    "end": 718
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'abort' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 749,
+    "end": 754
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'abort' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  }
+ ]
+}

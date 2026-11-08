@@ -2,7 +2,7 @@ import { primitiveConstructorOr } from "./lower-exprs.js";
 import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
-import { classKeyHash } from "../../ir/class-key-index.js";
+import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
 import { constructedValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
@@ -40,7 +40,11 @@ import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { isSloppyAt } from "./frozen-records.js";
-import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
+import {
+  erasedGenericInstance,
+  implicitDefaultInstance,
+  type GenericFnInfo,
+} from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
@@ -93,7 +97,12 @@ import {
   lowerDynamicEmitterOn,
 } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
-import { STREAM_OPERATORS, operatorSignalOptions, reduceSignalSetup } from "./lower-stream.js";
+import {
+  STREAM_OPERATORS,
+  STREAM_STATE_GETTERS,
+  operatorSignalOptions,
+  reduceSignalSetup,
+} from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
 /** The receiver local of a call rewritten for a getter-only name. */
@@ -162,7 +171,25 @@ const STREAM_NUM_PROPERTIES = new Set([
   "writableCorked",
 ]);
 const streamProperty = (name: string): boolean =>
-  STREAM_BOOL_PROPERTIES.has(name) || STREAM_NUM_PROPERTIES.has(name);
+  STREAM_BOOL_PROPERTIES.has(name) ||
+  STREAM_NUM_PROPERTIES.has(name) ||
+  STREAM_STATE_GETTERS.has(name);
+/** Whether a stream class of these sides has the stream property in Node
+ * (`name in stream`): the readable ones on Readable and the classes that
+ * extend it, the writable ones on Writable and the Duplex kinds,
+ * writableAborted on Writable alone (Duplex copies a fixed list of
+ * Writable's getters), allowHalfOpen on the Duplex kinds, and destroyed
+ * and closed everywhere. */
+const streamClassHasProperty = (sides: "r" | "w" | "rw", name: string): boolean =>
+  name === "writableAborted"
+    ? sides === "w"
+    : name === "allowHalfOpen"
+      ? sides === "rw"
+      : name.startsWith("readable")
+        ? sides !== "w"
+        : name.startsWith("writable")
+          ? sides !== "r"
+          : true;
 
 /** `(instance) => string`, the string a class's inherited
  * Symbol.toStringTag getter answers, which the runtime reads for
@@ -325,6 +352,7 @@ const NUMBER_HINT_CALLS = new Set<IrLibFn>([
   "dyn.numberConstructor",
   "dyn.toNumberCoerce",
   "dyn.toNumeric",
+  "dyn.negate",
 ]);
 const STRING_HINT_CALLS = new Set<IrLibFn>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
 /** Operations whose second operand is a property key, converted with the
@@ -557,19 +585,48 @@ function branchKind(cond: IrExpr, param: string): "classCapsule" | "funcKind" | 
  * chain it had. */
 const MIN_CLASS_DISPATCH_CASES = 64;
 
+/** The fewest distinct classes a run of class-value branches dispatches on
+ * (`dyn.classIs` tests: `x instanceof C`, `new C()` and a static member of
+ * an untyped constructor `C`). The receiver of such a table is most often
+ * not a compiled class at all (`value instanceof RegExp` in JavaScript that
+ * takes the constructor from a variable), and then every branch of the chain
+ * is a call that fails: the index answers "no class" from the value's tag
+ * and skips them all, so it pays from the first few classes on. Measured
+ * over 1.2 million tests of class instances against class values taken in
+ * rotation from a list of all the program's classes: 229 ms to 197 ms at 8
+ * classes, 251 to 232 at 16, 381 to 229 at 64, 1,193 to 282 at 300 and
+ * 3,804 to 452 at 1,000; a table of 6 keeps its chain and its time. */
+const MIN_CLASS_VALUE_DISPATCH_CASES = 8;
+
+/** The exact key test of one class branch: the receiver local, the key, and
+ * the builtin that folds a receiver of that kind to the key's switch case
+ * (`dyn.classHash` for a capsule tested with `dyn.typedRefIs`,
+ * `dyn.classValueHash` for a class value tested with `dyn.classIs`). */
+interface ClassKeyTest {
+  value: IrExpr;
+  receiver: string;
+  key: string;
+  index: "dyn.classHash" | "dyn.classValueHash";
+}
+
+/** A class branch as a run holds it. `returns`: the branch's last statement
+ * returns, so the class it selects leaves the helper. A branch that can
+ * complete (a keyed read's symbol-key prelude: `if (class) if (symbol key)
+ * ...`) continues into the statements after the run, as the unselected
+ * branches do. */
+interface ClassBranch extends ClassKeyTest {
+  returns: boolean;
+}
+
 /** A class table's branch whose condition tests one class's type key on a
- * receiver local, or null for a statement of another form. A branch
- * qualifies when it returns: a run is a dispatch, so the branch the switch
- * selects leaves the helper rather than continuing into the statements after
- * the run, which only the unselected branches would reach. */
-function classBranch(stmt: IrStmt): { value: IrExpr; receiver: string; key: string } | null {
+ * receiver local, or null for a statement of another form. */
+function classBranch(stmt: IrStmt): ClassBranch | null {
   if (stmt.kind !== "if" || stmt.else_ !== null) return null;
   const test = classKeyTest(stmt.cond);
   if (test === null) return null;
-  if (stmt.then[stmt.then.length - 1]?.kind !== "return") return null;
   if (assignsLocal(stmt.then, test.receiver)) return null;
   if (leavesSwitch(stmt.then)) return null;
-  return test;
+  return { ...test, returns: stmt.then[stmt.then.length - 1]?.kind === "return" };
 }
 
 /** Whether the branch would `break` the switch its body moves into: an
@@ -619,15 +676,24 @@ function leavesSwitch(statements: readonly IrStmt[]): boolean {
  * or of the branch-conditional form `test ? instanceOf(v, C) : false`. The
  * key must be ASCII: the dispatch indexes on the key's length and last four
  * bytes, which for ASCII are the key text's own. */
-function classKeyTest(cond: IrExpr): { value: IrExpr; receiver: string; key: string } | null {
+function classKeyTest(cond: IrExpr): ClassKeyTest | null {
   if (cond.kind === "ternary" && cond.else_.kind === "boolLit" && cond.else_.value === false)
     return classKeyTest(cond.cond);
-  if (cond.kind !== "libCall" || cond.fn !== "dyn.typedRefIs" || cond.args.length !== 2)
-    return null;
+  if (cond.kind !== "libCall" || cond.args.length !== 2) return null;
+  // A capsule's key (an instance of the class) or a class value's key (the
+  // constructor itself): the two kinds of table never share a run.
+  const index: ClassKeyTest["index"] | null =
+    cond.fn === "dyn.typedRefIs"
+      ? "dyn.classHash"
+      : cond.fn === "dyn.classIs"
+        ? "dyn.classValueHash"
+        : null;
+  if (index === null) return null;
   const [value, key] = cond.args;
   if (value?.kind !== "varRef" || key?.kind !== "strLit") return null;
-  if (!key.value.startsWith("object:") || !/^[\x20-\x7e]*$/.test(key.value)) return null;
-  return { value, receiver: value.localId, key: key.value };
+  const prefix = index === "dyn.classHash" ? "object:" : "classval:";
+  if (!key.value.startsWith(prefix) || !/^[\x20-\x7e]*$/.test(key.value)) return null;
+  return { value, receiver: value.localId, key: key.value, index };
 }
 
 /** Whether the branch writes its receiver local, which would make the
@@ -657,24 +723,27 @@ function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
   if (!body.some(isClassDispatch)) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassDispatch(stmt))
-      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
-    else branches.push(stmt);
+    if (isClassDispatch(stmt)) {
+      // A case of branches that can complete ends with a `break`.
+      for (const { body: caseBody } of stmt.cases)
+        for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
+    } else branches.push(stmt);
   }
   return branches;
 }
 
 /** The switch indexBranchRuns builds over a table's branches. */
 function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
-  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
+  return (
+    stmt.kind === "switch" &&
+    stmt.disc.kind === "libCall" &&
+    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+  );
 }
 
 /** One class branch of a run: the receiver local it tests, the key it tests
  * for, and the statement itself. */
-interface ClassRunBranch {
-  value: IrExpr;
-  receiver: string;
-  key: string;
+interface ClassRunBranch extends ClassBranch {
   stmt: IrStmt;
 }
 
@@ -698,7 +767,18 @@ const CLASS_DISPATCH_HEAD = 2;
  * statements after the run exactly as the chain would. The run's first
  * CLASS_DISPATCH_HEAD branches stay in the chain ahead of the switch: they
  * run in order before it, and a class they select returns as it always did,
- * so the switch only sees the receiver once those tests have failed. */
+ * so the switch only sees the receiver once those tests have failed.
+ *
+ * Two kinds of run have no such head and are indexed whole, and each of
+ * their cases ends with a `break`: no later case can hold a branch of the
+ * same class (equal keys share a case), so the guards the chain would
+ * still walk are all false. A run of class-value branches (`dyn.classIs`)
+ * is reached mostly by values that are no compiled class: the index sends
+ * them past every branch at once, or, when such a value's key folds to an
+ * occupied slot, past the table after that slot's guards. A run of
+ * branches that can complete is one whose selected class continues after
+ * the run. Runs of returning capsule branches keep the fallthrough they
+ * were built with. */
 function indexBranchRuns(body: IrStmt[]): IrStmt[] {
   let rebuilt: IrStmt[] | null = null;
   let i = 0;
@@ -712,18 +792,24 @@ function indexBranchRuns(body: IrStmt[]): IrStmt[] {
     }
     const run: ClassRunBranch[] = [];
     let branch: ReturnType<typeof classBranch> = first;
-    while (branch !== null && branch.receiver === first.receiver) {
-      run.push({ value: branch.value, receiver: branch.receiver, key: branch.key, stmt: body[i]! });
+    while (
+      branch !== null &&
+      branch.receiver === first.receiver &&
+      branch.index === first.index &&
+      branch.returns === first.returns
+    ) {
+      run.push({ ...branch, stmt: body[i]! });
       i++;
       branch = i < body.length ? classBranch(body[i]!) : null;
     }
     const keys = [...new Set(run.map((branch) => branch.key))];
-    if (keys.length < MIN_CLASS_DISPATCH_CASES) {
+    const values = first.index === "dyn.classValueHash";
+    if (keys.length < (values ? MIN_CLASS_VALUE_DISPATCH_CASES : MIN_CLASS_DISPATCH_CASES)) {
       if (rebuilt) for (const branch of run) rebuilt.push(branch.stmt);
       continue;
     }
     rebuilt ??= body.slice(0, start);
-    const head = Math.min(CLASS_DISPATCH_HEAD, run.length - 1);
+    const head = values || !first.returns ? 0 : Math.min(CLASS_DISPATCH_HEAD, run.length - 1);
     for (const branch of run.slice(0, head)) rebuilt.push(branch.stmt);
     rebuilt.push(classDispatch(run.slice(head)));
   }
@@ -731,27 +817,43 @@ function indexBranchRuns(body: IrStmt[]): IrStmt[] {
 }
 
 /** The switch that selects one of the run's branches, keyed by the class
- * hash the emitted code computes from the receiver's key. */
+ * hash the emitted code computes from the receiver's key. A table of class
+ * values is keyed by a slot instead: the hash's high bits in a range about
+ * twice the table's size, which makes the switch a jump table, so a class
+ * value reaches its branch in one indexed jump however many classes the
+ * table holds. */
 function classDispatch(run: readonly ClassRunBranch[]): IrStmt {
   const first = run[0]!;
   const loc = first.stmt.loc;
+  const values = first.index === "dyn.classValueHash";
+  const bits = values ? classValueSlotBits(new Set(run.map((branch) => branch.key)).size) : 0;
   const branches = new Map<number, IrStmt[]>();
   for (const branch of run) {
-    const hash = classKeyHash(branch.key);
+    const hash = values ? classValueSlot(branch.key, bits) : classKeyHash(branch.key);
     const ofHash = branches.get(hash);
     if (ofHash) ofHash.push(branch.stmt);
     else branches.set(hash, [branch.stmt]);
   }
+  const receiver = varRef(first.receiver, first.value.type, loc);
   return {
     kind: "switch",
     disc: {
       kind: "libCall",
-      fn: "dyn.classHash",
-      args: [varRef(first.receiver, first.value.type, loc)],
+      fn: first.index,
+      args: values ? [receiver, numLit(bits, loc)] : [receiver],
       type: F64,
       loc,
     },
-    cases: [...branches].map(([hash, body]) => ({ test: numLit(hash, loc), body })),
+    // A case of returning capsule branches falls through to the cases
+    // after it, as those tables were built; every other case ends with a
+    // `break`. No later case holds a branch of the same class (equal keys
+    // share a case), so a value the case's own guards reject, such as a
+    // builtin constructor whose key folds to an occupied slot, is done with
+    // the table there instead of walking the guards behind it.
+    cases: [...branches].map(([hash, body]) => ({
+      test: numLit(hash, loc),
+      body: first.returns && !values ? body : [...body, { kind: "break", loc }],
+    })),
     loc,
   };
 }
@@ -4205,6 +4307,20 @@ export class ClassDynamicDispatch {
                 loc,
               },
             ];
+          if (info.builtinStream !== undefined && streamProperty(name) && dispatch.probe)
+            return [
+              {
+                kind: "return",
+                value: {
+                  kind: "boolLit",
+                  value:
+                    dispatch.probe === "in" && streamClassHasProperty(info.builtinStream, name),
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ];
           if (
             ((info.builtinStream !== undefined && streamProperty(name)) ||
               eventTargetInheritedMember(info, name) ||
@@ -4454,7 +4570,12 @@ export class ClassDynamicDispatch {
         const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
         if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
         if (info.builtinStream)
-          for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
+          for (const name of [
+            ...STREAM_BOOL_PROPERTIES,
+            ...STREAM_NUM_PROPERTIES,
+            ...STREAM_STATE_GETTERS.keys(),
+          ])
+            names.add(name);
         const inherited = eventTargetApiMembers(info);
         if (inherited) for (const name of inherited) names.add(name);
         if (dateRootOf(info))
@@ -6598,6 +6719,23 @@ export class ClassDynamicDispatch {
             loc,
           },
         ];
+      const getter = STREAM_STATE_GETTERS.get(name);
+      // The runtime answers by the stream's class: undefined where Node's
+      // prototype does not define the getter.
+      if (getter !== undefined)
+        return [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "stream.stateDyn",
+              args: [receiver, numLit(getter, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
       return [
         {
           kind: "return",
@@ -7116,10 +7254,11 @@ export class ClassDynamicDispatch {
       loc,
     });
     // Node indexes _events with the argument itself: an omitted name is
-    // the key "undefined".
+    // the key "undefined", and a symbol argument keys by its identity (the
+    // checked-dynamic name conversion, not a string coercion).
     const eventName = (): IrExpr =>
       incoming.length
-        ? lowerer.coerceToExpected(incoming[0]!, STRING)
+        ? { kind: "libCall", fn: "emitter.nameDyn", args: [incoming[0]!], type: STRING, loc }
         : { kind: "strLit", value: "undefined", type: STRING, loc };
     switch (method) {
       case "listenerCount":
@@ -7129,7 +7268,7 @@ export class ClassDynamicDispatch {
             : call("emitter.count", [eventName()], F64),
         );
       case "eventNames":
-        return ret(call("emitter.names", [], { kind: "array", elem: STRING }));
+        return ret(call("emitter.names", [], DYN));
       case "removeAllListeners":
         return ret(
           incoming.length
@@ -7200,9 +7339,16 @@ export class ClassDynamicDispatch {
       const ret = (value: IrExpr): IrStmt[] => [
         { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
       ];
+      // The event name keys Node's table: a symbol by its identity, any
+      // other value by its property key. A stream keeps the string-only
+      // coercion (its fixed events carry typed payload ABIs).
+      const eventKey = (value: IrExpr): IrExpr =>
+        streamRooted(info)
+          ? lowerer.coerceToExpected(value, STRING)
+          : { kind: "libCall", fn: "emitter.nameDyn", args: [value], type: STRING, loc };
       if (method === "emit") {
         if (!incoming.length) return fence();
-        const event = lowerer.coerceToExpected(incoming[0]!, STRING);
+        const event = eventKey(incoming[0]!);
         const bridged = streamRooted(info)
           ? null
           : lowerDynamicEmitterEmit(lowerer, receiver, event, incoming.slice(1), loc);
@@ -7218,7 +7364,7 @@ export class ClassDynamicDispatch {
       }
       if (registering || removing) {
         if (incoming.length < 2) return fence();
-        const event = lowerer.coerceToExpected(incoming[0]!, STRING);
+        const event = eventKey(incoming[0]!);
         const cb = incoming[1]!;
         const bridged =
           registering && !streamRooted(info)
@@ -7440,6 +7586,11 @@ export class ClassDynamicDispatch {
       !generic.info.implicitParams &&
       generic.info.typeParams.length > 0 &&
       generic.declarer.decl &&
+      // An async generator has no checked-dynamic form: one that leaves
+      // through an untyped value can neither be iterated there nor checked
+      // back into its type. A generic async generator method called by
+      // name keeps the fence instead of answering such a value.
+      !isAsyncGenerator(generic.info.decl) &&
       !lowerer.overrideBelow(info, method)
     ) {
       // A generic method called by name runs its erased instance; a
@@ -7462,7 +7613,13 @@ export class ClassDynamicDispatch {
         collect(info);
         for (const sub of subclasses) {
           const own = sub.genericMethods!.get(method)!;
-          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          if (
+            !sub.decl ||
+            own.implicitParams ||
+            own.typeParams.length === 0 ||
+            isAsyncGenerator(own.decl)
+          )
+            return fence();
           const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
           if (
             subInstance.params.length !== params.length ||
@@ -7629,4 +7786,14 @@ function hasRuntimeHeritage(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base)
     if (current.callableBase) return true;
   return false;
+}
+
+/** `async *f()`: a declaration whose calls answer an async generator. */
+function isAsyncGenerator(decl: GenericFnInfo["decl"]): boolean {
+  return (
+    !ts.isArrowFunction(decl) &&
+    !ts.isAccessor(decl) &&
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true
+  );
 }

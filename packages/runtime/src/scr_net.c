@@ -39,6 +39,8 @@
 #endif
 #endif
 
+#include "scr_system_error_event.h"
+
 static void scr_net_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();
@@ -436,94 +438,10 @@ void scr_net_fire_err_this(ScrNetLs *l, ScrStr *msg, void *self, ScrDynHandleTag
 
 void scr_net_fire_err(ScrNetLs *l, ScrStr *msg) { scr_net_fire_err_this(l, msg, NULL, 0); }
 
-/* The libuv errno of an error code name (Node's err.errno), 0 for a name
- * outside libuv's map. */
-static double scr_net_uv_errno(const char *code, size_t len) {
-#define SCR_NET_UV_ERRNO(name, text)                                          \
-  if (len == sizeof #name - 1 && memcmp(code, #name, len) == 0) return SCR_NODE_UV__##name;
-  SCR_NODE_UV_ERRNO_MAP(SCR_NET_UV_ERRNO)
-#undef SCR_NET_UV_ERRNO
-  return 0;
-}
-
-/* The libuv message of an error code name, or NULL. */
-static const char *scr_net_uv_text(const char *code, size_t len) {
-#define SCR_NET_UV_TEXT(name, text)                                           \
-  if (len == sizeof #name - 1 && memcmp(code, #name, len) == 0) return text;
-  SCR_NODE_UV_ERRNO_MAP(SCR_NET_UV_TEXT)
-#undef SCR_NET_UV_TEXT
-  return NULL;
-}
-
-/* Node's system error for a net failure message this unit writes:
- * "<syscall> <CODE>[ <detail>]" (errnoException, exceptionWithHostPort) or
- * "<syscall> <CODE>: <libuv message>[ <detail>]" (uvExceptionWithHostPort).
- * The error carries the code, the libuv errno and the syscall; for
- * connect, listen and bind, the detail is the address, as "<address>:<port>"
- * with a port, and a listen on a pipe path has port -1. NULL for any other
- * message; +1 otherwise. */
-static ScrError *scr_net_system_error(ScrStr *msg) {
-  const char *data = msg->data;
-  const char *end = data + msg->len;
-  const char *space = memchr(data, ' ', msg->len);
-  if (space == NULL || space == data) return NULL;
-  size_t syscall_len = (size_t)(space - data);
-  const char *code = space + 1;
-  const char *code_end = code;
-  while (code_end < end && *code_end != ' ' && *code_end != ':') code_end++;
-  size_t code_len = (size_t)(code_end - code);
-  if (code_len < 2 || code[0] != 'E') return NULL;
-  for (size_t i = 0; i < code_len; i++) {
-    char c = code[i];
-    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return NULL;
-  }
-  double uv = scr_net_uv_errno(code, code_len);
-  if (uv == 0) return NULL;
-  const char *detail = code_end;
-  if (detail < end && *detail == ':') {
-    /* the libuv form: skip ": <message>" */
-    const char *text = scr_net_uv_text(code, code_len);
-    size_t text_len = text != NULL ? strlen(text) : 0;
-    if (text == NULL || (size_t)(end - detail) < 2 + text_len ||
-        memcmp(detail + 2, text, text_len) != 0)
-      return NULL;
-    detail += 2 + text_len;
-  }
-  if (detail < end && *detail == ' ') detail++;
-  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
-  char code_buf[32];
-  size_t n = code_len < sizeof code_buf - 1 ? code_len : sizeof code_buf - 1;
-  memcpy(code_buf, code, n);
-  code_buf[n] = '\0';
-  scr_error_set_code(e, code_buf);
-  e->system_errno = uv;
-  e->system_call = scr_str_new(data, syscall_len);
-  bool with_address = (syscall_len == 7 && memcmp(data, "connect", 7) == 0) ||
-                      (syscall_len == 6 && memcmp(data, "listen", 6) == 0) ||
-                      (syscall_len == 4 && memcmp(data, "bind", 4) == 0);
-  if (with_address && detail < end) {
-    const char *colon = NULL;
-    for (const char *q = detail; q < end; q++)
-      if (*q == ':') colon = q;
-    bool digits = colon != NULL && colon + 1 < end;
-    for (const char *q = colon != NULL ? colon + 1 : end; q < end; q++)
-      if (*q < '0' || *q > '9') digits = false;
-    const char *address_end = digits ? colon : end;
-    ScrStr *address = scr_str_new(detail, (size_t)(address_end - detail));
-    scr_error_set_prop(e, "address", 7, scr_dyn_new_str(address));
-    /* a pipe listen: Node's listenInCluster passes port -1 with the path */
-    bool pipe_listen = false;
-    if (!digits && syscall_len == 6) {
-      unsigned char ip[16];
-      pipe_listen = inet_pton(AF_INET, address->data, ip) != 1 &&
-                    inet_pton(AF_INET6, address->data, ip) != 1;
-    }
-    scr_str_release(address);
-    if (digits) scr_error_set_prop(e, "port", 4, scr_dyn_new_num(strtod(colon + 1, NULL)));
-    else if (pipe_listen) scr_error_set_prop(e, "port", 4, scr_dyn_new_num(-1));
-  }
-  return e;
-}
+/* Node's system error for a net failure message this unit writes
+ * (scr_system_error_event.h); NULL for any other message, +1 otherwise.
+ * The http unit builds its client errors through it too. */
+ScrError *scr_net_system_error(ScrStr *msg) { return scr_system_error_from_message(msg); }
 
 /* ── the handles ─────────────────────────────────────────────────────── */
 
@@ -726,6 +644,13 @@ struct ScrNetSocket {
    * receives it on the next tick. */
   const char *write_err_code, *write_err_msg;
   bool finish_pending; /* wr_done seen: fire finish_ls at the next sweep */
+  /* The socket closed before it connected (destroy() while connecting,
+   * or a connect that failed): its queued write callbacks receive
+   * ERR_SOCKET_CLOSED_BEFORE_CONNECTION. */
+  bool closed_before_connect;
+  /* a connection an HTTP server accepted: its setEncoding throws
+   * ERR_HTTP_SOCKET_ENCODING for good. */
+  bool http_server_conn;
   ScrNetLs ready_ls;   /* 'ready': right after the client's 'connect' listeners */
   size_t bytes_read;   /* socket.bytesRead: every byte delivered from the peer */
   /* a server whose 'connection' waits for this socket's handshake — the
@@ -1880,6 +1805,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
   socklen_t len = sizeof err;
   if (getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0) err = errno;
   s->connecting = false;
+  if (err == 0) s->closed_before_connect = false; /* a socket that connects again after a failure */
   if (err != 0 && s->dial_i < s->dial_n) {
     /* a caller-lookup dial with addresses left: record the failure
      * (last-wins, surfaced only on exhaustion) and retry QUIETLY — no
@@ -1896,6 +1822,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
     return;
   }
   if (err != 0) {
+    s->closed_before_connect = true;
     char msg[128];
     snprintf(msg, sizeof msg, "connect %s %s:%d", scr_net_errname(err), s->peer_ip,
              s->peer_port);
@@ -2147,6 +2074,22 @@ ScrNetServer *scr_net_create_server(ScrClosure *handler /*moves, nullable*/, Scr
   return s;
 }
 
+/* listen() on a server that is listening: Node throws
+ * ERR_SERVER_ALREADY_LISTEN at the call. Compiled code does not check the
+ * listen entry points for an exception (a correct program calls listen
+ * once per server, and a check would put an exception branch into every
+ * program that listens), so the error is reported here as the uncaught
+ * error it is in a program that does not catch it, and the process exits
+ * with status 1, as the unhandled 'error' above does. */
+static SCR_COLD void scr_net_listen_again(void) {
+  scr_stdout_settle();
+  fflush(stdout);
+  fputs("Uncaught Error [ERR_SERVER_ALREADY_LISTEN]: Listen method has been called more than once "
+        "without closing.\n",
+        stderr);
+  _Exit(1);
+}
+
 /* listen(port): bind + listen NOW (Node fails synchronously into an async
  * 'error'); success defers the listen callback ('listening') to the next
  * dispatch pass, Node's next-tick emit. Binds like Node's host-less
@@ -2155,7 +2098,8 @@ static void scr_net_listen_any(ScrNetServer *s, double port, bool reuse_port,
                                ScrClosure *cb /*moves, nullable*/) {
   scr_net_server_capture_listen(s);
   if (cb) scr_net_ls_add(&s->listening_cbs, cb, NULL, true);
-  if (s->listening || s->close_emitted) return;
+  if (s->listening) scr_net_listen_again();
+  if (s->close_emitted) return;
   if (!scr_net_poller_init()) {
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
@@ -2238,7 +2182,8 @@ static void scr_net_listen_opts_impl(ScrNetServer *s, double port, ScrStr *host 
     return;
   }
   if (cb) scr_net_ls_add(&s->listening_cbs, cb, NULL, true);
-  if (s->listening || s->close_emitted) return;
+  if (s->listening) scr_net_listen_again();
+  if (s->close_emitted) return;
   if (!scr_net_poller_init()) {
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
@@ -2445,7 +2390,11 @@ ScrStr *scr_net_server_addr_family(ScrNetServer *s) {
  * recurse). */
 void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/) {
   if (s->close_emitted) {
-    scr_closure_release(cb);
+    /* A closed server: Node runs the callback at the 'close' it emits
+     * again, with ERR_SERVER_NOT_RUNNING (the callback's adapter builds
+     * it: scr_net_server_close_dyn). The settled server has dropped its
+     * listeners, so only the callback runs. */
+    if (cb) scr_next_tick(cb);
     return;
   }
   scr_als_ctx_release(s->close_ctx);
@@ -3035,6 +2984,7 @@ static void scr_net_sock_dial_peer(ScrNetSocket *s) {
     s->pending_err = scr_str_new(msg, strlen(msg));
     s->had_error = true;
     s->connecting = false;
+    s->closed_before_connect = true;
     scr_net_sock_close_fd(s);
   }
 }
@@ -3427,7 +3377,8 @@ void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
     return;
   }
   if (cb) scr_net_ls_add(&s->listening_cbs, cb, NULL, true);
-  if (s->listening || s->close_emitted) return;
+  if (s->listening) scr_net_listen_again();
+  if (s->close_emitted) return;
   if (!scr_net_poller_init()) {
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
@@ -5489,6 +5440,7 @@ void scr_net_sock_destroy(ScrNetSocket *s) {
     return;
   }
   if (s->fd < 0 && !s->in_registry) return;
+  if (s->connecting) s->closed_before_connect = true;
   s->rd_eof = true;
   s->wr_done = true;
   scr_net_sock_close_fd(s); /* 'close' fires at the next sweep */
@@ -5604,6 +5556,14 @@ ScrNetServer *scr_net_sock_server(ScrNetSocket *s) { return s->server; }
  * name throws ERR_UNKNOWN_ENCODING. 'data' then delivers the decoded
  * strings, and a partial sequence held at EOF is the last 'data'. */
 void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/) {
+  /* A connection of an HTTP server feeds its parser: Node replaces the
+   * socket's setEncoding with a function that throws, and leaves it in
+   * place when the connection is upgraded. */
+  if (s->http_server_conn) {
+    static const char msg[] = "Changing the socket encoding is not allowed per RFC7230 Section 3.";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_HTTP_SOCKET_ENCODING");
+    return;
+  }
   /* Node's normalizeEncoding answers utf8 for the empty name */
   ScrStr *canonical = enc->len == 0 ? scr_str_new("utf8", 4) : scr_bytes_normalize_encoding(enc);
   if (canonical == NULL) return; /* ERR_UNKNOWN_ENCODING pending */
@@ -5750,6 +5710,7 @@ void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
 
 void scr_net_sock_set_native_idle_checker(ScrNetSocket *s, bool (*fn)(void *)) {
   s->native_idle = fn;
+  s->http_server_conn = true; /* stays set after an upgrade, as Node's setEncoding override does */
 }
 
 /* The upgrade handover: clear the native reader's FN POINTERS but keep
@@ -6190,7 +6151,7 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     scr_als_dispatch_leave(prev);
     if (scr_exc_pending()) return false;
   }
-  if (sock->wcb_ls.n > 0 && (sock->wlen == sock->whead || sock->fd < 0)) {
+  if (!sock->closed_before_connect && sock->wcb_ls.n > 0 && (sock->wlen == sock->whead || sock->fd < 0)) {
     /* write(chunk, cb): the buffer drained (this surface's flush
      * moment) — the callbacks fire off the sweep, never the writing
      * stack. A dead socket fires them too (the buffered bytes are
@@ -6241,6 +6202,21 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     scr_als_dispatch_leave(prev);
     sock->pending_code = NULL;
     scr_str_release(msg);
+    if (scr_exc_pending()) return false;
+  }
+  if (sock->closed_before_connect && sock->wcb_ls.n > 0 && sock->fd < 0) {
+    /* The socket closed before it connected (destroy(), or a connect
+     * that failed): Node's _writeGeneric answers the queued writes with
+     * this error at 'close', after the 'error' event when there is one. */
+    static const char text[] = "Socket closed before the connection was established";
+    ScrStr *msg = scr_str_new(text, sizeof text - 1);
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+    scr_str_release(msg);
+    scr_error_set_code(e, "ERR_SOCKET_CLOSED_BEFORE_CONNECTION");
+    ScrDyn *error = scr_dyn_from_error(e);
+    scr_error_release(e);
+    scr_net_fire_arg_this(&sock->wcb_ls, error, sock, SCR_DYNH_NET_SOCKET);
+    scr_dyn_release(error);
     if (scr_exc_pending()) return false;
   }
   if (sock->emit_close && !sock->close_emitted && sock->fd < 0) {
@@ -6606,7 +6582,7 @@ static void scr_net_dynh_unsupported(const char *member, const char *why) {
   char msg[160];
   int n = snprintf(msg, sizeof msg, "'Socket.prototype.%s' on a dynamic value is not supported yet%s%s",
                    member, why ? " — " : "", why ? why : "");
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
 }
 
 /* The TLS-member hooks (scr_tls.c registers them when linked): TLSSocket
@@ -6662,7 +6638,7 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
         scr_jb_write(&b, name->v.str->data, name->v.str->len);
       }
       scr_jb_puts(&b, "' on a dynamic Socket is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+      { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return NULL;
     }
     return scr_dyn_retain(self);
@@ -6970,7 +6946,7 @@ static void scr_net_dynh_srv_unsupported(const char *member, const char *why) {
   char msg[160];
   int n = snprintf(msg, sizeof msg, "'Server.prototype.%s' on a dynamic value is not supported yet%s%s",
                    member, why ? " — " : "", why ? why : "");
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
 }
 
 /* The 'connection' fire for a dyn listener: box the socket by reference
@@ -7046,7 +7022,7 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
         scr_jb_write(&b, name->v.str->data, name->v.str->len);
       }
       scr_jb_puts(&b, "' on a dynamic Server is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+      { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return NULL;
     }
     return scr_dyn_retain(self);

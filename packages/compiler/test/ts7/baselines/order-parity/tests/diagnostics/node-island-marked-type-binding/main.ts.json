@@ -1,0 +1,13 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/node-island-marked-type-binding/box.ts",
+  "<repo>/tests/diagnostics/node-island-marked-type-binding/default-import.ts",
+  "<repo>/tests/diagnostics/node-island-marked-type-binding/default-beside-named.ts",
+  "<repo>/tests/diagnostics/node-island-marked-type-binding/reexport.ts",
+  "<repo>/tests/diagnostics/node-island-marked-type-binding/export-local.ts",
+  "<repo>/tests/diagnostics/node-island-marked-type-binding/export-default.ts",
+  "<repo>/tests/diagnostics/node-island-marked-type-binding/written-as-types.ts",
+  "<repo>/tests/diagnostics/node-island-marked-type-binding/main.ts"
+ ],
+ "diags": []
+}

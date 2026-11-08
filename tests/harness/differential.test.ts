@@ -30,11 +30,13 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
-import { runStep, type Track } from "./step-timeout.js";
+import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -153,7 +155,7 @@ function wantsTscDecorators(file: string): boolean {
  * test cache — a pure function of the program bytes and the typescript
  * version (both in the oracle cache key). */
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -241,7 +243,8 @@ function nodeOracleArgs(file: string): string[] {
  * child's stdin closes immediately: corpus programs may read fd 0 to EOF
  * (readFileSync(0)), and the default open pipe would block both sides
  * forever — this way Node and the native binary see the same empty,
- * closed stream. */
+ * closed stream. `env` adds variables to the inherited environment (the
+ * oracle's `// @define` variables). */
 async function runBinary(
   cmd: string,
   args: string[],
@@ -255,6 +258,7 @@ async function runBinary(
   // briefly, the npm/cargo stance. (No-op on macOS: exec there never
   // answers ETXTBSY.)
   for (let attempt = 0; ; attempt++) {
+    const startedAt = Date.now();
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
       // The program's `// @env:` pins layer over the inherited environment,
@@ -274,7 +278,9 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw spawnFailure(err);
+        // Darwin leaves a crash report for a signal death: it names the
+        // exception and the crashing stack, which the child's error cannot.
+        throw spawnFailure(err, await recentCrashReport(cmd, startedAt));
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }
@@ -419,7 +425,8 @@ async function runNode(file: string, track?: Track): Promise<RunResult> {
   // Node 24 strips types natively; the supported subset is erasable by
   // construction — except `// @transform-types` programs (namespaces),
   // which run under Node's transform mode.
-  const res = await runBinary("node", nodeOracleArgs(file), programEnv(file), track);
+  const oracleEnv = { ...programEnv(file), ...programDefines(directiveHead(file))?.env };
+  const res = await runBinary("node", nodeOracleArgs(file), oracleEnv, track);
   if (cachePath !== null) {
     try {
       const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}`;
@@ -444,6 +451,7 @@ async function compileAndRun(rel: string, file: string): Promise<RunResult> {
   // Directory tests hash every sibling file so edits to imports bust the cache.
   const inputs = programInputs(file);
   const speed = wantsSpeed(file);
+  const defines = programDefines(directiveHead(file));
   const hash = createHash("sha256");
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
@@ -463,6 +471,7 @@ async function compileAndRun(rel: string, file: string): Promise<RunResult> {
       sanitize,
       backend: "llvm",
       ...(speed ? { optimization: "speed" as const } : {}),
+      ...(defines ? { define: defines.define } : {}),
     }),
   );
   if (!result.ok) {
@@ -482,9 +491,15 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
   // live-spawned Node itself can hang under heavy box load (1751's
   // fs.watch stalled five gates on 2026-07-20 while the compiled binary
   // answered in milliseconds every time).
+  //
+  // timeout: the case's hang detector, above the longest chain of steps it
+  // runs — the oracle starts beside the compile, whose run follows it, so two
+  // step deadlines deep. The shared 300 s default is not a bound for a case
+  // that can spend a full deadline in each of two steps; a step that stalls
+  // still reports itself at its own deadline, naming the processes it left.
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
-    { retry: 1 },
+    { retry: 1, timeout: STEP_TIMEOUT_MS * 2 },
     async ([rel, file], { skip }) => {
       // `// @requires-libnode`: the binary loads Node from a libnode pack,
       // required in the Linux CI lanes (libnode.ts), else skipped without one.

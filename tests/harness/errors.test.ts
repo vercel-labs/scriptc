@@ -1352,11 +1352,12 @@ console.log(max(1, 2));
     );
   });
 
-  test("an OPAQUE global's destructured member binds a token; uses fence lazily per site (JS lane)", async () => {
+  test("a member destructured from the WebCrypto object is the member (JS lane)", async () => {
     // The node-suite webcrypto prologue: `const { subtle } =
-    // globalThis.crypto` binds the member identity token, so the program
-    // RUNS past the destructure (the eager pattern fence used to kill it
-    // at that line) and each use meets its own named fence.
+    // globalThis.crypto` binds the SubtleCrypto object, and a call through
+    // the binding is the call through `crypto.subtle`: this one reaches
+    // WebCrypto's own argument check, as in Node, where the binding used to
+    // be a placeholder with no methods ("subtle.digest is not a function").
     const r = await compileAndRun(
       "destructure-opaque-global",
       `'use strict';
@@ -1368,7 +1369,9 @@ subtle.digest('SHA-256');
     );
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("bound true\n");
-    expect(r.stderr).toMatch(/^Uncaught TypeError: subtle\.digest is not a function\n$/);
+    expect(r.stderr).toMatch(
+      /^Unhandled promise rejection: TypeError \[ERR_MISSING_ARGS\]: Failed to execute 'digest' on 'SubtleCrypto': 2 arguments required, but only 1 present\.\n$/,
+    );
   });
 
   test("a 7000-level expression is a named deferred fence, not a stack overflow (JS lane)", async () => {
@@ -1538,6 +1541,26 @@ export type Other = string;
     expect(r.stdout).toBe("");
     expect(r.stderr).toBe(
       "Uncaught SyntaxError: The requested module './types.ts' does not provide an export named 'Other'\n",
+    );
+  });
+
+  test("a builtin's named import of a name its exports object does not enumerate", async () => {
+    // node:zlib owns the deprecated Z_* constants without enumerating them:
+    // they are not exports, and the first missing binding by local name is
+    // reported, before any module evaluates.
+    const r = await compileAndRun(
+      "esm-builtin-link",
+      `import './side.ts';
+import { Z_NO_FLUSH, gzipSync, Z_BEST_COMPRESSION as best } from 'node:zlib';
+console.log('never runs', Z_NO_FLUSH, best, gzipSync('a').length);
+`,
+      "ts",
+      { "side.ts": "console.log('side evaluated');\n" },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module 'node:zlib' does not provide an export named 'Z_NO_FLUSH'\n",
     );
   });
 
@@ -2773,14 +2796,12 @@ console.log(count(require("./lib.cjs")));
 });
 
 describe("builtin constructor values (JS lane)", () => {
-  test("constructing one without a lowering keeps its fence, not a token-spelled TypeError", async () => {
+  test("constructing one without a lowering throws the refusal that names it", async () => {
     // `AsyncResource` has no lowering, so a JavaScript source reads the
-    // import as the identifier chokepoint's identity token: an IR string
-    // whose text Node never produces. A String's construction does throw
-    // "… is not a constructor", but from the token that reports a class
-    // Node constructs as if the program could see the carrier — the wrong
-    // error class AND a fabricated message. The construction keeps the
-    // named refusal instead.
+    // import as a function value that refuses when it is used
+    // (builtin-function-fences.ts). Node constructs the class, so "… is not
+    // a constructor" would be the wrong error class and a fabricated
+    // message: the construction is refused by name where it is written.
     const r = await compileAndRun(
       "builtin-token-construction",
       `import { AsyncResource } from "node:async_hooks";
@@ -2795,14 +2816,13 @@ run();
     expect(r.stdout).toBe("before\n");
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toMatch(
-      /^Uncaught Error: constructing values other than classes declared in the program is not supported yet \[SC1090 at .*builtin-token-construction\.mjs:3\]\n$/,
+      /^Uncaught Error: 'new async_hooks\.AsyncResource' is part of the standard library types but has no scriptc lowering yet \[SC2020 at .*builtin-token-construction\.mjs:3\]\n$/,
     );
   });
 
   test("a program's own string casts keep Node's answers at the same sites", async () => {
-    // The token is recognized by the text it interns, so a real string the
-    // program widens to `any` is no token: every object-coercion site runs
-    // and answers exactly as Node does.
+    // A string the program widens to `any` is a string at every
+    // object-coercion site, which runs and answers exactly as Node does.
     const r = await compileAndRun(
       "string-cast-object-coercion",
       `"use strict";
@@ -2924,8 +2944,10 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
 // `Date.prototype` reads as the prototype object; a WRITE into it cannot be
 // observed by a typed Date, so every writer keeps the SC1090 fence it had
 // before the prototype had a value — including the plural defineProperties,
-// which the dynamic path would otherwise apply to the prototype object while
-// `new Date(0).getTime()` kept answering the builtin method.
+// which the dynamic path would otherwise apply to the prototype object. A
+// program that also calls the written member natively (`new
+// Date(0).getTime()`) is refused when it is built (SC1092,
+// tests/diagnostics/builtin-member-write-js.cjs).
 describe("standard library prototype writes (JS lane)", () => {
   test("defineProperties keeps the fence, like defineProperty", async () => {
     const r = await compileAndRun(
@@ -2944,14 +2966,11 @@ refuse("defineProperties", () =>
 );
 refuse("defineProperty", () => Object.defineProperty(Date.prototype, "getTime", { value: () => 42 }));
 refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
-console.log("getTime", new Date(0).getTime());
 `,
       "cjs",
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(
-      "defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\ngetTime 0\n",
-    );
+    expect(r.stdout).toBe("defineProperties SC1090\ndefineProperty SC1090\nassign SC1090\n");
   });
 });
 
@@ -3335,7 +3354,7 @@ console.log("unreachable");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("x\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: Object\.defineProperty on a numeric property of a native array is not supported yet\n$/,
+      /^Uncaught Error: Object\.defineProperty on a numeric property of a native array is not supported yet \[SC2020\]\n$/,
     );
   });
 
@@ -3439,7 +3458,7 @@ console.log(new B().a());
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("same prototype A.a\n");
     expect(r.stderr).toBe(
-      "Uncaught Error: Object.setPrototypeOf with this value is not supported yet\n",
+      "Uncaught Error: Object.setPrototypeOf with this value is not supported yet [SC2020]\n",
     );
   });
 });

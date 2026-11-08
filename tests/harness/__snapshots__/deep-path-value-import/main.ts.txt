@@ -1,0 +1,15 @@
+deep-path-value-import/main.ts:5:1 - error SC1010: the 'spice-rack/lib/blends.mjs' package (nothing installed resolves it) is not supported yet
+
+  4 | // starts, through the map, and refuses it. The build sides with Node.
+  5 | import { blend } from "spice-rack/lib/blends.mjs";
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  6 | import * as oven from "oven-dial";
+
+  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
+
+deep-path-value-import/main.ts:5:23 - error SC0001: Cannot find module 'spice-rack/lib/blends.mjs' or its corresponding type declarations.
+
+  4 | // starts, through the map, and refuses it. The build sides with Node.
+  5 | import { blend } from "spice-rack/lib/blends.mjs";
+    |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  6 | import * as oven from "oven-dial";

@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/typings-directory-not-named/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Could not find a declaration file for module 'pantry-units'. '<repo>/tests/diagnostics/typings-directory-not-named/node_modules/pantry-units/index.js' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/pantry-units` if it exists or add a new declaration (.d.ts) file containing `declare module 'pantry-units';`",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/typings-directory-not-named/main.ts",
+    "start": 255,
+    "end": 269
+   }
+  }
+ ]
+}

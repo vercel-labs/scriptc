@@ -6,6 +6,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import { canAssertClassValue, checkedClassAssertion } from "../class-assertions.js";
 import * as ts from "../../ts7/adapter.js";
 import { PoisonError, type Lowerer } from "../lowerer.js";
+import { valueListCallbackReturn } from "../lower-calls.js";
 import {
   BOOL,
   DYN,
@@ -55,6 +56,7 @@ import {
 import { typeKey } from "../../type-mapper.js";
 import {
   lowerArrayCallback,
+  requireFixedArityCallback,
   requireProducedArrayElement,
   unitOnlyArrayElement,
   callbackArrayElement,
@@ -565,6 +567,157 @@ function withFastCallback(fn: IrFunction, fastT: CallbackType | null, elem: IrTy
   };
 }
 
+/** The arguments an array-method helper for a callback VALUE was built
+ * from (the shared, type-interned helper; a literal callback has a helper
+ * of its own and is never a view). JavaScript hands every callback the
+ * element, its index and the array, and the helper passes the parameters the
+ * callback's type has; when that callback can be a view of a function with
+ * more parameters, function-views.ts builds the same helper for the full
+ * parameter list from this record (widerArrayHelper). */
+export type ArrayHelperRecipe =
+  | {
+      family: "hof";
+      method: "map" | "flatMap" | "filter" | "forEach";
+      elem: IrType;
+      fnRet: IrType;
+      arity: number;
+      outElem: IrType;
+      present: boolean;
+      withThis: boolean;
+    }
+  | {
+      family: "find";
+      elem: IrType;
+      resultT: IrType & { kind: "union" };
+      undefTag: number;
+      fnRet: IrType;
+      arity: number;
+      last: boolean;
+      retag?: string;
+      present: boolean;
+      withThis: boolean;
+    }
+  | {
+      family: "findIndex";
+      elem: IrType;
+      fnRet: IrType;
+      arity: number;
+      last: boolean;
+      present: boolean;
+      withThis: boolean;
+    }
+  | {
+      family: "someEvery";
+      method: "some" | "every";
+      elem: IrType;
+      fnRet: IrType;
+      arity: number;
+      present: boolean;
+      withThis: boolean;
+    }
+  | {
+      family: "flatMapArray";
+      elem: IrType;
+      fnRet: IrType & { kind: "array" };
+      arity: number;
+      present: boolean;
+      withThis: boolean;
+    }
+  | {
+      family: "reduce";
+      method: "reduce" | "reduceRight";
+      elem: IrType;
+      accT: IrType;
+      fnArg: CallbackType;
+      hasInit: boolean;
+    };
+
+/** The helper `recipe` describes, for a callback that takes everything
+ * JavaScript passes: the element, the index and the array (after the
+ * accumulator for the reduce family). Null when the recipe's helper already
+ * passes all of it, or its callback has no element parameter to extend. */
+export function widerArrayHelper(
+  lowerer: Lowerer,
+  recipe: ArrayHelperRecipe,
+  loc: SrcLoc,
+): string | null {
+  if (recipe.family === "reduce") {
+    const { fnArg, elem } = recipe;
+    if (fnArg.rest === true || fnArg.params.length < 2 || fnArg.params.length >= 4) return null;
+    const full: CallbackType = {
+      kind: "func",
+      params: [fnArg.params[0]!, fnArg.params[1]!, F64, arrayOf(elem)],
+      ret: fnArg.ret,
+    };
+    return reduceHelper(lowerer, recipe.method, elem, recipe.accT, full, recipe.hasInit, loc);
+  }
+  if (recipe.arity < 1 || recipe.arity >= 3) return null;
+  const { elem, fnRet, present, withThis } = recipe;
+  switch (recipe.family) {
+    case "hof":
+      return arrayHofHelper(
+        lowerer,
+        recipe.method,
+        elem,
+        fnRet,
+        3,
+        loc,
+        recipe.outElem,
+        "",
+        null,
+        present,
+        false,
+        withThis,
+      );
+    case "find":
+      return findHelper(
+        lowerer,
+        elem,
+        recipe.resultT,
+        recipe.undefTag,
+        fnRet,
+        3,
+        recipe.last,
+        loc,
+        recipe.retag ?? null,
+        "",
+        present,
+        false,
+        withThis,
+      );
+    case "findIndex":
+      return findIndexHelper(
+        lowerer,
+        elem,
+        fnRet,
+        3,
+        recipe.last,
+        loc,
+        "",
+        null,
+        present,
+        false,
+        withThis,
+      );
+    case "someEvery":
+      return someEveryHelper(
+        lowerer,
+        recipe.method,
+        elem,
+        fnRet,
+        3,
+        loc,
+        "",
+        null,
+        present,
+        false,
+        withThis,
+      );
+    case "flatMapArray":
+      return flatMapHelper(lowerer, elem, recipe.fnRet, 3, loc, "", null, present, false, withThis);
+  }
+}
+
 /** The interning suffix for a callback argument. A literal closure (an
  * inline arrow or function expression) gets a helper of its own, so the
  * helper's only incoming callback is one known function: the backend's
@@ -639,6 +792,17 @@ function arrayHofHelper(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
+  if (site === "" && !fastT && !unread)
+    lowerer.arrHofRecipes.set(name, {
+      family: "hof",
+      method,
+      elem,
+      fnRet,
+      arity,
+      outElem,
+      present,
+      withThis,
+    });
   lowerer.arrHofInfo.set(name, {
     method,
     elem,
@@ -1523,6 +1687,19 @@ function findHelper(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
+  if (site === "" && !unread)
+    lowerer.arrHofRecipes.set(name, {
+      family: "find",
+      elem,
+      resultT,
+      undefTag,
+      fnRet,
+      arity,
+      last,
+      ...(retag === null ? {} : { retag }),
+      present,
+      withThis,
+    });
   const arrT = arrayOf(elem);
   const valueT = callbackValueType(lowerer, elem, present);
   const fnT = funcOf([valueT, F64, arrT].slice(0, arity), fnRet);
@@ -1662,6 +1839,16 @@ function findIndexHelper(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
+  if (site === "" && !fastT && !unread)
+    lowerer.arrHofRecipes.set(name, {
+      family: "findIndex",
+      elem,
+      fnRet,
+      arity,
+      last,
+      present,
+      withThis,
+    });
   if (!last)
     lowerer.arrHofInfo.set(name, {
       method: "findIndex",
@@ -1751,6 +1938,16 @@ function someEveryHelper(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
+  if (site === "" && !fastT && !unread)
+    lowerer.arrHofRecipes.set(name, {
+      family: "someEvery",
+      method,
+      elem,
+      fnRet,
+      arity,
+      present,
+      withThis,
+    });
   lowerer.arrHofInfo.set(name, {
     method,
     elem,
@@ -1847,6 +2044,11 @@ export function lowerArrayFlatMapCall(
     argNode,
     [callbackValueType(lowerer, elem, present)],
     arrT,
+    false,
+    // A callback that returns the values of a checked-dynamic object
+    // returns the native list of them, which the flatten below reads.
+    valueListCallbackReturn(lowerer, argNode),
+    true,
   );
   const { fnArg, arity } = lowered;
   // Only an array that can hold elements outside its element type needs to
@@ -1867,6 +2069,8 @@ export function lowerArrayFlatMapCall(
       loc,
     };
   }
+  // Every path below calls the callback from a helper's loop.
+  requireFixedArityCallback(lowerer, argNode, fnArg.type);
   if (fnRet.kind === "union") {
     const def = lowerer.unions.get(fnRet.unionId);
     const plan = def?.arms.some((a) => a.kind === "array")
@@ -2297,6 +2501,15 @@ function flatMapHelper(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%arr.flatMap", key);
   lowerer.arrHofHelpers.set(key, name);
+  if (site === "" && !fastT && !unread)
+    lowerer.arrHofRecipes.set(name, {
+      family: "flatMapArray",
+      elem,
+      fnRet,
+      arity,
+      present,
+      withThis,
+    });
   lowerer.arrHofInfo.set(name, {
     method: "flatMapArray",
     elem,
@@ -2623,6 +2836,8 @@ function reduceHelper(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
+  if (site === "" && !fastT && !unread)
+    lowerer.arrHofRecipes.set(name, { family: "reduce", method, elem, accT, fnArg, hasInit });
   // A dynamic accumulator stays out of the pipeline registry: the fused
   // loops type their accumulator from the checker's view (arrHofInfo), which
   // this shape contradicts.
@@ -2977,6 +3192,7 @@ export function lowerArraySortCall(
   ) {
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
+  requireFixedArityCallback(lowerer, argNode, fnArg.type);
   const arity = fnArg.type.params.length;
   // The runtime sorts raw slots without per-move reference counting; this
   // beats the IR merge sort even when its comparator call becomes direct.
@@ -3022,7 +3238,7 @@ function recognizedSortKeys(
   fnArg: IrExpr,
   elem: IrType,
 ): readonly SortKeyOrder[] | null {
-  const keyed = closureKeyOrder(lowerer, fnArg);
+  const keyed = closureKeyOrder((name) => lowerer.liftedFnNamed(name), fnArg);
   if (!keyed) return null;
   if (keyed[0]!.read === null) return elem.kind === "f64" ? keyed : null;
   return elem.kind === "record" || elem.kind === "object" ? keyed : null;
@@ -3131,8 +3347,11 @@ export function lowerDynArrayFlatMapCall(
   if (call.arguments.nodes.length !== 1) return null;
   const argNode = call.arguments.nodes[0]!;
   const loc = locOf(call);
-  const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN);
+  const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN, false, undefined, true);
   const ret = fnArg.type.ret;
+  // Only the dynamic-returning path boxes the callback; the helper below
+  // calls it from its loop.
+  if (ret.kind !== "dyn") requireFixedArityCallback(lowerer, argNode, fnArg.type);
   if (ret.kind !== "array") {
     // A DYNAMIC-returning callback (`plugins.flatMap((plugin) =>
     // plugin.languages ?? [])` — the getSupportInfo shape, where the

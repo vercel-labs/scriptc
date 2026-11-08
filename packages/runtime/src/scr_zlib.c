@@ -562,7 +562,7 @@ bool scr_zlib_base_options(const ScrDyn *o, double flush_max, ScrZlibOptions *ou
   if (out->chunk_size > 4294967295.0) {
     scr_zlib_options_drop(out);
     static const char msg[] = "a zlib chunkSize above 4294967295 is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return false;
   }
   const ScrDyn *info = scr_zlib_opt(o, "info");
@@ -678,7 +678,7 @@ static bool scr_zlib_refuse_info(const ScrZlibOptions *o) {
   if (!o->info) return false;
   static const char msg[] =
       "the zlib option 'info' is not supported yet (it returns the engine object)";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return true;
 }
 

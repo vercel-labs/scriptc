@@ -38,6 +38,7 @@ import {
   isOptionalProcessVersionsRead,
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
+import { builtRecordResultType } from "../built-record-results.js";
 import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
@@ -1139,48 +1140,6 @@ export function runtimeOptionalReceiverRead(
       "a runtime-optional capture whose narrowed value type is not representable",
     );
   }
-  if (narrowed.kind === "union") {
-    const classView = narrowStoredClassValue(lowerer, varRef(local.id, local.type, loc), narrowed);
-    if (classView) return classView;
-    // The checker may keep the receiver at the storage union unchanged
-    // (`string | undefined` on a JS `.match()` call). There is no
-    // sub-union to re-tag: preserve the value for the downstream
-    // nullable-receiver lowering, which performs the member-specific
-    // checked extraction. Refusing here deferred the whole statement to
-    // a runtime fence before that lowering could run.
-    if (typeEquals(local.type, narrowed)) {
-      return varRef(local.id, local.type, loc);
-    }
-    // A captured array element can itself be a union of records (for
-    // example Circle | Square). The optional storage union has one extra
-    // undefined arm; re-tag it to the checker-narrowed value union with a
-    // checked trap for that arm, then let union property lowering inspect
-    // the surviving record arms.
-    const helper = lowerer.narrowedRetagHelper(
-      narrowedNode,
-      local.type.unionId,
-      narrowed.unionId,
-      loc,
-    );
-    if (!helper) {
-      // Intersection-refined record arms read through their stored
-      // layout (the predicate `r is Route & { path: string }`).
-      const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
-      if (hosted) return hosted;
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "a runtime-optional capture whose narrowed union is not representable",
-      );
-    }
-    return {
-      kind: "call",
-      callee: helper,
-      args: [varRef(local.id, local.type, loc)],
-      type: narrowed,
-      loc,
-    };
-  }
   // An array hole in a slot with more than two arms fails the member
   // access with Node's TypeError before the checked extraction runs.
   const holeGuarded = (extracted: IrExpr): IrExpr => {
@@ -1210,6 +1169,85 @@ export function runtimeOptionalReceiverRead(
       loc,
     };
   };
+  if (narrowed.kind === "union") {
+    const classView = narrowStoredClassValue(lowerer, varRef(local.id, local.type, loc), narrowed);
+    if (classView) return classView;
+    // The checker may keep the receiver at the storage union unchanged
+    // (`string | undefined` on a JS `.match()` call). There is no
+    // sub-union to re-tag: preserve the value for the downstream
+    // nullable-receiver lowering, which performs the member-specific
+    // checked extraction. Refusing here deferred the whole statement to
+    // a runtime fence before that lowering could run.
+    if (typeEquals(local.type, narrowed)) {
+      return varRef(local.id, local.type, loc);
+    }
+    // A captured array element can itself be a union of records (for
+    // example Circle | Square). The optional storage union has one extra
+    // undefined arm; re-tag it to the checker-narrowed value union with a
+    // checked trap for that arm, then let union property lowering inspect
+    // the surviving record arms.
+    const helper = lowerer.narrowedRetagHelper(
+      narrowedNode,
+      local.type.unionId,
+      narrowed.unionId,
+      loc,
+    );
+    if (!helper) {
+      // Intersection-refined record arms read through their stored
+      // layout (the predicate `r is Route & { path: string }`).
+      const hosted = hostedStorageView(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
+      if (hosted) return hosted;
+      // The checker can also type the receiver WIDER than its storage. In
+      // a generic function a member receiver reads as the type parameter's
+      // constraint (`T extends A | B | C` reads as `A | B | C`), while an
+      // instantiation stores its own type argument (`A | undefined`).
+      // Nothing is narrowed there: every stored arm but the hidden
+      // undefined is an arm of the checker's union, so the read goes
+      // through the storage.
+      const stored = lowerer.unions.get(local.type.unionId)?.arms ?? [];
+      const hiddenTag = lowerer.armTag(local.type.unionId, UNDEFINED_T);
+      const widerView =
+        hiddenTag >= 0 &&
+        stored.length >= 2 &&
+        stored.every((arm, tag) => tag === hiddenTag || lowerer.armTag(narrowed.unionId, arm) >= 0);
+      const widened =
+        widerView && stored.length > 2
+          ? lowerer.unionRetagHelper(
+              local.type.unionId,
+              narrowed.unionId,
+              loc,
+              new Set([hiddenTag]),
+            )
+          : null;
+      if (!widerView || (stored.length > 2 && !widened)) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "a runtime-optional capture whose narrowed union is not representable",
+        );
+      }
+      // Several stored arms keep their tags in the checker's union; the
+      // undefined arm fails the member access with Node's TypeError. One
+      // stored arm takes the two-arm extraction below.
+      if (widened) {
+        return holeGuarded({
+          kind: "call",
+          callee: widened,
+          args: [varRef(local.id, local.type, loc)],
+          type: narrowed,
+          loc,
+        });
+      }
+    } else {
+      return {
+        kind: "call",
+        callee: helper,
+        args: [varRef(local.id, local.type, loc)],
+        type: narrowed,
+        loc,
+      };
+    }
+  }
   if (narrowed.kind === "object") {
     const view = checkedClassAssertion(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
     // Preserve the member-specific missing-value error on the two-arm
@@ -1637,33 +1675,12 @@ export function lowerAsExpression(
         };
       }
     }
-    // Structural assertions use the ordinary checked dynamic bridge. It
-    // retains primitive values and native class identity before validating
-    // the requested shape; an assertion does not bypass runtime checks.
-    const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
-    const narrowedFlags = lowerer.typeOf(expr.expression).flags;
-    const bridged =
-      (narrowed &&
-        (narrowed.kind === "f64" ||
-          narrowed.kind === "bool" ||
-          narrowed.kind === "string" ||
-          narrowed.kind === "object" ||
-          narrowed.kind === "dyn" ||
-          // A control-flow test (`typeof e === "object" && "code" in e`)
-          // or a structural predicate narrowed the binding to the shape
-          // the assertion names. caughtRead crosses those as a
-          // checked-dynamic value — the same read an unnarrowed binding
-          // takes — so the assertion's own checked bridge validates it.
-          narrowed.kind === "record" ||
-          narrowed.kind === "union")) ||
-      // `catch (e: any)`: the binding reads as its checked-dynamic value.
-      // An intersection (`object & Record<"code", unknown>`) or an
-      // unmapped object shape has no IR type either; caughtRead crosses
-      // it the same way.
-      (narrowed === null &&
-        (narrowedFlags & (ts.TypeFlags.Any | ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !==
-          0);
-    if (!bridged) lowerer.unsupported("SC1063", expr);
+    // Every other assertion takes the ordinary path below over the
+    // binding's read (caughtRead): its checked-dynamic value, or the
+    // extraction its narrowing proved. A structural assertion then goes
+    // through the checked dynamic bridge, which keeps primitive values and
+    // native class identity before validating the requested shape; an
+    // assertion does not bypass runtime checks.
   }
   // `{ ...message, content } as T`: the program claimed the literal's shape,
   // so a union-valued member converts in a checked context — an arm the
@@ -1688,7 +1705,11 @@ export function lowerAsExpression(
     return inner;
   if (inner.type.kind !== "dyn") {
     const targetTs0 = lowerer.checker.getTypeFromTypeNode(expr.type);
-    const target = lowerer.mapTypeOf(targetTs0);
+    // A generic body's `return built as Result<T>` names its declared result
+    // by a type the checker keeps symbolic: the record the function built
+    // takes the instance's result type (built-record-results.ts).
+    const target =
+      lowerer.mapTypeOf(targetTs0) ?? builtRecordResultType(lowerer, expr, inner, targetTs0);
     // A static assertion ERASES in Node, but the claim it makes still
     // answers to the program: a slot this value reaches that no ordinary
     // conversion covers (SC2002/SC2003) converts it CHECKED instead of
@@ -1713,6 +1734,22 @@ export function lowerAsExpression(
     if (target?.kind === "object") {
       const asserted = checkedClassAssertion(lowerer, inner, target, locOf(expr));
       if (asserted) return asserted;
+    }
+    // A function asserted to a function type with more parameters: Node
+    // erases the assertion, and a call through it hands the function every
+    // argument. An erased value keeps its narrower type here, so that call
+    // would have nowhere to put them and would drop them. Convert it as a
+    // slot of the asserted type does; the adapter keeps the function's
+    // identity and looks through a narrower view (function-views.ts).
+    if (
+      target?.kind === "func" &&
+      inner.type.kind === "func" &&
+      target.rest !== true &&
+      inner.type.rest !== true &&
+      target.params.length > inner.type.params.length
+    ) {
+      const widened = lowerer.coerceToExpected(inner, target);
+      if (typeEquals(widened.type, target)) return widened;
     }
     // Unknown-only record views use the checked-dynamic representation.
     // A native record asserted to such a view still denotes the original
@@ -1931,7 +1968,22 @@ export function lowerAsExpression(
   // extraction an unknown value gets wherever the checker admits it.
   if (expr.type.kind === ts.SyntaxKind.NeverKeyword) return inner;
   const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
-  const target = lowerer.mapTypeOf(targetTs) ?? dynFallbackType(lowerer, expr.type, targetTs);
+  const mappedTarget = lowerer.mapTypeOf(targetTs);
+  // A generic body's `return built as Result<T>` over a dictionary that
+  // keeps checked identity: the object nothing else holds converts into the
+  // instance's result type (built-record-results.ts), keys and order kept.
+  const built =
+    mappedTarget === null ? builtRecordResultType(lowerer, expr, inner, targetTs) : null;
+  if (
+    built !== null &&
+    canDynCheckTo(
+      built,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return { kind: "dynCheck", value: inner, type: built, loc: locOf(expr) };
+  const target = mappedTarget ?? dynFallbackType(lowerer, expr.type, targetTs);
   if (!target) lowerer.badType(expr.type, targetTs);
   if (target.kind === "dyn") return inner; // `as unknown`: erasure
   // The declaration-typed boundary (decl-projection.ts): an identity-

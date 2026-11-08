@@ -48,3 +48,44 @@ attempt(() => object.keys({ a: 1 }).join());
   );
   expect(stderr).toBe("");
 });
+
+// A function global's interned value models its own name and length. The
+// ECMAScript intrinsic functions own exactly those two keys, while a
+// lib-declared function such as setTimeout also owns a prototype the value
+// does not model, so asking about that key refuses.
+test("own-key probes on function global values model name and length and refuse the prototype", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-builtin-static-refusals-"));
+  const entry = join(outDir, "main.cjs");
+  writeFileSync(
+    entry,
+    `
+function attempt(run) {
+  try { return String(run()); } catch (error) { return error.name + " " + error.code; }
+}
+const own = (run) => attempt(run);
+console.log(own(() => Object.prototype.hasOwnProperty.call(parseInt, "name")), own(() => Object.prototype.hasOwnProperty.call(parseInt, "length")), own(() => Object.prototype.hasOwnProperty.call(parseInt, "prototype")));
+console.log(own(() => Object.prototype.hasOwnProperty.call(setTimeout, "name")), own(() => Object.prototype.hasOwnProperty.call(setTimeout, "length")), own(() => Object.prototype.hasOwnProperty.call(setTimeout, "prototype")));
+console.log(own(() => Object.prototype.hasOwnProperty.call(atob, "name")), own(() => Object.prototype.hasOwnProperty.call(setTimeout, String("prototype"))));
+console.log(attempt(() => Object.prototype.toString.call(setTimeout)));
+`,
+  );
+  const result = await compile(entry, {
+    backend: "llvm",
+    sanitize: process.env["SCRIPTC_SAN"] === "1",
+    outDir,
+    outPath: join(outDir, "program"),
+  });
+  expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true);
+  if (!result.ok) return;
+  const { stdout, stderr } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+  expect(stdout).toBe(
+    [
+      "true true false",
+      "true true Error SC2020",
+      "true Error SC2020",
+      "[object Function]",
+      "",
+    ].join("\n"),
+  );
+  expect(stderr).toBe("");
+});

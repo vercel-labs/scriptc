@@ -246,6 +246,20 @@ test("every file of the darwin suite runs the macOS lane", () => {
     expect(lanesOf([file]).macos, file).toBe(true);
 });
 
+test("a script only a macOS job runs turns the macOS lane on", () => {
+  // The packed installation check with the opt-in libnode pack runs in the
+  // macOS contracts job and nowhere else.
+  const contracts = workflow.jobs["llvm_artifacts_macos_arm64_contracts"]!;
+  const script = "scripts/smoke-libnode-opt-in.mjs";
+  expect(contracts.steps.some((step) => step.run?.includes(`node ${script}`))).toBe(true);
+  expect(
+    Object.entries(workflow.jobs)
+      .filter(([, job]) => job.steps?.some((step) => step.run?.includes(script)))
+      .map(([name]) => name),
+  ).toEqual(["llvm_artifacts_macos_arm64_contracts"]);
+  expect(lanesOf([script]).macos).toBe(true);
+});
+
 test("CI runs the base commit's lane selection against the pull request's diff", () => {
   expect(lanesScript).toContain('git show "$BASE:scripts/ci-lanes.mjs"');
   expect(lanesScript).toContain(
@@ -271,10 +285,10 @@ function runLanes(event: string) {
   }
 }
 
-test("pushes to main and merge queue groups run every lane except macos and islands; the nightly sweep and manual runs run every lane", () => {
+test("pushes to main and merge queue groups run every lane except macos; the nightly sweep and manual runs run every lane", () => {
   for (const event of ["push", "merge_group"])
     expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n",
+      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n",
     );
   // The workflow starts on a merge queue group, which is what would become main.
   expect("merge_group" in workflow.on).toBe(true);

@@ -8,12 +8,14 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `ast-interp` | cpu | tokenizer, recursive-descent parser, class dispatch |
 | `async-pipeline` | cpu | `async`/`await`, `Promise.all` fan-out |
 | `atomics-contended` | cpu | four worker threads updating `SharedArrayBuffer` counters with `Atomics`: one shared counter, one counter per worker, a `compareExchange` loop, and `Atomics.wait`/`notify` handoffs |
+| `catalog-tables` | cpu | keyed tables made from keyed tables: `Object.values` over dictionaries of `object` from parsed JSON, flattened with `flatMap`, filtered by a field and keyed again with `Object.fromEntries` |
 | `channel-messages` | cpu | 200,000 MessageChannel messages in one thread, half numbers and half small objects, all posted before the port delivers any |
 | `class-unions` | cpu | class instances in unions with their base class (`Shape \| Circle \| Rect`, `Account \| Savings`): an array scanned through overridden methods and methods that return `this`, a `Map` of accounts, and `instanceof` tests for subclass members |
 | `csv-numbers` | cpu | `split`, `Number`, `parseInt`, `toFixed` |
 | `date-math` | cpu | schedules built with Date setters (local and UTC), weekday and month-end rules through the getters, Dates sorted by time value |
 | `cyclic-graphs` | cpu | object graphs with back references built and dropped: trees with parent and sibling links, rings of records sharing a long-lived registry, closures capturing their owner |
 | `dictionary-walks` | cpu | `Record<string, number>` dictionaries walked with for-in and `Object.keys`/`values`/`entries` while entries are added, updated and deleted |
+| `dynamic-class-tests` | cpu | untyped JavaScript in a program with 240 classes, using constructors it holds in variables: `value instanceof ctor` against class values and builtin constructors, `new ctor()` from a list of classes, and deep copies of plain records with computed-key reads; none of it depends on the number of classes, so the time shows a class dispatch that walks them |
 | `dynamic-methods` | cpu | untyped JavaScript calling builtin methods on values it does not type: string `slice`/`indexOf`/`toUpperCase`/`padStart`, array `push`/`pop`/`includes`, `Map` and `Set`, and an object's own methods |
 | `dynamic-properties` | cpu | untyped JavaScript reading and writing properties of values it does not type: records built by object literals in two key orders, nested records, and instances of a class and its subclass |
 | `functional-pipeline` | cpu | `filter`/`map`/`reduce`/`flatMap` chains, closures, small records |
@@ -26,6 +28,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `line-reader` | cpu | `readline` over a file stream: 'line' events for a 67 MB access log (every 50th line not ASCII), with a status count, a path tally and byte totals |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |
 | `log-summary`, `inventory-report` | cpu | the multi-module applications from `benchmarks/builds`, on 300k-line inputs |
+| `module-table-reads` | cpu | reads of a number table that another module builds at load (`benchmarks/runtime/module-table`): a hundred million through that module's one-line accessor from the entry's loop, and as many in a loop of the module's own. The table's module only computes, so its initializer runs at the first read; the workload is the cost of the check in front of a read |
 | `n-body` | cpu | five planets in an array of records advanced a million fixed steps by the pair loop over the upper triangle, then the system's total energy before and after |
 | `number-maps` | cpu | number-keyed Map/Set: a dense-id table, sparse ids in many small maps, get/has/set mixes |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
@@ -37,6 +40,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `records-sort` | cpu | comparator sorts, group-by, `reduce`/`filter` |
 | `regex-logs` | cpu | regex `exec` with groups, `test`, global `replace` |
 | `regex-replacers` | cpu | regex `replace`/`replaceAll` with inline callbacks whose parameters have no annotations: dictionary placeholders, snake_case to camelCase, date reordering, optional captures, capitalization, and a string search that reads the offset |
+| `regex-tokenizer` | cpu | a block tokenizer in the shape Markdown parsers have: twelve rules anchored at the start (`/^…/`) tried in order on the rest of a document, each token cut off with `slice`; three generated documents of about 60,000 characters (ASCII, with dashes and accented letters, with emoji) |
 | `region-builds` | cpu | a watch-mode build loop over `LifetimeRegion`: each build binds a program in a new region and releases the previous one, which a cache keeps referenced for two builds |
 | `string-iteration` | cpu | code point iteration over text that mixes ASCII, Latin-1 letters, CJK and emoji: a for-of word tokenizer, spread reversal, and `Array.from` over words |
 | `template-render` | cpu | template literals, escaping, `map`/`join` |
@@ -55,6 +59,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `cli-config` | startup | a `deploy-plan` CLI: read a ~110 KB JSON manifest, validate, interpolate env values, order 80 services into dependency waves, print a summary |
 | `startup-islands-used`, `startup-islands-unused`, `startup-islands-cold` | startup | a command-line program with three dependencies in Node islands (`benchmarks/startup/islands`): an ES module package of about a hundred small modules, a CommonJS package whose load reads an environment variable that is normally unset, and a package it imports and does not use, which ships 1.3 MB of data files nothing loads (as most of a real package directory is). `-used` calls into the first two; `-unused` prints a version and uses none of them, so its time is what having islands costs a start that does not need them; `-cold` is `-used` on a first run, with an empty island module cache. All three need a libnode pack |
 | `startup-modules` | startup | the 240-module program in `benchmarks/startup/modules`: every module's top level runs (classes and instances, Maps and a shared registry filled at load, record tables, strings and regex literals, a regular expression built from a string, constant objects, closures) and the entry prints one line, so the time is module initialization |
+| `startup-unused-tables` | startup | the command-line tool in `benchmarks/startup/unused`, asked for its version: four modules build tables at load (number tables filled by loops, records derived from a smaller table, a catalogue flattened with `Object.entries` and `flatMap`, regular expressions assembled from strings) and the command reads none of them, so the time is what unused module-level tables cost a start |
 | `http-api` | server | a `node:http` JSON API: routing, query parsing, a seeded catalog, per-cart state, typed JSON bodies, `ETag`/`If-None-Match`, auth and request-id headers |
 
 Compare two checkouts (each with a built CLI and native artifacts for the host):

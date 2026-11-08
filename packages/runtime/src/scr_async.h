@@ -160,6 +160,11 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
 ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject);
 void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve,
                                   ScrClosure *reject);
+/* The same for a typed promise: its resolve closure given a promise where
+ * the static type of the value has a promise arm, and the reject closure
+ * that ends with it (scr_async_dyn.c). */
+void scr_resolve_join(ScrClosure *resolve, ScrClosure *reject);
+void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);
@@ -307,6 +312,14 @@ void scr_buffer_deprecation(void);
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
 extern SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message);
+/* The EventEmitter leak warning with its `emitter`, `count` and `type` own
+ * properties (scr_lib.c; set by the 'warning'-listener registration beside
+ * scr_warning_emit_hook). A raising unit owns the values it passes: `type`
+ * is the event name value, `emitter` an identity-bearing value of the
+ * emitter, `message` the report's text; all are borrowed. Units that
+ * cannot link the dyn-async unit test this hook first and fall back to
+ * scr_warning_emit_hook, then to the default report. */
+extern SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message);
 /* Node's traceWarningHelperShown: the "(Use `node --trace-warnings ...`"
  * hint follows only the first warning report of the process, whichever
  * unit prints it (scr_lib.c). */

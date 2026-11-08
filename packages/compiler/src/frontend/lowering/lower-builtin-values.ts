@@ -647,7 +647,14 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
       if (callable) add(member, lowerer.checkedBuiltinValue(callable));
     }
     for (const member of Object.keys(BUILTIN_MODULE_CONSTS[module] ?? {})) {
-      const worker = module === "worker_threads" ? lowerWorkerMetadata(member, loc) : null;
+      if (module === "worker_threads" && member === SHARE_ENV) {
+        // The one member whose value lives in the worker unit: refused by
+        // name here, and answered once the program is known to use workers
+        // (settleLoaderShareEnv).
+        add(member, moduleMemberUnsupported(module, key, loc));
+        continue;
+      }
+      const worker = module === "worker_threads" ? lowerWorkerMetadata(lowerer, member, loc) : null;
       const value = builtinModuleConstOf(lowerer, module, member);
       if (worker) add(member, worker);
       else if (value !== undefined) add(member, builtinConstLit(value, loc));
@@ -661,7 +668,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
     }
     if (module === "worker_threads") {
       for (const member of ["isInternalThread", "parentPort", "workerData"])
-        add(member, lowerWorkerMetadata(member, loc)!);
+        add(member, lowerWorkerMetadata(lowerer, member, loc)!);
     }
     // A path family, like node:sea, is the whole of Node's object, so
     // another key is absent there too.
@@ -670,13 +677,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
       value:
         plainObjectKeys !== null
           ? dynUndefinedExpr(loc)
-          : {
-              kind: "libCall",
-              fn: "process.builtinUnsupported",
-              args: [strLit(module, loc), key],
-              type: DYN,
-              loc,
-            },
+          : moduleMemberUnsupported(module, key, loc),
       loc,
     });
     lowerer.liftedFns.push({
@@ -723,6 +724,62 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
     type: DYN,
     loc,
   };
+}
+
+/** The named run-time refusal of a member the loader's module object does
+ * not serve (`native builtin 'worker_threads.Worker' is not supported
+ * through process.getBuiltinModule yet`). */
+function moduleMemberUnsupported(module: string, key: IrExpr, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "process.builtinUnsupported",
+    args: [strLit(module, loc), key],
+    type: DYN,
+    loc,
+  };
+}
+
+const SHARE_ENV = "SHARE_ENV";
+const WORKER_THREADS_GETTER = "%builtin.module.get.worker_threads";
+
+/** `worker_threads.SHARE_ENV` in the loader's module object.
+ *
+ * The loader function serves every module it knows, whichever one a call
+ * names at run time, and a JavaScript source that holds `process` holds the
+ * loader with it. The symbol's identity lives in the worker unit, which only
+ * a workers program links, so the module object must not decide that: a
+ * program is a workers program by what its own source does (a worker API it
+ * spells, or `process.getBuiltinModule` spelled where the compiler cannot
+ * see which module it will name), never by holding an object whose
+ * inventory lists the member.
+ *
+ * So the entry is built as the refusal every unserved member of the module
+ * object has, and here, once lowering has finished and the answer is known,
+ * a workers program gets the symbol instead: the same value the spelled
+ * member reads. In any other program a read that reaches the entry throws
+ * the refusal, by name, where it happens. */
+export function settleLoaderShareEnv(lowerer: Lowerer, functions: IrFunction[]): void {
+  if (!lowerer.usesWorkers || !lowerer.builtinCallableValueFns.has(WORKER_THREADS_GETTER)) return;
+  const getter = functions.find((fn) => fn.name === WORKER_THREADS_GETTER);
+  if (getter === undefined) return;
+  getter.body = getter.body.map((stmt): IrStmt => {
+    if (
+      stmt.kind !== "if" ||
+      stmt.cond.kind !== "strEq" ||
+      stmt.cond.right.kind !== "strLit" ||
+      stmt.cond.right.value !== SHARE_ENV
+    )
+      return stmt;
+    const loc = stmt.loc;
+    const symbol: IrExpr = {
+      kind: "libCall",
+      fn: "worker.shareEnv",
+      args: [],
+      type: SYMBOL_T,
+      loc,
+    };
+    return { ...stmt, then: [{ kind: "return", value: box(symbol), loc }] };
+  });
 }
 
 /** Object.keys of Node's path.posix and path.win32. */
@@ -786,7 +843,15 @@ export function lowerObjectAssignValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   };
 }
 
-export function lowerBuiltinLoaderValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+export function lowerBuiltinLoaderValue(lowerer: Lowerer, loc: SrcLoc, held = false): IrExpr {
+  // Spelled in the program's source (`process.getBuiltinModule` read or
+  // called), the loader can be handed any module id at run time,
+  // `worker_threads` among them, so the program is compiled as one that may
+  // use workers and the module object answers SHARE_ENV. `held` is the same
+  // function as a member of a stored process object (node-value-reads.ts):
+  // the program asked for `process`, not for the loader, and holding it
+  // decides nothing (settleLoaderShareEnv).
+  if (!held) lowerer.usesWorkers = true;
   const cacheKey = "%builtin.process.getBuiltinModule";
   let name = lowerer.builtinCallableValueFns.get(cacheKey);
   if (!name) {

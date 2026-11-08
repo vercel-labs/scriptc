@@ -902,8 +902,10 @@ export function resolveBareModule(
    * the active set (the auto-detection probe); "types-only" forces the
    * unshadowed declaration pass for overload-overlay discovery;
    * "runtime-js" and "runtime-source" probe Node's import-condition entry
-   * by executable file kind; default follows the active set. */
-  mode?: "js-only" | "types-only" | "runtime-js" | "runtime-source",
+   * by executable file kind; "by-path" is the declaration pass over a
+   * package's files by path, never through its exports map
+   * (resolveTypesAsProject); default follows the active set. */
+  mode?: "js-only" | "types-only" | "runtime-js" | "runtime-source" | "by-path",
   /** Select the actual module edge when compiling an opted-in package. */
   resolutionKind: "import" | "require" = "import",
 ): BareResolution | null {
@@ -914,9 +916,11 @@ export function resolveBareModule(
   // pass only, the "types" export condition dropped, the @types mangling
   // never consulted — mirroring the shadowed world the tsgo host serves.
   const runtimeImport = mode === "runtime-js" || mode === "runtime-source";
+  const byPath = mode === "by-path";
   const npmStatic =
     mode === "js-only" ||
     (!runtimeImport &&
+      !byPath &&
       mode !== "types-only" &&
       (isNpmStaticPackage(pkgName) ||
         (npmStaticActive() && isNpmStaticPackage(aliasedPackageOf(fromFile, pkgName)))));
@@ -969,7 +973,7 @@ export function resolveBareModule(
             return clone;
           })()
         : rawPkg;
-    if (pkg?.exports !== undefined) {
+    if (pkg?.exports !== undefined && !byPath) {
       const target = resolveExports(pkg.exports, subpath, conditions);
       if (target !== null) {
         const file = loadTargetInPass(nmPkgDir, target, pass, runtimeOnly);
@@ -995,11 +999,17 @@ export function resolveBareModule(
         // 1. The package directory.
         const viaPkg = inPackage(join(nm, pkgName), pkgName, pass);
         if (viaPkg) return viaPkg;
-        // 2. The specifier as a bare FILE under node_modules.
-        for (const ext of extensionsFor(pass, "plain")) {
-          const asFile = join(nm, specifier + ext);
-          if (isFile(asFile)) {
-            return { typesFile: realpathOr(asFile), packageName: pkgName };
+        // 2. The specifier as a bare FILE under node_modules. A package
+        // with an exports map answers for all of its directory: the map
+        // refused the subpath above, and 5.9.3 looks no further there
+        // ("There are types at …, but this result could not be resolved
+        // when respecting package.json exports").
+        if (byPath || rest === "" || pkgJsonOf(join(nm, pkgName))?.exports === undefined) {
+          for (const ext of extensionsFor(pass, "plain")) {
+            const asFile = join(nm, specifier + ext);
+            if (isFile(asFile)) {
+              return { typesFile: realpathOr(asFile), packageName: pkgName };
+            }
           }
         }
         // 3. The mangled @types package (declaration pass only).
@@ -1015,10 +1025,121 @@ export function resolveBareModule(
     }
   };
 
-  if (mode === "types-only") return passOnce("types");
+  if (mode === "types-only" || byPath) return passOnce("types");
   if (mode === "runtime-source") return passOnce("source");
   if (mode === "runtime-js") return passOnce("js");
   return npmStatic ? passOnce("js") : (passOnce("types") ?? passOnce("js"));
+}
+
+/** A name under one of a project's `typeRoots`. tsc resolves the name under
+ * a configured root as a file or a directory, as it does a module: the
+ * declaration file `<root>/<name>.d.ts` first, then the package directory's
+ * `types`/`typings` file, then its index.d.ts. */
+export function resolveInTypeRoots(typeRoots: readonly string[], name: string): string | null {
+  for (const root of typeRoots) {
+    const base = resolve(root, name);
+    if (isFile(`${base}.d.ts`)) return normalizeResolvedPath(`${base}.d.ts`);
+    if (!isDirectory(base)) continue;
+    const pkg = pkgJsonOf(base);
+    for (const field of [pkg?.types, pkg?.typings]) {
+      if (typeof field === "string" && field !== "" && isFile(resolve(base, field)))
+        return normalizeResolvedPath(resolve(base, field));
+    }
+    if (isFile(resolve(base, "index.d.ts")))
+      return normalizeResolvedPath(resolve(base, "index.d.ts"));
+  }
+  return null;
+}
+
+/** The two settings of a project's tsconfig that give a module specifier
+ * declarations scriptc's own resolution does not find. */
+export interface ProjectTypeResolution {
+  /** `typeRoots`, absolute. tsc looks a module up under them when no
+   * node_modules directory holds declarations for it. */
+  typeRoots: readonly string[];
+  /** `moduleResolution: node10`: tsc reads a package's files by path and
+   * never its `exports` map (`pkg/lib/feature.mjs` is that file's declaration
+   * twin, `pkg` its `types`, `typings` or `main` file). */
+  byPath: boolean;
+}
+
+/** The declaration file the project's own tsc resolves a bare specifier to
+ * where scriptc's resolution finds no declarations: by path in a package's
+ * directory for a node10 project, then under the project's type roots (tsc's
+ * order). Null when scriptc's resolution answers with declarations, and
+ * when the project's settings find none either.
+ *
+ * A project that compiles under node10 names files a package's `exports`
+ * map does not list, most often from its own declaration of a subpath the
+ * map does list: `declare module "pkg/feature" { export * from
+ * "pkg/lib/feature.mjs"; }`. The type checker resolves as a bundler does and
+ * has no node10 mode, so the caller hands it the answer (typesAsProject7,
+ * `paths`).
+ *
+ * `erased` says that only the type checker reads the specifier: it stands
+ * in a declaration file or in an import Node erases. Node resolves every
+ * other specifier at run time, with the map: where it finds nothing to
+ * load, the import stays unresolved here too, and preflight reports Node's
+ * refusal. */
+export function resolveTypesAsProject(
+  fromFile: string,
+  specifier: string,
+  project: ProjectTypeResolution,
+  erased: boolean,
+): string | null {
+  if (isRelativeSpecifier(specifier) || isAbsolute(specifier)) return null;
+  // `#` names the importing package's own `imports`, `:` a URL scheme, and
+  // `*` would be a pattern in the `paths` entry the answer becomes.
+  if (specifier.startsWith("#") || specifier.includes(":") || specifier.includes("*")) return null;
+  if (resolveProjectModule(fromFile, specifier) !== null) return null;
+  if (resolveBareModule(fromFile, specifier, "types-only") !== null) return null;
+  if (!erased && resolveBareModule(fromFile, specifier) === null) return null;
+  if (project.byPath) {
+    const byPath = resolveBareModule(fromFile, specifier, "by-path");
+    if (byPath !== null) return byPath.typesFile;
+  }
+  return resolveInTypeRoots(project.typeRoots, specifier);
+}
+
+/** The questions resolveTypesAsProject answered in an earlier load of this
+ * compile, by tsconfig and specifier. A build loads the same program many
+ * times (once per candidate set of compiled packages, then once per island
+ * round), and the checker must be given the answers when a program is
+ * created: a load that learns them only from its first program creates a
+ * second one. Each later load asks the remembered questions again before
+ * it creates its first program, so its inputs are probed and recorded as in
+ * the first load, and an answer that no longer holds is dropped. */
+const answeredProjectTypes = new Map<string, Map<string, { fromFile: string; erased: boolean }>>();
+
+/** Records that `specifier`, asked from `fromFile`, had an answer. */
+export function rememberProjectTypes(
+  configFile: string,
+  specifier: string,
+  fromFile: string,
+  erased: boolean,
+): void {
+  let questions = answeredProjectTypes.get(configFile);
+  if (questions === undefined) {
+    questions = new Map();
+    answeredProjectTypes.set(configFile, questions);
+  }
+  if (!questions.has(specifier)) questions.set(specifier, { fromFile, erased });
+}
+
+/** The remembered questions asked again: each specifier that still has an
+ * answer, with the file it names, in the order first answered. */
+export function rememberedProjectTypes(
+  configFile: string,
+  project: ProjectTypeResolution,
+): Map<string, string> {
+  const answers = new Map<string, string>();
+  const questions = answeredProjectTypes.get(configFile);
+  if (questions === undefined) return answers;
+  for (const [specifier, question] of questions) {
+    const file = resolveTypesAsProject(question.fromFile, specifier, project, question.erased);
+    if (file !== null) answers.set(specifier, file);
+  }
+  return answers;
 }
 
 /** The package an npm alias directory installs (`"x-updated":
@@ -1106,6 +1227,7 @@ export function clearResolveCaches(): void {
   projectRealmPkgJson = null;
   projectRealmSet = false;
   projectPathMappings = null;
+  answeredProjectTypes.clear();
 }
 
 /** True when `path` is under a node_modules directory (the

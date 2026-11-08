@@ -1,0 +1,20 @@
+instanceof-union-rejected-class-arm.ts:9:3 - error SC1090: a class index signature other than '[key: string]: any' or '[key: string]: unknown' (a string key, and a value type that admits an absent property) is not supported yet
+
+   8 |   status: number;
+   9 |   [index: number]: unknown;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~
+  10 |   constructor(message: string, status: number) {
+
+instanceof-union-rejected-class-arm.ts:24:36 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  23 | function lookup(name: string): Entry | Failure {
+  24 |   if (name.startsWith("x")) return new Failure("not found", 404);
+     |                                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  25 |   return new Entry(name);
+
+instanceof-union-rejected-class-arm.ts:30:7 - error SC1090: 'instanceof' on a value whose type names 'Failure', a class that has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  29 |   const found = lookup(name);
+  30 |   if (found instanceof Entry) return found.name;
+     |       ^~~~~~~~~~~~~~~~~~~~~~
+  31 |   return "failure";

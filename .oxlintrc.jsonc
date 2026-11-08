@@ -114,6 +114,10 @@
                   "keyedHelperName",
                   "contentDigest",
                   "lowerToIr",
+                  // The member census (builtin-module-members.ts) imports
+                  // only its generated table, never the lowering graph:
+                  // program.ts links a builtin's named imports against it.
+                  "builtinModuleHasMember",
                 ],
                 "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
               },
@@ -370,6 +374,8 @@
         "packages/compiler/src/frontend/lowering/**",
         "packages/compiler/src/backend/llvm/**",
         "packages/compiler/src/backend/immutability.test.ts",
+        "packages/compiler/src/backend/lazy-initializers.test.ts",
+        "packages/compiler/src/backend/lazy-initializers.ts",
         "packages/compiler/src/backend/loop-polls.test.ts",
         "packages/compiler/src/backend/may-throw.test.ts",
         "packages/compiler/src/backend/stack-observations.test.ts",

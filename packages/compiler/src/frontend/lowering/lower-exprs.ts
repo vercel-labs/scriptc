@@ -26,6 +26,7 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { staticCondition } from "./static-typeof.js";
+import { noteBuiltinMemberWrite } from "./builtin-member-writes.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { lowerDeferredCallbackCall } from "./expressions/library-callbacks.js";
 import { PoisonError } from "./lowerer.js";
@@ -81,6 +82,7 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
+import { isCompilerCrash, noteCrashSite } from "../../diagnostics/crash-site.js";
 import { lowerHelperReturnCall } from "./containers/iterator-helpers.js";
 import {
   lowerSafeIndexRead,
@@ -385,6 +387,12 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
     if (outermost) refuseSpentLowering(lowerer);
     return lowered;
+  } catch (e) {
+    // An internal error or a checker panic on its way out: the innermost
+    // expression being lowered is where the diagnostic belongs
+    // (diagnostics/crash-site.ts). A poison passes untouched.
+    if (!(e instanceof PoisonError) && isCompilerCrash(e)) noteCrashSite(e, () => locOf(expr));
+    throw e;
   } finally {
     lowerExprDepth--;
     lowerer.closeOperandFrame(operands);
@@ -982,6 +990,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     return { kind: "awaitExpr", value, type: value.type.inner, loc };
   }
   if (ts.isYieldExpression(expr)) return lowerYield(lowerer, expr);
+  // A write to a member of a built-in object is recorded for the check at
+  // the end of lowering (builtin-member-writes.ts) and lowers as usual.
+  noteBuiltinMemberWrite(lowerer, expr);
   if (ts.isPrefixUnaryExpression(expr)) return lowerer.lowerPrefixUnary(expr);
   // `x++` / `x--` in expression position: yields the OLD value.
   if (ts.isPostfixUnaryExpression(expr)) return lowerIncDec(lowerer, expr, false);
@@ -2871,15 +2882,17 @@ export function lowerElementCompoundStatement(
   return { kind: "exprStmt", expr: lowered.expr!, loc: locOf(expr) };
 }
 
-/** Checked member assignment evaluates the reference before its RHS and
- * yields the original assigned value, including in a chained assignment. */
-export function lowerDynMemberAssignment(
+/** The reference of a checked member write, evaluated ahead of the value
+ * it will take: the receiver and the key are held in temporaries (key
+ * coercion waits for PutValue), and `store` writes a checked-dynamic value
+ * through them. Shared by the member assignment and by a destructuring
+ * assignment's member targets, so both make the same write. */
+export function dynMemberReference(
   lowerer: Lowerer,
-  expr: ts.BinaryExpression,
+  target: ts.ElementAccessExpression | ts.PropertyAccessExpression,
   recv: IrExpr,
-): IrExpr {
-  const loc = locOf(expr);
-  const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
+  loc: SrcLoc,
+): { stmts: IrStmt[]; store: (stored: IrExpr) => IrStmt } {
   const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
   const boxedKey = ts.isElementAccessExpression(target)
     ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
@@ -2892,6 +2905,39 @@ export function lowerDynMemberAssignment(
     boxedKey.value.type.kind === "string";
   const keyValue = stringKey ? boxedKey.value : boxedKey;
   const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
+  return {
+    stmts: [
+      { kind: "varDecl", localId: receiver.id, init: recv, loc },
+      { kind: "varDecl", localId: key.id, init: keyValue, loc },
+    ],
+    store: (stored) => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+        args: [
+          varRef(receiver.id, DYN, loc),
+          varRef(key.id, stringKey ? STRING : DYN, loc),
+          stored,
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    }),
+  };
+}
+
+/** Checked member assignment evaluates the reference before its RHS and
+ * yields the original assigned value, including in a chained assignment. */
+export function lowerDynMemberAssignment(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  recv: IrExpr,
+): IrExpr {
+  const loc = locOf(expr);
+  const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
+  const reference = dynMemberReference(lowerer, target, recv, loc);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2913,24 +2959,9 @@ export function lowerDynMemberAssignment(
   return {
     kind: "seqExpr",
     stmts: [
-      { kind: "varDecl", localId: receiver.id, init: recv, loc },
-      { kind: "varDecl", localId: key.id, init: keyValue, loc },
+      ...reference.stmts,
       { kind: "varDecl", localId: assigned.id, init: value, loc },
-      {
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
-          args: [
-            varRef(receiver.id, DYN, loc),
-            varRef(key.id, stringKey ? STRING : DYN, loc),
-            stored,
-          ],
-          type: VOID,
-          loc,
-        },
-        loc,
-      },
+      reference.store(stored),
     ],
     result,
     type: result.type,
@@ -3009,7 +3040,7 @@ export function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExp
   return (
     classToStringConversion(lowerer, e, "default", node) ??
     classUnionToString(lowerer, e, "default", node) ??
-    lowerer.ensureString(e, node)
+    lowerer.ensureString(e, node, "default")
   );
 }
 
@@ -3146,13 +3177,6 @@ export function operatorUnsupported(
   );
 }
 
-/** `typeof e === "lit"` / `typeof e !== "lit"` where e is a catch
- * binding: the runtime kind test over the snapshot's tag. Only the
- * primitive literals narrow ("string"/"number"/"boolean" — exactly what
- * the exception cell can distinguish); "object"/"function"/"undefined"
- * cannot be answered from the payload kinds (a thrown array and a thrown
- * record are both refs) and get the instanceof hint. Null when neither
- * side is a typeof over a catch binding (not this pattern). */
 /** The %Error-rooted object type inside a checker type, or null: the
  * direct mapping when it IS one, else the first mappable %Error-rooted
  * constituent of an intersection (`Error & Record<"code", unknown>` —
@@ -3177,6 +3201,12 @@ export function errorRootedObjectOf(lowerer: Lowerer, t: ts.Type): IrType | null
   return null;
 }
 
+/** `typeof e === "lit"` / `typeof e !== "lit"` where e is a catch
+ * binding. "string", "number", "boolean" and "object" are the runtime kind
+ * test over the snapshot's tag; "undefined", "function", "bigint" and
+ * "symbol" are asked of the checked-dynamic value the binding holds. Null
+ * when neither side is a typeof over a catch binding compared with a
+ * string literal (not this pattern). */
 export function lowerCaughtTypeofTest(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -3187,19 +3217,34 @@ export function lowerCaughtTypeofTest(
     if (!ts.isTypeOfExpression(a)) continue;
     const local = lowerer.caughtLocalOf(a.expression);
     if (!local) continue;
-    if (!ts.isStringLiteral(b)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "'typeof' catch-binding tests against non-literal strings",
-      );
-    }
+    // A comparison with a computed string compares the ordinary `typeof`
+    // value, as it does for every other operand.
+    if (!ts.isStringLiteral(b)) continue;
+    const ref: IrExpr = { kind: "varRef", localId: local.id, type: CAUGHT, loc };
     if (b.text === "string" || b.text === "number" || b.text === "boolean" || b.text === "object") {
       return {
         kind: "caughtTest",
-        value: { kind: "varRef", localId: local.id, type: CAUGHT, loc },
+        value: ref,
         test: b.text,
         ...(negated ? { negated: true } : {}),
+        type: BOOL,
+        loc,
+      };
+    }
+    // The kinds the snapshot's tag does not tell apart are asked of the
+    // value the binding holds, exactly as for an `unknown` value
+    // (lowerDynTypeofTest).
+    if (
+      b.text === "undefined" ||
+      b.text === "function" ||
+      b.text === "bigint" ||
+      b.text === "symbol"
+    ) {
+      return {
+        kind: "dynTest",
+        test: b.text,
+        ...(negated ? { negated: true as const } : {}),
+        value: { kind: "caughtToDyn", value: ref, type: DYN, loc },
         type: BOOL,
         loc,
       };
@@ -3207,7 +3252,7 @@ export function lowerCaughtTypeofTest(
     lowerer.unsupported(
       "SC1090",
       b,
-      `'typeof' catch-binding tests against "${b.text}" (only "string"/"number"/"boolean"/"object" are supported)`,
+      `'typeof' catch-binding tests against "${b.text}" ('typeof' answers "string", "number", "boolean", "object", "undefined", "function", "bigint" or "symbol")`,
     );
   }
   return null;
@@ -3369,14 +3414,14 @@ function aliasTypeofArmOf(
     if (!ts.isTypeOfExpression(init)) continue;
     const opnd = strip(init.expression);
     if (!ts.isIdentifier(opnd)) continue;
-    if (!bindingNeverReassigned(lowerer, aliasSym, aliasDecl)) continue;
+    if (!bindingNeverReassigned(lowerer.bindingScope(), aliasSym, aliasDecl)) continue;
     const valSym = lowerer.resolveValueSymbol(opnd);
     const valDecl = valSym ? valSym.valueDeclaration : undefined;
     if (!valSym || !valDecl) continue;
     // v1: identifier PARAMETERS only — initialized at function entry,
     // before any alias can capture their typeof.
     if (!ts.isParameter(valDecl) || !ts.isIdentifier(valDecl.name)) continue;
-    if (!bindingNeverReassigned(lowerer, valSym, valDecl)) continue;
+    if (!bindingNeverReassigned(lowerer.bindingScope(), valSym, valDecl)) continue;
     const fn = valDecl.parent;
     if (fn === undefined || !(e.pos >= fn.pos && e.end <= fn.end)) continue;
     const valT = lowerer.typeOf(opnd); // override-aware: implicit bindings compose
@@ -3528,12 +3573,13 @@ export function cjsAccessorCall(
 }
 
 /** A read of a catch binding — the caught analog of maybeNarrow. Where
- * tsc's control-flow narrowing has proven a supported test (`instanceof`
- * over a hierarchy class, `typeof` over a primitive), the read bridges
- * with a `caughtNarrow` extraction whose kind backends verify at run time,
- * exactly like unionNarrow. Every OTHER read is the narrowness fence:
- * the binding's payload is a typed exception snapshot, not a dyn, so
- * un-narrowed uses have nothing sound to lower to. */
+ * tsc's control-flow narrowing has proven a test the exception snapshot
+ * answers natively (`instanceof` over a class, `typeof` over a primitive),
+ * the read bridges with a `caughtNarrow` extraction whose kind backends
+ * verify at run time, exactly like unionNarrow, and a typed throw never
+ * boxes. Every OTHER read converts the snapshot to the checked-dynamic
+ * value it holds (caughtToDyn keeps the thrown object's identity) and is
+ * from there an ordinary `unknown` value. */
 export function caughtRead(
   lowerer: Lowerer,
   node: ts.Identifier,
@@ -3598,7 +3644,15 @@ export function caughtRead(
   ) {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
-  lowerer.unsupported("SC1063", node);
+  // Every other narrowing (`Array.isArray(e)`, `e === undefined`, `e
+  // instanceof Map`, a class whose declaration was refused, `never` past an
+  // exhaustive test): the binding is a value of TypeScript's declared type
+  // for it, `unknown` or `any`, so it reads as that value and the narrowing
+  // bridges exactly as it does for any other unknown value (maybeNarrow: a
+  // validated extraction where one exists, the checked-dynamic value
+  // otherwise, whose uses each validate what they read). A use the narrowed
+  // type cannot lower is refused where it is written, for its own reason.
+  return lowerer.maybeNarrow({ kind: "caughtToDyn", value: ref, type: DYN, loc }, node);
 }
 
 /** `String(e)` / `${e}` where e is a catch binding: JS's String() over
@@ -3796,7 +3850,8 @@ export function matchAllCallbackRegexOf(
   // A reassigned parameter can hold a row of another regex.
   if (ts.isIdentifier(param.name)) {
     const sym = lowerer.checker.getSymbolAtLocation(param.name);
-    if (sym === undefined || !bindingNeverReassigned(lowerer, sym, param)) return null;
+    if (sym === undefined || !bindingNeverReassigned(lowerer.bindingScope(), sym, param))
+      return null;
   }
   let site: ts.Node = fn;
   while (ts.isParenthesizedExpression(site.parent)) site = site.parent;

@@ -1224,7 +1224,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         fn: "fs.existsSync",
         params: [STRING],
         result: BOOL,
-        valueParams: exactValueParams(STRING),
+        // A Buffer or `any` path answers through the value form, so a stored
+        // function value passes its argument as given.
+        valueParams: exactValueParams(DYN),
+        valueFn: "fs.existsSyncValue",
       },
       mkdirSync: { fn: "fs.mkdirSync", params: [STRING], result: VOID },
       rmSync: { fn: "fs.rmSync", params: [STRING], result: VOID },
@@ -1464,12 +1467,27 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: exactValueParams(STRING, F64, F64),
       },
       // access' omitted mode and truncate's omitted len complete to 0 in
-      // lowerBuiltinModuleCall, like their sync spellings.
-      access: { fn: "fsp.access", params: [STRING, F64], result: { kind: "promise", inner: VOID } },
+      // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
+      // fixed (path plus one optional number), so they box as function values
+      // too: the bounded builtin namespace box serves them, and an omitted
+      // mode/len completes to the same 0 through the value adapter.
+      access: {
+        fn: "fsp.access",
+        params: [STRING, F64],
+        result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
+      },
       truncate: {
         fn: "fsp.truncate",
         params: [STRING, F64],
         result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
       },
       // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
       // lowerBuiltinModuleCall.
@@ -2215,6 +2233,36 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     v8: {
       getHeapStatistics: { fn: "process.memoryUsageTake", params: [], result: VOID },
     },
+    // node:module's compile cache family (lowerCompileCacheCall in
+    // builtins/module-resolution.ts completes a call; these rows carry the
+    // function values). A compiled program loads no JavaScript to cache:
+    // enableCompileCache validates its argument as Node does and answers the
+    // DISABLED status, getCompileCacheDir answers undefined and
+    // flushCompileCache writes nothing. The module's other members keep
+    // their own lowerings (createRequire, isBuiltin, builtinModules,
+    // syncBuiltinESMExports).
+    module: {
+      enableCompileCache: {
+        fn: "module.compileCacheEnable",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+      },
+      getCompileCacheDir: {
+        fn: "module.compileCacheDir",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      flushCompileCache: {
+        fn: "module.compileCacheFlush",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 0,
+      },
+    },
     // node:stream/web re-exports the web stream globals (the same objects);
     // its members lower through the globals' own paths.
     "stream/web": {},
@@ -2340,7 +2388,9 @@ export const BUILTIN_MODULE_CONSTS: Record<
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
   os: { EOL: "\n", devNull: "/dev/null" },
-  worker_threads: { isMainThread: true, threadId: 0 },
+  // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
+  // in the namespace inventory, and the worker lowering supplies the value.
+  worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's
@@ -2384,6 +2434,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   fs: {
     // Inline numeric O_* flags use a target-neutral runtime entry point.
     openSync: ["fs.openNumericSync"],
+    // The Buffer path: the typed entry point for a statically typed one
+    // (fs.existsSyncBytes), and the value form when only the runtime knows
+    // the arm (fs.existsSyncValue, which reports DEP0187 for other values).
+    existsSync: ["fs.existsSyncValue", "fs.existsSyncBytes"],
     // The Buffer form (no encoding), the fd forms (readFileSync(fd[,
     // "utf8"])), and the checked-dynamic encoding form.
     readFileSync: [
@@ -2405,17 +2459,25 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
-    // The bytes-data form and the { mode } options form.
-    // The bytes-data form, the { mode } options form, and the
-    // file-descriptor data form.
+    // The bytes-data form, the { mode } options form, the file-descriptor
+    // data form, and the { encoding, mode, flag } option-record forms over
+    // string and bytes data.
     writeFileSync: [
       "fs.writeFileSyncBytes",
       "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
+      "fs.writeFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
     ],
-    appendFileSync: ["fs.appendFileSyncBytes"],
+    // The bytes-data form and the { encoding, mode, flag } option-record
+    // forms over string and bytes data.
+    appendFileSync: [
+      "fs.appendFileSyncBytes",
+      "fs.appendFileOptionsSync",
+      "fs.appendFileBytesOptionsSync",
+    ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
       "fs.fsStreamBytes",
@@ -2976,6 +3038,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the compatibility target's release metadata as one stable read-only object",
     },
     {
+      id: "node-builtin.process.features",
+      kind: "node-builtin",
+      name: "process.features",
+      fns: ["process.features"],
+      note: "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node",
+    },
+    {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",
@@ -3198,6 +3267,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["os.constants"],
       note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
     },
+    // module.constants is a VALUE read too: the frozen null-prototype object
+    // that holds compileCacheStatus.
+    {
+      id: "node-builtin.module.constants",
+      kind: "node-builtin",
+      name: "module.constants",
+      fns: ["module.compileCacheConstants"],
+      note: "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED",
+    },
     // fs.constants as a value, and its members beyond the baked access-mode
     // bits: the target libc's null-prototype constants object.
     {
@@ -3302,6 +3380,22 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "readdir",
 ]);
 
+/** Members of one builtin module that the lowering tables answer as VALUES:
+ * its lowered functions and its constants, sorted. Used by the checked-
+ * dynamic namespace box (a bounded dynamic import of a builtin) to name the
+ * keys it can serve; a member outside the tables is left out of the box. */
+export function builtinModuleMemberNames(lowerer: Lowerer, module: string): string[] {
+  const names = new Set<string>();
+  const fns = builtinModuleFnsOf(lowerer, module);
+  if (fns !== undefined) {
+    for (const name of Object.keys(fns)) if (fns[name] !== undefined) names.add(name);
+  }
+  const consts = ownEntry(BUILTIN_MODULE_CONSTS, module);
+  if (consts !== undefined) {
+    for (const name of Object.keys(consts)) if (consts[name] !== undefined) names.add(name);
+  }
+  return [...names].sort();
+}
 /** The `length` Node's filesystem callback functions carry
  * (`fs.readFile.length` is 3). The value adapter reports it through
  * Function.length; the direct call accepts the arguments it always did. */
@@ -3539,7 +3633,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   child_process: {
     execFile:
       "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; " +
-      "maxBuffer is not enforced by the growing native capture; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
+      "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
     ...Object.fromEntries(

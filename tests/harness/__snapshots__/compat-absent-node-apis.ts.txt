@@ -1,0 +1,141 @@
+compat-absent-node-apis.ts:5:10 - error SC0001: Module '"node:async_hooks"' has no exported member 'AsyncResource'.
+
+  4 | // registry gap.
+  5 | import { AsyncResource } from "node:async_hooks";
+    |          ^~~~~~~~~~~~~
+  6 | import { Resolver } from "node:dns";
+
+compat-absent-node-apis.ts:6:10 - error SC0001: Module '"node:dns"' has no exported member 'Resolver'.
+
+  5 | import { AsyncResource } from "node:async_hooks";
+  6 | import { Resolver } from "node:dns";
+    |          ^~~~~~~~
+  7 | import { EventEmitterAsyncResource } from "node:events";
+
+compat-absent-node-apis.ts:7:10 - error SC0001: Module '"node:events"' has no exported member 'EventEmitterAsyncResource'.
+
+  6 | import { Resolver } from "node:dns";
+  7 | import { EventEmitterAsyncResource } from "node:events";
+    |          ^~~~~~~~~~~~~~~~~~~~~~~~~
+  8 | import { openAsBlob } from "node:fs";
+
+compat-absent-node-apis.ts:8:10 - error SC0001: Module '"node:fs"' has no exported member 'openAsBlob'.
+
+  7 | import { EventEmitterAsyncResource } from "node:events";
+  8 | import { openAsBlob } from "node:fs";
+    |          ^~~~~~~~~~
+  9 | import { findPackageJSON, register } from "node:module";
+
+compat-absent-node-apis.ts:9:10 - error SC0001: Module '"node:module"' has no exported member 'findPackageJSON'.
+
+   8 | import { openAsBlob } from "node:fs";
+   9 | import { findPackageJSON, register } from "node:module";
+     |          ^~~~~~~~~~~~~~~
+  10 | import { PerformanceObserver, performance } from "node:perf_hooks";
+
+compat-absent-node-apis.ts:9:27 - error SC0001: Module '"node:module"' has no exported member 'register'.
+
+   8 | import { openAsBlob } from "node:fs";
+   9 | import { findPackageJSON, register } from "node:module";
+     |                           ^~~~~~~~
+  10 | import { PerformanceObserver, performance } from "node:perf_hooks";
+
+compat-absent-node-apis.ts:10:10 - error SC0001: Module '"node:perf_hooks"' has no exported member 'PerformanceObserver'.
+
+   9 | import { findPackageJSON, register } from "node:module";
+  10 | import { PerformanceObserver, performance } from "node:perf_hooks";
+     |          ^~~~~~~~~~~~~~~~~~~
+  11 | import { Readable, Writable } from "node:stream";
+
+compat-absent-node-apis.ts:14:30 - error SC0001: Property 'toWeb' does not exist on type 'typeof Readable'.
+
+  13 | // stream: the web-stream adapters going out.
+  14 | const webReadable = Readable.toWeb(Readable.from(["a"]));
+     |                              ^~~~~
+  15 | const webWritable = Writable.toWeb(new Writable({ write(_chunk, _encoding, callback) { callback(); } }));
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-apis.ts:15:30 - error SC0001: Property 'toWeb' does not exist on type 'typeof Writable'.
+
+  14 | const webReadable = Readable.toWeb(Readable.from(["a"]));
+  15 | const webWritable = Writable.toWeb(new Writable({ write(_chunk, _encoding, callback) { callback(); } }));
+     |                              ^~~~~
+  16 | console.log(typeof webReadable, typeof webWritable);
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-apis.ts:19:17 - error SC0001: Property 'createObjectURL' does not exist on type '{ new (input: string | { toString: () => string; }, base?: string | URL | undefined): URL; canParse(input: string | URL, base?: string | URL | undefined): boolean; parse(input: string | URL, base?: string | ... 1 more ... | undefined): URL | null; revokeObjectURL(url: string | URL): void; }'. Did you mean 'revokeObjectURL'?
+
+  18 | // url: object URLs.
+  19 | console.log(URL.createObjectURL(new Blob(["x"])));
+     |                 ^~~~~~~~~~~~~~~
+  20 | 
+
+compat-absent-node-apis.ts:23:7 - error SC0001: Property 'close' does not exist on type 'Timeout'.
+
+  22 | const timer = setTimeout(() => {}, 1);
+  23 | timer.close();
+     |       ^~~~~
+  24 | 
+
+compat-absent-node-apis.ts:26:25 - error SC0001: Property 'timeOrigin' does not exist on type 'Performance'.
+
+  25 | // perf_hooks: the time origin and the observer.
+  26 | console.log(performance.timeOrigin);
+     |                         ^~~~~~~~~~
+  27 | const observer = new PerformanceObserver(() => {});
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'timeOrigin' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-apis.ts:31:9 - error SC0001: Property 'setSourceMapsEnabled' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  30 | // process: source maps, the capture callback, finalization and ref counting.
+  31 | process.setSourceMapsEnabled(true);
+     |         ^~~~~~~~~~~~~~~~~~~~
+  32 | console.log(process.hasUncaughtExceptionCaptureCallback());
+
+compat-absent-node-apis.ts:32:21 - error SC0001: Property 'hasUncaughtExceptionCaptureCallback' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  31 | process.setSourceMapsEnabled(true);
+  32 | console.log(process.hasUncaughtExceptionCaptureCallback());
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  33 | process.setUncaughtExceptionCaptureCallback(() => {});
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'hasUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-apis.ts:33:9 - error SC0001: Property 'setUncaughtExceptionCaptureCallback' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  32 | console.log(process.hasUncaughtExceptionCaptureCallback());
+  33 | process.setUncaughtExceptionCaptureCallback(() => {});
+     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  34 | process.finalization.register({ n: 1 }, () => {});
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'setUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-apis.ts:34:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  33 | process.setUncaughtExceptionCaptureCallback(() => {});
+  34 | process.finalization.register({ n: 1 }, () => {});
+     |         ^~~~~~~~~~~~
+  35 | process.ref(timer);
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-apis.ts:35:9 - error SC0001: Property 'ref' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  34 | process.finalization.register({ n: 1 }, () => {});
+  35 | process.ref(timer);
+     |         ^~~
+  36 | process.unref(timer);
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'ref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-node-apis.ts:36:9 - error SC0001: Property 'unref' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+
+  35 | process.ref(timer);
+  36 | process.unref(timer);
+     |         ^~~~~
+  37 | 
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'unref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint

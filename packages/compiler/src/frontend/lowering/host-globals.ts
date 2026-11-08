@@ -58,35 +58,6 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
   "WebSocket",
 ]);
 
-/** Node 24's `length` for each listed global's constructor — the `Function`
- * length of the class (`WebSocket.length` is 1, `FormData.length` 0). A read
- * answers a constructor carrying it, so a program reading `name`, `length` or
- * `typeof` off the value sees what Node shows. Values are pinned against the
- * running Node in packages/compiler/test/host-globals.test.ts. */
-const HOST_GLOBAL_LENGTHS: ReadonlyMap<string, number> = new Map([
-  ["BroadcastChannel", 1],
-  ["CloseEvent", 1],
-  ["CompressionStream", 1],
-  ["DecompressionStream", 1],
-  ["FormData", 0],
-  ["Navigator", 0],
-  ["Performance", 0],
-  ["PerformanceEntry", 0],
-  ["PerformanceMark", 1],
-  ["PerformanceMeasure", 0],
-  ["PerformanceObserver", 1],
-  ["PerformanceObserverEntryList", 0],
-  ["PerformanceResourceTiming", 0],
-  ["URLPattern", 0],
-  ["WebSocket", 1],
-]);
-
-/** Node's `length` for the listed global `name`, or undefined when the table
- * does not know it (the value is then built with the closure's own arity). */
-export function hostGlobalLength(name: string): number | undefined {
-  return HOST_GLOBAL_LENGTHS.get(name);
-}
-
 /** Whether the read is the callee of a call or `new` — the one use a listed
  * global's value refuses. A bare read answers the constructor (see
  * host-global-values.ts); constructing or calling it can only produce an

@@ -72,17 +72,23 @@ export interface EarlyExecutableNativeFeatures {
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
   mutableBuffers: boolean;
-  stdioExtended?: boolean;
   fsFlags?: boolean;
+  fsExistsValue?: boolean;
+  moduleCompileCache?: boolean;
   fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
-  /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
-  stdioWriteSlot?: boolean;
+  /** A process output stream held as a value: with Node islands,
+   * SCR_NODE_ISLAND_STDIO and scr_node_island_stdio.c. */
+  stdioObject?: boolean;
+  /** pipe()'s listeners and Node's unpipe: scr_stream_pipe_events.c. */
+  streamPipeEvents?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
   childErrorFields?: boolean;
+  /** A child output stream's flowing state: SCR_CHILD_STREAM_FLOW. */
+  childStreamFlow?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
@@ -100,6 +106,8 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  /** process.features as a value: scr_process_features.c. */
+  processFeatures?: boolean;
   childOptionExt?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
@@ -140,6 +148,9 @@ export interface EarlyExecutableNativeFeatures {
   /** A computed read of the global object, or `… in globalThis`:
    * scr_global_host_absent.c. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic:
+   * scr_deferred_fence.c. */
+  deferredFence?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
@@ -266,6 +277,8 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
   heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
+  /** Omitted without --define; otherwise its values as JSON. */
+  define?: string;
   /** Omitted for the default Node island policy; else nodeIslandOptionsKey. */
   nodeIslands?: string;
   /** Omitted unless shape inference's overlay compiles the packages
@@ -471,6 +484,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
       : options.npmStatic === "auto"
         ? "<npm-static-auto>"
         : JSON.stringify(options.npmStatic),
+    ...(options.define !== undefined ? [`define:${options.define}`] : []),
     options.target,
     options.compiler.join("\x1f"),
     options.nativeEnvironment,
@@ -532,7 +546,9 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
           ? "<npm-static-auto>"
           : JSON.stringify(options.npmStatic),
     )
-    .update("\0")
+    .update("\0");
+  if (options.define !== undefined) hash.update(`define:${options.define}\0`);
+  hash
     .update(options.target)
     .update("\0")
     .update(options.compiler.join("\x1f"))

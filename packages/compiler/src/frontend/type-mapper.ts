@@ -1529,6 +1529,15 @@ export interface TypeMapperCtx {
    * only the literal's objects, so it maps to the empty record (see the
    * empty object type rule in the object mapping). */
   emptyLiteralArm?: boolean;
+  /** The array type of a property the checker types `never[]` or the
+   * empty tuple: for an untyped empty array (`name: []`) its context's
+   * type, or the one the typed slots its value reaches agree on; for an
+   * alias of one (`list: o.files`) that array's type
+   * (empty-array-places.ts). Null when nothing decides it. The Lowerer
+   * supplies it. */
+  untypedArrayPropertyType?: (
+    decl: ts.PropertyAssignment | ts.ShorthandPropertyAssignment,
+  ) => IrType | null;
   /** The class value a generic factory's result type names when the factory
    * returns one of its own local classes through a constructor type
    * (`function struct<S>(v: S): Struct<S> { class Base {}; return Base as
@@ -1947,11 +1956,41 @@ export function isOsConstantsSymbol(
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
   types = false,
 ): boolean {
+  return isBuiltinConstantsSymbol(symbol, ctx, "os", types);
+}
+
+/** node:module's `constants` and its `compileCacheStatus` group, as
+ * @types/node and the fallback declare them (namespaces): the runtime's
+ * frozen checked-dynamic constants object. Its members are the same four
+ * numbers on every platform. */
+export function isModuleConstantsType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  return (
+    isBuiltinConstantsSymbol(type.getAliasSymbol(), ctx, "module", false) ||
+    isBuiltinConstantsSymbol(type.getSymbol(), ctx, "module", false)
+  );
+}
+
+/** A symbol declared as `constants`, or a namespace inside it, of the
+ * builtin module `module` (os or module). */
+function isBuiltinConstantsSymbol(
+  symbol: ts.Symbol | null | undefined,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+  module: "os" | "module",
+  types: boolean,
+): boolean {
   if (!symbol) return false;
   for (const d of symbol.declarations) {
-    const alias = types && ts.isTypeAliasDeclaration(d) && d.name.text === "SignalConstants";
+    const os = module === "os";
+    const alias = os && types && ts.isTypeAliasDeclaration(d) && d.name.text === "SignalConstants";
     const signals =
-      !types && ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) && d.name.text === "signals";
+      os &&
+      !types &&
+      ts.isVariableDeclaration(d) &&
+      ts.isIdentifier(d.name) &&
+      d.name.text === "signals";
     if (
       !(alias || signals || ts.isModuleDeclaration(d)) ||
       !ctx.isStdlibFile(ts.getSourceFileOfNode(d))
@@ -1961,7 +2000,7 @@ export function isOsConstantsSymbol(
     for (let n: ts.Node | undefined = d.parent; n; n = n.parent) {
       if (!ts.isModuleDeclaration(n)) continue;
       if (ts.isStringLiteral(n.name)) {
-        if ((n.name.text === "os" || n.name.text === "node:os") && (alias || inConstants))
+        if ((n.name.text === module || n.name.text === `node:${module}`) && (alias || inConstants))
           return true;
         break;
       }
@@ -2581,6 +2620,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // module object (the checked-dynamic module value).
   if (isPlatformPathType(type, ctx)) return DYN;
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
+  if (isModuleConstantsType(type, ctx)) return DYN;
   // The WebAssembly API's values have the checked-dynamic representation, so
   // declarations that merely mention them compile; each reached use of the
   // API itself is refused at its site (builtins/webassembly.ts).
@@ -4017,6 +4057,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("PropertyDescriptorMap") ||
     isStdlibInterface("ProcessVersions") ||
     isStdlibInterface("ProcessRelease") ||
+    isStdlibInterface("ProcessFeatures") ||
     isStdlibInterface("ProcessReport")
   )
     return DYN;
@@ -4129,6 +4170,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "bigintStats" };
   }
+  // module.enableCompileCache()'s result and its options argument
+  // (@types/node's EnableCompileCacheResult and EnableCompileCacheOptions,
+  // and the fallback's twins) are the plain objects Node passes: a result
+  // lacks the members Node did not set, and an options object is read by the
+  // runtime the way Node reads it.
+  if (
+    psym !== undefined &&
+    (psymName === "EnableCompileCacheResult" || psymName === "EnableCompileCacheOptions") &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "module"),
+    )
+  )
+    return DYN;
   // Capacity snapshots and options keep their live object representation
   // across numeric/BigInt overloads, runtime options, and callbacks.
   if (
@@ -4591,6 +4648,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "dyn" };
   }
+  // http.InformationEvent — the argument of a ClientRequest's
+  // 'information' event is an ordinary object the runtime builds (seven
+  // keys, a real `headers` object), so the TYPE maps to dyn like Agent's:
+  // a listener parameter declared with it takes the object as it is, and
+  // member reads go through the checked-dynamic path. Module-checked like
+  // the rest.
+  if (
+    psym !== undefined &&
+    psymName === "InformationEvent" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "http"),
+    )
+  ) {
+    return { kind: "dyn" };
+  }
   // http.IncomingMessage / http.ServerResponse — module-checked like
   // net.Server (the names repeat nowhere today, but provenance stays the
   // rule).
@@ -4887,7 +4962,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // (required — the "WithStringEncoding" refinement), cwd/input/timeout,
   // stdio (the "pipe"/"ignore" string or 3-tuple forms — a runtime array
   // is string[]; unsupported runtime modes throw at the call), and the
-  // accepted-but-inert maxBuffer/windowsHide. Members outside this set
+  // maxBuffer and the accepted-but-inert windowsHide. Members outside this set
   // (env, killSignal, shell, uid, ...) keep the shape unmatched — their
   // literals fence at the shape check instead of being dropped without a
   // diagnostic.
@@ -7228,6 +7303,14 @@ function constAssertedEmptyArrayProp(p: ts.Symbol): boolean {
   }
   if (!ts.isArrayLiteralExpression(init) || init.elements.nodes.length > 0) return false;
   return underConstAssertion(d);
+}
+
+/** `never[]`: the checker's type for an array that names no element. */
+function isNeverArrayType(type: ts.Type, checker: ts.TypeChecker): boolean {
+  return (
+    checker.isArrayType(type) &&
+    (checker.getTypeArguments(type as ts.TypeReference)[0]!.flags & ts.TypeFlags.Never) !== 0
+  );
 }
 
 /** A TypeScript property assignment `name: []` whose type is `never[]`. */
@@ -10106,12 +10189,25 @@ function mapRecordTypeInner(
       }
       // A TypeScript property initialized with an empty literal and typed
       // `never[]` (`const out = { files: [] }`) holds no element, so it maps
-      // like the empty tuple: the unit-only element array, which a
-      // destination's typed array field (`files: string[]`) receives through
-      // the checked empty-array lift. never's f64 element would make it a
-      // `number[]` field.
+      // like the empty tuple: the unit-only element array. never's f64
+      // element would make it a `number[]` field.
       if (pt?.kind === "array" && emptyNeverArrayProp(p, fieldTs, checker))
         pt = arrayOf(unitOnlyUnion(ctx.unions));
+      // That array of nothing is the same array under every name that
+      // reaches it, so where a declared type names its elements it is an
+      // array of those from the start (empty-array-places.ts); no typed
+      // slot then has to convert it.
+      if (
+        pt?.kind === "array" &&
+        ctx.untypedArrayPropertyType !== undefined &&
+        p.valueDeclaration !== undefined &&
+        (ts.isPropertyAssignment(p.valueDeclaration) ||
+          ts.isShorthandPropertyAssignment(p.valueDeclaration)) &&
+        (isUnitOnlyIr(pt.elem, ctx) || isNeverArrayType(fieldTs, checker))
+      ) {
+        const decided = ctx.untypedArrayPropertyType(p.valueDeclaration);
+        if (decided !== null) pt = decided;
+      }
       if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) pt = DYN;
       // An `any[]` field (`list: any[]` in an SDK's message type, also
       // optional or nullable) is the checked-dynamic array, exactly as

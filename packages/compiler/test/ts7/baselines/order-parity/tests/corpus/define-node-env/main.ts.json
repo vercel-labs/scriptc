@@ -1,0 +1,21 @@
+{
+ "order": [
+  "<repo>/tests/corpus/define-node-env/local.production.cjs",
+  "<repo>/tests/corpus/define-node-env/wrap.cjs",
+  "<repo>/tests/corpus/define-node-env/flags.mjs",
+  "<repo>/tests/corpus/define-node-env/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC1090",
+   "message": "a 'var' read before its assignment is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/define-node-env/flags.mjs",
+    "start": 166,
+    "end": 174
+   },
+   "milestone": "later",
+   "hint": "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2454 here.)"
+  }
+ ]
+}

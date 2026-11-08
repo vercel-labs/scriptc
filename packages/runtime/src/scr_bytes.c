@@ -1240,7 +1240,7 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
  * prototype/iterator keep a catchable refusal instead of losing hooks. */
 static bool scr_bytes_source_refusal(void) {
   static const char msg[] = "typed-array conversion of an opaque reference is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return false;
 }
 
@@ -5126,4 +5126,30 @@ double scr_bytes_compare_chk(const ScrBytes *src, const ScrDyn *target,
   /* Every slot validated or defaulted above; nargs 4 revalidates the
    * now-known-good numbers (a no-op) and keeps one comparison core. */
   return scr_bytes_compare(src, t, 4, tsv, tev, ssv, sev);
+}
+
+/* One streaming step through the decoder above: decoder.write over the chunk
+ * and the packed state that follows it, from a single walk of pending+chunk.
+ * process.stdin's setEncoding (scr_events.c) threads the state across reads
+ * through this, keeping the encoding and the state as values it never
+ * unpacks. Kept at the end of the unit so the functions before it keep their
+ * constant-pool numbering. */
+ScrStr *scr_strdec_stream_write(const ScrStr *enc, const ScrBytes *chunk, double *pending) {
+  SCR_BYTES_SNAPSHOT(chunk);
+  double hold = 0;
+  ScrStr *text = scr_strdec_step(enc, *pending, chunk, true, &hold);
+  *pending = hold;
+  return text;
+}
+
+/* scr_bytes.h. At the end of the unit for the same reason: only the Node
+ * island handle unit calls it, so no other program links it. */
+bool scr_bytes_storage_movable(const ScrBytes *owner) {
+#ifdef SCR_JS_OBJECT_MODEL
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return ops != NULL && (ops->owner_resizable(owner) || ops->owner_detached(owner));
+#else
+  (void)owner;
+  return false;
+#endif
 }

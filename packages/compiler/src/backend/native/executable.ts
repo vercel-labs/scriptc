@@ -172,6 +172,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
   // argument is the SCR_FS_FLAGS build of scr_fs_cp.c.
   unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
+  // existsSync over a path value that may not be a string (scr_fs_exists_dyn.c).
+  unit((u) => u.opts.fsExistsValue === true, "scr_fs_exists_dyn.c"),
+  // node:module's compile cache family (scr_module_cache.c).
+  unit((u) => u.opts.moduleCompileCache === true, "scr_module_cache.c"),
   // The BYTE-data spellings of the options write and fs.promises.writeFile
   // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
   // program that writes no byte payload keeps both objects unchanged.
@@ -216,7 +220,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ]
       : [],
   ),
-  unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
+  unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.workers, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
     (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
@@ -352,7 +356,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // net families (http implies net), so handle-free binaries keep
   // their exact size class.
   unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
-  unit((u) => u.opts.symbol, "scr_symbol.c"),
+  // The worker unit compares the env option against SHARE_ENV, its symbol
+  // (scr_worker_events.c), so a worker program links the symbol unit even
+  // when nothing else in it uses symbols.
+  unit((u) => u.opts.symbol || u.opts.workers, "scr_symbol.c"),
   unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
   unit((u) => u.opts.qs, "scr_qs.c"),
   // The legacy url unit references the regex, querystring and dyn-async
@@ -394,12 +401,17 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
+  // Node's pipe lifecycle ('unpipe' when a destination finishes, closes or
+  // errors), installed into the stream unit for programs that pipe.
+  unit((u) => u.opts.stream && u.opts.streamPipeEvents === true, "scr_stream_pipe_events.c"),
   // Own properties JavaScript adds to children.
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // ChildProcess listener removal (off/removeListener) and signalCode.
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
   // The spawnSync capture Buffers (spawnRes.stdoutBytes/stderrBytes).
   unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
+  // process.features as a value: the stable flags object.
+  unit((u) => u.opts.processFeatures === true, "scr_process_features.c"),
   // Object.isExtensible and Object.isSealed of a value typed dynamically.
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
   // Reflect.getPrototypeOf's primitive-target check.
@@ -488,7 +500,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+    "scr_node_island_events.c",
   ),
+  // One process.stdout.write for the program and its islands: only a program
+  // that holds a process output stream as a value can replace the method.
+  unit((u) => u.opts.nodeIsland === true && u.opts.stdioObject === true, "scr_node_island_stdio.c"),
   // A native AbortSignal or AbortController crossing into an island: the
   // signal's twin there follows it through the signal unit's watcher list.
   unit(
@@ -500,6 +516,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
+  // The stderr report of a deferred diagnostic that fires
+  // (ir/deferred-fence.ts).
+  unit((u) => u.opts.deferredFence === true, "scr_deferred_fence.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -532,11 +551,10 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
-  { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
-  // The wave's prepend registrations and stdin.isRaw (scr_events.c,
-  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
-  // (scr_fs_cp.c). The source build compiles these units from source, so the
-  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  // The wave's prepend registrations and stdin.isRaw (scr_async_dyn.c),
+  // server.off (scr_net.c) and copyFile's mode form (scr_fs_cp.c). The source
+  // build compiles these units from source, so the defines must name the same
+  // builds runtime-pack-matrix.mjs selects.
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
@@ -546,8 +564,6 @@ const RUNTIME_DEFINES: readonly {
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
-  // scr_events.c's typed process output write slot.
-  { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,
   // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
   // bodies of its streams.
@@ -561,7 +577,13 @@ const RUNTIME_DEFINES: readonly {
   // `.error` answers Node's errnoException fields (errno, syscall, path,
   // spawnargs); a program that never reads `.error` keeps the default build.
   { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
+  // scr_child.c's flowing state for a child's output streams (pause(),
+  // resume(), isPaused(), readableFlowing).
+  { define: "SCR_CHILD_STREAM_FLOW", when: (opts) => opts.childStreamFlow },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
+  // scr_node_island.c's bootstrap carries the stdio accessor and calls
+  // scr_node_island_stdio.c when Node has started.
+  { define: "SCR_NODE_ISLAND_STDIO", when: (opts) => opts.nodeIsland && opts.stdioObject },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {

@@ -2,16 +2,21 @@
  * does not see (`globalThis[name]`, `for (name in globalThis)` followed by
  * `globalThis[name]`). Such a read answers what the name's static spelling
  * reads in a JavaScript source: the interned function and constructor
- * values, the WebCrypto object and Buffer, and the opaque
- * identity token for the other declared globals.
+ * values, the WebCrypto object and Buffer, and for a function or class no
+ * lowering has a value for, the function value that refuses when it is
+ * called or constructed (builtin-function-fences.ts).
  *
  * The values come from one lookup function per program
  * (`%global.builtinValue`), which a JavaScript module with such a read
  * installs on the global object when its body starts
  * (scr_global_values_install). The runtime answers the global object,
  * console, fetch and the constants itself and calls the lookup for the
- * other declared names: a value, `undefined` for the token, or `null` for
- * a name without one, whose read keeps its SC2020 refusal. */
+ * other declared names: a value, or `null` for a name without one, whose
+ * read keeps its SC2020 refusal. A declared global Node 24 does not define
+ * (lower-namespaces.ts) is not among the names: the global object has no
+ * such property and the read answers undefined. The lookup never answers
+ * `undefined`, which the runtime would read as a request for a placeholder
+ * string. */
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import {
@@ -19,7 +24,6 @@ import {
   DYN,
   F64,
   STRING,
-  UNDEFINED_T,
   type IrExpr,
   type IrStmt,
   type IrType,
@@ -28,7 +32,8 @@ import {
 import { isJsSourceFile } from "../program.js";
 import { isStrictCode } from "./strict-mode.js";
 import type { Lowerer } from "./lowerer.js";
-import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
+import { nodeUndefinedGlobalName } from "./lower-namespaces.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 import { builtinGlobalValue } from "./expressions/property-access.js";
 import { builtinNamespaceValue } from "./builtin-namespaces.js";
@@ -36,6 +41,7 @@ import { uriFunctionValue } from "./expressions/identifiers.js";
 import { navigatorValue } from "./builtins/navigator.js";
 import { primitiveCtorClosure } from "./lower-exprs.js";
 import { globalFunctionValue, isUnloweredGlobal } from "./global-function-values.js";
+import { storedGlobalValue, unloweredGlobalValue } from "./node-value-reads.js";
 import {
   WEB_STREAM_CLASSES,
   programNamesWebStreamClass,
@@ -124,8 +130,8 @@ function readsBuiltinByName(lowerer: Lowerer, node: ts.ElementAccessExpression):
 
 /** The value a JavaScript source reads for the declared global `name`
  * taken as a value, whatever its spelling (`name`, `globalThis.name`,
- * `const { name } = globalThis`, `globalThis[name]`), or null when it
- * reads the opaque identity token. `reportFences` is false for the
+ * `const { name } = globalThis`, `globalThis[name]`), or null when no
+ * lowering has a value for it (node-value-reads.ts answers those). `reportFences` is false for the
  * program's lookup, which holds every declared global's value whether or
  * not the program reads it. */
 export function jsGlobalValueByName(
@@ -346,7 +352,7 @@ function declaredGlobalNames(lowerer: Lowerer, at: ts.Node): string[] {
     .map((property) => ts.symbolName(property))
     .filter(
       (name) =>
-        name !== TEMPORAL_GLOBAL &&
+        !nodeUndefinedGlobalName(name) &&
         !RUNTIME_ANSWERED.has(name) &&
         !COMMONJS_MODULE_BINDINGS.has(name),
     );
@@ -375,8 +381,9 @@ export function installsGlobalValues(lowerer: Lowerer, sf: ts.SourceFile): boole
 }
 
 /** The statement that installs the program's lookup, built on first use
- * from the names it answers (lookupNames). */
-export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
+ * from the names it answers (lookupNames). `at` is the module that
+ * installs it, which a value's refusal names. */
+export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc, at: ts.Node): IrStmt {
   const fnType: IrType & { kind: "func" } = { kind: "func", params: [STRING], ret: DYN };
   if (!lowerer.liftedFnNamed(LOOKUP_FN)) {
     const name: IrExpr = { kind: "varRef", localId: "name.0", type: STRING, loc };
@@ -390,11 +397,22 @@ export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
             ? webStreamClassValue(webStream, loc)
             : null
           : jsGlobalValueByName(lowerer, global, loc, false);
-      if (value === null) continue;
+      // A global no lowering has a value for reads what its bare spelling
+      // reads (node-value-reads.ts): the refusing function value for a
+      // function or class, the object the census describes for `process`
+      // and `performance`. Any other value is refused by the runtime's
+      // SC2020, as the bare spelling refuses it.
+      const answered: IrExpr = value ??
+        storedGlobalValue(lowerer, global, at, loc) ?? {
+          kind: "unitLit",
+          unit: "null",
+          type: { kind: "nullT" },
+          loc,
+        };
       // A function boxed here has no source spelling to take its name from
       // (the identifier read's rule): it takes the global's name, as
       // `globalThis.String.name` is "String".
-      const boxed = lowerer.coerceToExpected(value, DYN);
+      const boxed = lowerer.coerceToExpected(answered, DYN);
       const named: IrExpr =
         boxed.kind === "dynFrom" && boxed.value.type.kind === "func" && boxed.fnName === undefined
           ? { ...boxed, fnName: global }
@@ -414,10 +432,11 @@ export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
         loc,
       });
     }
+    // The runtime asks only for the names above; any other name is refused.
     body.push({
       kind: "return",
       value: lowerer.coerceToExpected(
-        { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        { kind: "unitLit", unit: "null", type: { kind: "nullT" }, loc },
         DYN,
       ),
       loc,
@@ -493,21 +512,24 @@ const GLOBAL_MEMBERS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
 };
 
+/** Whether the builtin module member `bi` is the global object of the same
+ * name (GLOBAL_MEMBERS). */
+export function isGlobalMember(bi: { module: string; member: string }): boolean {
+  return GLOBAL_MEMBERS[bi.module]?.has(bi.member) === true;
+}
+
 /** In a JavaScript source, the value of a builtin module member that is a
- * global object (GLOBAL_MEMBERS): what the global's own spelling reads,
- * so identity holds across the spellings. Null for other members. */
+ * global object (GLOBAL_MEMBERS): what the global's own spelling reads at
+ * `node`, so identity holds across the spellings. Null for other members. */
 export function globalMemberValue(
   lowerer: Lowerer,
   bi: { module: string; member: string },
+  node: ts.Expression,
   loc: SrcLoc,
 ): IrExpr | null {
   if (!GLOBAL_MEMBERS[bi.module]?.has(bi.member)) return null;
   return (
-    jsGlobalValueByName(lowerer, bi.member, loc) ?? {
-      kind: "strLit",
-      value: `[builtin ${bi.member}]`,
-      type: STRING,
-      loc,
-    }
+    jsGlobalValueByName(lowerer, bi.member, loc) ??
+    unloweredGlobalValue(lowerer, bi.member, node, loc)
   );
 }

@@ -2,7 +2,8 @@ import * as ts from "../ts7/adapter.js";
 import { DYN, STRING, arrayOf, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
+import { nodeUndefinedGlobalName } from "./lower-namespaces.js";
 
 /** A stored global object has identity and survives module/function boundaries.
  * Known globals without a value implementation refuse at runtime; absent host
@@ -42,7 +43,7 @@ function lowerGlobalValueOfType(lowerer: Lowerer, type: ts.Type | undefined, loc
   // not properties of the global object: reads answer undefined.
   const names = (type === undefined ? [] : lowerer.checker.getPropertiesOfType(type))
     .map((property) => ts.symbolName(property))
-    .filter((name) => name !== TEMPORAL_GLOBAL && !COMMONJS_MODULE_BINDINGS.has(name));
+    .filter((name) => !nodeUndefinedGlobalName(name) && !COMMONJS_MODULE_BINDINGS.has(name));
   return {
     kind: "libCall",
     fn: "global.native",

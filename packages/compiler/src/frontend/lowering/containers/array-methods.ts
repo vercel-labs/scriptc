@@ -27,7 +27,7 @@ import { ARRAY_METHODS } from "../surfaces.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { lowerDynDispatchMethodCall } from "../lower-calls.js";
+import { isValueListChain, lowerDynDispatchMethodCall } from "../lower-calls.js";
 import {
   arrayIndexPresent,
   arrayValueRead,
@@ -37,6 +37,8 @@ import {
   insertedValues,
   optionalElementValue,
   primitiveElement,
+  unionArmsView,
+  unionTupleJoin,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -65,6 +67,7 @@ import {
 import { arrayLengthDeclaration } from "./array-iteration.js";
 import {
   lowerArrayCallback,
+  arrayCallbackNeedsDynamicView,
   callbackArrayElement,
   requireProducedArrayElement,
 } from "./callback-arguments.js";
@@ -441,6 +444,34 @@ function orderedSeparatorJoin(
   };
 }
 
+/** A rest-parameter callback cannot ride a native array helper: the helper
+ * passes only the parameters the callback declares, while the callback
+ * expects every argument the method passes. Nor can the other callbacks
+ * arrayCallbackNeedsDynamicView names. A list a method is handed runs on
+ * the list's checked-dynamic view instead, where the method calls the
+ * callback the way Node does, and answers what the method made there: a
+ * checked-dynamic value, checked where it is used, as these lists answered
+ * before they stayed native. Undefined when the callback is one the native
+ * loop calls, which keeps the native list, and when the view has no
+ * dispatch for the method (flatMap, findLastIndex, reduce, reduceRight and
+ * toSorted in TypeScript sources): the native lowering then serves the
+ * callback (a flatMap whose callback returns checked-dynamic values boxes
+ * it) or refuses it by name (requireFixedArityCallback). */
+function lowerRestCallbackOverProbedList(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  probe: IrExpr,
+): IrExpr | undefined {
+  if (
+    !arrayCallbackNeedsDynamicView(lowerer, call) ||
+    (!isJsSourceFile(ts.getSourceFileOfNode(access)) && !lowerer.isStdlibMember(access))
+  )
+    return undefined;
+  const view = lowerer.coerceInto(access.expression, probe, DYN);
+  return lowerDynDispatchMethodCall(lowerer, call, access, view, true) ?? undefined;
+}
+
 /** Ambient array method calls. `push`/`unshift`/`pop`/`reverse`/
  * `indexOf`/`includes`/`join`
  * lower to arrIntrinsic; the HOF family — `map`/`filter`/`forEach`/
@@ -475,6 +506,19 @@ const DYN_ELEMENT_METHODS = new Set([
   "toSpliced",
   "unshift",
   "with",
+]);
+
+/** Array methods that write the array they are called on. */
+const RECEIVER_WRITING_METHODS = new Set([
+  "copyWithin",
+  "fill",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "sort",
+  "splice",
+  "unshift",
 ]);
 
 export function lowerArrayMethodCall(
@@ -524,6 +568,8 @@ export function lowerArrayMethodCall(
   ) {
     const probe = lowerer.lowerExpr(access.expression);
     if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
       receiverIr = probe.type;
       probedUntyped = true;
     } else if (
@@ -556,11 +602,51 @@ export function lowerArrayMethodCall(
   // receiver.
   if (receiverIr === null && lowerer.checker.isArrayType(checkerReceiver)) {
     const probe = lowerer.lowerExpr(access.expression);
-    if (probe.type.kind === "array") receiverIr = probe.type;
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+      receiverIr = probe.type;
+    }
+  }
+  // A checker array of checked-dynamic elements (`object[]`) maps to the
+  // checked-dynamic array, but a list nothing else can observe is a native
+  // vector of its values: Object.values over a checked-dynamic object whose
+  // result goes straight to an array method (consumesValueList), and the
+  // lists the methods below build from one. Ride the ordinary tables on the
+  // lowered element type, as the two probes above do. A value that lowers
+  // to the checked-dynamic array was claimed by the dyn receiver path
+  // before this one.
+  if (receiverIr?.kind === "dyn" && lowerer.checker.isArrayType(checkerReceiver)) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+      receiverIr = probe.type;
+    }
+  }
+  // A list a chain of these methods made from Object.values is native
+  // whatever its element type (`Object.values(o).map((v) => v.n)` is a
+  // number[], which no probe above looks at), and it was a checked-dynamic
+  // array before the chain stayed native: it hands the same callbacks to
+  // its view.
+  if (
+    receiverIr?.kind === "array" &&
+    isValueListChain(access.expression) &&
+    arrayCallbackNeedsDynamicView(lowerer, call)
+  ) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+    }
   }
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);
     if (unionHof) return unionHof;
+    // A union of tuples whose elements all have one type (the values of an
+    // `as const` table): the method runs on the array the value converts
+    // to, as it does behind an assertion to that array type.
+    receiverIr = unionTupleJoin(lowerer, receiverIr) ?? receiverIr;
   }
   if (receiverIr?.kind !== "array") return null;
   if (!probedUntyped && !lowerer.isStdlibMember(access)) return null;
@@ -596,6 +682,26 @@ export function lowerArrayMethodCall(
         return lowerer.withExpressionOverride(access.expression, array, () =>
           lowerArrayMethodCall(lowerer, call, access),
         );
+      }
+      // A union of tuples and arrays that the checker reads as ONE array
+      // (unionArmsView): the method runs on the arm the value holds, in
+      // place. A method that writes its receiver has no single array to
+      // write and refuses.
+      const view = unionArmsView(
+        lowerer,
+        access.expression,
+        receiver,
+        receiverIr,
+        locOf(access.expression),
+      );
+      if (view) {
+        if (RECEIVER_WRITING_METHODS.has(name))
+          lowerer.unsupported(
+            "SC1090",
+            call,
+            `'.${name}()' on a union of tuples and arrays read as '${lowerer.fmt(receiverIr)}' (the call writes its receiver, and the value has no single array to write: narrow it to one arm first)`,
+          );
+        return lowerUnionArmsMethodCall(lowerer, call, access, view, receiverIr);
       }
     }
     if (receiver.type.kind === "record" && lowerer.shapes.get(receiver.type.shapeId)?.tuple) {
@@ -2199,6 +2305,82 @@ function arraySearchHelper(
     loc,
   });
   return name;
+}
+
+/** A method called on a union of tuples and arrays read as one array
+ * (unionArmsView): each arm runs its own lowering on the value itself, an
+ * array arm the array's method and a tuple arm the tuple's
+ * (lowerTupleReadMethodCall), which reads a position only when the call
+ * reaches it. So the call sees what its callback or its arguments write,
+ * as it does on one array or one tuple, and an array arm keeps its
+ * identity. The receiver is evaluated once, before the arguments; the
+ * arguments are lowered for each arm and evaluated in the arm the value
+ * holds. A method a tuple has no in-place lowering for refuses: reading a
+ * copy of the tuple instead would not show those writes. */
+function lowerUnionArmsMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  view: IrExpr,
+  read: IrType & { kind: "array" },
+): IrExpr {
+  const loc = locOf(call);
+  const method = access.name.text;
+  const onArm = (arm: IrExpr): IrExpr => {
+    const lowered =
+      arm.type.kind === "array"
+        ? lowerer.withExpressionOverride(access.expression, arm, () =>
+            lowerArrayMethodCall(lowerer, call, access),
+          )
+        : lowerTupleReadMethodCall(lowerer, call, access, arm);
+    if (lowered) return lowered;
+    return lowerer.unsupported(
+      "SC1090",
+      call,
+      `'.${method}()' on a union of tuples and arrays read as '${lowerer.fmt(read)}' (a tuple has no '.${method}()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of)`,
+    );
+  };
+  if (view.type.kind !== "union") return onArm(view);
+  const unionId = view.type.unionId;
+  const arms = lowerer.unions.get(unionId)!.arms;
+  const stmts: IrStmt[] = [];
+  let held = view;
+  if (view.kind !== "varRef") {
+    const local = lowerer.declareHiddenLocal("%unionArmsReceiver", view.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: view, loc });
+    held = varRef(local.id, view.type, loc);
+  }
+  const answers = arms.map((arm, tag) =>
+    onArm({ kind: "unionNarrow", unionId, tag, value: held, type: arm, loc }),
+  );
+  // One type for every arm's answer: the checker's result where the arms
+  // disagree (a tuple's `.find()` and an array's spell the same union).
+  let type = answers[0]!.type;
+  if (!answers.every((answer) => typeEquals(answer.type, type))) {
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!declared || declared.kind === "void")
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `'.${method}()' on a union of tuples and arrays read as '${lowerer.fmt(read)}' (its arms answer values of different representations: narrow the value to one arm first)`,
+      );
+    type = declared;
+  }
+  const coerced = answers.map((answer) =>
+    typeEquals(answer.type, type) ? answer : lowerer.coerceInto(call, answer, type),
+  );
+  let result = coerced[coerced.length - 1]!;
+  for (let tag = coerced.length - 2; tag >= 0; tag--) {
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: held, type: BOOL, loc },
+      then: coerced[tag]!,
+      else_: result,
+      type,
+      loc,
+    };
+  }
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type, loc };
 }
 
 /** Tuple methods keep the original receiver alive through argument evaluation.

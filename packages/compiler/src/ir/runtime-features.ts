@@ -18,6 +18,7 @@ import {
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
 import { everyModuleNode, everyStmtList } from "./traverse.js";
+import { isDeferredDiagnosticFence } from "./deferred-fence.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 import { TEXT_DECODER_STREAM_CLASS } from "./webstream-classes.js";
@@ -88,6 +89,9 @@ export const DYN_BUFFER_METHODS: ReadonlyMap<string, string> = new Map([
 ]);
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // A typed promise's resolve function given a promise (scr_resolve_adopt,
+  // beside the checked-dynamic resolution it shares its target box with).
+  "promise.adopt",
   // DEP0040 rides the dyn-async unit's warning machinery.
   "async.awaitDyn",
   // So does SlowBuffer's DEP0030.
@@ -313,6 +317,10 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNative",
   "stream.dynNativePipe",
   "stream.errored",
+  "stream.is",
+  "stream.isDyn",
+  "stream.stateDyn",
+  "stream.asyncDispose",
   "stream.pipeDyn",
   "stream.prop",
   "stream.stdioWritable",
@@ -512,6 +520,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.prototypeMember",
   ...DYN_COLLECTION_LIB_FNS,
   "buffer.prototypeObject",
+  // A symbol event name's registry key (scr_str_symbol_key lives in the
+  // string unit, but the emitter registry holds the symbol itself).
+  "emitter.symName",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",
@@ -866,10 +877,6 @@ const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.streamUndefCall",
 ]);
 
-/** Names that reach the extended process-stream surface (the
- * SCR_STDIO_EXTENDED events unit): stdin.setEncoding and 'resize'. */
-const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resize"]);
-
 /** The libCall nodes the rules below test. */
 type LibCallNode = IrExpr & { kind: "libCall" };
 
@@ -899,6 +906,28 @@ interface RuntimeFeatureRule {
 
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
+
+/** Whether the module holds a runtimeFence that stands for a deferred
+ * diagnostic: the statement the backend throws through the reporter. A
+ * library's fences keep the plain throw (emit-statements.ts), so a library
+ * never asks for the reporter. */
+function moduleHasDeferredFence(mod: IrModule): boolean {
+  if (mod.lib !== undefined) return false;
+  let found = false;
+  everyModuleNode(mod, {
+    expr: () => !found,
+    stmt: (node) => {
+      if (
+        node.kind === "runtimeFence" &&
+        isDeferredDiagnosticFence(node.code, node.message, node.loc.file)
+      )
+        found = true;
+      return !found;
+    },
+    type: () => !found,
+  });
+  return found;
+}
 
 /* The node:url and WHATWG URL entry points: every URL value comes from
  * one, and parsing one can reach the UTS #46 host processing. */
@@ -1300,6 +1329,11 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** process.features read as a value (an alias, `in`, Object.keys): the
+   * stable flags object of scr_process_features.c, a unit of its own so
+   * every other program keeps scr_lib.c's object. A member read
+   * (`process.features.tls`) is a constant and links nothing. */
+  processFeatures: rule({ fns: ["process.features"] }),
   /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
    * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
    * own, so a program that never passes those options keeps the default
@@ -1321,6 +1355,14 @@ const RUNTIME_FEATURE_RULES = {
    * program that never reads `.error` keeps the default object and the
    * result container exactly as they were. */
   childErrorFields: rule({ fns: ["spawnRes.error"] }),
+  /** pause(), resume(), isPaused() and readableFlowing on a child's output
+   * stream: Node's flowing state lives on the handle in a build of
+   * scr_child.c of its own (SCR_CHILD_STREAM_FLOW), so a program that never
+   * calls them keeps the default object, where a stream reads its pipe only
+   * while it has a 'data' listener and holds nothing back. */
+  childStreamFlow: rule({
+    fns: ["stream.childPause", "stream.childResume", "stream.childIsPaused", "stream.childFlowing"],
+  }),
   /** The program can register an 'error' listener on a ChildProcess: a
    * typed or an untyped registration, or a child that converts to an
    * untyped value, whose `on` the handle table serves. Such a program
@@ -1397,6 +1439,9 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.ecdhNew",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
+      // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
+      // this unit's warning queue.
+      "fs.existsSyncValue",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -1406,8 +1451,9 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "intrinsic" &&
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())) ||
-      // The resolve function of a promise of a checked-dynamic value that
-      // may be given a promise adopts it (scr_make_resolve_dyn).
+      // The resolve function of a promise that may be given a promise
+      // adopts it (scr_make_resolve_dyn, and scr_resolve_adopt for a typed
+      // promise).
       (node.kind === "newPromise" && node.resolves === true) ||
       (node.kind === "promiseWithResolvers" && resolversOfDyn(node.type, tables())),
   }),
@@ -1438,6 +1484,10 @@ const RUNTIME_FEATURE_RULES = {
    * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
    * the global object, or `… in globalThis` (host-globals.ts). */
   hostAbsentGlobals: rule({ fns: ["global.hostAbsent", "dyn.globalHas"] }),
+  /** The stderr report of a deferred diagnostic that fires
+   * (scr_deferred_fence.c): a runtimeFence whose message carries its
+   * diagnostic's tag (deferred-fence.ts). */
+  deferredFence: rule({ initial: moduleHasDeferredFence }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -1783,34 +1833,57 @@ const RUNTIME_FEATURE_RULES = {
   /** URL programs install the IDNA unit's ToASCII for the WHATWG host
    * parser (scr_url_idna_install). */
   urlIdna: rule({ prefixes: URL_PREFIXES, types: ["url"] }),
-  /** stdin setEncoding / string data listeners / stdio 'resize' events. A
-   * typed string 'data' listener takes setEncoding-decoded chunks; the
-   * process stream object's setEncoding and 'resize' members are reached
-   * by name (dynamic member calls and event-name strings). */
-  stdioExtended: rule({
-    libCall: (node) =>
-      node.fn === "stdin.onData" &&
-      node.args[0]?.type.kind === "func" &&
-      node.args[0].type.params[0]?.kind === "string",
-    expr: (node, _tables) =>
-      (node.kind === "dynInvoke" && STDIO_EXTENDED_NAMES.has(node.method)) ||
-      (node.kind === "strLit" && STDIO_EXTENDED_NAMES.has(node.value)),
-  }),
   /** A write completion callback that takes the error argument lowers
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
-  /** The program reaches the process output streams' write slot — the
-   * write method as a value (process.stdioSlot), its replacement, a patched
-   * program's typed writes, a run-time-typed chunk
-   * (process.stdioWriteDyn), or the untyped one-string write
-   * (process.stdioWriteStr): the SCR_STDIO_WRITE_SLOT build of the events
-   * unit carries the shared write body, the dynamic-chunk entry point,
-   * the string entry point and Node's anonymous write function. Every
-   * other program links the default object unchanged. */
-  stdioWriteSlot: rule({
-    fns: ["process.stdioSlot", "process.stdioWriteDyn", "process.stdioWriteStr"],
+  /** The program can pipe or unpipe a stream: pipe(), unpipe(), pipeline()
+   * and compose() in every form, a call of a member named pipe or unpipe
+   * (or a computed member) on an untyped value, which can reach a native
+   * stream's own method, and either name as a string. It links
+   * scr_stream_pipe_events.c, which installs Node's pipe lifecycle into
+   * the stream unit: the destination hears 'unpipe' when it finishes,
+   * closes or errors, and unpipe pauses the source as Node's does. A
+   * program that never pipes links none of it. */
+  streamPipeEvents: rule({
+    fns: [
+      "readable.pipe",
+      "readable.pipeGeneral",
+      "readable.unpipe",
+      "stream.pipeline",
+      "stream.pipelineDyn",
+      "stream.pipelineStages",
+      "stream.pipelineStagesDyn",
+      "stream.compose",
+      "stream.composeStages",
+      "sp.pipeline",
+      "sp.pipelineOpts",
+      "sp.pipelineOptsSignal",
+      "sp.pipelineStages",
+      "sp.pipelineStagesOpts",
+    ],
+    expr: (node) =>
+      (node.kind === "dynInvoke" &&
+        (node.method === "pipe" ||
+          node.method === "unpipe" ||
+          node.calleeNameValue !== undefined)) ||
+      (node.kind === "strLit" && (node.value === "pipe" || node.value === "unpipe")),
   }),
+
+  /** The program holds a process output stream as a value: the
+   * process.stdio lib call, process.stdioSlot for the write method's own
+   * lowering, or a value of the process stream type, which becomes the
+   * stream object when it is boxed (dyn.ts). Those are the only ways to the
+   * stream object, and a replacement of its write method is a store into
+   * that object, so this covers every program that can replace
+   * process.stdout.write or process.stderr.write, whichever spelling, alias
+   * or computed key the replacement uses. Beside
+   * `nodeIsland` it links scr_node_island_stdio.c and the
+   * SCR_NODE_ISLAND_STDIO build of scr_node_island.c, which make the
+   * island's two output streams read and write the program's write slots;
+   * every other program with islands keeps its island units unchanged. */
+  stdioObject: rule({ fns: ["process.stdio", "process.stdioSlot"], types: ["procStream"] }),
+
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1824,8 +1897,10 @@ const RUNTIME_FEATURE_RULES = {
     fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
-    // symbols scr_sym_well_known makes.
-    prefixes: ["sym.", "disposable.", "iterator."],
+    // symbols scr_sym_well_known makes. An island symbol the program
+    // receives is a native symbol (scr_node_island_handle.c makes it), so
+    // a program with a Node island links the unit too.
+    prefixes: ["sym.", "disposable.", "iterator.", "nodeIsland."],
     types: ["symbol"],
   }),
   /** Symbol.toPrimitive is read (sym.wellKnown with that name, or a name
@@ -1974,17 +2049,28 @@ const RUNTIME_FEATURE_RULES = {
       "tls.sockGetCertificate",
     ],
   }),
-  /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode
-   * argument: scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c.
-   * Programs that never pass either keep both units' default objects. */
+  /** writeFile's options record (`encoding`, `mode`, `flag`), appendFile's
+   * three-argument form and copyFile's mode argument: scr_fs_flags.c and
+   * the SCR_FS_FLAGS build of scr_fs_cp.c. Programs that never pass them
+   * keep both units' default objects. */
   fsFlags: rule({
     fns: [
       "fs.copyFileFlagsSync",
       "fs.writeFileFlagsSync",
+      "fs.writeFileOptionsSync",
+      "fs.appendFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
+      "fs.appendFileBytesOptionsSync",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
     ],
   }),
+  /** existsSync over a path value that is not statically a string:
+   * scr_fs_exists_dyn.c, which reports DEP0187 through the warning queue the
+   * dynAsync rule brings in. */
+  fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
   /** The BYTE-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -1998,8 +2084,8 @@ const RUNTIME_FEATURE_RULES = {
   strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
   /** The process and stream event registries' extras — prependListener for
    * signals, 'exit' and uncaught exceptions, stdin.isRaw, and server.off:
-   * the SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and
-   * the SCR_NET_SERVER_OFF build of scr_net.c. */
+   * the SCR_PROCESS_EXTRAS build of scr_async_dyn.c and the
+   * SCR_NET_SERVER_OFF build of scr_net.c. */
   processExtras: rule({
     fns: [
       "net.serverOff",
@@ -2048,6 +2134,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdlibPrototypeValue: false,
     dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
+    deferredFence: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,
@@ -2061,6 +2148,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsFlags: false,
+    fsExistsValue: false,
+    moduleCompileCache: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
@@ -2092,9 +2181,9 @@ function noRuntimeFeatures(): RuntimeFeatures {
     regex: false,
     searchParams: false,
     urlIdna: false,
-    stdioExtended: false,
-    stdioWriteSlot: false,
+    stdioObject: false,
     streamWriteErrors: false,
+    streamPipeEvents: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
@@ -2105,9 +2194,11 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    processFeatures: false,
     childOptionExt: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
+    childStreamFlow: false,
     childErrorEvent: false,
     declAdopt: false,
     typeOrigins: false,

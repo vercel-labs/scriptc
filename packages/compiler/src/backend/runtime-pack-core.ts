@@ -133,6 +133,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A runtimeFence that stands for a deferred diagnostic
    * (scr_deferred_fence.c). */
   deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value (scr_dyn_fn_own.c). */
+  functionOwnWrite?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -409,6 +411,7 @@ export function effectiveRuntimeFeatures(
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
     deferredFence: features.deferredFence === true,
+    functionOwnWrite: features.functionOwnWrite === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,

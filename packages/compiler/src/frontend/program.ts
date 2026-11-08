@@ -998,7 +998,15 @@ function loadProgram7(
       ? (configuredPaths as Record<string, string[]>)
       : null,
   );
-  const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
+  // The project config's presence decides the Node type world the load
+  // PLANS for: a governed project adopts its installed @types/node, a
+  // config-less program keeps the bundled fallback so `scriptc build
+  // foo.ts` types the same on every machine. The plan can still be
+  // overruled below, where a file that pulled the real types in anyway
+  // (a dependency's `/// <reference types="node" />` resolves them
+  // regardless of this choice) retires the fallback before the two
+  // worlds' identical globals collide.
+  let nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
   // skipLibCheck is FORCED with @types/node in the program: checking a
   // third-party lib's internals against OUR lib choice (es2025, no dyn) is
   // not scriptc's fence and drowns real diagnostics in hundreds of
@@ -1055,6 +1063,34 @@ function loadProgram7(
   }
   try {
     for (let pass = 0; pass < 32; pass++) {
+      // The fallback planned above loses whenever the real Node types
+      // arrived through the program's own files — a dependency's type
+      // directive resolves @types/node from its own node_modules walk,
+      // which the entry-anchored resolveNodeTypes7 never ran (no config)
+      // or did not find (a nested install). Keeping the fallback's
+      // declarations beside them redeclares every global they share, so
+      // its roots leave and the program rebuilds on the pulled types
+      // under the same forced skipLibCheck the adopted path applies.
+      if (nodeTypes === null) {
+        const pulled = program.getSourceFileNames().find(isNodeTypesPath) ?? null;
+        if (pulled !== null) {
+          nodeTypes = pulled;
+          options = { ...options, skipLibCheck: true };
+          for (let i = programRoots.length - 1; i >= 0; i--)
+            if (isFallbackDtsPath(programRoots[i]!)) programRoots.splice(i, 1);
+          programRoots.push(pulled);
+          const previous = program;
+          program = host.createProgram(
+            [...programRoots, overridesDtsPath()],
+            options,
+            false,
+            lineage,
+          );
+          previous.dispose();
+          if (pass === 31) throw new Error("static program-root discovery did not converge");
+          continue;
+        }
+      }
       const candidates = [
         ...(nodeTypes === null ? fallbackModuleRoots7(program, host) : []),
         ...entryPackageProgramRoots7(program, entryPath, packageRoots),

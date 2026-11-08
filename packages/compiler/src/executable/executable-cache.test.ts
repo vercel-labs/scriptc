@@ -9,6 +9,7 @@ import {
   trackedReadFile,
 } from "../frontend/input-tracker.js";
 import { nativeProgramPartitions } from "../backend/native-codegen-core.js";
+import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
   nativeArtifactDependenciesStillMatch,
   snapshotNativeArtifactDependencies,
@@ -192,6 +193,70 @@ test("early dev cache restores the matching dSYM and rejects a missing payload",
   expect(cachedSymbols).toBeDefined();
   await rm(join(f.root, cachedSymbols!));
   expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
+});
+
+test("early executable cache replays every warning the build reported", async () => {
+  const f = await fixture();
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  // Lowering runs on a cold build only; the entry carries the warnings so a
+  // hit reports the same diagnostics (SC8001 is a Node island note, SC6101 a
+  // performance warning, and neither may vanish behind a cache hit).
+  const warnings: ScrDiagnostic[] = [
+    {
+      code: "SC8001",
+      message: "module 'entry.ts' runs in a Node island: sloppy: undeclared write",
+      loc: { file: f.source, start: 0, end: 1 },
+      hint: "sloppy-mode code Node runs; --node-islands=off compiles this module natively instead",
+    },
+    {
+      code: "SC6101",
+      message: "likely-hot function 'add' uses untyped values",
+      loc: { file: f.source, start: 4, end: 9 },
+    },
+  ];
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: false,
+    frontend: tracker.snapshot(),
+    warnings,
+  });
+  expect((await readEarlyExecutableCache(f.root, f.options))?.warnings).toEqual(warnings);
+});
+
+test("early executable cache keeps the rewritten text its warnings were located in", async () => {
+  const f = await fixture();
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  const warnings: ScrDiagnostic[] = [
+    {
+      code: "SC6101",
+      message: "likely-hot function 'view' uses untyped values",
+      loc: { file: f.source, start: 0, end: 4 },
+    },
+  ];
+  // The frontend locates a rewritten JSX file's warnings in the rewritten
+  // text, which no longer matches the file on disk: the entry keeps that text
+  // so a hit frames the warning where the build did. A file the frontend did
+  // not rewrite stays out of the entry and is re-read on a hit.
+  const rewritten = 'const view = jsx("div");\n';
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: false,
+    frontend: tracker.snapshot(),
+    warnings,
+    warningTexts: new Map([
+      [f.source, rewritten],
+      [f.llvmPath, "; generated llvm\n"],
+    ]),
+  });
+  const hit = await readEarlyExecutableCache(f.root, f.options);
+  expect(hit?.warnings).toEqual(warnings);
+  expect(hit?.warningSources).toEqual({ [f.source]: rewritten });
 });
 
 test("early executable cache preserves worker runtime selection when only frontend output restores", async () => {

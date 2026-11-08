@@ -333,7 +333,7 @@ export function reflectClassPrototype(
   if (!prototype || !info.decl) return prototype;
   const refuse = (message: string): IrExpr => {
     const name = `%prototype.refusal:${info.def.name}`;
-    if (!lowerer.liftedFns.some((fn) => fn.name === name))
+    if (lowerer.liftedFnNamed(name) === undefined)
       lowerer.liftedFns.push({
         name,
         params: [],

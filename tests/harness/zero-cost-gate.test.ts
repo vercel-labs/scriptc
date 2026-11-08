@@ -21,6 +21,9 @@ import {
   objectFunctionHashes,
   mergeReports,
   nmOutput,
+  pairPrograms,
+  changedProgram,
+  programChange,
   parseAllowPrograms,
   programInputsHash,
   programLines,
@@ -383,6 +386,16 @@ test("the zero-cost gate allows listed programs and refuses a stale list", () =>
     expect(unlisted.stdout).toContain("  fixture/llvm-emitter: differs");
     expect(unlisted.stdout).not.toContain("listed ");
     expect(unlisted.status).toBe(1);
+    // Neither checkout has a self-compile budget, or the compiler's source:
+    // the candidate's own build is made, and the run says that nothing of it
+    // is budgeted instead of reading source that is not there.
+    expect(unlisted.stdout).toContain(
+      "self       candidate compiler source builds with the candidate (",
+    );
+    expect(unlisted.stdout).toContain(
+      "self       no scripts/self-compile-budget.json in the candidate, so nothing is budgeted\n",
+    );
+    expect(unlisted.stderr).toBe("");
 
     // The list may name programs of sets, languages and shards this run does
     // not select: they are programs, so the list is not stale.
@@ -492,6 +505,132 @@ test("the zero-cost gate fails differing programs unless they match the signatur
   // was never compared.
   expect(verdict({}, false, failed, failed, true)).toEqual({ verdict: "both-fail", fails: true });
   expect(verdict({}, true, ok, failed)).toEqual({ verdict: "build-error", fails: true });
+});
+
+test("the zero-cost gate lists a program the PR rewrote when the baseline cannot build it", () => {
+  const ok = { ok: true };
+  const failed = { ok: false, error: "SC1090" };
+  const verdict = (baseline: object, candidate: object, changedSource: boolean) =>
+    programVerdict({ baseline, candidate, artifacts: {}, allowed: false, changedSource });
+  expect(verdict(failed, ok, true)).toEqual({ verdict: "changed-by-pr", fails: false });
+  // The same failure without the change's own source is a regression.
+  expect(verdict(failed, ok, false)).toEqual({ verdict: "build-error", fails: true });
+  // The candidate must still build the source the PR provides.
+  expect(verdict(ok, failed, true)).toEqual({ verdict: "build-error", fails: true });
+  expect(
+    programLines({
+      id: "corpus/x.ts",
+      verdict: "changed-by-pr",
+      pr: "changed",
+      artifacts: {},
+      baselineError: "SC1090: nope",
+    }),
+  ).toEqual([
+    "PR-change  corpus/x.ts  source changed by the PR, built from the candidate checkout; " +
+      "the baseline compiler cannot build it, so the gate did not compare it",
+    "           baseline:",
+    "             SC1090: nope",
+  ]);
+  expect(programLines({ id: "corpus/y.ts", verdict: "removed-by-pr", artifacts: {} })).toEqual([
+    "PR-remove  corpus/y.ts  the candidate checkout removed it",
+  ]);
+});
+
+test("the zero-cost gate pairs the two checkouts' programs by id", () => {
+  const exe = (id: string, entry: string, more: object = {}) => ({
+    id,
+    entry,
+    kind: "exe",
+    ...more,
+  });
+  // A benchmark keeps its workload name while its entry moves: one program,
+  // not a removed one and an added one under the same id.
+  const baseline = [
+    exe("bench/sort", "/b/benchmarks/runtime/sort.ts"),
+    exe("corpus/a.ts", "/b/a.ts"),
+  ];
+  const candidate = [
+    exe("corpus/a.ts", "/c/a.ts"),
+    exe("bench/sort", "/c/benchmarks/runtime/sort/main.ts"),
+    exe("corpus/new.ts", "/c/new.ts"),
+  ];
+  const rows = pairPrograms(baseline, candidate);
+  expect(rows.map((row) => (row.own ?? row.counterpart)!.id)).toEqual([
+    "bench/sort",
+    "corpus/a.ts",
+    "corpus/new.ts",
+  ]);
+  expect(rows[0]).toEqual({ own: baseline[0], counterpart: candidate[1] });
+  expect(rows[2]).toEqual({ own: null, counterpart: candidate[2] });
+  // The same pairing from the candidate's side keeps a program only the
+  // baseline has.
+  expect(pairPrograms(candidate, [...baseline, exe("corpus/gone.ts", "/b/gone.ts")])[3]).toEqual({
+    own: null,
+    counterpart: exe("corpus/gone.ts", "/b/gone.ts"),
+  });
+  // One row per id is what a sharded run needs: the merge refuses a
+  // program id that appears twice.
+  const report = (programs: object[]) => ({
+    schema: 1,
+    trees: { baseline: { revision: "b" }, candidate: { revision: "c" } },
+    programs,
+    failures: [],
+    globalFailures: [],
+    timing: null,
+    elapsedMs: 1,
+  });
+  const entry = (id: string) => ({ id, verdict: "identical", artifacts: {} });
+  expect(() =>
+    mergeReports([report([entry("bench/sort")]), report([entry("bench/sort")])]),
+  ).toThrow("program bench/sort appears in more than one gate report");
+  expect(new Set(rows.map((row) => (row.own ?? row.counterpart)!.id)).size).toBe(rows.length);
+});
+
+test("the zero-cost gate builds a rewritten program as the candidate checkout defines it", () => {
+  const source = (entry: string, files: Record<string, string>) => ({
+    entry,
+    files: new Map(Object.entries(files)),
+  });
+  const before = source("tests/corpus/a.ts", {
+    "tests/corpus/a.ts": "1",
+    "tests/corpus/lib.ts": "2",
+  });
+  expect(programChange(before, source(before.entry, Object.fromEntries(before.files)))).toBe(
+    undefined,
+  );
+  expect(programChange(before, null)).toBe("removed");
+  expect(programChange(null, before)).toBe("added");
+  expect(programChange(null, null)).toBe(undefined);
+  // Different contents, another set of files, or the same files under
+  // another entry path.
+  expect(
+    programChange(
+      before,
+      source(before.entry, { "tests/corpus/a.ts": "1", "tests/corpus/lib.ts": "3" }),
+    ),
+  ).toBe("changed");
+  expect(programChange(before, source(before.entry, { "tests/corpus/a.ts": "1" }))).toBe("changed");
+  expect(
+    programChange(before, source("tests/corpus/a/main.ts", Object.fromEntries(before.files))),
+  ).toBe("changed");
+  // A rewrite that adds `// @optimization: speed` is built at that level,
+  // and a workload with the arguments the change gives it: the baseline
+  // copy's settings describe the old source.
+  const program = {
+    id: "corpus/a.ts",
+    kind: "exe",
+    entry: "/b/tests/corpus/a.ts",
+    optimization: "release",
+    workload: undefined,
+  };
+  expect({
+    ...program,
+    ...changedProgram({ ...program, entry: "/c/tests/corpus/a.ts", optimization: "speed" }),
+  }).toEqual({ ...program, entry: "/c/tests/corpus/a.ts", optimization: "speed" });
+  const workload = { name: "sort", entry: "sort/main.ts", args: ["2000"] };
+  expect(
+    changedProgram({ id: "bench/sort", kind: "exe", entry: "/c/sort/main.ts", workload }),
+  ).toEqual({ entry: "/c/sort/main.ts", optimization: undefined, workload });
 });
 
 test("the zero-cost gate classifies runtime-only and nondeterministic differences", () => {

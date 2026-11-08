@@ -19505,6 +19505,10 @@
           "tests/corpus/7155-cipher-aes-ccm.cjs",
           "tests/corpus/7156-cipher-key-wrap.cjs",
           "tests/corpus/7157-crypto-cipher-info-typed.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20212,6 +20216,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20265,6 +20273,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20322,6 +20334,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20352,6 +20368,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20489,6 +20509,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20519,6 +20543,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -21421,6 +21449,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -21478,6 +21510,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23489,6 +23525,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23519,6 +23559,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23664,6 +23708,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23694,6 +23742,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23724,6 +23776,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23754,6 +23810,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23784,6 +23844,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23814,6 +23878,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/crypto-sign-writable.ts",
+          "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-sign-write-after-end.ts",
+          "tests/corpus/crypto-sign-pipe.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -25316,7 +25384,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -26515,7 +26585,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -28468,10 +28539,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.existsSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44509,11 +44577,13 @@
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
           "tests/corpus/fs-dir-dispose.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-write-options.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
           "tests/corpus/node24-fs-links-options.cjs",
@@ -45482,7 +45552,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45757,7 +45829,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45836,7 +45910,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45917,7 +45993,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46001,7 +46079,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46057,7 +46137,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46086,7 +46168,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46200,7 +46284,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47410,7 +47496,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47683,7 +47771,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48011,7 +48101,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48040,7 +48132,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48069,7 +48163,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48098,7 +48194,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48127,7 +48225,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48212,10 +48312,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.existsSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48566,7 +48663,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48595,7 +48694,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48699,7 +48800,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48728,7 +48831,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48812,7 +48917,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48841,7 +48948,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48896,7 +49005,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48951,7 +49062,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48980,7 +49093,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49009,7 +49124,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49038,7 +49155,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49152,7 +49271,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49210,7 +49331,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/8427-fs-copyfile-writefile-flags.ts"
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49239,7 +49361,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49268,7 +49392,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49297,7 +49423,9 @@
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts"
+          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-write-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75894,7 +76022,8 @@
           "tests/corpus/5147-path-matches-glob-extglob.ts",
           "tests/corpus/5148-path-matches-glob-classes.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -75948,7 +76077,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75979,7 +76109,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76010,7 +76141,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76037,6 +76169,7 @@
         "evidence": "surface-manifest:node-builtin.path.format",
         "tests": [
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
           "packages/runtime/test/path.test.ts"
         ]
       },
@@ -76098,7 +76231,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76129,7 +76263,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76160,7 +76295,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76187,6 +76323,7 @@
         "evidence": "surface-manifest:node-builtin.path.parse",
         "tests": [
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
           "packages/runtime/test/path.test.ts"
         ]
       },
@@ -76218,7 +76355,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76249,7 +76387,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76280,7 +76419,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76311,7 +76451,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76342,7 +76483,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76373,7 +76515,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -76404,7 +76547,8 @@
           "tests/corpus/2916-path-function-values-cjs.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/2918-builtin-callable-widths-cjs.ts",
-          "tests/corpus/9205-path-namespace-members.ts"
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -102497,6 +102641,7 @@
           "tests/corpus/inspect-hidden-properties.cjs",
           "tests/corpus/inspect-max-array-length.ts",
           "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/node24-deep-equality-properties.js",
@@ -103686,6 +103831,7 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/util-format-json-error.ts"
         ]
       },
@@ -103717,6 +103863,7 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/util-format-json-error.ts"
         ]
       },
@@ -103916,6 +104063,7 @@
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-hidden-properties.cjs"
         ]
       },

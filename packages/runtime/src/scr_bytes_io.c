@@ -160,6 +160,7 @@ void scr_fs_append_file_bytes(ScrStr *path, const ScrBytes *data) {
 static bool scr_fs_mode_number_valid(double v);
 static int scr_fs_flag_bits(const char *f);
 static void scr_fs_flag_invalid(const char *f);
+static int scr_fs_record_flag_bits(const ScrStr *flag, const char *default_flag);
 
 /* fsync(2), or the Windows CRT's _commit over the same descriptor. */
 static int scr_fs_sync_fd(int fd) {
@@ -232,16 +233,10 @@ static void scr_fs_write_opts_core(ScrStr *path, const ScrStr *text, const ScrBy
     data = owned;
   }
   bool ok = scr_fs_path_ok(path, "path");
-  /* `options.flag || <default>`: an empty flag leaves the family's default
-   * (write truncates, append appends). */
-  const char *flag_text = flag->len ? flag->data : default_flag;
   int bits = -1;
   if (ok) {
-    bits = scr_fs_flag_bits(flag_text);
-    if (bits < 0) {
-      scr_fs_flag_invalid(flag_text);
-      ok = false;
-    }
+    bits = scr_fs_record_flag_bits(flag, default_flag);
+    if (bits < 0) ok = false;
   }
   if (ok && !scr_fs_mode_number_valid(mode)) ok = false;
   if (ok) {
@@ -314,11 +309,7 @@ static void scr_fs_write_fd_utf8(double fd, const char *bytes, size_t length, Sc
     scr_fs_fd_path_fail(fd);
     return;
   }
-  const char *flag_text = flag->len ? flag->data : default_flag;
-  if (scr_fs_flag_bits(flag_text) < 0) {
-    scr_fs_flag_invalid(flag_text);
-    return;
-  }
+  if (scr_fs_record_flag_bits(flag, default_flag) < 0) return;
   if (!scr_fs_mode_number_valid(mode)) return;
   scr_fs_write_fd_all(fd, bytes, length);
 }
@@ -543,6 +534,23 @@ static void scr_fs_flag_invalid(const char *f) {
   scr_str_release(text);
   scr_dyn_arg_value_fail("flags", NULL, value);
   scr_dyn_release(value);
+}
+
+/* The options record's flag: `options.flag || <default>`, so an empty name
+ * leaves the family's default (write truncates, append appends). Node's
+ * table compares the whole name, so one with an embedded NUL ("w\0invalid")
+ * matches no entry and is refused with the whole value, \x00 included,
+ * instead of reading as its prefix. Answers the open(2) bits, or -1 with
+ * ERR_INVALID_ARG_VALUE pending. */
+static int scr_fs_record_flag_bits(const ScrStr *flag, const char *default_flag) {
+  if (flag->len == 0) return scr_fs_flag_bits(default_flag);
+  int bits = memchr(flag->data, 0, flag->len) ? -1 : scr_fs_flag_bits(flag->data);
+  if (bits < 0) {
+    ScrDyn *value = scr_dyn_new_str((ScrStr *)flag);
+    scr_dyn_arg_value_fail("flags", NULL, value);
+    scr_dyn_release(value);
+  }
+  return bits;
 }
 
 /* open's flags check, which Node runs before its callback check. Numeric
@@ -1609,7 +1617,7 @@ bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
 static ScrBytes *scr_buffer_from_refusal(const char *detail) {
   char msg[192];
   int n = snprintf(msg, sizeof msg, "Buffer.from %s is not supported yet", detail);
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
   return NULL;
 }
 

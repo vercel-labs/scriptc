@@ -196,7 +196,7 @@ static void dyn_throw_unsupported(const char *proto, const char *method) {
   scr_jb_puts(&b, ".prototype.");
   scr_jb_puts(&b, method);
   scr_jb_puts(&b, "' on a dynamic value is not supported yet");
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+  { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 /* ToIntegerOrInfinity over an optional index argument. Missing and
@@ -363,7 +363,7 @@ static bool dyn_borrow_length(ScrDyn *recv, size_t *out) {
 static bool dyn_borrow_iteration(size_t step) {
   if (step < 1000000) return true;
   static const char msg[] = "array-like iteration over one million entries is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return false;
 }
 
@@ -496,7 +496,7 @@ ScrDyn *scr_dyn_array_proto_call(ScrDyn *recv, ScrStr *method, ScrDyn *args) {
   bool reduce_right = dyn_borrow_is(method, "reduceRight");
   if (!(each || map || filter || some || every || find || find_index || find_last || find_last_index || reduce || reduce_right)) {
     static const char msg[] = "Array.prototype method is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
   }
   if (!dyn_cb_check(argv, argc)) return NULL;
@@ -2743,29 +2743,115 @@ ScrDyn *scr_dyn_array_prototype(void) {
   return prototype;
 }
 
-/* Object.defineProperties' read-and-convert half: every own enumerable
- * string-keyed descriptor of the Properties argument is read and converted
+/* Whether Type(value) is not Object. */
+static bool dyn_define_props_primitive(const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_UNDEF: case SCR_DYN_NULL: case SCR_DYN_BOOL: case SCR_DYN_NUM:
+  case SCR_DYN_STR: case SCR_DYN_BIGINT: case SCR_DYN_SYMBOL:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* Object.defineProperties' read-and-convert half (ObjectDefineProperties
+ * steps 1 to 4): ToObject of the Properties argument, then every own
+ * enumerable property of it, string keys in own-key order and then symbols,
+ * is read ([[Get]], through a getter on the map) and converted
  * (ToPropertyDescriptor) before any property is defined, so a later invalid
- * descriptor leaves the target untouched. `read_any`
- * (scr_dyn_descriptor_snapshot) admits a descriptor built by an expression;
- * NULL keeps the plain-object rule and its TypeError. Returns an array of
- * [key, descriptor] pairs (+1), or NULL with the exception pending. */
-ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
-  ScrDyn *keys = scr_dyn_obj_own_keys(descs);
+ * descriptor leaves the target untouched.
+ *
+ * The map is any object the checked-dynamic tier holds: an untyped object,
+ * a typed record, class instance or array held by reference (its view,
+ * materialized once so a getter on it runs once), an array, a function
+ * (its property table). undefined and null throw ToObject's TypeError; a
+ * number, boolean, bigint or symbol has no own properties; a string's
+ * characters are its own properties, and none is a descriptor. A handle
+ * (a Map, a Date), a promise, a proxy, a typed array or a Buffer as the map
+ * is refused by name.
+ *
+ * `read_any` (scr_dyn_descriptor_snapshot) admits a descriptor built by an
+ * expression; NULL keeps the plain-object rule and its TypeError, where a
+ * typed record held by reference is read through its view as
+ * scr_dyn_define_property reads it. `read_this` is the `this` value of the
+ * map's [[Get]]: the map itself, except that a function's table is only the
+ * enumeration source, so its getters still observe the function. Returns an
+ * array of [key, descriptor] pairs (+1), or NULL with the exception
+ * pending. */
+static ScrDyn *dyn_define_props_pending(ScrDyn *descs, ScrDyn *read_this,
+                                        ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
+  if (descs->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(descs);
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return NULL;
+    }
+    ScrDyn *pending = dyn_define_props_pending(view, view, read_any);
+    scr_dyn_release(view);
+    return pending;
+  }
+  if (descs->kind == SCR_DYN_FUNC) {
+    /* A function's own enumerable properties are those of its table; its
+     * name, length and prototype are not enumerable. The function, not the
+     * table, is the map a getter on it observes. */
+    ScrDyn *table = scr_dyn_function_properties_existing(descs);
+    if (!table) return scr_exc_pending() ? NULL : scr_dyn_new_arr();
+    ScrDyn *pending = dyn_define_props_pending(table, descs, read_any);
+    scr_dyn_release(table);
+    return pending;
+  }
+  if (descs->kind == SCR_DYN_HANDLE || descs->kind == SCR_DYN_PROMISE || descs->kind == SCR_DYN_PROXY ||
+      descs->kind == SCR_DYN_BYTES) {
+    static const char message[] = "Object.defineProperties with this value as the property map is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  bool primitive = dyn_define_props_primitive(descs);
+  /* undefined and null throw here: "Cannot convert undefined or null to object". */
+  ScrDyn *keys = scr_dyn_get_own_property_names(descs);
+  if (!keys) return NULL;
+  if (!primitive) {
+    ScrDyn *symbols = scr_dyn_get_own_property_symbols(descs);
+    if (!symbols) {
+      scr_dyn_release(keys);
+      return NULL;
+    }
+    for (size_t i = 0; i < symbols->v.arr.len; i++)
+      scr_dyn_arr_push(keys, scr_dyn_retain(symbols->v.arr.items[i]));
+    scr_dyn_release(symbols);
+  }
   ScrDyn *pending = scr_dyn_new_arr();
   static const char *const names[] = {"enumerable", "configurable", "value", "writable", "get", "set"};
   static const size_t lengths[] = {10, 12, 5, 8, 3, 3};
   for (size_t i = 0; i < keys->v.arr.len; i++) {
     ScrDyn *key = keys->v.arr.items[i];
-    ScrStr *name = key->v.str;
-    if (!scr_dyn_obj_enumerable(descs, name->data, name->len)) continue;
-    ScrDyn *descriptor = scr_dyn_obj_read(descs, name->data, name->len);
+    ScrDyn *descriptor;
+    if (primitive) {
+      /* Only a string has own keys: its characters, then `length`, which
+       * is not enumerable. */
+      if (descs->kind != SCR_DYN_STR || i + 1 == keys->v.arr.len) continue;
+      descriptor = scr_dyn_string_index_get(descs, (double)i);
+    } else {
+      if (!scr_dyn_property_is_enumerable_computed(descs, key)) {
+        if (scr_exc_pending()) goto fail;
+        continue;
+      }
+      descriptor = scr_dyn_reflect_get(descs, key, read_this);
+    }
     if (!descriptor) goto fail;
     if (read_any) {
       ScrDyn *snapshot = read_any(descriptor);
       scr_dyn_release(descriptor);
       if (!snapshot) goto fail;
       descriptor = snapshot;
+    } else if (descriptor->kind == SCR_DYN_TYPED_REF) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(descriptor);
+      scr_dyn_release(descriptor);
+      if (scr_exc_pending()) {
+        scr_dyn_release(view);
+        goto fail;
+      }
+      descriptor = view;
     }
     if (descriptor->kind != SCR_DYN_OBJ) {
       ScrJsonBuf b;
@@ -2817,24 +2903,24 @@ fail:
   return NULL;
 }
 
-/* Object.defineProperties over dyn values (see scr_runtime.h). With a
+ScrDyn *scr_dyn_define_props_pending(ScrDyn *descs, ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
+  return dyn_define_props_pending(descs, descs, read_any);
+}
+
+/* Object.defineProperties over dyn values (see scr_runtime.h): the
+ * descriptors are read as above, then each is defined through
+ * scr_dyn_define_property, in key order. That function decides which
+ * objects take a definition and how (an untyped object, a function's or an
+ * array's property table, a typed value held by reference through its
+ * view, a handle's table), so this one has no receiver test of its own
+ * beyond the spec's: a primitive target is Node's TypeError. With a
  * `read_any` (scr_dyn_descriptor_snapshot), each descriptor may be any
  * object; otherwise it must be a plain object. Only the entry point that
  * passes it references the reader, so other programs do not link it. */
 static ScrDyn *scr_dyn_define_props_internal(ScrDyn *target, ScrDyn *descs, ScrDyn *protected_keys,
                                              ScrDyn *(*read_any)(const ScrDyn *descriptor)) {
-  /* Island-held operands ARE objects to Node — the non-object TypeError
-   * below would be a wrong claim. They are fenced with a "not supported
-   * yet" error instead (lane dyn-routing-ops). */
-
-
   if (scr_exc_pending()) return NULL;
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR) {
-    scr_throw_error_msg(SCR_ERR_TYPE, "Object.defineProperties called on non-object",
-                        strlen("Object.defineProperties called on non-object"));
-    return NULL;
-  }
-  if (descs->kind != SCR_DYN_OBJ) {
+  if (dyn_define_props_primitive(target)) {
     scr_throw_error_msg(SCR_ERR_TYPE, "Object.defineProperties called on non-object",
                         strlen("Object.defineProperties called on non-object"));
     return NULL;

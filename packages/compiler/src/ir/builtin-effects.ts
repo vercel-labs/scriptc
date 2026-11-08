@@ -1,12 +1,14 @@
 import type { IrLibFn } from "./builtin-signatures.js";
 
 /** The may-throw seed: libCall members that can raise. Every fs.* member
- * EXCEPT existsSync (which, like Node's, swallows errors and returns false)
- * throws a catchable error on failure; json.parse throws a catchable
- * SyntaxError-shaped string on malformed input. Backends' may-throw analyses must treat a function containing one
- * of these as throwing, exactly like a `throw` statement (and must ALSO
- * seed on `dynCheck` and `awaitExpr` nodes, which throw on validation
- * failure / promise rejection). */
+ * except existsSync (which, like Node's, swallows path errors and returns
+ * false) throws a catchable error on failure; fs.existsSyncValue is here
+ * because reporting DEP0187 for an invalid argument type runs
+ * process.emitWarning, whose replacement may throw. json.parse throws a
+ * catchable SyntaxError-shaped string on malformed input. Backends' may-throw
+ * analyses must treat a function containing one of these as throwing, exactly
+ * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
+ * nodes, which throw on validation failure / promise rejection). */
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The copied error of a synchronous call into Node (@scriptc/node).
   "nodeIsland.callSync",
@@ -131,6 +133,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unboxDynStage",
   "stream.dynTransformResult",
   "stream.handleStream",
+  "stream.handleWritable",
   "stream.pipeDyn",
   "stream.unpipeDyn",
   "weakMap.new",
@@ -573,6 +576,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.propertyKey",
   "dyn.toNumeric",
   "dyn.increment",
+  "dyn.negate",
   // The dynamic-tier operators run the same coercions (scr_js_value.c), and
   // js.toF64 throws dynCheck's TypeError for a non-number.
   "js.toF64",
@@ -582,6 +586,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "js.compare",
   "js.toNumeric",
   "js.increment",
+  "js.negate",
   "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
@@ -918,6 +923,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.loadEnvFile",
   "fs.realpathSync",
   "fs.realpathNativeSync",
+  "fs.existsSyncValue",
   "fs.readFileSync",
   "fs.writeFileSync",
   "fs.appendFileSync",
@@ -1076,6 +1082,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.writeFileFd",
   "fs.appendFileFd",
   "fs.writeFileFdBytes",
+  // The fs/promises and FileHandle twins run the same writes before they
+  // settle their promise, so the writes' errors are raised the same way.
+  "fsp.writeFileOpts",
+  "fsp.writeFileBytesOpts",
+  "fsp.appendFileOpts",
+  "fsp.appendFileBytesOpts",
+  "fileHandle.writeFilePath",
+  "fileHandle.writeFilePathBytes",
   "zlib.inflateSync",
   "zlib.inflateRawSync",
   "zlib.gunzipSync",
@@ -1272,6 +1286,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  // ReadableStream.from's iterability and iterator-method errors, which
+  // Node raises from the call itself.
+  "webstream.from",
 ]);
 
 /** libCall members that always throw. Their result type is the replaced

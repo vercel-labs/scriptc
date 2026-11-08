@@ -618,7 +618,7 @@ static ScrDyn *scr_file_handle_dyn_invoke(
   }
   static const char msg[] =
       "FileHandle method calls through an 'unknown' value are not supported yet — narrow the value to FileHandle first";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return NULL;
 }
 

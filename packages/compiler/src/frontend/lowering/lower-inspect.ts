@@ -1766,6 +1766,20 @@ export function typeReachesCycle(lowerer: Lowerer, t: IrType): boolean {
   return walk(t);
 }
 
+/** True when a value of `t` can hold an untyped value: a type reachable
+ * from it is the checked dynamic. */
+function typeReachesUntyped(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    if (u.kind === "dyn") return true;
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
 /** True when a value of `t` can hold a function: `t` or any type
  * reachable from it is a function type. */
 export function typeReachesFunction(lowerer: Lowerer, t: IrType): boolean {
@@ -2195,9 +2209,14 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   // An accessor's getter answers any value — the walked value itself
   // included — which no declared field type shows, so a shape with a
   // getter keeps Node's circular bookkeeping on.
+  // An untyped value holds any object by reference, the walked value
+  // included, so a container that reaches one keeps the bookkeeping on too.
   const onCycle =
-    (t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
-    (typeReachesItself(lowerer, t) || (t.kind === "record" && shapeHasGetter(lowerer, t.shapeId)));
+    ((t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
+      (typeReachesItself(lowerer, t) ||
+        (t.kind === "record" && shapeHasGetter(lowerer, t.shapeId)))) ||
+    ((t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "set") &&
+      typeReachesUntyped(lowerer, t));
   const begin = (): IrStmt[] => [
     exprStmt({ kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: { kind: "void" }, loc }),
     ...(onCycle
@@ -3733,14 +3752,15 @@ function isDataViewTypeName(tname: string): boolean {
 /** The parsed options literal: the resolved depth (numeric; Infinity for
  * `null`), breakLength (numeric; default 80), compact (numeric, -1 for
  * false; default 3), maxArrayLength and maxStringLength (a non-negative
- * integer; Infinity for `null`; defaults 100 and 10000), with every other
- * non-default knob fenced by name. */
+ * integer; Infinity for `null`; defaults 100 and 10000) and
+ * numericSeparator, with every other non-default knob fenced by name. */
 interface InspectOptions {
   depth: number;
   breakLength: number;
   compact: number;
   sorted: boolean;
   maxArrayLength: number;
+  numericSeparator: boolean;
   maxStringLength: number;
   /** Set by the `atRunTime` parse: colors or a computed knob value, which
    * the runtime reads. */
@@ -3775,6 +3795,7 @@ function parseInspectOptions(
     compact: 3,
     sorted: false,
     maxArrayLength: 100,
+    numericSeparator: false,
     maxStringLength: 10000,
     runtime: false,
     depthKind: 0,
@@ -3977,6 +3998,21 @@ function parseInspectOptions(
           "getters must be true, false, 'get' or 'set'",
         );
       }
+    } else if (key === "numericSeparator") {
+      const literal =
+        value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword;
+      if (!literal && atRunTime) {
+        options.runtime = true;
+        continue;
+      }
+      if (!literal) {
+        lowerer.noLowering(
+          `${surface} with this numericSeparator option`,
+          value,
+          "numericSeparator must be true or false",
+        );
+      }
+      options.numericSeparator = value.kind === ts.SyntaxKind.TrueKeyword;
     } else if (
       !dir &&
       key === "customInspect" &&
@@ -4016,7 +4052,7 @@ function parseInspectOptions(
       lowerer.noLowering(
         `${surface} with the '${key}' option`,
         prop,
-        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength and maxStringLength (a non-negative integer or null), getters (true, false, 'get' or 'set'), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
+        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength and maxStringLength (a non-negative integer or null), getters (true, false, 'get' or 'set'), numericSeparator (true or false), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
       );
     }
   }
@@ -4024,8 +4060,9 @@ function parseInspectOptions(
 }
 
 /** A render under non-default breakLength/compact/sorted/maxArrayLength/
- * maxStringLength/getters: the value is evaluated first, the options apply
- * to this render only, and the defaults return however the render ends, an
+ * maxStringLength/getters/numericSeparator: the value is evaluated first,
+ * the options apply to this render only, and the defaults return however the
+ * render ends, an
  * inspection refusal included. The render runs in a lifted function,
  * `(v) => { set...; try { return render(v); } finally { restore...; } }`,
  * since a seqExpr cannot hold the try; `tag` names the render for the
@@ -4044,10 +4081,11 @@ function withInspectLayout(
     !options.sorted &&
     options.maxArrayLength === 100 &&
     options.maxStringLength === 10000 &&
-    options.getters === 0
+    options.getters === 0 &&
+    !options.numericSeparator
   )
     return render(value);
-  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.depth}`;
+  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.numericSeparator}:${options.depth}`;
   let name = lowerer.inspectHelpers.get(key);
   if (name === undefined) {
     name = keyedHelperName(lowerer, "%util.inspLayout", key);
@@ -4121,6 +4159,24 @@ function withInspectLayout(
       restore.unshift({
         kind: "exprStmt",
         expr: getters(varRef(previous, F64, loc)),
+        loc,
+      });
+    }
+    if (options.numericSeparator) {
+      // insp.numericSeparator answers the previous value.
+      const previous = `previous.${locals.length}`;
+      locals.push({ id: previous, name: "previous", type: BOOL, mutable: false });
+      const separator = (arg: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.numericSeparator",
+        args: [arg],
+        type: BOOL,
+        loc,
+      });
+      apply.push({ kind: "varDecl", localId: previous, init: separator(boolLit(true, loc)), loc });
+      restore.unshift({
+        kind: "exprStmt",
+        expr: separator(varRef(previous, BOOL, loc)),
         loc,
       });
     }
@@ -4396,7 +4452,16 @@ export function lowerInspectValue(
       );
     }
     // Buffers render fully at any depth and on one line (custom inspect).
-    return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
+    // Their named properties render as an object's members, so the layout
+    // options -- numericSeparator among them -- apply to those entries.
+    return withInspectLayout(
+      lowerer,
+      options,
+      value,
+      "buffer",
+      (input) => ({ kind: "libCall", fn: "insp.buffer", args: [input], type: STRING, loc }),
+      loc,
+    );
   }
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, value.type, new Set(), walk);
@@ -4420,7 +4485,7 @@ export function lowerInspectValue(
     // render(v); } finally { restore; } }`, so the previous ones return on
     // every exit, an inspection refusal's throw included (a seqExpr cannot
     // hold the try).
-    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${depth}`;
+    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.numericSeparator}:${depth}`;
     let name = lowerer.inspectHelpers.get(key);
     if (name === undefined) {
       name = keyedHelperName(lowerer, "%util.inspContext", key);

@@ -1,13 +1,15 @@
 /// <reference path="./fs-promises.d.ts" />
 /// <reference path="./stream.d.ts" />
 
-/* The synchronous node:fs surface — utf8-only, no options objects, no
- * Buffers. Importing "node:fs" resolves here (preflight allowlists exactly
- * the ambient-declared node: modules); every function lowers to a `libCall`
- * with a scr_fs_* runtime implementation. Failures throw CATCHABLE string
- * values formatted like Node's error messages ("ENOENT: no such file or
- * directory, open 'x'"). `rmSync` removes FILES only (like Node without
- * `recursive`); empty directories go through `rmdirSync`. */
+/* The synchronous node:fs surface — the subset that compiles natively:
+ * utf8 path strings, string and Buffer data, and the documented option
+ * records that have a lowering. Importing "node:fs" resolves here
+ * (preflight allowlists exactly the ambient-declared node: modules); every
+ * function lowers to a `libCall` with a scr_fs_* runtime implementation.
+ * Failures throw CATCHABLE string values formatted like Node's error
+ * messages ("ENOENT: no such file or directory, open 'x'"). `rmSync`
+ * removes FILES only (like Node without `recursive`); empty directories go
+ * through `rmdirSync`. */
 declare module "node:fs" {
   import { Readable, Writable } from "stream";
   export function readFileSync(path: string | number | URL, encoding: BufferEncoding): string;
@@ -96,7 +98,7 @@ declare module "node:fs" {
       | BufferEncoding
       | null,
   ): void;
-  export function existsSync(path: string | URL): boolean;
+  export function existsSync(path: string | Uint8Array | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(
     path: string | URL,

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9473-child-output-order-large.ts"
+ ],
+ "diags": []
+}

@@ -13,6 +13,7 @@ import { BOOL, DYN, F64, STRING, UNDEFINED_T, isUnitType, typeEquals } from "../
 import { typeKey } from "../../type-mapper.js";
 import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
+import { builtinMethodRecord } from "./builtin-method-records.js";
 import type { Lowerer } from "../lowerer.js";
 import { recordLinkPair, registerLinkSite } from "../record-links.js";
 
@@ -38,6 +39,13 @@ export function widthCoerce(lowerer: Lowerer, expr: IrExpr, expected: IrType): I
     const helper = lowerer.objRecordWidthHelper(expr.type.className, expected.shapeId, expr.loc);
     if (!helper) return null;
     return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
+  }
+  // A builtin handle (process.stdout, process.stderr) flowing into a
+  // record of methods: each method calls the handle's member through its
+  // checked-dynamic view (builtin-method-records.ts).
+  if (expected.kind === "record") {
+    const projected = builtinMethodRecord(lowerer, expr, expected.shapeId, expr.loc);
+    if (projected) return projected;
   }
   // A RECORD flowing into a class-instance slot (`{x: 0, y: 0}` into
   // `A.Point` — the parameter-property data-class pattern): construction
@@ -1019,6 +1027,56 @@ function buildRecordProjection(
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
+            if ("overflow" in conversion || "overflowAt" in conversion) {
+              // The source keeps this member in its index signature:
+              // read the key from the overflow instead of completing
+              // undefined over a value it holds. The key names no
+              // declared field of the source, so the read is an overflow
+              // read. A typed member reads at its own type, where a key
+              // the object never had is the type's undefined arm; a
+              // dynamic member reads as dyn, whose undefined the member's
+              // check rejects.
+              const atMember = "overflowAt" in conversion;
+              const shapeId = (source as IrType & { kind: "record" }).shapeId;
+              const read: IrExpr = {
+                kind: "recordKeyGet",
+                obj: receiver,
+                shapeId,
+                key: { kind: "strLit", value: field.name, type: STRING, loc },
+                overflowOnly: true,
+                type: atMember ? conversion.overflowAt : conversion.overflow,
+                loc,
+              };
+              const value: IrExpr = atMember ? read : lowerer.coerceToExpected(read, field.type);
+              // The key lives in the source's index signature, so the
+              // projection cannot know it is there: a key the object never
+              // had keeps the target slot ABSENT instead of writing the
+              // type's undefined arm as a present property, the state `in`,
+              // Object.hasOwn and Object.keys observe. A stored undefined
+              // is still a present key, which the overflow test tells apart.
+              const absent = lowerer.absentFieldValue(field, loc);
+              if (absent?.kind === "fieldAbsent") {
+                return {
+                  name: field.name,
+                  value: {
+                    kind: "ternary",
+                    cond: {
+                      kind: "recordOvfHas",
+                      obj: receiver,
+                      shapeId,
+                      key: { kind: "strLit", value: field.name, type: STRING, loc },
+                      type: BOOL,
+                      loc,
+                    },
+                    then: value,
+                    else_: absent,
+                    type: value.type,
+                    loc,
+                  },
+                };
+              }
+              return { name: field.name, value };
+            }
             if ("absentDyn" in conversion) {
               // The source has no such property: an optional target field
               // keeps the absent marker, a required one holds the dyn

@@ -11,7 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { USES_TIMERS_LIB_FNS } from "../backend/llvm/lib-shared.js";
-import { libnodeCacheKey, libnodeRecord, libnodeTarget, NODE_BRIDGE_ABI } from "./libnode.js";
+import {
+  libnodeCacheKey,
+  libnodeRecord,
+  libnodeTarget,
+  NODE_BRIDGE_ABI,
+  nodeIslandPackHint,
+} from "./libnode.js";
 import { libnodePackPackage } from "./libnode-pack.js";
 import { findInstalledLibnodePack, hostLibnodeTarget } from "./libnode-pack.js";
 
@@ -216,4 +222,29 @@ test("calls into Node keep the program's event loop running", () => {
   // Node's ref'd timers and I/O run on the program's loop (scr_node_island.c).
   expect(USES_TIMERS_LIB_FNS.has("nodeIsland.call")).toBe(true);
   expect(USES_TIMERS_LIB_FNS.has("nodeIsland.callSync")).toBe(true);
+});
+
+describe("SC8005's hint", () => {
+  const use = { file: "/project/main.ts", api: "callSync (@scriptc/node)" };
+
+  test("names the use and this host's install line", () => {
+    const hint = nodeIslandPackHint(use, { SCRIPTC_TARGET: "x86_64-linux-gnu" });
+    expect(hint).toContain("/project/main.ts uses callSync (@scriptc/node)");
+    expect(hint).toContain("npm i @scriptc/libnode-linux-x64-gnu@");
+    expect(hint).toContain("Node.js >=24.13.1");
+  });
+
+  test("keeps the self-build route where no pack is published", () => {
+    for (const target of ["x86_64-windows-gnu", "wasm32-wasi"]) {
+      const hint = nodeIslandPackHint(use, { SCRIPTC_TARGET: target });
+      expect(hint).not.toContain("npm i @scriptc/libnode-");
+      expect(hint).toContain("packages/libnode-common/build-pack.mjs");
+    }
+  });
+
+  test("still says what to install when lowering recorded no use site", () => {
+    const hint = nodeIslandPackHint(undefined, { SCRIPTC_TARGET: "x86_64-linux-gnu" });
+    expect(hint).toContain("runs code in Node.js (@scriptc/node)");
+    expect(hint).toContain("npm i @scriptc/libnode-linux-x64-gnu@");
+  });
 });

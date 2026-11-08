@@ -141,6 +141,7 @@ import { funcTypeFromParamShapes, registerOverloadedCallableAlias } from "./call
 import {
   jsBindingHasOpenWrites,
   hasJsTypeAnnotation,
+  hasShapeOverlayType,
   inferredEvolvingLetType,
   isVarDeclared,
   numericIteratorSourceOf,
@@ -151,7 +152,7 @@ import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
-import { isNativeBuiltinValueInitializer } from "./lower-builtin-values.js";
+import { isNativeBuiltinValueInitializer, reflectMemberValueRead } from "./lower-builtin-values.js";
 import { isDataViewPrototypeRead, isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
   collectNamespaceStmt,
@@ -2361,7 +2362,11 @@ export function collectGlobals(
           // callable ABI. Preserve checked-native values in shared storage;
           // adapting the loader to (string) would replace its validation.
           // An inferred Promise.prototype binding holds an ordinary object
-          // (isPromisePrototypeRead), in TypeScript as well.
+          // (isPromisePrototypeRead), in TypeScript as well. A Reflect member
+          // value reads the arity of its call (`Reflect.get(t, k)` defaults
+          // the receiver to the target only when it is ABSENT), which the
+          // lib signature's fixed parameters cannot express: the binding
+          // keeps the checked-dynamic callable the namespace answers.
           const initializer = decl.initializer
             ? withoutParenthesesAssertionsNonNull(decl.initializer)
             : undefined;
@@ -2369,7 +2374,8 @@ export function collectGlobals(
             (nameNode === decl.name &&
               !decl.type &&
               (isPromisePrototypeRead(lowerer, decl.initializer) ||
-                isDataViewPrototypeRead(lowerer, decl.initializer))) ||
+                isDataViewPrototypeRead(lowerer, decl.initializer) ||
+                reflectMemberValueRead(lowerer, decl.initializer))) ||
             (isJsSourceFile(sf) &&
               nameNode === decl.name &&
               initializer &&
@@ -2525,12 +2531,16 @@ export function collectGlobals(
           // values (a Map member) keep their static/alias stories.
           // Spreads from an existing checked dictionary stay checked too;
           // copying its entries must not extract nested callable records.
+          // A literal shape inference typed (hasShapeOverlayType) is a
+          // record global: the analysis proved its object never reaches
+          // untyped code.
           if (
             isJsSourceFile(sf) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
             decl.initializer !== undefined &&
             ts.isObjectLiteralExpression(decl.initializer) &&
+            !hasShapeOverlayType(decl) &&
             decl.initializer.properties.nodes.every((p) => {
               if (ts.isSpreadAssignment(p)) {
                 return (

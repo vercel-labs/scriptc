@@ -27,12 +27,15 @@ import {
   analyzeClosedGroups,
   analyzeRegionGroups,
   source,
+  throws,
   type RegionGroups,
 } from "./region-groups.js";
 import { CYC_BUF, CYC_HDR, CYC_TYPE } from "./alloc.js";
 import { ALLOCATIONS, children, forEachNode, isExpr, type Node } from "./region-ir.js";
 import {
   guardedFunctions,
+  holdValues,
+  opensArena,
   planRegionSites,
   reachableFrom,
   type RegionSites,
@@ -140,15 +143,46 @@ export function planArenas(mod: IrModule, eligible: ArenaEligibility): ArenaPlan
     ((node.kind === "recordLit" && node.type.kind === "record" && shapes.has(node.type.shapeId)) ||
       (node.kind === "new" && classes.has(node.className)) ||
       node.kind === "arrayLit");
-  const unsafe = cycleUnsafeFunctions(mod, groups.reachable, sites, takesArena, eligible.traced);
-  for (const r of [...groups.roots, ...groups.calls]) {
-    const runs = reachableFrom(mod, [r]);
-    if ([...runs].some((f) => unsafe.has(f)) || (r.kind === "new" && !takesArena(r))) {
-      groups.roots.delete(r);
-      groups.calls.delete(r);
-      groups.drops.delete(r);
+  // The same holds for a value on the heap that holds a reference into the
+  // group from outside it (RegionGroups.holders; holdValues sent it to the
+  // heap): a group keeps its arena only if no such value can be on a cycle.
+  // A holder that opens an arena of its own is judged as that group.
+  let allocators: Set<string> | null = null;
+  const fnNames = new Set(mod.functions.map((f) => f.name));
+  const heldInCycle = (r: Node): boolean => {
+    if (!opensArena(groups, r)) return false;
+    for (const h of groups.holders(r)) {
+      // Only a call that allocates can make a cycle: one that allocates
+      // nothing hands back what it was given, and a copy is a single object
+      // that the root's proof lets nothing else refer to.
+      if (h.kind !== "call" || !sites.heldCalls.has(h)) continue;
+      allocators ??= cycleCapableAllocators(mod, eligible.traced);
+      if (allocators.has(h.callee) || !fnNames.has(h.callee)) return true;
     }
-  }
+    return false;
+  };
+  const dropUnsafe = (): boolean => {
+    const unsafe = cycleUnsafeFunctions(mod, groups.reachable, sites, takesArena, eligible.traced);
+    let dropped = false;
+    for (const r of [...groups.roots, ...groups.calls]) {
+      const runs = reachableFrom(mod, [r]);
+      if (
+        [...runs].some((f) => unsafe.has(f)) ||
+        (r.kind === "new" && !takesArena(r)) ||
+        heldInCycle(r)
+      ) {
+        groups.roots.delete(r);
+        groups.calls.delete(r);
+        groups.drops.delete(r);
+        dropped = true;
+      }
+    }
+    return dropped;
+  };
+  // A root that lost its arena here may hold a reference into the group of
+  // one that keeps its own: it takes the heap from now on (holdValues),
+  // and a call that runs with the arena suspended can make a group unsafe.
+  for (let again = dropUnsafe(); again;) again = holdValues(mod, groups, sites) && dropUnsafe();
   if (groups.roots.size === 0 && groups.calls.size === 0) return null;
   groups.reachable = reachableFrom(mod, [...groups.roots, ...groups.calls]);
   const treeClasses = arenaTreeClasses(mod, groups, sites, defs, eligible);
@@ -184,6 +218,51 @@ export function planArenas(mod: IrModule, eligible: ArenaEligibility): ArenaPlan
   return { groups, sites, shapes, classes, allClosed };
 }
 
+/** Whether `node` allocates an object that can be on a reference cycle. */
+function allocatesCycleCapable(node: Node, traced: (t: IrType) => boolean): boolean {
+  return (
+    isExpr(node) &&
+    traced(node.type) &&
+    (node.kind === "closure"
+      ? node.captures.length > 0
+      : (ALLOCATIONS.has(node.kind) || source(node) || node.kind === "libCall") &&
+        node.kind !== "call" &&
+        node.kind !== "callValue")
+  );
+}
+
+/** The functions of `mod` that can allocate a cycle-capable object, by
+ * themselves or through a function they call, construct or make a closure
+ * of. A throw has the type of the value it stands in for and makes none. */
+function cycleCapableAllocators(mod: IrModule, traced: (t: IrType) => boolean): Set<string> {
+  const out = new Set<string>();
+  const callers = new Map<string, string[]>();
+  for (const fn of mod.functions)
+    forEachNode(fn.body, (node) => {
+      if (isExpr(node) && !throws(node) && allocatesCycleCapable(node, traced)) out.add(fn.name);
+      const callee =
+        node.kind === "call"
+          ? node.callee
+          : node.kind === "new"
+            ? `%${node.className}.constructor`
+            : node.kind === "closure"
+              ? node.fnName
+              : null;
+      if (callee === null) return;
+      const list = callers.get(callee);
+      if (list === undefined) callers.set(callee, [fn.name]);
+      else list.push(fn.name);
+    });
+  const queue = [...out];
+  while (queue.length > 0)
+    for (const caller of callers.get(queue.pop()!) ?? [])
+      if (!out.has(caller)) {
+        out.add(caller);
+        queue.push(caller);
+      }
+  return out;
+}
+
 /** The functions in `reachable` that can allocate a cycle-capable object
  * on the heap while an arena is open: one that does not take the arena
  * (`takesArena`), or a call that runs with the arena suspended and reaches
@@ -196,14 +275,7 @@ function cycleUnsafeFunctions(
   traced: (t: IrType) => boolean,
 ): Set<string> {
   const fns = new Map(mod.functions.map((f) => [f.name, f]));
-  const allocatesTraced = (node: Node): boolean =>
-    isExpr(node) &&
-    traced(node.type) &&
-    (node.kind === "closure"
-      ? node.captures.length > 0
-      : (ALLOCATIONS.has(node.kind) || source(node) || node.kind === "libCall") &&
-        node.kind !== "call" &&
-        node.kind !== "callValue");
+  const allocatesTraced = (node: Node): boolean => allocatesCycleCapable(node, traced);
   // Functions with a cycle-capable allocation, and what they call.
   const direct = new Set<string>();
   const calls = new Map<string, Set<string>>();

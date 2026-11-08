@@ -53,6 +53,7 @@ import {
 } from "./lower-timers.js";
 import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
+import { lowerOpenEnumeration } from "./open-enumerations.js";
 import { InternalCompilerError } from "../../errors.js";
 import {
   isFsStreamMember,
@@ -10648,6 +10649,12 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+  }
+  // An open spread value whose pairs or values go straight to bindings
+  // that take them as they are (open-enumerations.ts).
+  if (member !== "keys") {
+    const open = lowerOpenEnumeration(lowerer, call);
+    if (open !== null) return open;
   }
   // A CHECKED-DYNAMIC argument — the checker may still spell a record
   // type (the JS file-scope object-literal identity story stores the

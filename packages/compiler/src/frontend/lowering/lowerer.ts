@@ -293,6 +293,7 @@ import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./r
 import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
+import { analyzeOpenEnumerations } from "./open-enumerations.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
@@ -3483,7 +3484,9 @@ export class Lowerer {
   runtimeOptionalNarrowings: readonly RuntimeOptionalNarrowing[] = [];
   /** JavaScript bindings assigned values outside their declared type
    * (analyzeJsWidenedBindings): checked-dynamic storage, and reads keep the
-   * stored value instead of narrowing it to the checker's type. */
+   * stored value instead of narrowing it to the checker's type. Also the
+   * TypeScript bindings that take the values of an open spread value's
+   * enumeration as they are (analyzeOpenEnumerations). */
   readonly jsWidenedBindings = new Set<ts.Symbol>();
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
@@ -8882,6 +8885,27 @@ export class Lowerer {
     }
   }
 
+  /** The bindings that take the pairs or values of an open spread value's
+   * enumeration as they are, checked-dynamic, instead of the element type
+   * the checker inferred from the literal's members (open-enumerations.ts). */
+  analyzeOpenEnumerations(parts: FileParts[]): void {
+    analyzeOpenEnumerations(
+      this,
+      parts,
+      (symbol, type) => {
+        // This decides the binding's storage, whatever the optional-read
+        // analysis made of the checker's element type before.
+        this.runtimeOptionalBindingTypes.set(symbol, type);
+        // A read of the value answers what the binding holds: the
+        // checker's type at the read does not describe it.
+        if (type.kind === "dyn") this.jsWidenedBindings.add(symbol);
+      },
+      (pattern, type) => {
+        this.runtimeOptionalPatternTypes.set(pattern, type);
+      },
+    );
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = this.runtimeOptionalProvenance;
     // The site whose value the current promotion follows (debug only).
@@ -12378,6 +12402,7 @@ export class Lowerer {
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
       this.analyzeJsWidenedBindings(parts);
+      this.analyzeOpenEnumerations(parts);
     });
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
@@ -13060,6 +13085,7 @@ export class Lowerer {
         this.analyzeDateJsonResults(parts);
         this.analyzeGuardedRecordReadGlobals(parts);
         this.analyzeJsWidenedBindings(parts);
+        this.analyzeOpenEnumerations(parts);
       });
       // Decorated classes analyze post-collection here too: the %init seeds
       // lower the decoration calls, whose edges (decorator bodies, construct

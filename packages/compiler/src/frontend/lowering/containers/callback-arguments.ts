@@ -231,6 +231,21 @@ export function lowerArrayCallback(
     }
   }
 
+  // A parameter registered to take the helper's checked-dynamic value as it
+  // is (open-enumerations.ts) is declared `unknown` for this lowering, like
+  // the untyped parameters above.
+  if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
+    for (const p of callbackDataParams(argNode)) {
+      if (!ts.isIdentifier(p.name) || p.type || p.initializer || p.dotDotDotToken) continue;
+      if (lowerer.chainNarrowedType.has(p.name)) continue;
+      const symbol = lowerer.checker.getSymbolAtLocation(p.name);
+      if (symbol && lowerer.runtimeOptionalBindingTypes.get(symbol)?.kind === "dyn") {
+        lowerer.chainNarrowedType.set(p.name, lowerer.checker.getUnknownType());
+        overridden.push(p.name);
+      }
+    }
+  }
+
   // the value's handle element while tsc's evolving analysis types the
   // callback's params by the pushed elements): the lead params BIND the
   // handles the loop passes, whatever the contextual type spelled —

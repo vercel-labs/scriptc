@@ -1033,18 +1033,15 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // not reuse. (Identifier catch bindings shipped too, and a catch clause
   // that destructures ships through the checked-dynamic tree; what remains
   // rejected is a destructuring pattern in a promise handler's parameter —
-  // SC1062 — un-narrowed binding uses — SC1063 — and jumps crossing a
-  // finally — SC1090.)
+  // SC1062 — and jumps crossing a finally — SC1090.)
   SC1062: {
     feature: "destructuring catch clause bindings",
     milestone: "later",
     hint: "bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives",
   },
-  SC1063: {
-    feature: "this use of a catch binding",
-    milestone: "later",
-    hint: "a catch binding is typed by what was thrown — narrow before reading: 'if (e instanceof Error)' (then .name/.message), 'typeof e === \"string\"/\"number\"/\"boolean\"', or rethrow with 'throw e'; String(e) and `${e}` also compile ('Error: msg' for Error payloads — Node's String(), which has no stack), so 'e instanceof Error ? e.message : String(e)' works as-is",
-  },
+  // SC1063 (uses of a catch binding outside the narrowing tests) shipped —
+  // code retired, do not reuse: the binding reads as the `unknown` (or
+  // `any`) value TypeScript declares it to be.
   SC1070: { feature: "async/await", milestone: "M3" },
   SC1071: { feature: "generators", milestone: "later" },
   // `this` in class methods (+ lexical capture by arrows) shipped; what

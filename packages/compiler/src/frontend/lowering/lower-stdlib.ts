@@ -3,7 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
 
 import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
 import { staticString } from "./builtins/module-resolution.js";
-import { resolveImport, resolveNpmImport } from "../program.js";
+import { resolveNpmImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
@@ -2550,7 +2550,7 @@ function programImportTarget(
       if (ts.isSourceFile(d) && !d.isDeclarationFile) return d;
     }
   }
-  const resolved = resolveImport(lowerer.program, ts.getSourceFileOfNode(call), specifier);
+  const resolved = lowerer.facts.importedModule(ts.getSourceFileOfNode(call), specifier);
   return resolved !== null && !resolved.isDeclarationFile ? resolved : null;
 }
 

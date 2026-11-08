@@ -1,0 +1,13 @@
+forward-let-unassigned-state.ts:6:30 - error SC1030: the reference to 'label' from a function created above its 'let' declaration, which has no initializer (a read before the first assignment would be 'undefined', which the binding's type cannot hold — annotate it '| undefined', initialize it, or move the declaration up) is not supported yet
+
+  5 | function text(seed: number): string {
+  6 |   const read = (): string => label + ":" + seed;
+    |                              ^~~~~
+  7 |   let label: string;
+
+forward-let-unassigned-state.ts:14:5 - error SC1030: the reference to 'total' from a function created above its 'let' declaration, which has no initializer (a read before the first assignment would be 'undefined', which the binding's type cannot hold — annotate it '| undefined', initialize it, or move the declaration up) is not supported yet
+
+  13 |   const bump = (): void => {
+  14 |     total += seed;
+     |     ^~~~~
+  15 |   };

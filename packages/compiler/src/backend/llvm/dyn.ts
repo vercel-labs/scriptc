@@ -4189,7 +4189,9 @@ export class LlDyn {
           const flags = B.tmp();
           const np = B.tmp();
           const alloc = B.tmp();
-          B.line(`${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 1`);
+          // The map follows the record's header, which has a second word
+          // when the record is an arm of a pointer-represented union.
+          B.line(`${ovfp} = getelementptr inbounds %${struct}, ptr %v, i64 0, i32 ${base}`);
           B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
           B.line(
             `${flagsp} = getelementptr inbounds i8, ptr ${ovf}, i64 ${mapFlagsOffset(host.sizeType)}`,

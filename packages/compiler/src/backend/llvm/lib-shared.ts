@@ -970,6 +970,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.spawnSyncOpts": "scr_spawn_sync_opts",
   "cp.spawnSyncStdioStr": "scr_spawn_sync_stdio_str",
   "cp.spawnSyncEnv": "scr_spawn_sync_env",
+  "cp.shellLine": "scr_child_shell_line",
+  "cp.checkShellArgs": "scr_child_shell_check_args",
   "cp.spawnSyncExt": "scr_spawn_sync_ext",
   "cp.spawnSyncExtEnv": "scr_spawn_sync_ext_env",
   "cp.execSync": "scr_exec_sync",
@@ -991,6 +993,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "child.ref": "scr_child_ref",
   "procStream.write": "scr_proc_stream_write",
   "stream.stdioWritable": "scr_stream_stdio_writable",
+  "stream.stdioReadable": "scr_stream_stdio_readable",
   "stream.unboxDyn": "scr_stream_unbox_dyn",
   "stream.dynIterableSource": "scr_stream_dyn_iterable_source",
   "stream.dynSourceValue": "scr_stream_dyn_source_value",
@@ -2041,6 +2044,9 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.cipherNew",
   // ecdh.setPublicKey reports DEP0031 on the next tick.
   "crypto.ecdhNew",
+  // A shell command line joined from separate arguments reports DEP0190
+  // on the next tick.
+  "cp.shellLine",
   // WebCrypto results settle through the deferred crypto queue.
   "webcrypto.generateKey",
   "webcrypto.encrypt",

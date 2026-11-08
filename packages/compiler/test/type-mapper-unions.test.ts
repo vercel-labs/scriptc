@@ -46,6 +46,12 @@ beforeAll(() => {
     export type PrimitiveNumber = 1;
     export type PrimitiveBoolean = true;
     export type TemplateText<T extends string> = \`value:\${T}\`;
+    export type Json = null | boolean | number | string | Json[] | JsonObject;
+    export type JsonObject = { [key: string]: Json };
+    export type Mixed = number | Map<string, Mixed> | Mixed[] | MixedBag;
+    export type MixedBag = { [key: string]: Mixed };
+    export type Value = number | Value[] | Tagged;
+    export type Tagged = { [key: string]: Value; [Symbol.toStringTag]: string };
   `,
   );
   load = loadProgram(entry);
@@ -169,6 +175,60 @@ describe("checker and synthesized optional union identity", () => {
     expect(withUndefinedArm(plain, ctx.unions)).toEqual(optional);
     expect(ctx.unions.get(plain.unionId)!.discriminant).toBeUndefined();
     expect(ctx.unions.get(optional.unionId)!.discriminant).toBeUndefined();
+  });
+
+  // The lowerer answers classImplementedProtocol for a dictionary that keeps
+  // the identity of the objects that enter it.
+  function viewContext(...views: string[]): TypeMapperCtx {
+    const kept = new Set(views.map((name) => aliases.get(name)!));
+    return { ...context(), classImplementedProtocol: (type) => kept.has(type) };
+  }
+
+  test("a recursive union holding an identity dictionary is checked-dynamic in either mapping order", () => {
+    for (const order of [
+      ["JsonObject", "Json"],
+      ["Json", "JsonObject"],
+    ]) {
+      const ctx = viewContext("JsonObject");
+      for (const name of order) expect(mapType(aliases.get(name)!, ctx)).toEqual({ kind: "dyn" });
+      // No placeholder was left behind for either type.
+      expect(ctx.shapes.recursivePending(aliases.get("JsonObject")!)).toBe(false);
+      expect(ctx.unions.recursivePending(aliases.get("Json")!)).toBe(false);
+      expect(ctx.unions.dynBackReferences.size).toBe(0);
+    }
+  });
+
+  test("without the identity the same union keeps its recursive layout", () => {
+    const ctx = context();
+    const json = mapped("Json", ctx);
+    const arms = ctx.unions.get(json.unionId)!.arms;
+    const object = arms.find((arm) => arm.kind === "record");
+    if (object?.kind !== "record") throw new Error("missing dictionary arm");
+    expect(ctx.shapes.get(object.shapeId)!.indexValue).toEqual(json);
+    expect(mapType(aliases.get("JsonObject")!, ctx)).toEqual(object);
+  });
+
+  test("a recursive union holding a symbol-keyed dictionary is checked-dynamic in either mapping order", () => {
+    for (const order of [
+      ["Tagged", "Value"],
+      ["Value", "Tagged"],
+    ]) {
+      const ctx = context();
+      for (const name of order) expect(mapType(aliases.get(name)!, ctx)).toEqual({ kind: "dyn" });
+      expect(ctx.shapes.recursivePending(aliases.get("Tagged")!)).toBe(false);
+      expect(ctx.unions.recursivePending(aliases.get("Value")!)).toBe(false);
+    }
+  });
+
+  test("an arm with a typed representation keeps the identity union unmapped in either order", () => {
+    for (const order of [
+      ["MixedBag", "Mixed"],
+      ["Mixed", "MixedBag"],
+    ]) {
+      const ctx = viewContext("MixedBag");
+      for (const name of order) expect(mapType(aliases.get(name)!, ctx)).toBeNull();
+      expect(ctx.unions.dynBackReferences.size).toBe(0);
+    }
   });
 
   test("making a recursive root optional does not rewrite its child storage", () => {

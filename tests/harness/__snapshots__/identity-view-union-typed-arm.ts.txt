@@ -1,0 +1,33 @@
+identity-view-union-typed-arm.ts:7:7 - error SC2006: values of type 'Bag' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Dates, Promises, or 'unknown')
+
+  6 | const fixed = { n: 1 };
+  7 | const bag: Bag = fixed;
+    |       ^~~
+  8 | bag.more = [2];
+
+  hint: string- and number-keyed index signatures over the supported value types compile directly; symbol keys and dual signatures with unequal value types have no lowering
+
+identity-view-union-typed-arm.ts:8:1 - error SC1090: assignment to non-variables are not supported yet
+
+  7 | const bag: Bag = fixed;
+  8 | bag.more = [2];
+    | ^~~~~~~~
+  9 | function count(value: Node): number {
+
+identity-view-union-typed-arm.ts:9:16 - error SC2009: values of type 'Node' cannot be compiled: the union shape is supported, and unions in the 'string | object' family ride the checked-dynamic representation wholesale, but 'Map<string, Node>' arms have a typed representation whose semantics (identity, methods, dispatch) do not survive that collapse
+
+   8 | bag.more = [2];
+   9 | function count(value: Node): number {
+     |                ^~~~~
+  10 |   if (typeof value === "number") return 1;
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+identity-view-union-typed-arm.ts:15:13 - error SC2004: uses of 'count' inherit the blocker on its declaration
+
+  14 | }
+  15 | console.log(count(bag), count(new Map<string, Node>([["k", bag]])), count([bag, 3]), JSON.stringify(fixed));
+     |             ^~~~~
+  16 | 
+
+  hint: the declaration of 'count' did not compile — fix the diagnostic reported there and these sites clear with it

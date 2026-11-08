@@ -99,8 +99,10 @@ export interface EarlyExecutableNativeFeatures {
   dynAsync: boolean;
   dynTier?: boolean;
   streamDyn?: boolean;
+  streamStdin?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  childShellLine?: boolean;
   childOptionExt?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;

@@ -1,0 +1,15 @@
+generic-rest-asserted-member.ts:15:18 - error SC1031: rest bindings whose packed type has no static mapping (only plain record types pack) is not supported yet (instantiating 'listed' with <{ _meta: unknown; extra: number; name: string }>)
+
+  14 | function listed<T extends Base>(item: T): string {
+  15 |   const { _meta, ...rest } = item as T & { icons?: unknown };
+     |                  ^~~~~~~
+  16 |   return JSON.stringify(rest);
+
+generic-rest-asserted-member.ts:16:25 - error SC2004: uses of 'rest' inherit the blocker on its declaration (instantiating 'listed' with <{ _meta: unknown; extra: number; name: string }>)
+
+  15 |   const { _meta, ...rest } = item as T & { icons?: unknown };
+  16 |   return JSON.stringify(rest);
+     |                         ^~~~
+  17 | }
+
+  hint: the declaration of 'rest' did not compile — fix the diagnostic reported there and these sites clear with it

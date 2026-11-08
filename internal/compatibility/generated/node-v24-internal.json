@@ -52860,6 +52860,7 @@
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
           "tests/corpus/headers-static-accessors.ts",
+          "tests/corpus/headers-typed-iteration.ts",
           "tests/corpus/js-abort-portable.js",
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-mutation.ts",
@@ -53607,6 +53608,7 @@
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
           "tests/corpus/headers-static-accessors.ts",
+          "tests/corpus/headers-typed-iteration.ts",
           "tests/corpus/7735-untyped-headers-iterators.js"
         ]
       },

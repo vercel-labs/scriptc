@@ -4,8 +4,8 @@
  * Node parity notes (SEMANTICS.md has the user-facing story):
  * - The command PATH-searches like Node's (the parent searches PATH and
  *   spawns the candidate; a command containing '/' spawns directly).
- *   `shell` (always with an empty args list — see DEP0190 below) runs the
- *   command line through /bin/sh -c instead.
+ *   `shell` (always with an empty args list — scr_child_shell.c joins
+ *   separate arguments) runs the command line through /bin/sh -c instead.
  * - stdin is /dev/null (Node's spawnSync default reads nothing without
  *   `input`; `input` pipes that string instead); stdout/stderr are
  *   captured to strings, utf8 assumed — the compiler fences every other
@@ -3187,8 +3187,8 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   ScrWinSyncRes w;
   /* `shell`: the command runs through cmd.exe /d /s /c, Node's Windows
    * shape. The compiler emits the form with an EMPTY args list only (a
-   * non-empty one is Node's DEP0190 warning, which a native build cannot
-   * report), so the command string IS the command line. */
+   * non-empty one arrives joined into the command by scr_child_shell.c,
+   * with Node's DEP0190), so the command string IS the command line. */
   ScrStr *run_cmd = cmd;
   ScrArr *run_args = args;
   ScrArr *shell_args = NULL;
@@ -6796,8 +6796,8 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   char **argv = scr_child_argv(cmd, args);
   /* `shell`: the command line through /bin/sh -c (the async spawn's exact
    * shape), so the command's quoting and operators apply. The form is
-   * emitted with an EMPTY args list only (Node's DEP0190 warns otherwise,
-   * and a native build has no warning channel), so the command string IS
+   * emitted with an EMPTY args list only (separate arguments arrive joined
+   * into the command by scr_child_shell.c), so the command string IS
    * the command line. */
   const char *file = cmd->data;
   if (shell) {

@@ -77,11 +77,7 @@ import {
   classUnionToString,
   type StringConversionHint,
 } from "../class-to-primitive.js";
-import {
-  genericDeclarationBehindValue,
-  noteDynamicIdentityComparison,
-  notePinnedIdentityComparison,
-} from "../generic-functions.js";
+import { genericDeclarationBehindValue } from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
@@ -108,6 +104,7 @@ import {
 import { lowerInstanceConstructorIs } from "../class-instance-constructor.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
+import { processStreamAs } from "../general-streams.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
 import { withUnitArm } from "../../type-mapper.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
@@ -772,6 +769,34 @@ export function lowerNullishPair(
       );
       lowerer.nullishFuncResults.add(expr);
       return { kind: "nullish", left, right, type: present, loc };
+    }
+  }
+  // A present value that converts into the result (`texts ?? mixed`, where
+  // the default's array holds a wider element union): the conversion a slot
+  // of the result type applies to that value, after the original nullish
+  // test, with the default lowered lazily into the result.
+  if (present !== null) {
+    const helper = lowerer.narrowedArmHelper(left.type.unionId, present, loc);
+    if (helper !== null) {
+      let converts = true;
+      const converted = nullishBranches(
+        lowerer,
+        left,
+        left.type,
+        def.arms,
+        type,
+        loc,
+        () => lowerer.lowerExprExpecting(expr.right, type),
+        (stable) => {
+          const value = lowerer.coerceToExpected(
+            { kind: "call", callee: helper, args: [stable], type: present, loc },
+            type,
+          );
+          converts = typeEquals(value.type, type);
+          return value;
+        },
+      );
+      if (converts) return converted;
     }
   }
   lowerer.unsupported(
@@ -1981,6 +2006,11 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     ? (lowerAbsenceProbe(lowerer, expr.right) ?? lowerer.lowerExpr(expr.right))
     : lowerer.lowerExpr(expr.right);
   if (strictEquality) {
+    // A process stream compared with a value of the stream class it is an
+    // instance of: the process stream answers its one stream, so the
+    // comparison is between two streams (general-streams.ts).
+    left = processStreamAs(left, right.type) ?? left;
+    right = processStreamAs(right, left.type) ?? right;
     const storedLeft = runtimeOptionalStorageOperand(lowerer, expr.left);
     const storedRight = runtimeOptionalStorageOperand(lowerer, expr.right);
     if (storedLeft !== null && right.type.kind !== "union") left = storedLeft;
@@ -2080,8 +2110,6 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
             ? { liveRef: true as const }
             : {}),
         };
-        if (reference.kind === "func")
-          noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left: scalarSide === left ? boxed : left,
@@ -2137,12 +2165,6 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           // reference kinds by identity (scr_dyn_strict_eq).
           scalarSide.type.kind === "dyn")
       ) {
-        // A generic declaration read through `unknown` compares as the
-        // function object it names, which is one object in JavaScript but
-        // one closed instance per signature here: the whole-program check
-        // refuses it when the program holds the declaration at more than
-        // one signature.
-        noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left,
@@ -3063,17 +3085,6 @@ export function lowerStrictEquality(
         loc,
       };
     }
-    // Two pins of ONE generic declaration at different signatures are
-    // different compiled closures; the whole-program check refuses the
-    // compare (checkGenericIdentityPins).
-    notePinnedIdentityComparison(
-      lowerer,
-      node,
-      leftNode,
-      rightNode,
-      idLeft.kind === "closure" ? idLeft.fnName : undefined,
-      idRight.kind === "closure" ? idRight.fnName : undefined,
-    );
     return {
       kind: "bin",
       op: negated ? "!==" : "===",
@@ -3152,11 +3163,6 @@ export function lowerStrictEquality(
     };
   }
   if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
-    // A generic declaration read through `unknown` compares as the function
-    // object it names, which is one object in JavaScript but one closed
-    // instance per signature here: the whole-program check refuses it when
-    // the program holds the declaration at more than one signature.
-    noteDynamicIdentityComparison(lowerer, node, leftNode, rightNode);
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),

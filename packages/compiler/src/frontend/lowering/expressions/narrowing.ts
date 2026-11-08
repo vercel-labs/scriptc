@@ -63,6 +63,7 @@ import { assertsGlobalObject, extractionCopiesReference } from "../assertion-ide
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
 import { isMessageListenerCall } from "./message-listeners.js";
+import { nativeProxyEntering, refuseProxyInTypedSlot } from "./native-proxy.js";
 import {
   assertedProbeAccessOf,
   convertingAssertion,
@@ -967,6 +968,15 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     }
     return expr;
   }
+  // A member a constituent of a class of record types requires sits in the
+  // class's record as an optional slot (union-classes.ts). The checker's
+  // type for the read is the constituent's declaration, not a test the
+  // program made: a value asserted or guarded past its members is found
+  // here, and throws.
+  if (classRecordMemberRead(lowerer, node, expr)) {
+    const helper = lowerer.narrowedArmHelper(expr.type.unionId, narrowed, expr.loc);
+    if (helper) return lowerer.checkedNarrowCall(helper, expr, narrowed, expr.loc);
+  }
   const checked = checkedStaleArm(lowerer, node, expr, tag, narrowed);
   if (checked) return checked;
   return {
@@ -977,6 +987,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     type: narrowed,
     loc: expr.loc,
   };
+}
+
+/** A read of a member that its receiver's type requires, where that type
+ * belongs to a class of record types and the class's record holds the
+ * member as optional. */
+function classRecordMemberRead(lowerer: Lowerer, node: ts.Node, expr: IrExpr): boolean {
+  if (expr.kind !== "recordGet" || lowerer.typeCtx.unionClassOf === undefined) return false;
+  if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return false;
+  const receiver = lowerer.checker.getNonNullableType(lowerer.typeOf(node.expression));
+  if (lowerer.typeCtx.unionClassOf(receiver)?.state !== "merged") return false;
+  const property = lowerer.checker.getPropertyOfType(receiver, expr.field);
+  return property !== undefined && (property.flags & ts.SymbolFlags.Optional) === 0;
 }
 
 /** A getter read whose runtime result can be undefined (an unchecked
@@ -2044,6 +2066,8 @@ function checkedDynCast(
   inner: IrExpr,
   target: IrType,
 ): IrExpr {
+  const proxy = nativeProxyEntering(lowerer, inner);
+  if (proxy) refuseProxyInTypedSlot(lowerer, inner.loc, target, proxy.trapless);
   if (
     holdsReference(lowerer, target) &&
     !freshDynSource(lowerer, expr, inner) &&

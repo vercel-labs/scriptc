@@ -1,0 +1,8 @@
+method-param-union-arm-typed-apart.ts:76:32 - error SC2002: record shapes must match exactly or width-coerce: expected '{ describe: ({ compat: { level: number | undefined; second: string | undefined } | { c: boolean | undefined; first: string | undefined; level: number | undefined; second: string | undefined } | { first: string | undefined; level: number } | undefined; id: string; kind: string }) => string; id: string }', got '{ describe: ({ compat: { level: number | undefined; second: string | undefined } | { first: string | undefined; level: number } | undefined; id: string; kind: string }) => string; id: string }' — field 'describe': '({ compat: { level: number | undefined; second: string | undefined } | { first: string | undefined; level: number } | undefined; id: string; kind: string }) => string' does not lift into '({ compat: { level: number | undefined; second: string | undefined } | { c: boolean | undefined; first: string | undefined; level: number | undefined; second: string | undefined } | { first: string | undefined; level: number } | undefined; id: string; kind: string }) => string'
+
+  75 | 
+  76 | const providers: Provider[] = [twoKinds()];
+     |                                ^~~~~~~~~~
+  77 | for (const model of models()) console.log(providers[0]!.describe(model));
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

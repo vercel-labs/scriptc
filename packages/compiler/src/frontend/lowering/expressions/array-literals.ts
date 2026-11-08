@@ -552,7 +552,6 @@ export function lowerArrayLiteral(
       // and the arm literals must BUILD as this element type).
       let srcNode: ts.Expression = el.expression;
       while (ts.isParenthesizedExpression(srcNode)) srcNode = srcNode.expression;
-      lowerer.fenceStaticHeadersIteration(el.expression);
       let src = ts.isConditionalExpression(srcNode)
         ? lowerTernary(lowerer, srcNode, type)
         : lowerer.lowerExpr(el.expression);

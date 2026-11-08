@@ -1,0 +1,6 @@
+union-receiver-callable-members.ts:25:43 - error SC1090: method calls like 'options.transform' is not supported yet (instantiating 'apply' with <{ beta: string | undefined; headers: { [key: string]: null | string } | undef...>)
+
+  24 |   let headers: Headers = { ...(options?.headers ?? {}) };
+  25 |   if (options?.transform) headers = await options.transform(headers);
+     |                                           ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  26 |   return headers;

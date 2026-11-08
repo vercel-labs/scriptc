@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/spawn-shell-runtime-boolean.ts"
+ ],
+ "diags": []
+}

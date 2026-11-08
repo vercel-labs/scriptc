@@ -15,6 +15,7 @@ import {
   planUnionRetag,
   buildUnionRetag,
   identityRetagTags,
+  planPresenceRoutes,
   planRecordUnionLift,
   planRecordUnionWrap,
 } from "./union-retag.js";
@@ -925,6 +926,184 @@ describe("class routes from a stored base arm", () => {
       throw new Error("missing TypeError after the class tests");
     expect(thrown.value.args[0]).toMatchObject({
       value: expect.stringContaining("is not representable in the target union"),
+    });
+  });
+});
+
+describe("an arm several destination arms hold, routed by the value's properties", () => {
+  const optional = (unionId: string): IrType => ({ kind: "union", unionId });
+  const field = (name: string) => ({ name, type: optional("opt") });
+  const shapes = new Map<string, IrRecordShape>(
+    [
+      { id: "a", fields: [field("a"), field("shared"), field("first")] },
+      { id: "b", fields: [field("b"), field("shared"), field("both")] },
+      { id: "c", fields: [field("c"), field("shared"), field("a"), field("both")] },
+      { id: "open", fields: [field("b")], indexValue: STRING },
+    ].map((shape) => [shape.id, shape]),
+  );
+  const shapeOf = (id: string): IrRecordShape | undefined => shapes.get(id);
+  // Every optional record holds every other by width; a union has no lift.
+  const widthLift = (src: IrType, dst: IrType): WidthLift | null =>
+    src.kind === "record" && dst.kind === "record" ? { how: "width" } : null;
+  const from: IrUnionDef = {
+    id: "wide",
+    arms: [record("a"), record("c"), record("b"), UNDEFINED_T],
+  };
+  const to: IrUnionDef = { id: "narrow", arms: [record("a"), record("b"), UNDEFINED_T] };
+  const routes = [
+    { tag: 0, lift: { how: "width" }, absent: ["both"] },
+    { tag: 1, lift: { how: "width" }, absent: ["a"] },
+  ];
+
+  test("each arm asks for the absence of what it does not declare and another arm does", () => {
+    // `c` is declared by no destination arm, so no route tests it; `shared`
+    // is declared by both.
+    expect(planPresenceRoutes(record("c"), to, shapeOf, widthLift)).toEqual(routes);
+  });
+
+  test("declines with one holding arm, an open record arm, or an arm of another kind that holds it", () => {
+    const one: IrUnionDef = { id: "one", arms: [record("b"), UNDEFINED_T] };
+    expect(planPresenceRoutes(record("c"), one, shapeOf, widthLift)).toBeNull();
+    const open: IrUnionDef = { id: "open", arms: [record("a"), record("open")] };
+    expect(planPresenceRoutes(record("c"), open, shapeOf, widthLift)).toBeNull();
+    const mixed: IrUnionDef = { id: "mixed", arms: [record("a"), record("b"), DYN] };
+    const intoDyn = (src: IrType, dst: IrType): WidthLift | null =>
+      dst.kind === "dyn" ? { how: "dynIn" } : widthLift(src, dst);
+    expect(planPresenceRoutes(record("c"), mixed, shapeOf, intoDyn)).toBeNull();
+  });
+
+  test("declines when an arm that holds it declares one of its properties at another type", () => {
+    // `strict` requires `shared`: its copy of an optional `shared` is a
+    // checked extraction, which throws for a value `b` would take.
+    const typed = new Map(shapes).set("strict", {
+      id: "strict",
+      fields: [{ name: "shared", type: STRING }, field("first")],
+    });
+    const lookup = (id: string): IrRecordShape | undefined => typed.get(id);
+    const apart: IrUnionDef = { id: "apart", arms: [record("strict"), record("b")] };
+    expect(planPresenceRoutes(record("c"), apart, lookup, widthLift)).toBeNull();
+    // An arm that does not hold the source may declare what it likes.
+    const holds = (src: IrType, dst: IrType): WidthLift | null =>
+      dst.kind === "record" && dst.shapeId === "strict" ? null : widthLift(src, dst);
+    const beside: IrUnionDef = { id: "beside", arms: [record("a"), record("strict"), record("b")] };
+    expect(planPresenceRoutes(record("c"), beside, lookup, holds)).toEqual([
+      { tag: 0, lift: { how: "width" }, absent: ["both"] },
+      { tag: 2, lift: { how: "width" }, absent: ["a"] },
+    ]);
+  });
+
+  test("the retag plan takes the routes only when asked, and only for the arm no rule places", () => {
+    const plan = (byPresence: boolean): UnionRetagArm[] | null =>
+      planUnionRetag(
+        from,
+        to,
+        shapeOf,
+        widthLift,
+        new Set<number>(),
+        undefined,
+        undefined,
+        undefined,
+        byPresence,
+      );
+    expect(plan(false)).toBeNull();
+    expect(plan(true)).toEqual([
+      { kind: "direct", route: { tag: 0, lift: { how: "copy" }, values: [] } },
+      { kind: "presence", routes },
+      { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
+      { kind: "direct", route: { tag: 2, lift: { how: "copy" }, values: [] } },
+    ]);
+  });
+
+  test("an arm a compile-time rule placed is routed too when that arm lacks a member another declares", () => {
+    // `d` declares every member of `a`, so the layout rule places it in `a`,
+    // which has no `both`.
+    const withD = new Map(shapes).set("d", {
+      id: "d",
+      fields: [field("a"), field("shared"), field("first"), field("both")],
+    });
+    const lookup = (id: string): IrRecordShape | undefined => withD.get(id);
+    const placed = (src: IrType, dst: IrType): WidthLift | null =>
+      src.kind === "record" && src.shapeId === "d" && dst.kind === "union"
+        ? { how: "liftWrap", tag: 0, arm: record("a") }
+        : widthLift(src, dst);
+    const wide: IrUnionDef = {
+      id: "wide2",
+      arms: [record("a"), record("c"), record("d"), record("b")],
+    };
+    const plan = (byPresence: boolean): UnionRetagArm[] | null =>
+      planUnionRetag(
+        wide,
+        to,
+        lookup,
+        placed,
+        new Set<number>(),
+        undefined,
+        undefined,
+        undefined,
+        byPresence,
+      );
+    expect(plan(false)).toBeNull();
+    expect(plan(true)?.[2]).toEqual({
+      kind: "presence",
+      routes: [
+        { tag: 0, lift: { how: "width" }, absent: ["both"] },
+        { tag: 1, lift: { how: "width" }, absent: ["a", "first"] },
+      ],
+    });
+    // Alone, the pair converts by the layout rule and keeps that plan.
+    const alone: IrUnionDef = { id: "alone", arms: [record("a"), record("d"), record("b")] };
+    expect(planUnionRetag(alone, to, lookup, placed, new Set<number>())?.[1]).toEqual({
+      kind: "direct",
+      route: { tag: 0, lift: { how: "width" }, values: [] },
+    });
+  });
+
+  test("builds one presence test per route, then the trap", () => {
+    const plan = planUnionRetag(
+      from,
+      to,
+      shapeOf,
+      widthLift,
+      new Set<number>(),
+      undefined,
+      undefined,
+      undefined,
+      true,
+    )!;
+    const fn = buildUnionRetag(
+      "retag",
+      from,
+      to,
+      plan,
+      loc,
+      (_, value) => value,
+      () => "source",
+    );
+    const branch = fn.body.find(
+      (stmt) => stmt.kind === "if" && stmt.cond.kind === "unionIsTag" && stmt.cond.tag === 1,
+    );
+    if (branch?.kind !== "if") throw new Error("missing branch of the routed arm");
+    expect(branch.then[0]).toMatchObject({
+      kind: "varDecl",
+      init: { kind: "unionNarrow", tag: 1 },
+    });
+    expect(branch.then[1]).toMatchObject({
+      kind: "if",
+      cond: { kind: "recordHas", shapeId: "c", field: "both" },
+      then: [],
+      else_: [{ kind: "return", value: { kind: "unionWrap", unionId: "narrow", tag: 0 } }],
+    });
+    expect(branch.then[2]).toMatchObject({
+      kind: "if",
+      cond: { kind: "recordHas", shapeId: "c", field: "a" },
+      then: [],
+      else_: [{ kind: "return", value: { kind: "unionWrap", unionId: "narrow", tag: 1 } }],
+    });
+    const thrown = branch.then[3]!;
+    if (thrown.kind !== "throw" || thrown.value.kind !== "libCall")
+      throw new Error("missing TypeError after the presence tests");
+    expect(thrown.value.args[0]).toMatchObject({
+      value: expect.stringContaining("no arm of it declares every property the value has"),
     });
   });
 });

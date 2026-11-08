@@ -6,7 +6,8 @@
  * the values against Node.
  *  - An entry does not keep its key alive and goes when the key does: the
  *    memory, the handles and the exports a program holds do not grow with
- *    the number of keys it dropped (800k against 1.6M iterations), and no
+ *    the number of keys it dropped (400,000 against 2,000,000 iterations),
+ *    and no
  *    dropped key the island watches is alive at the end, the ones whose
  *    value reaches the key through either heap included.
  *  - An entry stays while either side reaches its key: keys the program
@@ -85,8 +86,8 @@ describe.skipIf(skip)("Node island objects as native weak keys", () => {
     // reflects what the entries keep alive rather than how often the engine
     // collected. The sanitized lane does not compare memory (ASan's
     // quarantine decides its resident set).
-    const [few, many] = sanitize ? [4_000, 40_000] : [800_000, 1_600_000];
-    const cadence = sanitize ? [] : [`gc:${Math.floor(few / 40)}`];
+    const [few, many] = sanitize ? [4_000, 40_000] : [400_000, 2_000_000];
+    const cadence = sanitize ? [] : ["gc:20000"];
     const small = await run([String(few), ...cadence]);
     const large = await run([String(many), ...cadence]);
     for (const r of [small, large]) {
@@ -106,10 +107,32 @@ describe.skipIf(skip)("Node island objects as native weak keys", () => {
     for (const key of ["held exports", "held handles", "representatives", "import entries"])
       expect(large.totals[key], key).toBe(small.totals[key]);
     expect(large.totals["held handles"]).toBeLessThan(200);
-    // Peak memory does not grow with the keys dropped: twice the keys, and
-    // 50 bytes leaked per key would be 40 MB (ASan's quarantine makes the
-    // sanitized lane's resident set meaningless).
-    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.05 + 8 * 1024);
+    // Peak memory does not grow with the keys dropped, measured as bytes per
+    // additional key between the two counts (ASan's quarantine makes the
+    // sanitized lane's resident set meaningless). The peak of one run is not
+    // one number: the same binary lands on one of a few levels, whatever the
+    // count (measured: 105 or 110 MB on one machine for every count from
+    // 200,000 to 2,000,000 keys, 93 to 96 MB for some runs on CI's machines),
+    // so two runs can differ by 18 MB with nothing leaked. Over 1,600,000
+    // additional keys that is 12 bytes per key; the bound is 32, which 50 MB
+    // would reach. What a leak costs is measured below with the cross-heap
+    // collector off, where no entry is released: 865 to 970 bytes per key.
+    if (!sanitize) {
+      const perKey = (bytes: number, keys: number): number => (bytes * 1024) / keys;
+      const leakBound = 32;
+      expect(perKey(large.rss - small.rss, many - few), "bytes per dropped key").toBeLessThan(
+        leakBound,
+      );
+      // The measure sees a leak: the same subtraction over 100,000 keys that
+      // are never released is far above the bound.
+      const off = { SCRIPTC_NODE_ISLANDS_GC: "off" };
+      const leakedFew = await run(["50000", ...cadence], off);
+      const leakedMany = await run(["150000", ...cadence], off);
+      expect(
+        perKey(leakedMany.rss - leakedFew.rss, 100_000),
+        "bytes per key that is never released",
+      ).toBeGreaterThan(10 * leakBound);
+    }
   }, 900_000);
 
   test("forced collections end no entry whose key either side still reaches", async () => {

@@ -2545,6 +2545,8 @@ export class LlDyn {
         host.declare(`declare ptr @${fn}(ptr, ptr, ptr)`);
         return fn;
       };
+      // Declared before the subclass tests below, as the one check always was.
+      const own = check(t.className);
       // A subclass's class value checks into the base class's slot when
       // construction through the slot can call its thunk with the base
       // constructor's arguments; any other subclass fails the check.
@@ -2567,7 +2569,7 @@ export class LlDyn {
       }
       const checked = B.tmp();
       B.line(
-        `${checked} = call ptr @${check(t.className)}(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
+        `${checked} = call ptr @${own}(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
       );
       B.terminate(`ret ptr ${checked}`);
       this.defs.push(

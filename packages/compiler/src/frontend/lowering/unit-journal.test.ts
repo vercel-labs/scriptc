@@ -64,6 +64,7 @@ const scratch = new Set([
   "shapes.inProgress",
   "shapes.currentDeclaredOrderPriority",
   "unions.inProgress",
+  "unions.dynBackReferences",
 ]);
 
 /** Owned objects whose collections are listed one by one. */

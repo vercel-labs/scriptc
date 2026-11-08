@@ -6819,11 +6819,20 @@ export class Lowerer {
     );
   }
 
+  /** A dictionary that keeps checked identity because dictionaries of its
+   * value type hold existing objects: the object itself, where a dictionary
+   * type with another value type would hold a copy. */
+  classDictionaryView(type: ts.Type): boolean {
+    return this.verifyProtocol("dictionaryView", type, (protocols) =>
+      protocols.dictionaryView(type),
+    );
+  }
+
   /** The round's shared class protocol index (lowering-facts.ts): a pure
    * analysis of (checker, moduleOrder). With SCRIPTC_LOWERING_FACTS_VERIFY
    * this Lowerer builds its own index and every answer is compared. */
   private verifyProtocol(
-    query: "usesCheckedIdentity" | "collectionView",
+    query: "usesCheckedIdentity" | "collectionView" | "dictionaryView",
     type: ts.Type,
     ask: (protocols: ClassProtocols) => boolean,
   ): boolean {

@@ -748,10 +748,12 @@ function widthCopyBetween(
   lowerer: Lowerer,
   source: ts.Expression,
   targetNode: ts.TypeNode,
-): { source: string; target: string } | null {
+): { source: string; target: string; dictionary?: true } | null {
   const checker = lowerer.checker;
   const s = copiedValueType(checker, checker.getTypeAtLocation(source));
   const t = checker.getTypeFromTypeNode(targetNode);
+  if (identityDictionaryCopy(lowerer, s, t))
+    return { source: checker.typeToString(s), target: checker.typeToString(t), dictionary: true };
   if (!isPlainRecordType(checker, t)) return null;
   const classSource = isProgramClassType(checker, s);
   // A union of plain records, such as `TextBlock | ThinkingBlock` narrowed by
@@ -829,6 +831,27 @@ function copiedValueType(checker: ts.TypeChecker, type: ts.Type): ts.Type {
     if (records.length === 1) return records[0]!;
   }
   return type;
+}
+
+/** A dictionary that keeps checked identity (ClassProtocols: it holds the
+ * record or class instance it was given) converted to a dictionary type that
+ * does not. Dictionary types with the same value type are one type and share
+ * the answer, so this is a dictionary of another value type: a native
+ * dictionary, built by copying the entries. A dictionary that is a view for
+ * another reason (an island value) is not copied by a conversion: it is
+ * refused when the program runs. */
+function identityDictionaryCopy(lowerer: Lowerer, source: ts.Type, target: ts.Type): boolean {
+  const checker = lowerer.checker;
+  const dictionary = (type: ts.Type): boolean =>
+    (type.flags & ts.TypeFlags.Object) !== 0 &&
+    checker.getPropertiesOfType(type).length === 0 &&
+    checker
+      .getIndexInfosOfType(type)
+      .some((index) => (index.keyType.flags & ts.TypeFlags.String) !== 0);
+  if (!dictionary(source) || !dictionary(target)) return false;
+  if (!lowerer.classDictionaryView(source) || lowerer.classImplementedProtocol(target))
+    return false;
+  return lowerer.mapTypeOf(target)?.kind === "record";
 }
 
 /** Whether asserting to `target` keeps the value it selects: the

@@ -868,6 +868,11 @@ export class UnionRegistry {
    * folding one-level unfoldings in). */
   private readonly recIds = new Map<ts.Type, string>();
   private readonly pendingRec = new Set<string>();
+  /** For each in-progress union a back-reference has reached: whether its
+   * back-references read the checked-dynamic value instead of a placeholder
+   * (unionHoldsDynView, asked once per frame). A frame they did read it for
+   * answers that value or nothing. */
+  readonly dynBackReferences = new Map<ts.Type, boolean>();
 
   /** The union id a back-reference to an in-progress union resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
@@ -5997,6 +6002,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const knownRecursive = unions.recursiveUnionFor(widened);
     if (knownRecursive !== undefined) return { kind: "union", unionId: knownRecursive };
     if (unions.inProgress.has(widened)) {
+      // A union that holds a dictionary which is the checked-dynamic value
+      // (one that keeps checked identity) collapses into that value (the
+      // `string | object` family below), which a placeholder would forbid.
+      // Its own back-references read the value instead, and the frame then
+      // answers it or nothing.
+      let readsDyn = unions.dynBackReferences.get(widened);
+      if (readsDyn === undefined) {
+        readsDyn = unionHoldsDynView(widened, ctx);
+        unions.dynBackReferences.set(widened, readsDyn);
+      }
+      if (readsDyn) return DYN;
       return {
         kind: "union",
         unionId: unions.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
@@ -6120,6 +6136,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
       }
       const arms = [...byKey.values()];
+      // A back-reference already holds the checked-dynamic value for this
+      // union: the collapse below is the only answer that agrees with it.
+      if (
+        unions.dynBackReferences.get(widened) === true &&
+        !(arms.some((a) => a.kind === "dyn") && arms.every((a) => dynSubsumableUnionArm(a, ctx)))
+      )
+        return null;
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
       // `Cond<T> | undefined` whose conditional selects never for the
       // instance's binding is the plain `undefined` the concrete
@@ -6232,6 +6255,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return { kind: "union", unionId: unions.intern(mergedArms, discriminant) };
     } finally {
       unions.inProgress.delete(widened);
+      unions.dynBackReferences.delete(widened);
     }
   }
   return null;
@@ -9492,6 +9516,36 @@ interface RecordShapeParts {
   accessorOrder?: string[];
 }
 
+/** Whether mapRecordTypeInner answers the checked-dynamic value for
+ * `widened` whatever its index signature's value maps to: a type that keeps
+ * checked identity, or one with a symbol-keyed member. That value type is
+ * the only thing mapped before the answer, so it is the only way a
+ * back-reference reaches the type while it maps. */
+function recordViewIsDyn(widened: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (ctx.classImplementedProtocol?.(widened)) return true;
+  return ctx.checker
+    .getPropertiesOfType(widened)
+    .some((property) => ts.symbolName(property).startsWith("__@"));
+}
+
+/** Whether a union has a dictionary arm that recordViewIsDyn answers for.
+ * Asked before that arm has mapped, so it names the types that reach
+ * mapRecordTypeInner with an index signature: arrays, tuples, callables and
+ * class instances have representations of their own. */
+function unionHoldsDynView(widened: ts.Type, ctx: TypeMapperCtx): boolean {
+  const { checker } = ctx;
+  return ts.constituentTypes(widened).some((part) => {
+    if ((part.flags & ts.TypeFlags.Object) === 0) return false;
+    if (checker.getIndexInfosOfType(part).length === 0) return false;
+    if (checker.isArrayLikeType(part) || checker.isTupleType(part)) return false;
+    if (checker.getCallSignatures(part).length > 0) return false;
+    if (checker.getConstructSignatures(part).length > 0) return false;
+    const symbol = part.getSymbol();
+    if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
+    return recordViewIsDyn(part, ctx);
+  });
+}
+
 function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { shapes } = ctx;
   // A type whose recursive shape already finalized answers its id straight
@@ -9507,6 +9561,14 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // frame completes (finalizeRecursive below). Backends represent records
   // as heap references, so the self-reference is an ordinary pointer.
   if (shapes.inProgress.has(widened)) {
+    // A dictionary that keeps checked identity is the checked-dynamic value
+    // whatever its index signature holds, so that is what the signature's
+    // value type holds of it. A placeholder would never be completed, and a
+    // union that reached the dictionary through it would keep an empty
+    // record as its object arm. Only an index signature's value is mapped
+    // before that answer, so no other type is asked.
+    if (ctx.checker.getIndexInfosOfType(widened).length > 0 && recordViewIsDyn(widened, ctx))
+      return DYN;
     return {
       kind: "record",
       shapeId: shapes.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
@@ -10600,6 +10662,32 @@ function slotReason(
   return why === null ? "" : `: ${why}`;
 }
 
+/** A union's arms as mapTypeInner maps them. A union that holds a
+ * checked-dynamic dictionary maps its arms while its own back-references
+ * read the checked-dynamic value (unionHoldsDynView), so an arm that leads back
+ * to the union is described the same way: mapped alone it would fail on the
+ * union itself and hide the arm that cannot ride the collapse. The memo is
+ * bypassed, because those answers hold only inside this union. */
+function mapUnionArmsForDescription(
+  widened: ts.Type,
+  arms: readonly ts.Type[],
+  ctx: TypeMapperCtx,
+): { p: ts.Type; mapped: IrType | null }[] {
+  const { unions } = ctx;
+  if (unions.inProgress.has(widened) || !unionHoldsDynView(widened, ctx))
+    return arms.map((p) => ({ p, mapped: mapType(p, ctx) }));
+  const bypassed = bypassTypeMemo;
+  bypassTypeMemo = true;
+  unions.inProgress.add(widened);
+  try {
+    return arms.map((p) => ({ p, mapped: mapType(p, ctx) }));
+  } finally {
+    unions.inProgress.delete(widened);
+    unions.dynBackReferences.delete(widened);
+    bypassTypeMemo = bypassed;
+  }
+}
+
 /** When an unmapped type is a SUPPORTED container/composite whose failure
  * lives in a component, answer a message tail naming the component (the
  * SC2009 story); null when the shape itself is the blocker (the caller
@@ -10711,7 +10799,7 @@ export function describeComponentBlocker(
     // dyn-subsumable (mapTypeInner's collapse) — so when such a union
     // still failed, the story is the sibling that CANNOT ride the
     // collapse, never the dyn arm itself.
-    const mappedArms = dataArms.map((p) => ({ p, mapped: mapType(p, ctx) }));
+    const mappedArms = mapUnionArmsForDescription(widened, dataArms, ctx);
     if (mappedArms.some(({ mapped }) => mapped?.kind === "dyn")) {
       const blocker = mappedArms.find(
         ({ mapped }) => mapped !== null && !dynSubsumableUnionArm(mapped, ctx),

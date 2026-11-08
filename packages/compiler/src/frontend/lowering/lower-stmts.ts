@@ -364,6 +364,7 @@ import { isRelativeSpecifier } from "../workspace-registry.js";
 import { probeNodeRequireRefusal } from "../npm.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
+import { packageBuiltWithoutMember } from "./package-built-values.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
@@ -10873,6 +10874,15 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (ts.isPropertyAccessExpression(expr.left) && !expr.left.questionDotToken) {
         const undeclared = anyAssertedUndeclaredWrite(lowerer, expr.left);
         if (undeclared !== null) lowerer.unsupported("SC1090", expr.left, undeclared);
+      }
+      if (ts.isPropertyAccessExpression(expr.left) && !ts.isPrivateIdentifier(expr.left.name)) {
+        const built = packageBuiltWithoutMember(
+          lowerer,
+          expr.left.expression,
+          expr.left.name.text,
+          "writing",
+        );
+        if (built !== null) lowerer.unsupported("SC1090", expr.left, built);
       }
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");

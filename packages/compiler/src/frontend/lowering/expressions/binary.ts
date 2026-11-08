@@ -489,6 +489,26 @@ function untypedCollectionFallback(lowerer: Lowerer, node: ts.Expression): boole
   });
 }
 
+/** Whether every arm of `type` is a unit: a value of it is null or
+ * undefined, whatever it was computed from. */
+function holdsOnlyUnits(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms;
+  return arms !== undefined && arms.length > 0 && arms.every(isUnitType);
+}
+
+/** `result`, once `operand` has been evaluated for its effects. */
+function afterEvaluating(operand: IrExpr, result: IrExpr, loc: SrcLoc): IrExpr {
+  if (isSafeToDiscard(operand)) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: operand, loc }],
+    result,
+    type: result.type,
+    loc,
+  };
+}
+
 /** Whether converting a value of `from` into `to` answers that same value:
  * a union that holds `from` (or every arm of a `from` union) as its own arm,
  * a function entering a function type whose arguments and result convert the
@@ -3549,6 +3569,12 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   // units only — computed unit-typed values keep the fences below.
   if (left.kind === "unitLit") {
     return op === ts.SyntaxKind.BarBarToken ? right : left;
+  }
+  // A computed value that can only be null or undefined (a `null`-typed
+  // parameter or binding: every arm of its type is a unit) is as falsy as
+  // the literal: `x || y` is y after x is evaluated, `x && y` is x.
+  if (holdsOnlyUnits(lowerer, left.type)) {
+    return op === ts.SyntaxKind.BarBarToken ? afterEvaluating(left, right, loc) : left;
   }
   // JS objects and symbols are always truthy. In `ref || fallback`
   // the fallback is therefore unreachable and the result is the

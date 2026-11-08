@@ -10,10 +10,12 @@
  * boundary under zod 4 and @hono/zod-validator. The rewrite test checks that
  * a file keeps its projection (no SC6102 note) where the rewrite has to
  * parenthesize a bare async arrow's parameter and cast the start of an
- * unbraced loop body. The last test is a declared type of exactly
+ * unbraced loop body. The undefined test is a declared type of exactly
  * `undefined` (a result type computed from a table whose type the program
  * built at run time): the cast passes for a value that is undefined and
- * throws for any other. */
+ * throws for any other. The overload test checks that a call selecting one of
+ * several declared signatures is checked against that signature's result,
+ * and that the failure names the declaration. */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -126,6 +128,51 @@ test(
         "compared threw TypeError expected null | undefined at $, got string\n" +
         "tested threw TypeError expected null | undefined at $, got string\n" +
         "asserted threw TypeError expected null | undefined at $, got string\n",
+    );
+  },
+);
+
+test(
+  "a call that selects a declared signature is checked against its result",
+  { timeout: 600_000 },
+  async () => {
+    const claims = join(repoRoot, "tests/corpus/9562-npm-overload-selected-result/claims.ts");
+    mkdirSync(outDir, { recursive: true });
+    const result = await compile(claims, {
+      outPath: join(outDir, "overload-claims"),
+      outDir,
+      sanitize,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    const pending = execFileAsync(result.binaryPath, [], {
+      cwd: dirname(claims),
+      encoding: "utf8",
+    });
+    pending.child.stdin?.end();
+    const { stdout } = await pending;
+    // Node prints "stored undefined", "arithmetic NaN", "method NaN" and its
+    // own TypeErrors for the array and the record: it does not check.
+    const held =
+      "undefined is not representable in the target union (a value narrowed or asserted past it still held it)";
+    const patch = (pkg: string, selector: string): string =>
+      `    if that declaration is wrong, patch it: scriptc types patch ${pkg} '${selector}' '| undefined'\n`;
+    expect(stdout).toBe(
+      `stored threw true ${held}\n` +
+        "    weigh@1.4.0 declares weigh() as number (index.d.ts:1)\n" +
+        patch("weigh", "weigh()") +
+        `arithmetic threw true ${held}\n` +
+        "    gauge@2.1.0 declares read() as number (index.d.ts:1)\n" +
+        patch("gauge", "read()") +
+        `method threw true ${held}\n` +
+        `array threw true ${held}\n` +
+        "    gauge@2.1.0 declares spans() as number[] (index.d.ts:6)\n" +
+        patch("gauge", "spans()") +
+        `record threw true ${held}\n` +
+        "    gauge@2.1.0 declares measured() as { mm: number; text: string; } (index.d.ts:8)\n" +
+        patch("gauge", "measured()") +
+        "honest 2010\n",
     );
   },
 );

@@ -230,6 +230,28 @@ type _members = ExpectNever<{
 }[SharedKeys]>;
 `;
 
+/** A method held as a string handed to dispatch(), directly and from a
+ * subclass's override to the inherited one. undici 7 declares the method
+ * as any string; 5.x names nine, and there this is a type error in the
+ * package's own declarations too. */
+const stringMethod = `
+import { Agent } from "UNDICI";
+
+// The handler record is named differently in the two releases.
+type Handler = Parameters<Agent["dispatch"]>[1];
+
+class Shouting extends Agent {
+  dispatch(options: Agent.DispatchOptions, handler: Handler): boolean {
+    const upper: string = options.method.toUpperCase();
+    return super.dispatch({ ...options, method: upper }, handler);
+  }
+}
+
+export function send(handler: Handler, verb: string): boolean {
+  return new Shouting().dispatch({ origin: "http://127.0.0.1:1", path: "/crate/7", method: verb }, handler);
+}
+`;
+
 /** Names the shim declares beyond a version's published declarations,
  * each because undici's runtime has it although its .d.ts does not (5.12's
  * declarations predate several runtime exports and options) or because the
@@ -376,9 +398,9 @@ describe.each([5, 7])("undici %i.x shim types", (major) => {
     expect(check("usage-shim.ts", helpers + usage(major).replace(/UNDICI/g, shim))).toEqual([]);
   });
 
-  // undici-types 7 admits any method string, so a declaration with the
-  // closed list fits both; 5.x is the package a project on @types/node 20
-  // has beside undici 5.
+  // undici-types 5 names nine methods and the 5.x entry declares the
+  // same; 5.x is the package a project on @types/node 20 has beside
+  // undici 5.
   test.runIf(major === 5)(
     "a dispatcher typed by undici-types 5 fits something that names the package's dispatch()",
     () => {
@@ -387,6 +409,22 @@ describe.each([5, 7])("undici %i.x shim types", (major) => {
       expect(check("dispatch-only-shim.ts", program.replace(/UNDICI/g, shim))).toEqual([]);
     },
   );
+
+  test("a method held as a string goes to dispatch() where the release declares any string", () => {
+    const onReal = check("string-method-real.ts", stringMethod.replace(/UNDICI/g, real));
+    const onShim = check("string-method-shim.ts", stringMethod.replace(/UNDICI/g, shim));
+    const refused = (diagnostics: string[]): number =>
+      diagnostics.filter((d) => d.includes("Type 'string' is not assignable to type")).length;
+    if (major === 7) {
+      expect(onReal).toEqual([]);
+      expect(onShim).toEqual([]);
+    } else {
+      expect(onReal).toHaveLength(2);
+      expect(refused(onReal)).toBe(2);
+      expect(onShim).toHaveLength(2);
+      expect(refused(onShim)).toBe(2);
+    }
+  });
 
   test("the shim's exports and records are a compatible subset", () => {
     const text = helpers + shape(major).replace(/REAL/g, real).replace(/SHIM/g, shim);

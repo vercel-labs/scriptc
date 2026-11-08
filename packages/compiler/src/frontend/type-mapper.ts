@@ -4057,6 +4057,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("PropertyDescriptorMap") ||
     isStdlibInterface("ProcessVersions") ||
     isStdlibInterface("ProcessRelease") ||
+    isStdlibInterface("ProcessFeatures") ||
     isStdlibInterface("ProcessReport")
   )
     return DYN;
@@ -4647,6 +4648,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "dyn" };
   }
+  // http.InformationEvent — the argument of a ClientRequest's
+  // 'information' event is an ordinary object the runtime builds (seven
+  // keys, a real `headers` object), so the TYPE maps to dyn like Agent's:
+  // a listener parameter declared with it takes the object as it is, and
+  // member reads go through the checked-dynamic path. Module-checked like
+  // the rest.
+  if (
+    psym !== undefined &&
+    psymName === "InformationEvent" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "http"),
+    )
+  ) {
+    return { kind: "dyn" };
+  }
   // http.IncomingMessage / http.ServerResponse — module-checked like
   // net.Server (the names repeat nowhere today, but provenance stays the
   // rule).
@@ -4943,7 +4962,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // (required — the "WithStringEncoding" refinement), cwd/input/timeout,
   // stdio (the "pipe"/"ignore" string or 3-tuple forms — a runtime array
   // is string[]; unsupported runtime modes throw at the call), and the
-  // accepted-but-inert maxBuffer/windowsHide. Members outside this set
+  // maxBuffer and the accepted-but-inert windowsHide. Members outside this set
   // (env, killSignal, shell, uid, ...) keep the shape unmatched — their
   // literals fence at the shape check instead of being dropped without a
   // diagnostic.

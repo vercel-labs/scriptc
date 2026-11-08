@@ -79,10 +79,12 @@
  * expression whose type is a variadic function type (1), a store that
  * lowering noted, or an adapter whose call is a store (2). The longer calls
  * lowering notes are read only for a store. Devirtualization is the last
- * step before these checks, and it reads every expression of the bodies it
- * leaves, so it says whether one has such a type (FinishedBodies), and a
- * program with none of the three is known without another walk of its IR
- * (nothingToRefuse). Most typed programs are such programs.
+ * step to rewrite the bodies before these checks, and it reads every
+ * expression of the bodies it leaves, so it says whether one has such a
+ * type (FinishedBodies), and a program with none of the three is known
+ * without another walk of its IR (nothingToRefuse). Most typed programs
+ * are such programs. A step put between the two must not make a function
+ * value, or must say so in FinishedBodies.
  *
  * SCRIPTC_CHECK_VARIADIC_SKIP=1 walks every program this skips and fails
  * the build when the walk finds something. The test lanes run with it

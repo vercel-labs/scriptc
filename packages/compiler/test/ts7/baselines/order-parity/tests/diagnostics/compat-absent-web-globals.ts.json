@@ -1,0 +1,88 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/compat-absent-web-globals.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'BroadcastChannel'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 271,
+    "end": 287
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'EventSource'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 337,
+    "end": 348
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'WebSocket'. Did you mean 'socket'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 415,
+    "end": 424
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'URLPattern'. Did you mean 'pattern'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 483,
+    "end": 493
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'CompressionStream'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 596,
+    "end": 613
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'DecompressionStream'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 642,
+    "end": 661
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'PerformanceMark'. Did you mean 'performance'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 949,
+    "end": 964
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'PerformanceEntry'. Did you mean 'performance'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 999,
+    "end": 1015
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'PerformanceMeasure'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 1033,
+    "end": 1051
+   }
+  }
+ ]
+}

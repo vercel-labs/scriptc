@@ -136,7 +136,7 @@ export function lowerMimeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr
 
 /** Reports SC2020 when `access` reads a static member of MIMEType or
  * MIMEParams (`MIMEType.prototype`, `MIMEType.name`); null otherwise.
- * JavaScript sources hold either class as an identity token, which has no
+ * JavaScript sources hold either class as a function value that models no
  * members, so the read would answer undefined. MIMEType.parse calls lower
  * in lowerMimeCall and never reach the member read. */
 export function fenceMimeStaticRead(lowerer: Lowerer, access: ts.PropertyAccessExpression): null {

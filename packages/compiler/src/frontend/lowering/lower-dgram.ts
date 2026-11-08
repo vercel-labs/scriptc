@@ -4,7 +4,7 @@ import { dynUndefinedExpr, boolLit } from "../../ir/build.js";
  * like lower-server.ts): module-function calls (dgram createSocket, dns
  * lookup), method calls on dgramSocket receivers (bind/connect/
  * disconnect/send/address/close/unref/ref, the socket options in
- * DGRAM_OPTIONS and the message/listening/close/connect/error events), and
+ * DGRAM_SOCKET_MEMBERS (handle-members.ts) and the message/listening/close/connect/error events), and
  * the AddressInfo record materialization behind address(). Everything the
  * lib declares beyond these shapes fences member-qualified — never a
  * generic rejection, never silence. */
@@ -29,38 +29,16 @@ import {
 import { resultIsDiscarded } from "./call-position.js";
 import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
 import { documentedParameter } from "./call-signatures.js";
+import {
+  DGRAM_SOCKET_MEMBERS,
+  handleMemberSignature,
+  handleMemberTypeName,
+} from "./handle-members.js";
 
 const DGRAM_SURFACE_HINT =
   "bind, connect, disconnect, send, address, close, unref/ref, the socket " +
   "options, and on/once of message/listening/close/connect/error are the " +
   "supported dgram.Socket members";
-
-/** The IR type each declared parameter type lowers to. */
-const DGRAM_OPTION_PARAMS = { boolean: BOOL, number: F64, string: STRING } as const;
-
-/** The socket options: each takes fixed typed arguments (the trailing
- * `optional` count may be omitted) and calls one runtime function. A
- * `value` result answers what the runtime returns; the others are
- * statements, like Node's undefined. */
-const DGRAM_OPTIONS: Record<
-  string,
-  { fn: IrLibFn; params: (keyof typeof DGRAM_OPTION_PARAMS)[]; optional?: number; value?: IrType }
-> = {
-  setBroadcast: { fn: "dgram.setBroadcast", params: ["boolean"] },
-  setTTL: { fn: "dgram.setTTL", params: ["number"], value: F64 },
-  setMulticastTTL: { fn: "dgram.setMulticastTTL", params: ["number"], value: F64 },
-  setMulticastLoopback: { fn: "dgram.setMulticastLoopback", params: ["boolean"], value: BOOL },
-  setMulticastInterface: { fn: "dgram.setMulticastInterface", params: ["string"] },
-  addMembership: { fn: "dgram.addMembership", params: ["string", "string"], optional: 1 },
-  dropMembership: { fn: "dgram.dropMembership", params: ["string", "string"], optional: 1 },
-  getRecvBufferSize: { fn: "dgram.getRecvBufferSize", params: [], value: F64 },
-  getSendBufferSize: { fn: "dgram.getSendBufferSize", params: [], value: F64 },
-  setRecvBufferSize: { fn: "dgram.setRecvBufferSize", params: ["number"] },
-  setSendBufferSize: { fn: "dgram.setSendBufferSize", params: ["number"] },
-  getSendQueueSize: { fn: "dgram.getSendQueueSize", params: [], value: F64 },
-  getSendQueueCount: { fn: "dgram.getSendQueueCount", params: [], value: F64 },
-  disconnect: { fn: "dgram.disconnect", params: [] },
-};
 
 /** Dgram's callback policy: validate every positional parameter and require
  * callbacks to return void; raw dyn values adapt only to zero-arg slots. */
@@ -74,7 +52,6 @@ function lowerCallbackArg(
 ): { cb: IrExpr; nparams: number } {
   return lowerCallbackArgShared(lowerer, node, what, maxParams, paramOk, paramHint, {
     dynZero: true,
-    checkAllParams: true,
     rejectValueReturn: true,
   });
 }
@@ -788,39 +765,39 @@ export function lowerDgramMethodCall(
       '"message", "listening", "close", "connect", and "error" are the supported socket events (as literals)',
     );
   }
-  const option = Object.hasOwn(DGRAM_OPTIONS, name) ? DGRAM_OPTIONS[name]! : null;
+  const option = Object.hasOwn(DGRAM_SOCKET_MEMBERS, name) ? DGRAM_SOCKET_MEMBERS[name]! : null;
   if (option !== null) {
-    const min = option.params.length - (option.optional ?? 0);
+    const { params, result } = handleMemberSignature(option);
+    const min = params.length - (option.optional ?? 0);
     const kinds = args.map((arg) =>
       ts.isSpreadElement(arg) ? undefined : lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind,
     );
     if (
       args.length < min ||
-      args.length > option.params.length ||
-      kinds.some((kind, i) => kind !== DGRAM_OPTION_PARAMS[option.params[i]!].kind)
+      args.length > params.length ||
+      kinds.some((kind, i) => kind !== params[i]!.kind)
     ) {
       lowerer.noLowering(
         `socket.${name} with these arguments`,
         call,
-        option.params.length === 0
+        params.length === 0
           ? `${name}() takes no arguments`
-          : `pass ${option.params.join(", ")} arguments, as the declaration types them`,
+          : `pass ${params.map(handleMemberTypeName).join(", ")} arguments, as the declaration types them`,
       );
     }
-    if (option.value === undefined) requireStatementPosition(lowerer, call, `socket.${name}(...)`);
+    if (result.kind === "void") requireStatementPosition(lowerer, call, `socket.${name}(...)`);
     const receiver = lowerer.lowerExpr(access.expression);
     const lowered: IrExpr[] = [receiver];
-    option.params.forEach((param, i) => {
+    params.forEach((param, i) => {
       lowered.push(
         args[i] !== undefined
-          ? lowerer.lowerExprExpecting(args[i]!, DGRAM_OPTION_PARAMS[param])
+          ? lowerer.lowerExprExpecting(args[i]!, param)
           : { kind: "strLit", value: "", type: STRING, loc },
       );
     });
     // the membership calls pass whether the interface argument was given
-    if (option.optional !== undefined)
-      lowered.push(boolLit(args.length === option.params.length, loc));
-    return { kind: "libCall", fn: option.fn, args: lowered, type: option.value ?? VOID, loc };
+    if (option.optional !== undefined) lowered.push(boolLit(args.length === params.length, loc));
+    return { kind: "libCall", fn: option.fn, args: lowered, type: result, loc };
   }
   lowerer.noLowering(
     `dgram.Socket.${name}`,

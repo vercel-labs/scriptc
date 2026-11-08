@@ -49,8 +49,9 @@ export interface DevirtualizeFacts {
  * calls take the checked property path instead of a virtualCall.
  *
  * The rewrite passes every expression of the bodies it leaves through its
- * hands, replaced or kept, and nothing rewrites them again before lowering's
- * last checks. It answers what those checks would otherwise walk the
+ * hands, replaced or kept, and it is the last step to rewrite them before
+ * lowering's last checks (Lowerer.finishModule names the one exception and
+ * what it writes). It answers what those checks would otherwise walk the
  * program again to learn (FinishedBodies). */
 export function devirtualizeVirtualCalls(
   lowerer: Lowerer,

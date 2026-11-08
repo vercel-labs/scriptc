@@ -4442,7 +4442,7 @@ export class Lowerer {
    * global holding what the import form sees (lower-node-island.ts). */
   readonly islandModules = new Map<string, IslandModuleBinding>();
   /** The modules Node island calls load (lower-node-island.ts). */
-  readonly nodeIslandModules = new NodeIslandModuleCollector();
+  readonly nodeIslandModules: NodeIslandModuleCollector;
   /** Each call's caller literal, set to its tree path when lowering ends. */
   readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
   /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
@@ -6456,6 +6456,7 @@ export class Lowerer {
       throw new InternalCompilerError(
         "lowerer bug: LowererMode.facts belongs to a different program or moduleOrder",
       );
+    this.nodeIslandModules = new NodeIslandModuleCollector(this.facts.moduleSpecifierScans);
     this.verifySymbolProvenance = this.facts.verify
       ? (sym, answer) => this.verifySymbolProvenanceAnswer(sym, answer)
       : undefined;

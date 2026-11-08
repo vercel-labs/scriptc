@@ -9,8 +9,9 @@
  * provenance, whether a type is an island handle, the admitted-opinion site
  * index, the package-file and declaration-boundary flags, the JavaScript
  * dynamic-declaration set, the class protocol index, the names each file's
- * identifiers spell, and the module an import specifier names) would be
- * computed again identically in every pass.
+ * identifiers spell, the module an import specifier names, and the module
+ * specifiers a file of an island package holds) would be computed again
+ * identically in every pass.
  *
  * This object computes each of them once per round. The rule for what may
  * live here: the answer must be a pure function of (program, island set,
@@ -43,6 +44,7 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { npmStaticDepSf7, resolveImport } from "../program.js";
+import { ModuleSpecifierScans } from "../../node-islands/modules.js";
 import { type AdmittedOpinion } from "../tsc-codes.js";
 import { newSymbolProvenanceMemo, type SymbolProvenance } from "../type-mapper.js";
 import { AsyncProtocolHolders } from "./async-protocol-holders.js";
@@ -138,6 +140,13 @@ export class LoweringFacts {
    * then by resolution kind and specifier. */
   private readonly importedModules = new Map<ts.SourceFile, Map<string, ts.SourceFile | null>>();
   private readonly npmStaticModules = new Map<ts.SourceFile, Map<string, ts.SourceFile | null>>();
+
+  /** The module specifiers of the files Node loads (the island packages
+   * and what they require): every pass collects those packages again
+   * (NodeIslandModuleCollector) and plans the modules they share
+   * (lower-shared-modules.ts) from the same files. Each answer is checked
+   * against the file's text when it is used. */
+  readonly moduleSpecifierScans = new ModuleSpecifierScans();
 
   /** Whether hits are recomputed and compared (SCRIPTC_LOWERING_FACTS_VERIFY). */
   readonly verify: boolean;

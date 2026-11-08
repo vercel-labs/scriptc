@@ -42,6 +42,7 @@ import { isPackageShimFile, isShimIntrinsicName, packageShimFor } from "../packa
 import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
+import { globalObjectInherits } from "./global-object-names.js";
 import { isIslandImportBinding } from "./lower-node-island.js";
 import { funduleFunctionOf, funduleMemberOf, lowerFunduleMemberValue } from "./lower-fundule.js";
 import type { FileParts } from "./lower-modules.js";
@@ -728,10 +729,13 @@ export function nodeUndefinedGlobalProperty(
  * define by default. The CommonJS wrapper bindings are not properties of the
  * global object either, but a CommonJS module has them, so they are not
  * undefined names; scriptc's own primitives are declared for the compiler
- * and are not Node's. */
+ * and are not Node's. A name the global object inherits from
+ * Object.prototype (`toString`) is not undefined either: the checker
+ * resolves `globalThis.toString` to the library's Object member. */
 export function nodeUndefinedGlobalName(name: string): boolean {
   return (
     nodeGlobalKind(name) === null &&
+    !globalObjectInherits(name) &&
     !COMMONJS_MODULE_BINDINGS.has(name) &&
     !SCRIPTC_PRIMITIVE_GLOBALS.has(name)
   );

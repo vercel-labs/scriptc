@@ -238,29 +238,51 @@ void scr_assert_eq_sym(ScrSym *a, ScrSym *b, bool negated, bool deep,
 /* Direct `globalThis[symbol]` accesses use the symbol-keyed properties of
  * the global object's box (scr_global_object), the storage every other
  * spelling of the global object reaches, so all of them see one property. */
+/* Node's global object has one symbol-keyed property of its own:
+ * Symbol.toStringTag, "global". It is made in that store, for the box that
+ * is current then, the first time a direct access names that symbol, so a
+ * program that replaces or deletes it reads its own change afterwards and a
+ * program that never names the symbol makes nothing. `key` is the access's
+ * key as a checked value: a symbol has one box while any is alive, and the
+ * installed tag symbol's box is kept alive, so identity tells the tag. */
+static SCR_TL ScrDyn *scr_global_tagged_box;
+
+static ScrDyn *scr_global_symbol_holder(ScrDyn *key) {
+  ScrDyn *global = scr_global_object();
+  if (scr_global_tagged_box != global && key == scr_dyn_to_string_tag_symbol()) {
+    scr_global_tagged_box = global;
+    ScrStr *text = scr_str_new("global", 6);
+    ScrDyn *value = scr_dyn_new_str(text);
+    scr_dyn_symbol_key_set(global, key, value);
+    scr_dyn_release(value);
+    scr_str_release(text);
+  }
+  return global;
+}
+
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key) {
   ScrDyn *k = scr_dyn_new_symbol(key);
-  ScrDyn *value = scr_dyn_symbol_key_get(scr_global_object(), k, false);
+  ScrDyn *value = scr_dyn_symbol_key_get(scr_global_symbol_holder(k), k, false);
   scr_dyn_release(k);
   return value;
 }
 
 void scr_dyn_global_symbol_set(ScrSym *key, ScrDyn *value) {
   ScrDyn *k = scr_dyn_new_symbol(key);
-  scr_dyn_symbol_key_set(scr_global_object(), k, value);
+  scr_dyn_symbol_key_set(scr_global_symbol_holder(k), k, value);
   scr_dyn_release(k);
 }
 
 bool scr_dyn_global_symbol_has(ScrSym *key) {
   ScrDyn *k = scr_dyn_new_symbol(key);
-  bool present = scr_dyn_has_own_computed(scr_global_object(), k);
+  bool present = scr_dyn_has_own_computed(scr_global_symbol_holder(k), k);
   scr_dyn_release(k);
   return present;
 }
 
 void scr_dyn_global_symbol_delete(ScrSym *key) {
   ScrDyn *k = scr_dyn_new_symbol(key);
-  scr_dyn_key_delete_computed(scr_global_object(), k, false);
+  scr_dyn_key_delete_computed(scr_global_symbol_holder(k), k, false);
   scr_dyn_release(k);
 }
 

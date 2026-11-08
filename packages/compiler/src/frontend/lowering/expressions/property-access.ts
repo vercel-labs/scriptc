@@ -13,6 +13,7 @@ import {
   hostGlobalNameOfMember,
   hostGlobalNameOfRead,
   hostGlobalPrototypeOf,
+  isGlobalObjectRead,
 } from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
 import { fenceConsoleMemberValue } from "../coercions/console-records.js";
@@ -218,7 +219,12 @@ import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "..
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
 import { iteratorResultValueRead } from "../lower-generators.js";
-import { lowerGlobalValue } from "../lower-global-value.js";
+import { lowerGlobalObjectValue, lowerGlobalValue } from "../lower-global-value.js";
+import {
+  globalObjectInheritedValue,
+  globalObjectInherits,
+  globalObjectMember,
+} from "../global-object-names.js";
 import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
 import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
@@ -797,16 +803,51 @@ export function lowerPropertyAccessExpr(
         lowerer.hostGlobalFence(prototypeOf, expr);
     }
   }
+  // A name the global object inherits from Object.prototype
+  // (`globalThis.toString`, `host.hasOwnProperty`) is a read of
+  // Object.prototype's member: the same read `Object.prototype.toString`
+  // is, so the two compare equal. Without this the name would count as one
+  // Node does not define and read as undefined. The read stays on the
+  // global object in two cases: the program writes the name on the global
+  // object (its own property answers), and a member Object.prototype has no
+  // value for yet (it reads undefined there, as before). A call keeps its
+  // own lowering.
+  if (
+    !expr.questionDotToken &&
+    globalObjectInherits(expr.name.text) &&
+    !isCalleeOf(expr) &&
+    isGlobalObjectRead(lowerer, expr.expression)
+  ) {
+    const globalType = lowerer.typeOf(staticallySelected(lowerer, expr.expression));
+    const own =
+      globalThisWrittenNames(lowerer, globalType).has(expr.name.text) ||
+      lowerer.globalThisComputedWrite;
+    const holder: IrExpr =
+      own || !globalObjectInheritedValue(expr.name.text)
+        ? lowerGlobalObjectValue(lowerer, expr.expression, locOf(expr.expression))
+        : { kind: "libCall", fn: "dyn.objectPrototype", args: [], type: DYN, loc };
+    return {
+      kind: "dynKeyGet",
+      value: holder,
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+  }
   // Missing host globals (Bun/Deno capability probes) have no binding
   // in a native program. Declared globals retain their own lowering;
   // arbitrary global-object mutation remains fenced. Preserve a dyn
-  // undefined value so stored probes compose with optional calls.
+  // undefined value so stored probes compose with optional calls. A
+  // spelling whose static type names no members (`const host: any =
+  // globalThis`) is the same object: the global object's own type says
+  // whether the name is missing.
   if (
     stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
     !lowerer.checker.getPropertyOfType(
       lowerer.typeOf(staticallySelected(lowerer, expr.expression)),
       expr.name.text,
-    )
+    ) &&
+    !globalObjectMember(lowerer, expr)
   ) {
     // A name the program stores on the global object
     // (`(_a = globalThis).__config ?? (_a.__config = {})`) reads back from
@@ -824,10 +865,10 @@ export function lowerPropertyAccessExpr(
         loc,
       };
     }
-    // Node's navigator, which JavaScript reads as a free name when no
-    // declaration types it (isNavigatorGlobal).
-    if (expr.name.text === "navigator" && isJsSourceFile(ts.getSourceFileOfNode(expr)))
-      return navigatorValue(loc);
+    // Node's navigator, which no bundled declaration types: JavaScript reads
+    // it as a free name (isNavigatorGlobal), and TypeScript reaches it here
+    // through a spelling of the global object typed `any`.
+    if (expr.name.text === "navigator") return navigatorValue(loc);
     return dynUndefinedExpr(loc);
   }
   // `Uint8Array.prototype.toBase64` and its siblings, the base64/hex

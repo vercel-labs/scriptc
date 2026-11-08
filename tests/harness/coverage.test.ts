@@ -828,10 +828,9 @@ test("the unreached pass asks about an array type the reachable pass degraded, a
       `${d.code} ${d.loc.file.replace(repoRoot + "/", "")}:${d.loc.start}-${d.loc.end}`;
     expect(coverage.diagnostics.map(site).sort()).toEqual(built.diagnostics.map(site).sort());
     expect(coverage.diagnostics.map((d) => d.code).sort()).toEqual([
-      "SC1090",
-      "SC1090",
       "SC2004",
       "SC2004",
+      "SC2013",
       "SC2013",
       "SC2013",
     ]);

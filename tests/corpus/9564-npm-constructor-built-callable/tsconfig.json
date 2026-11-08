@@ -1,3 +1,0 @@
-{
-  "compilerOptions": { "strict": true, "types": ["node"], "esModuleInterop": true }
-}

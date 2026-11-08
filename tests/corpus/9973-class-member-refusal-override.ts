@@ -1,6 +1,7 @@
-// An override whose signature the inherited slot cannot carry is refused without rejecting its
-// class: instances of the subclass are constructed, their other members work, and the base
-// method keeps working on base instances. The refused overrides are never called here.
+// An override whose signature the inherited slot cannot carry (fewer parameters) is refused
+// without rejecting its class: instances of the subclass are constructed, their other members
+// work, and the base method keeps working on base instances. The refused override is never
+// called here. The override with a narrower parameter beside it compiles.
 class Printer {
   sheets = 1;
   print(text: string, copies: number): string {

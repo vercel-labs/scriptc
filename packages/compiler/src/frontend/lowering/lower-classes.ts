@@ -152,6 +152,10 @@ import { nativeSubclassOfIslandDiag } from "../../diagnostics/diagnostic.js";
 import { isForeignType, isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import { declarationGroupKey } from "./type-failure.js";
 import {
+  narrowOverrideArgument,
+  overrideParameterNarrows,
+} from "./override-parameter-narrowing.js";
+import {
   checkRefusedMemberUse,
   checkRefusedStaticUse,
   memberRefusalMark,
@@ -4103,19 +4107,31 @@ export function collectClassShapeInner(
             shapes.slice(overridden.sig.params.length).every((p) => p.mode === "omittable") &&
             overridden.sig.params.every(
               (p, i) =>
-                p.mode === shapes[i]!.mode &&
                 (p.mode === "required" || p.mode === "omittable") &&
                 // Each inherited argument converts into the override's
                 // parameter: equal, a checked extraction from an `any`
                 // slot, or a widening (a contravariant parameter).
-                (typeEquals(p.type, shapes[i]!.type) ||
-                  (p.type.kind === "dyn" &&
-                    canDynCheckTo(
-                      shapes[i]!.type,
-                      (id) => lowerer.shapes.get(id),
-                      (id) => lowerer.unions.get(id),
-                    )) ||
-                  lowerer.coercibleValue(p.type, shapes[i]!.type)),
+                ((p.mode === shapes[i]!.mode &&
+                  (typeEquals(p.type, shapes[i]!.type) ||
+                    (p.type.kind === "dyn" &&
+                      canDynCheckTo(
+                        shapes[i]!.type,
+                        (id) => lowerer.shapes.get(id),
+                        (id) => lowerer.unions.get(id),
+                      )) ||
+                    lowerer.coercibleValue(p.type, shapes[i]!.type))) ||
+                  // Or a NARROWING (method parameters are bivariant): the
+                  // override declares an arm of the inherited union, the
+                  // value without `undefined` of an optional parameter, or
+                  // a subclass of the inherited class. The slot checks the
+                  // argument into the declared type and throws for a value
+                  // outside it (override-parameter-narrowing.ts).
+                  (confinesMemberRefusals &&
+                    (shapes[i]!.mode === "required" || shapes[i]!.mode === "omittable") &&
+                    overrideParameterNarrows(lowerer, p.type, shapes[i]!.type, {
+                      className,
+                      base,
+                    }))),
             ) &&
             (ownAsync ? ft.ret.kind === "promise" : true) &&
             (typeEquals(ft.ret, overridden.sig.ret) ||
@@ -9838,7 +9854,23 @@ function lowerClassMethodMemberInner(
           const ref: IrExpr = { kind: "varRef", localId: p.localId, type: p.type, loc };
           // `this` passes through; each inherited argument converts into
           // the override's declared parameter (checked where it narrows).
-          return i === 0 ? ref : lowerer.coerceInto(fnLike.name, ref, adapter.params[i - 1]!.type);
+          if (i === 0) return ref;
+          // An argument the override declares narrower than the inherited
+          // slot is checked into the declared type; every other one
+          // converts as a value flowing into a slot does.
+          const declared = fnLike.parameters.nodes[i - 1];
+          return (
+            narrowOverrideArgument(
+              lowerer,
+              fnLike.name,
+              ref,
+              adapter.params[i - 1]!.type,
+              `${info.def.jsName ?? className.replace(/^%/, "")}.${mName}`,
+              declared !== undefined && ts.isIdentifier(declared.name)
+                ? declared.name.text
+                : `#${i}`,
+            ) ?? lowerer.coerceInto(fnLike.name, ref, adapter.params[i - 1]!.type)
+          );
         }),
         type: adapter.ret,
         loc,

@@ -49,11 +49,11 @@ class RetypedRepeat extends Animal {
   name: number = 2;
 }
 
-// overrides must keep the exact signature (method bivariance is unsound
-// through a vtable)
-class Bivariant extends Animal {
-  feed(other: Bivariant): string {
-    return other.name;
+// an override must fit the inherited slot: a narrower parameter is checked
+// at the slot, but a signature with fewer parameters has no adapter
+class Shorter extends Animal {
+  feed(): string {
+    return this.name;
   }
 }
 
@@ -110,5 +110,5 @@ new BareRepeat();
 new RetypedRepeat();
 // A refused override does not reject its class: the construction
 // compiles, and the call through the class is what reports it.
-const bivariant = new Bivariant();
-bivariant.feed(bivariant);
+const shorter = new Shorter();
+shorter.feed();

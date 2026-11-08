@@ -21,10 +21,10 @@ inheritance.ts:49:3 - error SC1090: redeclaring inherited fields at a different 
 
 inheritance.ts:55:3 - error SC1090: overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass) is not supported yet
 
-  54 | class Bivariant extends Animal {
-  55 |   feed(other: Bivariant): string {
+  54 | class Shorter extends Animal {
+  55 |   feed(): string {
      |   ^~~~
-  56 |     return other.name;
+  56 |     return this.name;
 
 inheritance.ts:76:1 - error SC1090: a call supplying more arguments than the native parameter list (an override that declares parameters past the inherited slot arity can only be called on its own type, where the call goes straight to its body — behind a virtual slot, only the inherited arity travels) is not supported yet
 
@@ -56,11 +56,11 @@ inheritance.ts:110:1 - error SC1090: constructing through a class value whose cl
       | ^~~~~~~~~~~~~~~~~~~
   111 | // A refused override does not reject its class: the construction
 
-inheritance.ts:114:11 - error SC2004: uses of 'Bivariant.feed' inherit the blocker on its declaration
+inheritance.ts:114:9 - error SC2004: uses of 'Shorter.feed' inherit the blocker on its declaration
 
-  113 | const bivariant = new Bivariant();
-  114 | bivariant.feed(bivariant);
-      |           ^~~~
+  113 | const shorter = new Shorter();
+  114 | shorter.feed();
+      |         ^~~~
   115 | 
 
-  hint: the declaration of 'Bivariant.feed' did not compile — fix the diagnostic reported there and these sites clear with it
+  hint: the declaration of 'Shorter.feed' did not compile — fix the diagnostic reported there and these sites clear with it

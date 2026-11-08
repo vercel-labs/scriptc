@@ -2014,6 +2014,8 @@ const RUNTIME_FEATURE_RULES = {
    * scr_fs_exists_dyn.c, which reports DEP0187 through the warning queue the
    * dynAsync rule brings in. */
   fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
   /** The BYTE-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -2092,6 +2094,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fileHandle: false,
     fsFlags: false,
     fsExistsValue: false,
+    moduleCompileCache: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,

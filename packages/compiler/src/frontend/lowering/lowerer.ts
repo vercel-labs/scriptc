@@ -21083,6 +21083,10 @@ export class Lowerer {
     if (bi.module === "os" && bi.member === "constants") {
       return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
     }
+    // module.constants: the frozen object that holds compileCacheStatus.
+    if (bi.module === "module" && bi.member === "constants") {
+      return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
+    }
     // tls.rootCertificates through the namespace: the same runtime-valued
     // constant the named-import read lowers to.
     {

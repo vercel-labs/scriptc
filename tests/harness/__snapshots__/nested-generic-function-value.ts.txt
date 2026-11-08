@@ -1,0 +1,6 @@
+nested-generic-function-value.ts:11:10 - error SC1090: nested generic function declarations as values (each call of the enclosing function makes a new 'identity' function object, while its compiled instances are shared module functions — call 'identity' directly, or declare it at module scope) are not supported yet
+
+  10 |   console.log(call);
+  11 |   return identity;
+     |          ^~~~~~~~
+  12 | }

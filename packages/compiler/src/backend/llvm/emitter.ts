@@ -10,6 +10,7 @@ import { JsIcSites } from "../../ir/js-ic.js";
 import type { JsGroup, JsGroupPlan } from "../../ir/js-groups.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
+import { assertNoThreadLocalAddressConstant } from "./thread-local-constants.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
 import {
   CYC_BUF,
@@ -1777,6 +1778,12 @@ export class LlEmitter {
   /** Declared functions referenced as values: each needs an env-signature
    * wrapper + an interned immortal closure (so `f === f` holds). */
   readonly fnValues = new Set<string>();
+  /** The emitted instance closures that adopt another function's identity
+   * root in a build whose closure globals are thread-local, mapped to that
+   * root. A thread-local global's address is no static initializer's
+   * constant, so each thread's entry points its own copies at its own root
+   * before any program code runs (emit-module.ts). */
+  readonly threadLocalIdentityRoots = new Map<string, string>();
   needsOom = false;
   needsBadTag = false;
   needsBadKey = false;
@@ -3328,7 +3335,12 @@ export class LlEmitter {
             this.cpuCopies,
             this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
           );
-    return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    const module =
+      this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    // A thread-local's address in an initializer is a refused link, a crash
+    // or a wrong answer, depending on the link (thread-local-constants.ts).
+    assertNoThreadLocalAddressConstant(module);
+    return module;
   }
 
   /** The entry point and JavaScript name of each named function the
@@ -3453,8 +3465,19 @@ export class LlEmitter {
    * closure was never emitted (see closureWrapperNames). */
   emitFnValueDefs(): string[] {
     const out: string[] = [];
+    // Thread-instanced builds give every thread its own copy of each
+    // closure global.
+    const threadLocal = this.mod.workers === true || this.mod.lib?.threadInstances === true;
     const names = new Set(this.fnValues);
     for (const name of this.closureWrapperNames) names.add(name);
+    // A closure that adopts another function's identity root (one generic
+    // declaration, several compiled instances) names that function's
+    // interned closure: emit the root even when nothing reads it as a
+    // value itself.
+    for (const name of [...names]) {
+      const root = this.fnByName.get(name)?.identityRoot;
+      if (root !== undefined && this.fnByName.has(root)) names.add(root);
+    }
     for (const name of names) {
       const fn = this.fnByName.get(name)!;
       const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
@@ -3466,13 +3489,27 @@ export class LlEmitter {
         fn.async === true || fn.generator !== undefined ? "ptr" : this.llType(fn.returnType);
       const call = `call ${ret} @${this.callTarget(name)}(${args})`;
       const lending = this.lendsEveryArgument(name);
+      // The adopted identity root and its arity (the root's own boxes
+      // report their own length): field 6 is `identity_length`, field 7
+      // `identity` in ScrClosure.
+      const identityLength = fn.identityRoot !== undefined ? (fn.identityLength ?? 0) : 0;
+      // A thread-local global's address is a per-thread symbol that no static
+      // initializer may name (LLVM would emit a link-time constant holding
+      // the image's copy, not the running thread's). Those builds leave the
+      // field null here and point it at the thread's own root in the entry.
+      const identity =
+        fn.identityRoot !== undefined && !threadLocal
+          ? `@${mangleFnClosure(fn.identityRoot)}`
+          : "null";
+      if (threadLocal && fn.identityRoot !== undefined)
+        this.threadLocalIdentityRoots.set(name, fn.identityRoot);
       out.push(
         `define internal ${ret} @${mangleWrapper(name)}(ptr %env${params.length ? ", " + params.join(", ") : ""}) ${FN_ATTRS} { ; ${name} as a value`,
         `entry:`,
         ret === "void" ? `  ${call}` : `  %r = ${call}`,
         ret === "void" ? `  ret void` : `  ret ${ret} %r`,
         `}`,
-        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${this.closureFunctionKind(fn)}, i32 0, ptr null, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
+        `@${mangleFnClosure(name)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${this.closureFunctionKind(fn)}, i32 ${identityLength}, ptr ${identity}, ptr ${lending ? `@${mangleBorrowingWrapper(name)}` : "null"} }`,
         ``,
       );
       if (lending)

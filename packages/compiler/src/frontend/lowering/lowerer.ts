@@ -591,12 +591,13 @@ import {
   implicitMonoFile,
   collectGenericSignature,
   genericFnOf,
+  nestedGenericFnInfoOf,
   lowerGenericCall,
   lowerGenericFnValue,
   inferTypeParamBindings,
   lowerGenericInstance,
   genericLocalClassBinding,
-  checkGenericIdentityPins,
+  assignGenericIdentityRoots,
 } from "./generic-functions.js";
 import { bindingNeverReassigned, type BindingScope } from "./binding-analysis.js";
 import { isMessageListenerCall } from "./expressions/message-listeners.js";
@@ -3152,32 +3153,6 @@ export class Lowerer {
    * type parameters are bound to `unknown`, so lambdaSignature admits
    * them. */
   readonly erasingLambdas = new Set<ts.Node>();
-  /** Identity comparisons of a generic declaration met while lowering
-   * (directly against the declaration, or through a dynamic value): exact
-   * only while the program holds that declaration as one function object
-   * (checkGenericIdentityPins). */
-  readonly genericIdentityPins: { info: GenericFnInfo; node: ts.Node }[] = [];
-  /** Identity comparisons whose operands are dynamic values, recorded while
-   * lowering and resolved by checkGenericIdentityPins only when some
-   * generic declaration is held at more than one signature. */
-  readonly dynIdentityComparisons: { node: ts.Node; left: ts.Node; right: ts.Node }[] = [];
-  /** The value instance each pinned binding holds (`const f: Fn = ident`),
-   * keyed by the binding's declaration: two pins of one generic
-   * declaration at different signatures are separate compiled closures, so
-   * checkGenericIdentityPins refuses to compare them. */
-  readonly pinnedValueInstances = new Map<ts.Node, { info: GenericFnInfo; instance: string }>();
-  /** Function-vs-function identity comparisons recorded while lowering,
-   * with the closure name each operand lowered to when it is a closure
-   * (an inline instantiation expression names its instance directly). */
-  readonly pinnedIdentityComparisons: {
-    node: ts.Node;
-    left: ts.Node;
-    right: ts.Node;
-    leftInstance: string | undefined;
-    rightInstance: string | undefined;
-  }[] = [];
-  /** The identity comparison check reports once, after all lowering. */
-  genericIdentityCheckDone = false;
   /** Function expressions lowered against a fixed target signature with a
    * tuple-typed `arguments` (typed-arguments.ts). */
   readonly typedArgumentsLambdas = new Set<ts.Node>();
@@ -5254,13 +5229,6 @@ export class Lowerer {
       checkedTable("genericFunctionDemandOwner", () => this.genericFunctionDemandOwner.size),
       checkedTable("genericClassDemandOwner", () => this.genericClassDemandOwner.size),
       checkedTable("erasingLambdas", () => this.erasingLambdas.size),
-      checkedTable("genericIdentityPins", () => this.genericIdentityPins.length),
-      checkedTable("dynIdentityComparisons", () => this.dynIdentityComparisons.length),
-      // Pinned binding instances and function-vs-function identity
-      // comparisons feed the same end-of-lowering check; a unit that records
-      // one lowers again rather than replaying a record without it.
-      checkedTable("pinnedValueInstances", () => this.pinnedValueInstances.size),
-      checkedTable("pinnedIdentityComparisons", () => this.pinnedIdentityComparisons.length),
       checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
       checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
       checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
@@ -5829,9 +5797,6 @@ export class Lowerer {
       fixed("errorAccessorReflection", () => this.errorAccessorReflection),
       fixed("subclassLinks", () => this.subclassLinks),
       fixed("errorPathCopies", () => this.errorPathCopies),
-      // A latch of the end-of-lowering audit (checkGenericIdentityPins): a
-      // unit never touches it.
-      fixed("genericIdentityCheckDone", () => this.genericIdentityCheckDone),
       fixed("errorMethodDispatchRevision", () => this.errorMethodDispatchRevision),
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
@@ -12489,9 +12454,6 @@ export class Lowerer {
         if (this.alreadyFlushed.has(symbol)) continue;
         for (const d of [...diags]) this.pushDiag(d);
       }
-      // Coverage visits more bodies; more value instances can only add
-      // refusals to the identity comparison check.
-      checkGenericIdentityPins(this);
       refuseSourceFieldDeletes(this, functions);
       return {
         module: null,
@@ -12510,10 +12472,6 @@ export class Lowerer {
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
   finishModule(functions: IrFunction[], library = false): LowerResult {
-    // Every instance of every generic value is known now (the
-    // monomorphization worklists drained): an identity comparison against
-    // one is exact only if the declaration is held at a single signature.
-    checkGenericIdentityPins(this);
     // Every function value and conversion is in the IR now: a variadic
     // function must not reach a native call of fixed arity, and one stored
     // as a fixed signature is exact only if no function of that type is
@@ -12643,6 +12601,10 @@ export class Lowerer {
     refuseX509DynValues(this, functions);
     refuseUnseenBuiltinMemberWrites(this);
     markInferredFactChecks(functions, this.program);
+    // Every instance of every generic value is known now (the
+    // monomorphization worklists drained): the declarations the program
+    // holds as more than one function object take one identity root.
+    assignGenericIdentityRoots(this, functions);
     const sloppyDynWrites = sloppyDynamicWrites(this, functions);
     const module: IrModule | null =
       this.diags.length > 0
@@ -18606,6 +18568,12 @@ export class Lowerer {
 
   genericFnOf(ident: ts.Identifier): GenericFnInfo | null {
     return genericFnOf(this, ident);
+  }
+
+  /** The GenericFnInfo of a nested generic `function` declaration
+   * (nestedGenericFnInfoOf), or null for every other declaration form. */
+  nestedGenericFnInfoOf(decl: ts.FunctionDeclaration): GenericFnInfo | null {
+    return nestedGenericFnInfoOf(this, decl);
   }
 
   lowerGenericCall(expr: ts.CallExpression, info: GenericFnInfo): IrExpr {

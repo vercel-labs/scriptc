@@ -77,11 +77,7 @@ import {
   classUnionToString,
   type StringConversionHint,
 } from "../class-to-primitive.js";
-import {
-  genericDeclarationBehindValue,
-  noteDynamicIdentityComparison,
-  notePinnedIdentityComparison,
-} from "../generic-functions.js";
+import { genericDeclarationBehindValue } from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
@@ -2080,8 +2076,6 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
             ? { liveRef: true as const }
             : {}),
         };
-        if (reference.kind === "func")
-          noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left: scalarSide === left ? boxed : left,
@@ -2137,12 +2131,6 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           // reference kinds by identity (scr_dyn_strict_eq).
           scalarSide.type.kind === "dyn")
       ) {
-        // A generic declaration read through `unknown` compares as the
-        // function object it names, which is one object in JavaScript but
-        // one closed instance per signature here: the whole-program check
-        // refuses it when the program holds the declaration at more than
-        // one signature.
-        noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left,
@@ -3063,17 +3051,6 @@ export function lowerStrictEquality(
         loc,
       };
     }
-    // Two pins of ONE generic declaration at different signatures are
-    // different compiled closures; the whole-program check refuses the
-    // compare (checkGenericIdentityPins).
-    notePinnedIdentityComparison(
-      lowerer,
-      node,
-      leftNode,
-      rightNode,
-      idLeft.kind === "closure" ? idLeft.fnName : undefined,
-      idRight.kind === "closure" ? idRight.fnName : undefined,
-    );
     return {
       kind: "bin",
       op: negated ? "!==" : "===",
@@ -3152,11 +3129,6 @@ export function lowerStrictEquality(
     };
   }
   if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
-    // A generic declaration read through `unknown` compares as the function
-    // object it names, which is one object in JavaScript but one closed
-    // instance per signature here: the whole-program check refuses it when
-    // the program holds the declaration at more than one signature.
-    noteDynamicIdentityComparison(lowerer, node, leftNode, rightNode);
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),

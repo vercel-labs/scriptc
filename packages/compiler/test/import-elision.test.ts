@@ -11,6 +11,7 @@ import {
   type ImportElisionOptions,
 } from "../src/frontend/import-elision.js";
 import { Ts7Api } from "../src/frontend/ts7/api.js";
+import { loadProgram } from "../src/frontend/program-node.js";
 import { Ts7Host } from "../src/frontend/ts7/program-host.js";
 import { Ts7RpcClient } from "../src/frontend/ts7/rpc-client.js";
 import { TS7_FILE_SYSTEM_CALLBACKS } from "../src/frontend/ts7/rpc-filesystem.js";
@@ -242,6 +243,58 @@ export namespace OnlyTypes { export interface P { p: number } }
   "values_alias.ts": `export { a } from "./values";
 export type T = number;
 `,
+  // A const enum exported through a local export list of the module that
+  // imports it, and imported beside a name the importing file uses only as
+  // a type. tsc drops both exports and inlines the member; the rewrite keeps
+  // the name a value on both sides.
+  "const-enum-reexport-e.ts": `export const enum E {
+  A = 1,
+}
+export class C {
+  x = 1;
+}
+`,
+  "const-enum-reexport-mid.ts": `import { E, C } from "./const-enum-reexport-e";
+export { E, C };
+export type T = number;
+`,
+  "const-enum-reexport-main.ts": `import { C, type T, E } from "./const-enum-reexport-mid";
+const t: T = 1;
+const c: C | undefined = undefined;
+console.log(E.A, t, c);
+`,
+  // The re-export chain one step longer: two const enums re-exported beside
+  // a class and a function, imported in one clause that also holds a name
+  // used only as a type.
+  "chain-messages.ts": `export const enum Diagnostics {
+  X_0_expected = 1000,
+}
+export const messageCodes = { X_0_expected: 1 };
+`,
+  "chain-locales.ts": `export const enum Locale {
+  En = "en",
+}
+export const translations = { en: "en" };
+`,
+  "chain-diagnostics.ts": `import { Diagnostics } from "./chain-messages";
+import { Locale } from "./chain-locales";
+export { Diagnostics, Locale };
+export type DiagnosticMessage = Diagnostics;
+export class Diagnostic {
+  code = 0;
+}
+export function messageCode(): number {
+  return 1;
+}
+`,
+  "chain-parser.ts": `import { Diagnostic, type DiagnosticMessage, Diagnostics, messageCode } from "./chain-diagnostics";
+export function parse(text: string): Diagnostic | undefined {
+  const message: DiagnosticMessage | undefined = undefined;
+  if (text.length === 0) return undefined;
+  console.log(Diagnostics.X_0_expected, messageCode(), message);
+  return undefined;
+}
+`,
 };
 
 const roots: string[] = [];
@@ -278,11 +331,13 @@ function host(server: Ts7TestServer, cwd: string): Ts7Host {
   );
 }
 
-/** The run-time module requests of a module text and the names it exports:
+/** What the run-time module requests of a module text and the names it exports:
  * what survives type erasure. tsc may print an exported declaration as a
  * declaration and an export list, and adds or drops the empty `export {}`
- * marker freely, so exported names are compared as one set. */
-function requests(fileName: string, text: string): string[] {
+ * marker freely, so exported names are compared as one set. A const enum
+ * declaration counts as an export only where the dialect emits the enum
+ * object (`preserveConstEnums`, `isolatedModules`). */
+function requests(fileName: string, text: string, keepsConstEnums = false): string[] {
   const sf = ts5.createSourceFile(fileName, text, ts5.ScriptTarget.Latest, true);
   const out: string[] = [];
   const exported = new Set<string>();
@@ -292,6 +347,7 @@ function requests(fileName: string, text: string): string[] {
     if (modifiers.some((m) => m.kind === ts5.SyntaxKind.ExportKeyword)) {
       const ambient = modifiers.some((m) => m.kind === ts5.SyntaxKind.DeclareKeyword);
       const constEnum =
+        !keepsConstEnums &&
         ts5.isEnumDeclaration(stmt) &&
         modifiers.some((m) => m.kind === ts5.SyntaxKind.ConstKeyword);
       if (modifiers.some((m) => m.kind === ts5.SyntaxKind.DefaultKeyword)) {
@@ -373,6 +429,12 @@ function requests(fileName: string, text: string): string[] {
   return out.sort();
 }
 
+/** `requests` spells a kept specifier `<original> as <exported>`; the last
+ * name is the exported one. */
+function exportedNameOf(entry: string): string {
+  return entry.slice(entry.lastIndexOf(" as ") + " as ".length);
+}
+
 /** What tsc 5.9 emits for every case, as requests. */
 function tscRequests(root: string, options: ts5.CompilerOptions): Map<string, string[]> {
   const names = Object.keys(FILES).map((name) => join(root, name));
@@ -406,7 +468,14 @@ const DIALECTS: {
     label: "default",
     tsc: {},
     scriptc: {},
-    inlinedOnly: ["const-enums.ts", "const-enums.ts", "type-alias-of-import.ts"],
+    inlinedOnly: [
+      "chain-diagnostics.ts",
+      "chain-diagnostics.ts",
+      "const-enum-reexport-main.ts",
+      "const-enums.ts",
+      "const-enums.ts",
+      "type-alias-of-import.ts",
+    ],
   },
   {
     label: "isolatedModules",
@@ -418,7 +487,12 @@ const DIALECTS: {
     label: "preserveConstEnums",
     tsc: { preserveConstEnums: true },
     scriptc: { preserveConstEnums: true },
-    inlinedOnly: ["const-enums.ts", "const-enums.ts", "type-alias-of-import.ts"],
+    inlinedOnly: [
+      "const-enum-reexport-main.ts",
+      "const-enums.ts",
+      "const-enums.ts",
+      "type-alias-of-import.ts",
+    ],
   },
 ];
 
@@ -441,6 +515,9 @@ describe.each(ts7TestServers())("import elision ($name)", (server) => {
         ...dialect.scriptc,
       });
       const options = importElisionOptions(dialect.scriptc)!;
+      const keepsConstEnums =
+        dialect.scriptc["preserveConstEnums"] === true ||
+        dialect.scriptc["isolatedModules"] === true;
       const elision = elideProgramImports(program, () => options);
       const elisions = elision.texts;
       const actual = new Map<string, string[]>();
@@ -449,12 +526,15 @@ describe.each(ts7TestServers())("import elision ($name)", (server) => {
         const source = program.getSourceFile(name)!;
         const original = source.text;
         const rewritten = elisions.get(name) ?? original;
+        const elision = elideImports(program, source, options);
         // A binding kept for a use tsc inlines is the one difference from
-        // tsc's output: compare without those bindings.
-        const inlined = new Set(elideImports(program, source, options)?.inlined ?? []);
+        // tsc's output: compare without those bindings, and without the
+        // value exports kept for the same reason.
+        const inlined = new Set(elision?.inlined ?? []);
+        const inlinedExports = new Set(elision?.inlinedExports ?? []);
         actual.set(
           name,
-          requests(name, rewritten)
+          requests(name, rewritten, keepsConstEnums)
             .map((request) =>
               request.replace(/\{(.*)\}$/, (_, list: string) => {
                 const kept = list.split(", ").filter((binding) => {
@@ -464,7 +544,20 @@ describe.each(ts7TestServers())("import elision ($name)", (server) => {
                 return `{${kept.join(", ")}}`;
               }),
             )
-            .filter((request) => inlined.size === 0 || !/^import \S+ \{\}$/.test(request)),
+            .filter((request) => inlined.size === 0 || !/^import \S+ \{\}$/.test(request))
+            .map((request) =>
+              request.replace(/^export (\S+) \{(.*)\}$/, (_, specifier: string, list: string) => {
+                const kept = list
+                  .split(", ")
+                  .filter((binding) => !inlinedExports.has(exportedNameOf(binding)));
+                return kept.length === 0 ? "" : `export ${specifier} {${kept.join(", ")}}`;
+              }),
+            )
+            .filter((request) => request !== "")
+            .filter(
+              (request) =>
+                !(request.startsWith("exported ") && inlinedExports.has(exportedNameOf(request))),
+            ),
         );
         // Every offset of the file as written survives: characters are
         // kept or blanked, never moved, and additions follow the text.
@@ -605,12 +698,71 @@ describe.each(ts7TestServers())("import elision ($name)", (server) => {
       declarations: 0,
       bindings: 0,
       inlined: ["Level"],
+      inlinedExports: [],
       inlinedOnly: [
         { start: 0, end: 'import { Level } from "./levels";'.length, specifier: '"./levels"' },
       ],
     });
     // With isolatedModules tsc keeps the import too.
     expect(elide(files, "main.ts", { isolatedModules: true, preserveConstEnums: true })).toBeNull();
+  });
+
+  test("a value use of a const enum re-exported through a local export list keeps the export", () => {
+    // tsc drops `export { Diagnostics, Locale }` and the imports behind it,
+    // because its output has no value for either name. Here the name stays a
+    // value, so the import that uses Diagnostics as a value still resolves.
+    const files = {
+      "messages.ts": "export const enum Diagnostics {\n  X_0_expected = 1000,\n}\n",
+      "locales.ts": 'export const enum Locale {\n  En = "en",\n}\n',
+      "diagnostics.ts":
+        'import { Diagnostics } from "./messages";\nimport { Locale } from "./locales";\nexport { Diagnostics, Locale };\n',
+      "parser.ts":
+        'import { Diagnostic, Diagnostics } from "./diagnostics";\nconsole.log(Diagnostics.X_0_expected, undefined as Diagnostic | undefined);\n',
+    };
+    const exportSide = elide(files, "diagnostics.ts", {});
+    expect(exportSide?.text).toBeNull();
+    expect(exportSide?.inlinedExports).toEqual(["Diagnostics", "Locale"]);
+    expect(exportSide?.inlined).toEqual(["Diagnostics", "Locale"]);
+    const useSide = elide(files, "parser.ts", {});
+    expect(useSide?.inlined).toEqual(["Diagnostics"]);
+    expect(useSide?.text).toMatch(/import \{[^}]*\bDiagnostics\b[^}]*\} from "\.\/diagnostics"/);
+  });
+
+  test("a 13-line program that uses a re-exported const enum as a value compiles", () => {
+    // The const enum travels from the module that declares it, through a
+    // module that re-exports it, to a file that uses a member as a value.
+    // Eliding the export on the way leaves the use without a value.
+    const files = {
+      "tsconfig.json": `{
+  "compilerOptions": {
+    "module": "nodenext",
+    "target": "esnext",
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["**/*.ts"]
+}
+`,
+      "e.ts": "export const enum E {\n  A = 1,\n}\nexport class C {\n  x = 1;\n}\n",
+      "mid.ts": "import { E, C } from './e.js';\nexport { E, C };\nexport type T = number;\n",
+      "main.ts":
+        "import { C, type T, E } from './mid.js';\nconst t: T = 1;\nconst c: C | undefined = undefined;\nconsole.log(E.A, t, c);\n",
+    };
+    const root = project(files);
+    // The load refuses the program when a value use of a kept name has no
+    // value in the rewritten sources; it must load.
+    const loaded = loadProgram(join(root, "main.ts"));
+    try {
+      // The use of E keeps the import, and the export that names it stays a
+      // value export.
+      const main = loaded.program.getSourceFile(join(root, "main.ts"))!;
+      expect(main.text).toMatch(/import \{[^}]*\bE\b[^}]*\} from ['"]\.\/mid\.js['"]/);
+      expect(loaded.program.getSourceFile(join(root, "mid.ts"))!.text).toContain(
+        "export { E, C };",
+      );
+    } finally {
+      loaded.dispose();
+    }
   });
 
   test("a file whose only imports bind nothing loses them, as in tsc's output", () => {

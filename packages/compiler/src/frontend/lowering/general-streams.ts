@@ -105,14 +105,21 @@ function readsProcessStdin(expr: IrExpr): boolean {
 }
 
 /** A process stream as the runtime stream class `expected` names, where
- * Node's process stream is an instance of that class: process.stdin as a
- * Readable, process.stdout and process.stderr as a Writable. The handle
- * answers its one stream (scr_stream_stdin.c, scr_stream_stdio_writable),
- * so every conversion is the same object. Null for any other pair. */
+ * Node's process stream is an instance of that class: process.stdout and
+ * process.stderr as a Writable. The handle answers its one stream
+ * (scr_stream_stdio_writable), so every conversion is the same object.
+ * Null for any other pair.
+ *
+ * process.stdin as a Readable (stream.stdioReadable, scr_stream_stdin.c)
+ * is withheld. In Node the two names are one object with one readable
+ * state. Here the stream and the process.stdin name still answer apart
+ * for readableLength, for destroyed after process.stdin.destroy(), and
+ * for input held before the conversion, each without a diagnostic. Until
+ * they answer as one, the conversion is not made and the value stops at
+ * the Readable slot by name (TypeError: expected Readable, got
+ * ProcessStream), as it did before the conversion existed. */
 export function processStreamAs(expr: IrExpr, expected: IrType): IrExpr | null {
   if (expected.kind !== "object") return null;
-  if (expected.className === "%Readable" && readsProcessStdin(expr))
-    return { kind: "libCall", fn: "stream.stdioReadable", args: [], type: READABLE, loc: expr.loc };
   if (expected.className === "%Writable" && expr.type.kind === "procStream")
     return {
       kind: "libCall",
@@ -125,7 +132,8 @@ export function processStreamAs(expr: IrExpr, expected: IrType): IrExpr | null {
 }
 
 /** A process stream flowing into a runtime stream slot. process.stdin (the
- * process stream handle) into a Readable slot is the stdin stream. Under
+ * process stream handle) into a Readable slot is the stdin stream, once
+ * processStreamAs makes that conversion again (it answers null now). Under
  * the general representation, process.stdout / process.stderr (the
  * procStream fd scalar) into a runtime Writable slot is an fd-backed
  * Writable whose writes take the same synchronous path as

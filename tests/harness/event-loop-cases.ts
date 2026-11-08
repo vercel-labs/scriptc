@@ -20,7 +20,7 @@ export interface EventLoopCase {
   script: StdinScript;
 }
 
-export const eventLoopCases: EventLoopCase[] = [
+const allCases: EventLoopCase[] = [
   {
     title: "stdio values: paused reads consume buffered input",
     fixture: "stdio-read.mjs",
@@ -334,3 +334,13 @@ export const eventLoopCases: EventLoopCase[] = [
     script: { writes: [], end: false },
   },
 ];
+
+/** The cases whose program passes process.stdin where a Readable is
+ * declared. That conversion is withheld for now (processStreamAs in
+ * general-streams.ts), so each of these programs stops at its first
+ * conversion with a TypeError by name, which event-loop.test.ts pins. The
+ * cases are Node's answers and return with the conversion. */
+const convertsStdin = (c: EventLoopCase): boolean =>
+  c.fixture.startsWith("../node-types/stdin-readable-");
+export const stdinAsReadableCases: EventLoopCase[] = allCases.filter(convertsStdin);
+export const eventLoopCases: EventLoopCase[] = allCases.filter((c) => !convertsStdin(c));

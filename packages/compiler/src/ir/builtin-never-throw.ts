@@ -33,4 +33,13 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Emitted inline: the value's tag, its signature literal's length and
   // the literal's last four bytes. No runtime call but strlen.
   "dyn.classValueHash",
+  // scr_http_server_off drops the last entry of the event's listener list
+  // that stands for the function; a function that is not in the list, or a
+  // closed server, leaves the list as it is. No 'removeListener' event runs.
+  "http.serverOff",
+  // scr_net_server_listeners and scr_http_server_listeners copy the event's
+  // listener list into a new array of the registered functions; running out
+  // of memory ends the process.
+  "net.serverListeners",
+  "http.serverListeners",
 ]);

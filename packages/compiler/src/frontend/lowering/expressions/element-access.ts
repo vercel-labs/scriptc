@@ -2083,6 +2083,26 @@ function lowerTupleIndexRead(
     locOf(expr.argumentExpression),
     expr.argumentExpression,
   );
+  // An untyped key, or a JavaScript file's non-number key (`t[name]` over
+  // the names Object.getOwnPropertyNames answered): the property read is
+  // dynamic, as it is for an array receiver. The tuple answers through its
+  // checked-dynamic array view: an index, "length", or undefined.
+  if (
+    index.type.kind === "dyn" ||
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      index.type.kind !== "f64" &&
+      lowerer.dynConvertible(index.type))
+  ) {
+    const view = lowerer.coerceToExpected(obj, DYN);
+    if (view.type.kind === "dyn")
+      return {
+        kind: "dynKeyGet",
+        value: view,
+        key: lowerer.coerceToExpected(index, DYN),
+        type: DYN,
+        loc,
+      };
+  }
   if (index.type.kind !== "f64") {
     lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
   }

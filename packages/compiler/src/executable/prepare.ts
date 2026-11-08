@@ -548,6 +548,7 @@ function moduleIslands(
             : 'marked "node" in scriptc.nodeIslands.modules'
           : describe(reason),
       decision: marked === null ? "auto" : "marked",
+      ...(patches.length > 0 ? { patchesBuiltin: true as const } : {}),
     });
   }
   for (const mark of unmatched.values())

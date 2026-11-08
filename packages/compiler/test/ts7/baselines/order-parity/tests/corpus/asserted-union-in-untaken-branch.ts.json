@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/asserted-union-in-untaken-branch.ts"
+ ],
+ "diags": []
+}

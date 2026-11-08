@@ -72,3 +72,7 @@ try {
 } catch (err) {
   if (err instanceof Mix) console.log("caught", err.seeds[0], err.message, err.label());
 }
+
+// The class answers its constructor's length as Node counts it: the
+// parameters before the first default.
+console.log("lengths", Mix.length, Counted.length, Deep.length);

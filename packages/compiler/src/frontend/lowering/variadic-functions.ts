@@ -71,8 +71,25 @@
  * to such a caller.
  *
  * What this cannot see: a declaration that names fewer parameters than the
- * library passes at run time. */
+ * library passes at run time.
+ *
+ * 3. When there is nothing to refuse.
+ *
+ * Every refusal above needs one of three things in the program: an
+ * expression whose type is a variadic function type (1), a store that
+ * lowering noted, or an adapter whose call is a store (2). The longer calls
+ * lowering notes are read only for a store. Devirtualization is the last
+ * step before these checks, and it reads every expression of the bodies it
+ * leaves, so it says whether one has such a type (FinishedBodies), and a
+ * program with none of the three is known without another walk of its IR
+ * (nothingToRefuse). Most typed programs are such programs.
+ *
+ * SCRIPTC_CHECK_VARIADIC_SKIP=1 walks every program this skips and fails
+ * the build when the walk finds something. The test lanes run with it
+ * (vitest.config.ts), so a refusal added to the walk without its condition
+ * here fails there first. */
 
+import { InternalCompilerError } from "../../errors.js";
 import type { IrExpr, IrFunction, IrType, SrcLoc } from "../../ir/ir.js";
 import { typeEquals } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -139,29 +156,125 @@ function fixedFunc(type: IrType): type is FuncType {
 
 /** Whether `type` is a function type with the hidden argument array: a
  * rest parameter of untyped values, or `arguments`. */
-function variadicFunc(type: IrType): type is FuncType {
+export function isVariadicFunctionType(type: IrType): type is FuncType {
   return type.kind === "func" && type.rest === true && type.restAbi === undefined;
+}
+
+/** What the last step to read every expression of the program's bodies
+ * found in them, as it left them (devirtualize.ts). */
+export interface FinishedBodies {
+  /** Some expression has a variadic function type. */
+  variadicFunctions: boolean;
 }
 
 const NATIVE_CALL =
   "a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses)";
 
+/** A function adapter's factory: a function of one parameter, the adapted
+ * function, that answers the adapter (coercions/builders.ts). The variadic
+ * adapter's takes the function boxed, so it has no `from`. */
+type AdapterFactory =
+  | { kind: "variadic"; to: FuncType }
+  | { kind: "function"; from: FuncType; to: FuncType };
+
+/** What `fn` is as an adapter factory, or null when it is not one. */
+function adapterFactory(lowerer: Lowerer, fn: IrFunction): AdapterFactory | null {
+  if (!lowerer.freshClosureAdapters.has(fn.name) || fn.params.length !== 1) return null;
+  const from = fn.params[0]!.type;
+  const to = fn.returnType;
+  if (to.kind !== "func") return null;
+  if (fn.name.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`)) return { kind: "variadic", to };
+  return from.kind === "func" ? { kind: "function", from, to } : null;
+}
+
+/** Whether an adapter from `from` to `to` packs a fixed signature's
+ * arguments into a typed rest array. */
+function packsTypedRest(from: FuncType, to: FuncType): boolean {
+  return from.rest === true && from.restAbi === "typed" && fixedFunc(to);
+}
+
+/** Whether a call of the adapter factory is a store of a variadic function
+ * under a fixed signature: the variadic adapter's, and the adapter that
+ * packs a typed rest array. */
+function storingFactory(factory: AdapterFactory): boolean {
+  return factory.kind === "variadic" || packsTypedRest(factory.from, factory.to);
+}
+
+/** SCRIPTC_CHECK_VARIADIC_SKIP=1 walks the IR of every program
+ * nothingToRefuse answers for, and fails when the walk finds what the
+ * answer says is not there (the file's head, 3). */
+let checkSkip = process.env["SCRIPTC_CHECK_VARIADIC_SKIP"] === "1";
+
+/** Turns the check mode on or off. A test lowers its fixtures both ways. */
+export function setCheckVariadicSkip(value: boolean): void {
+  checkSkip = value;
+}
+
+/** Whether the program holds none of the three things a refusal of this
+ * file needs (the file's head, 3):
+ *
+ * - no expression of its bodies has a variadic function type (`bodies`);
+ * - lowering noted no store;
+ * - no adapter factory's call is a store.
+ *
+ * With none, the walk refuses no native call (it finds no such
+ * expression), collects no store, and returns before it reads the
+ * program's library calls. */
+function nothingToRefuse(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+  bodies: FinishedBodies,
+): boolean {
+  if (bodies.variadicFunctions || lowerer.notedVariadicStores.size > 0) return false;
+  if (lowerer.freshClosureAdapters.size === 0) return true;
+  for (const fn of functions) {
+    const factory = adapterFactory(lowerer, fn);
+    if (factory !== null && storingFactory(factory)) return false;
+  }
+  return true;
+}
+
+/** The checks of this file's head. `bodies` is what the step before found
+ * in the bodies of `functions`; without it the IR is walked. */
+export function checkVariadicFunctions(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+  bodies?: FinishedBodies,
+): void {
+  if (bodies === undefined || !nothingToRefuse(lowerer, functions, bodies)) {
+    walkVariadicFunctions(lowerer, functions);
+    return;
+  }
+  if (!checkSkip) return;
+  for (const fn of functions) {
+    const none = everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (node) => !isVariadicFunctionType(node.type),
+    });
+    if (!none)
+      throw new InternalCompilerError(
+        `the variadic check was skipped for a program in which ${fn.name} holds an expression of a variadic function type`,
+      );
+  }
+  const before = lowerer.diags.length;
+  walkVariadicFunctions(lowerer, functions);
+  if (lowerer.diags.length !== before)
+    throw new InternalCompilerError(
+      `the variadic check was skipped for a program it refuses: ${lowerer.diags[before]!.message}`,
+    );
+}
+
 /** The checks of this file's head, in one walk of the finished IR. */
-export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[]): void {
-  // Every function adapter is a factory of one parameter, the adapted
-  // function, that answers the adapter (coercions/builders.ts). The
-  // variadic adapter's takes the function boxed.
+function walkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[]): void {
   const factories = new Map<string, { from: FuncType; to: FuncType }>();
   const variadicFactories = new Map<string, FuncType>();
   const byName = new Map<string, IrFunction>();
   for (const fn of functions) {
     byName.set(fn.name, fn);
-    if (!lowerer.freshClosureAdapters.has(fn.name) || fn.params.length !== 1) continue;
-    const from = fn.params[0]!.type;
-    const to = fn.returnType;
-    if (to.kind !== "func") continue;
-    if (fn.name.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`)) variadicFactories.set(fn.name, to);
-    else if (from.kind === "func") factories.set(fn.name, { from, to });
+    const factory = adapterFactory(lowerer, fn);
+    if (factory === null) continue;
+    if (factory.kind === "variadic") variadicFactories.set(fn.name, factory.to);
+    else factories.set(fn.name, { from: factory.from, to: factory.to });
   }
 
   /** The stores, by the slot's type. */
@@ -249,14 +362,14 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
           // an untyped function it is given through the function's own
           // typed entry.
           for (const arg of node.args) {
-            if (variadicFunc(arg.type)) refuseNativeCall(arg.loc);
+            if (isVariadicFunctionType(arg.type)) refuseNativeCall(arg.loc);
             if (arg.kind === "dynFrom") builtinTaken.add(arg);
           }
           return true;
         }
         if (node.kind === "newPromise") {
           // The promise calls its executor with the two settling functions.
-          if (variadicFunc(node.executor.type)) refuseNativeCall(node.executor.loc);
+          if (isVariadicFunctionType(node.executor.type)) refuseNativeCall(node.executor.loc);
           return true;
         }
         if (node.kind === "callValue") {
@@ -265,7 +378,7 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
           // named parameters and the argument array.
           const callee = node.callee.type;
           if (
-            variadicFunc(callee) &&
+            isVariadicFunctionType(callee) &&
             (node.args.length !== callee.params.length + 1 || node.args.at(-1)!.type.kind !== "dyn")
           )
             refuseNativeCall(node.loc);
@@ -287,7 +400,7 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
                 const param = params[i];
                 if (
                   param !== undefined &&
-                  variadicFunc(arg.type) &&
+                  isVariadicFunctionType(arg.type) &&
                   !typeEquals(arg.type, param.type)
                 )
                   refuseNativeCall(arg.loc);
@@ -297,7 +410,7 @@ export function checkVariadicFunctions(lowerer: Lowerer, functions: readonly IrF
           const { from, to } = adapter;
           // A typed rest function packed behind a fixed signature receives
           // the slot's arguments in its rest array: the same kind of store.
-          if (from.rest === true && from.restAbi === "typed" && fixedFunc(to)) {
+          if (packsTypedRest(from, to)) {
             store(typeKey(to), lowerer.fmt(to), to.params.length, node.loc, "noted");
             return true;
           }

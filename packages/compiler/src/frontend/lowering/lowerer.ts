@@ -163,7 +163,7 @@ import {
   recordClassWidthHelper,
   classStaticsProjection,
 } from "./coercions/structural.js";
-import { checkVariadicFunctions } from "./variadic-functions.js";
+import { checkVariadicFunctions, type FinishedBodies } from "./variadic-functions.js";
 import {
   callbackReadsThis,
   callbackTakesEveryArgument,
@@ -12154,7 +12154,7 @@ export class Lowerer {
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
-  finishModule(functions: IrFunction[], library = false): LowerResult {
+  finishModule(functions: IrFunction[], library = false, bodies?: FinishedBodies): LowerResult {
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
@@ -12162,8 +12162,10 @@ export class Lowerer {
     // Every function value and conversion is in the IR now: a variadic
     // function must not reach a native call of fixed arity, and one stored
     // as a fixed signature is exact only if no function of that type is
-    // handed to a caller with a longer argument list.
-    checkVariadicFunctions(this, functions);
+    // handed to a caller with a longer argument list. `bodies` (what the
+    // step before found in them) answers for a program that holds no
+    // variadic function without another walk of its IR.
+    checkVariadicFunctions(this, functions, bodies);
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
     refuseSourceFieldDeletes(this, functions);
@@ -13325,14 +13327,14 @@ export class Lowerer {
     if (this.regexGroupResults) for (const fn of functions) foldRegexSpanReads(this, fn);
     // The worklist can leave a virtual site with a single implementation.
     // Devirtualize after construction/override reachability has settled.
-    devirtualizeVirtualCalls(this, functions, {
+    const bodies = devirtualizeVirtualCalls(this, functions, {
       reachable,
       instantiated,
       library: extraRoots !== undefined,
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    return { reachable, result: this.finishModule(functions, extraRoots !== undefined) };
+    return { reachable, result: this.finishModule(functions, extraRoots !== undefined, bodies) };
   }
 
   /** What the steps before the worklist settled for a top-level

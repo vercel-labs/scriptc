@@ -54,6 +54,8 @@ if (isMainThread) {
   refused("callback", () => helper.callBack((n: number) => n + 1));
   refused("bytes out", () => helper.byteLength(new Uint8Array(4)));
   refused("bytes in", () => helper.bytes());
+  refused("buffer out", () => helper.byteLength(new ArrayBuffer(4)));
+  refused("buffer in", () => helper.buffer());
   refused("symbol out", () => helper.describe(Symbol("native")));
   refused("symbol in", () => helper.symbol());
   refused("error out", () => helper.errorName(new RangeError("native")));

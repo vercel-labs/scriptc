@@ -80,7 +80,17 @@ typedef struct ScrNodeRef {
 
 static ScrNodeRef **ni_refs = NULL; /* by bridge id */
 static size_t ni_refs_cap = 0;
+/* Whether Node has stopped (scr_ni_stop: the main thread, at the process's
+ * end). A worker thread made before the island started is joined only
+ * after that, and can be releasing its last reference to an island value
+ * at that moment: in a build with workers the flag is an atomic. */
+#if SCR_NI_THREADS
+static atomic_bool ni_stopped = false;
+static inline bool nh_stopped(void) { return atomic_load_explicit(&ni_stopped, memory_order_relaxed); }
+#else
 static bool ni_stopped = false;
+static inline bool nh_stopped(void) { return ni_stopped; }
+#endif
 /* Worker threads reach the same island values, so the table is shared. */
 static pthread_mutex_t nh_refs_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -702,7 +712,7 @@ static void nh_young_flush(void) {
   }
   nh_unlock(&nh_pins_lock, locked);
   const ScrNodeBridge *bridge = scr_ni_bridge_loaded();
-  if (bridge != NULL && !ni_stopped) {
+  if (bridge != NULL && !nh_stopped()) {
     /* Giving a view a handle can allocate in V8, and so collect: that
      * runs on Node's stack, like every operation (V8 scans the stack it
      * believes it is on). Letting the views go allocates nothing. */
@@ -939,7 +949,7 @@ __attribute__((noinline)) static void nh_ref_free(ScrNodeRef *ref) {
   bool held = nh_lock(&nh_refs_lock);
   if (id < ni_refs_cap && ni_refs[id] == ref) ni_refs[id] = NULL;
   nh_unlock(&nh_refs_lock, held);
-  if (!ni_stopped) nh_drop(id);
+  if (!nh_stopped()) nh_drop(id);
   free(ref);
 }
 
@@ -1360,7 +1370,7 @@ static ScrDyn *nh_promise_box(ScrNodeRef *ref) {
 static void nh_promise_subscribe(ScrPromise *p) {
   ScrNodeRef *ref = nh_pinned(p, NH_PIN_PROMISE);
   if (ref == NULL) return;
-  if (ni_stopped || ref->id == 0 || scr_ni_bridge_loaded() == NULL) {
+  if (nh_stopped() || ref->id == 0 || scr_ni_bridge_loaded() == NULL) {
     nh_ref_release(ref);
     return;
   }
@@ -1618,7 +1628,8 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
   }
   case SCR_NV_BYTES:
     if (!nh_on_island()) {
-      nh_worker_refusal("island bytes (a typed array or Buffer)");
+      nh_worker_refusal((v->flags & SCR_NVF_ARRAYBUFFER) != 0 ? "an island ArrayBuffer"
+                                                              : "island bytes (a typed array or Buffer)");
       return NULL;
     }
     return nh_bytes_box(v);
@@ -1946,6 +1957,13 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
       return true;
     }
     if (v->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || v->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
+      /* The island would alias this thread's storage, and keep it after
+       * the thread ended: refused from another thread, like the views
+       * over it (SCR_DYN_BYTES below). */
+      if (!nh_on_island()) {
+        nh_worker_refusal("a native ArrayBuffer");
+        return false;
+      }
       /* An ArrayBuffer is its storage: the buffer bound to it, or one the
        * bridge makes over it now. */
       ScrBytes *root = v->v.handle.ptr;
@@ -3020,8 +3038,14 @@ uint32_t scr_ni_live_handles(void) {
   return n;
 }
 
-void scr_ni_stop(void) { ni_stopped = true; }
-bool scr_ni_running(void) { return !ni_stopped && scr_ni_bridge_loaded() != NULL; }
+void scr_ni_stop(void) {
+#if SCR_NI_THREADS
+  atomic_store_explicit(&ni_stopped, true, memory_order_relaxed);
+#else
+  ni_stopped = true;
+#endif
+}
+bool scr_ni_running(void) { return !nh_stopped() && scr_ni_bridge_loaded() != NULL; }
 
 /* ── the handle tag (dynamic code over island values) ────────────────── */
 

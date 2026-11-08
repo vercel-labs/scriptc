@@ -21,6 +21,7 @@ exports.getFunction = () => keptFunction;
 exports.callBack = (fn) => fn(1);
 exports.byteLength = (bytes) => bytes.length;
 exports.bytes = () => new Uint8Array(4);
+exports.buffer = () => new ArrayBuffer(4);
 exports.describe = (symbol) => symbol.description;
 exports.symbol = () => Symbol("island");
 exports.errorName = (error) => error.name;

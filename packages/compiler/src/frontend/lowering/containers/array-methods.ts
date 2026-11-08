@@ -27,7 +27,7 @@ import { ARRAY_METHODS } from "../surfaces.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { lowerDynDispatchMethodCall } from "../lower-calls.js";
+import { isValueListChain, lowerDynDispatchMethodCall } from "../lower-calls.js";
 import {
   arrayIndexPresent,
   arrayValueRead,
@@ -65,6 +65,7 @@ import {
 import { arrayLengthDeclaration } from "./array-iteration.js";
 import {
   lowerArrayCallback,
+  arrayCallbackNeedsDynamicView,
   callbackArrayElement,
   requireProducedArrayElement,
 } from "./callback-arguments.js";
@@ -441,6 +442,34 @@ function orderedSeparatorJoin(
   };
 }
 
+/** A rest-parameter callback cannot ride a native array helper: the helper
+ * passes only the parameters the callback declares, while the callback
+ * expects every argument the method passes. Nor can the other callbacks
+ * arrayCallbackNeedsDynamicView names. A list a method is handed runs on
+ * the list's checked-dynamic view instead, where the method calls the
+ * callback the way Node does, and answers what the method made there: a
+ * checked-dynamic value, checked where it is used, as these lists answered
+ * before they stayed native. Undefined when the callback is one the native
+ * loop calls, which keeps the native list, and when the view has no
+ * dispatch for the method (flatMap, findLastIndex, reduce, reduceRight and
+ * toSorted in TypeScript sources): the native lowering then serves the
+ * callback (a flatMap whose callback returns checked-dynamic values boxes
+ * it) or refuses it by name (requireFixedArityCallback). */
+function lowerRestCallbackOverProbedList(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  probe: IrExpr,
+): IrExpr | undefined {
+  if (
+    !arrayCallbackNeedsDynamicView(lowerer, call) ||
+    (!isJsSourceFile(ts.getSourceFileOfNode(access)) && !lowerer.isStdlibMember(access))
+  )
+    return undefined;
+  const view = lowerer.coerceInto(access.expression, probe, DYN);
+  return lowerDynDispatchMethodCall(lowerer, call, access, view, true) ?? undefined;
+}
+
 /** Ambient array method calls. `push`/`unshift`/`pop`/`reverse`/
  * `indexOf`/`includes`/`join`
  * lower to arrIntrinsic; the HOF family — `map`/`filter`/`forEach`/
@@ -524,6 +553,8 @@ export function lowerArrayMethodCall(
   ) {
     const probe = lowerer.lowerExpr(access.expression);
     if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
       receiverIr = probe.type;
       probedUntyped = true;
     } else if (
@@ -556,7 +587,43 @@ export function lowerArrayMethodCall(
   // receiver.
   if (receiverIr === null && lowerer.checker.isArrayType(checkerReceiver)) {
     const probe = lowerer.lowerExpr(access.expression);
-    if (probe.type.kind === "array") receiverIr = probe.type;
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+      receiverIr = probe.type;
+    }
+  }
+  // A checker array of checked-dynamic elements (`object[]`) maps to the
+  // checked-dynamic array, but a list nothing else can observe is a native
+  // vector of its values: Object.values over a checked-dynamic object whose
+  // result goes straight to an array method (consumesValueList), and the
+  // lists the methods below build from one. Ride the ordinary tables on the
+  // lowered element type, as the two probes above do. A value that lowers
+  // to the checked-dynamic array was claimed by the dyn receiver path
+  // before this one.
+  if (receiverIr?.kind === "dyn" && lowerer.checker.isArrayType(checkerReceiver)) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+      receiverIr = probe.type;
+    }
+  }
+  // A list a chain of these methods made from Object.values is native
+  // whatever its element type (`Object.values(o).map((v) => v.n)` is a
+  // number[], which no probe above looks at), and it was a checked-dynamic
+  // array before the chain stayed native: it hands the same callbacks to
+  // its view.
+  if (
+    receiverIr?.kind === "array" &&
+    isValueListChain(access.expression) &&
+    arrayCallbackNeedsDynamicView(lowerer, call)
+  ) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+    }
   }
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);

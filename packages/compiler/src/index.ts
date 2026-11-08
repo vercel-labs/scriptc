@@ -174,7 +174,12 @@ import {
   nodeIslandModuleDiag,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
-import { libnodeCacheKey, libnodeProbePack, libnodeRecord } from "./node-islands/libnode.js";
+import {
+  libnodeCacheKey,
+  libnodeProbePack,
+  libnodeRecord,
+  nodeIslandPackHint,
+} from "./node-islands/libnode.js";
 import { placeNodeIslandModules, readNodeIslandModules } from "./node-islands/modules.js";
 import { finalizeDeferredIslands } from "./node-islands/snapshot.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
@@ -879,14 +884,12 @@ async function compileExecutableNative(
     ...(features.promiseRejectDyn ? { promiseRejectDyn: true } : {}),
     ...(jsObjectModelFact(features) ? { jsObjectModel: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
-    ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
-    ...(features.stdioWriteSlot ? { stdioWriteSlot: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
@@ -1310,7 +1313,13 @@ async function prepareExecutableInput(
     } else if (outputKind === "exe") {
       const recorded = libnodeRecord(opts.libnode, opts.outPath, process.env, dirname(entryPath));
       if (typeof recorded === "string")
-        return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
+        return {
+          ok: false,
+          diagnostics: [
+            nodeIslandNodeDiag(recorded, entryPath, nodeIslandPackHint(prepared.nodeIslandUse)),
+          ],
+          sourceTexts,
+        };
       mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
       // Deferred island modules (scope-B NI-7): probed in the same pack.
       finalizeDeferredIslands(

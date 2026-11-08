@@ -18,6 +18,7 @@ import {
 import { cleanFuncAdaptable } from "../coercions/function-adapters.js";
 import { checkedNarrowOperand } from "../coercions/unions.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
+import { refuseCopiedStore } from "../structural-instances.js";
 import { recordMayKeepSource } from "../record-sources.js";
 import { recordStringCall } from "../record-links.js";
 import {
@@ -1301,6 +1302,63 @@ function lowerNanCodedEquality(lowerer: Lowerer, expr: ts.BinaryExpression): IrE
   return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: BOOL, loc };
 }
 
+/** Whether ToNumeric of a value of this type can only answer a number: a
+ * number, string, boolean or unit converts through ToNumber, while an object,
+ * array or checked-dynamic value runs its coercion hooks and can answer a
+ * BigInt (`Symbol.toPrimitive` returning one). */
+export function numericTypeStaysNumber(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "f64" || type.kind === "string" || type.kind === "bool" || isUnitType(type))
+    return true;
+  if (type.kind === "union") {
+    const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+    return arms.every((arm) => numericTypeStaysNumber(lowerer, arm));
+  }
+  return false;
+}
+
+/** A JavaScript operation whose operands are not statically the numbers the
+ * operator needs (`"6" / 2`, `true - null`, `s << "1"`, `a ^ b` over
+ * strings): the checked-dynamic runtime applies ToPrimitive/ToNumeric (or
+ * ToInt32/ToUint32) in Node's order, then answers the operation, so the
+ * result is what Node computes and a Symbol or a mixed BigInt throws Node's
+ * TypeError. The static type is the operator's own result type: the numeric
+ * operators answer a Number unless a BigInt takes part, `+` answers a string
+ * when either operand is one, and the bitwise six answer Int32/Uint32. An
+ * operand that can coerce to a BigInt keeps the result checked-dynamic, since
+ * the operator then answers a BigInt. */
+function lowerJsDynArithmetic(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  left: IrExpr,
+  right: IrExpr,
+): IrExpr {
+  const loc = locOf(expr);
+  const text = ts.tokenToString(expr.operatorToken.kind) ?? "?";
+  const args = [lowerer.coerceToExpected(left, DYN), lowerer.coerceToExpected(right, DYN)];
+  const bigint = left.type.kind === "bigint" || right.type.kind === "bigint";
+  if (text === "+") {
+    const add: IrExpr = { kind: "libCall", fn: "dyn.add", args, type: DYN, loc };
+    return left.type.kind === "string" || right.type.kind === "string"
+      ? { kind: "dynCheck", value: add, type: STRING, loc }
+      : add;
+  }
+  const op: IrExpr = { kind: "strLit", value: text, type: STRING, loc };
+  const arithmetic = text === "-" || text === "*" || text === "/" || text === "%" || text === "**";
+  const value: IrExpr = {
+    kind: "libCall",
+    fn: arithmetic ? "dyn.arithmetic" : "dyn.bitwise",
+    args: [...args, op],
+    type: DYN,
+    loc,
+  };
+  const result: IrType | null = bigint
+    ? BIGINT_T
+    : numericTypeStaysNumber(lowerer, left.type) && numericTypeStaysNumber(lowerer, right.type)
+      ? F64
+      : null;
+  return result === null ? value : { kind: "dynCheck", value, type: result, loc };
+}
+
 /** A JavaScript numeric operator with one BigInt operand and one other value
  * (`1n + 1`, `6n & true`, `8n / "2"`), or `>>>` over two BigInts. TypeScript
  * refuses each of these forms because it has no conversion for them, while
@@ -1429,6 +1487,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         );
       }
       const value = lowerer.lowerExprExpecting(expr.right, target.type);
+      refuseCopiedStore(lowerer, expr.left, target.type, expr.right);
       const runtimeOptionalRoot = lowerer.runtimeOptionalRootOf(target);
       if (lowerer.runtimeOptionalStorageLocals.has(runtimeOptionalRoot))
         lowerer.runtimeOptionalLocals.add(runtimeOptionalRoot);
@@ -1531,6 +1590,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         : null;
       if (target) {
         const value = lowerer.lowerExprExpecting(expr.right, target.type);
+        refuseCopiedStore(lowerer, expr.left, target.type, expr.right);
         return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
       }
       // Bundled numeric enums use e[e["name"] = value] = "name".
@@ -1579,6 +1639,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               expr.left.argumentExpression,
               "indexing with non-number keys",
             );
+          // An element of a kept array rebuilds an assigned existing array
+          // into its own element layout, so a later write through the
+          // assigned name would reach only the copy (SC2021): the same
+          // refusal the statement form of this store makes.
+          if (recv.type.kind === "array")
+            refuseCopiedStore(lowerer, expr.left, recv.type.elem, expr.right);
           const key = lowerer.declareHiddenLocal("%setIndex", F64);
           const raw = lowerer.lowerExpr(expr.right);
           const value = lowerer.declareHiddenLocal("%setValue", raw.type);
@@ -1665,6 +1731,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           const receiver = field.obj;
           field.obj = varRef(recvTmp.id, receiver.type, loc);
           const value = lowerer.lowerExprExpecting(expr.right, field.fieldType);
+          refuseCopiedStore(lowerer, expr.left, field.fieldType, expr.right);
           const valTmp = lowerer.declareHiddenLocal("%setValue", value.type);
           const result = varRef(valTmp.id, value.type, loc);
           return {
@@ -2523,6 +2590,14 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           };
         }
       }
+      // A JavaScript operand that is neither a string nor a number —
+      // `true + null`, `[] + 1`, a record with valueOf — appends or adds
+      // only after both operands undergo ToPrimitive at run time, which is
+      // the checked-dynamic add. TypeScript sources keep the refusal: their
+      // operands are typed, and a non-numeric `+` there is a source error.
+      if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+        return lowerJsDynArithmetic(lowerer, expr, left, right);
+      }
       operatorUnsupported(lowerer, expr, "+", [left.type, right.type]);
       break;
     case ts.SyntaxKind.MinusToken:
@@ -2530,6 +2605,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     case ts.SyntaxKind.SlashToken:
     case ts.SyntaxKind.PercentToken:
     case ts.SyntaxKind.AsteriskAsteriskToken: {
+      if (!bothNum && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+        return lowerJsDynArithmetic(lowerer, expr, left, right);
       if (!bothNum)
         operatorUnsupported(lowerer, expr, ts.tokenToString(op) ?? "?", [left.type, right.type]);
       const binOp =
@@ -2576,6 +2653,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       const numeric = (e: IrExpr): boolean =>
         e.type.kind === "f64" || e.type.kind === "bool" || optionalBoolTag(e) >= 0;
       const boolBits = !bothNum && numeric(arithmeticLeft) && numeric(arithmeticRight);
+      if (!bothNum && !boolBits && isJsSourceFile(ts.getSourceFileOfNode(expr)))
+        return lowerJsDynArithmetic(lowerer, expr, left, right);
       if (!bothNum && !boolBits)
         operatorUnsupported(lowerer, expr, ts.tokenToString(op) ?? "?", [left.type, right.type]);
       const bitPrefix: IrStmt[] = [];

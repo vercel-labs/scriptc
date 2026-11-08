@@ -498,7 +498,7 @@ static bool scr_fss_integer(const ScrDyn *v, const char *name) {
 }
 
 static void scr_fss_unsupported(const char *msg) {
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, strlen(msg));
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, strlen(msg), "SC2020");
 }
 
 /* The options record after getOptions: a +1 object (an empty one for

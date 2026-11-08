@@ -2343,7 +2343,9 @@ export const BUILTIN_MODULE_CONSTS: Record<
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
   os: { EOL: "\n", devNull: "/dev/null" },
-  worker_threads: { isMainThread: true, threadId: 0 },
+  // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
+  // in the namespace inventory, and the worker lowering supplies the value.
+  worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's
@@ -2412,17 +2414,25 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
-    // The bytes-data form and the { mode } options form.
-    // The bytes-data form, the { mode } options form, and the
-    // file-descriptor data form.
+    // The bytes-data form, the { mode } options form, the file-descriptor
+    // data form, and the { encoding, mode, flag } option-record forms over
+    // string and bytes data.
     writeFileSync: [
       "fs.writeFileSyncBytes",
       "fs.writeFileSyncBytesFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
+      "fs.writeFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
     ],
-    appendFileSync: ["fs.appendFileSyncBytes"],
+    // The bytes-data form and the { encoding, mode, flag } option-record
+    // forms over string and bytes data.
+    appendFileSync: [
+      "fs.appendFileSyncBytes",
+      "fs.appendFileOptionsSync",
+      "fs.appendFileBytesOptionsSync",
+    ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
       "fs.fsStreamBytes",

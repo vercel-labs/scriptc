@@ -218,7 +218,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ]
       : [],
   ),
-  unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
+  unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.workers, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
     (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
@@ -354,7 +354,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // net families (http implies net), so handle-free binaries keep
   // their exact size class.
   unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
-  unit((u) => u.opts.symbol, "scr_symbol.c"),
+  // The worker unit compares the env option against SHARE_ENV, its symbol
+  // (scr_worker_events.c), so a worker program links the symbol unit even
+  // when nothing else in it uses symbols.
+  unit((u) => u.opts.symbol || u.opts.workers, "scr_symbol.c"),
   unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
   unit((u) => u.opts.qs, "scr_qs.c"),
   // The legacy url unit references the regex, querystring and dyn-async
@@ -534,11 +537,10 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
-  { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
-  // The wave's prepend registrations and stdin.isRaw (scr_events.c,
-  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
-  // (scr_fs_cp.c). The source build compiles these units from source, so the
-  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  // The wave's prepend registrations and stdin.isRaw (scr_async_dyn.c),
+  // server.off (scr_net.c) and copyFile's mode form (scr_fs_cp.c). The source
+  // build compiles these units from source, so the defines must name the same
+  // builds runtime-pack-matrix.mjs selects.
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
@@ -548,8 +550,6 @@ const RUNTIME_DEFINES: readonly {
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
-  // scr_events.c's typed process output write slot.
-  { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,
   // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
   // bodies of its streams.

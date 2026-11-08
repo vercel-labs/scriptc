@@ -1,6 +1,7 @@
 #include "scr_runtime.h"
 
 #ifdef SCR_WORKERS
+#include <pthread.h>
 #include <stdlib.h>
 #include <stdatomic.h>
 
@@ -26,7 +27,36 @@ SCR_TL void (*scr_context_report_error)(void);
 SCR_TL bool scr_context_report_rejection;
 
 typedef struct { char *name; char *value; } ScrContextEnvEntry;
-struct ScrContextEnv { size_t count; ScrContextEnvEntry *entries; };
+/* An environment's entries never change once published: a write builds a new
+ * view and swaps it in. A reader that loaded a view therefore sees one
+ * consistent snapshot even while another thread writes, and a borrowed value
+ * pointer stays valid for as long as the environment lives. A SHARE_ENV
+ * worker and the thread that created it hold one environment and can read and
+ * write it at the same time. */
+typedef struct ScrContextEnvView {
+  size_t count;
+  ScrContextEnvEntry entries[];
+} ScrContextEnvView;
+
+/* A replaced view, and every string a write dropped. No reader can tell when
+ * it is the last one looking at a view (a borrowed value pointer outlives the
+ * call that answered it), so both are freed with the environment, which
+ * outlives every thread that holds it. */
+typedef struct ScrContextEnvRetired {
+  struct ScrContextEnvRetired *next;
+  void *block;
+} ScrContextEnvRetired;
+
+/* A SHARE_ENV worker shares the creating thread's environment rather than
+ * copying it, so two threads can hold one environment and either can outlive
+ * the other; the reference count spans both. The lock orders writers only:
+ * readers load the published view atomically. */
+struct ScrContextEnv {
+  atomic_size_t references;
+  pthread_mutex_t lock;
+  _Atomic(ScrContextEnvView *) view;
+  ScrContextEnvRetired *retired;
+};
 static SCR_TL ScrContextEnv *scr_context_environment;
 
 static char *scr_context_text_copy(const char *value) {
@@ -37,77 +67,213 @@ static char *scr_context_text_copy(const char *value) {
   return copy;
 }
 
+static ScrContextEnvView *scr_context_env_view_new(size_t count) {
+  ScrContextEnvView *view = calloc(1, sizeof(*view) + count * sizeof(view->entries[0]));
+  if (!view) scr_trap("scriptc: out of memory\n");
+  view->count = count;
+  return view;
+}
+
+static ScrContextEnvView *scr_context_env_view_load(ScrContextEnv *environment) {
+  return atomic_load_explicit(&environment->view, memory_order_acquire);
+}
+
+static void scr_context_env_view_publish(ScrContextEnv *environment, ScrContextEnvView *view) {
+  atomic_store_explicit(&environment->view, view, memory_order_release);
+}
+
+/* Takes a block out of service without freeing it: readers may still hold
+ * the view it belongs to. Caller holds the write lock, or owns the
+ * environment before it is shared. */
+static void scr_context_env_retire(ScrContextEnv *environment, void *block) {
+  ScrContextEnvRetired *retired = malloc(sizeof(*retired));
+  if (!retired) scr_trap("scriptc: out of memory\n");
+  retired->next = environment->retired;
+  retired->block = block;
+  environment->retired = retired;
+}
+
 ScrContextEnv *scr_context_env_capture(void) {
   ScrArr *pairs = scr_env_pairs();
   ScrContextEnv *environment = calloc(1, sizeof(*environment));
   if (!environment) scr_trap("scriptc: out of memory\n");
-  environment->count = pairs->len / 2;
-  environment->entries = calloc(environment->count ? environment->count : 1, sizeof(*environment->entries));
-  if (!environment->entries) scr_trap("scriptc: out of memory\n");
-  for (size_t i = 0; i < environment->count; i++) {
+  atomic_init(&environment->references, 1);
+  atomic_init(&environment->view, NULL);
+  if (pthread_mutex_init(&environment->lock, NULL) != 0) scr_trap("scriptc: out of memory\n");
+  size_t count = pairs->len / 2;
+  ScrContextEnvView *view = scr_context_env_view_new(count);
+  for (size_t i = 0; i < count; i++) {
     ScrStr *key = scr_arr_get_ref(pairs, (double)(2 * i));
     ScrStr *value = scr_arr_get_ref(pairs, (double)(2 * i + 1));
-    environment->entries[i] = (ScrContextEnvEntry){scr_context_text_copy(key->data), scr_context_text_copy(value->data)};
+    view->entries[i] = (ScrContextEnvEntry){scr_context_text_copy(key->data), scr_context_text_copy(value->data)};
     scr_str_release(key); scr_str_release(value);
   }
   scr_arr_release(pairs);
+  scr_context_env_view_publish(environment, view);
   return environment;
 }
 
-void scr_context_env_free(ScrContextEnv *environment) {
+ScrContextEnv *scr_context_env_current(void) { return scr_context_environment; }
+
+ScrContextEnv *scr_context_env_retain(ScrContextEnv *environment) {
+  if (environment) atomic_fetch_add_explicit(&environment->references, 1, memory_order_relaxed);
+  return environment;
+}
+
+void scr_context_env_release(ScrContextEnv *environment) {
   if (!environment) return;
-  for (size_t i = 0; i < environment->count; i++) {
-    free(environment->entries[i].name); free(environment->entries[i].value);
+  if (atomic_fetch_sub_explicit(&environment->references, 1, memory_order_acq_rel) != 1) return;
+  ScrContextEnvView *view = scr_context_env_view_load(environment);
+  if (view) {
+    for (size_t i = 0; i < view->count; i++) {
+      free(view->entries[i].name); free(view->entries[i].value);
+    }
+    free(view);
   }
-  free(environment->entries); free(environment);
+  ScrContextEnvRetired *retired = environment->retired;
+  while (retired) {
+    ScrContextEnvRetired *next = retired->next;
+    free(retired->block);
+    free(retired);
+    retired = next;
+  }
+  pthread_mutex_destroy(&environment->lock);
+  free(environment);
 }
 
 static void scr_context_env_cleanup(void) {
-  scr_context_env_free(scr_context_environment);
+  scr_context_env_release(scr_context_environment);
   scr_context_environment = NULL;
 }
 
+/* Takes ownership of the caller's reference for the thread's lifetime; a
+ * SHARE_ENV worker passes a reference it retained from the creating thread's
+ * environment, so both threads release the same environment independently. */
 void scr_context_env_enter(ScrContextEnv *environment) {
   scr_context_environment = environment;
   if (scr_context_atexit(scr_context_env_cleanup)) scr_trap("scriptc: out of memory\n");
 }
 
+/* The process environment is shared by every thread: a SHARE_ENV worker
+ * created by a thread that has no environment of its own reads and writes it
+ * directly. glibc's setenv reallocates the environ array, so a read that
+ * walks it while another thread writes is a use-after-free. Every access
+ * takes this lock. A read answers a copy, kept in a per-thread ring so that
+ * a caller may hold a few values at once (scr_util_terminal_colors holds
+ * TERM across a dozen reads) and the copies die with the thread. */
+static pthread_mutex_t scr_context_process_env_lock = PTHREAD_MUTEX_INITIALIZER;
+
+#define SCR_CONTEXT_ENV_COPIES 16
+static SCR_TL char *scr_context_env_copies[SCR_CONTEXT_ENV_COPIES];
+static SCR_TL size_t scr_context_env_copy_next;
+
+static void scr_context_env_copies_cleanup(void) {
+  for (size_t i = 0; i < SCR_CONTEXT_ENV_COPIES; i++) {
+    free(scr_context_env_copies[i]);
+    scr_context_env_copies[i] = NULL;
+  }
+}
+
+static const char *scr_context_env_copy_track(char *copy) {
+  static SCR_TL bool registered = false;
+  if (!copy) return NULL;
+  if (!registered) {
+    if (scr_context_atexit(scr_context_env_copies_cleanup)) scr_trap("scriptc: out of memory\n");
+    registered = true;
+  }
+  free(scr_context_env_copies[scr_context_env_copy_next]);
+  scr_context_env_copies[scr_context_env_copy_next] = copy;
+  scr_context_env_copy_next = (scr_context_env_copy_next + 1) % SCR_CONTEXT_ENV_COPIES;
+  return copy;
+}
+
+void scr_context_env_process_lock(void) { pthread_mutex_lock(&scr_context_process_env_lock); }
+void scr_context_env_process_unlock(void) { pthread_mutex_unlock(&scr_context_process_env_lock); }
+
 const char *scr_context_getenv(const char *name) {
-  if (!scr_context_environment) return getenv(name);
-  for (size_t i = 0; i < scr_context_environment->count; i++)
-    if (!strcmp(scr_context_environment->entries[i].name, name)) return scr_context_environment->entries[i].value;
+  ScrContextEnv *environment = scr_context_environment;
+  if (!environment) {
+    /* The process environment goes through the same read scr_env_get uses:
+     * on Windows that is the Win32 environment, which scr_env_set writes,
+     * not the CRT's startup snapshot. A SHARE_ENV worker has no environment
+     * of its own, so it reads here and must see the writes either thread
+     * made. */
+    pthread_mutex_lock(&scr_context_process_env_lock);
+    char *copy = scr_env_process_copy(name);
+    pthread_mutex_unlock(&scr_context_process_env_lock);
+    return scr_context_env_copy_track(copy);
+  }
+  ScrContextEnvView *view = scr_context_env_view_load(environment);
+  for (size_t i = 0; view && i < view->count; i++)
+    if (!strcmp(view->entries[i].name, name)) return view->entries[i].value;
   return NULL;
 }
 
-bool scr_context_env_set(const char *name, const char *value) {
-  ScrContextEnv *environment = scr_context_environment;
-  if (!environment) return false;
-  for (size_t i = 0; i < environment->count; i++) {
-    ScrContextEnvEntry *entry = &environment->entries[i];
-    if (strcmp(entry->name, name)) continue;
-    char *copy = value ? scr_context_text_copy(value) : NULL;
-    free(entry->value);
-    entry->value = copy;
-    if (!copy) {
-      free(entry->name);
-      memmove(entry, entry + 1, (--environment->count - i) * sizeof(*entry));
+ScrContextEnv *scr_context_env_new(void) {
+  ScrContextEnv *environment = calloc(1, sizeof(*environment));
+  if (!environment) scr_trap("scriptc: out of memory\n");
+  atomic_init(&environment->references, 1);
+  atomic_init(&environment->view, NULL);
+  if (pthread_mutex_init(&environment->lock, NULL) != 0) scr_trap("scriptc: out of memory\n");
+  scr_context_env_view_publish(environment, scr_context_env_view_new(0));
+  return environment;
+}
+
+/* Swaps in a view that carries the change. Entries of the old view are
+ * never edited, so a concurrent reader never sees a half-written one. */
+static void scr_context_env_put(ScrContextEnv *environment, const char *name, const char *value) {
+  pthread_mutex_lock(&environment->lock);
+  ScrContextEnvView *current = scr_context_env_view_load(environment);
+  size_t count = current ? current->count : 0;
+  size_t at = count;
+  for (size_t i = 0; i < count; i++)
+    if (!strcmp(current->entries[i].name, name)) { at = i; break; }
+  ScrContextEnvView *next;
+  if (at < count) {
+    if (value) {
+      next = scr_context_env_view_new(count);
+      for (size_t i = 0; i < count; i++) next->entries[i] = current->entries[i];
+      next->entries[at].value = scr_context_text_copy(value);
+      scr_context_env_retire(environment, current->entries[at].value);
+    } else {
+      next = scr_context_env_view_new(count - 1);
+      for (size_t i = 0; i < at; i++) next->entries[i] = current->entries[i];
+      for (size_t i = at + 1; i < count; i++) next->entries[i - 1] = current->entries[i];
+      scr_context_env_retire(environment, current->entries[at].name);
+      scr_context_env_retire(environment, current->entries[at].value);
     }
-    return true;
+  } else if (value) {
+    next = scr_context_env_view_new(count + 1);
+    for (size_t i = 0; i < count; i++) next->entries[i] = current->entries[i];
+    next->entries[count] = (ScrContextEnvEntry){scr_context_text_copy(name), scr_context_text_copy(value)};
+  } else {
+    pthread_mutex_unlock(&environment->lock);
+    return;
   }
-  if (value) {
-    ScrContextEnvEntry *entries = realloc(environment->entries, (environment->count + 1) * sizeof(*entries));
-    if (!entries) scr_trap("scriptc: out of memory\n");
-    environment->entries = entries;
-    entries[environment->count++] = (ScrContextEnvEntry){scr_context_text_copy(name), scr_context_text_copy(value)};
-  }
+  scr_context_env_view_publish(environment, next);
+  if (current) scr_context_env_retire(environment, current);
+  pthread_mutex_unlock(&environment->lock);
+}
+
+/* Sets one entry of an environment the caller owns: the Worker env option
+ * fills a fresh environment before the thread starts. */
+void scr_context_env_assign(ScrContextEnv *environment, const char *name, const char *value) {
+  scr_context_env_put(environment, name, value);
+}
+
+bool scr_context_env_set(const char *name, const char *value) {
+  if (!scr_context_environment) return false;
+  scr_context_env_put(scr_context_environment, name, value);
   return true;
 }
 
 ScrArr *scr_context_env_pairs(void) {
-  if (!scr_context_environment) return NULL;
+  ScrContextEnv *environment = scr_context_environment;
+  if (!environment) return NULL;
+  ScrContextEnvView *view = scr_context_env_view_load(environment);
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
-  for (size_t i = 0; i < scr_context_environment->count; i++) {
-    const ScrContextEnvEntry *entry = &scr_context_environment->entries[i];
+  for (size_t i = 0; view && i < view->count; i++) {
+    const ScrContextEnvEntry *entry = &view->entries[i];
     scr_arr_push_ref(out, scr_str_new(entry->name, strlen(entry->name)));
     scr_arr_push_ref(out, scr_str_new(entry->value, strlen(entry->value)));
   }

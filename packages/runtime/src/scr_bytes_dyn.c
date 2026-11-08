@@ -776,7 +776,7 @@ static ScrDyn *scr_bytes_dyn_buffer_member(ScrDyn *recv, const char *method, Scr
     scr_jb_puts(&jb, method);
     scr_jb_puts(&jb, "' on a dynamic value is not supported yet");
     ScrStr *message = scr_jb_finish(&jb);
-    scr_throw_error_msg(SCR_ERR_ERROR, message->data, message->len);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
     scr_str_release(message);
     return NULL;
   }

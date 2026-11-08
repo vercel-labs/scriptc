@@ -1,0 +1,5 @@
+- **Runtime-optional storage:** A binding, field, or parameter whose value comes from a read that can miss — an array element, a record key, or a read asserted with `!` — keeps `undefined` in its storage, and a call site that passes such a read adds that arm to the callee parameter's storage, so the callee receives every value the call site can produce.
+  The checker's narrowing does not remove the stored arm: inside a `typeof` or `=== undefined` guard, lowering extracts the stored value through a checked narrowing.
+  A parameter widened this way keeps the arm even when the call site's checker type has no `undefined`, so a construct that needs the declared type can refuse while an arm the program never wrote is still stored; the refusal's hint names both the narrowed type and the stored arms that block it.
+  Bind the guarded value to a local declared as the narrowed type and pass that local when a construct needs the declared type.
+  `scriptc coverage --explain-dynamic` lists each widened slot and the reads where the checker's type is narrower than its storage.

@@ -1,0 +1,31 @@
+tuple-union-position-handle-beside-record.ts:20:10 - error SC1031: array or tuple union elements without a common native representation is not supported yet
+
+  19 | 
+  20 | const [, load] = shipment(1);
+     |          ^~~~
+  21 | console.log(load instanceof Response ? load.status : load.crates);
+
+tuple-union-position-handle-beside-record.ts:23:10 - error SC2009: values of type 'Headers | Pallet | undefined' cannot be compiled: the union shape is supported, and unions in the 'string | object' family ride the checked-dynamic representation wholesale, but 'Pallet' arms have a typed representation whose semantics (identity, methods, dispatch) do not survive that collapse
+
+  22 | 
+  23 | const [, dock] = delivery(2);
+     |          ^~~~
+  24 | console.log(dock instanceof Pallet ? dock.crates : 'none');
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+tuple-union-position-handle-beside-record.ts:23:10 - error SC1031: array or tuple union elements without a common native representation is not supported yet
+
+  22 | 
+  23 | const [, dock] = delivery(2);
+     |          ^~~~
+  24 | console.log(dock instanceof Pallet ? dock.crates : 'none');
+
+tuple-union-position-handle-beside-record.ts:24:13 - error SC2004: uses of 'dock' inherit the blocker on its declaration
+
+  23 | const [, dock] = delivery(2);
+  24 | console.log(dock instanceof Pallet ? dock.crates : 'none');
+     |             ^~~~
+  25 | 
+
+  hint: the declaration of 'dock' did not compile — fix the diagnostic reported there and these sites clear with it

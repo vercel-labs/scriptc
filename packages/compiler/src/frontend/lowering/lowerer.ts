@@ -1236,6 +1236,10 @@ export interface LowerOptions {
    * diagnostics and stats under `unreached` — the whole-program analysis
    * builds deliberately gave up. */
   coverage?: boolean;
+  /** Coverage only: lower the unreached remainder (default true).
+   * `--coverage=reached` sets false; the report then has no unreached group,
+   * and the aggregates cover the reached statements only. */
+  coverageRemainder?: boolean;
   /** End a pass that a stream pass replaces where it asks for that pass
    * (default; see Lowerer.requestedStreamMode). `false` lowers every pass
    * to its end, which is how the equivalence test compares the two
@@ -1416,6 +1420,10 @@ export interface LowererMode {
    * always-reachable init bodies and module building, and report deferred
    * collection diagnostics nothing flushed. */
   remainder?: boolean;
+  /** Coverage without the remainder pass (`--coverage=reached`): the
+   * reached pass counts and reports the signature-blocked bodies it
+   * reaches, which the remainder would otherwise report. */
+  coverageReached?: boolean;
   /** Coverage (--explain-dynamic): keep the runtime-optional storage
    * decisions and the reads the checker narrows below the widened
    * storage, for the report (runtime-optional-report.ts). Report-only:
@@ -1711,6 +1719,10 @@ function lowerToIrWithIslands(
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const tierMode = options.tierMode ?? "auto";
   const runtimeOptionalReport = options.tierReport !== undefined;
+  // `--coverage=reached` has no remainder pass, so the reached pass reports
+  // the body diagnostics of the functions it reaches whose signature
+  // blocked, which the remainder would otherwise report.
+  const coverageReached = options.coverage === true && options.coverageRemainder === false;
   // Coverage lists the program's type claims (lowering/type-claims.ts).
   const typeClaims = options.coverage === true;
   // One island round lowers the same program through several passes:
@@ -1754,6 +1766,7 @@ function lowerToIrWithIslands(
     abortOnStreamFlags: abortReplacedPasses,
     tierMode,
     runtimeOptionalReport,
+    coverageReached,
     typeClaims,
   });
   const ffiValidation = validateFfiImports(validation);
@@ -1787,6 +1800,7 @@ function lowerToIrWithIslands(
           externalTypeSpecifiersByFile,
           tierMode,
           runtimeOptionalReport,
+          coverageReached,
           typeClaims,
           ffiBindingSymbols: ffiValidation.symbolsByName,
           abortOnStreamFlags: abortReplacedPasses,
@@ -1858,6 +1872,7 @@ function lowerToIrWithIslands(
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      coverageReached,
       typeClaims,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       wholeSlotDegradation: true,
@@ -1898,6 +1913,7 @@ function lowerToIrWithIslands(
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      coverageReached,
       typeClaims,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
@@ -1981,6 +1997,7 @@ function lowerToIrWithIslands(
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      coverageReached,
       typeClaims,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
     });
@@ -2219,20 +2236,27 @@ function lowerToIrWithIslands(
       tierMode,
       runtimeOptionalReport,
     });
-  let remainder = remainderPass(generalNodeStreams);
-  let rem = remainder.run();
-  // Unreached code reports what it would compile to once reached: a
-  // stream flow there that needs the general representation lowers the
-  // remainder again with it, as reachable emit would.
-  if (!generalNodeStreams && remainder.requiresGeneralNodeStreams) {
-    remainder = remainderPass(true, remainder.requiresDynNodeStreams);
+  // `--coverage=reached` skips this pass: lowering every unreached body is
+  // what made the analysis of a large program run out of memory.
+  let rem: LowerResult | null = null;
+  let blockedBody: readonly ScrDiagnostic[] = resultLowerer.reachedBlockedBodyDiagnostics;
+  if (options.coverageRemainder !== false) {
+    let remainder = remainderPass(generalNodeStreams);
     rem = remainder.run();
+    // Unreached code reports what it would compile to once reached: a
+    // stream flow there that needs the general representation lowers the
+    // remainder again with it, as reachable emit would.
+    if (!generalNodeStreams && remainder.requiresGeneralNodeStreams) {
+      remainder = remainderPass(true, remainder.requiresDynNodeStreams);
+      rem = remainder.run();
+    }
+    if (!dynNodeStreams && remainder.generalNodeStreams && remainder.requiresDynNodeStreams) {
+      remainder = remainderPass(true, true);
+      rem = remainder.run();
+    }
+    blockedBody = remainder.reachedBlockedBodyDiagnostics;
+    timing("coverage-remainder");
   }
-  if (!dynNodeStreams && remainder.generalNodeStreams && remainder.requiresDynNodeStreams) {
-    remainder = remainderPass(true, true);
-    rem = remainder.run();
-  }
-  timing("coverage-remainder");
   // Tiers (tier-analysis.ts): reached statements in dynamic-tier functions,
   // and with tierReport the report-only demotion analysis.
   const dynamicFunctions = resultLowerer.dynamicBodies;
@@ -2244,7 +2268,7 @@ function lowerToIrWithIslands(
           dynamicFunctions,
           reached: [...options.tierReport.preflight, ...result.diagnostics],
           deferred: result.runtimeFences,
-          unreached: [...rem.diagnostics, ...rem.runtimeFences],
+          unreached: rem === null ? [] : [...rem.diagnostics, ...rem.runtimeFences],
           runtimeOptional: resultLowerer.runtimeOptionalNarrowings,
         });
   // A dynamic function's own statements can include ones that failed.
@@ -2259,13 +2283,17 @@ function lowerToIrWithIslands(
   // travel with them: a failed statement is never left unexplained.
   const covered: LowerResult = {
     ...result,
-    diagnostics: [...result.diagnostics, ...remainder.reachedBlockedBodyDiagnostics],
+    diagnostics: [...result.diagnostics, ...blockedBody],
     stats: { ...result.stats, statementsDynamic },
-    unreached: {
-      diagnostics: rem.diagnostics,
-      stats: rem.stats,
-      ...(rem.runtimeFences.length > 0 ? { runtimeFences: rem.runtimeFences } : {}),
-    },
+    ...(rem === null
+      ? {}
+      : {
+          unreached: {
+            diagnostics: rem.diagnostics,
+            stats: rem.stats,
+            ...(rem.runtimeFences.length > 0 ? { runtimeFences: rem.runtimeFences } : {}),
+          },
+        }),
   };
   if (tiers !== undefined) covered.tiers = tiers;
   const wasmModules = discoverModules();
@@ -5797,6 +5825,9 @@ export class Lowerer {
     "frontendServices",
     "nodeIslands",
     "remainder",
+    // The reached pass of a report that skips the remainder is a setting of
+    // the pass (`--coverage=reached`), fixed before any unit lowers.
+    "coverageReached",
     "tierMode",
     "runtimeOptionalReport",
     "typeClaims",
@@ -6194,6 +6225,10 @@ export class Lowerer {
   /** Coverage remainder mode: the reachability gate inverts (see wantBody)
    * and no module is built. */
   readonly remainder: boolean;
+  /** LowererMode.coverageReached: the reached pass of a report that skips
+   * the remainder, so the signature-blocked bodies it reaches are counted
+   * and reported here. */
+  readonly coverageReached: boolean;
   /** `--tier` (tier-analysis.ts). Stage S2 is report-only: both modes
    * refuse and fence exactly as before. Stage S6 demotes the units of
    * committed refusals in "auto" and keeps them refusals in "static-only". */
@@ -6886,6 +6921,7 @@ export class Lowerer {
     this.parameterPropertiesFirst = mode.parameterPropertiesFirst ?? null;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
+    this.coverageReached = mode.coverageReached ?? false;
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
     this.define = mode.define;
@@ -12778,7 +12814,7 @@ export class Lowerer {
         if (fn) functions.push(fn);
         else {
           this.skippedBodies.add(decl);
-          if (this.countsSkips()) {
+          if (this.countsSkips() && this.countsSkipOf(decl)) {
             this.countSkippedBody(decl);
             if (this.remainder) this.reportBlockedBody(decl);
           }
@@ -12918,6 +12954,16 @@ export class Lowerer {
     for (const fn of this.liftedFns) functions.push(fn);
     for (const fn of this.implicitFns) functions.push(fn);
     for (const fn of runtimeClassConstructs(this, functions)) functions.push(fn);
+
+    if (this.coverageReached) {
+      // A report without the remainder pass: every declaration this pass
+      // visited is reached, so the body diagnostics of the ones whose
+      // signature blocked are reached diagnostics. Report them once the
+      // flush retries below have settled, as the remainder pass does.
+      for (const decl of this.skippedBodies) {
+        if (ts.isFunctionDeclaration(decl) && this.countsSkipOf(decl)) this.reportBlockedBody(decl);
+      }
+    }
 
     if (this.remainder) {
       // Deferred collection diagnostics nothing flushed — declarations no
@@ -13298,12 +13344,18 @@ export class Lowerer {
   /** Coverage remainder: the body diagnostics of a function whose
    * signature blocked (blockedBodyDiagnostics). A function reachable emit
    * reached (its signature's diagnostics flushed there) reports them with
-   * the reached diagnostics; any other reports them as unreached. */
+   * the reached diagnostics; any other reports them as unreached. A
+   * reached-only report has no remainder: the pass that reached the
+   * declaration reports them, so its own flushed set decides. */
   readonly reachedBlockedBodyDiagnostics: ScrDiagnostic[] = [];
   private reportBlockedBody(decl: ts.FunctionDeclaration): void {
     const diags = blockedBodyDiagnostics(this, decl);
     const symbol = declSymbolOf(this, decl);
-    if (symbol && this.alreadyFlushed.has(symbol)) {
+    const reached =
+      symbol !== undefined &&
+      (this.alreadyFlushed.has(symbol) ||
+        (this.coverageReached && this.flushedSymbols.has(symbol)));
+    if (reached) {
       for (const d of diags) this.reachedBlockedBodyDiagnostics.push(d);
     } else {
       for (const d of diags) this.pushDiag(d);
@@ -13313,9 +13365,23 @@ export class Lowerer {
   /** Whether run() counts a signature-blocked declaration in
    * stats.functionsSkipped: whole-program passes and the coverage
    * remainder do; an externally-gated emit pass leaves the counting to the
-   * remainder (the declaration was never reached). */
+   * remainder (the declaration was never reached). A reached-only report
+   * has no remainder, so its reached pass counts the blocked declarations
+   * it reaches. */
   countsSkips(): boolean {
-    return this.reachable === null || this.remainder;
+    return this.reachable === null || this.remainder || this.coverageReached;
+  }
+
+  /** Whether a declaration whose body did not lower counts as skipped. The
+   * whole-program passes and the coverage remainder count every one of
+   * them; a reached-only report counted only the declarations it reached
+   * (their signature diagnostics flushed) whose signature blocked, since a
+   * signature that compiled counts its own statements as they lower. */
+  private countsSkipOf(decl: ts.ClassDeclaration | ts.FunctionDeclaration): boolean {
+    if (!this.coverageReached) return true;
+    const symbol = declSymbolOf(this, decl);
+    if (symbol === undefined || !this.flushedSymbols.has(symbol)) return false;
+    return !ts.isFunctionDeclaration(decl) || !this.fnSigsBySymbol.has(symbol);
   }
 
   /* ── reachability ─────────────────────────────────────────────────── */
@@ -14110,6 +14176,34 @@ export class Lowerer {
       ...this.liftedFns,
       ...this.implicitFns,
     ]);
+    if (this.coverageReached) {
+      // A report without the remainder pass: no later pass counts and
+      // reports the bodies of the declarations this program reaches whose
+      // signature blocked. Do it here, once every unit has lowered and the
+      // signature answers have settled. A flushed signature is what makes a
+      // declaration reached. The throwaway body walk fires no reachability
+      // edges.
+      const edges = this.onEdge;
+      this.onEdge = null;
+      try {
+        for (const fp of parts) {
+          for (const decl of fp.fnDecls) {
+            if (!decl.body) continue;
+            const symbol = declSymbolOf(this, decl);
+            // A signature that compiled counts its own statements as they
+            // lower; only a blocked one leaves the body uncounted.
+            if (!symbol || this.genericFnsBySymbol.has(symbol)) continue;
+            if (this.mixinFnShapes.get(decl)) continue;
+            if (this.fnSigsBySymbol.has(symbol)) continue;
+            if (!this.flushedSymbols.has(symbol)) continue;
+            this.countSkippedBody(decl);
+            this.reportBlockedBody(decl);
+          }
+        }
+      } finally {
+        this.onEdge = edges;
+      }
+    }
     if (dump !== null) writeRecords(dump, recordLines);
     if (reuse !== null) {
       reuse.finish();

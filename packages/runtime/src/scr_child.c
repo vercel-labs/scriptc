@@ -9108,15 +9108,50 @@ static ScrError *scr_ipc_closed_error(void) {
   return error;
 }
 
+/* The child's 'error' listeners as they were when send() was called: the
+ * child may reach its terminal events, which release its listeners, before
+ * the tick. A child that had already reached them holds none to ask. */
+typedef struct {
+  size_t rc;
+  ScrChild *child; /* +1 */
+  ScrChildErrEntry *heard;
+  size_t n;
+  bool settled;
+} ScrIpcClosedSend;
+
+static void *scr_ipc_closed_send_retain_v(void *p) {
+  ((ScrIpcClosedSend *)p)->rc++;
+  return p;
+}
+
+static void scr_ipc_closed_send_release_v(void *p) {
+  ScrIpcClosedSend *note = p;
+  if (--note->rc > 0) return;
+  for (size_t i = 0; i < note->n; i++) scr_closure_release(note->heard[i].cb);
+  free(note->heard);
+  scr_child_release(note->child);
+  free(note);
+}
+
 static void scr_ipc_closed_child_tick(ScrClosure *clo) {
-  ScrChild *c = scr_box_get_ref(clo->caps[0]);
+  ScrIpcClosedSend *note = scr_box_get_ref(clo->caps[0]);
   ScrError *error = scr_ipc_closed_error();
-  ScrAlsCtx *prev = scr_als_dispatch_enter(c->als);
-  bool heard = scr_child_emit_error(c, error);
-  scr_als_dispatch_leave(prev);
-  if (heard) scr_error_release(error);
-  else scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
-  scr_child_release(c);
+  if (note->n > 0) {
+    ScrAlsCtx *prev = scr_als_dispatch_enter(note->child->als);
+    ScrError *outer_payload = scr_event_error_payload;
+    scr_event_error_payload = error;
+    for (size_t i = 0; i < note->n; i++) {
+      if (!scr_exc_pending()) note->heard[i].fn(note->heard[i].cb, error->message);
+    }
+    scr_event_error_payload = outer_payload;
+    scr_als_dispatch_leave(prev);
+    scr_error_release(error);
+  } else if (!note->settled) {
+    scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+  } else {
+    scr_error_release(error);
+  }
+  scr_ipc_closed_send_release_v(note);
 }
 
 static void scr_ipc_closed_process_tick(ScrClosure *clo) {
@@ -9129,9 +9164,24 @@ static void scr_ipc_closed_process_tick(ScrClosure *clo) {
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json) {
 #if defined(SCR_CHILD_CP_OPTIONS) && !defined(_WIN32)
   if (c->ipc != NULL && !c->ipc->connected) {
+    ScrIpcClosedSend *note = calloc(1, sizeof *note);
+    if (!note) scr_trap("out of memory");
+    note->rc = 1;
+    note->child = scr_child_retain(c);
+    note->settled = c->settled;
+    note->n = c->n_err;
+    if (note->n > 0) {
+      note->heard = malloc(note->n * sizeof *note->heard);
+      if (!note->heard) scr_trap("out of memory");
+      for (size_t i = 0; i < note->n; i++) {
+        note->heard[i] = c->err_cbs[i];
+        scr_closure_retain(note->heard[i].cb);
+      }
+    }
     ScrClosure *tick = scr_closure_new((void *)&scr_ipc_closed_child_tick, 1);
-    tick->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
-    scr_box_set_ref(tick->caps[0], scr_child_retain(c));
+    tick->caps[0] =
+        scr_box_new_obj(&scr_ipc_closed_send_retain_v, &scr_ipc_closed_send_release_v, NULL);
+    scr_box_set_ref(tick->caps[0], note);
     scr_next_tick(tick);
   }
 #endif

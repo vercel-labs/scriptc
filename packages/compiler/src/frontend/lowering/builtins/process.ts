@@ -981,8 +981,12 @@ export function lowerProcessProperty(
     // The channel's state, false without a channel. A JavaScript source
     // reads undefined there, as Node does (node-value-reads.ts
     // untypedNodeMemberRead); a TypeScript read is typed boolean by its
-    // declaration.
-    usesProcessChannel(lowerer.program);
+    // declaration. A program that never uses the channel has not taken a
+    // parent's over, and nothing in it can disconnect it: there the
+    // parent's variable answers, as for the test of process.send.
+    if (lowerer.forkTargets.length === 0 && !usesProcessChannel(lowerer.program)) {
+      return processHasIpc(lowerer, loc);
+    }
     return { kind: "libCall", fn: "process.connected", args: [], type: BOOL, loc };
   }
   // process.execArgv: the Node runtime flags kept out of process.argv —

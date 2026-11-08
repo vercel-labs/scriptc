@@ -27,8 +27,9 @@ export class ProgramAnalysis {
   cycleEarlyBindings: EarlyBindingsMemo | null = null;
   /** Whether some program file can name node:child_process (namesChildProcess). */
   namesChildProcess: boolean | null = null;
-  /** Whether some program file uses the process's IPC channel
-   * (usesProcessChannel); null until a lowering asks. */
+  /** Whether the program calls process.send or process.disconnect or
+   * listens for the channel's events (usesProcessChannel); null until a
+   * lowering asks. */
   usesProcessChannel: boolean | null = null;
   /** Which member names a typed member call passes its holder for
    * (member-call-receivers.ts): null until the census is taken; `any` is

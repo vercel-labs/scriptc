@@ -31,6 +31,7 @@ import {
 } from "./builtin-object-members.generated.js";
 import type { Lowerer } from "./lowerer.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { isStrictCode } from "../program.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 
 /** f: a function; a: an accessor; t: other data that is truthy; z: other
@@ -512,10 +513,19 @@ export function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
 
 /** `X.m ||= v` and `X.m ??= v` over a member that is always truthy never
  * assign, and `X.m = X.m || v` / `X.m = X.m ?? v` assign the member's own
- * value: the polyfill spellings that have no guard statement. */
+ * value: the polyfill spellings that have no guard statement. `X.m = X.m`
+ * over a data member assigns what it read. None of them replaces the
+ * member; the ones that assign still lower as assignments
+ * (isDeadBuiltinPolyfill). */
 function keepsOwnValue(lowerer: Lowerer, write: ts.BinaryExpression, target: WriteTarget): boolean {
-  if (target.kind === null || !alwaysTruthy({ ...target, kind: target.kind })) return false;
+  if (target.kind === null) return false;
   const op = write.operatorToken.kind;
+  const sameMember = (read: BuiltinMember | null): boolean =>
+    read !== null && read.owner === target.owner && read.member === target.member;
+  if (op === ts.SyntaxKind.EqualsToken && target.kind !== "a") {
+    if (sameMember(builtinMemberOf(lowerer, write.right))) return true;
+  }
+  if (!alwaysTruthy({ ...target, kind: target.kind })) return false;
   if (op === ts.SyntaxKind.BarBarEqualsToken || op === ts.SyntaxKind.QuestionQuestionEqualsToken)
     return true;
   if (op !== ts.SyntaxKind.EqualsToken) return false;
@@ -524,8 +534,7 @@ function keepsOwnValue(lowerer: Lowerer, write: ts.BinaryExpression, target: Wri
   const inner = value.operatorToken.kind;
   if (inner !== ts.SyntaxKind.BarBarToken && inner !== ts.SyntaxKind.QuestionQuestionToken)
     return false;
-  const read = builtinMemberOf(lowerer, value.left);
-  return read !== null && read.owner === target.owner && read.member === target.member;
+  return sameMember(builtinMemberOf(lowerer, value.left));
 }
 
 /** A write to a member of a built-in object that the program spells out. */
@@ -981,14 +990,25 @@ function noteBuiltinFeatureTest(lowerer: Lowerer, test: ts.Expression): void {
   lowerer.builtinFeatureTests.add(test);
 }
 
-/** Whether an expression statement is a polyfill that never runs: a logical
- * expression whose left operand is a decided feature test and whose right
- * operand, which that answer skips, contains a refused write
- * (`Array.prototype.at || (Array.prototype.at = f)`), or an assignment that
- * keeps the member's own value (`X.m = X.m || f`, `X.m ??= f`). Its operands
- * that run are reads of built-in members and have no effects, so the
- * statement lowers to nothing; one whose read makes a value first
- * (`Object.getPrototypeOf([effect()]).at || …`) is not such a statement. */
+/** Whether an expression statement is a polyfill in which nothing happens:
+ * a logical expression whose left operand is a decided feature test and
+ * whose right operand, which that answer skips, contains a refused write
+ * (`Array.prototype.at || (Array.prototype.at = f)`), or a logical
+ * assignment that never assigns (`X.m ||= f`, `X.m ??= f` over a member that
+ * is always truthy). Node writes nothing in such a statement, and its
+ * operands that run are reads of built-in members with no effects, so it
+ * lowers to nothing; one whose read makes a value first
+ * (`Object.getPrototypeOf([effect()]).at || …`) is not such a statement.
+ *
+ * `X.m = X.m || f` does assign: the member's own value. In sloppy code that
+ * is nothing too, over a data member the object itself holds: a writable
+ * one keeps its value, and a write to a read-only one, or to a member of a
+ * frozen object, is ignored. In strict code that write throws
+ * (`Math.PI = Math.PI || 3.14`), and whether the member is writable when the
+ * statement runs is not a fact of the build, so there the statement lowers
+ * as the assignment it is and the runtime answers as Node does. It is not a
+ * replacement of the member either way (keepsOwnValue), so nothing refuses
+ * it. */
 export function isDeadBuiltinPolyfill(lowerer: Lowerer, expr: ts.Expression): boolean {
   const e = withoutParentheses(expr);
   if (!ts.isBinaryExpression(e)) return false;
@@ -997,10 +1017,14 @@ export function isDeadBuiltinPolyfill(lowerer: Lowerer, expr: ts.Expression): bo
     const target = builtinMemberOf(lowerer, e.left);
     if (target === null || isAssignableState(target) || !keepsOwnValue(lowerer, e, target))
       return false;
-    // The target runs, and so does the read of `X.m = X.m || f`.
-    const kept = op === ts.SyntaxKind.EqualsToken ? withoutParenthesesTypeWrappers(e.right) : null;
+    if (op === ts.SyntaxKind.EqualsToken) {
+      if (isStrictCode(e) || builtinOwnMemberKind(target.owner, target.member) === null)
+        return false;
+      // The read of `X.m = X.m || f`, or of `X.m = X.m`, runs too.
+      const kept = withoutParenthesesTypeWrappers(e.right);
+      if (readRuns(lowerer, ts.isBinaryExpression(kept) ? kept.left : kept)) return false;
+    }
     if (readRuns(lowerer, e.left)) return false;
-    if (kept !== null && ts.isBinaryExpression(kept) && readRuns(lowerer, kept.left)) return false;
     noteBuiltinFeatureTest(lowerer, e.left);
     return true;
   }

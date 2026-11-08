@@ -1,3 +1,4 @@
+import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import {
   memberCallHolder,
@@ -5780,6 +5781,11 @@ export function lowerDynDispatchMethodCall(
         DYN,
       );
     if (i === 0 && predicate) return lowerer.coerceInto(arg, predicate, DYN);
+    // The receiver of call, apply or bind (lowerFunctionMethodArgs).
+    if (i === 0 && (method === "bind" || method === "call" || method === "apply")) {
+      const stream = processStreamReceiver(lowerer, arg);
+      if (stream) return stream;
+    }
     const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, arg);
     return undefinedArg
       ? defaultAfterUndefined(undefinedArg, dynUndefinedExpr(locOf(arg)))
@@ -11911,6 +11917,49 @@ function arrowSignatureOf(lowerer: Lowerer, node: ts.Expression): ts.Signature |
   return declaration !== undefined && ts.isArrowFunction(declaration) ? signatures[0]! : null;
 }
 
+/** The arguments of Function.prototype.call, apply or bind on a
+ * checked-dynamic function. The first one is the receiver. A process stream
+ * there is the stream object itself, whose methods the function may be
+ * (`process.stdout.write.bind(process.stdout)`): under checked-dynamic stream
+ * slots a process stream that flows into a dynamic slot otherwise becomes
+ * the Writable such a slot holds (general-streams.ts), which the stream's
+ * own methods do not take as their receiver. */
+function lowerFunctionMethodArgs(lowerer: Lowerer, call: ts.CallExpression): IrExpr[] {
+  return call.arguments.nodes.map(
+    (arg, index) =>
+      (index === 0 ? processStreamReceiver(lowerer, arg) : null) ??
+      lowerer.lowerExprExpecting(arg, DYN),
+  );
+}
+
+/** A process stream given as the receiver of call, apply or bind, boxed as
+ * the stream object; null for any other argument, and in programs without
+ * checked-dynamic stream slots, where the ordinary conversion already
+ * answers the stream object. */
+function processStreamReceiver(lowerer: Lowerer, arg: ts.Expression): IrExpr | null {
+  if (!lowerer.dynNodeStreams || !isProcessStreamValue(lowerer, arg)) return null;
+  const stream = lowerer.lowerExpr(arg);
+  return stream.type.kind === "procStream"
+    ? { kind: "dynFrom", value: stream, type: DYN, loc: stream.loc }
+    : lowerer.coerceToExpected(stream, DYN);
+}
+
+function isProcessStreamValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  // The streams by name: under checked-dynamic stream slots their declared
+  // type maps to the slot's representation, not to the process stream.
+  if (ts.isPropertyAccessExpression(node)) {
+    const member = lowerer.stdlibGlobalMember(node, "process");
+    if (member === "stdout" || member === "stderr" || member === "stdin") return true;
+  }
+  // A query, never a commit: a type with no readable form is not a stream.
+  try {
+    return lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "procStream";
+  } catch (e) {
+    if (!isCheckerPanic(e)) throw e;
+    return false;
+  }
+}
+
 /** An inline arrow has lexical `this` and no observable own properties
  * before binding. With no preset arguments, a fresh forwarding closure
  * preserves its completed ABI, defaults and captured environment. Keep
@@ -12309,7 +12358,7 @@ function lowerObjLitGenericMethodCall(
           recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
           method: name,
           calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          args: lowerFunctionMethodArgs(lowerer, call),
           type: DYN,
           loc,
         };
@@ -12322,7 +12371,7 @@ function lowerObjLitGenericMethodCall(
           recv: childMethod,
           method: name,
           calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          args: lowerFunctionMethodArgs(lowerer, call),
           type: DYN,
           loc,
         };

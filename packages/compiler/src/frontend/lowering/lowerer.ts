@@ -16482,6 +16482,22 @@ export class Lowerer {
         narrowGenericClassValue(this, e, expected);
       if (narrowed) e = this.coerceToExpected(narrowed, expected);
     }
+    // A union the checker narrowed, at this site, to classes at or below
+    // the expected class (`v instanceof Base` on a union that also holds
+    // records or scalars): the stored value keeps its union, and the arms
+    // the site's type still names all widen to the class without a copy.
+    // The other arms are ruled out by the checker and throw if one arrives.
+    if (!typeEquals(e.type, expected) && expected.kind === "object" && e.type.kind === "union") {
+      const site = this.mapTypeOf(this.typeOf(node));
+      if (
+        site &&
+        (site.kind === "object" || site.kind === "union") &&
+        identityPreservingWidening(this, site, expected)
+      ) {
+        const view = checkedClassAssertion(this, e, expected, e.loc);
+        if (view) e = view;
+      }
+    }
     // Existing JavaScript arrays retain mutations and identity across checked
     // slots. Fresh literals have no prior identity and use checked storage
     // directly, so later writes can change their inferred element type.

@@ -1897,6 +1897,7 @@ bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len) {
 static const ScrDyn *scr_dyn_property_owner(const ScrDyn *object, const char *key, size_t length);
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver);
 static ScrDyn *scr_promise_properties(const ScrDyn *v, bool create);
+static bool scr_promise_island_fence(const ScrDyn *d, const char *operation);
 static bool scr_promise_protocol_name(const ScrStr *key);
 static void scr_promise_protocol_fence(const ScrStr *key);
 static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function);
@@ -3470,7 +3471,10 @@ ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
       object->v.arr.properties->non_extensible = true;
   }
   if (object->kind == SCR_DYN_BYTES) scr_bytes_properties(object)->non_extensible = true;
-  if (object->kind == SCR_DYN_PROMISE) scr_promise_properties(object, true)->non_extensible = true;
+  if (object->kind == SCR_DYN_PROMISE) {
+    if (scr_promise_island_fence(object, "Object.preventExtensions")) return NULL;
+    scr_promise_properties(object, true)->non_extensible = true;
+  }
   return scr_dyn_retain(object);
 }
 
@@ -3516,6 +3520,7 @@ ScrDyn *scr_dyn_seal(ScrDyn *object) {
     return scr_dyn_retain(object);
   }
   if (object->kind == SCR_DYN_PROMISE) {
+    if (scr_promise_island_fence(object, "Object.seal")) return NULL;
     scr_dyn_release(scr_dyn_seal(scr_promise_properties(object, true)));
     return scr_dyn_retain(object);
   }
@@ -8437,6 +8442,23 @@ static void scr_promise_protocol_fence(const ScrStr *key) {
   scr_str_release(text);
 }
 
+/* Whether `d` is the mirror of an island promise. Its members live on the
+ * island object (scr_dyn_promise_key_get), so an operation that would only
+ * change the mirror's own-property table refuses it instead. */
+static bool scr_promise_island_fence(const ScrDyn *d, const char *operation) {
+  if (scr_ni_dyn_ops == NULL || scr_ni_dyn_ops->promise_is_island == NULL ||
+      !scr_ni_dyn_ops->promise_is_island(d))
+    return false;
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, operation);
+  scr_jb_puts(&message, " on a promise from a Node island is not supported yet");
+  ScrStr *text = scr_jb_finish(&message);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, text->data, text->len, "SC2020");
+  scr_str_release(text);
+  return true;
+}
+
 /* The promise's own property `key` (+1, a getter called on the promise), or
  * NULL when it has none: a promise without own properties costs one load. */
 ScrDyn *scr_dyn_promise_named_get(const ScrDyn *d, const char *key, size_t key_len) {
@@ -11323,6 +11345,7 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     return scr_dyn_retain(target);
   }
   if (target->kind == SCR_DYN_PROMISE) {
+    if (scr_promise_island_fence(target, "Object.defineProperty")) return NULL;
     ScrStr *name = scr_dyn_property_key(key);
     if (!name) return NULL;
     if (scr_promise_protocol_name(name)) {
@@ -14549,6 +14572,11 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     return;
   }
   if (recv->kind == SCR_DYN_PROMISE) {
+    /* An island promise is an island object too (scr_dyn_promise_key_get):
+     * a member other than then, catch and finally is written there. */
+    if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_set != NULL &&
+        scr_ni_dyn_ops->promise_set(recv, key->data, key->len, (ScrDyn *)value))
+      return;
     if (scr_promise_protocol_name(key)) {
       scr_promise_protocol_fence(key);
       return;
@@ -14556,13 +14584,6 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     scr_dyn_object_key_set(scr_promise_properties(recv, true), key, value, recv);
     return;
   }
-
-  /* An island promise is an island object too (scr_dyn_promise_key_get):
-   * a member an island Promise subclass has is written there. */
-  if (recv->kind == SCR_DYN_PROMISE && scr_ni_dyn_ops != NULL &&
-      scr_ni_dyn_ops->promise_set != NULL &&
-      scr_ni_dyn_ops->promise_set(recv, key->data, key->len, (ScrDyn *)value))
-    return;
 
   ScrJsonBuf b;
   scr_jb_init(&b);
@@ -22423,6 +22444,7 @@ ScrDyn *scr_dyn_freeze_data(ScrDyn *value) {
     return scr_dyn_retain(value);
   }
   if (value->kind == SCR_DYN_PROMISE) {
+    if (scr_promise_island_fence(value, "Object.freeze")) return NULL;
     scr_dyn_release(scr_dyn_freeze_data(scr_promise_properties(value, true)));
     return scr_dyn_retain(value);
   }

@@ -1075,6 +1075,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_promise_island_fence",
+  "message": " on a promise from a Node island is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_handle_key_set",
   "message": " is not supported yet",
   "code": "SC2020"

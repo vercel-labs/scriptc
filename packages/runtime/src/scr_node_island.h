@@ -245,6 +245,8 @@ typedef struct ScrNiDynOps {
    * (a throw stays pending). 1 for the mirror of an island promise, 0 for
    * any other. */
   int (*promise_set)(const ScrDyn *promise, const char *key, size_t len, ScrDyn *value);
+  /* 1 for the mirror of an island promise, 0 for any other promise. */
+  int (*promise_is_island)(const ScrDyn *promise);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

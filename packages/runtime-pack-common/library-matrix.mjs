@@ -24,6 +24,10 @@ export function withLibraryRuntimeFlavors(matrix) {
     // detaches a buffer names scr_js_buffers_arm from its own object, so the
     // library flavors must carry the unit the executable flavors compile.
     "scr_js_buffers.c",
+    // The kept-source read of a record-to-record conversion: a library
+    // whose program projects a record calls it, so the library flavors
+    // carry the same optional unit the executable flavors compile.
+    "scr_record_source_get.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

@@ -167,6 +167,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
   // A generator function that reads `this` (scr_gen_receiver.c).
   unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
+  // The kept-source read a record width copy emits (scr_record_source_get.c).
+  unit((u) => u.opts.recordSourceGet === true, "scr_record_source_get.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
@@ -564,6 +566,10 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_json.c's function-property write/define/delete paths and
+  // scr_dyn_invoke.c's own call/apply/bind dispatch: the source build must
+  // name the builds runtime-pack-matrix.mjs selects.
+  { define: "SCR_FN_MEMBER_PROPS", when: (opts) => opts.fnMemberProps },
   // scr_child.c's spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
   // entries.
   { define: "SCR_CHILD_CP_OPTIONS", when: (opts) => opts.childOptionExt },

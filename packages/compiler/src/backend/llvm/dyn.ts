@@ -260,6 +260,9 @@ export interface DynHost extends WalkerHost {
   /** The closures with a jsval body (IrFunction.jsEntry) on targets with
    * jsval words, which the box builders give a jsval entry. */
   jsEntryClosures?(): readonly JsEntryClosure[];
+  /** The view bodies whose closures box as the function they forward to
+   * (IrFunction.boxesSource). */
+  boxedViews?(): readonly BoxedView[];
   /** The entry point and JavaScript name of each named function the module
    * makes closures of (LlEmitter.closureNames). */
   closureNames?(): readonly { entry: string; name: string }[];
@@ -278,6 +281,17 @@ export interface JsEntryClosure {
   body: string;
   bodyParams: readonly IrType[];
   bodyRet: IrType;
+}
+
+/** A view body whose closures box as the function they forward to
+ * (IrFunction.boxesSource), for the box builders. */
+export interface BoxedView {
+  /** The view's entry symbol (ScrClosure.fn) and signature. */
+  closure: string;
+  params: readonly IrType[];
+  ret: IrType;
+  /** The type of the function in the view's first capture. */
+  source: IrType & { kind: "func" };
 }
 
 const FN_ATTRS = "#0";
@@ -6406,9 +6420,44 @@ export class LlDyn {
         );
       });
     }
+    // A view of this signature that stands for a function an untyped
+    // caller must reach (IrFunction.boxesSource) boxes as that function:
+    // captures[0] of a view is the box of what it forwards to (viewSource).
+    const views =
+      t.rest === true
+        ? []
+        : (host.boxedViews?.() ?? []).filter(
+            (view) =>
+              view.params.length === t.params.length &&
+              view.params.every((p, i) => typeKey(p) === typeKey(t.params[i]!)) &&
+              typeKey(view.ret) === typeKey(t.ret),
+          );
+    const through: string[] = [];
+    if (views.length > 0) {
+      through.push(
+        `  %vfnp = getelementptr inbounds %ScrClosure, ptr %v, i64 0, i32 1`,
+        `  %vfn = load ptr, ptr %vfnp`,
+      );
+      views.forEach((view, i) => {
+        const source = this.dynFuncBoxHelper(view.source);
+        through.push(
+          `  %view${i} = icmp eq ptr %vfn, @${view.closure}`,
+          `  br i1 %view${i}, label %source${i}, label %own${i}`,
+          `source${i}:`,
+          `  %caps${i} = getelementptr %ScrClosure, ptr %v, i64 1 ; caps`,
+          `  %box${i} = load ptr, ptr %caps${i}`,
+          `  %slot${i} = getelementptr inbounds %ScrBox, ptr %box${i}, i64 0, i32 5`,
+          `  %fn${i} = load ptr, ptr %slot${i}`,
+          `  %boxed${i} = call ptr @${source}(ptr %fn${i}, ptr %fname)`,
+          `  ret ptr %boxed${i}`,
+          `own${i}:`,
+        );
+      });
+    }
     this.defs.push(
       `define internal ptr @${name}(ptr %v, ptr %fname) ${FN_ATTRS} { ; box ${key} into dyn`,
       `entry:`,
+      ...through,
       `  %c = call ptr @scr_closure_retain_v(ptr %v)`,
       `  %r = call ptr @scr_dyn_new_func(ptr %c, ptr @${thunk}, i32 ${t.params.length - (t.restAbi === "typed" ? 1 : 0)}, ptr ${sigLit}, ptr %fname)`,
       ...register,

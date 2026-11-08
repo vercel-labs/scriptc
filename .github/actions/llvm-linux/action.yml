@@ -20,7 +20,7 @@ runs:
       shell: bash
       run: |
         curl -fL --connect-timeout 20 --max-time 300 --speed-limit 102400 --speed-time 30 \
-          --retry 2 --retry-max-time 600 -o "$RUNNER_TEMP/llvm.tar.xz" \
+          --retry 4 --retry-delay 30 --retry-max-time 600 -o "$RUNNER_TEMP/llvm.tar.xz" \
           https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz
         tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
         mv "$RUNNER_TEMP/LLVM-22.1.8-Linux-X64" "$RUNNER_TEMP/llvm-22.1.8"

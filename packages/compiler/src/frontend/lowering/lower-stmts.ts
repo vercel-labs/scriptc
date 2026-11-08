@@ -211,7 +211,7 @@ import {
   requireEarlyReference,
   requireSpecOf,
 } from "../program.js";
-import { callableDeleteKey } from "./callable-properties.js";
+import { callableDeleteKey, callableMemberWriteTarget } from "./callable-properties.js";
 import { isStrictCode } from "./strict-mode.js";
 import {
   COMPOUND_ASSIGN_OPS,
@@ -242,6 +242,7 @@ import {
   nodeUndefinedGlobalName,
 } from "./lower-namespaces.js";
 import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
+import { lowerFunduleMemberDecl } from "./lower-fundule.js";
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
@@ -2462,6 +2463,11 @@ function lowerVarDeclarator(
   isConst: boolean,
   isLet: boolean,
 ): IrStmt[] {
+  // An EXPORTED member of a function+namespace merge: its value is an own
+  // property of the merged function object, written here at its source
+  // position (lower-fundule.ts) — no module global exists for it.
+  const funduleStore = lowerFunduleMemberDecl(lowerer, decl);
+  if (funduleStore !== null) return funduleStore;
   // `var m; m = require("./x")`: the declaration is alias plumbing; the
   // assignment owns the module's run-once %init (cjs-inline-require.ts).
   // A read that code before the assignment can reach keeps Node's hoisted
@@ -10814,6 +10820,20 @@ export function lowerExprStatement(
         // receiver's shape lacks. `(view).member` and `view!.member` reach
         // the same refusal as `view.member`.
         assertedOnlyMemberWrite(lowerer, expr.left.expression, expr.left.name.text, expr.left);
+        // `fn.name = v` on a typed CALLABLE, the inherited protocol names
+        // included: the write creates the own data property JS creates, so
+        // it is the closure's table store (callable-properties.ts) even when
+        // the value's type only inherits the name (`fn.call = f` shadows
+        // Function.prototype.call). Every other target keeps its own path.
+        if (!ts.isPrivateIdentifier(expr.left.name)) {
+          const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression));
+          const callableWrite =
+            recvT?.kind === "func" ? callableMemberWriteTarget(lowerer, expr.left, recvT) : null;
+          if (callableWrite) {
+            const value = lowerer.lowerExprExpecting(expr.right, callableWrite.fieldType);
+            return lowerer.fieldSetStmt(callableWrite, value, locOf(expr), expr.left);
+          }
+        }
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);

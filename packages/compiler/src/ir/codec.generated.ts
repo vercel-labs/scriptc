@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "d6250b2824817cfd";
+export const IR_CODEC_LAYOUT = "e1ff443bbafba46b";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -25,7 +25,7 @@ export function decodeIrFunction(r: IrReader): IrFunction {
 }
 
 const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","recordLinks","recordSourcesFolded","threadSlotKeys","bytesHeadersMutable","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
-const KEYS1: readonly string[] = ["name","sourceName","displayName","identityRoot","identityLength","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
+const KEYS1: readonly string[] = ["name","sourceName","displayName","identityRoot","identityLength","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","boxesSource","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
 const KEYS2: readonly string[] = ["libnode","nodeVersion","modules"];
 const KEYS3: readonly string[] = ["profileName","prefix","initSymbol","sinkRegisterSymbol","collectSymbol","resultResetSymbol","threadInstances","callbackRegisterSymbol","callbacks","exports","trapOverlays","identity"];
 const KEYS4: readonly string[] = ["int32Fields","int32Params","int32Returns","int32Locals","int32Elements","noThrow","acyclic","immortalGlobals","programLifetime","inlineArrays"];
@@ -141,7 +141,7 @@ const KEYS113: readonly string[] = ["kind","value","type","loc"];
 const KEYS114: readonly string[] = ["kind","method","receiver","args","type","loc","invalidNaN"];
 const KEYS115: readonly string[] = ["kind","source","from","type","loc"];
 const KEYS116: readonly string[] = ["kind","callee","args","type","loc"];
-const KEYS117: readonly string[] = ["kind","callee","receiver","args","type","loc"];
+const KEYS117: readonly string[] = ["kind","callee","receiver","args","untyped","type","loc"];
 const KEYS118: readonly string[] = ["kind","value","className","type","loc"];
 const KEYS119: readonly string[] = ["kind","value","type","loc"];
 const KEYS120: readonly string[] = ["kind","value","test","className","negated","type","loc"];
@@ -468,6 +468,11 @@ function encIrFunction(w: IrWriter, v: IrFunction): void {
     w.byte(1);
     w.str(v.jsEntry);
   }
+  if (v.boxesSource === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.bool(v.boxesSource);
+  }
   if (v.tier === undefined) w.byte(0);
   else {
     w.byte(1);
@@ -524,15 +529,16 @@ function decIrFunction(r: IrReader): IrFunction {
   const f11 = decT20(r);
   const f12 = decSrcLoc(r);
   const f13 = r.tag(2, "IrFunction.jsEntry") === 0 ? undefined : r.str();
-  const f14 = r.tag(2, "IrFunction.tier") === 0 ? undefined : (r.str() as NonNullable<IrFunction["tier"]>);
-  const f15 = r.tag(2, "IrFunction.speculativeDispatch") === 0 ? undefined : r.bool();
-  const f16 = r.tag(2, "IrFunction.fastRead") === 0 ? undefined : (r.str() as NonNullable<IrFunction["fastRead"]>);
-  const f17 = r.tag(2, "IrFunction.plainLoops") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["plainLoops"]>);
-  const f18 = r.tag(2, "IrFunction.async") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["async"]>);
-  const f19 = r.tag(2, "IrFunction.generator") === 0 ? undefined : decT22(r);
-  const f20 = r.tag(2, "IrFunction.asyncCacheGlobal") === 0 ? undefined : r.str();
-  const f21 = r.tag(2, "IrFunction.asyncCycleCacheGlobal") === 0 ? undefined : r.str();
-  const o: IrFunction = { name: f0, ...(f1 !== undefined ? { sourceName: f1 } : {}), ...(f2 !== undefined ? { displayName: f2 } : {}), ...(f3 !== undefined ? { identityRoot: f3 } : {}), ...(f4 !== undefined ? { identityLength: f4 } : {}), ...(f5 !== undefined ? { ownsPrototype: f5 } : {}), params: f6, returnType: f7, locals: f8, ...(f9 !== undefined ? { captures: f9 } : {}), ...(f10 !== undefined ? { classCaptures: f10 } : {}), body: f11, loc: f12, ...(f13 !== undefined ? { jsEntry: f13 } : {}), ...(f14 !== undefined ? { tier: f14 } : {}), ...(f15 !== undefined ? { speculativeDispatch: f15 } : {}), ...(f16 !== undefined ? { fastRead: f16 } : {}), ...(f17 !== undefined ? { plainLoops: f17 } : {}), ...(f18 !== undefined ? { async: f18 } : {}), ...(f19 !== undefined ? { generator: f19 } : {}), ...(f20 !== undefined ? { asyncCacheGlobal: f20 } : {}), ...(f21 !== undefined ? { asyncCycleCacheGlobal: f21 } : {}) };
+  const f14 = r.tag(2, "IrFunction.boxesSource") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["boxesSource"]>);
+  const f15 = r.tag(2, "IrFunction.tier") === 0 ? undefined : (r.str() as NonNullable<IrFunction["tier"]>);
+  const f16 = r.tag(2, "IrFunction.speculativeDispatch") === 0 ? undefined : r.bool();
+  const f17 = r.tag(2, "IrFunction.fastRead") === 0 ? undefined : (r.str() as NonNullable<IrFunction["fastRead"]>);
+  const f18 = r.tag(2, "IrFunction.plainLoops") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["plainLoops"]>);
+  const f19 = r.tag(2, "IrFunction.async") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["async"]>);
+  const f20 = r.tag(2, "IrFunction.generator") === 0 ? undefined : decT22(r);
+  const f21 = r.tag(2, "IrFunction.asyncCacheGlobal") === 0 ? undefined : r.str();
+  const f22 = r.tag(2, "IrFunction.asyncCycleCacheGlobal") === 0 ? undefined : r.str();
+  const o: IrFunction = { name: f0, ...(f1 !== undefined ? { sourceName: f1 } : {}), ...(f2 !== undefined ? { displayName: f2 } : {}), ...(f3 !== undefined ? { identityRoot: f3 } : {}), ...(f4 !== undefined ? { identityLength: f4 } : {}), ...(f5 !== undefined ? { ownsPrototype: f5 } : {}), params: f6, returnType: f7, locals: f8, ...(f9 !== undefined ? { captures: f9 } : {}), ...(f10 !== undefined ? { classCaptures: f10 } : {}), body: f11, loc: f12, ...(f13 !== undefined ? { jsEntry: f13 } : {}), ...(f14 !== undefined ? { boxesSource: f14 } : {}), ...(f15 !== undefined ? { tier: f15 } : {}), ...(f16 !== undefined ? { speculativeDispatch: f16 } : {}), ...(f17 !== undefined ? { fastRead: f17 } : {}), ...(f18 !== undefined ? { plainLoops: f18 } : {}), ...(f19 !== undefined ? { async: f19 } : {}), ...(f20 !== undefined ? { generator: f20 } : {}), ...(f21 !== undefined ? { asyncCacheGlobal: f21 } : {}), ...(f22 !== undefined ? { asyncCycleCacheGlobal: f22 } : {}) };
   return o;
 }
 
@@ -2911,6 +2917,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         encIrExpr(w, v.receiver);
       }
       encT68(w, v.args);
+      if (v.untyped === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.untyped);
+      }
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
       return;
@@ -4070,9 +4081,10 @@ function decIrExpr(r: IrReader): IrExpr {
       const f0 = decIrExpr(r);
       const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<callValue>.receiver") === 0 ? undefined : decIrExpr(r);
       const f2 = decT68(r);
-      const f3 = decIrType(r);
-      const f4 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "callValue" }> = { kind: "callValue", callee: f0, ...(f1 !== undefined ? { receiver: f1 } : {}), args: f2, type: f3, loc: f4 };
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<callValue>.untyped") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "callValue" }>["untyped"]>);
+      const f4 = decIrType(r);
+      const f5 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "callValue" }> = { kind: "callValue", callee: f0, ...(f1 !== undefined ? { receiver: f1 } : {}), args: f2, ...(f3 !== undefined ? { untyped: f3 } : {}), type: f4, loc: f5 };
       return o;
     }
     case 15: {

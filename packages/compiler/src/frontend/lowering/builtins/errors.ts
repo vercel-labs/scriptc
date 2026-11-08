@@ -60,6 +60,18 @@ export function refuseExecExceptionCode(lowerer: Lowerer, node: ts.Node): never 
  * receivers and non-stdlib members, so the chain keeps trying. */
 /** Error members with slots of their own: never read through the dynamic
  * node, even when an intersection restates them. */
+/** The Error subclasses of the language whose instances are the Error
+ * root's layout and nothing more (DOMException and AggregateError keep
+ * state of their own beyond it). */
+const STANDARD_ERROR_SUBCLASSES: ReadonlySet<string> = new Set([
+  "%TypeError",
+  "%RangeError",
+  "%SyntaxError",
+  "%ReferenceError",
+  "%EvalError",
+  "%URIError",
+]);
+
 const ERROR_SLOT_MEMBERS = new Set([
   "code",
   "cause",
@@ -210,9 +222,20 @@ export function lowerErrorCodeProperty(
     refuseExecExceptionCode(lowerer, expr);
   }
   const rawReceiver = lowerer.lowerExpr(expr.expression);
+  // A checked-dynamic value narrowed to a standard Error subclass (`err
+  // instanceof TypeError` on an unknown): these members are slots of the
+  // Error root every error class shares, so the value enters through the
+  // root's checked conversion. Any error answers as in Node; a value that
+  // is no error throws.
   const receiver =
     rawReceiver.type.kind === "dyn"
-      ? lowerer.coerceInto(expr.expression, rawReceiver, recvT)
+      ? lowerer.coerceInto(
+          expr.expression,
+          rawReceiver,
+          STANDARD_ERROR_SUBCLASSES.has(recvT.className)
+            ? { kind: "object", className: "%Error" }
+            : recvT,
+        )
       : rawReceiver;
   if (systemField) {
     const loc = locOf(expr);

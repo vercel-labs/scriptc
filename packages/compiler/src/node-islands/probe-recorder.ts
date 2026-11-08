@@ -443,14 +443,70 @@ exports.probe = function probe(input) {
     if (realEnv.TZ !== undefined) noteEnv("TZ", String(realEnv.TZ));
     else add(inputs, "the time zone of the machine (TZ is unset)");
   };
+  // An argument of a call is looked at only where the engine answers without
+  // running the load's own code. A getter, a proxy trap or a conversion run
+  // here would run before the call's own: the load would see its accessor
+  // read twice, or the second value of one that answers differently each
+  // time, and that result would be recorded. An argument only the load's
+  // code can answer is an input: the load evaluates where it is imported.
+  const descriptorOf = Object.getOwnPropertyDescriptor, prototypeOf = Object.getPrototypeOf;
+  const isArray = Array.isArray, applyFn = Reflect.apply;
+  const OPAQUE = {};
+  const opaque = (what) => add(inputs, what + " that only the load's own code can answer (an accessor, a proxy or a conversion)");
+  // The data property key of value, own or inherited: its value,
+  // undefined when there is none, OPAQUE behind an accessor or a proxy.
+  const dataMember = (value, key) => {
+    for (let o = value; o !== null; o = prototypeOf(o)) {
+      if (types.isProxy(o)) return OPAQUE;
+      const d = descriptorOf(o, key);
+      if (d !== undefined) return hasOwn.call(d, "value") ? d.value : OPAQUE;
+    }
+    return undefined;
+  };
+  // The Intl services as the recorder found them, and what answers a tag of
+  // an Intl.Locale from its own slot.
+  const realIntl = {};
+  const supportedLocalesOf = new Map();
+  for (const k of Object.getOwnPropertyNames(Intl)) {
+    const service = Intl[k];
+    if (typeof service !== "function" || typeof service.supportedLocalesOf !== "function") continue;
+    realIntl[k] = service;
+    supportedLocalesOf.set(service, service.supportedLocalesOf);
+  }
+  const localeTag = typeof Intl.Locale === "function" ? Intl.Locale.prototype.toString : undefined;
+  // The tags of a locales argument, or null when reading them would run the
+  // load's code: a string, an Intl.Locale, or a plain array of those.
+  const tagOf = (v) => {
+    if (typeof v === "string") return v;
+    if (v === null || typeof v !== "object" || localeTag === undefined) return null;
+    try { return applyFn(localeTag, v, []); } catch { return null; }
+  };
+  const tagsOf = (locales) => {
+    const one = tagOf(locales);
+    if (one !== null) return [one];
+    if (!isArray(locales) || types.isProxy(locales) || locales.length > 64) return null;
+    const tags = [];
+    for (let i = 0; i < locales.length; i++) {
+      const d = descriptorOf(locales, i);
+      const tag = d !== undefined && hasOwn.call(d, "value") ? tagOf(d.value) : null;
+      if (tag === null) return null;
+      tags.push(tag);
+    }
+    return tags;
+  };
   // Whether a locales argument leaves the choice to the default locale:
   // none, an empty list, or tags of which ICU supports none.
   const defaultLocale = (service, locales) => {
     if (locales === undefined) return true;
-    try { return service.supportedLocalesOf(locales).length === 0; } catch { return false; }
+    const tags = tagsOf(locales);
+    if (tags === null) { opaque("a locales argument"); return false; }
+    try { return applyFn(supportedLocalesOf.get(service), service, [tags]).length === 0; } catch { return false; }
   };
   const zoneOption = (options) => {
-    try { return options !== null && (typeof options === "object" || typeof options === "function") && options.timeZone !== undefined; } catch { return false; }
+    if (options === null || (typeof options !== "object" && typeof options !== "function")) return false;
+    const zone = dataMember(options, "timeZone");
+    if (zone === OPAQUE) { opaque("an options argument"); return true; }
+    return zone !== undefined;
   };
 
   // ── process ──
@@ -637,7 +693,7 @@ exports.probe = function probe(input) {
       if (!isNew) add(volatile, "Date()");
       else if (a.length === 0) add(volatile, "new Date()");
       else if (a.length > 1) zone();
-      else if (typeof a[0] === "string" ? localText(a[0]) : a[0] !== null && typeof a[0] === "object" && !(a[0] instanceof RealDate)) zone();
+      else if (typeof a[0] === "string" ? localText(a[0]) : a[0] !== null && typeof a[0] === "object" && !types.isDate(a[0])) zone();
     }, "");
     // new date.constructor(...) is the same question.
     if (wrapped !== undefined) {
@@ -650,14 +706,14 @@ exports.probe = function probe(input) {
     wrapFn(RealDate.prototype, k, zone, "", "zone");
   for (const k of ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"])
     wrapFn(RealDate.prototype, k, (a) => {
-      if (defaultLocale(Intl.DateTimeFormat, a[0])) locale();
+      if (defaultLocale(realIntl.DateTimeFormat, a[0])) locale();
       if (!zoneOption(a[1])) zone();
     }, "");
-  wrapFn(Number.prototype, "toLocaleString", (a) => { if (defaultLocale(Intl.NumberFormat, a[0])) locale(); }, "", "locale");
-  wrapFn(BigInt.prototype, "toLocaleString", (a) => { if (defaultLocale(Intl.NumberFormat, a[0])) locale(); }, "", "locale");
-  wrapFn(String.prototype, "localeCompare", (a) => { if (defaultLocale(Intl.Collator, a[1])) locale(); }, "", "locale");
+  wrapFn(Number.prototype, "toLocaleString", (a) => { if (defaultLocale(realIntl.NumberFormat, a[0])) locale(); }, "", "locale");
+  wrapFn(BigInt.prototype, "toLocaleString", (a) => { if (defaultLocale(realIntl.NumberFormat, a[0])) locale(); }, "", "locale");
+  wrapFn(String.prototype, "localeCompare", (a) => { if (defaultLocale(realIntl.Collator, a[1])) locale(); }, "", "locale");
   for (const k of ["toLocaleUpperCase", "toLocaleLowerCase"])
-    wrapFn(String.prototype, k, (a) => { if (defaultLocale(Intl.Collator, a[0])) locale(); }, "", "locale");
+    wrapFn(String.prototype, k, (a) => { if (defaultLocale(realIntl.Collator, a[0])) locale(); }, "", "locale");
   // Every Intl service that takes locales (Intl.Locale and the functions
   // take a tag and answer from ICU's data, which is the pack's).
   for (const k of Object.getOwnPropertyNames(Intl)) {
@@ -759,9 +815,9 @@ exports.probe = function probe(input) {
     undo.push(() => Object.defineProperty(globalThis, key, d));
   };
   const fileMade = (a) => {
-    let given = false;
-    try { given = a[2] !== null && typeof a[2] === "object" && a[2].lastModified !== undefined; } catch {}
-    if (!given) add(volatile, "new File() (its lastModified)");
+    const given = a[2] !== null && typeof a[2] === "object" ? dataMember(a[2], "lastModified") : undefined;
+    if (given === OPAQUE) opaque("an options argument");
+    else if (given === undefined) add(volatile, "new File() (its lastModified)");
   };
   wrapGlobalClass("File", fileMade);
   try { wrapFn(require("node:buffer"), "File", fileMade, ""); } catch {}

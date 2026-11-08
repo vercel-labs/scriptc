@@ -757,6 +757,50 @@ describe("what a load reads of the machine and the moment", () => {
     expectDeterministic(mention.of("mention"), "mention");
   });
 
+  test("an argument is read without running the load's code, and one only that code can answer is an input", () => {
+    // Each source counts how often its accessor, trap or conversion ran, or
+    // answers differently the second time. The recorder classifies the call
+    // before it runs: reading the argument there would run the load's code
+    // once more than Node does, and the load's result, which the snapshot
+    // would hold, would not be Node's.
+    const opaque: { [name: string]: string } = {
+      "zone-getter": `(function () { var n = 0; var f = new Intl.DateTimeFormat("en-US", { get timeZone() { n++; return n === 1 ? "Asia/Tokyo" : "UTC"; } }); return f.resolvedOptions().timeZone + " " + n; })()`,
+      "zone-getter-date": `(function () { var n = 0; var text = new Date(0).toLocaleTimeString("en-US", { get timeZone() { n++; return n === 1 ? "Asia/Tokyo" : "UTC"; } }); return text + " " + n; })()`,
+      "zone-proxy": `(function () { var gets = 0; var f = new Intl.DateTimeFormat("en-US", new Proxy({ timeZone: "UTC" }, { get: function (t, k) { if (k === "timeZone") gets++; return t[k]; } })); return f.resolvedOptions().timeZone + " " + gets; })()`,
+      "locale-conversion": `(function () { var n = 0; var tag = { toString: function () { n++; return n === 1 ? "de-DE" : "en-US"; } }; return (1234.5).toLocaleString([tag]) + " " + n; })()`,
+      "locale-element-getter": `(function () { var n = 0; var list = ["sv"]; Object.defineProperty(list, 0, { get: function () { n++; return n === 1 ? "sv" : "en"; } }); return "\u00e4".localeCompare("z", list) + " " + n; })()`,
+      "locale-array-like": `(function () { var n = 0; var list = { get length() { n++; return 1; }, 0: "de-DE" }; return new Intl.NumberFormat(list).resolvedOptions().locale + " " + n; })()`,
+      "file-getter": `(function () { var n = 0; var f = new File([], "a", { get lastModified() { n++; return 5; } }); return f.lastModified + " " + n; })()`,
+    };
+    // Arguments the engine answers by itself stay what they were: constants.
+    const plain: { [name: string]: string } = {
+      "zone-data": `new Intl.DateTimeFormat(["en-US"], { timeZone: "UTC" }).resolvedOptions().timeZone`,
+      "zone-inherited": `new Intl.DateTimeFormat("en-US", Object.create({ timeZone: "UTC" })).resolvedOptions().timeZone`,
+      "locale-object": `(1234.5).toLocaleString(new Intl.Locale("de-DE"))`,
+      "locale-objects": `"\u00e4".localeCompare("z", [new Intl.Locale("sv"), "en"])`,
+    };
+    const underNode = (source: string): unknown => {
+      const run = spawnSync(process.execPath, ["-p", `JSON.stringify(${source})`], {
+        encoding: "utf8",
+      });
+      expect(run.status, run.stderr).toBe(0);
+      return JSON.parse(run.stdout) as unknown;
+    };
+    const recorded = recordSources({ ...opaque, ...plain });
+    for (const [name, source] of Object.entries(opaque)) {
+      const record = recorded.of(name);
+      expect(recorded.value(name), name).toEqual(underNode(source));
+      expect(record.inputs.join("\n"), name).toContain(
+        "that only the load's own code can answer (an accessor, a proxy or a conversion)",
+      );
+      expect(record.inputs.join("\n"), name).toContain(`node_modules/${name}/index.js`);
+    }
+    for (const [name, source] of Object.entries(plain)) {
+      expect(recorded.value(name), name).toEqual(underNode(source));
+      expectDeterministic(recorded.of(name), name);
+    }
+  });
+
   test("the recorder leaves the process as it found it", () => {
     const recorded = recordSources({ any: `new Date(2020, 0, 1).getHours() + Date.now()` });
     expect(recorded.after).toEqual({ tz: null, native: true, stdout: true });

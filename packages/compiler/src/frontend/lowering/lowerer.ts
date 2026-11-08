@@ -4957,6 +4957,9 @@ export class Lowerer {
   /** Initialization flags of classes reachable before their statement ran,
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
+  /** Initialization flags of import-cycle bindings that have no module
+   * storage and are only ever called (cycle-initialization.ts). */
+  readonly calledBindingInitFlags: CycleInitFlag[] = [];
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
   /** Each class's constructor return plan by class name
    * (constructor-returns.ts); null when no return can yield an object. */
@@ -5430,6 +5433,7 @@ export class Lowerer {
       checkedTable("closureDynLets", () => this.closureDynLets.size),
       checkedTable("cycleInitFlags", () => this.cycleInitFlags.size),
       checkedTable("classInitFlags", () => this.classInitFlags.size),
+      checkedTable("calledBindingInitFlags", () => this.calledBindingInitFlags.length),
       checkedTable("cycleInitDeclarations", () => this.cycleInitDeclarations.size),
       checkedTable("uninitializedLexicalGlobals", () => this.uninitializedLexicalGlobals.size),
       checkedTable("requireInitFlags", () => this.requireInitFlags.size),

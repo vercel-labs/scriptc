@@ -10031,9 +10031,14 @@ export class Lowerer {
           // asking irTypeOf to invent one poisons otherwise valid generic
           // value/HOF programs. Leave that parameter at its generic
           // signature and let the normal instantiation path specialize it.
+          // A parameter whose type has no lowering stays at its declared
+          // signature the same way: the statement that holds the callback
+          // owns that refusal (irTypeOfSpeculatively).
           const current =
             mapped ??
-            (checkerTypeContainsTypeParameter(checkerType) ? null : this.irTypeOf(parameter.name));
+            (checkerTypeContainsTypeParameter(checkerType)
+              ? null
+              : this.irTypeOfSpeculatively(parameter.name));
           if (!current) continue;
           if (!ts.isIdentifier(parameter.name)) {
             const widened = this.runtimeOptionalType(current);
@@ -11416,15 +11421,19 @@ export class Lowerer {
                   : null;
               if (reduce && (optional || arithmetic !== null)) {
                 if (optional && promoteHofCallback(callback, [0, 1])) changed = true;
-                let result = this.irTypeOf(node);
-                if (arithmetic !== null)
-                  result = joinPrimitiveTypes([result, arithmetic]) ?? result;
-                if (optional) result = this.runtimeOptionalType(result);
-                siteDependencies?.read(node);
-                const previous = this.runtimeOptionalReduceTypes.get(node);
-                if (!previous || !typeEquals(previous, result)) {
-                  this.runtimeOptionalReduceTypes.set(node, result);
-                  changed = true;
+                // A result type with no lowering records nothing: the
+                // statement that holds the call owns that refusal.
+                let result = this.irTypeOfSpeculatively(node);
+                if (result !== null) {
+                  if (arithmetic !== null)
+                    result = joinPrimitiveTypes([result, arithmetic]) ?? result;
+                  if (optional) result = this.runtimeOptionalType(result);
+                  siteDependencies?.read(node);
+                  const previous = this.runtimeOptionalReduceTypes.get(node);
+                  if (!previous || !typeEquals(previous, result)) {
+                    this.runtimeOptionalReduceTypes.set(node, result);
+                    changed = true;
+                  }
                 }
               }
             }
@@ -15402,6 +15411,30 @@ export class Lowerer {
     if (isJsSourceFile(ts.getSourceFileOfNode(node)) && this.mixesFunctionsWithArrays(mapped))
       return DYN;
     return jsOpenObjectType(node, mapped, this.shapes, this.unions);
+  }
+
+  /** irTypeOf for a speculative whole-program analysis
+   * (speculativeTypeQueries): null where the node's type has no lowering.
+   * Such an analysis asks before any body lowers, about every file, reached
+   * or not, so no statement or declaration owns a refusal its query makes.
+   * Reported from here, the refusal would end the pass on a type the
+   * statement that holds the node may lower after all (as a dynamic slot,
+   * or through the form a commit point degraded it to), and in a pass with
+   * no collection fence (the coverage remainder) it would leave the
+   * compiler. So the query reports nothing: the analysis learns nothing
+   * from the node, and the statement that lowers it meets the type at its
+   * own commit point, which reports or degrades it there. */
+  irTypeOfSpeculatively(node: ts.Node): IrType | null {
+    const reports = this.diagSink ?? this.diags;
+    const reported = reports.length;
+    try {
+      return this.irTypeOf(node);
+    } catch (e) {
+      if (!(e instanceof PoisonError)) throw e;
+      reports.length = reported;
+      if (e.failure !== undefined) this.failedTypes.delete(e.failure);
+      return null;
+    }
   }
 
   /** Whether `type`, or an array element type inside it, is a union with

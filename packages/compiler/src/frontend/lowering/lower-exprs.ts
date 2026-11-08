@@ -3177,13 +3177,6 @@ export function operatorUnsupported(
   );
 }
 
-/** `typeof e === "lit"` / `typeof e !== "lit"` where e is a catch
- * binding: the runtime kind test over the snapshot's tag. Only the
- * primitive literals narrow ("string"/"number"/"boolean" — exactly what
- * the exception cell can distinguish); "object"/"function"/"undefined"
- * cannot be answered from the payload kinds (a thrown array and a thrown
- * record are both refs) and get the instanceof hint. Null when neither
- * side is a typeof over a catch binding (not this pattern). */
 /** The %Error-rooted object type inside a checker type, or null: the
  * direct mapping when it IS one, else the first mappable %Error-rooted
  * constituent of an intersection (`Error & Record<"code", unknown>` —
@@ -3208,6 +3201,12 @@ export function errorRootedObjectOf(lowerer: Lowerer, t: ts.Type): IrType | null
   return null;
 }
 
+/** `typeof e === "lit"` / `typeof e !== "lit"` where e is a catch
+ * binding. "string", "number", "boolean" and "object" are the runtime kind
+ * test over the snapshot's tag; "undefined", "function", "bigint" and
+ * "symbol" are asked of the checked-dynamic value the binding holds. Null
+ * when neither side is a typeof over a catch binding compared with a
+ * string literal (not this pattern). */
 export function lowerCaughtTypeofTest(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -3218,19 +3217,34 @@ export function lowerCaughtTypeofTest(
     if (!ts.isTypeOfExpression(a)) continue;
     const local = lowerer.caughtLocalOf(a.expression);
     if (!local) continue;
-    if (!ts.isStringLiteral(b)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "'typeof' catch-binding tests against non-literal strings",
-      );
-    }
+    // A comparison with a computed string compares the ordinary `typeof`
+    // value, as it does for every other operand.
+    if (!ts.isStringLiteral(b)) continue;
+    const ref: IrExpr = { kind: "varRef", localId: local.id, type: CAUGHT, loc };
     if (b.text === "string" || b.text === "number" || b.text === "boolean" || b.text === "object") {
       return {
         kind: "caughtTest",
-        value: { kind: "varRef", localId: local.id, type: CAUGHT, loc },
+        value: ref,
         test: b.text,
         ...(negated ? { negated: true } : {}),
+        type: BOOL,
+        loc,
+      };
+    }
+    // The kinds the snapshot's tag does not tell apart are asked of the
+    // value the binding holds, exactly as for an `unknown` value
+    // (lowerDynTypeofTest).
+    if (
+      b.text === "undefined" ||
+      b.text === "function" ||
+      b.text === "bigint" ||
+      b.text === "symbol"
+    ) {
+      return {
+        kind: "dynTest",
+        test: b.text,
+        ...(negated ? { negated: true as const } : {}),
+        value: { kind: "caughtToDyn", value: ref, type: DYN, loc },
         type: BOOL,
         loc,
       };
@@ -3238,7 +3252,7 @@ export function lowerCaughtTypeofTest(
     lowerer.unsupported(
       "SC1090",
       b,
-      `'typeof' catch-binding tests against "${b.text}" (only "string"/"number"/"boolean"/"object" are supported)`,
+      `'typeof' catch-binding tests against "${b.text}" ('typeof' answers "string", "number", "boolean", "object", "undefined", "function", "bigint" or "symbol")`,
     );
   }
   return null;
@@ -3559,12 +3573,13 @@ export function cjsAccessorCall(
 }
 
 /** A read of a catch binding — the caught analog of maybeNarrow. Where
- * tsc's control-flow narrowing has proven a supported test (`instanceof`
- * over a hierarchy class, `typeof` over a primitive), the read bridges
- * with a `caughtNarrow` extraction whose kind backends verify at run time,
- * exactly like unionNarrow. Every OTHER read is the narrowness fence:
- * the binding's payload is a typed exception snapshot, not a dyn, so
- * un-narrowed uses have nothing sound to lower to. */
+ * tsc's control-flow narrowing has proven a test the exception snapshot
+ * answers natively (`instanceof` over a class, `typeof` over a primitive),
+ * the read bridges with a `caughtNarrow` extraction whose kind backends
+ * verify at run time, exactly like unionNarrow, and a typed throw never
+ * boxes. Every OTHER read converts the snapshot to the checked-dynamic
+ * value it holds (caughtToDyn keeps the thrown object's identity) and is
+ * from there an ordinary `unknown` value. */
 export function caughtRead(
   lowerer: Lowerer,
   node: ts.Identifier,
@@ -3629,7 +3644,15 @@ export function caughtRead(
   ) {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
-  lowerer.unsupported("SC1063", node);
+  // Every other narrowing (`Array.isArray(e)`, `e === undefined`, `e
+  // instanceof Map`, a class whose declaration was refused, `never` past an
+  // exhaustive test): the binding is a value of TypeScript's declared type
+  // for it, `unknown` or `any`, so it reads as that value and the narrowing
+  // bridges exactly as it does for any other unknown value (maybeNarrow: a
+  // validated extraction where one exists, the checked-dynamic value
+  // otherwise, whose uses each validate what they read). A use the narrowed
+  // type cannot lower is refused where it is written, for its own reason.
+  return lowerer.maybeNarrow({ kind: "caughtToDyn", value: ref, type: DYN, loc }, node);
 }
 
 /** `String(e)` / `${e}` where e is a catch binding: JS's String() over

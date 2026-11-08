@@ -282,6 +282,7 @@ import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import {
+  classHasIndexSignature,
   genericIfaceBindingKeepsClass,
   lowerClassStaticRead,
   fenceStaticAccessorUpdate,
@@ -3943,6 +3944,21 @@ export function lowerBindingPattern(
             out.push({ kind: "varDecl", localId: got.id, init: value, loc });
             value = { kind: "varRef", localId: got.id, type: value.type, loc };
           }
+        } else if (
+          classHasIndexSignature(info) &&
+          !isCompiledPrototypeMember(lowerer, info, propName)
+        ) {
+          // A class with an index signature: a name no class on the chain
+          // declares is the member read of that name, an own property of
+          // the instance in its checked-dynamic view (absent reads
+          // undefined).
+          value = {
+            kind: "dynKeyGet",
+            value: lowerer.coerceToExpected(srcRef(), DYN),
+            key: { kind: "strLit", value: propName, type: STRING, loc },
+            type: DYN,
+            loc,
+          };
         } else {
           lowerer.unsupported(
             "SC1031",
@@ -8977,15 +8993,16 @@ function lowerBranchSwitch(
 /** try/catch/finally:
  * - `catch { }` (bindingless) discards the thrown value on entry.
  * - `catch (e)` binds it as a CAUGHT local — a snapshot of the exception
- *   cell, deliberately narrower than dyn: the supported uses are the
- *   narrowing tests (`e instanceof C` over hierarchy classes, `typeof e
- *   === "string"/"number"/"boolean"`), reads under a proven narrow
- *   (caughtRead bridges them with caughtNarrow, verified at run time like
- *   unionNarrow), and rethrow (`throw e`). Unsupported raw uses and
- *   assignments are fenced (SC1063 and friends). The `: any` /
- *   `: unknown` annotations tsc admits both lower the same way (tsc
- *   narrows either through the tests). Captures retain the snapshot
- *   beyond the catch scope.
+ *   cell, which holds a typed throw's payload as it was thrown, so the
+ *   narrowing tests (`e instanceof C`, `typeof e === "string"`), the reads
+ *   under them (caughtRead bridges those with caughtNarrow, verified at
+ *   run time like unionNarrow) and rethrow (`throw e`) never box. Every
+ *   other read converts the snapshot to the checked-dynamic value it
+ *   holds, with the thrown object's identity, and is an ordinary
+ *   `unknown` value from there; assignments to the binding are fenced.
+ *   The `: any` / `: unknown` annotations tsc admits both lower the same
+ *   way (tsc narrows either through the tests). Captures retain the
+ *   snapshot beyond the catch scope.
  * - `catch ([a])` / `catch ({ p })` binds the thrown value through a
  *   destructuring pattern: the exception cell keeps its hidden CAUGHT
  *   local, and the pattern reads its checked-dynamic view
@@ -10749,11 +10766,19 @@ export function lowerExprStatement(
           // system-error members (errno, syscall, path, dest) read
           // through the checked-dynamic node and keep the dynamic write, as
           // do JavaScript files, whose reads use that node too.
+          // A class with an index signature reads `code` as it reads every
+          // name it does not declare, from the instance's checked-dynamic
+          // view, so the write goes there too (the fallback below).
+          const receiverClass =
+            recv?.type.kind === "object" ? lowerer.classes.get(recv.type.className) : undefined;
+          const indexedErrorClass =
+            receiverClass !== undefined && classHasIndexSignature(receiverClass);
           if (
             !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
             recv?.type.kind === "object" &&
             lowerer.isErrorRootedClass(recv.type.className) &&
-            expr.left.name.text === "code"
+            expr.left.name.text === "code" &&
+            !indexedErrorClass
           ) {
             const loc = locOf(expr);
             const stringValue = isStringTyped(lowerer.typeOf(expr.right));

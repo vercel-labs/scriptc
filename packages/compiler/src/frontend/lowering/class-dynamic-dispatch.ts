@@ -40,7 +40,11 @@ import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { isSloppyAt } from "./frozen-records.js";
-import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
+import {
+  erasedGenericInstance,
+  implicitDefaultInstance,
+  type GenericFnInfo,
+} from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
@@ -7523,6 +7527,11 @@ export class ClassDynamicDispatch {
       !generic.info.implicitParams &&
       generic.info.typeParams.length > 0 &&
       generic.declarer.decl &&
+      // An async generator has no checked-dynamic form: one that leaves
+      // through an untyped value can neither be iterated there nor checked
+      // back into its type. A generic async generator method called by
+      // name keeps the fence instead of answering such a value.
+      !isAsyncGenerator(generic.info.decl) &&
       !lowerer.overrideBelow(info, method)
     ) {
       // A generic method called by name runs its erased instance; a
@@ -7545,7 +7554,13 @@ export class ClassDynamicDispatch {
         collect(info);
         for (const sub of subclasses) {
           const own = sub.genericMethods!.get(method)!;
-          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          if (
+            !sub.decl ||
+            own.implicitParams ||
+            own.typeParams.length === 0 ||
+            isAsyncGenerator(own.decl)
+          )
+            return fence();
           const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
           if (
             subInstance.params.length !== params.length ||
@@ -7712,4 +7727,14 @@ function hasRuntimeHeritage(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base)
     if (current.callableBase) return true;
   return false;
+}
+
+/** `async *f()`: a declaration whose calls answer an async generator. */
+function isAsyncGenerator(decl: GenericFnInfo["decl"]): boolean {
+  return (
+    !ts.isArrowFunction(decl) &&
+    !ts.isAccessor(decl) &&
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true
+  );
 }

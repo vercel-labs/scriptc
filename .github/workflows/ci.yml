@@ -77,8 +77,8 @@ jobs:
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
   # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
-  # every lane except macos and islands, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs
-  # run every lane.
+  # every lane except macos, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every
+  # lane.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -115,7 +115,7 @@ jobs:
         run: |
           every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"; }
           if [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
           elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -387,9 +387,12 @@ jobs:
   # package program under Node, as its default build, and with each package
   # forced into a Node island. It builds each program several times, so it
   # runs in a pull request only when the change touches island code or the
-  # programs it runs (scripts/ci-lanes.mjs), and in the nightly sweep and
-  # manual runs; not on pushes to main. Linux x64 only: known-failures.json
-  # pins that platform's results.
+  # programs it runs (scripts/ci-lanes.mjs). It also runs on every push to
+  # main, in the nightly sweep and in manual runs: its list pins what a
+  # program prints, and a change outside the island paths (the wording of a
+  # refusal, the uncaught report) moves entries without running the lane in
+  # its own pull request. Linux x64 only: known-failures.json pins that
+  # platform's results.
   island_conformance:
     needs: [validation_scope, lanes, native_linux]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.islands == 'true' }}

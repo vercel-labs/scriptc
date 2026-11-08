@@ -90,7 +90,9 @@ function checkedDeepConvertible(lowerer: Lowerer, source: IrType, expected: IrTy
   if (expected.kind === "record" && lowerer.shapes.get(expected.shapeId)?.indexValue !== undefined)
     return false;
   return (
-    lowerer.dynConvertible(source) &&
+    // A module namespace has no static conversion into a record, but its
+    // dynamic value does: the box reads the namespace's members live.
+    (lowerer.dynConvertible(source) || source.kind === "moduleNs") &&
     canDynCheckTo(
       expected,
       (id) => lowerer.shapes.get(id),

@@ -150,7 +150,7 @@ function lowerBytesSortCall(
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   const arity = fnArg.type.params.length;
-  const keyed = closureKeyOrder(lowerer, fnArg);
+  const keyed = closureKeyOrder((name) => lowerer.liftedFnNamed(name), fnArg);
   const order = keyed?.length === 1 && keyed[0]!.read === null ? keyed[0]!.order : null;
   const helper = helperFor(`${arity}${order === null ? "" : `:keyed${order}`}`, arity, true, order);
   return {

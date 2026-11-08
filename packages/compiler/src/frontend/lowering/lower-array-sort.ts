@@ -821,13 +821,19 @@ function recognizeKeyTerm(fn: IrFunction, value: IrExpr): SortKeyOrder | null {
 
 /** The keys of a comparator closure: a zero-capture closure (not a
  * signature adapter) over a lifted function recognizeKeyComparator accepts.
- * `lowerer` finds the lifted function by name (Lowerer.liftedFnNamed). */
+ * `liftedFnNamed` finds the lifted function by name (Lowerer.liftedFnNamed).
+ * It is a function, not a record with that member: the compiler lowers its
+ * own source, and while the parameter was a record type every caller handed
+ * the Lowerer itself over as a dynamic value, which kept the Lowerer and
+ * each class its fields reach in the dynamic tier of the compiler's own
+ * build (see Lowerer.isStdlibFile). Pass
+ * `(name) => lowerer.liftedFnNamed(name)`. */
 export function closureKeyOrder(
-  lowerer: { liftedFnNamed(name: string | undefined): IrFunction | undefined },
+  liftedFnNamed: (name: string | undefined) => IrFunction | undefined,
   closure: IrExpr,
 ): readonly SortKeyOrder[] | null {
   if (closure.kind !== "closure" || closure.captures.length > 0 || closure.adapts) return null;
-  const fn = lowerer.liftedFnNamed(closure.fnName);
+  const fn = liftedFnNamed(closure.fnName);
   return fn ? recognizeKeyComparator(fn) : null;
 }
 

@@ -8440,6 +8440,8 @@ function mapGenericIndexedAccess(type: ts.Type, ctx: TypeMapperCtx): IrType | nu
   // (`Record<string, unknown>` maps to the checked-dynamic value, see
   // mapRecordType): every member reads as unknown.
   if (bound?.kind === "dyn" && idx.isIndexType() && idx.getTarget() === obj) return DYN;
+  // `T[number]` over a T bound to an array: the array's element.
+  if (bound?.kind === "array" && (idx.flags & ts.TypeFlags.Number) !== 0) return bound.elem;
   if (!bound || bound.kind !== "record") return null;
   const shape = shapes.get(bound.shapeId);
   if (!shape || shape.tuple) return null;

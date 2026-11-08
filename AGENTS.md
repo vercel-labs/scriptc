@@ -257,3 +257,7 @@ NEXT_DIST_DIR=.next-check pnpm check
 ## Releases
 
 Releases are maintainer-run; see [RELEASING.md](./RELEASING.md).
+
+## Pinned downloads and actions
+
+Every toolchain archive that CI, the release jobs or the Sandbox image download (LLVM, Node, Zig, the LLVM apt key) has its SHA-256 in `scripts/toolchain.sha256`, and the code that downloads it runs `scripts/verify-toolchain.sh` on the file before using it. A version bump adds the new archive's digest to that file, taken from the publisher's signed checksum list and checked against a download. GitHub Actions are referenced by commit with the version in a trailing comment (`uses: owner/action@<40 hex digits> # v1.2.3`); Dependabot proposes the updates. Every workflow sets top-level `permissions`, and a job that needs more than reading the repository declares it. `tests/harness/ci-supply-chain.test.ts` enforces all three.

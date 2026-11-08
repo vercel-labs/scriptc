@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/project-lib-opaque-types/main.ts"
+ ],
+ "diags": []
+}

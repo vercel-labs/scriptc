@@ -242,6 +242,10 @@ function buildLibFnSignatures() {
     "nodeIsland.superMethod": { argTypes: [DYN, DYN, STRING, DYN], result: DYN },
     "nodeIsland.defineField": { argTypes: [DYN, STRING, DYN], result: VOID },
     "nodeIsland.promisify": { argTypes: [DYN], result: DYN },
+    /** clearTimeout (0), clearInterval (1) or clearImmediate (2) of a
+     * checked-dynamic value that is not a number: an island's timer is
+     * cleared by Node's own function, any other value is ignored. */
+    "nodeIsland.clearTimer": { argTypes: [DYN, F64], result: VOID },
     /** NI-6 shared modules: registers a module the program shares with its
      * islands (real path, exports JSON, accessor); the TDZ sentinel an
      * accessor answers; the method table and constructor helper of an
@@ -271,6 +275,10 @@ function buildLibFnSignatures() {
     "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
     "nodeIsland.exitCode": { argTypes: [], result: F64 },
     "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
+    /** process.chdir in a program with Node islands: the runtime's own
+     * change, then Node drops its cached process.cwd()
+     * (island-process-state.ts). */
+    "nodeIsland.chdir": { argTypes: [STRING], result: VOID },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An
@@ -418,6 +426,7 @@ function buildLibFnSignatures() {
     "dyn.nativeSetIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeMapIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeUrlIs": { argTypes: [DYN], result: BOOL },
+    "dyn.nativeSearchParamsIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeDateIs": { argTypes: [DYN], result: BOOL },
     "dyn.nativeDateHandleIs": { argTypes: [DYN], result: BOOL },
     /** A builtin constructor (`Object`, `Date`, `RegExp`, `Map`, `Set`,
@@ -3975,6 +3984,17 @@ function buildLibFnSignatures() {
      * rejection settles it the same way. The result is the tuple's promise
      * (program-dependent). */
     "promise.allTuple": { argTypes: [null, null], result: VOID },
+    /** Promise.allSettled's tuple form as a value: promise.allTuple over the
+     * combinator that waits for every entry. The function receives every
+     * settled entry, fulfilled or rejected, and builds the tuple of settled
+     * records (program-dependent result). */
+    "promise.allSettledTuple": { argTypes: [null, null], result: VOID },
+    /** Whether a settled entry of the settled tuple form rejected (the
+     * entry, a Promise<void> view of a program-dependent promise). */
+    "promise.entryRejected": { argTypes: [null], result: BOOL },
+    /** The reason of a rejected entry of the settled tuple form as a
+     * checked-dynamic value, with the identity a catch would see. */
+    "promise.entryReason": { argTypes: [null], result: DYN },
     "fsp.readFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: STRING } },
     "fsp.writeFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     /** fs.promises.writeFile(path, data, { mode }): the settled-promise
@@ -4564,6 +4584,11 @@ function buildLibFnSignatures() {
      * answer). args are the borrowed dyn and the SCR_ERR_* kind literal.
      * Never throws. */
     "dyn.errInstanceof": { argTypes: [DYN, F64], result: BOOL },
+    /** A promise as the key of a WeakMap or WeakSet operation: the promise
+     * itself in a checked-dynamic box (scr_dyn_new_promise), which the
+     * collection reads only for its identity. No adapter promise is made, so
+     * the key takes over nothing of the promise's rejection tracking. */
+    "weakMap.promiseKey": { argTypes: [{ kind: "promise", inner: VOID }], result: DYN },
     "weakMap.is": { argTypes: [DYN], result: BOOL },
     "weakSet.is": { argTypes: [DYN], result: BOOL },
     "weakMap.new": { argTypes: [DYN], result: DYN },

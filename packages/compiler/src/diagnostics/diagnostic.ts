@@ -74,7 +74,8 @@
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
  *            to a cast to an unrelated class (SC6004), a value a Node island
- *            made converted to a native type, which is a copy (SC6007), an
+ *            made converted to a native type, which is a copy, or stored
+ *            untyped where the compiler no longer follows it (SC6007), an
  *            import the build keeps although tsc's output drops it (SC6008);
  *            SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
@@ -190,6 +191,7 @@ export type TypeFailureFamily =
   | "intersection"
   | "component"
   | "stdlib-nominal"
+  | "thenable"
   | "record-member"
   | "unsupported"
   | "dyn-field-policy";
@@ -333,6 +335,22 @@ export function widthCopyDivergenceDiag(
   };
 }
 
+/** SC6001, the wording for a copy that is not made — `rows[at] ?? wide` or
+ * `rows[at] || wide`: an element or key read whose type holds no undefined
+ * and can be absent at run time all the same, defaulted to a value of a
+ * wider type that reaches the read's type only as a copy. Under Node the
+ * result is then the default itself. The compiled program answers the left
+ * side as it is where it is present and stops with a TypeError where it is
+ * absent, instead of answering a copy. */
+export function absentDefaultStopDiag(from: string, to: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6001",
+    message: `the left side of this default can be absent at run time although its type '${to}' holds no undefined, and the default has the wider type '${from}', which reaches the left side's type only as a copy (a conversion to another layout builds a new object), while under Node the result is the default itself: where the left side is absent the program stops here with a TypeError instead of answering a copy`,
+    loc,
+    hint: `give both sides one type: declare the left side's elements as '${from}', or give the default the type '${to}'`,
+  };
+}
+
 /** SC6012 — a JavaScript statement that does not compile (a deferred
  * refusal) sits in the `try` block of a `try`/`catch` of the same function.
  * It throws when it runs, so the program's `catch` clause runs, also where
@@ -351,6 +369,25 @@ export function guardedDeferredFenceDiag(
     message: `this statement does not compile (${code}: ${refusal}) and sits inside its own try block: when it runs it throws and the catch clause runs, also where the statement would have completed under Node, so the program's output can differ from Node's from there on. The binary prints nothing about it when it runs`,
     loc,
     hint: "rewrite the statement so that it compiles, or accept the catch path; SCRIPTC_DEFERRED_REPORT=all in the program's environment makes the binary name each such site on stderr the first time it throws",
+  };
+}
+
+/** SC6013 — a statement writes a member that the program added to the
+ * library Promise type (`Promise<T> & { status?: ... }`, an interface that
+ * extends Promise). Node adds the member to the promise object. A compiled
+ * promise holds no members of its own, so the write throws a TypeError when
+ * it runs on a promise the program made; a promise a Node island handed
+ * over keeps its members. The program builds either way. */
+export function promiseMemberWriteDivergenceDiag(
+  member: string,
+  type: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6013",
+    message: `writing '${member}' on a promise (declared '${type}'): a compiled promise holds no members of its own, so this statement throws a TypeError when it runs on a promise the program made, while Node adds the member to the promise object`,
+    loc,
+    hint: "keep the state beside the promise: a wrapper record such as { promise, status, value, reason }, or a WeakMap keyed by the promise",
   };
 }
 
@@ -454,8 +491,10 @@ export type IslandValueCopySite = "assertion" | "binding" | "parameter" | "membe
  * name, the program's writes reach the island, and `===` holds; the copy has
  * none of the three, and it holds only the members the target type declares.
  * A target that stays checked-dynamic (`unknown`, a record of `unknown`
- * members, a type the island declares) keeps the island's object and is not
- * reported, and neither is a copy the program writes itself
+ * members, a type the island declares, a record type of the program that
+ * became a view of the island's object where the program gave the value
+ * that type: class-protocols.ts, markIslandSites) keeps the island's object
+ * and is not reported, and neither is a copy the program writes itself
  * (`structuredClone(value) as T`). */
 export function islandValueCopyDivergenceDiag(
   targetType: string,
@@ -473,6 +512,24 @@ export function islandValueCopyDivergenceDiag(
     message: `${how[site]} copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own object, so the island's later changes are visible through it, writes made through it reach the island, and it is '===' to the island's object; the copy has none of the three`,
     loc,
     hint: "declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too",
+  };
+}
+
+/** SC6007 — an untyped value a Node island made is stored where the
+ * compiler no longer follows it (a member, an element, a reassigned binding,
+ * a container). Where it is read back and given a record type the program's
+ * own source declares (an assertion, a typed slot), the checked conversion
+ * copies the island's object into a native record: writes through the copy
+ * and its identity are not the island's, where Node keeps one object. A type
+ * a declaration file declares stays a view there (class-protocols.ts,
+ * markUnplacedConversions). */
+export function islandValueUntrackedDivergenceDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6007",
+    message:
+      "this untyped value from a Node island is stored where the compiler no longer follows it: natively, giving it a record type of the program's own source after it is read back copies the island's object, so writes through that copy and its identity are not the island's, while Node keeps one object",
+    loc,
+    hint: "assert its type where the island hands it over ('value as T') so it stays a view of the island's object, or copy it there with 'structuredClone(value)'",
   };
 }
 
@@ -1485,6 +1542,22 @@ export function componentTypeDiag(typeText: string, detail: string, loc: SrcLoc)
   };
 }
 
+/** A type whose mapping took more steps than one mapping may take
+ * (frontend/type-mapper.ts, the walk memo's step limit). A mapping maps each
+ * type it reaches once, so a type that gets here reaches a graph of types
+ * that map differently below every ancestor, and the mapping would run for
+ * minutes or without end. The build ends here, in every tier: `loc` is the
+ * type's declaration. */
+export function typeWalkBudgetDiag(typeText: string, steps: number, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2016",
+    message: `type '${typeText}' cannot be compiled: mapping the types it reaches takes more than ${steps} steps`,
+    loc,
+    milestone: "M2",
+    hint: "the type reaches a large graph of types that refer to each other, or members with their own type parameters nested many levels deep; declare the value with a narrower type (the members the program reads), or cut the graph with 'unknown' where it closes",
+  };
+}
+
 /** A REACHED use of standard-library surface with no lowering — the scope
  * fence of the real-lib type world. The checker sees the full es2025
  * standard library, so `Symbol`, `new Date()`, `p.then(...)`, `Math.min`
@@ -1872,6 +1945,34 @@ export function unionMismatchDiag(
       ambiguous !== undefined
         ? "a union value is one arm at run time, and nothing in this record says which: type the slot with the record type itself (one record that declares every member), or give each arm a member with its own literal value"
         : "narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's",
+  };
+}
+
+/** A union conversion one of whose arms fits several arms of the destination
+ * union, and so enters the arm its own discriminant names, copies its arms
+ * into the destination's layouts. Under Node the value stays one object, so
+ * the conversion compiles only where the program cannot tell the two apart
+ * (width-copies.ts, refuseObservedCopies); `observed` is what tells them
+ * apart here. The conversion then has no layout mapping that keeps the
+ * object. */
+export function unionArmCopyDiag(
+  from: string,
+  to: string,
+  observed: { how: "write" | "identity" | "untyped"; what: string; where: string },
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const effect =
+    observed.how === "write"
+      ? `the program writes ${observed.what} (${observed.where}), and such a write would reach only one of the two objects`
+      : observed.how === "identity"
+        ? `the program compares ${observed.what} by identity (${observed.where}), and the copy is never the object it was made from`
+        : `${observed.what} (${observed.where}), where a write or an identity comparison tells the copy from the object it was made from`;
+  return {
+    code: "SC2003",
+    message: `union conversion has no layout mapping that keeps the object: the arm '${from}' enters the destination as '${to}', which has another layout, so the conversion would build a new object where Node keeps one, and ${effect}`,
+    loc,
+    milestone: "later",
+    hint: `declare the value with the destination's arm type ('${to}') where it is made so that both names are one object, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too`,
   };
 }
 

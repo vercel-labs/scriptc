@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../../errors.js";
-/* comptime(fn) lowering: run the closed callback through the host at compile
- * time (with a timeout), then bake the produced VALUE into the IR as
+/* comptime(fn) lowering: run the closed callback in the compile-time
+ * evaluator (within limits), then bake the produced VALUE into the IR as
  * literals — records/arrays/unions included, subject to comptimeBakeable. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
@@ -8,11 +8,12 @@ import { isUnitType, type IrExpr, type IrType } from "../../ir/ir.js";
 import { comptimeFailedDiag } from "../../diagnostics/diagnostic.js";
 import { locOf } from "../program.js";
 import { PoisonError } from "./lowerer.js";
+import { ComptimeFailure, type ComptimeLimits } from "../comptime.js";
 
-/** Wall-clock budget for one comptime callback. Evaluation happens inside
- * the compiler (node:vm), so a runaway loop would hang the BUILD — the vm
- * timeout turns it into a diagnostic instead. */
-const COMPTIME_TIMEOUT_MS = 2000;
+/** The bounds of one comptime callback, the same under every compiler host.
+ * Evaluation happens in a separate process (frontend/comptime.ts), so a
+ * runaway loop or allocation ends that process and becomes a diagnostic. */
+const COMPTIME_LIMITS: ComptimeLimits = { timeoutMs: 2000, memoryMb: 256 };
 
 /** Names a compile-time-computed JS value in a comptime result diagnostic
  * ("expected 'number' at $.t[2], got undefined"). */
@@ -25,8 +26,8 @@ function describeComptimeValue(v: unknown): string {
 }
 
 /** `comptime(() => ...)`: the callback is extracted SOURCE-TEXTUALLY,
- * executed at compile time in an isolated node:vm context (real JavaScript
- * semantics — the compiler's own Node process), and the returned value is
+ * executed at compile time in the evaluator (QuickJS in its own process:
+ * real JavaScript semantics, no host object), and the returned value is
  * lowered as if it were a literal written at the call site. No IR nodes,
  * no backend or runtime involvement — a pure frontend desugar to
  * numLit/strLit/boolLit/arrayLit/recordLit.
@@ -38,12 +39,12 @@ function describeComptimeValue(v: unknown): string {
  * 3. no references to outer bindings (the callback must be self-contained
  *    — it runs in a fresh context where module state doesn't exist) and no
  *    nested comptime calls; the ambient surface (JSON, ...) is permitted
- *    by the checker, though members with no vm counterpart (console,
+ *    by the checker, though members the evaluator lacks (console,
  *    process, fs) fail at evaluation;
  * 4. the call's checker type T must bake as a literal (number/string/
  *    boolean/arrays/records, nested);
- * 5. evaluation runs under a wall-clock budget; a throw or timeout is a
- *    SC1110 diagnostic quoting the message;
+ * 5. evaluation runs within COMPTIME_LIMITS; a throw, an exceeded limit or
+ *    a refused result is a SC1110 diagnostic that names it;
  * 6. the returned VALUE is checked against T, path-annotated
  *    (dynCheck-style) — NaN/Infinity, undefined/null/functions, and shape
  *    mismatches are rejected, never miscompiled. */
@@ -79,14 +80,17 @@ export function lowerComptime(lowerer: Lowerer, expr: ts.CallExpression): IrExpr
         `(number, string, boolean, and arrays, records and unions of those lower to literals; a record or union type reachable from itself does not)`,
     );
   }
-  // 5. The host executes the extracted callback under a finite budget.
-  // Shared lowering stays independent of the host's execution engine;
-  // capture checks and result validation apply to every evaluator.
+  // 5. The evaluator runs the extracted callback within the limits. The
+  // host supplies only the executables.
   let result: unknown;
   try {
     if (lowerer.frontendServices === undefined)
       throw new Error("compile-time evaluation requires frontend services");
-    result = lowerer.frontendServices.evaluateComptime(ts.getTextOfNode(cb), COMPTIME_TIMEOUT_MS);
+    result = lowerer.frontendServices.evaluateComptime(
+      ts.getTextOfNode(cb),
+      COMPTIME_LIMITS,
+      comptimeCallbacksOf(lowerer, ts.getSourceFileOfNode(cb)),
+    );
   } catch (e) {
     const detail = comptimeFailureDetail(e);
     lowerer.pushDiag(comptimeFailedDiag(detail, locOf(cb)));
@@ -96,16 +100,47 @@ export function lowerComptime(lowerer: Lowerer, expr: ts.CallExpression): IrExpr
   return lowerer.comptimeValueToIr(result, target, "$", cb);
 }
 
-/** VM errors may come from another realm; read their public error fields
- * structurally rather than relying on the host Error constructor. */
+/** What SC1110 says after "comptime evaluation failed: ". */
 function comptimeFailureDetail(error: unknown): string {
-  const err =
-    typeof error === "object" && error !== null
-      ? (error as { code?: unknown; message?: unknown })
-      : null;
-  return err?.code === "ERR_SCRIPT_EXECUTION_TIMEOUT"
-    ? `evaluation exceeded the ${COMPTIME_TIMEOUT_MS}ms compile-time budget`
-    : `the callback threw: ${err && typeof err.message === "string" ? err.message : String(error)}`;
+  if (error instanceof ComptimeFailure) {
+    switch (error.kind) {
+      case "timeout":
+        return `evaluation exceeded the ${COMPTIME_LIMITS.timeoutMs}ms compile-time budget`;
+      case "memory":
+        return `evaluation exceeded the ${COMPTIME_LIMITS.memoryMb} MB compile-time memory limit`;
+      case "thrown":
+        return `the callback threw: ${error.message}`;
+      case "refused":
+        return error.message;
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The text of every inline `comptime` callback in `sf`, in source order.
+ * The evaluator erases their types in one TypeScript run (frontend/
+ * comptime.ts), so a file's first `comptime` call pays for all of them. */
+function comptimeCallbacksOf(lowerer: Lowerer, sf: ts.SourceFile): readonly string[] {
+  let callbacks = lowerer.comptimeCallbacks.get(sf);
+  if (callbacks !== undefined) return callbacks;
+  callbacks = [];
+  const found = callbacks;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "comptime"
+    ) {
+      let cb: ts.Expression | undefined = node.arguments.nodes[0];
+      while (cb && ts.isParenthesizedExpression(cb)) cb = cb.expression;
+      if (cb && (ts.isArrowFunction(cb) || ts.isFunctionExpression(cb)))
+        found.push(ts.getTextOfNode(cb));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  lowerer.comptimeCallbacks.set(sf, callbacks);
+  return callbacks;
 }
 
 /** True when a comptime result of this type can be written as a literal
@@ -215,13 +250,13 @@ function comptimeFits(lowerer: Lowerer, value: unknown, t: IrType): boolean {
 
 /** The self-containment fence: every identifier inside the callback must
  * resolve to a declaration INSIDE the callback (its own locals/functions)
- * or to the standard library (whose JS intrinsics exist in the vm; what
- * doesn't — process, setTimeout — throws a ReferenceError at evaluation).
+ * or to the standard library (whose JS intrinsics exist in the evaluator;
+ * what doesn't — process, setTimeout — throws a ReferenceError at evaluation).
  * Anything else — module locals, imports, top-level functions — would be a
  * capture, and the evaluation context has no module state to capture from.
  * Type-position references (annotations, `as` targets) are exempt: they
  * are erased before evaluation. Nested comptime calls are rejected up
- * front with their own message (the vm context has no `comptime`). */
+ * front with their own message (the evaluator has no `comptime`). */
 export function rejectComptimeCaptures(
   lowerer: Lowerer,
   cb: ts.ArrowFunction | ts.FunctionExpression,
@@ -260,11 +295,10 @@ export function rejectComptimeCaptures(
                   "(the callback already runs at compile time — compute the value directly)",
               );
             }
-            // V8 installs console in vm contexts, where calls could no-op
-            // at compile time instead of printing at runtime.
-            // Rejected so side effects cannot vanish without a diagnostic;
-            // the other Node-isms (process, setTimeout) don't exist in the
-            // vm and throw a ReferenceError at evaluation.
+            // A console call's output belongs to run time, and the evaluator
+            // has no console. Rejected up front with its own message; the
+            // other Node-isms (process, setTimeout) don't exist in the
+            // evaluator either and throw a ReferenceError at evaluation.
             if (node.text === "console" && lowerer.isStdlibSymbol(symbol)) {
               lowerer.unsupported(
                 "SC1090",

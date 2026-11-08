@@ -35,6 +35,7 @@ import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
+  cjsNestedExportReplacementOf,
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
   wholeExportValue,
@@ -85,6 +86,7 @@ import {
   unsupportedPackageValueDiag,
 } from "../../../diagnostics/diagnostic.js";
 import { dirname } from "node:path";
+import { packageDirOf } from "../../../node-islands/origin.js";
 import { funcTypeFromParamShapes } from "../call-signatures.js";
 import { threadsImportOf } from "../../threads-import.js";
 import { nodeApiBindingOf } from "../../node-api-import.js";
@@ -884,6 +886,29 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     if (required !== null) return required;
   }
   if (lowerer.cjsLocalModuleBindingOf(expr)) {
+    // A module that assigns module.exports inside a function or under a
+    // condition (a UMD wrapper) exports whatever that statement chose when
+    // it ran: the binding is that value under Node, and the static export
+    // table this build reads does not hold it. The refusal names that
+    // cause; "access its members" would not help.
+    const dep = lowerer.cjsModuleBindingDepOf(expr);
+    const nested = dep === null ? null : cjsNestedExportReplacementOf(dep);
+    if (dep !== null && nested !== null) {
+      const pkg = packageDirOf(dep.fileName);
+      const line = ts.getLineAndCharacterOfPosition(dep, locOf(nested).start).line + 1;
+      const where =
+        pkg === null
+          ? `line ${line} of its module`
+          : `${posix.relative(pkg.dir, dep.fileName.split("\\").join("/"))}:${line}`;
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `the value of '${expr.text}' (its module assigns module.exports inside a function or under a condition, at ${where}, so what it exports is decided when it runs)`,
+        pkg === null
+          ? "assign module.exports in a top-level statement of the module, or mark the module to run in a Node island"
+          : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
+      );
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -1316,7 +1341,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // read always unwinds before any of them observes it. A WRITE to the same
   // name is not a read: it reaches rejectUnresolved and its SC1091 story.
   // Typed sources keep the compile error (preflight's JS relaxation is
-  // `isJsSourceFileName`-gated, so no TS file reaches this branch).
+  // `isJsSourceFileName`-gated), except a name that only a library of the
+  // project's `lib` declares and Node does not define (the DOM's
+  // `document`): the project's own tsc resolves it, preflight admits it
+  // (projectLibraryNameAt), and the read is Node's, as in a `.js` file.
   // In shorthand position (`{ x }`) `resolveValueSymbol` answers the
   // PROPERTY symbol, so the declaration test there is the checker's
   // shorthand-VALUE symbol.
@@ -1325,7 +1353,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
       ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
       : lowerer.resolveValueSymbol(expr) === null;
-  if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  if (
+    undeclared &&
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) || lowerer.projectLibraryNameAt(expr))
+  ) {
     return nsUndefRead(lowerer, expr.text, expr, contextualUndefReadType(lowerer, expr) ?? DYN);
   }
   // Preflight guarantees no unresolved identifiers; anything else here

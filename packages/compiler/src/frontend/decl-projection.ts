@@ -885,7 +885,10 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       try {
         const ctxFn = declChecker.getContextualType(declNode.parent as ts.Expression);
         if (ctxFn === undefined) return;
-        const sigs = declChecker.getCallSignatures(ctxFn);
+        // An optional member's contextual type carries `| undefined`, which
+        // has no call signatures as a union: the callback is typed by the
+        // function arm, as the checker itself types it.
+        const sigs = declChecker.getCallSignatures(declChecker.getNonNullableType(ctxFn));
         if (
           !sigs.some(
             (s) =>

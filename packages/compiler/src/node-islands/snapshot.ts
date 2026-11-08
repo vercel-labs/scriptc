@@ -652,6 +652,17 @@ export function finalizeDeferredIslands(
       wrote = keys;
   }
   const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
+  // What an earlier load read that no run repeats (a clock, a random number,
+  // the process id), once such a load evaluates where it is imported. Every
+  // load the probe reached after it computed from an island that held the
+  // build's reading, so its constants can hold it too (a package that
+  // exports what the earlier one left in a global). No run would be answered
+  // from such a snapshot: Node is running once the earlier load evaluates,
+  // and a run that skips the earlier load fails the snapshot's guard on the
+  // loads before it. So the snapshot is not written, and the executable
+  // holds nothing of the build's reading: two builds of one program are the
+  // same bytes.
+  let unrepeatable: string[] | undefined;
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === probed(c.path));
     const why = (() => {
@@ -675,7 +686,12 @@ export function finalizeDeferredIslands(
       const inherited = inherits.get(result);
       if (inherited !== undefined)
         return `an earlier load read the environment variable${inherited.length === 1 ? "" : "s"} ${inherited.join(", ")} and wrote shared state, so a load probed after it can export ${inherited.length === 1 ? "its build-time value" : "their build-time values"}`;
-      if (c.lazy) return null;
+      // The load's own reasons come first; this one holds for "lazy" too.
+      const after =
+        unrepeatable === undefined
+          ? null
+          : `an earlier load reads ${unrepeatable.join(", ")} and evaluates where it is imported, so Node is running before this load, and a snapshot of it could hold the build's reading`;
+      if (c.lazy) return after;
       // Its own, or those of a load it shares a file with.
       const whose = (own: string[]): string =>
         own.length > 0 ? "its load" : "a load it shares a file with";
@@ -693,10 +709,14 @@ export function finalizeDeferredIslands(
       // load that shares a file with it, evaluates where it is imported.
       if (volatile.length > 0)
         return `${whose(result.volatile)} reads ${volatile.join(", ")}: no run repeats the reading, and a load evaluated later would take it after the program's own`;
-      return null;
+      return after;
     })();
     if (why !== null || result === undefined) {
       decide(c.call, false, why ?? "");
+      if (unrepeatable === undefined && result !== undefined) {
+        const read = reads.get(result)!.volatile;
+        if (read.length > 0) unrepeatable = read;
+      }
       continue;
     }
     const how = c.lazy

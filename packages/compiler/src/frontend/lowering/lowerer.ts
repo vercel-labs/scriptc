@@ -4779,9 +4779,15 @@ export class Lowerer {
   readonly linkedHelperFinalizers: ((sourced: ReadonlySet<string>) => void)[] = [];
   /** Helpers over record types that finalizeRecordLinks completes. */
   readonly linkedHelpers: LinkedHelper[] = [];
-  /** The JavaScript names of object literals' methods, by lifted function
-   * (function-names.ts). */
+  /** The JavaScript names of methods (an object literal's, a class's, the
+   * function that stands for a method read as a value, a static method
+   * read as a value) and of the functions that initialize class fields, by
+   * function (function-names.ts). */
   readonly objectMethodNames = new Map<string, string>();
+  /** The JavaScript names of the functions the compiler lifts for primitive
+   * constructors held as typed values. Given only in a program that prints
+   * a function held in a typed slot (function-names.ts). */
+  readonly heldFunctionNames = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -5546,6 +5552,7 @@ export class Lowerer {
       checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
       checkedTable("recordSourceDeletes", () => this.recordSourceDeletes.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
+      checkedTable("heldFunctionNames", () => this.heldFunctionNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
       checkedTable("funduleMembers", () => this.funduleMembers.size),

@@ -4825,6 +4825,11 @@ function buildLibFnSignatures() {
      * plain data, or that the value holds twice, keeps its separate copy.
      * Never throws: the conversion already succeeded. */
     "dyn.adoptShared": { argTypes: [DYN, DYN], result: VOID },
+    /** Whether adoption has anything to do for `source`: it is a plain
+     * object or array. A capsule of a native value, a primitive and every
+     * other value are left alone, so a cast asks this before it boxes its
+     * result for the adoption call. */
+    "dyn.adoptable": { argTypes: [DYN], result: BOOL },
     "dyn.cloneMissing": { argTypes: [], result: DYN },
     /** structuredClone with a NON-EMPTY transfer array of static values:
      * nothing static is transferable, so the call always throws Node's

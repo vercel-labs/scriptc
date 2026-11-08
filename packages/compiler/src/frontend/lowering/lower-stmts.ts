@@ -8476,6 +8476,15 @@ function lowerVariableInitializer(
       : lowerer.lowerAtSlot(node, slot);
   }
 
+  // An untyped binding whose literal the checker has proven against one
+  // closed record type (`const held: unknown = {…} satisfies T`): the value
+  // is built in that type's layout and stored boxed, so a read back at that
+  // type takes the object itself (lowerer.contextualRecordLayout).
+  if (expected?.kind === "dyn" || (expected === undefined && slot?.kind === "dyn")) {
+    const declared = lowerer.contextualRecordLayout(value);
+    if (declared) return lowerer.coerceInto(node, lowerer.lowerObjectLiteral(value, declared), DYN);
+  }
+
   if (expected?.kind === "dyn") {
     // The dynamic object of a checked-identity view holds its array and
     // object members at their declared types (view-literals.ts).

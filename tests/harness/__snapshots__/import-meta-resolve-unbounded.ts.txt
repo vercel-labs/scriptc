@@ -1,0 +1,17 @@
+import-meta-resolve-unbounded.ts:6:30 - error SC2020: 'import.meta.resolve with a runtime-computed specifier' is part of the standard library types but has no scriptc lowering yet
+
+  5 | export function fromAnyCaller(specifier: string): string {
+  6 |   return import.meta.resolve(specifier);
+    |                              ^~~~~~~~~
+  7 | }
+
+  hint: a compiled binary has a fixed module graph — pass a string literal, a const, or a parameter of a module-local function every call of which passes one (not bounded at import-meta-resolve-unbounded.ts:5: a parameter of the exported function 'fromAnyCaller')
+
+import-meta-resolve-unbounded.ts:10:30 - error SC2020: 'import.meta.resolve with a runtime-computed specifier' is part of the standard library types but has no scriptc lowering yet
+
+   9 | function fromArgv(): string {
+  10 |   return import.meta.resolve(process.argv[2] ?? "node:fs");
+     |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | }
+
+  hint: a compiled binary has a fixed module graph — pass a string literal, a const, or a parameter of a module-local function every call of which passes one (not bounded at import-meta-resolve-unbounded.ts:10: a value read from `process.argv`)

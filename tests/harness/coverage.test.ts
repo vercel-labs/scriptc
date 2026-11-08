@@ -790,6 +790,57 @@ test("runtime-optional refined unions report blockers without crashing", () => {
   }
 });
 
+test("an array callback's parameter without a lowering is its statement's to lower or refuse", () => {
+  // The analysis that widens callback parameters for missing elements asks
+  // for each parameter's type before any body lowers. A type with no
+  // lowering is not that analysis' to refuse: the callbacks here compile,
+  // each parameter as a dynamic slot, exactly as they do over an array
+  // without holes, and the build and the report agree.
+  const { coverage } = analyze(
+    join(repoRoot, "tests/corpus/9287-array-callback-parameter-without-lowering.ts"),
+  );
+  expect(coverage.preflightFailed).toBe(false);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+  const slots = coverage.dynamicSlots ?? [];
+  expect(slots.filter((s) => s.slot === "param" && s.name === "e")).toHaveLength(9);
+  expect(slots.map((s) => s.name)).toContain("seen");
+});
+
+test("the unreached pass asks about an array type the reachable pass degraded, and reports what a build reports", async () => {
+  // A row type declared by a linked workspace package has no lowering here,
+  // and an array of it in a class field degrades to its canonical form
+  // where the reachable pass commits the field. The unreached pass inherits
+  // that form, so its callback analysis meets a native array whose element
+  // type still has no lowering. That type is the callback statement's to
+  // refuse, as the reachable pass already did: the report ends, and its
+  // errors are the build's, site by site.
+  const program = fixture("workspace-declared-rows/main.ts");
+  const { coverage } = analyze(program);
+  expect(coverage.preflightFailed).toBe(false);
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-coverage-degraded-array-"));
+  try {
+    const built = await compile(program, {
+      outputKind: "ir",
+      outPath: join(outDir, "main.ir.json"),
+      outDir,
+    });
+    // Whatever the build reports, the report says the same, site by site.
+    // The types a linked workspace package declares compile now, so this
+    // fixture builds and there is nothing to report; while its row type was
+    // refused, these were the build's five errors.
+    const site = (d: { code: string; loc: { file: string; start: number; end: number } }) =>
+      `${d.code} ${d.loc.file.replace(repoRoot + "/", "")}:${d.loc.start}-${d.loc.end}`;
+    const reported = built.ok ? [] : built.diagnostics;
+    expect(coverage.diagnostics.map(site).sort()).toEqual(reported.map(site).sort());
+    expect(built.ok).toBe(true);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+  expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+});
+
 test("a rejected class reached only through a receiver probe reports its own diagnostic once", () => {
   const program = join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts");
   // The class's refusal, as the diagnostics corpus pins it (--tier=static-only).

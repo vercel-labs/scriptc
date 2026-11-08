@@ -1,0 +1,13 @@
+package-built-object-member/main.ts:9:1 - error SC1090: writing 'note' on an object the JavaScript of package 'shelf-kit' built without that member (it built '{ id: any; amount: number; }'; the package's types declare 'note' and its code never creates it, so the compiled object has no place for it: run the package in a Node island with --node-island=shelf-kit, where the object is Node's own) is not supported yet
+
+   8 | entry.amount = 2;
+   9 | entry.note = "checked";
+     | ^~~~~~~~~~
+  10 | console.log(entry.amount, entry.note);
+
+package-built-object-member/main.ts:10:27 - error SC1090: reading 'note' from an object the JavaScript of package 'shelf-kit' built without that member (it built '{ id: any; amount: number; }'; the package's types declare 'note' and its code never creates it, so the compiled object has no place for it: run the package in a Node island with --node-island=shelf-kit, where the object is Node's own) is not supported yet
+
+   9 | entry.note = "checked";
+  10 | console.log(entry.amount, entry.note);
+     |                           ^~~~~~~~~~
+  11 | 

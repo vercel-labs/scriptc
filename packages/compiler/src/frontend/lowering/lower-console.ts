@@ -13,8 +13,9 @@ import {
 import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import { type ConsoleMethodMember } from "./builtins/console.js";
-import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
+import { type Lowerer } from "./lowerer.js";
 import {
+  definedFunctionName,
   heldFormatArgs,
   lowerConsoleInspectArg,
   lowerFormatCall,
@@ -269,9 +270,10 @@ export function lowerConsoleArg(
     };
   }
   // A function VALUE prints Node's [Function: name] form by boxing
-  // across the checked-dynamic boundary (the box carries the
-  // best-effort reference-site name — the documented naming stance)
-  // and rendering through the same dyn arm.
+  // across the checked-dynamic boundary and rendering through the same
+  // dyn arm. The box carries the name of the definition the argument
+  // reaches; any other argument (a parameter, a member) is named by the
+  // function it holds, at run time.
   if (
     lowered.type.kind === "func" &&
     canBoxFuncIntoDyn(
@@ -280,7 +282,7 @@ export function lowerConsoleArg(
       (id) => lowerer.unions.get(id),
     )
   ) {
-    const name = jsFuncNameOf(node);
+    const name = definedFunctionName(lowerer, node);
     const boxed: IrExpr = {
       kind: "dynFrom",
       value: lowered,

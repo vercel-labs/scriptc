@@ -4522,6 +4522,11 @@ export class Lowerer {
   /** The JavaScript names of object literals' methods, by lifted function
    * (function-names.ts). */
   readonly objectMethodNames = new Map<string, string>();
+  /** The JavaScript names of the function values the compiler lifts for a
+   * program: a class method read as a value, a primitive constructor held
+   * as a typed value. Given only in a program that prints a function held
+   * in a typed slot (function-names.ts). */
+  readonly heldFunctionNames = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -5261,6 +5266,7 @@ export class Lowerer {
       checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
       checkedTable("recordSourceDeletes", () => this.recordSourceDeletes.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
+      checkedTable("heldFunctionNames", () => this.heldFunctionNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
       checkedTable("initNameOf", () => this.initNameOf.size),

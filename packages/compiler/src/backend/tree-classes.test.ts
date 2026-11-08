@@ -10,7 +10,7 @@ import {
   type IrStmt,
   type IrType,
 } from "../ir/ir.js";
-import { mentions, planTreeClasses } from "./tree-classes.js";
+import { planTreeClasses } from "./tree-classes.js";
 
 const loc = { file: "tree.ts", start: 0, end: 1 };
 const NODE: IrType = { kind: "object", className: "Node" };
@@ -496,6 +496,54 @@ test("a union that reaches itself through a container is walked once", () => {
   ]);
 });
 
+test("a class whose own field holds a self-reaching union is judged", () => {
+  // `type Json = string | Json[]; class Other { data: Json }`: the rule
+  // about reference fields asks whether the field's type leads back to the
+  // class, and that question follows the union's array arm into the union.
+  const JSON_T: IrType = { kind: "union", unionId: "u.json" };
+  const OTHER: IrType = { kind: "object", className: "Other" };
+  const mod = tree();
+  mod.unions!.push({ id: "u.json", arms: [{ kind: "string" }, arrayOf(JSON_T)] });
+  mod.classes!.push({ name: "Other", fields: [{ name: "data", type: JSON_T }], loc });
+  mod.functions.push(fn("%Other.constructor", [param("this.1", OTHER)], { kind: "void" }, []));
+  const plan = planTreeClasses(mod, {
+    borrowed: new Map([...FACTS.borrowed, ["%Other.constructor", new Set([0])]]),
+  });
+  expect([...plan.classes]).toEqual(["Node", "Other"]);
+  expect([...plan.rejected]).toEqual([]);
+});
+
+test("a function that holds a node beside a self-reaching union is checked", () => {
+  // The linear-use check asks every local, result and expression type of a
+  // function that mentions the class whether it holds a node. Two unions
+  // that reach each other and never the class answer no.
+  const EVEN: IrType = { kind: "union", unionId: "u.even" };
+  const ODD: IrType = { kind: "union", unionId: "u.odd" };
+  const mod = tree({
+    functions: [
+      fn(
+        "weigh",
+        [param("tree.1", NODE), param("extra.1", EVEN)],
+        F64_T,
+        [
+          { kind: "varDecl", localId: "seen.1", init: at("extra.1", EVEN), loc },
+          ret(call("nodeCount", [at("tree.1")], F64_T)),
+        ],
+        [local("seen.1", EVEN)],
+      ),
+    ],
+  });
+  mod.unions!.push(
+    { id: "u.even", arms: [F64_T, arrayOf(ODD)] },
+    { id: "u.odd", arms: [{ kind: "string" }, arrayOf(EVEN)] },
+  );
+  const plan = planTreeClasses(mod, {
+    borrowed: new Map([...FACTS.borrowed, ["weigh", new Set([0])]]),
+  });
+  expect([...plan.classes]).toEqual(["Node"]);
+  expect([...plan.rejected]).toEqual([]);
+});
+
 test("a module with a self-reaching union and no class is planned without a walk", () => {
   const JSON_T: IrType = { kind: "union", unionId: "u.json" };
   const plan = planTreeClasses(
@@ -510,28 +558,4 @@ test("a module with a self-reaching union and no class is planned without a walk
   );
   expect([...plan.classes]).toEqual([]);
   expect([...plan.rejected]).toEqual([]);
-});
-
-test("a union that holds itself through a container is walked once", () => {
-  // A JSON value: `number | Json[] | Map<string, Json>`. The walk used to
-  // enter the union again from its own array arm until the stack ran out.
-  const json: IrType = { kind: "union", unionId: "json" };
-  const plain = new Map([
-    [
-      "json",
-      { id: "json", arms: [F64_T, arrayOf(json), { kind: "map", key: F64_T, value: json }] },
-    ],
-  ]) as unknown as Parameters<typeof mentions>[2];
-  expect(mentions(json, "Node", plain)).toBe(false);
-  expect(mentions(arrayOf(json), "Node", plain)).toBe(false);
-  // The same union with the class in an arm behind the recursive ones, and
-  // a second union reached only through the first.
-  const holder: IrType = { kind: "union", unionId: "holder" };
-  const withNode = new Map([
-    ["json", { id: "json", arms: [arrayOf(json), holder] }],
-    ["holder", { id: "holder", arms: [arrayOf(json), NODE] }],
-  ]) as unknown as Parameters<typeof mentions>[2];
-  expect(mentions(json, "Node", withNode)).toBe(true);
-  expect(mentions(holder, "Node", withNode)).toBe(true);
-  expect(mentions(json, "Other", withNode)).toBe(false);
 });

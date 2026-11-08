@@ -3610,7 +3610,15 @@ export function implicitLocalFnNodeOf(
     if (redeclared) return null;
     if (!isConst && !bindingNeverReassigned(lowerer.bindingScope(), sym, decl)) return null;
     // Instances are module functions with no frame.
-    return capturesEnclosingFrame(lowerer, init, decl, init.body) ? null : init;
+    if (capturesEnclosingFrame(lowerer, init, decl, init.body)) return null;
+    // ...and a mention of the binding as a value is the one closure of an
+    // instance, for the whole program. That is the function a declaration
+    // makes when it runs once. A declaration in a function or a loop makes a
+    // new function each time it runs: two of them are different objects with
+    // their own properties, so a binding whose value is read there is a
+    // closure made where it is declared.
+    if (runsMoreThanOnce(decl) && readAsValue(lowerer, sym, decl, init)) return null;
+    return init;
   };
   const node = probe();
   if (node === null) {
@@ -3618,6 +3626,62 @@ export function implicitLocalFnNodeOf(
     return null;
   }
   return node;
+}
+
+/** True when the declaration can run more than once in one program: it is
+ * inside a function, a class member or a loop. */
+function runsMoreThanOnce(decl: ts.VariableDeclaration): boolean {
+  for (
+    let p: ts.Node | undefined = decl.parent;
+    p !== undefined && !ts.isSourceFile(p);
+    p = p.parent
+  ) {
+    if (ts.isFunctionLike(p) || ts.isClassLikeDeclaration(p)) return true;
+    switch (p.kind) {
+      case ts.SyntaxKind.ForStatement:
+      case ts.SyntaxKind.ForInStatement:
+      case ts.SyntaxKind.ForOfStatement:
+      case ts.SyntaxKind.WhileStatement:
+      case ts.SyntaxKind.DoStatement:
+        return true;
+    }
+  }
+  return false;
+}
+
+/** True when the function bound by `decl` is read anywhere other than as
+ * the function a call calls: returned, stored, passed on, compared, or the
+ * receiver of a member read or write, under the binding's name or under a
+ * function expression's own name. A binding's references are all inside the
+ * function (or the file) that declares it. */
+function readAsValue(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  decl: ts.VariableDeclaration,
+  fn: ts.FunctionExpression | ts.ArrowFunction,
+): boolean {
+  let scope: ts.Node = decl;
+  while (scope.parent !== undefined && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope))
+    scope = scope.parent;
+  const own = ts.isFunctionExpression(fn) ? fn.name : undefined;
+  const ownSym = own !== undefined ? lowerer.checker.getSymbolAtLocation(own) : undefined;
+  const name = ts.symbolName(sym);
+  let read = false;
+  const scan = (n: ts.Node): void => {
+    if (read) return;
+    if (ts.isTypeNode(n)) return;
+    if (ts.isIdentifier(n)) {
+      if (n === decl.name || n === own || (n.text !== name && n.text !== own?.text)) return;
+      const parent = n.parent;
+      if (parent !== undefined && ts.isCallExpression(parent) && parent.expression === n) return;
+      const s = lowerer.checker.getSymbolAtLocation(n);
+      if (s !== undefined && (s === sym || s === ownSym)) read = true;
+      return;
+    }
+    ts.forEachChild(n, scan);
+  };
+  scan(scope);
+  return read;
 }
 
 /** True when `fn`, bound by `decl`, uses its enclosing function's frame

@@ -68,3 +68,20 @@ console.log(make());
 `);
   expect(result.ok, JSON.stringify(result.ok ? [] : result.diagnostics)).toBe(true);
 });
+
+// A deferred declaration whose diagnostics name a type that another
+// declaration's retry has since degraded to the dynamic value collects once
+// more: its diagnostics were recorded before the type degraded.
+test("a declaration deferred on a type another retry degraded collects again", async () => {
+  const result = await compileSource(`function count(bucket: any[] | null): number {
+  return bucket === null ? -1 : bucket.length;
+}
+function grow(bucket: any[] | null): number {
+  if (bucket !== null) bucket.push(1);
+  return count(bucket) + 1;
+}
+const crate: any[] = [1, "two"];
+console.log(grow(crate), grow(null));
+`);
+  expect(result.ok, JSON.stringify(result.ok ? [] : result.diagnostics)).toBe(true);
+});

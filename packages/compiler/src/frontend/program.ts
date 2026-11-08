@@ -87,6 +87,8 @@ import {
   npmStaticFsShadow,
   programBuiltinAliasSource,
   clearProgramBuiltinAliasCache,
+  definedSource,
+  setProgramDefines,
   npmStaticLexerVisibleNames,
   npmStaticLiveExportTable,
   npmStaticPackageOfPath,
@@ -95,6 +97,7 @@ import {
   setNpmStaticPackages,
   setNpmStaticTypeExports,
 } from "./npm-static.js";
+import type { Defines } from "./defines.js";
 import { isPrunedNpmReexport, planNpmStaticReexports } from "./npm-static-prune.js";
 import { npmStaticTypeExportPlan } from "./npm-static-type-exports-host.js";
 import { isNpmStaticSubclassArgument } from "./npm-static-subtyping.js";
@@ -1610,6 +1613,18 @@ function loadProgram7(
       } else {
         gateWorld.diagnostics();
       }
+      // A type-only import the program itself uses as a value is the
+      // program's own error (TS1361, TS1362 in the file as written; the gate
+      // reports it): the check after the rewrite must not take it for a
+      // binding the elision dropped.
+      const writtenTypeOnlyValueUses = new Set<string>();
+      for (const file of elisions.keys()) {
+        const written = before.getSourceFile(file);
+        if (written === undefined) continue;
+        for (const d of before.getSemanticDiagnostics(written)) {
+          if (d.code === 1361 || d.code === 1362) writtenTypeOnlyValueUses.add(`${file}:${d.pos}`);
+        }
+      }
       for (const [file, text] of elisions) {
         // The text is carried, not inspected: what the elision took from it
         // is the rewrite it reported.
@@ -1621,7 +1636,7 @@ function loadProgram7(
       }
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       if (gateWorld.program !== before) before.dispose();
-      assertElisionKeptValues7(program, elisions.keys());
+      assertElisionKeptValues7(program, elisions.keys(), writtenTypeOnlyValueUses);
     }
     // The other two things a file's tsconfig decides: the order of class
     // field initializers and parameter properties, which the lowering
@@ -1730,18 +1745,29 @@ export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   /** Exact host module specifiers paired with their declaration paths. */
   externalTypes?: readonly (readonly [string, string])[];
+  /** `--define` values: JavaScript files' `if` statements they decide
+   * resolve to their taken branches. */
+  define?: Defines | undefined;
 }
 
 /** A binding the elision dropped is declared type-only, so a value use of
  * it that the analysis missed is a TypeScript error in the rewritten file
  * (TS1361, TS1362) where the file as written has none. That is a compiler
- * bug to report, never a program to lower with the import missing. */
-function assertElisionKeptValues7(program: ts.Program, files: Iterable<string>): void {
+ * bug to report, never a program to lower with the import missing. A use
+ * the file as written already reports (`written`, by file and offset: the
+ * rewrite keeps every offset) is the program's own type-only import used as
+ * a value, which the gate reports as the program's error. */
+function assertElisionKeptValues7(
+  program: ts.Program,
+  files: Iterable<string>,
+  written: ReadonlySet<string>,
+): void {
   for (const file of files) {
     const sf = program.getSourceFile(file);
     if (sf === undefined) continue;
     for (const d of program.getSemanticDiagnostics(sf)) {
       if (d.code !== 1361 && d.code !== 1362) continue;
+      if (written.has(`${file}:${d.pos}`)) continue;
       throw new InternalCompilerError(
         `import elision dropped a binding that ${file} uses as a value: ${ts.flattenDiagnosticMessageText(d, "\n")}`,
       );
@@ -1936,9 +1962,13 @@ export function loadProgram(
   // resolve.ts answers the same sibling for scriptc's own edges).
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
+  setProgramDefines(opts?.define);
   const fsShadow = {
     readFile: (path: string) =>
-      npmShadow?.readFile(path) ?? programBuiltinAliasSource(services, path),
+      npmShadow?.readFile(path) ??
+      programBuiltinAliasSource(services, path) ??
+      definedSource(services, path) ??
+      undefined,
     hideFile: (path: string) =>
       (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
   };

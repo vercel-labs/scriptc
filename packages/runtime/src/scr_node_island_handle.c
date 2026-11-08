@@ -1887,8 +1887,19 @@ int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor) {
  * V8's TypeError, the very value the island's own `TypeError` crosses as)
  * is read from it. Errors among the results are native views themselves.
  * 0 for an error the runtime made itself. */
-static int nh_error_get(const struct ScrError *err, const char *key, size_t len, ScrDyn **out) {
-  ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
+/* The island error whose native view is `view`: its ref (+1, as nh_pinned
+ * returns it: the caller releases), or NULL for a value that is no error's
+ * view, or the view of an error the runtime made itself. */
+static ScrNodeRef *nh_error_view_ref(const ScrDyn *view) {
+  ScrError *err = scr_errdyn_err_of(view);
+  if (err == NULL) return NULL;
+  ScrNodeRef *ref = nh_pinned(err, NH_PIN_ERROR);
+  scr_error_release(err); /* its pin and its view hold it */
+  return ref;
+}
+
+static int nh_error_get(const ScrDyn *view, const char *key, size_t len, ScrDyn **out) {
+  ScrNodeRef *ref = nh_error_view_ref(view);
   if (ref == NULL) return 0;
   *out = NULL;
   if (nh_live(ref)) {
@@ -1906,8 +1917,8 @@ static int nh_error_get(const struct ScrError *err, const char *key, size_t len,
   return 1;
 }
 
-static int nh_error_has(const struct ScrError *err, const char *key, size_t len) {
-  ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
+static int nh_error_has(const ScrDyn *view, const char *key, size_t len) {
+  ScrNodeRef *ref = nh_error_view_ref(view);
   if (ref == NULL) return -1;
   ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND); /* retains */
   nh_ref_release(ref); /* the lookup's reference */

@@ -257,6 +257,10 @@ ScrStr *scr_error_to_string(ScrError *e);
 void scr_error_install_message_reader(ScrStr *(*reader)(ScrError *));
 void scr_error_install_name_reader(ScrStr *(*reader)(ScrError *));
 ScrStr *scr_error_default_name(const ScrError *e);
+/* The `name` a read of the error gives: its own, or what its class answers
+ * (a `name` getter), or the inherited default. +1, or NULL with the
+ * getter's exception pending. */
+ScrStr *scr_error_read_name(ScrError *e);
 ScrStr *scr_error_stack(ScrError *e);
 /* Writes the frames the error captured at creation to stderr, each line
  * led by its newline; nothing when it captured none. Borrows e. */

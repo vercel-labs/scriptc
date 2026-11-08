@@ -37,6 +37,7 @@ export const CLI_OPTIONS = {
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  define: { type: "string", multiple: true },
   "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
@@ -426,6 +427,20 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  define: {
+    entries: [
+      {
+        term: "--define <process.env.NAME=value>",
+        help: [
+          "run the executable with the environment variable set to",
+          "the value, a JSON string, whatever its environment holds",
+          "(repeatable): --define='process.env.NODE_ENV=\"production\"'.",
+          "JavaScript if statements it decides compile only their",
+          "taken branch",
+        ],
+      },
+    ],
+  },
   "shape-overlay": {
     entries: [
       {
@@ -665,6 +680,7 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "sanitize",
   "ffi",
   "npm-static",
+  "define",
   "shape-overlay",
   "provenance-sources",
   "tier",
@@ -726,6 +742,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       "fail-on",
       "ffi",
       "npm-static",
+      "define",
       "provenance-sources",
       "external-types",
       "tier",

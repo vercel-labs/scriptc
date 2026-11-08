@@ -1079,7 +1079,7 @@ export interface ProjectTypeResolution {
    * node_modules directory holds declarations for it. */
   typeRoots: readonly string[];
   /** `moduleResolution: node10`: tsc reads a package's files by path and
-   * never its `exports` map (`pkg/dist/cli.mjs` is that file's declaration
+   * never its `exports` map (`pkg/lib/feature.mjs` is that file's declaration
    * twin, `pkg` its `types`, `typings` or `main` file). */
   byPath: boolean;
 }
@@ -1092,8 +1092,8 @@ export interface ProjectTypeResolution {
  *
  * A project that compiles under node10 names files a package's `exports`
  * map does not list, most often from its own declaration of a subpath the
- * map does list: `declare module "pkg/cli" { export * from
- * "pkg/dist/cli.mjs"; }`. The type checker resolves as a bundler does and
+ * map does list: `declare module "pkg/feature" { export * from
+ * "pkg/lib/feature.mjs"; }`. The type checker resolves as a bundler does and
  * has no node10 mode, so the caller hands it the answer (typesAsProject7,
  * `paths`).
  *

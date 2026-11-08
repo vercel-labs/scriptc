@@ -242,12 +242,14 @@ typedef struct ScrNiDynOps {
   /* A property of an error island code threw that its native view does not
    * hold, read from the V8 error (+1 in *out, NULL with the exception
    * pending when the read threw): own properties, its class's methods and
-   * accessors, and `constructor`, its own realm's. 1 for an island error,
-   * 0 for any other. It has the place error_constructor had, which it
-   * replaces, so the entries behind it keep their offsets in the units
-   * every program links (error_has, below, is at the end for the same
-   * reason). */
-  int (*error_get)(const struct ScrError *err, const char *key, size_t len, ScrDyn **out);
+   * accessors, and `constructor`, its own realm's. `view` is any object:
+   * 1 for the view of an island error, 0 for any other value. The caller,
+   * in a unit every program links, only tests the table and calls; finding
+   * the error of a view is done here, where only island programs pay for
+   * it. It has the place error_constructor had, which it replaces, so the
+   * entries behind it keep their offsets in the units every program links
+   * (error_has, below, is at the end for the same reason). */
+  int (*error_get)(const ScrDyn *view, const char *key, size_t len, ScrDyn **out);
   /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
    * the exception pending). */
   ScrStr *(*object_tag)(const ScrDyn *value);
@@ -273,9 +275,9 @@ typedef struct ScrNiDynOps {
   int (*weak_test)(ScrDyn *collection, bool set, ScrDyn *key, bool remove);
   bool (*weak_set)(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
   /* The `in` operator on an error island code threw, for what its native
-   * view does not hold (error_get reads the same): 1, 0, or -1 for an error
-   * the runtime made itself. */
-  int (*error_has)(const struct ScrError *err, const char *key, size_t len);
+   * view does not hold (error_get reads the same): 1, 0, or -1 for a value
+   * that is not the view of an island error. */
+  int (*error_has)(const ScrDyn *view, const char *key, size_t len);
   /* A member of an island promise that a promise does not have itself (an
    * island class that extends Promise adds its own), read from the V8
    * promise (+1 in *out, NULL with the exception pending when the read

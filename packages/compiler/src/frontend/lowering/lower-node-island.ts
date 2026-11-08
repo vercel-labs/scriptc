@@ -1390,6 +1390,44 @@ export function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
   return false;
 }
 
+/** Whether `node` is a value a Node island made, as far as the compiler
+ * sees it, in a slot where an island object stays the island's (typed `any`,
+ * `unknown` or by the island): an island read, call, index or `new`, awaited
+ * or not, or a `const` initialized with one. The divergence scan asks this
+ * of the operand of a checked conversion (SC6007). */
+export function islandMadeValue(lowerer: Lowerer, node: ts.Expression, depth = 0): boolean {
+  const islands = lowerer.nodeIslands;
+  if (islands === null) return false;
+  let e = withoutParenthesesTypeWrappers(node);
+  const type = lowerer.typeOf(e);
+  if (
+    (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+    !isForeignType(islands, type, lowerer.checker)
+  )
+    return false;
+  while (ts.isAwaitExpression(e)) e = withoutParenthesesTypeWrappers(e.expression);
+  if (ts.isIdentifier(e)) {
+    if (depth >= 4) return false;
+    const d = (lowerer.resolveValueSymbol(e) ?? lowerer.checker.getSymbolAtLocation(e))
+      ?.valueDeclaration;
+    return (
+      d !== undefined &&
+      ts.isVariableDeclaration(d) &&
+      ts.isIdentifier(d.name) &&
+      d.initializer !== undefined &&
+      ts.isVariableDeclarationList(d.parent) &&
+      (d.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      islandMadeValue(lowerer, d.initializer, depth + 1)
+    );
+  }
+  return islandRooted(lowerer, e);
+}
+
+/** Whether `call` calls into a Node island: its callee is an island value. */
+export function islandCall(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  return lowerer.nodeIslands !== null && islandRooted(lowerer, call);
+}
+
 /** An island operation whose result is an undeclared object (a handle). */
 function isIslandHandleExpr(lowerer: Lowerer, node: ts.Expression): boolean {
   return islandRooted(lowerer, node) && undeclaredHandleType(lowerer, lowerer.typeOf(node));

@@ -4454,6 +4454,9 @@ export class Lowerer {
    * only then can a value that is not an Error instance be
    * `instanceof Error`. */
   errorPrototypeValues = false;
+  /** Every write of the global object the program makes, by any spelling
+   * (global-object-writes.ts), collected on first use. */
+  globalObjectWrites: import("./global-object-writes.js").GlobalObjectWrites | null = null;
   /** The property names the program assigns on the global object
    * (property-access.ts), collected on first use. */
   globalThisWrittenNames: Set<string> | null = null;
@@ -5933,6 +5936,7 @@ export class Lowerer {
       fixed("handleAdditions", () => this.handleAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
+      fixed("globalObjectWrites", () => this.globalObjectWrites),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),
@@ -14962,11 +14966,11 @@ export class Lowerer {
     // pointed reason the identifier/constructor chokepoints teach.
     if (stdlibNominal) {
       const intlHint =
-        "Intl formatter values have no representation — the COMPOSED forms lower: " +
-        'new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and ' +
-        "x.toLocaleString() with default options, d.toLocaleString(), d.toLocaleTimeString(), " +
-        "and Intl.Segmenter with grapheme or word granularity; the formatter objects " +
-        "themselves (locale negotiation, resolvedOptions, options bags) remain unsupported";
+        "values of this Intl type have no representation — what compiles: Intl.NumberFormat " +
+        "and Intl.DateTimeFormat objects with format(), the toLocaleString(), " +
+        "toLocaleDateString() and toLocaleTimeString() forms with a locale and options, and " +
+        "Intl.Segmenter with grapheme or word granularity; locale negotiation, " +
+        "resolvedOptions and the other Intl constructors remain unsupported";
       const typeHints: Record<string, string | undefined> = {
         ArrayBuffer:
           "fixed ArrayBuffer storage and typed-array views are supported; resizable and detached storage are not modeled",
@@ -16169,6 +16173,18 @@ export class Lowerer {
         );
         throw new PoisonError();
       }
+      // The empty literal of no element type (`[]` where no array type
+      // reaches it: a default against an `any[]`, the initializer of one)
+      // is the dynamic empty array in a checked-dynamic slot. Boxed live it
+      // would be an array of nothing, which no later `push` could enter.
+      // The literal is fresh, so no typed holder reads it back.
+      if (
+        expr.kind === "arrayLit" &&
+        expr.elems.length === 0 &&
+        expr.type.kind === "array" &&
+        this.unitOnlyElem(expr.type.elem)
+      )
+        return { kind: "dynArrLit", elems: [], type: DYN, loc: expr.loc };
       if (expr.kind === "unitLit" || this.dynConvertible(expr.type)) {
         // Records and arrays keep their identity as untyped values, including
         // when they arrive through a union, so `unknown` views, weak
@@ -18795,6 +18811,23 @@ export class Lowerer {
         }
         const type = failure === undefined ? undefined : this.failedTypes.get(failure);
         const id = (type as { id?: number } | undefined)?.id;
+        // A type that another declaration's retry degraded to the whole-slot
+        // dynamic after this diagnostic was recorded: the diagnostic is
+        // stale, so the collection runs again once, as for a declaration
+        // that only waited for another. The diagnostics of a later round
+        // come from a collection that already saw the degraded type.
+        if (
+          round === 0 &&
+          failure !== undefined &&
+          id !== undefined &&
+          failure.degradable &&
+          DECLARATION_SLOTS.has(failure.slot) &&
+          this.degradedTypes.get(id)?.lenient?.kind === "dyn"
+        ) {
+          retriable = true;
+          slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
+          continue;
+        }
         if (
           failure === undefined ||
           type === undefined ||

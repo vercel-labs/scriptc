@@ -146,6 +146,7 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import { iterableSlotValue } from "./iterable-values.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
+import { refuseObservedHandleProjections } from "./coercions/builtin-method-records.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { CoercionState } from "./coercions/state.js";
 import {
@@ -11850,6 +11851,7 @@ export class Lowerer {
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
     refuseSourceFieldDeletes(this, functions);
+    refuseObservedHandleProjections(this, functions);
     finalizeRecordLinks(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.

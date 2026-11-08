@@ -1,0 +1,44 @@
+handle-projection-observed.ts:12:13 - error SC2021: a 'WriteStream' stored as '{ write: (string) => boolean }' is a separate record of the declared methods, and the program compares it with the handle: under Node the value is the 'WriteStream' itself
+
+  11 | sinks[0]!.write("through the record\n");
+  12 | console.log(sinks[0] === process.stdout);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | const second = sinks[1]!;
+
+  hint: pass the 'WriteStream' as the argument of a directly called function declaration or hold it in a const (both keep it), or keep the value to calls of its methods
+
+handle-projection-observed.ts:14:13 - error SC2021: a 'WriteStream' stored as '{ write: (string) => boolean }' is a separate record of the declared methods, and the program hands it to untyped code or compares it with the handle: under Node the value is the 'WriteStream' itself
+
+  13 | const second = sinks[1]!;
+  14 | console.log(second !== process.stderr);
+     |             ^~~~~~
+  15 | console.log(Object.keys(second).length);
+
+  hint: pass the 'WriteStream' as the argument of a directly called function declaration or hold it in a const (both keep it), or keep the value to calls of its methods
+
+handle-projection-observed.ts:15:13 - error SC2021: a 'WriteStream' stored as '{ write: (string) => boolean }' is a separate record of the declared methods, and the program lists or tests its keys: under Node the value is the 'WriteStream' itself
+
+  14 | console.log(second !== process.stderr);
+  15 | console.log(Object.keys(second).length);
+     |             ^~~~~~~~~~~~~~~~~~~
+  16 | 
+
+  hint: pass the 'WriteStream' as the argument of a directly called function declaration or hold it in a const (both keep it), or keep the value to calls of its methods
+
+handle-projection-observed.ts:15:13 - error SC2021: a 'WriteStream' stored as '{ write: (string) => boolean }' is a separate record of the declared methods, and the program hands it to untyped code or compares it with the handle: under Node the value is the 'WriteStream' itself
+
+  14 | console.log(second !== process.stderr);
+  15 | console.log(Object.keys(second).length);
+     |             ^~~~~~~~~~~~~~~~~~~
+  16 | 
+
+  hint: pass the 'WriteStream' as the argument of a directly called function declaration or hold it in a const (both keep it), or keep the value to calls of its methods
+
+handle-projection-observed.ts:19:26 - error SC2021: a 'WriteStream' stored as '{ write: (string) => boolean }' is a separate record of the declared methods, and the program hands it to untyped code or compares it with the handle: under Node the value is the 'WriteStream' itself
+
+  18 | current = { write: () => true };
+  19 | const untyped: unknown = current;
+     |                          ^~~~~~~
+  20 | console.log(typeof untyped);
+
+  hint: pass the 'WriteStream' as the argument of a directly called function declaration or hold it in a const (both keep it), or keep the value to calls of its methods

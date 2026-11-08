@@ -1548,6 +1548,25 @@ export function handleDefaultRefusalDiag(
   };
 }
 
+/** A builtin handle stored as a record of its methods (`const sinks:
+ * Sink[] = [process.stdout]`) and then observed as a whole object (SC2021):
+ * the stored value is a separate record of the declared methods, while Node
+ * keeps the handle itself, with its own keys and identity. */
+export function handleProjectionObservedDiag(
+  handleText: string,
+  recordText: string,
+  how: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2021",
+    message: `a '${handleText}' stored as '${recordText}' is a separate record of the declared methods, and the program ${how}: under Node the value is the '${handleText}' itself`,
+    loc,
+    milestone: "later",
+    hint: `pass the '${handleText}' as the argument of a directly called function declaration or hold it in a const (both keep it), or keep the value to calls of its methods`,
+  };
+}
+
 /** A record-width conversion at a boundary where the program writes
  * through the value afterwards (SC2021): the conversion builds a new
  * object, so the write reaches only the copy, while Node keeps one object.

@@ -16,8 +16,11 @@
  * declare data members, optional members or index signatures are outside
  * the projection and keep SC2002. */
 import { DYN, HANDLE_KINDS, VOID, typeEquals, canDynCheckTo } from "../../../ir/ir.js";
-import type { IrExpr, IrLocal, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
+import type { IrExpr, IrFunction, IrLocal, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import { varRef } from "../../../ir/build.js";
+import { everyStmtList } from "../../../ir/traverse.js";
+import { handleProjectionObservedDiag } from "../../../diagnostics/diagnostic.js";
+import { EXPOSING_LIB_CALLS } from "../record-links.js";
 import { typeKey } from "../../type-mapper.js";
 import { keyedHelperName } from "../stable-names.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -169,4 +172,135 @@ function memberInvoker(
     body,
     loc,
   };
+}
+
+const PROJECTION_KEY = "builtin-methods:";
+
+/** Whether a value of type `t` is, or holds, a record of shape `shapeId`. */
+function holdsShape(lowerer: Lowerer, t: IrType, shapeId: string, seen: Set<string>): boolean {
+  switch (t.kind) {
+    case "record": {
+      if (t.shapeId === shapeId) return true;
+      if (seen.has(t.shapeId)) return false;
+      seen.add(t.shapeId);
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (!shape) return false;
+      if (shape.indexValue && holdsShape(lowerer, shape.indexValue, shapeId, seen)) return true;
+      return shape.fields.some((field) => holdsShape(lowerer, field.type, shapeId, seen));
+    }
+    case "array":
+    case "set":
+      return holdsShape(lowerer, t.elem, shapeId, seen);
+    case "map":
+      return (
+        holdsShape(lowerer, t.key, shapeId, seen) || holdsShape(lowerer, t.value, shapeId, seen)
+      );
+    case "promise":
+      return holdsShape(lowerer, t.inner, shapeId, seen);
+    case "union": {
+      if (seen.has(t.unionId)) return false;
+      seen.add(t.unionId);
+      const arms = lowerer.unions.get(t.unionId)?.arms ?? [];
+      return arms.some((arm) => holdsShape(lowerer, arm, shapeId, seen));
+    }
+    default:
+      return false;
+  }
+}
+
+/** Refuses a program that observes a projected record as a whole object.
+ *
+ * In Node the record a handle is stored as IS the handle: its keys are the
+ * handle's, it is identical to the handle, and untyped code that receives
+ * it sees the handle. The projection is a separate record of the declared
+ * methods, so a program that lists such a record's keys, converts it to a
+ * string, serializes it, or hands it to untyped code (which is also how a
+ * record is compared with a handle) would answer for that record instead.
+ * The check runs once every function is lowered, over the record types the
+ * program really projects a handle into: a type no handle reaches is not
+ * looked at, and a program without a projection pays nothing. */
+export function refuseObservedHandleProjections(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+): void {
+  const helpers = new Map<string, { shapeId: string; source: IrType }>();
+  for (const [key, name] of lowerer.valueHelpers) {
+    if (!key.startsWith(PROJECTION_KEY)) continue;
+    const source = lowerer.liftedFnNamed(name)?.params[0]?.type;
+    if (source) helpers.set(name, { shapeId: key.slice(key.lastIndexOf(":") + 1), source });
+  }
+  if (helpers.size === 0) return;
+  const all = [...functions, ...lowerer.liftedFns];
+  // The projections the program calls: one a discarded attempt built is
+  // interned and never reached.
+  const projected = new Map<string, IrType>();
+  for (const fn of all)
+    everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (e) => {
+        const helper = e.kind === "call" ? helpers.get(e.callee) : undefined;
+        if (helper) projected.set(helper.shapeId, helper.source);
+        return true;
+      },
+    });
+  if (projected.size === 0) return;
+  const holder = (t: IrType): string | undefined => {
+    for (const shapeId of projected.keys())
+      if (holdsShape(lowerer, t, shapeId, new Set())) return shapeId;
+    return undefined;
+  };
+  const refuse = (shapeId: string, how: string, loc: SrcLoc): void =>
+    lowerer.pushDiag(
+      handleProjectionObservedDiag(
+        lowerer.fmt(projected.get(shapeId)!),
+        lowerer.fmt({ kind: "record", shapeId }),
+        how,
+        loc,
+      ),
+    );
+  for (const helper of lowerer.linkedHelpers)
+    if (projected.has(helper.shapeId))
+      refuse(
+        helper.shapeId,
+        helper.kind === "keys" || helper.kind === "hasOwn"
+          ? "lists or tests its keys"
+          : "converts it to a string or inspects it",
+        helper.fn.loc,
+      );
+  for (const call of lowerer.recordMethodCalls)
+    if (projected.has(call.shapeId)) refuse(call.shapeId, `calls '${call.method}' on it`, call.loc);
+  // A union operand is compared arm by arm in an equality helper, where a
+  // record arm never equals a handle.
+  const equality = new Set(lowerer.equalityHelpers.values());
+  for (const fn of all) {
+    // The projection's own helpers box the handle, never the record.
+    if (helpers.has(fn.name)) continue;
+    everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (e) => {
+        if (e.kind === "call" && equality.has(e.callee) && e.args.length === 2) {
+          const [left, right] = [e.args[0]!.type, e.args[1]!.type];
+          const shapeId = HANDLE_KINDS.has(right.kind)
+            ? holder(left)
+            : HANDLE_KINDS.has(left.kind)
+              ? holder(right)
+              : undefined;
+          if (shapeId) refuse(shapeId, "compares it with the handle", e.loc);
+        } else if (e.kind === "dynFrom") {
+          const shapeId = holder(e.value.type);
+          if (shapeId)
+            refuse(shapeId, "hands it to untyped code or compares it with the handle", e.loc);
+        } else if (e.kind === "jsonStringify") {
+          const shapeId = holder(e.value.type);
+          if (shapeId) refuse(shapeId, "serializes it", e.loc);
+        } else if (e.kind === "libCall" && EXPOSING_LIB_CALLS.test(e.fn)) {
+          for (const arg of e.args) {
+            const shapeId = holder(arg.type);
+            if (shapeId) refuse(shapeId, "prints or serializes it", e.loc);
+          }
+        }
+        return true;
+      },
+    });
+  }
 }

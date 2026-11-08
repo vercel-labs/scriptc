@@ -38,6 +38,7 @@ When other streams flow into the same parameter, the process streams join them a
 `process.stdout` and `process.stderr` also flow into a record type that declares only methods, such as `interface Sink { write(text: string): void }`.
 A call through the record runs the stream's current method with the stream as its receiver, so a program that replaces `process.stdout.write` reaches its replacement.
 The record is a separate value: it is not identical to the stream, and it exposes only the methods it declares.
+A program that compares such a record with the stream, lists its keys, converts it to a string, serializes it, or hands it to untyped code throws `SC2021`.
 A process stream, or another builtin handle such as a child process or a socket, stays the stream itself where a record type names some of its members, such as `{ isTTY?: boolean }`, in two places: as the argument of a directly called function declaration, and in a `const`.
 There a data member such as `isTTY` or `columns` answers the stream's value at the time of the read, `===` compares the stream, and the same function still takes plain records.
 A parameter that defaults to a stream, such as `stream: { isTTY?: boolean } = process.stdout`, receives the stream when a direct call omits the argument; a call whose argument may be `undefined` throws `SC2002`.

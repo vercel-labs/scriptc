@@ -114,6 +114,30 @@ test("record width copies report at every storing site", async () => {
   );
 });
 
+test("a Node island value converted to a native type reports as a copy", async () => {
+  // SC6007: an assertion to an array and to a record, the same through a
+  // `const`, a typed binding of an `any`, a typed callback parameter the
+  // callback writes through, and an island Map keyed by a record type. A
+  // record of unknown members, a structuredClone, a value no island made, a
+  // read-only parameter and a Map of scalars report nothing.
+  const entry = fixture("island-copies/main.ts");
+  const { coverage } = analyze(entry);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  const source = readFileSync(entry, "utf8");
+  const lineOf = (offset: number): number => source.slice(0, offset).split("\n").length;
+  expect((coverage.divergences ?? []).map((d) => [d.code, lineOf(d.loc.start)])).toEqual([
+    ["SC6007", 12],
+    ["SC6007", 13],
+    ["SC6007", 15],
+    ["SC6007", 16],
+    ["SC6007", 17],
+    ["SC6007", 20],
+  ]);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
+  await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-island-copies.txt");
+});
+
 test("ordinary code reports no divergence", () => {
   const { coverage } = analyze(fixture("no-divergences.ts"));
   expect(coverage.diagnostics).toEqual([]);

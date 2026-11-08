@@ -2034,9 +2034,22 @@ function lowerToIrWithIslands(
     for (const line of traceWidthCopies(resultLowerer, widthCopies))
       process.stderr.write(line + "\n");
   if (widthCopies.length > 0) result = { ...result, widthCopies };
+  const scanned = scanDivergences(resultLowerer, moduleOrder);
   const divergences = [
     ...widthCopyDivergences(resultLowerer, widthCopies),
-    ...scanDivergences(resultLowerer, moduleOrder),
+    ...scanned,
+    // Key orders the witness pass could not follow (SC6014), except where
+    // the scan already names the same construction for its own order
+    // (SC6002).
+    ...resultLowerer.keyOrder.warnings.filter(
+      (warning) =>
+        !scanned.some(
+          (found) =>
+            found.code === "SC6002" &&
+            found.loc.file === warning.loc.file &&
+            found.loc.start === warning.loc.start,
+        ),
+    ),
     ...resultLowerer.sharedModuleWarnings,
     ...resultLowerer.islandWorkerWarnings,
     // Deferred refusals inside their own try/catch: named here, since the

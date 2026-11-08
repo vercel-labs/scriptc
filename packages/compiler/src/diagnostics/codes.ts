@@ -116,6 +116,7 @@ export const DIAGNOSTIC_CODES = {
   SC6011: "divergence: one Node island module instance for all threads",
   SC6012: "divergence: refused statement inside its own try",
   SC6013: "divergence: member written on a promise",
+  SC6014: "divergence: key order of a record type not followed per object",
   SC6101: "performance: likely-hot function with untyped values",
   SC6102: "performance: declaration-typed boundary note",
   SC6103: "performance: shape inference overlay report",

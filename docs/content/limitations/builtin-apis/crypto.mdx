@@ -27,6 +27,8 @@
   A call on a DiffieHellman value whose arguments no @types/node overload accepts, or whose output encoding is typed `any`, is refused at compile time, as are its `Object.prototype` methods; other property reads, and property writes, throw a coded SC2020 error.
   `Object.keys()` and `in` do not see a DiffieHellman's own `verifyError` property, and `JSON.stringify()` and `instanceof` are refused.
   After `createDiffieHellman(primeLength)` throws `Invalid DH parameters`, the next OpenSSL error Node throws can list the failed generation's errors in `opensslErrorStack`; errors in a compiled binary list only their own.
+  The error for key material that no decoder accepts has Node's `library`, `reason`, and `opensslErrorStack`, whose last entry is the reported error.
+  When a PEM body begins with a valid structure and fails further in, the entries OpenSSL lists before that last one are missing, and a malformed public key or DER input is reported as `ERR_OSSL_UNSUPPORTED` where Node reports the ASN.1 parser's own code.
   `crypto.diffieHellman` computes ECDH and X25519 secrets from EC and X25519 keys, given as KeyObjects or in any form `createPrivateKey` and `createPublicKey` read, with Node's errors; DH keys have no KeyObjects here, and the `DiffieHellman` and `DiffieHellmanGroup` constructors are not available.
   `checkPrime`, `checkPrimeSync`, `generatePrime`, and `generatePrimeSync` support bigint, ArrayBuffer, typed-array, Buffer, and DataView values and the `checks`, `safe`, `add`, `rem`, and `bigint` options on native targets, with Node's errors; the callback forms compute before they return and call back in a later macrotask.
   Candidates and sizes longer than 262144 bits throw a coded SC2020 error, and wasm32-wasi builds are refused.

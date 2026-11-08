@@ -401,6 +401,52 @@ test("a unit that tests SCR_NODE_ISLANDS has a build that defines it", () => {
   expect(withoutBuild).toEqual([]);
 });
 
+test("Node's pipe lifecycle is a unit of its own and the stream unit has no build for it", () => {
+  // A program that pipes links the unit that installs the lifecycle into
+  // the stream unit; the stream unit itself builds once more only for the
+  // write-error callbacks it already had.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_stream_pipe_events.c",
+  );
+  expect(unit.predicate).toEqual({ all: ["stream", "streamPipeEvents"] });
+  const stream = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_stream.c");
+  expect(stream.variants.some((v: { defines: string[] }) => v.defines.length > 2)).toBe(false);
+  expect(
+    stream.variants
+      .flatMap((v: { defines: string[] }) => v.defines)
+      .filter((d: string) => /PIPE/.test(d)),
+  ).toEqual([]);
+});
+
+test("pausing a child's output selects the child build with the flowing state", () => {
+  // pause(), resume(), isPaused() and readableFlowing on a child stream link
+  // the build whose stream handle keeps Node's flowing state.
+  expect(selected("scr_child.c", { workers: false, childStreamFlow: true }).defines).toEqual([
+    "SCR_CHILD_STREAM_FLOW",
+  ]);
+  // A program that only listens to a child's output keeps the default
+  // object, byte for byte.
+  expect(selected("scr_child.c", { workers: false, childStreamFlow: false }).defines).toEqual([]);
+  // The flowing state beside the other child builds is one object carrying
+  // every define, not the build with the most recent feature alone.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childStreamFlow: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_STREAM_FLOW"]);
+  expect(
+    selected("scr_child.c", { workers: false, childErrorFields: true, childStreamFlow: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"]);
+  expect(
+    selected("scr_child.c", {
+      workers: false,
+      childOptionExt: true,
+      childErrorFields: true,
+      childStreamFlow: true,
+    }).defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"]);
+});
+
 test("the installed island table has every entry the shared units call through it", () => {
   // The shared units build once, so an island path in them is a call through
   // ScrNiDynOps (a native weak collection keyed by an island object, for

@@ -403,12 +403,17 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
+  // Node's pipe lifecycle ('unpipe' when a destination finishes, closes or
+  // errors), installed into the stream unit for programs that pipe.
+  unit((u) => u.opts.stream && u.opts.streamPipeEvents === true, "scr_stream_pipe_events.c"),
   // Own properties JavaScript adds to children.
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // ChildProcess listener removal (off/removeListener) and signalCode.
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
   // The spawnSync capture Buffers (spawnRes.stdoutBytes/stderrBytes).
   unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
+  // process.features as a value: the stable flags object.
+  unit((u) => u.opts.processFeatures === true, "scr_process_features.c"),
   // Object.isExtensible and Object.isSealed of a value typed dynamically.
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
   // Reflect.getPrototypeOf's primitive-target check.
@@ -578,6 +583,9 @@ const RUNTIME_DEFINES: readonly {
   // `.error` answers Node's errnoException fields (errno, syscall, path,
   // spawnargs); a program that never reads `.error` keeps the default build.
   { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
+  // scr_child.c's flowing state for a child's output streams (pause(),
+  // resume(), isPaused(), readableFlowing).
+  { define: "SCR_CHILD_STREAM_FLOW", when: (opts) => opts.childStreamFlow },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
   // scr_node_island.c's bootstrap carries the stdio accessor and calls
   // scr_node_island_stdio.c when Node has started.

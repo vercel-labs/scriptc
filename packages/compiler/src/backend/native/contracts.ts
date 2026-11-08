@@ -150,6 +150,8 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** process.features as a value links scr_process_features.c. */
+  processFeatures?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
@@ -286,9 +288,15 @@ export interface CcOptions {
    * SCR_NODE_ISLAND_STDIO: the island's process.stdout.write and
    * process.stderr.write are the program's write slots. */
   stdioObject?: boolean;
+  /** The program pipes or unpipes a stream: compiles
+   * scr_stream_pipe_events.c (Node's pipe lifecycle). */
+  streamPipeEvents?: boolean;
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;
+  /** SCR_CHILD_STREAM_FLOW: a child's output streams keep Node's flowing
+   * state (pause(), resume(), isPaused(), readableFlowing). */
+  childStreamFlow?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;

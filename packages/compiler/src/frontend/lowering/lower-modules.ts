@@ -3612,7 +3612,7 @@ export function lowerFileInit(
     // A module that reads builtin globals through the global object, by
     // computed names or through a sloppy-mode function's `this`, installs
     // the program's lookup before its body runs.
-    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0));
+    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0, sf));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

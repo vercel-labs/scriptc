@@ -873,6 +873,18 @@ describe("K9: library-mode refusals", () => {
     );
   });
 
+  test("SC4005: process.features as a value", async () => {
+    // The flags object is a gated runtime unit no library archive carries,
+    // so the value form is refused by name instead of leaving the archive
+    // with an undefined symbol.
+    const diags = await refusal(
+      `export function f(): number { return "tls" in process.features ? 1 : 0; }\n`,
+      { exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }] },
+    );
+    expect(diags[0]!.code).toBe("SC4005");
+    expect(diags[0]!.message).toContain("process.features as a value");
+  });
+
   test("SC4007: a generic export", async () => {
     const diags = await refusal(
       `export function id<T>(x: T): T { return x; }\nconsole.log(id(1));\n`,

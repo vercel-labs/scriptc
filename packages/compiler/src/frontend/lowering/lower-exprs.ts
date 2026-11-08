@@ -26,6 +26,7 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { staticCondition } from "./static-typeof.js";
+import { noteBuiltinMemberWrite } from "./builtin-member-writes.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { lowerDeferredCallbackCall } from "./expressions/library-callbacks.js";
 import { PoisonError } from "./lowerer.js";
@@ -989,6 +990,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     return { kind: "awaitExpr", value, type: value.type.inner, loc };
   }
   if (ts.isYieldExpression(expr)) return lowerYield(lowerer, expr);
+  // A write to a member of a built-in object is recorded for the check at
+  // the end of lowering (builtin-member-writes.ts) and lowers as usual.
+  noteBuiltinMemberWrite(lowerer, expr);
   if (ts.isPrefixUnaryExpression(expr)) return lowerer.lowerPrefixUnary(expr);
   // `x++` / `x--` in expression position: yields the OLD value.
   if (ts.isPostfixUnaryExpression(expr)) return lowerIncDec(lowerer, expr, false);
@@ -3396,14 +3400,14 @@ function aliasTypeofArmOf(
     if (!ts.isTypeOfExpression(init)) continue;
     const opnd = strip(init.expression);
     if (!ts.isIdentifier(opnd)) continue;
-    if (!bindingNeverReassigned(lowerer, aliasSym, aliasDecl)) continue;
+    if (!bindingNeverReassigned(lowerer.bindingScope(), aliasSym, aliasDecl)) continue;
     const valSym = lowerer.resolveValueSymbol(opnd);
     const valDecl = valSym ? valSym.valueDeclaration : undefined;
     if (!valSym || !valDecl) continue;
     // v1: identifier PARAMETERS only — initialized at function entry,
     // before any alias can capture their typeof.
     if (!ts.isParameter(valDecl) || !ts.isIdentifier(valDecl.name)) continue;
-    if (!bindingNeverReassigned(lowerer, valSym, valDecl)) continue;
+    if (!bindingNeverReassigned(lowerer.bindingScope(), valSym, valDecl)) continue;
     const fn = valDecl.parent;
     if (fn === undefined || !(e.pos >= fn.pos && e.end <= fn.end)) continue;
     const valT = lowerer.typeOf(opnd); // override-aware: implicit bindings compose
@@ -3823,7 +3827,8 @@ export function matchAllCallbackRegexOf(
   // A reassigned parameter can hold a row of another regex.
   if (ts.isIdentifier(param.name)) {
     const sym = lowerer.checker.getSymbolAtLocation(param.name);
-    if (sym === undefined || !bindingNeverReassigned(lowerer, sym, param)) return null;
+    if (sym === undefined || !bindingNeverReassigned(lowerer.bindingScope(), sym, param))
+      return null;
   }
   let site: ts.Node = fn;
   while (ts.isParenthesizedExpression(site.parent)) site = site.parent;

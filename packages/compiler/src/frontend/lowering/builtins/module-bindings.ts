@@ -1,6 +1,6 @@
 import { builtinModules } from "node:module";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import {
   canonicalBuiltinModule,
@@ -190,7 +190,7 @@ export function esmImportBindingKind(
  * mutable properties, as `events.defaultMaxListeners` does. */
 export function isBuiltinEsmNamespaceOf(lowerer: Lowerer, expr: ts.Expression): boolean {
   if (awaitedBuiltinDynamicImportOf(lowerer, expr) !== null) return true;
-  const e = withoutParenthesesAssertionsNonNull(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   if (!ts.isIdentifier(e)) return false;
   if (esmImportBindingKind(lowerer, e) === "namespace") return true;
   const decl = lowerer.checker.getSymbolAtLocation(e)?.declarations[0];
@@ -278,7 +278,7 @@ export function builtinNamespaceDestructureModuleOf(
   // The casts strip, so an assertion over the call (`require("fs") as {…}`,
   // a statically known `any`) destructures the same namespace it names.
   let module: string | null = null;
-  const init = withoutParenthesesAssertionsNonNull(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (ts.isCallExpression(init)) {
     if (ts.isIdentifier(init.expression) && isCjsRequireGlobal(lowerer, init.expression)) {
       const spec = requireSpecOf(init);
@@ -323,9 +323,9 @@ export function awaitedBuiltinDynamicImportOf(
   lowerer: Lowerer,
   expr: ts.Expression,
 ): { module: string; awaited: ts.AwaitExpression } | null {
-  const awaited = withoutParenthesesAssertionsNonNull(expr);
+  const awaited = withoutParenthesesTypeWrappers(expr);
   if (!ts.isAwaitExpression(awaited)) return null;
-  const call = withoutParenthesesAssertionsNonNull(awaited.expression);
+  const call = withoutParenthesesTypeWrappers(awaited.expression);
   if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword)
     return null;
   if (call.arguments.nodes.length !== 1) return null;
@@ -343,21 +343,21 @@ export function awaitedBuiltinDynamicImportOf(
  * resolution, and every supported spelling names the call's own file. */
 /** `undefined` in either spelling, through casts. */
 function isUndefinedValue(expr: ts.Expression): boolean {
-  const e = withoutParenthesesAssertionsNonNull(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   return ts.isIdentifier(e) ? e.text === "undefined" : ts.isVoidExpression(e);
 }
 
 /** True for a read of the createRequire import binding itself (the value
  * tested by a conditional initializer). */
 function isCreateRequireImportValue(lowerer: Lowerer, expr: ts.Expression): boolean {
-  const e = withoutParenthesesAssertionsNonNull(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   if (!ts.isIdentifier(e)) return false;
   const bi = builtinImportOf(lowerer, e);
   return bi !== null && bi.module === "module" && bi.member === "createRequire";
 }
 
 function createRequireBaseCallOf(lowerer: Lowerer, expr: ts.Expression): ts.CallExpression | null {
-  const e = withoutParenthesesAssertionsNonNull(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   // `const require = createRequire ? createRequire(import.meta.url) :
   // undefined`: the import binding is always a function, so the true arm
   // is the value. Only that polarity folds; with the arms swapped the
@@ -372,7 +372,7 @@ function createRequireBaseCallOf(lowerer: Lowerer, expr: ts.Expression): ts.Call
   const bi = builtinImportOf(lowerer, e.expression);
   if (!bi || bi.module !== "module" || bi.member !== "createRequire") return null;
   if (e.arguments.nodes.length !== 1) return null;
-  const base = withoutParenthesesAssertionsNonNull(e.arguments.nodes[0]!);
+  const base = withoutParenthesesTypeWrappers(e.arguments.nodes[0]!);
   if (ts.isIdentifier(base) && lowerer.isStdlibGlobal(base, "__filename")) return e;
   if (
     ts.isPropertyAccessExpression(base) &&
@@ -417,11 +417,11 @@ function declaredNodeOf(lowerer: Lowerer, ident: ts.Identifier): ts.Node | null 
  * fresh require function in Node, so it anchors at its own position and
  * distinct positions stay distinct. */
 export function createRequireLoaderAnchorOf(lowerer: Lowerer, receiver: ts.Expression): string {
-  let e = withoutParenthesesAssertionsNonNull(receiver);
+  let e = withoutParenthesesTypeWrappers(receiver);
   // `r.resolve.paths` names a member of the loader's `resolve`: anchor on
   // the loader, so both members share it (each surface keeps its own key).
   if (ts.isPropertyAccessExpression(e) && e.name.text === "resolve")
-    e = withoutParenthesesAssertionsNonNull(e.expression);
+    e = withoutParenthesesTypeWrappers(e.expression);
   const decl = ts.isIdentifier(e) ? declaredNodeOf(lowerer, e) : null;
   const at = locOf(decl ?? e);
   return `${at.file}:${at.start}`;
@@ -449,7 +449,7 @@ export function createRequireFactoryBinding(lowerer: Lowerer, ident: ts.Identifi
     (varDecl.parent.flags & ts.NodeFlags.Const) === 0
   )
     return false;
-  const call = withoutParenthesesAssertionsNonNull(varDecl.initializer);
+  const call = withoutParenthesesTypeWrappers(varDecl.initializer);
   if (!ts.isCallExpression(call)) return false;
   const cr = createRequireSpecOf(lowerer, call);
   return cr !== null && cr.spec !== null && canonicalBuiltinModule(cr.spec) === "module";
@@ -463,11 +463,11 @@ export function createRequireFactoryBinding(lowerer: Lowerer, ident: ts.Identifi
  * TypeScript sources keep the refusal. */
 export function createRequireRuntimeBaseOf(lowerer: Lowerer, expr: ts.Expression): boolean {
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
-  const e = withoutParenthesesAssertionsNonNull(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   if (ts.isCallExpression(e)) {
-    if (e.questionDotToken || !ts.isIdentifier(withoutParenthesesAssertionsNonNull(e.expression)))
+    if (e.questionDotToken || !ts.isIdentifier(withoutParenthesesTypeWrappers(e.expression)))
       return false;
-    const callee = withoutParenthesesAssertionsNonNull(e.expression) as ts.Identifier;
+    const callee = withoutParenthesesTypeWrappers(e.expression) as ts.Identifier;
     // `cr(base)` — the factory call IS the run-time-base loader, so
     // `cr(base)(spec)` reaches the loader through it.
     if (createRequireFactoryBinding(lowerer, callee)) return true;
@@ -484,10 +484,10 @@ export function createRequireRuntimeBaseOf(lowerer: Lowerer, expr: ts.Expression
     (decl.parent.flags & ts.NodeFlags.Const) === 0
   )
     return false;
-  const init = withoutParenthesesAssertionsNonNull(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (ts.isConditionalExpression(init)) return false;
   if (!ts.isCallExpression(init) || init.questionDotToken) return false;
-  const callee = withoutParenthesesAssertionsNonNull(init.expression);
+  const callee = withoutParenthesesTypeWrappers(init.expression);
   if (!ts.isIdentifier(callee)) return false;
   if (createRequireFactoryBinding(lowerer, callee)) return true;
   return (
@@ -520,7 +520,7 @@ export function createRequireFactoryDecl(
     if (!ts.isIdentifier(name) || name.text !== "createRequire") return false;
     if (!ts.isIdentifier(element.name)) return false;
   }
-  const call = withoutParenthesesAssertionsNonNull(init);
+  const call = withoutParenthesesTypeWrappers(init);
   if (!ts.isCallExpression(call) || call.questionDotToken) return false;
   const cr = createRequireSpecOf(lowerer, call);
   return cr !== null && cr.spec !== null && canonicalBuiltinModule(cr.spec) === "module";
@@ -565,7 +565,7 @@ export function createRequireEvaluatedBaseOf(
   init: ts.Expression | undefined,
 ): ts.Expression | null {
   if (init === undefined) return null;
-  const e = withoutParenthesesAssertionsNonNull(init);
+  const e = withoutParenthesesTypeWrappers(init);
   if (!ts.isCallExpression(e) || e.questionDotToken) return null;
   if (e.arguments.nodes.length !== 1) return null;
   return createRequireRuntimeBaseOf(lowerer, e) ? e.arguments.nodes[0]! : null;
@@ -580,7 +580,7 @@ export function createRequireCalleeFileOf(
   lowerer: Lowerer,
   callee: ts.Expression,
 ): ts.SourceFile | null {
-  const e = withoutParenthesesAssertionsNonNull(callee);
+  const e = withoutParenthesesTypeWrappers(callee);
   if (ts.isCallExpression(e)) {
     return createRequireBaseCallOf(lowerer, e) !== null ? ts.getSourceFileOfNode(e) : null;
   }
@@ -624,7 +624,7 @@ export function createRequireSpecOf(
  * storage even when the createRequire loader is named `require`. */
 export function isNativeFfiRequire(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
   if (expr === undefined) return false;
-  const call = withoutParenthesesAssertionsNonNull(expr);
+  const call = withoutParenthesesTypeWrappers(expr);
   return ts.isCallExpression(call) && createRequireSpecOf(lowerer, call)?.spec === "node:ffi";
 }
 
@@ -639,7 +639,7 @@ export function createRequireNamespaceDecl(
   init: ts.Expression | undefined,
 ): boolean {
   if (!ts.isIdentifier(nameNode) || init === undefined) return false;
-  const call = withoutParenthesesAssertionsNonNull(init);
+  const call = withoutParenthesesTypeWrappers(init);
   if (!ts.isCallExpression(call)) return false;
   const cr = createRequireSpecOf(lowerer, call);
   return cr !== null && cr.spec !== null && canonicalBuiltinModule(cr.spec) !== null;
@@ -654,7 +654,7 @@ export function createRequireProgramModuleOf(
   expr: ts.Expression | undefined,
 ): { spec: string; baseFile: ts.SourceFile; dep: ts.SourceFile } | null {
   if (expr === undefined) return null;
-  const call = withoutParenthesesAssertionsNonNull(expr);
+  const call = withoutParenthesesTypeWrappers(expr);
   if (!ts.isCallExpression(call)) return null;
   const cr = createRequireSpecOf(lowerer, call);
   if (cr === null || cr.spec === null || canonicalBuiltinModule(cr.spec) !== null) return null;

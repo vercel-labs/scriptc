@@ -89,6 +89,9 @@ export const DYN_BUFFER_METHODS: ReadonlyMap<string, string> = new Map([
 ]);
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // A typed promise's resolve function given a promise (scr_resolve_adopt,
+  // beside the checked-dynamic resolution it shares its target box with).
+  "promise.adopt",
   // DEP0040 rides the dyn-async unit's warning machinery.
   "async.awaitDyn",
   // So does SlowBuffer's DEP0030.
@@ -1434,8 +1437,9 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "intrinsic" &&
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())) ||
-      // The resolve function of a promise of a checked-dynamic value that
-      // may be given a promise adopts it (scr_make_resolve_dyn).
+      // The resolve function of a promise that may be given a promise
+      // adopts it (scr_make_resolve_dyn, and scr_resolve_adopt for a typed
+      // promise).
       (node.kind === "newPromise" && node.resolves === true) ||
       (node.kind === "promiseWithResolvers" && resolversOfDyn(node.type, tables())),
   }),
@@ -1847,8 +1851,10 @@ const RUNTIME_FEATURE_RULES = {
     fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
-    // symbols scr_sym_well_known makes.
-    prefixes: ["sym.", "disposable.", "iterator."],
+    // symbols scr_sym_well_known makes. An island symbol the program
+    // receives is a native symbol (scr_node_island_handle.c makes it), so
+    // a program with a Node island links the unit too.
+    prefixes: ["sym.", "disposable.", "iterator.", "nodeIsland."],
     types: ["symbol"],
   }),
   /** Symbol.toPrimitive is read (sym.wellKnown with that name, or a name
@@ -2017,6 +2023,8 @@ const RUNTIME_FEATURE_RULES = {
    * scr_fs_exists_dyn.c, which reports DEP0187 through the warning queue the
    * dynAsync rule brings in. */
   fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
   /** The BYTE-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -2095,6 +2103,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fileHandle: false,
     fsFlags: false,
     fsExistsValue: false,
+    moduleCompileCache: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,

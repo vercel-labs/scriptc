@@ -322,6 +322,14 @@ double scr_bytes_byte_len(const ScrBytes *b); /* len * elem size */
  * pooling), the view's offset into its owner's storage for a DataView. */
 double scr_bytes_byte_offset(const ScrBytes *b);
 
+/* Whether the program can move, shrink or detach an owner's storage (a
+ * resizable or detached ArrayBuffer of a JavaScript program with mutable
+ * buffers, below): memory nothing outside the runtime may alias. Always
+ * false in a build without the JavaScript object model. A function, so a
+ * unit that is built once (the Node island handle unit) asks the build of
+ * this unit the program links. */
+bool scr_bytes_storage_movable(const ScrBytes *owner);
+
 #ifdef SCR_JS_OBJECT_MODEL
 /* ── mutable buffers (t262-dc) ────────────────────────────────────────
  * A JavaScript program with the `mutableBuffers` fact may resize, grow or

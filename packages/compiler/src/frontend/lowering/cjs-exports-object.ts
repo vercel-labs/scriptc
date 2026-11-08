@@ -602,5 +602,5 @@ function rereadableMemberValue(
   // A function declaration is initialized when the module starts; any
   // other binding must be initialized before the write stores it.
   if (!ts.isFunctionDeclaration(decl) && decl.end > stmt.pos) return false;
-  return bindingNeverReassigned(lowerer, sym, decl);
+  return bindingNeverReassigned(lowerer.bindingScope(), sym, decl);
 }

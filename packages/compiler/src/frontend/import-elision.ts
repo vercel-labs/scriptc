@@ -240,16 +240,30 @@ function specifierSource(specifier: ts.Node): string | null {
   return ts.isStringLiteral(specifier) ? JSON.stringify(specifier.text) : null;
 }
 
-/** The rewritten text of one TypeScript source file, or null when tsc keeps
- * every import and export of it. */
-export function elideImports(
-  program: ts.Program,
-  sf: ts.SourceFile,
-  options: ImportElisionOptions,
-): ImportElision | null {
-  const checker = program.getTypeChecker();
-  const startOf = (node: ts.Node): number => ts.tokenStartOfNode(node);
+/** What tsc may drop from one file, and what the decision reads, from the
+ * file's syntax alone. */
+interface Candidates {
+  /** Every import binding that exists at run time. */
+  aliases: Alias[];
+  byName: Map<string, Alias[]>;
+  imports: ts.ImportDeclaration[];
+  exportLists: ts.ExportDeclaration[];
+  defaultExports: ts.ExportAssignment[];
+  /** The uses of a candidate's name that may keep its import. */
+  uses: Use[];
+  /** The names that occur anywhere beyond the aliases' own declarations. */
+  mentioned: Set<string>;
+  /** The nodes the decision asks the checker for the symbol at before it
+   * starts: the candidates' names, the first use of each, and the module
+   * specifiers and re-exported names behind which it looks for a type-only
+   * declaration. One request answers them for a file, or for a whole
+   * program (elideProgramImports). */
+  questions: ts.Node[];
+}
 
+/** The candidates of `sf`, or null when it has no import, export list or
+ * `export default name` to decide. */
+function candidatesOf(sf: ts.SourceFile): Candidates | null {
   // ---- the candidates: every import binding that exists at run time ----
   const aliases: Alias[] = [];
   const byName = new Map<string, Alias[]>();
@@ -321,6 +335,76 @@ export function elideImports(
     defaultExports.length === 0
   )
     return null;
+
+  // ---- the uses ----
+  const uses: Use[] = [];
+  const mentioned = new Set<string>();
+  const aliasNames = new Set<ts.Node>(aliases.map((alias) => alias.name));
+  if (byName.size > 0) {
+    ts.walkPreorder(
+      sf,
+      (node) => {
+        const id = node as ts.Identifier;
+        if (!byName.has(id.text)) return;
+        if (!aliasNames.has(id)) mentioned.add(id.text);
+        const kind = useKindOf(id);
+        if (kind !== null && emitsWhereItStands(id)) uses.push({ id, kind });
+      },
+      IDENTIFIERS,
+    );
+  }
+
+  // ---- the questions ----
+  const questions: ts.Node[] = aliases.map((alias) => alias.name);
+  // The first use of a name settles it almost always (it resolves to the
+  // import, which names a value), and the decision skips every later use of
+  // a settled name. A later use of a name its first use left open (a local
+  // that shadows the import, a const enum member tsc inlines) is asked when
+  // the decision reaches it.
+  const asked = new Set<string>();
+  for (const use of uses) {
+    if (use.kind === "shorthand" || use.kind === "exported" || asked.has(use.id.text)) continue;
+    asked.add(use.id.text);
+    questions.push(use.id);
+  }
+  // Whether a type-only import or export stands between a binding and what
+  // it names is read through the module each declaration names
+  // (reachedThroughTypeOnly). The module specifiers are not identifiers, so
+  // no sweep of a file's identifiers answers them.
+  for (const stmt of imports) questions.push(stmt.moduleSpecifier);
+  for (const declaration of exportLists) {
+    if (declaration.moduleSpecifier === undefined) continue;
+    questions.push(declaration.moduleSpecifier);
+    for (const element of (declaration.exportClause as ts.NamedExports).elements.nodes)
+      if (!element.isTypeOnly) questions.push(element.name);
+  }
+  return { aliases, byName, imports, exportLists, defaultExports, uses, mentioned, questions };
+}
+
+/** The rewritten text of one TypeScript source file, or null when tsc keeps
+ * every import and export of it. */
+export function elideImports(
+  program: ts.Program,
+  sf: ts.SourceFile,
+  options: ImportElisionOptions,
+): ImportElision | null {
+  const candidates = candidatesOf(sf);
+  if (candidates === null) return null;
+  program.getTypeChecker().prefetchSymbolsAtExact(candidates.questions);
+  return elideCandidates(program, sf, options, candidates);
+}
+
+/** tsc's decision for the candidates of one file. The checker has been
+ * asked the candidates' questions. */
+function elideCandidates(
+  program: ts.Program,
+  sf: ts.SourceFile,
+  options: ImportElisionOptions,
+  candidates: Candidates,
+): ImportElision | null {
+  const checker = program.getTypeChecker();
+  const startOf = (node: ts.Node): number => ts.tokenStartOfNode(node);
+  const { aliases, byName, imports, exportLists, defaultExports, uses, mentioned } = candidates;
 
   // ---- what a symbol names ----
   /** The symbol an alias resolves to, or null when it resolves to nothing
@@ -443,7 +527,6 @@ export function elideImports(
     if (alias !== undefined) mark(alias, inExport);
   };
 
-  checker.prefetchSymbolNodesExact(aliases.map((alias) => alias.name));
   for (const alias of aliases) alias.symbol = checker.getSymbolAtLocation(alias.name);
   for (const alias of aliases) {
     const node = alias.node;
@@ -455,28 +538,6 @@ export function elideImports(
     // only when the file uses it as a value.
     else if (hasExportModifier(node)) mark(alias, true);
   }
-
-  // ---- the uses ----
-  const uses: Use[] = [];
-  /** The names that occur anywhere beyond the aliases' own declarations. */
-  const mentioned = new Set<string>();
-  const aliasNames = new Set<ts.Node>(aliases.map((alias) => alias.name));
-  if (byName.size > 0) {
-    ts.walkPreorder(
-      sf,
-      (node) => {
-        const id = node as ts.Identifier;
-        if (!byName.has(id.text)) return;
-        if (!aliasNames.has(id)) mentioned.add(id.text);
-        const kind = useKindOf(id);
-        if (kind !== null && emitsWhereItStands(id)) uses.push({ id, kind });
-      },
-      IDENTIFIERS,
-    );
-  }
-  checker.prefetchSymbolNodesExact(
-    uses.filter((use) => use.kind !== "shorthand" && use.kind !== "exported").map((u) => u.id),
-  );
 
   for (const use of uses) {
     const name = use.id.text;
@@ -821,11 +882,29 @@ export function elideProgramImports(
   optionsOf: (fileName: string) => ImportElisionOptions | null,
 ): ProgramImportElision {
   const out: ProgramImportElision = { texts: new Map(), inlinedOnly: [] };
+  // Every file's candidates first, from its syntax, so that the checker is
+  // asked about all of them at once: a request per file and one more per
+  // import declaration is most of what the decision costs on a program of
+  // many files.
+  const files: {
+    sf: ts.SourceFile;
+    options: ImportElisionOptions;
+    candidates: Candidates;
+  }[] = [];
+  const questions: ts.Node[] = [];
   for (const sf of program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile || !TYPESCRIPT_SOURCE.test(sf.fileName)) continue;
     const options = optionsOf(sf.fileName);
     if (options === null) continue;
-    const elision = elideImports(program, sf, options);
+    const candidates = candidatesOf(sf);
+    if (candidates === null) continue;
+    files.push({ sf, options, candidates });
+    for (const node of candidates.questions) questions.push(node);
+  }
+  if (files.length === 0) return out;
+  program.getTypeChecker().prefetchSymbolsAtExact(questions);
+  for (const { sf, options, candidates } of files) {
+    const elision = elideCandidates(program, sf, options, candidates);
     if (elision === null) continue;
     if (elision.text !== null) out.texts.set(sf.fileName, elision.text);
     for (const kept of elision.inlinedOnly) out.inlinedOnly.push({ file: sf.fileName, ...kept });

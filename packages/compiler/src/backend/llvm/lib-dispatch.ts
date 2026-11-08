@@ -377,6 +377,13 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     );
     return { name: "", type: e.type };
   }
+  if (e.fn === "promise.adopt") {
+    const resolve = host.emitReadReceiver(e.args[0]!);
+    const source = host.emitReadReceiver(e.args[1]!);
+    host.declare(`declare void @scr_resolve_adopt(ptr, ptr)`);
+    B.line(`call void @scr_resolve_adopt(ptr ${resolve.name}, ptr ${source.name})`);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "record.link") {
     // The link owns a reference to the source, released with the copy.
     const copy = host.emitReadReceiver(e.args[0]!);

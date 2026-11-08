@@ -4,6 +4,11 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, neverTaintedJsType } from "../lowerer.js";
 import { notIterableSpelling } from "../iterable-spelling.js";
 import {
+  emptyArrayLiteralPlaceType,
+  isUntypedArrayType,
+  untypedArrayExprType,
+} from "../empty-array-places.js";
+import {
   BOOL,
   DYN,
   F64,
@@ -188,9 +193,10 @@ function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {
  * `[]` with no contextual array type (`return []` in an async function,
  * whose contextual type is `string[] | PromiseLike<string[]>`; `{ files: [] }`).
  * It holds no element, as the empty tuple does, so it builds as the
- * unit-only element array, and an array slot receives it through the
- * checked empty-array lift. never's f64 element mapping would make it a
- * `number[]`, which no `string[]` slot accepts. */
+ * unit-only element array, and a typed array slot that receives the
+ * literal itself builds the slot's empty array instead (widthCoerce).
+ * never's f64 element mapping would make it a `number[]`, which no
+ * `string[]` slot accepts. */
 function emptyNeverLiteral(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): boolean {
   if (expr.elements.nodes.length > 0 || isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
   const own = lowerer.typeOf(expr);
@@ -231,6 +237,28 @@ export function lowerArrayLiteral(
   let mapped = expected ?? lowerer.mapTypeOf(tsType);
   if (expected === undefined && ctxType === undefined && emptyNeverLiteral(lowerer, expr))
     mapped = arrayOf(unitOnlyUnion(lowerer.unions));
+  // The empty array of a property (`content: []`) is built as the array
+  // type decided for that property (empty-array-places.ts), whatever
+  // untyped context the literal sits in (a callback result the checker
+  // inferred from this very literal).
+  if (expected === undefined && expr.elements.nodes.length === 0) {
+    const place = emptyArrayLiteralPlaceType(lowerer, expr);
+    if (place?.kind === "array") mapped = place;
+  }
+  // `[...o.files]` over an untyped empty array (`{ files: [] }`): the
+  // checker types the copy `never[]` too, and it holds what the array
+  // holds, so it has the array's element type (empty-array-places.ts).
+  if (
+    expected === undefined &&
+    ctxType === undefined &&
+    mapped?.kind === "array" &&
+    expr.elements.nodes.length > 0 &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    isUntypedArrayType(lowerer.checker, tsType)
+  ) {
+    const copied = untypedArrayExprType(lowerer, expr);
+    if (copied?.kind === "array") mapped = copied;
+  }
   // Inferred JavaScript arrays can contain unrelated constructors with
   // structurally equal checker types. Their native class ABIs still differ.
   if (

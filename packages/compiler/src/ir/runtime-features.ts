@@ -1772,7 +1772,7 @@ const RUNTIME_FEATURE_RULES = {
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */
   declAdopt: rule({
-    fns: ["dyn.declAdopt", "dyn.adoptShared"],
+    fns: ["dyn.declAdopt", "dyn.adoptShared", "dyn.adoptable"],
     initial: (mod) => mod.declBoundary === true,
   }),
   // Checked conversions into package-declared types name the declaration

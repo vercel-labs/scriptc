@@ -15,6 +15,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `date-math` | cpu | schedules built with Date setters (local and UTC), weekday and month-end rules through the getters, Dates sorted by time value |
 | `cyclic-graphs` | cpu | object graphs with back references built and dropped: trees with parent and sibling links, rings of records sharing a long-lived registry, closures capturing their owner |
 | `dictionary-walks` | cpu | `Record<string, number>` dictionaries walked with for-in and `Object.keys`/`values`/`entries` while entries are added, updated and deleted |
+| `dynamic-class-tests` | cpu | untyped JavaScript in a program with 240 classes, using constructors it holds in variables: `value instanceof ctor` against class values and builtin constructors, `new ctor()` from a list of classes, and deep copies of plain records with computed-key reads; none of it depends on the number of classes, so the time shows a class dispatch that walks them |
 | `dynamic-methods` | cpu | untyped JavaScript calling builtin methods on values it does not type: string `slice`/`indexOf`/`toUpperCase`/`padStart`, array `push`/`pop`/`includes`, `Map` and `Set`, and an object's own methods |
 | `dynamic-properties` | cpu | untyped JavaScript reading and writing properties of values it does not type: records built by object literals in two key orders, nested records, and instances of a class and its subclass |
 | `functional-pipeline` | cpu | `filter`/`map`/`reduce`/`flatMap` chains, closures, small records |
@@ -38,6 +39,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `records-sort` | cpu | comparator sorts, group-by, `reduce`/`filter` |
 | `regex-logs` | cpu | regex `exec` with groups, `test`, global `replace` |
 | `regex-replacers` | cpu | regex `replace`/`replaceAll` with inline callbacks whose parameters have no annotations: dictionary placeholders, snake_case to camelCase, date reordering, optional captures, capitalization, and a string search that reads the offset |
+| `regex-tokenizer` | cpu | a block tokenizer in the shape Markdown parsers have: twelve rules anchored at the start (`/^…/`) tried in order on the rest of a document, each token cut off with `slice`; three generated documents of about 60,000 characters (ASCII, with dashes and accented letters, with emoji) |
 | `region-builds` | cpu | a watch-mode build loop over `LifetimeRegion`: each build binds a program in a new region and releases the previous one, which a cache keeps referenced for two builds |
 | `string-iteration` | cpu | code point iteration over text that mixes ASCII, Latin-1 letters, CJK and emoji: a for-of word tokenizer, spread reversal, and `Array.from` over words |
 | `template-render` | cpu | template literals, escaping, `map`/`join` |

@@ -418,3 +418,96 @@ test("a local both branches moved is not read after the join", () => {
     expect.arrayContaining([expect.stringContaining("local t.0 is used after it was moved")]),
   );
 });
+
+test("each class is judged by the slots that mention it, in module order", () => {
+  // Two classes share a module. A slot that reaches a class through a
+  // container, a map value or a function type counts for that class and for
+  // no other, and the reasons keep the order of the module's slots.
+  const OTHER: IrType = { kind: "object", className: "Other" };
+  const mod = tree();
+  mod.classes!.push({ name: "Other", fields: [{ name: "n", type: F64_T }], loc });
+  mod.functions.push(
+    fn("%Other.constructor", [param("this.1", OTHER)], { kind: "void" }, []),
+    fn("pick", [param("all.0", arrayOf(OTHER))], F64_T, [
+      ret({ kind: "numLit", value: 0, type: F64_T, loc }),
+    ]),
+  );
+  mod.records = [
+    {
+      id: "r0",
+      fields: [{ name: "make", type: { kind: "func", params: [OTHER], ret: MAYBE_NODE } }],
+    },
+  ];
+  mod.globals = [
+    {
+      id: "%g.m.byName",
+      name: "byName",
+      type: { kind: "map", key: { kind: "string" }, value: OTHER },
+      mutable: false,
+    },
+    { id: "%g.m.trees", name: "trees", type: arrayOf(NODE), mutable: false },
+  ];
+  const plan = planTreeClasses(mod, {
+    borrowed: new Map([...FACTS.borrowed, ["%Other.constructor", new Set([0])]]),
+  });
+  const unfit = "holds it in a type that is neither the class nor null or it";
+  expect([...plan.classes]).toEqual([]);
+  expect(plan.rejected.get("Node")).toEqual([
+    `record r0 field make ${unfit}`,
+    `global trees ${unfit}`,
+  ]);
+  expect(plan.rejected.get("Other")).toEqual([
+    `pick parameter all.0 ${unfit}`,
+    `pick local all.0 ${unfit}`,
+    `record r0 field make ${unfit}`,
+    `global byName ${unfit}`,
+  ]);
+});
+
+test("a union that reaches itself through a container is walked once", () => {
+  // `type Forest = Node | Forest[]` in a global: the class is mentioned
+  // through the union's own array arm, and the slot keeps the count. A
+  // second class the union does not reach is judged without it.
+  const FOREST: IrType = { kind: "union", unionId: "u.forest" };
+  const WOODS: IrType = { kind: "union", unionId: "u.woods" };
+  const OTHER: IrType = { kind: "object", className: "Other" };
+  const mod = tree();
+  mod.unions!.push(
+    { id: "u.forest", arms: [arrayOf(WOODS), NODE] },
+    // Two unions that reach each other: each mentions what the other does.
+    { id: "u.woods", arms: [arrayOf(FOREST), { kind: "nullT" }] },
+  );
+  mod.classes!.push({ name: "Other", fields: [{ name: "n", type: F64_T }], loc });
+  mod.functions.push(fn("%Other.constructor", [param("this.1", OTHER)], { kind: "void" }, []));
+  mod.globals = [
+    { id: "%g.m.woods", name: "woods", type: WOODS, mutable: false },
+    { id: "%g.m.forest", name: "forest", type: FOREST, mutable: false },
+  ];
+  const plan = planTreeClasses(mod, {
+    borrowed: new Map([...FACTS.borrowed, ["%Other.constructor", new Set([0])]]),
+  });
+  const unfit = "holds it in a type that is neither the class nor null or it";
+  expect([...plan.classes]).toEqual(["Other"]);
+  expect(plan.rejected.get("Node")).toEqual([
+    `global woods ${unfit}`,
+    `global forest ${unfit}`,
+    `union u.forest ${unfit}`,
+    `union u.woods ${unfit}`,
+  ]);
+});
+
+test("a module with a self-reaching union and no class is planned without a walk", () => {
+  const JSON_T: IrType = { kind: "union", unionId: "u.json" };
+  const plan = planTreeClasses(
+    {
+      irVersion: 17,
+      sourceFile: loc.file,
+      entry: "%init.0",
+      functions: [fn("%init.0", [], { kind: "void" }, [], [local("j.0", JSON_T)])],
+      unions: [{ id: "u.json", arms: [{ kind: "string" }, arrayOf(JSON_T)] }],
+    },
+    { borrowed: new Map() },
+  );
+  expect([...plan.classes]).toEqual([]);
+  expect([...plan.rejected]).toEqual([]);
+});

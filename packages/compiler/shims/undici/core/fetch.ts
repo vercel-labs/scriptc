@@ -15,12 +15,16 @@ import type { Transform } from "node:stream";
 // a project's @types/node may predate the globals (20.11 has none).
 import { ReadableStream, type ReadableStreamDefaultController } from "node:stream/web";
 import * as zlib from "node:zlib";
+import { Dispatcher as DispatcherClass } from "./dispatcher.ts";
 import type { Dispatcher } from "./dispatcher.ts";
+import { NotSupportedError } from "./errors.ts";
 import { getGlobalDispatcher, hasCustomGlobalDispatcher } from "./api.ts";
-import type { DispatchHandlers, Profile } from "./types.ts";
+import type { DispatchHandlers, HttpMethod, Profile } from "./types.ts";
 
 /** undici's RequestInit, restricted to the implemented members: string and
- * byte bodies, and the init members the dispatcher path honors. */
+ * byte bodies, and the init members the dispatcher path honors. This is
+ * what the implementation works with; fetch() takes an UndiciFetchInit and
+ * narrows it to this (requestInitOf). */
 export interface UndiciRequestInit {
   method?: string;
   headers?: Headers | [string, string][] | Record<string, string>;
@@ -28,6 +32,108 @@ export interface UndiciRequestInit {
   signal?: AbortSignal | null;
   redirect?: "follow" | "manual" | "error";
   dispatcher?: Dispatcher;
+}
+
+/** What fetch() accepts as its init. A program hands undici's fetch the
+ * init it has: undici's own RequestInit, or the global one (Node's types
+ * build it from `undici-types`, the DOM library declares its own, and the
+ * compiler bundles one for programs without either), often spread into a
+ * new literal. Those declare the same members with types that are not
+ * assignable to one another (`headers` as `HeadersInit`, `body` as
+ * `BodyInit`, `dispatcher` as each package's own `Dispatcher`), so those
+ * members have the one type all of them are assignable to, and their
+ * values are narrowed where fetch reads them (requestInitOf): a value
+ * outside what this implementation sends is refused there, by name. */
+export interface UndiciFetchInit {
+  method?: string;
+  headers?: unknown;
+  body?: unknown;
+  signal?: AbortSignal | null;
+  redirect?: string;
+  dispatcher?: unknown;
+  // Members of RequestInit that change nothing in a Node process (there is
+  // no page, cache or credential store): accepted and not read.
+  cache?: unknown;
+  credentials?: unknown;
+  duplex?: unknown;
+  integrity?: unknown;
+  keepalive?: unknown;
+  mode?: unknown;
+  priority?: unknown;
+  referrer?: unknown;
+  referrerPolicy?: unknown;
+  window?: unknown;
+}
+
+/** The init fetch works with, from the init a program passed. */
+export function requestInitOf(init: UndiciFetchInit): UndiciRequestInit {
+  const out: UndiciRequestInit = {};
+  if (init.method !== undefined) out.method = init.method;
+  const headers = init.headers;
+  if (headers !== undefined && headers !== null) out.headers = headersInitOf(headers);
+  const body = init.body;
+  if (body !== undefined && body !== null) out.body = bodyInitOf(body);
+  if (init.signal !== undefined) out.signal = init.signal;
+  const redirect = init.redirect;
+  if (redirect !== undefined) {
+    if (redirect !== "follow" && redirect !== "manual" && redirect !== "error") {
+      throw new TypeError(
+        `Request constructor: ${redirect} is not an accepted type. Expected one of follow, error, manual.`,
+      );
+    }
+    out.redirect = redirect;
+  }
+  const dispatcher = init.dispatcher;
+  if (dispatcher !== undefined && dispatcher !== null) {
+    if (!(dispatcher instanceof DispatcherClass)) {
+      throw new NotSupportedError(
+        "scriptc's undici fetch takes a dispatcher made by this undici (Agent, Pool, Client, ProxyAgent or a subclass of Dispatcher)",
+      );
+    }
+    out.dispatcher = dispatcher;
+  }
+  return out;
+}
+
+function headersInitOf(headers: unknown): Headers | [string, string][] | Record<string, string> {
+  if (headers instanceof Headers) return headers;
+  if (Array.isArray(headers)) {
+    const pairs: [string, string][] = [];
+    for (const entry of headers as unknown[]) {
+      if (!Array.isArray(entry) || entry.length !== 2) {
+        throw new TypeError(
+          "Headers constructor: expected name/value pair to be length 2, found " +
+            String(Array.isArray(entry) ? entry.length : 0) +
+            ".",
+        );
+      }
+      pairs.push([String(entry[0]), String(entry[1])]);
+    }
+    return pairs;
+  }
+  if (typeof headers !== "object") {
+    throw new TypeError(
+      "Headers constructor: The provided value is not of type '(record<ByteString, ByteString> or sequence<sequence<ByteString>>)'.",
+    );
+  }
+  const record: Record<string, string> = {};
+  const given = headers as Record<string, unknown>;
+  for (const name of Object.keys(given)) {
+    const value = given[name];
+    record[name] = Array.isArray(value) ? (value as unknown[]).join(",") : String(value);
+  }
+  return record;
+}
+
+function bodyInitOf(body: unknown): string | Uint8Array {
+  if (typeof body === "string") return body;
+  if (body instanceof Uint8Array) return body;
+  if (body instanceof ArrayBuffer) return new Uint8Array(body);
+  if (ArrayBuffer.isView(body))
+    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+  throw new NotSupportedError(
+    "scriptc's undici fetch sends string and byte bodies (string, ArrayBuffer and its views); streams, Blob, FormData and URLSearchParams bodies are not supported yet",
+  );
 }
 
 /** The fetch standard's blocked ports (undici lib/web/fetch/constants.js). */
@@ -131,10 +237,19 @@ const nullBodyStatuses = [101, 204, 205, 304];
 
 export function undiciFetch(
   input: string | URL,
-  init: UndiciRequestInit | undefined,
+  given: UndiciFetchInit | undefined,
   createGlobal: () => Dispatcher,
   profile: Profile,
 ): Promise<Response> {
+  let init: UndiciRequestInit | undefined;
+  if (given !== undefined) {
+    // fetch() reports a bad init by rejecting, never by throwing.
+    try {
+      init = requestInitOf(given);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
   const explicit = init !== undefined ? init.dispatcher : undefined;
   if (explicit === undefined && !hasCustomGlobalDispatcher()) {
     if (init === undefined) return fetch(input);
@@ -148,6 +263,38 @@ export function undiciFetch(
   }
   const dispatcher = explicit ?? getGlobalDispatcher(createGlobal);
   return fetchThrough(dispatcher, input, init ?? {}, profile);
+}
+
+/** Compiler intrinsic (fetch-dispatcher.ts): stores the function the
+ * global fetch hands a request to when its init carries a dispatcher. */
+declare function scriptcFetchDispatcherHook(
+  hook: (input: unknown, init: unknown) => Promise<Response>,
+): (input: unknown, init: unknown) => Promise<Response>;
+
+/** Node's global fetch is undici's, so `fetch(url, { dispatcher })` sends
+ * the request through the dispatcher. The native global fetch knows none:
+ * a call whose init carries one comes here, with the values as the call
+ * had them, and goes the way this package's fetch goes. An object that is
+ * no dispatcher of this package is refused by name (requestInitOf). Each
+ * entry installs this once, when its module starts. */
+export function installGlobalFetchDispatcher(
+  createGlobal: () => Dispatcher,
+  profile: Profile,
+): void {
+  const through = (input: unknown, init: unknown): Promise<Response> => {
+    // A URL reads as its href; a Request has no dispatcher path here and
+    // fails as the address it is not.
+    const target = typeof input === "string" ? input : String(input);
+    return undiciFetch(target, init as UndiciFetchInit, createGlobal, profile);
+  };
+  // The intrinsic exists in a compiled program. Run as it is under Node
+  // (the package's own tests do), the name is not defined and this module
+  // has nothing to install: the global fetch there is undici's already.
+  try {
+    scriptcFetchDispatcherHook(through);
+  } catch {
+    return;
+  }
 }
 
 function normalizeMethod(method: string): string {
@@ -209,6 +356,16 @@ async function fetchThrough(
       raw = await dispatchOnce(dispatcher, url, method, pairs, body, signal, redirectMode, profile);
     } catch (err) {
       if (signal !== null && signal.aborted) throw abortReason(signal);
+      // undici's fetch reports a dispatch that was aborted without the
+      // caller's signal (a ProxyAgent whose proxy refused the tunnel) as a
+      // cancelled request, with the abort as that error's cause. undici
+      // makes it a DOMException with the default name, "Error"; the native
+      // runtime constructs none, so it is the Error of that name and text.
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new TypeError("fetch failed", {
+          cause: new Error("Request was cancelled.", { cause: err }),
+        });
+      }
       throw new TypeError("fetch failed", { cause: err });
     }
 
@@ -628,7 +785,8 @@ function dispatchOnce(
       {
         origin: url.origin,
         path: url.pathname + url.search,
-        method,
+        // fetch() sends any method token, as undici's does.
+        method: method as HttpMethod,
         headers,
         body,
       },

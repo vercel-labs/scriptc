@@ -18,18 +18,37 @@
  * program the check builds includes them), since real projects compile
  * them with their own Node types.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import * as ad from "../src/frontend/ts7/adapter.js";
 import { createProgram, getPreEmitDiagnostics } from "../src/frontend/ts7/program-adapter.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const shimRoot = join(repoRoot, "packages/compiler/shims/undici");
 
+/** undici-types 5.26.5 (vendored, see the fixture's README): what
+ * @types/node 20 types the global fetch with. */
+const globalTypes5 = join(repoRoot, "tests/fixtures/undici-types-5/undici-types");
+
+/** The real package's declarations, copied to a directory that is not an
+ * installed undici. The checker reads the types entry of an installed
+ * undici as the shim (package-shims.ts: that is how a program's imports
+ * are typed), so importing the vendored package where it lies would
+ * compare the shim with itself. */
+const realCopies = mkdtempSync(join(tmpdir(), "scriptc-undici-real-"));
+afterAll(() => rmSync(realCopies, { recursive: true, force: true }));
+
 function realEntry(major: number): string {
-  return join(repoRoot, `tests/fixtures/npm/cases/undici${major}/node_modules/undici`);
+  const dir = join(realCopies, `declarations-${major}`);
+  if (!existsSync(dir)) {
+    const installed = join(repoRoot, `tests/fixtures/npm/cases/undici${major}/node_modules/undici`);
+    mkdirSync(dir);
+    cpSync(join(installed, "index.d.ts"), join(dir, "index.d.ts"));
+    cpSync(join(installed, "types"), join(dir, "types"), { recursive: true });
+  }
+  return dir;
 }
 
 /** Drops the shim's implementation members (`__`-prefixed) at every
@@ -184,6 +203,33 @@ export async function run(url: string, lookup: import("node:net").LookupFunction
 `;
 }
 
+/** A dispatcher typed by undici-types (what the global fetch's types are
+ * made of in a project) handed to something that names only the undici
+ * package's `dispatch()`. The two signatures must be related in the
+ * direction a caller uses them: the options this package's dispatch()
+ * declares are options the other accepts. */
+const dispatchOnly = `
+import type GlobalDispatcher from "GLOBAL/dispatcher";
+import type { Dispatcher } from "UNDICI";
+
+interface Sender {
+  dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandlers): boolean;
+}
+
+export function sender(from: GlobalDispatcher): Sender {
+  return from;
+}
+
+// The options dispatch() declares, one member at a time: none is wider
+// than undici-types' own.
+type Declared = Dispatcher.DispatchOptions;
+type Global = GlobalDispatcher.DispatchOptions;
+type SharedKeys = Extract<keyof Declared, keyof Global>;
+type _members = ExpectNever<{
+  [K in SharedKeys]-?: Sub<Declared[K], Global[K]> extends true ? never : K;
+}[SharedKeys]>;
+`;
+
 /** Names the shim declares beyond a version's published declarations,
  * each because undici's runtime has it although its .d.ts does not (5.12's
  * declarations predate several runtime exports and options) or because the
@@ -314,6 +360,14 @@ describe.each([5, 7])("undici %i.x shim types", (major) => {
   const real = realEntry(major);
   const shim = join(shimRoot, `v${major}.ts`);
 
+  // MockAgent is declared by the package and not by the shim: the two
+  // sides of every check below are different declarations.
+  test("the real declarations are the package's own", () => {
+    const names = 'import { MockAgent } from "UNDICI";\nexport const mock = MockAgent;\n';
+    expect(check("names-real.ts", names.replace(/UNDICI/g, real))).toEqual([]);
+    expect(check("names-shim.ts", names.replace(/UNDICI/g, shim))).toHaveLength(1);
+  });
+
   test("a program written against undici type-checks against the real declarations", () => {
     expect(check("usage-real.ts", helpers + usage(major).replace(/UNDICI/g, real))).toEqual([]);
   });
@@ -321,6 +375,18 @@ describe.each([5, 7])("undici %i.x shim types", (major) => {
   test("the same program type-checks against the shim", () => {
     expect(check("usage-shim.ts", helpers + usage(major).replace(/UNDICI/g, shim))).toEqual([]);
   });
+
+  // undici-types 7 admits any method string, so a declaration with the
+  // closed list fits both; 5.x is the package a project on @types/node 20
+  // has beside undici 5.
+  test.runIf(major === 5)(
+    "a dispatcher typed by undici-types 5 fits something that names the package's dispatch()",
+    () => {
+      const program = helpers + dispatchOnly.replace(/GLOBAL/g, globalTypes5);
+      expect(check("dispatch-only-real.ts", program.replace(/UNDICI/g, real))).toEqual([]);
+      expect(check("dispatch-only-shim.ts", program.replace(/UNDICI/g, shim))).toEqual([]);
+    },
+  );
 
   test("the shim's exports and records are a compatible subset", () => {
     const text = helpers + shape(major).replace(/REAL/g, real).replace(/SHIM/g, shim);

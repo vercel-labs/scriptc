@@ -4334,6 +4334,9 @@ export class Lowerer {
   /** The property names the program assigns on the global object
    * (property-access.ts), collected on first use. */
   globalThisWrittenNames: Set<string> | null = null;
+  /** Whether the program contains the built-in undici package
+   * (fetch-dispatcher.ts), found on first use. */
+  undiciPackageInProgram: boolean | null = null;
   /** Set with globalThisWrittenNames: the program writes the global object
    * by a computed name somewhere. */
   globalThisComputedWrite = false;
@@ -5747,6 +5750,7 @@ export class Lowerer {
       fixed("emitterEventTable", () => this.emitterEventTable),
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
+      fixed("undiciPackageInProgram", () => this.undiciPackageInProgram),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),
       // State of the lowering in progress, which a unit restores.

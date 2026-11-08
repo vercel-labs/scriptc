@@ -24,6 +24,9 @@
  * - a CommonJS package's require() of a shimmed package (fs-extra, required
  *   by an installed package's JavaScript) compiles the shim, and matches
  *   Node running the real package;
+ * - the undici 5.x shim's ProxyAgent sends what undici 5.29 sends through a
+ *   proxy in the test process (the CONNECT request, credentials, a refused
+ *   tunnel), and its fetch takes the global RequestInit;
  * - the undici shim compiles under a project tsconfig with
  *   strictPropertyInitialization off;
  * - the undici shim compiles in a project whose own @types/node declares no
@@ -483,6 +486,94 @@ describe("package shims", () => {
       "200 GET /ok\nAbortError This operation was aborted true\n",
     );
   }, 300_000);
+
+  test("undici5: ProxyAgent tunnels every request through HTTP CONNECT", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-proxy-agent.ts");
+    // undici 5.29.0's output under Node 24 (the vendored fixture is 5.12).
+    expect(await run(binary, [], dir)).toBe(
+      [
+        "true false false",
+        "200 GET /one host=127.0.0.1:<target> x=a",
+        "200 GET /two host=127.0.0.1:<target> x=a",
+        "2 CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close",
+        "200 POST /post host=127.0.0.1:<target> x=-",
+        "200 GET /fetched host=127.0.0.1:<target> x=f 0",
+        "true true",
+        "200 GET /token host=127.0.0.1:<target> x=-",
+        "200 GET /user host=127.0.0.1:<target> x=-",
+        "200 GET /auth host=127.0.0.1:<target> x=-",
+        "CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | x-via: fixture | proxy-authorization: Bearer secret || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | proxy-authorization: Basic dXNlcjpwYSBzcw== || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | proxy-authorization: Basic dXNlcjpwYXNz",
+        "200 GET /global host=127.0.0.1:<target> x=- true 1",
+        "AbortError UND_ERR_ABORTED Proxy response (407) !== 200 when HTTP Tunneling",
+        "TypeError fetch failed cause: Error Request was cancelled.",
+        "true 2",
+        "InvalidArgumentError UND_ERR_INVALID_ARG Proxy opts.uri is mandatory",
+        "InvalidArgumentError UND_ERR_INVALID_ARG opts.auth cannot be used in combination with opts.token",
+        "TypeError Invalid URL",
+        "InvalidArgumentError UND_ERR_INVALID_ARG Proxy-Authorization should be sent in ProxyAgent constructor",
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: fetch takes the global RequestInit and sends byte bodies", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-fetch-init.ts");
+    // undici 5.29.0's output under Node 24.
+    expect(await run(binary, [], dir)).toBe(
+      [
+        'variable: 200 POST station=north tide=high type=text/plain;charset=UTF-8 bytes=9 "0612 4.2m"',
+        'pairs: 200 PUT station=north tide=low type=text/plain;charset=UTF-8 bytes=9 "1240 0.9m"',
+        'headers object: 200 POST station=south tide=slack type=text/plain;charset=UTF-8 bytes=1 "-"',
+        'nothing: 200 GET station=south tide=- type=- bytes=0 ""',
+        'signal and redirect: 200 GET station=east tide=- type=- bytes=0 ""',
+        'typed array: 200 POST station=west tide=- type=- bytes=5 "hi!\\n\u00ff"',
+        'array buffer: 200 POST station=- tide=- type=- bytes=3 "hi!"',
+        'data view: 200 POST station=- tide=- type=- bytes=2 "\\n\u00ff"',
+        'dispatcher: 200 POST station=pier tide=ebb type=text/plain;charset=UTF-8 bytes=9 "1903 1.4m"',
+        'dispatcher bytes: 200 POST station=pier tide=- type=- bytes=5 "hi!\\n\u00ff"',
+        'other method: 200 PROPFIND station=pier tide=- type=- bytes=0 ""',
+        'request: 200 REPORT station=pier tide=- type=- bytes=0 ""',
+        "aborted: AbortError",
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: the global fetch sends a request through a dispatcher of the package", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-global-fetch-relay.ts");
+    // Node 24 with undici 5.29.0 installed: its global fetch dispatches
+    // through the package's objects.
+    expect(await run(binary, [], dir)).toBe(
+      [
+        'straight | 200 GET /parcels/1 bay=A parcel="" | tunnels 0',
+        'in the init | 200 GET /parcels/2 bay=B parcel="" | tunnels 1',
+        'in the init, with a body | 200 POST /parcels bay=none parcel="crate of pears" | tunnels 2',
+        'assigned | 200 PUT /parcels/3 bay=none parcel="two crates" | tunnels 2',
+        'assigned again | 200 GET /parcels/4 bay=C parcel="" | tunnels 2',
+        'own class | 200 GET /parcels/5 bay=none parcel="" | tunnels 2',
+        "handed on 1",
+        'agent | 200 GET /parcels/6 bay=D parcel="" | tunnels 2',
+        "agent used the relay: false",
+        'never set | 200 DELETE /parcels/7 bay=none parcel="" | tunnels 2',
+        'undefined | 200 GET /parcels/8 bay=none parcel="" | tunnels 2',
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: the global fetch refuses, by name, an object that is no dispatcher of the package", async () => {
+    // Written in the init, the object is refused when the program is built.
+    await expect(
+      buildInCase("undici5", "undici5-global-fetch-literal-dispatch.ts"),
+    ).rejects.toThrow(
+      /RequestInit option 'dispatcher' holding an object that is no dispatcher of the undici package/,
+    );
+    // Reached through a record, it is refused where the call runs.
+    const { dir, binary } = await buildInCase("undici5", "undici5-global-fetch-own-dispatch.ts");
+    expect(await run(binary, [], dir)).toBe(
+      "NotSupportedError | scriptc's undici fetch takes a dispatcher made by this undici (Agent, Pool, Client, ProxyAgent or a subclass of Dispatcher)\n",
+    );
+  }, 180_000);
 
   test("undici7: the shim compiles under a project with strictPropertyInitialization off", async () => {
     const dir = copyCase("undici7", "undici7-loose");

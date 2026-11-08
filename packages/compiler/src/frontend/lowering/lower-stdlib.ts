@@ -8,6 +8,11 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  definitelyNoUndiciDispatcher,
+  fetchThroughDispatcher,
+  programHasUndiciPackage,
+} from "./fetch-dispatcher.js";
 import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
@@ -477,6 +482,20 @@ function fenceRequestInitObject(
       }
     }
     if (row.status === "static") return;
+    // A dispatcher in a program that contains the built-in undici is sent
+    // through (fetch-dispatcher.ts); one that cannot be that package's is
+    // refused here, the others where the call runs.
+    if (row.member === "dispatcher" && programHasUndiciPackage(lowerer)) {
+      if (value !== null && definitelyNoUndiciDispatcher(lowerer, value)) {
+        lowerer.noLowering(
+          "RequestInit option 'dispatcher' holding an object that is no dispatcher of the undici package",
+          blame,
+          "fetch sends a request through an Agent, Pool, Client or ProxyAgent of the undici package, or an instance of a class that extends its Dispatcher; an object that implements dispatch() itself has no lowering",
+          memberSym(),
+        );
+      }
+      return;
+    }
     const sym = memberSym();
     lowerer.noLowering(
       `RequestInit option '${row.member}'${" in a static build"}`,
@@ -681,7 +700,10 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
       type: { kind: "promise", inner: DYN },
       loc,
     };
-    return { kind: "seqExpr", stmts, result: answer, type: answer.type, loc };
+    // An init that carries a dispatcher of the built-in undici goes to
+    // that package's fetch (fetch-dispatcher.ts).
+    const routed = fetchThroughDispatcher(lowerer, initNode, dynInput ?? url, initRef, answer, loc);
+    return { kind: "seqExpr", stmts, result: routed, type: answer.type, loc };
   }
 }
 

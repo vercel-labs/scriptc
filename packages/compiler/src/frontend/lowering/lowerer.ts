@@ -4708,6 +4708,9 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
+  /** array-values.ts's answer per binding: where its value is handed to a
+   * slot of a mutable array type (mutableArraySlotUseOf), or null. */
+  readonly mutableArraySlotUses = new Map<ts.Symbol, ts.Node | null>();
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
@@ -5469,6 +5472,7 @@ export class Lowerer {
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
+    "mutableArraySlotUses",
     "sloppyThisGlobalReads",
     "globalLookupNames",
     "namesWebStreamClass",

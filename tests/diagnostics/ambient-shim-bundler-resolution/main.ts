@@ -1,9 +1,9 @@
-// The ambient module re-exports a file the package's exports map does not
-// list. This project resolves as a bundler does, so its own tsc reads the
-// map, finds nothing, and reports the members as missing: so does every
-// load of the build.
-import { type CliCommand, commands, run } from "shapes-kit/cli";
-import * as termCodes from "term-codes";
+// The ambient module passes on the declarations of a file that the
+// package's `exports` map does not list. This project resolves as a
+// bundler does: its own tsc reads the map, finds no such file, and reports
+// every imported member as missing. Each load of the build does the same.
+import { blend, titles, type Blend } from "spice-rack/blends";
+import * as oven from "oven-dial";
 
-const first: CliCommand = commands[0];
-console.log(commands.length, run(first.name), JSON.stringify(termCodes.eraseLine));
+const picked: Blend = blend(titles[0]);
+console.log(titles.length, picked.parts, oven.gasMark(180));

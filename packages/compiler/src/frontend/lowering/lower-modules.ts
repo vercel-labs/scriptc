@@ -4,6 +4,7 @@ import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
+import { closedIslandInitLoad } from "./closed-island-init.js";
 import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
@@ -1353,7 +1354,8 @@ function checkedGlobalReference(lowerer: Lowerer, expression: ts.Expression): bo
  * class (their bodies lower on their own and reach the binding only
  * through module storage), or code another module runs (an exported
  * binding). An arrow or function expression of the module's start captures
- * the binding where it is. */
+ * the binding where it is. A read counts however it is spelled: a plain
+ * name, an object shorthand, an export list entry (bindingSymbolAt). */
 function sharedJsBinding(lowerer: Lowerer, sf: ts.SourceFile, name: ts.Identifier): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(name);
   if (symbol === undefined) return false;
@@ -1378,10 +1380,28 @@ function sharedJsBinding(lowerer: Lowerer, sf: ts.SourceFile, name: ts.Identifie
         ts.isSetAccessorDeclaration(p) ||
         ts.isExportSpecifier(p) ||
         ts.isExportAssignment(p);
-    if (declared && lowerer.checker.getSymbolAtLocation(node) === symbol) shared = true;
+    if (declared && bindingSymbolAt(lowerer, node) === symbol) shared = true;
     return undefined;
   });
   return shared;
+}
+
+/** The binding an identifier reads, where the checker's symbol at the
+ * identifier is not the binding's own: the name of an object shorthand
+ * (`{ state }`: the symbol there is the property's) and the name of an
+ * export list entry (`export { state }`: the symbol there is the export's
+ * alias). */
+function bindingSymbolAt(lowerer: Lowerer, node: ts.Identifier): ts.Symbol | undefined {
+  const parent = node.parent;
+  if (parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === node)
+    return (
+      lowerer.checker.getShorthandAssignmentValueSymbol(parent) ??
+      lowerer.checker.getSymbolAtLocation(node)
+    );
+  const symbol = lowerer.checker.getSymbolAtLocation(node);
+  return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+    ? lowerer.checker.getAliasedSymbol(symbol)
+    : symbol;
 }
 
 /** An object or array literal of plain data written inline, as one arm of
@@ -2014,7 +2034,13 @@ export function collectGlobals(
           const vSym = lowerer.checker.getSymbolAtLocation(rhs);
           const vDecl = vSym?.declarations.find(ts.isVariableDeclaration);
           const vG = vSym ? lowerer.globalsBySymbol.get(vSym) : undefined;
-          if (vSym && vDecl && vG && vG.mutable && !bindingNeverReassigned(lowerer, vSym, vDecl)) {
+          if (
+            vSym &&
+            vDecl &&
+            vG &&
+            vG.mutable &&
+            !bindingNeverReassigned(lowerer.bindingScope(), vSym, vDecl)
+          ) {
             const g: IrGlobal = {
               id: `%g.${tag}exports`,
               name: "exports",
@@ -2450,7 +2476,9 @@ export function collectGlobals(
           stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
           (() => {
             const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
-            return symbol !== undefined && bindingNeverReassigned(lowerer, symbol, decl);
+            return (
+              symbol !== undefined && bindingNeverReassigned(lowerer.bindingScope(), symbol, decl)
+            );
           })());
       if (stableStdlibAlias && stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer))
         continue;
@@ -2599,14 +2627,16 @@ export function collectGlobals(
           // bodies (runCallChecks, _mustCallInner) reach the SAME
           // storage instead of fencing per reference. Identifier
           // declarations only: a destructured array literal binds its
-          // pieces, not the array.
+          // pieces, not the array. A chained export declaration (`const
+          // src = exports.src = []`) holds the literal the chain assigns:
+          // the binding and the export are that one array.
           if (
             isJsSourceFile(sf) &&
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode)) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
-            decl.initializer !== undefined &&
-            ts.isArrayLiteralExpression(decl.initializer)
+            declValue !== undefined &&
+            ts.isArrayLiteralExpression(declValue)
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol) {
@@ -3824,6 +3854,9 @@ export function lowerFileInit(
         body.push(...lowerStaticsAt(statics[at]!));
         at++;
       }
+      // A run of constants the island evaluates loads its generated module
+      // where the run begins (closed-island-init.ts).
+      if (lowerer.nodeIslands !== null) body.push(...closedIslandInitLoad(lowerer, sf, stmt));
       // A cycle binding's declaration stays at its position: its
       // initialization flag must be set where the declaration runs.
       const deferred = lowerer.cycleInitDeclarations.has(stmt)
@@ -4090,6 +4123,28 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       else_: workerBranch,
       loc,
     });
+  }
+  // `--define`: the program runs as if started with the defined variables
+  // set, so every read of the environment, and each child process, agrees
+  // with the `if` statements the values decided at build time. Set on the
+  // main thread before any module runs, so no thread reads the environment meanwhile.
+  if (lowerer.define !== undefined) {
+    body.unshift(
+      ...Object.entries(lowerer.define).map(([key, value]): IrStmt => ({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "process.envSet",
+          args: [
+            { kind: "strLit", value: key.slice("process.env.".length), type: STRING, loc },
+            { kind: "strLit", value, type: STRING, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      })),
+    );
   }
   if (lowerer.workerTargets.length > 0) {
     const mainBody = body.splice(0);

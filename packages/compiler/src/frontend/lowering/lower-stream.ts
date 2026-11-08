@@ -4149,7 +4149,7 @@ function pipelineStageFunction(lowerer: Lowerer, node: ts.Expression): StageFunc
   const decl = bodies[0]!;
   if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return null;
   if (ts.isFunctionDeclaration(decl)) {
-    return bindingNeverReassigned(lowerer, symbol, decl, resolve) ? decl : null;
+    return bindingNeverReassigned(lowerer.bindingScope(), symbol, decl, resolve) ? decl : null;
   }
   if (
     ts.isVariableDeclaration(decl) &&

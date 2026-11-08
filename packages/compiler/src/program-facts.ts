@@ -328,6 +328,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "degraded-types",
+    file: `${SRC}/frontend/lowering/lowerer.ts`,
+    symbol: "degradedTypes",
+    source: "types",
+    scope: "type",
+    setBy:
+      "one slot whose type has no layout and whose unit is about to fail the build (localized failure's commit point): a generic call instantiated at `any[]`, for example",
+    gates:
+      "every later mapping of that checker type anywhere in the program takes the degraded layout (`any[]` becomes an array of checked-dynamic elements) where it had none, so sites that chose their own storage for the type now convert to that layout",
+    narrower: "the slot that failed, once slot layouts are decided before bodies lower",
+    tracked: "FOLLOWUPS 2026-11-07 (pi-fences-typebox); pi-build-speed PLAN-2 D17",
+    lowererFields: [],
+  },
+  {
     name: "async-protocol-holders",
     file: `${SRC}/frontend/lowering/async-protocol-holders.ts`,
     symbol: "AsyncProtocolHolders",
@@ -493,6 +507,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     4,
     "discovery",
     "finds the modules a fork() can start, which become program roots",
+  ),
+  scan(
+    "frontend/import-elision.ts#elideProgramImports",
+    1,
+    "discovery",
+    "the imports and exports tsc drops, file by file: each file's answer comes from its own uses and the tsconfig above it, and decides that file's module edges",
   ),
   scan(
     "frontend/lowering/argument-counts.ts#usedAsValue",
@@ -728,9 +748,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/program.ts#loadProgram7",
-    2,
+    3,
     "discovery",
-    "fork and worker targets, which become program roots",
+    "fork and worker targets, which become program roots; and, file by file from the tsconfig above each, the files that compile class fields in the constructor and the legacy decorators refused by name",
   ),
   scan(
     "frontend/program.ts#declBoundaryUserFiles",

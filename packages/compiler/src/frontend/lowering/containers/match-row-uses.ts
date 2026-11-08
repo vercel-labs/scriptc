@@ -179,7 +179,7 @@ function forOfReadsByElements(
   const decl = list.declarations.nodes[0]!;
   if (!ts.isIdentifier(decl.name)) return false;
   const symbol = lowerer.resolveValueSymbol(decl.name);
-  if (!symbol || !bindingNeverReassigned(lowerer, symbol, decl)) return false;
+  if (!symbol || !bindingNeverReassigned(lowerer.bindingScope(), symbol, decl)) return false;
   return usesOf(lowerer, decl.name, symbol).every((use) => {
     const parent = outerValue(use).parent;
     if (
@@ -213,7 +213,7 @@ function callbackReadsByElements(
     return groupsPattern(param.name) && groupsProjectedParam(lowerer, param);
   if (!ts.isIdentifier(param.name)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(param.name);
-  if (!symbol || !bindingNeverReassigned(lowerer, symbol, param)) return false;
+  if (!symbol || !bindingNeverReassigned(lowerer.bindingScope(), symbol, param)) return false;
   return usesOf(lowerer, param.name, symbol).every((use) => rowReadByElements(lowerer, use, 1));
 }
 

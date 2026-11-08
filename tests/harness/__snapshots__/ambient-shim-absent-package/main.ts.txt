@@ -1,0 +1,15 @@
+ambient-shim-absent-package/main.ts:4:1 - error SC1010: the 'missing-larder/shelves' module (it exists only as an ambient 'declare module' type surface — there is no runtime module to import) is not supported yet
+
+  3 | // missing, and so does the build.
+  4 | import { stocked } from "missing-larder/shelves";
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 | import * as oven from "oven-dial";
+
+  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
+
+ambient-shim-absent-package/main.ts:4:10 - error SC0001: Module '"missing-larder/shelves"' has no exported member 'stocked'.
+
+  3 | // missing, and so does the build.
+  4 | import { stocked } from "missing-larder/shelves";
+    |          ^~~~~~~
+  5 | import * as oven from "oven-dial";

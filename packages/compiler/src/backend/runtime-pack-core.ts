@@ -130,6 +130,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A computed read of the global object, or `… in globalThis`
    * (scr_global_host_absent.c). */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic
+   * (scr_deferred_fence.c). */
+  deferredFence?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -402,6 +405,7 @@ export function effectiveRuntimeFeatures(
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
+    deferredFence: features.deferredFence === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,

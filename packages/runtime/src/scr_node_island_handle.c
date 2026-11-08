@@ -324,8 +324,7 @@ bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real) {
 }
 
 /* A stub whose Node value is needed: starting Node materializes every
- * deferred module (scr_node_island_boot.c), or in per-module mode the
- * boot unit evaluates the stub's component; then the ref is real.
+ * deferred module (scr_node_island_boot.c); then the ref is real.
  * False with the module's load error pending. */
 ScrDyn *scr_ni_lazy_subclass_new(ScrDyn *const *args) {
   ScrNodeRef *ref = calloc(1, sizeof *ref);
@@ -378,9 +377,6 @@ static bool nh_live(ScrNodeRef *ref) {
   if (ref->stub == NULL) return true;
   void *stub = ref->stub;
   scr_ni_bridge();
-  /* Per-module mode (NI-7b): Node starting evaluated nothing; the stub's
-   * own component evaluates now. */
-  if (ref->stub != NULL) scr_ni_boot_materialize(stub);
   if (ref->stub == NULL) return true;
   scr_ni_boot_stub_failed(stub);
   return false;
@@ -1234,8 +1230,19 @@ int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor) {
  * V8's TypeError, the very value the island's own `TypeError` crosses as)
  * is read from it. Errors among the results are native views themselves.
  * 0 for an error the runtime made itself. */
-static int nh_error_get(const struct ScrError *err, const char *key, size_t len, ScrDyn **out) {
-  ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
+/* The island error whose native view is `view`: its ref (borrowed: the pin
+ * holds it), or NULL for a value that is no error's view, or the view of an
+ * error the runtime made itself. */
+static ScrNodeRef *nh_error_view_ref(const ScrDyn *view) {
+  ScrError *err = scr_errdyn_err_of(view);
+  if (err == NULL) return NULL;
+  ScrNodeRef *ref = nh_pinned(err, NH_PIN_ERROR);
+  scr_error_release(err); /* its pin and its view hold it */
+  return ref;
+}
+
+static int nh_error_get(const ScrDyn *view, const char *key, size_t len, ScrDyn **out) {
+  ScrNodeRef *ref = nh_error_view_ref(view);
   if (ref == NULL) return 0;
   *out = NULL;
   if (!nh_live(ref)) return 1;
@@ -1250,8 +1257,8 @@ static int nh_error_get(const struct ScrError *err, const char *key, size_t len,
   return 1;
 }
 
-static int nh_error_has(const struct ScrError *err, const char *key, size_t len) {
-  ScrNodeRef *ref = nh_pinned((void *)err, NH_PIN_ERROR);
+static int nh_error_has(const ScrDyn *view, const char *key, size_t len) {
+  ScrNodeRef *ref = nh_error_view_ref(view);
   if (ref == NULL) return -1;
   ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND); /* retains */
   ScrStr *name = scr_str_new(key, len);

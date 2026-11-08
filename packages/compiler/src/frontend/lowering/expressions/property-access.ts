@@ -236,7 +236,7 @@ import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js
 import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
-import { arrayValueRead, arrayValueType } from "../array-values.js";
+import { arrayValueRead, arrayValueType, unionArmsLength, unionArmsView } from "../array-values.js";
 import { lowerClassMethodValue } from "../class-method-values.js";
 import { reflectMemberValue } from "../builtins/reflection.js";
 import {
@@ -3442,6 +3442,19 @@ export function lowerIntrinsicProperty(
       receiver = helper
         ? lowerer.checkedNarrowCall(helper, receiver, present, locOf(expr.expression))
         : lowerer.maybeNarrow(receiver, expr.expression);
+    }
+
+    // A union of tuples and arrays the checker reads as one array: the
+    // length of the arm the value holds, read in place (unionArmsView).
+    if (kind === "array") {
+      const view = unionArmsView(
+        lowerer,
+        expr.expression,
+        receiver,
+        expected,
+        locOf(expr.expression),
+      );
+      if (view) return unionArmsLength(lowerer, view, locOf(expr));
     }
 
     // A CHECKED-DYNAMIC value behind an array-typed checker spelling

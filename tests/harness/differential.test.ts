@@ -35,7 +35,8 @@ import { spawnFailure } from "./spawn-failure.js";
 import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -154,7 +155,7 @@ function wantsTscDecorators(file: string): boolean {
  * test cache — a pure function of the program bytes and the typescript
  * version (both in the oracle cache key). */
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -242,7 +243,8 @@ function nodeOracleArgs(file: string): string[] {
  * child's stdin closes immediately: corpus programs may read fd 0 to EOF
  * (readFileSync(0)), and the default open pipe would block both sides
  * forever — this way Node and the native binary see the same empty,
- * closed stream. */
+ * closed stream. `env` adds variables to the inherited environment (the
+ * oracle's `// @define` variables). */
 async function runBinary(
   cmd: string,
   args: string[],
@@ -423,7 +425,8 @@ async function runNode(file: string, track?: Track): Promise<RunResult> {
   // Node 24 strips types natively; the supported subset is erasable by
   // construction — except `// @transform-types` programs (namespaces),
   // which run under Node's transform mode.
-  const res = await runBinary("node", nodeOracleArgs(file), programEnv(file), track);
+  const oracleEnv = { ...programEnv(file), ...programDefines(directiveHead(file))?.env };
+  const res = await runBinary("node", nodeOracleArgs(file), oracleEnv, track);
   if (cachePath !== null) {
     try {
       const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}`;
@@ -448,6 +451,7 @@ async function compileAndRun(rel: string, file: string): Promise<RunResult> {
   // Directory tests hash every sibling file so edits to imports bust the cache.
   const inputs = programInputs(file);
   const speed = wantsSpeed(file);
+  const defines = programDefines(directiveHead(file));
   const hash = createHash("sha256");
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
@@ -467,6 +471,7 @@ async function compileAndRun(rel: string, file: string): Promise<RunResult> {
       sanitize,
       backend: "llvm",
       ...(speed ? { optimization: "speed" as const } : {}),
+      ...(defines ? { define: defines.define } : {}),
     }),
   );
   if (!result.ok) {

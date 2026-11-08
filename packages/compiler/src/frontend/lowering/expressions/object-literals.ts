@@ -17,6 +17,7 @@ import {
   canDynCheckTo,
   isUnitType,
   shapeHasAccessorSlots,
+  sortArms,
   typeEquals,
 } from "../../../ir/ir.js";
 import type { IrExpr, IrLocal, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
@@ -3017,7 +3018,9 @@ function checkedSpreadSource(lowerer: Lowerer, node: ts.Expression, stored: IrEx
   if (stored.type.kind !== "union") return null;
   if (isJsSourceFile(ts.getSourceFileOfNode(node))) return null;
   const def = lowerer.unions.get(stored.type.unionId);
-  if (!def || def.arms.filter((arm) => arm.kind === "record").length < 2) return null;
+  if (!def) return null;
+  if (def.arms.filter((arm) => arm.kind === "record").length < 2)
+    return narrowedRecordSpreadSource(lowerer, node, stored);
   const site = lowerer.mapTypeOf(lowerer.typeOf(node));
   if (!site || typeEquals(site, stored.type)) return null;
   const loc = stored.loc;
@@ -3029,6 +3032,56 @@ function checkedSpreadSource(lowerer: Lowerer, node: ts.Expression, stored: IrEx
   if (site.kind !== "union") return null;
   const helper = lowerer.narrowedRetagHelper(node, stored.type.unionId, site.unionId, loc);
   return helper ? { kind: "call", callee: helper, args: [stored], type: site, loc } : null;
+}
+
+/** A spread source whose stored union holds one record arm beside arms
+ * that are neither records nor units (`string | { source: string }`), where
+ * the checker narrowed this site to the record (`typeof x === "string" ? s
+ * : { ...x, source: s }`): re-tag the value into the record beside the
+ * stored unit arms, so the present-test desugar spreads the record and
+ * copies nothing for `undefined` or `null`, as JavaScript does, and an arm
+ * the checker excluded throws the catchable TypeError. Null when the stored
+ * union has no such arm (the desugar already owns it), or when the site
+ * type is not that record, alone or beside unit arms. */
+function narrowedRecordSpreadSource(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  stored: IrExpr,
+): IrExpr | null {
+  if (stored.type.kind !== "union") return null;
+  const fromId = stored.type.unionId;
+  const def = lowerer.unions.get(fromId);
+  if (!def) return null;
+  const excluded = new Set<number>();
+  def.arms.forEach((arm, tag) => {
+    if (arm.kind !== "record" && !isUnitType(arm)) excluded.add(tag);
+  });
+  if (excluded.size === 0) return null;
+  // The site names the record, alone or beside unit arms the checker kept
+  // (`string | Rec | undefined` after the string left).
+  const site = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (!site) return null;
+  const siteArms = site.kind === "union" ? (lowerer.unions.get(site.unionId)?.arms ?? []) : [site];
+  const record = siteArms.find((arm) => arm.kind === "record");
+  if (
+    record === undefined ||
+    !siteArms.every(
+      (arm) => (isUnitType(arm) || typeEquals(arm, record)) && lowerer.armTag(fromId, arm) >= 0,
+    )
+  )
+    return null;
+  const units = def.arms.filter((arm) => isUnitType(arm));
+  const loc = stored.loc;
+  if (units.length === 0) {
+    const helper = lowerer.narrowedArmHelper(fromId, record, loc);
+    return helper ? lowerer.checkedNarrowCall(helper, stored, record, loc) : null;
+  }
+  const to: IrType = {
+    kind: "union",
+    unionId: lowerer.unions.intern(sortArms([record, ...units])),
+  };
+  const helper = lowerer.unionRetagHelper(fromId, to.unionId, loc, excluded);
+  return helper ? { kind: "call", callee: helper, args: [stored], type: to, loc } : null;
 }
 
 /** The field type is an array, or a union with exactly one array arm. */

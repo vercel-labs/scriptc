@@ -2,7 +2,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
 
   statements analyzed   30
   compile statically    30  (100%)
-    in dynamic tier     11  (operate on values typed only at runtime; --explain-dynamic lists them)
+    in dynamic tier     10  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     tc-island  static
@@ -14,6 +14,11 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
     hint: scriptc coverage --explain-island=<package> lists every reason
 
   fully static — all analyzed statements compile to native code.
+
+  differs from Node   1 site (compiles; the native program can behave differently)
+      ×1  SC6007  asserting a value a Node island made as 'Config' copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own objec…
+          at tests/coverage-fixtures/node-islands-type-claims/main.ts:31:16
+          hint: declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too
 
   trusts unverified types   14 checked conversions on 10 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
       ×1  tc-island@3.1.0 declares started() as Date (index.d.ts:8): a Node island value the program reads as Date, which throws for every object the island made

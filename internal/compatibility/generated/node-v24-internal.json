@@ -53737,6 +53737,7 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/9917-structured-clone-errors.ts",
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
@@ -55726,7 +55727,8 @@
         "evidence": "compiler-feature:globals.structuredClone",
         "tests": [
           "tests/corpus/2283-structured-clone.cjs",
-          "tests/corpus/5324-structured-clone-documents.ts"
+          "tests/corpus/5324-structured-clone-documents.ts",
+          "tests/corpus/9917-structured-clone-errors.ts"
         ]
       },
       "anchorSource": "exact"

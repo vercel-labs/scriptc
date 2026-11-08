@@ -147,6 +147,9 @@ export interface EarlyExecutableNativeFeatures {
   /** A computed read of the global object, or `… in globalThis`:
    * scr_global_host_absent.c. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic:
+   * scr_deferred_fence.c. */
+  deferredFence?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
@@ -273,6 +276,8 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
   heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
+  /** Omitted without --define; otherwise its values as JSON. */
+  define?: string;
   /** Omitted for the default Node island policy; else nodeIslandOptionsKey. */
   nodeIslands?: string;
   /** Omitted unless shape inference's overlay compiles the packages
@@ -478,6 +483,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
       : options.npmStatic === "auto"
         ? "<npm-static-auto>"
         : JSON.stringify(options.npmStatic),
+    ...(options.define !== undefined ? [`define:${options.define}`] : []),
     options.target,
     options.compiler.join("\x1f"),
     options.nativeEnvironment,
@@ -539,7 +545,9 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
           ? "<npm-static-auto>"
           : JSON.stringify(options.npmStatic),
     )
-    .update("\0")
+    .update("\0");
+  if (options.define !== undefined) hash.update(`define:${options.define}\0`);
+  hash
     .update(options.target)
     .update("\0")
     .update(options.compiler.join("\x1f"))

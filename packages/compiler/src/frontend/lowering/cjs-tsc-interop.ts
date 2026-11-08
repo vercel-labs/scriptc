@@ -19,13 +19,7 @@
  * which never has the name), so they lower to nothing. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import {
-  isCjsJsFile,
-  isEsModuleStamp,
-  npmStaticDepSf7,
-  requireSpecOf,
-  resolveImport,
-} from "../program.js";
+import { isCjsJsFile, isEsModuleStamp, requireSpecOf } from "../program.js";
 import { cjsNamespaceModule } from "./cjs-inline-require.js";
 
 const HELPERS = new Set([
@@ -114,8 +108,8 @@ export function tscInteropBindingOfDecl(
   const spec = requireSpecOf(init.arguments.nodes[0]!);
   if (spec === null) return null;
   const dep =
-    resolveImport(lowerer.program, sf, spec, "require") ??
-    npmStaticDepSf7(lowerer.program, sf, spec, "require");
+    lowerer.facts.importedModule(sf, spec, "require") ??
+    lowerer.facts.npmStaticModule(sf, spec, "require");
   if (!dep || dep.isDeclarationFile || !isCjsJsFile(dep, lowerer.program)) return null;
   return {
     helper: callee.text as TscInteropBinding["helper"],

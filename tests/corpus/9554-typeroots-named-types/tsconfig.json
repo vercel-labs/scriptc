@@ -1,21 +1,11 @@
 {
   "compilerOptions": {
-    "module": "es2022",
-    "moduleResolution": "node",
-    "target": "ES2021",
-    "lib": [
-      "ES2021",
-      "DOM"
-    ],
     "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
     "typeRoots": [
-      "./typings"
+      "typings"
     ],
     "types": [
-      "tiny-lines"
+      "pantry-units"
     ]
   },
   "include": [

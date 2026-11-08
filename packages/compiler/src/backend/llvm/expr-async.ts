@@ -1191,11 +1191,35 @@ export function emitAsyncExpr(
         B.line(`call void @scr_promise_run_executor0(ptr ${p}, ptr ${exec0.name})`);
         return out;
       }
+      // A typed promise's resolve closure fulfils with a value of the
+      // inner type.
+      const fulfilling = (): string => {
+        const kindNums: Partial<Record<IrType["kind"], number>> = {
+          f64: 0,
+          bool: 1,
+          string: 2,
+          void: 3,
+        };
+        const kindNum = kindNums[inner.kind];
+        let made: string;
+        if (kindNum !== undefined) {
+          host.declare(`declare ptr @scr_make_resolve(ptr, i32)`);
+          made = B.tmp();
+          B.line(`${made} = call ptr @scr_make_resolve(ptr ${p}, i32 ${kindNum})`);
+        } else {
+          host.declare(`declare ptr @scr_make_resolve_fn(ptr, ptr)`);
+          made = B.tmp();
+          B.line(
+            `${made} = call ptr @scr_make_resolve_fn(ptr ${p}, ptr @${host.resolveThunkFor(inner)})`,
+          );
+        }
+        return made;
+      };
       if (e.resolves === true) {
         // The resolve function runs the promise resolution procedure, and
         // shares its target with the reject function so that a resolution
-        // that adopts a promise ends both (scr_make_resolve_dyn). The reject
-        // maker follows the closure's signature, as below.
+        // that adopts a promise ends both. The reject maker follows the
+        // closure's signature, as below.
         const rejectType = e.executor.type.kind === "func" ? e.executor.type.params[1] : undefined;
         let reject = "null";
         if (rejectType !== undefined) {
@@ -1207,9 +1231,23 @@ export function emitAsyncExpr(
           reject = B.tmp();
           B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
         }
-        host.declare(`declare ptr @scr_make_resolve_dyn(ptr, ptr)`);
-        const resolving = B.tmp();
-        B.line(`${resolving} = call ptr @scr_make_resolve_dyn(ptr ${p}, ptr ${reject})`);
+        let resolving: string;
+        if (inner.kind === "dyn") {
+          // A checked-dynamic value is asked whether it is a promise
+          // (scr_make_resolve_dyn).
+          host.declare(`declare ptr @scr_make_resolve_dyn(ptr, ptr)`);
+          resolving = B.tmp();
+          B.line(`${resolving} = call ptr @scr_make_resolve_dyn(ptr ${p}, ptr ${reject})`);
+        } else {
+          // A typed value is not: the closure fulfils, and the executor
+          // hands it a promise where the value's static type has a promise
+          // arm (promise.adopt, scr_resolve_adopt).
+          resolving = fulfilling();
+          if (reject !== "null") {
+            host.declare(`declare void @scr_resolve_join(ptr, ptr)`);
+            B.line(`call void @scr_resolve_join(ptr ${resolving}, ptr ${reject})`);
+          }
+        }
         const exec = host.emitExpr(e.executor);
         host.declare(`declare void @scr_promise_run_executor_dyn(ptr, ptr, ptr, ptr)`);
         B.line(
@@ -1217,25 +1255,7 @@ export function emitAsyncExpr(
         );
         return out;
       }
-      let resolve: string;
-      const kindNums: Partial<Record<IrType["kind"], number>> = {
-        f64: 0,
-        bool: 1,
-        string: 2,
-        void: 3,
-      };
-      const kindNum = kindNums[inner.kind];
-      if (kindNum !== undefined) {
-        host.declare(`declare ptr @scr_make_resolve(ptr, i32)`);
-        resolve = B.tmp();
-        B.line(`${resolve} = call ptr @scr_make_resolve(ptr ${p}, i32 ${kindNum})`);
-      } else {
-        host.declare(`declare ptr @scr_make_resolve_fn(ptr, ptr)`);
-        resolve = B.tmp();
-        B.line(
-          `${resolve} = call ptr @scr_make_resolve_fn(ptr ${p}, ptr @${host.resolveThunkFor(inner)})`,
-        );
-      }
+      const resolve = fulfilling();
       if (e.executor.type.kind === "func" && e.executor.type.params.length === 2) {
         // Two-param executor: reject is a runtime-provided closure
         // rejecting the promise with its Error reason — or, for an executor

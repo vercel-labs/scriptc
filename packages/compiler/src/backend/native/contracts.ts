@@ -262,6 +262,9 @@ export interface CcOptions {
   /** fs.existsSync over a path value that may not be a string: compiles
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** node:module's enableCompileCache, getCompileCacheDir, flushCompileCache
+   * and constants: compiles scr_module_cache.c. */
+  moduleCompileCache?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;

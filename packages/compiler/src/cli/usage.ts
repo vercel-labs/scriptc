@@ -37,12 +37,14 @@ export const CLI_OPTIONS = {
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  define: { type: "string", multiple: true },
   "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
+  "copy-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
@@ -426,6 +428,20 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  define: {
+    entries: [
+      {
+        term: "--define <process.env.NAME=value>",
+        help: [
+          "run the executable with the environment variable set to",
+          "the value, a JSON string, whatever its environment holds",
+          "(repeatable): --define='process.env.NODE_ENV=\"production\"'.",
+          "JavaScript if statements it decides compile only their",
+          "taken branch",
+        ],
+      },
+    ],
+  },
   "shape-overlay": {
     entries: [
       {
@@ -497,6 +513,18 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "build and coverage: leave out SC6101, the warning that",
           "names likely-hot functions that use untyped values",
+        ],
+      },
+    ],
+  },
+  "copy-warning": {
+    entries: [
+      {
+        term: "--no-copy-warning",
+        help: [
+          "build and coverage: leave out SC6001, the warning at",
+          "conversions that copy a value the program can tell from",
+          "the original",
         ],
       },
     ],
@@ -665,10 +693,12 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "sanitize",
   "ffi",
   "npm-static",
+  "define",
   "shape-overlay",
   "provenance-sources",
   "tier",
   "dynamic-tier-warning",
+  "copy-warning",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -726,11 +756,13 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       "fail-on",
       "ffi",
       "npm-static",
+      "define",
       "provenance-sources",
       "external-types",
       "tier",
       "explain-dynamic",
       "dynamic-tier-warning",
+      "copy-warning",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",
@@ -957,7 +989,7 @@ export const CLI_FAST_PATHS = {
   /** `coverage` replaying the verdict of an unchanged program. */
   coverage: {
     commands: ["coverage"],
-    options: ["print", "fail-on", "dynamic-tier-warning"],
+    options: ["print", "fail-on", "dynamic-tier-warning", "copy-warning"],
   },
 } satisfies Record<string, CliFastPath>;
 

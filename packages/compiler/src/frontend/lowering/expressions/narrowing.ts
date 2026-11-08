@@ -38,6 +38,7 @@ import {
   isOptionalProcessVersionsRead,
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
+import { builtRecordResultType } from "../built-record-results.js";
 import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
@@ -1725,7 +1726,11 @@ export function lowerAsExpression(
     return inner;
   if (inner.type.kind !== "dyn") {
     const targetTs0 = lowerer.checker.getTypeFromTypeNode(expr.type);
-    const target = lowerer.mapTypeOf(targetTs0);
+    // A generic body's `return built as Result<T>` names its declared result
+    // by a type the checker keeps symbolic: the record the function built
+    // takes the instance's result type (built-record-results.ts).
+    const target =
+      lowerer.mapTypeOf(targetTs0) ?? builtRecordResultType(lowerer, expr, inner, targetTs0);
     // A static assertion ERASES in Node, but the claim it makes still
     // answers to the program: a slot this value reaches that no ordinary
     // conversion covers (SC2002/SC2003) converts it CHECKED instead of
@@ -1750,6 +1755,22 @@ export function lowerAsExpression(
     if (target?.kind === "object") {
       const asserted = checkedClassAssertion(lowerer, inner, target, locOf(expr));
       if (asserted) return asserted;
+    }
+    // A function asserted to a function type with more parameters: Node
+    // erases the assertion, and a call through it hands the function every
+    // argument. An erased value keeps its narrower type here, so that call
+    // would have nowhere to put them and would drop them. Convert it as a
+    // slot of the asserted type does; the adapter keeps the function's
+    // identity and looks through a narrower view (function-views.ts).
+    if (
+      target?.kind === "func" &&
+      inner.type.kind === "func" &&
+      target.rest !== true &&
+      inner.type.rest !== true &&
+      target.params.length > inner.type.params.length
+    ) {
+      const widened = lowerer.coerceToExpected(inner, target);
+      if (typeEquals(widened.type, target)) return widened;
     }
     // Unknown-only record views use the checked-dynamic representation.
     // A native record asserted to such a view still denotes the original
@@ -1968,7 +1989,22 @@ export function lowerAsExpression(
   // extraction an unknown value gets wherever the checker admits it.
   if (expr.type.kind === ts.SyntaxKind.NeverKeyword) return inner;
   const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
-  const target = lowerer.mapTypeOf(targetTs) ?? dynFallbackType(lowerer, expr.type, targetTs);
+  const mappedTarget = lowerer.mapTypeOf(targetTs);
+  // A generic body's `return built as Result<T>` over a dictionary that
+  // keeps checked identity: the object nothing else holds converts into the
+  // instance's result type (built-record-results.ts), keys and order kept.
+  const built =
+    mappedTarget === null ? builtRecordResultType(lowerer, expr, inner, targetTs) : null;
+  if (
+    built !== null &&
+    canDynCheckTo(
+      built,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return { kind: "dynCheck", value: inner, type: built, loc: locOf(expr) };
+  const target = mappedTarget ?? dynFallbackType(lowerer, expr.type, targetTs);
   if (!target) lowerer.badType(expr.type, targetTs);
   if (target.kind === "dyn") return inner; // `as unknown`: erasure
   // The declaration-typed boundary (decl-projection.ts): an identity-

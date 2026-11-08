@@ -27,10 +27,8 @@ import {
   isJsSourceFile,
   isModuleExportsAccess,
   locOf,
-  npmStaticDepSf7,
   requireBindingEarlyUse7,
   requireSpecOf,
-  resolveImport,
   splitRequireCallOf,
 } from "../program.js";
 import { createRequireCalleeFileOf } from "./builtins/module-bindings.js";
@@ -410,8 +408,8 @@ export function inlineProgramRequireOf(
   if (!isCjsRequireGlobal(lowerer, e.expression)) return null;
   if (createRequireCalleeFileOf(lowerer, e.expression) !== null) return null;
   const dep =
-    resolveImport(lowerer.program, sf, spec, "require") ??
-    npmStaticDepSf7(lowerer.program, sf, spec, "require");
+    lowerer.facts.importedModule(sf, spec, "require") ??
+    lowerer.facts.npmStaticModule(sf, spec, "require");
   if (!dep || dep.isDeclarationFile || dep.fileName.endsWith(".json")) return null;
   return { call: e, spec, dep };
 }
@@ -774,8 +772,8 @@ export function unresolvedRequireThrow(
   const sf = ts.getSourceFileOfNode(node);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
   if (
-    resolveImport(lowerer.program, sf, spec, "require") ??
-    npmStaticDepSf7(lowerer.program, sf, spec, "require")
+    lowerer.facts.importedModule(sf, spec, "require") ??
+    lowerer.facts.npmStaticModule(sf, spec, "require")
   )
     return null;
   const resolved = resolveCjsRuntime(sf.fileName, spec);

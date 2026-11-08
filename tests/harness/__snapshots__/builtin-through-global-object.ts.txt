@@ -1,47 +1,6 @@
-builtin-through-global-object.ts:8:13 - error SC1090: calling the built-in 'structuredClone' through the global object in a program that writes 'structuredClone' on the global object (it would reach the built-in, not the written value) is not supported yet
+builtin-through-global-object.ts:6:13 - error SC1090: calling the built-in 'structuredClone' through the global object in a program that writes 'structuredClone' on the global object (it would reach the built-in, not the written value) is not supported yet
 
-  7 | globalThis.structuredClone = (<T,>(value: T): T => value) as typeof structuredClone;
-  8 | console.log(globalThis.structuredClone({ a: 1 }).a);
+  5 | globalThis.structuredClone = (<T,>(value: T): T => value) as typeof structuredClone;
+  6 | console.log(globalThis.structuredClone({ a: 1 }).a);
     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  9 | 
-
-builtin-through-global-object.ts:10:7 - error SC2007: values of type '{ (callback: () => void, ms?: number | undefined): Timeout; (callback: (value?: unknown) => void, ms?: number | undefined): Timeout; (callback: (...args: never[]) => void, ms?: number | undefined, ...args: unknown[]): Timeout; }' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
-
-   9 | 
-  10 | const later = globalThis.setTimeout;
-     |       ^~~~~
-  11 | const { queueMicrotask: soon, URL: Address } = globalThis;
-
-  hint: annotate the slot with the ONE signature the program actually calls (e.g. '(x: number) => string'), or wrap the overloaded function in a single-signature arrow
-
-builtin-through-global-object.ts:10:26 - error SC2020: 'setTimeout' is part of the standard library types but has no scriptc lowering yet
-
-   9 | 
-  10 | const later = globalThis.setTimeout;
-     |                          ^~~~~~~~~~
-  11 | const { queueMicrotask: soon, URL: Address } = globalThis;
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-builtin-through-global-object.ts:11:9 - error SC1031: destructuring the built-in 'queueMicrotask' from the global object (it has no value a compiled program can hold: call it through its name, 'queueMicrotask(...)' or 'globalThis.queueMicrotask(...)') is not supported yet
-
-  10 | const later = globalThis.setTimeout;
-  11 | const { queueMicrotask: soon, URL: Address } = globalThis;
-     |         ^~~~~~~~~~~~~~~~~~~~
-  12 | console.log(typeof later, typeof soon, typeof Address);
-
-builtin-through-global-object.ts:11:36 - error SC2001: values of type '{ new (input: string | { toString: () => string; }, base?: string | URL | undefined): URL; canParse(input: string | URL, base?: string | URL | undefined): boolean; parse(input: string | URL, base?: string | ... 1 more ... | undefined): URL | null; revokeObjectURL(url: string | URL): void; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
-
-  10 | const later = globalThis.setTimeout;
-  11 | const { queueMicrotask: soon, URL: Address } = globalThis;
-     |                                    ^~~~~~~
-  12 | console.log(typeof later, typeof soon, typeof Address);
-
-builtin-through-global-object.ts:12:20 - error SC2004: uses of 'later' inherit the blocker on its declaration
-
-  11 | const { queueMicrotask: soon, URL: Address } = globalThis;
-  12 | console.log(typeof later, typeof soon, typeof Address);
-     |                    ^~~~~
-  13 | export {};
-
-  hint: the declaration of 'later' did not compile — fix the diagnostic reported there and these sites clear with it
+  7 | export {};

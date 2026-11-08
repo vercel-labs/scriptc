@@ -1,7 +1,9 @@
 // A built-in global named through the global object is the built-in its
 // bare name names: `globalThis.fetch(…)` and `global.fetch(…)` call
 // `fetch`, `new globalThis.URL(…)` constructs a URL, and a read of one
-// that has a value reads that value.
+// that has a value reads that value. A read of one the compiler has no
+// value for is refused where the statement runs, so in code the program
+// never reaches it costs nothing.
 import * as http from 'node:http';
 
 const order: string[] = [];
@@ -31,6 +33,14 @@ console.log(controller.signal.aborted, new global.AbortController().signal.abort
 console.log(typeof globalThis.fetch, typeof global.setTimeout, typeof globalThis.URL);
 console.log(globalThis.parseInt('42px', 10), global.isNaN(Number('x')), globalThis.encodeURIComponent('a b&c'));
 console.log(globalThis.btoa('hi'), global.atob('aGk='), globalThis.Symbol('s').toString());
+
+function unreached(): void {
+  const later = globalThis.setTimeout;
+  const { queueMicrotask: soon, clearTimeout: stop } = globalThis;
+  const again = global.setInterval;
+  console.log(typeof later, typeof soon, typeof stop, typeof again);
+}
+console.log(typeof unreached);
 
 const server = http.createServer((req, res) => {
   res.end(`${req.method} ${req.url}`);

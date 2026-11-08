@@ -1186,13 +1186,15 @@ export function lowerPropertyAccessExpr(
     return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
   }
   // In a TypeScript source, a built-in function or constructor read from
-  // the global object (`globalThis.setTimeout`, `global.URL`) is the read
-  // of its bare name: the value where the name has one, and where it has
-  // none the refusal the bare name gets when the program is built, not an
-  // error when the read runs. A program that assigns the member reads its
-  // own value back. A name Node does not define on the global object
-  // (Temporal, the CommonJS module bindings) is not concerned: its member
-  // read answers undefined where its bare name throws.
+  // the global object (`globalThis.URL`, `global.Map`) is the read of its
+  // bare name where that name has a value. Where it has none (a timer, a
+  // built-in the compiler only calls), the read stays what it was: the
+  // refusal below, raised when the statement runs, so a read in code the
+  // program never reaches does not stop its build. A program that assigns
+  // the member reads its own value back. A name Node does not define on
+  // the global object (Temporal, the CommonJS module bindings) is not
+  // concerned: its member read answers undefined where its bare name
+  // throws.
   if (!expr.questionDotToken && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
     const member = globalObjectMemberName(lowerer, expr);
     if (
@@ -1201,8 +1203,10 @@ export function lowerPropertyAccessExpr(
       !COMMONJS_MODULE_BINDINGS.has(member.text) &&
       builtinGlobalIsCallable(lowerer, member) &&
       !writesGlobalMember(lowerer, expr.expression, member.text)
-    )
-      return lowerIdentifierExpr(lowerer, member, loc);
+    ) {
+      const value = bareBuiltinValue(lowerer, member, loc);
+      if (value !== null) return value;
+    }
   }
   // `globalThis.<name>` that no lowering above claimed
   // (globalThis.SubtleCrypto, globalThis.localStorage
@@ -6612,6 +6616,26 @@ function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | "varie
 function writesGlobalMember(lowerer: Lowerer, receiver: ts.Expression, name: string): boolean {
   const writes = globalObjectWrites(lowerer, lowerer.typeOf(staticallySelected(lowerer, receiver)));
   return writes.computed || writes.names.has(name);
+}
+
+/** The value the bare name of a built-in global reads, or null where the
+ * name has none (its read is refused). The refusal's diagnostics are
+ * dropped: the caller answers the read another way. */
+function bareBuiltinValue(lowerer: Lowerer, name: ts.Identifier, loc: SrcLoc): IrExpr | null {
+  const saved = lowerer.diagSink;
+  const captured: typeof lowerer.diags = [];
+  lowerer.diagSink = captured;
+  let value: IrExpr;
+  try {
+    value = lowerIdentifierExpr(lowerer, name, loc);
+  } catch (error) {
+    lowerer.diagSink = saved;
+    if (error instanceof PoisonError) return null;
+    throw error;
+  }
+  lowerer.diagSink = saved;
+  for (const diagnostic of captured) lowerer.pushDiag(diagnostic);
+  return value;
 }
 
 /** Whether the built-in global `name` names is a function or a constructor. */

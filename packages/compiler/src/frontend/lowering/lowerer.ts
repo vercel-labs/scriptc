@@ -3198,6 +3198,16 @@ export class Lowerer {
    * typeParamBindings — the checker has no `T` to substitute, so the
    * binding rides the node-type accessor instead of mapType. */
   implicitParamTypes: Map<ts.Symbol, ts.Type> | null = null;
+  /** True while a JavaScript statement of an implicit-any instance body
+   * lowers a SECOND time, after its first lowering was refused (lowerStmts).
+   * The first lowering types a read through a bound parameter (`e.limit`,
+   * `const n = e.limit`) as the checker does, `any`, and the forms that
+   * dispatch on a receiver's type find none for the number, the Date or the
+   * Map the read holds. The second lowering types those reads by what the
+   * binding declares (typeThroughBindings), so they dispatch as a bound
+   * parameter itself does. A statement that lowers the first time is never
+   * lowered this way, so what compiles today compiles to the same code. */
+  bindingTypedRetry = false;
   /** The builtin class each binding names (`const E = EventEmitter`,
    * `const C = zlib.Gzip`), keyed by the binding's symbol; null for
    * bindings that name none (builtinClassAliasOf). new, instanceof,
@@ -5722,6 +5732,8 @@ export class Lowerer {
       fixed("instanceResultClass", () => this.instanceResultClass),
       fixed("typeParamTsBindings", () => this.typeParamTsBindings),
       fixed("implicitParamTypes", () => this.implicitParamTypes),
+      fixed("bindingTypedRetry", () => this.bindingTypedRetry),
+      fixed("typeThroughBindingsDepth", () => this.typeThroughBindingsDepth),
       fixed("fspGlobHead", () => this.fspGlobHead),
       fixed("instantiationContext", () => this.instantiationContext),
       fixed("suppressStats", () => this.suppressStats),
@@ -14676,7 +14688,183 @@ export class Lowerer {
         return bound;
       }
     }
+    if (this.bindingTypedRetry && (t.flags & ts.TypeFlags.Any) !== 0) {
+      const declared = this.typeThroughBindings(node);
+      if (declared !== null) return declared;
+    }
     return t;
+  }
+
+  private typeThroughBindingsDepth = 0;
+
+  /** Starts or ends a binding-typed second lowering (bindingTypedRetry):
+   * while it runs, a member name the checker resolves no symbol for,
+   * because it calls the receiver `any`, resolves to the member of the type
+   * the receiver's bindings declare (CheckerFacade.unresolvedSymbol), so the
+   * forms that ask the checker for the member a call or a read names find
+   * the one a typed receiver has. */
+  setBindingTypedRetry(on: boolean): void {
+    this.bindingTypedRetry = on;
+    this.checker.unresolvedSymbol = on ? (node) => this.memberThroughBindings(node) : null;
+  }
+
+  private memberThroughBindings(node: ts.Node): ts.Symbol | undefined {
+    const access = node.parent;
+    if (
+      !ts.isIdentifier(node) ||
+      access === undefined ||
+      !ts.isPropertyAccessExpression(access) ||
+      access.name !== node
+    )
+      return undefined;
+    const untyped = ts.TypeFlags.Any | ts.TypeFlags.Unknown;
+    if ((this.checker.getTypeAtLocation(access.expression).flags & untyped) === 0) return undefined;
+    const receiver = this.typeOf(access.expression);
+    if ((receiver.flags & untyped) !== 0) return undefined;
+    return this.checker.getPropertyOfType(receiver, node.text) ?? undefined;
+  }
+
+  /** Whether lowering `node` again with its reads typed through the
+   * bindings (bindingTypedRetry) can differ from the lowering just refused:
+   * some read under it that the checker calls `any` has a type by what its
+   * bindings declare. False outside an implicit-any instance body (unless
+   * `bindings` names the instance's) and inside such a second lowering. */
+  typedRetryApplies(node: ts.Node, bindings?: Map<ts.Symbol, ts.Type>): boolean {
+    const bound = bindings ?? this.implicitParamTypes;
+    if (this.bindingTypedRetry || bound === null) return false;
+    const previous = this.implicitParamTypes;
+    this.implicitParamTypes = bound;
+    this.bindingTypedRetry = true;
+    try {
+      let found = false;
+      const visit = (n: ts.Node): void => {
+        if (found) return;
+        if (ts.isPropertyAccessExpression(n) || ts.isIdentifier(n)) {
+          try {
+            if (
+              (this.checker.getTypeAtLocation(n).flags & ts.TypeFlags.Any) !== 0 &&
+              this.typeThroughBindings(n) !== null
+            ) {
+              found = true;
+              return;
+            }
+          } catch {
+            // A node the checker has no type for decides nothing.
+          }
+        }
+        ts.forEachChild(
+          n,
+          (child) => {
+            visit(child);
+            return undefined;
+          },
+          (list) => {
+            for (const child of list.nodes) visit(child);
+            return undefined;
+          },
+        );
+      };
+      visit(node);
+      return found;
+    } finally {
+      this.bindingTypedRetry = false;
+      this.implicitParamTypes = previous;
+    }
+  }
+
+  /** The type a read the checker calls `any` has by what its bindings
+   * declare, while a refused statement lowers again (bindingTypedRetry):
+   *
+   * - a member read whose receiver has a type here (a bound parameter, or
+   *   another such read) is the member the receiver's type declares, an
+   *   optional one with its `undefined`;
+   * - a call of a method such a receiver's type declares is the method's
+   *   result, where that is a primitive;
+   * - a `const` initialized from such a read is its initializer.
+   *
+   * The answer stands only where the value already lowers at that type: a
+   * record or class receiver must store the member at exactly the type the
+   * declaration maps to, and a local must be stored at its initializer's.
+   * Anything else keeps the checker's `any` and the lowering it has. */
+  private typeThroughBindings(node: ts.Node): ts.Type | null {
+    if (this.typeThroughBindingsDepth > 32) return null;
+    const untyped = ts.TypeFlags.Any | ts.TypeFlags.Unknown;
+    this.typeThroughBindingsDepth++;
+    try {
+      if (ts.isParenthesizedExpression(node)) {
+        const inner = this.typeOf(node.expression);
+        return (inner.flags & untyped) !== 0 ? null : inner;
+      }
+      if (ts.isPropertyAccessExpression(node) && !ts.isPrivateIdentifier(node.name)) {
+        const receiver = this.typeOf(node.expression);
+        if ((receiver.flags & untyped) !== 0) return null;
+        const present = this.checker.getNonNullableType(receiver);
+        const property = this.checker.getPropertyOfType(present, node.name.text);
+        if (!property) return null;
+        const member = this.checker.getTypeOfSymbol(property);
+        if ((member.flags & untyped) !== 0) return null;
+        const receiverIr = this.mapTypeOf(present);
+        if (receiverIr === null || receiverIr.kind === "dyn" || receiverIr.kind === "union")
+          return null;
+        const stored =
+          receiverIr.kind === "record"
+            ? this.shapes.get(receiverIr.shapeId)?.fields.find((f) => f.name === node.name.text)
+                ?.type
+            : receiverIr.kind === "object"
+              ? this.classes.get(receiverIr.className)?.fields.get(node.name.text)
+              : undefined;
+        if (receiverIr.kind === "record" || receiverIr.kind === "object") {
+          const memberIr = this.mapTypeOf(member);
+          if (!stored || memberIr === null || !typeEquals(stored, memberIr)) return null;
+        }
+        return member;
+      }
+      // The result of a method the receiver's type declares with one
+      // signature and no type parameters of its own, where the result is a
+      // primitive (a value, whatever its lowering held it as).
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const receiver = this.typeOf(node.expression.expression);
+        if ((receiver.flags & untyped) !== 0) return null;
+        const method = this.checker.getPropertyOfType(receiver, node.expression.name.text);
+        if (!method || !this.isStdlibSymbol(method)) return null;
+        const signatures = this.checker.getCallSignatures(this.checker.getTypeOfSymbol(method));
+        if (signatures.length !== 1 || signatures[0]!.getTypeParameters().length > 0) return null;
+        const result = this.checker.getReturnTypeOfSignature(signatures[0]!);
+        if ((result.flags & untyped) !== 0) return null;
+        const primitive = (t: IrType | null): boolean =>
+          t !== null &&
+          (t.kind === "string" ||
+            t.kind === "f64" ||
+            t.kind === "bool" ||
+            t.kind === "bigint" ||
+            isUnitType(t) ||
+            (t.kind === "union" &&
+              (this.unions.get(t.unionId)?.arms.every((arm) => primitive(arm)) ?? false)));
+        return primitive(this.mapTypeOf(result)) ? result : null;
+      }
+      if (ts.isIdentifier(node)) {
+        const symbol = this.checker.getSymbolAtLocation(node);
+        const decl = symbol ? symbol.valueDeclaration : undefined;
+        if (
+          !decl ||
+          !ts.isVariableDeclaration(decl) ||
+          !ts.isIdentifier(decl.name) ||
+          decl.initializer === undefined ||
+          decl.type !== undefined ||
+          (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0
+        )
+          return null;
+        const initializer = this.typeOf(decl.initializer);
+        if ((initializer.flags & untyped) !== 0) return null;
+        const stored = this.peekLocal(node)?.type ?? this.globalOf(node)?.type;
+        const initializerIr = this.mapTypeOf(initializer);
+        if (!stored || initializerIr === null || !typeEquals(stored, initializerIr)) return null;
+        return initializer;
+      }
+      return null;
+    } finally {
+      this.typeThroughBindingsDepth--;
+    }
   }
 
   /** mapType with this Lowerer's registries and (while a generic instance

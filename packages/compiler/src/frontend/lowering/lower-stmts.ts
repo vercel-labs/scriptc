@@ -882,6 +882,22 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       // lowered once (a poisoned generic instance) and its own diagnostics
       // can miss the failure's cause.
       let firstAttempt: ScrDiagnostic[] | null = null;
+      // A JavaScript statement of an implicit-any instance body that is
+      // refused lowers once more with its reads through the bound
+      // parameters typed by what the bindings declare (bindingTypedRetry),
+      // when it has such a read: the statement that would become a fence
+      // compiles where that typing is what the refused form lacked. Where
+      // the second lowering fails too, in any way, the statement is the
+      // fence its first lowering makes, with that lowering's diagnostics
+      // and the fences it recorded for the statements nested in it.
+      const outBefore = out.length;
+      const fencesBefore = lowerer.runtimeFences.length;
+      let typedRetry: {
+        error: unknown;
+        diags: ScrDiagnostic[];
+        fences: ScrDiagnostic[];
+        running: boolean;
+      } | null = null;
       try {
         for (let attempt = 0; ; attempt++) {
           const hits = new Set<number>();
@@ -891,6 +907,15 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             );
             break;
           } catch (e) {
+            if (typedRetry !== null && typedRetry.running) {
+              typedRetry.running = false;
+              lowerer.setBindingTypedRetry(false);
+              if (e instanceof InternalCompilerError) noteCrashSite(e, () => locOf(stmt));
+              lowerer.restoreFirstAttemptDiags(diagsBefore, typedRetry.diags);
+              lowerer.runtimeFences.length = fencesBefore;
+              for (const fence of typedRetry.fences) lowerer.runtimeFences.push(fence);
+              throw typedRetry.error;
+            }
             // Localized failure's statement commit point (design §3.3): a
             // degradable type failure at a local, loop variable or module
             // global degrades that type and the statement lowers again.
@@ -901,6 +926,28 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
               if (attempt > 0) lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt!);
               return e;
             };
+            if (
+              deferFences &&
+              attempt === 0 &&
+              e instanceof PoisonError &&
+              lowerer.diagSink === null &&
+              out.length === outBefore &&
+              lowerer.typedRetryApplies(stmt)
+            ) {
+              typedRetry = {
+                error: e,
+                diags: firstAttempt,
+                fences: lowerer.runtimeFences.slice(fencesBefore),
+                running: true,
+              };
+              lowerer.dropAttemptDiags(diagsBefore);
+              lowerer.runtimeFences.length = fencesBefore;
+              for (const [symbol, local] of tdzBefore)
+                if (!lowerer.ctx.tdzPredeclared.has(symbol))
+                  lowerer.ctx.tdzPredeclared.set(symbol, local);
+              lowerer.setBindingTypedRetry(true);
+              continue;
+            }
             if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw giveUp();
             const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
             // Pushed-down types the failed attempt mapped widen to the
@@ -981,6 +1028,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           if (fence) out.push(fence);
         }
       } finally {
+        if (typedRetry !== null && typedRetry.running) lowerer.setBindingTypedRetry(false);
         lowerer.failureTouches.pop();
       }
     }

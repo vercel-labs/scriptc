@@ -7,6 +7,7 @@ import { bindingNeverReassigned } from "./binding-analysis.js";
 import { declareContextLocal, type FnCtx } from "./function-context.js";
 import { isErrorFirstErrorType } from "./builtins/arguments.js";
 import { InternalCompilerError } from "../../errors.js";
+import { noteCrashSite } from "../../diagnostics/crash-site.js";
 import * as ts from "../ts7/adapter.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
@@ -507,6 +508,7 @@ export function lowerLambda(
     };
   }
   const diagsBefore = lowerer.diags.length;
+  let typedRetry = false;
   lowerer.fnStack.push(fnCtx);
   try {
     const receiver =
@@ -729,32 +731,70 @@ export function lowerLambda(
     // calling throws the first captured diagnostic at its source
     // position. ICEs (SC9001) stay compile errors, exactly like
     // lowerStmts; probe mode (diagSink) keeps the poison.
-    if (!(e instanceof PoisonError)) throw e;
-    if (!isJsSourceFile(ts.getSourceFileOfNode(node))) throw e;
-    const params: IrParam[] = funcType.params.map((t, i) => ({
-      localId: `%pf${i}`,
-      name: `%pf${i}`,
-      type: t,
-    }));
-    // A REST-MARKED value type hides one synthetic trailing dyn-array
-    // param in the lifted function (the boxed call thunk fills it) —
-    // the fence lambda must spell that slot too to preserve its ABI.
-    if (funcType.rest === true && funcType.restAbi === undefined) {
-      params.push({ localId: "%pfrest", name: "%pfrest", type: DYN });
+    // A lambda of an implicit-any instance body lowers once more with its
+    // reads through the bound parameters typed by what the bindings declare
+    // before it becomes that fence, as a refused statement does (lowerStmts);
+    // a second lowering that fails too, in any way, leaves the fence the
+    // first one makes.
+    const firstAttempt = typedRetryFirstAttempts.get(node);
+    if (firstAttempt !== undefined) {
+      typedRetryFirstAttempts.delete(node);
+      if (e instanceof InternalCompilerError) noteCrashSite(e, () => locOf(node));
+      lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt);
+    } else {
+      if (!(e instanceof PoisonError)) throw e;
+      if (!isJsSourceFile(ts.getSourceFileOfNode(node))) throw e;
+      if (lowerer.diagSink === null && lowerer.typedRetryApplies(node)) {
+        typedRetryFirstAttempts.set(node, lowerer.diags.slice(diagsBefore));
+        lowerer.dropAttemptDiags(diagsBefore);
+        typedRetry = true;
+      }
     }
-    const fence = lowerer.deferToRuntimeFence(diagsBefore, node, {
-      kind: "closure",
-      name: fnName,
-      params,
-      returnType: bodyReturn,
-      type: funcType,
-      ...(isAsync ? { async: true as const } : {}),
-      ...(fnCtx.generator ? { generator: fnCtx.generator } : {}),
-    });
-    if (!fence) throw e;
-    return fence;
+    if (!typedRetry) {
+      const params: IrParam[] = funcType.params.map((t, i) => ({
+        localId: `%pf${i}`,
+        name: `%pf${i}`,
+        type: t,
+      }));
+      // A REST-MARKED value type hides one synthetic trailing dyn-array
+      // param in the lifted function (the boxed call thunk fills it) —
+      // the fence lambda must spell that slot too to preserve its ABI.
+      if (funcType.rest === true && funcType.restAbi === undefined) {
+        params.push({ localId: "%pfrest", name: "%pfrest", type: DYN });
+      }
+      const fence = lowerer.deferToRuntimeFence(diagsBefore, node, {
+        kind: "closure",
+        name: fnName,
+        params,
+        returnType: bodyReturn,
+        type: funcType,
+        ...(isAsync ? { async: true as const } : {}),
+        ...(fnCtx.generator ? { generator: fnCtx.generator } : {}),
+      });
+      if (!fence) throw e;
+      return fence;
+    }
   } finally {
     lowerer.fnStack.pop();
+  }
+  return lowerLambdaTyped(lowerer, node, checkedReceiver);
+}
+
+/** The first lowering's diagnostics of a lambda that is lowering a second
+ * time (lowerLambda's catch). */
+const typedRetryFirstAttempts = new Map<ts.Node, ScrDiagnostic[]>();
+
+function lowerLambdaTyped(
+  lowerer: Lowerer,
+  node: Parameters<typeof lowerLambda>[1],
+  checkedReceiver: boolean,
+): IrExpr {
+  lowerer.setBindingTypedRetry(true);
+  try {
+    return lowerLambda(lowerer, node, checkedReceiver);
+  } finally {
+    lowerer.setBindingTypedRetry(false);
+    typedRetryFirstAttempts.delete(node);
   }
 }
 

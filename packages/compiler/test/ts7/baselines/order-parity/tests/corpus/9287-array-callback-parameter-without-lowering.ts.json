@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9287-array-callback-parameter-without-lowering.ts"
+ ],
+ "diags": []
+}

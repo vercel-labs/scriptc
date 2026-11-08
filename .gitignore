@@ -14,6 +14,7 @@ node_modules/
 !tests/fixtures/npm-static/node_modules/
 !tests/coverage-fixtures/wasm/node_modules/
 !tests/coverage-fixtures/node-islands*/node_modules/
+!tests/coverage-fixtures/workspace-declared-rows/node_modules/
 !tests/fixtures/node-island/*/node_modules/
 !tests/fixtures/node-island/*/*/node_modules/
 !tests/coverage-fixtures/dynamic-tier/package/node_modules/

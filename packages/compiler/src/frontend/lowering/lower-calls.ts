@@ -127,6 +127,7 @@ import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, isNodeEsmFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
+import { lowerArgumentsObjectCall } from "./arguments-object.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import {
   erasedOverloadMemberType,
@@ -561,6 +562,14 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // A call that asks an arguments object what it is (arguments-object.ts).
+  return (
+    lowerArgumentsObjectCall(lowerer, expr, locOf(expr), () => lowerOrdinaryCall(lowerer, expr)) ??
+    lowerOrdinaryCall(lowerer, expr)
+  );
+}
+
+function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
   // A JavaScript source calling a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The
@@ -4010,13 +4019,27 @@ function lowerObjectPrototypeCall(
   const receiverNode = call.arguments.nodes[0]!;
   const immediate = immediateObjectTagReceiver(lowerer, receiverNode);
   const receiver = immediate?.effect ?? lowerer.lowerExpr(receiverNode);
-  const tag = immediate?.tag ?? objectToStringTag(lowerer, receiver.type);
-  if (tag === null && immediate === null && call.arguments.nodes.length === 1) {
+  // A function that returns a promise or a generator can be an async or a
+  // generator function, whose tag names its kind (AsyncFunction,
+  // GeneratorFunction, AsyncGeneratorFunction), or an ordinary function that
+  // returns one: the function value tells them apart at run time. Every
+  // other function is "Function", folded.
+  const kindTagged =
+    immediate === null &&
+    receiver.type.kind === "func" &&
+    (receiver.type.ret.kind === "promise" || receiver.type.ret.kind === "generator");
+  const tag = immediate?.tag ?? (kindTagged ? null : objectToStringTag(lowerer, receiver.type));
+  if (tag === null && immediate === null && !kindTagged && call.arguments.nodes.length === 1) {
     const classTag = classObjectTag(lowerer, receiver, receiverNode);
     if (classTag) return classTag;
   }
   // A generator object answers its tag through its checked capsule.
-  if (tag === null && receiver.type.kind !== "dyn" && receiver.type.kind !== "generator") {
+  if (
+    tag === null &&
+    !kindTagged &&
+    receiver.type.kind !== "dyn" &&
+    receiver.type.kind !== "generator"
+  ) {
     lowerer.noLowering(
       "Object.prototype.toString.call over a " + lowerer.fmt(receiver.type) + " receiver",
       receiverNode,
@@ -4039,7 +4062,9 @@ function lowerObjectPrototypeCall(
       ? {
           kind: "libCall",
           fn: "dyn.objectTag",
-          args: [ref.type.kind === "generator" ? lowerer.coerceToExpected(ref, DYN) : ref],
+          args: [
+            ref.type.kind === "generator" || kindTagged ? lowerer.coerceToExpected(ref, DYN) : ref,
+          ],
           type: STRING,
           loc,
         }

@@ -30,9 +30,19 @@ ScrPromise *scr_promise_new(void);
  * A WeakMap or a WeakSet keys a promise by the same cell. Their unit, the
  * checked-dynamic core, is linked by programs that have no promise and calls
  * nothing of this unit, so it reads and creates the cell through the head
- * below: the first two words of every promise. */
+ * below: the first two words of every promise.
+ *
+ * The promises of one cell are one promise to the program, so they have one
+ * answer to "was its rejection handled": `observed` is set when a reaction
+ * attaches to any of them (scr_prom_observe) or when one of them has been
+ * reported, and none of them is reported as unhandled after that.
+ * `transferred` is set when a view first copies its source's rejection and
+ * takes the tracking over (scr_promise_settle_from): from then on the
+ * source's own mark means "a view tracks it", not "a reaction handled it". */
 typedef struct ScrPromiseIdentity {
   size_t rc;
+  bool observed;
+  bool transferred;
 } ScrPromiseIdentity;
 typedef struct ScrPromiseHead {
   size_t rc;

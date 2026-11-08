@@ -8939,15 +8939,16 @@ function lowerBranchSwitch(
 /** try/catch/finally:
  * - `catch { }` (bindingless) discards the thrown value on entry.
  * - `catch (e)` binds it as a CAUGHT local — a snapshot of the exception
- *   cell, deliberately narrower than dyn: the supported uses are the
- *   narrowing tests (`e instanceof C` over hierarchy classes, `typeof e
- *   === "string"/"number"/"boolean"`), reads under a proven narrow
- *   (caughtRead bridges them with caughtNarrow, verified at run time like
- *   unionNarrow), and rethrow (`throw e`). Unsupported raw uses and
- *   assignments are fenced (SC1063 and friends). The `: any` /
- *   `: unknown` annotations tsc admits both lower the same way (tsc
- *   narrows either through the tests). Captures retain the snapshot
- *   beyond the catch scope.
+ *   cell, which holds a typed throw's payload as it was thrown, so the
+ *   narrowing tests (`e instanceof C`, `typeof e === "string"`), the reads
+ *   under them (caughtRead bridges those with caughtNarrow, verified at
+ *   run time like unionNarrow) and rethrow (`throw e`) never box. Every
+ *   other read converts the snapshot to the checked-dynamic value it
+ *   holds, with the thrown object's identity, and is an ordinary
+ *   `unknown` value from there; assignments to the binding are fenced.
+ *   The `: any` / `: unknown` annotations tsc admits both lower the same
+ *   way (tsc narrows either through the tests). Captures retain the
+ *   snapshot beyond the catch scope.
  * - `catch ([a])` / `catch ({ p })` binds the thrown value through a
  *   destructuring pattern: the exception cell keeps its hidden CAUGHT
  *   local, and the pattern reads its checked-dynamic view

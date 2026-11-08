@@ -72,6 +72,7 @@ const mine = Symbol("mine");
 t("program writes a symbol key on an island object", () => { o[mine] = "set natively"; return readSym(o, mine); });
 t("island lists the keys", () => symKeys(o));
 t("island writes a symbol key, program reads", () => { writeSym(o, mine, "set by island"); return o[mine]; });
+t("program deletes a symbol key of an island object", () => { delete o[mine]; return `${hasSym(o, mine)} ${mine in o} ${symKeys(o)}`; });
 const rec: any = { plain: 1 };
 rec[mine] = "native value";
 rec[Symbol.for("vs.shared")] = "native registered";

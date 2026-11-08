@@ -11940,6 +11940,12 @@ typedef struct {
    * view sets `fields_view`. */
   ScrDyn *view_prototype;
   bool fields_view;
+  /* The node is not a view of the error: it is the value the error stands
+   * for where the runtime carries a reason as an Error (a stream destroyed
+   * with a number, a string or a plain object). Boxing the error answers
+   * that value, and nothing finds the entry from the value: the value is
+   * not an Error, and a constant's node is shared by every use of it. */
+  bool carried;
 } ScrErrDynEnt;
 
 static SCR_TL ScrErrDynEnt *scr_errdyn_cache = NULL;
@@ -12021,7 +12027,10 @@ static void scr_errdyn_sweep(void) {
   for (size_t i = 0; i < scr_errdyn_n; i++) {
     ScrErrDynEnt ent = scr_errdyn_cache[i];
     size_t boxed = ent.dyn->kind == SCR_DYN_TYPED_REF && ent.dyn->v.typed_ref.ptr == (void *)ent.err;
-    if (ent.dyn->rc == 1 + scr_errdyn_self_refs(ent.dyn) && ent.err->rc == 1 + boxed) {
+    /* Nothing reaches a carried entry from its value, so it goes with the
+     * last other reference to its error. */
+    if (ent.carried ? ent.err->rc == 1
+                    : ent.dyn->rc == 1 + scr_errdyn_self_refs(ent.dyn) && ent.err->rc == 1 + boxed) {
       if (dead == NULL) {
         dead = malloc((scr_errdyn_n - i) * sizeof *dead);
         if (!dead) scr_trap("scriptc: out of memory\n");
@@ -12038,19 +12047,22 @@ static void scr_errdyn_sweep(void) {
   memset(scr_errdyn_by_dyn, 0, scr_errdyn_slots * sizeof *scr_errdyn_by_dyn);
   for (size_t i = 0; i < scr_errdyn_n; i++) {
     scr_errdyn_index_put(scr_errdyn_by_err, scr_errdyn_cache[i].err, i, true);
-    scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
+    if (!scr_errdyn_cache[i].carried) scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
   }
   for (size_t i = 0; i < n_dead; i++) {
     scr_error_release(dead[i].err);
-    scr_errdyn_release_node(dead[i].dyn);
+    /* A carried value is the program's own: released, never changed. */
+    if (dead[i].carried) scr_dyn_release(dead[i].dyn);
+    else scr_errdyn_release_node(dead[i].dyn);
     scr_dyn_release(dead[i].code);
     scr_dyn_release(dead[i].view_prototype);
   }
   free(dead);
 }
 
-/* Appends an entry (both sides retained) and indexes it. */
-static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
+/* Appends an entry (both sides retained) and indexes it: by the error, and
+ * by the node unless the node is a carried value. */
+static void scr_errdyn_append_entry(ScrError *e, ScrDyn *d, bool carried) {
   if (scr_errdyn_n >= scr_errdyn_sweep_at) scr_errdyn_sweep();
   if (scr_errdyn_n == scr_errdyn_cap) {
     scr_errdyn_cap = scr_errdyn_cap ? scr_errdyn_cap * 2 : 8;
@@ -12068,6 +12080,7 @@ static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
   scr_errdyn_cache[scr_errdyn_n].code = NULL;
   scr_errdyn_cache[scr_errdyn_n].view_prototype = NULL;
   scr_errdyn_cache[scr_errdyn_n].fields_view = false;
+  scr_errdyn_cache[scr_errdyn_n].carried = carried;
   scr_errdyn_n++;
   if (scr_errdyn_n * 2 > scr_errdyn_slots) {
     free(scr_errdyn_by_err);
@@ -12078,12 +12091,21 @@ static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
     if (!scr_errdyn_by_err || !scr_errdyn_by_dyn) scr_trap("scriptc: out of memory\n");
     for (size_t i = 0; i < scr_errdyn_n; i++) {
       scr_errdyn_index_put(scr_errdyn_by_err, scr_errdyn_cache[i].err, i, true);
-      scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
+      if (!scr_errdyn_cache[i].carried) scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
     }
   } else {
     scr_errdyn_index_put(scr_errdyn_by_err, e, scr_errdyn_n - 1, true);
-    scr_errdyn_index_put(scr_errdyn_by_dyn, d, scr_errdyn_n - 1, false);
+    if (!carried) scr_errdyn_index_put(scr_errdyn_by_dyn, d, scr_errdyn_n - 1, false);
   }
+}
+
+static void scr_errdyn_append(ScrError *e, ScrDyn *d) { scr_errdyn_append_entry(e, d, false); }
+
+/* The entry whose node is a view of error `e` (not a value it carries), or
+ * SIZE_MAX. */
+static size_t scr_errdyn_find_view(const ScrError *e) {
+  size_t hit = scr_errdyn_find(e, true);
+  return hit != SIZE_MAX && scr_errdyn_cache[hit].carried ? SIZE_MAX : hit;
 }
 
 typedef struct {
@@ -12122,7 +12144,8 @@ static void scr_errdyn_teardown(void) {
   scr_errdyn_sweep_at = 64;
   for (size_t i = 0; i < n; i++) {
     scr_error_release(cache[i].err);
-    scr_errdyn_release_node(cache[i].dyn);
+    if (cache[i].carried) scr_dyn_release(cache[i].dyn);
+    else scr_errdyn_release_node(cache[i].dyn);
     scr_dyn_release(cache[i].code);
     scr_dyn_release(cache[i].view_prototype);
   }
@@ -12535,7 +12558,7 @@ void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg
 /* The error's checked-dynamic node when it has one (borrowed), else NULL:
  * util.inspect reads its extra own properties. */
 ScrDyn *scr_errdyn_view_of(const ScrError *e) {
-  size_t hit = scr_errdyn_find(e, true);
+  size_t hit = scr_errdyn_find_view(e);
   return hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].dyn;
 }
 
@@ -12603,6 +12626,18 @@ void scr_error_commit_dyn(ScrError *e, const ScrDyn *view) {
 ScrError *scr_error_from_dyn(const ScrDyn *d) {
   ScrError *hit = scr_errdyn_err_of(d);
   if (hit) return hit;
+  /* Only a node with the error encoding's marker is an Error. Any other
+   * value (a stream's reason may be a number, a string, a plain object) is
+   * carried: the error stands for it where the runtime holds an Error, and
+   * boxes back to the value itself, which stays what it was. Typed code
+   * that is handed the error reads what the value's own `name`, `message`
+   * and `code` say (a string's text as the message). */
+  bool carried = d->kind != SCR_DYN_OBJ || scr_dyn_obj_get(d, "%error", 6) == NULL;
+  if (d->kind != SCR_DYN_OBJ) {
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, d->kind == SCR_DYN_STR ? d->v.str : NULL);
+    scr_errdyn_append_entry(e, (ScrDyn *)d, true);
+    return e;
+  }
   const ScrDyn *en = scr_dyn_obj_get(d, "name", 4);
   const ScrDyn *em = scr_dyn_obj_get(d, "message", 7);
   const ScrDyn *ec = scr_dyn_obj_get(d, "code", 4);
@@ -12634,7 +12669,7 @@ ScrError *scr_error_from_dyn(const ScrDyn *d) {
       if (entry->key_len == 5 && memcmp(entry->key, "cause", 5) == 0) e->cause_enumerable = entry->enumerable;
     }
   }
-  scr_errdyn_put(e, (ScrDyn *)d);
+  scr_errdyn_append_entry(e, (ScrDyn *)d, carried);
   return e;
 }
 
@@ -20496,7 +20531,7 @@ ScrError *scr_suppressed_new(const ScrDyn *error, const ScrDyn *suppressed, cons
 }
 
 ScrDyn *scr_error_cause(ScrError *e) {
-  size_t hit = scr_errdyn_find(e, true);
+  size_t hit = scr_errdyn_find_view(e);
   if (hit != SIZE_MAX) {
     ScrDyn *value = scr_errdyn_cache[hit].dyn;
     if (value->kind == SCR_DYN_TYPED_REF) {
@@ -20511,7 +20546,7 @@ ScrDyn *scr_error_cause(ScrError *e) {
 }
 
 void scr_error_set_cause(ScrError *e, ScrDyn *value) {
-  size_t hit = scr_errdyn_find(e, true);
+  size_t hit = scr_errdyn_find_view(e);
   if (hit != SIZE_MAX) {
     ScrStr *key = scr_str_new("cause", 5);
     scr_dyn_key_set(scr_errdyn_cache[hit].dyn, key, value);
@@ -20531,7 +20566,7 @@ void scr_error_define_cause(ScrError *e, ScrDyn *value) {
 }
 
 void scr_error_delete_cause(ScrError *e) {
-  size_t hit = scr_errdyn_find(e, true);
+  size_t hit = scr_errdyn_find_view(e);
   if (hit != SIZE_MAX) {
     ScrStr *key = scr_str_new("cause", 5);
     scr_dyn_key_delete(scr_errdyn_cache[hit].dyn, key, true);

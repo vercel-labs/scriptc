@@ -333,6 +333,22 @@ export function widthCopyDivergenceDiag(
   };
 }
 
+/** SC6001, the wording for a copy that is not made — `rows[at] ?? wide` or
+ * `rows[at] || wide`: an element or key read whose type holds no undefined
+ * and can be absent at run time all the same, defaulted to a value of a
+ * wider type that reaches the read's type only as a copy. Under Node the
+ * result is then the default itself. The compiled program answers the left
+ * side as it is where it is present and stops with a TypeError where it is
+ * absent, instead of answering a copy. */
+export function absentDefaultStopDiag(from: string, to: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6001",
+    message: `the left side of this default can be absent at run time although its type '${to}' holds no undefined, and the default has the wider type '${from}', which reaches the left side's type only as a copy (a conversion to another layout builds a new object), while under Node the result is the default itself: where the left side is absent the program stops here with a TypeError instead of answering a copy`,
+    loc,
+    hint: `give both sides one type: declare the left side's elements as '${from}', or give the default the type '${to}'`,
+  };
+}
+
 /** SC6012 — a JavaScript statement that does not compile (a deferred
  * refusal) sits in the `try` block of a `try`/`catch` of the same function.
  * It throws when it runs, so the program's `catch` clause runs, also where

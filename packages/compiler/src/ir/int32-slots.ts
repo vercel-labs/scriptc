@@ -655,6 +655,12 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "record.sourceShare",
   "sharedArrayBuffer.new",
   "text.decodeStream",
+  // A weak collection's constructor reads its seed with the helpers of
+  // dyn.mapSeedEntries, dyn.mapSeedEntry and dyn.arrAt, and keeps the
+  // identity of each key in its table: it stores no property into a key or
+  // a value.
+  "weakMap.new",
+  "weakSet.new",
   "worker.new",
 ]);
 /** The node kinds each walk below reads. */

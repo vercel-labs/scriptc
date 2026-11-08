@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../src/index.js";
+import { analyzeFinalFields } from "../src/ir/final-fields.js";
 import { analyzeInt32Slots, dynamicFieldStores } from "../src/ir/int32-slots.js";
 import type { IrModule } from "../src/ir/ir.js";
 
@@ -122,4 +123,48 @@ test("adopting checked casts keep int32 fields of dynamically reached classes", 
     true,
     true,
   ]);
+});
+
+// A weak collection's constructor reads its seed and keeps the identity of
+// each key. Owning one stores no property through a dynamic value, so the
+// program's classes keep their final fields (reads of them borrow) and their
+// int32 fields; a store through a dynamic value still names every field.
+const weakOwner = (store: string): string => `
+class Item {
+  kind: number;
+  tags: string[] = [];
+  constructor(kind: number) {
+    this.kind = kind;
+  }
+}
+const seen = new WeakMap<object, number>();
+const marked = new WeakSet<object>([]);
+const item = new Item(3);
+seen.set(item, 1);
+marked.add(item);
+item.tags.push("a");
+${store}
+console.log(item.kind | 0, item.tags.length, seen.get(item), marked.has(item));
+`;
+
+test("owning a weak collection is not a dynamic store", async () => {
+  const mod = await lowered(weakOwner(""));
+  const text = JSON.stringify(mod.functions);
+  expect(text).toContain('"fn":"weakMap.new"');
+  expect(text).toContain('"fn":"weakSet.new"');
+  expect(dynamicFieldStores(mod).all).toBe(false);
+  const item = mod.classes!.find(
+    (c) => (c.jsName ?? c.name) === "Item" || c.name.endsWith(".Item"),
+  )!;
+  expect(analyzeFinalFields(mod).isFinal(item.name, "tags")).toBe(true);
+  expect(analyzeInt32Slots(mod).isField(item.name, "kind")).toBe(true);
+
+  const stored = await lowered(
+    weakOwner('const key: string = process.argv[2] ?? "kind";\n(item as any)[key] = 4;'),
+  );
+  expect(dynamicFieldStores(stored).all).toBe(true);
+  const storedItem = stored.classes!.find(
+    (c) => (c.jsName ?? c.name) === "Item" || c.name.endsWith(".Item"),
+  )!;
+  expect(analyzeFinalFields(stored).isFinal(storedItem.name, "tags")).toBe(false);
 });

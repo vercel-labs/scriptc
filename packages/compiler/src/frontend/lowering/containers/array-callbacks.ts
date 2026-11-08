@@ -1689,7 +1689,8 @@ function findResultRetag(
  * answered true for, as find's result union: converted checked to the
  * predicate's type (checkedValueNarrowing), then wrapped. Null when the
  * element has no checked conversion to that type that hands the element
- * itself on. */
+ * itself on, and for a predicate that names `null` alone: a unit has no
+ * value outside a union for the helper to convert and return. */
 function writtenPredicateRetag(
   lowerer: Lowerer,
   valueT: IrType,
@@ -1697,6 +1698,7 @@ function writtenPredicateRetag(
   loc: SrcLoc,
 ): string | null {
   const present = lowerer.stripUndefinedArm(resultT);
+  if (isUnitType(present)) return null;
   const typeText = lowerer.fmt(present);
   const narrow = checkedValueNarrowing(lowerer, valueT, present, typeText, loc);
   if (narrow === null) return null;

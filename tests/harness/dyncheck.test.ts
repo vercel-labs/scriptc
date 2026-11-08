@@ -1454,6 +1454,81 @@ console.log(typeof read(), read() === undefined);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("undefined true\nnumber false\n");
   });
+
+  test("an untyped value returned where the result is declared undefined is checked", async () => {
+    // Node hands the caller the value (5, null); a result declared
+    // `undefined` has no representation for it, so the return throws.
+    const r = await compileAndRun(
+      "undefined-result-returns",
+      `
+      function five(): any { return JSON.parse("5"); }
+      function nothing(): any { return JSON.parse("null"); }
+      const flag: boolean = process.argv.length < 99;
+      type Nothing = undefined;
+      function declared(): undefined { return five(); }
+      function aliased(): Nothing { return five(); }
+      function ofNull(): undefined { return nothing(); }
+      function conditional(): undefined { return flag ? five() : undefined; }
+      const concise = (): undefined => five();
+      const conciseConditional = (): undefined => (flag ? five() : undefined);
+      let effects = 0;
+      const effect = (): void => { effects++; };
+      const conciseVoidArm = (): undefined => (flag ? five() : void effect());
+      const conciseVoidTaken = (): undefined => (flag ? void effect() : five());
+      const castNumber = (): undefined => 5 as any;
+      const castNull = (): undefined => null as any;
+      const castUndefined = (): undefined => undefined as any;
+      function returnsCastNumber(): undefined { return 5 as any; }
+      function returnsCastUndefined(): undefined { return undefined as any; }
+      class Holder {
+        method(): undefined { return five(); }
+        static make(): undefined { return five(); }
+      }
+      const run = (label: string, f: () => unknown): void => {
+        try { console.log(label, f()); }
+        catch (error) { console.log(label, (error as Error).name, (error as Error).message); }
+      };
+      run("declared", () => declared());
+      run("aliased", () => aliased());
+      run("null", () => ofNull());
+      run("conditional", () => conditional());
+      run("concise", () => concise());
+      run("conciseConditional", () => conciseConditional());
+      run("conciseVoidArm", () => conciseVoidArm());
+      run("conciseVoidTaken", () => conciseVoidTaken());
+      console.log("effects", effects);
+      run("castNumber", () => castNumber());
+      run("castNull", () => castNull());
+      run("castUndefined", () => castUndefined());
+      run("returnsCastNumber", () => returnsCastNumber());
+      run("returnsCastUndefined", () => returnsCastUndefined());
+      run("method", () => new Holder().method());
+      run("static", () => Holder.make());
+      declared();
+    `,
+    );
+    const message =
+      "TypeError a value other than undefined is not representable in a result declared 'undefined' (an untyped value returned it)";
+    expect(r.stdout).toBe(
+      [
+        ...["declared", "aliased", "null", "conditional", "concise", "conciseConditional"].map(
+          (label) => `${label} ${message}`,
+        ),
+        `conciseVoidArm ${message}`,
+        "conciseVoidTaken undefined",
+        "effects 1",
+        `castNumber ${message}`,
+        `castNull ${message}`,
+        "castUndefined undefined",
+        `returnsCastNumber ${message}`,
+        "returnsCastUndefined undefined",
+        ...["method", "static"].map((label) => `${label} ${message}`),
+        "",
+      ].join("\n"),
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("a value other than undefined is not representable");
+  });
 });
 
 describe(`native-handle boundary fences (scriptc-only${sanitize ? ", sanitized" : ""})`, () => {
@@ -2164,5 +2239,35 @@ try {
         "",
       ].join("\n"),
     );
+  });
+
+  test("a function reached through a narrower slot refuses an argument its parameter cannot hold", async () => {
+    // The checker admits both steps: a function with an optional parameter
+    // into a slot without it, and that slot into one whose extra parameter
+    // has another type. Node hands the function the value its type
+    // excludes. The wide slot's value is built from the function, so the
+    // mismatch is the function's own: invoking the slot throws, and a
+    // function that has no such parameter still ignores the argument.
+    const r = await compileAndRun(
+      "function-view-stranded",
+      `
+      function fixed(a: string, digits?: number): string { return a + (digits === undefined ? "" : (1).toFixed(digits)); }
+      function plain(a: string): string { return a + "!"; }
+      function narrowOf(f: (a: string) => string): (a: string) => string { return f; }
+      function widen(f: (a: string) => string): (a: string, b: string) => string { return f; }
+      console.log(widen(narrowOf(plain))("x", "y"), narrowOf(fixed)("x"));
+      try { console.log(widen(narrowOf(fixed))("x", "y")); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "x! x",
+        "true a '(string, number | undefined) => string' function invoked through a '(string, string) => string' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
   });
 });

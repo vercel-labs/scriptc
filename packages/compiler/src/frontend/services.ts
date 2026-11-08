@@ -4,6 +4,10 @@ import { lowerEsmInitsWithParser, rewriteBundlerCjsWithParser } from "./npm-stat
 import { isBundlerCjsCandidate } from "./npm-static-rewrite-syntax.js";
 import { normalizeCjsFunctionExports } from "./npm-static-cjs-exports-alias.js";
 import {
+  mayHoldCjsExportsAccessor,
+  normalizeCjsExportsAccessor,
+} from "./npm-static-cjs-exports-accessor.js";
+import {
   mayBundleChunks,
   splitBundledChunks,
   type BundledChunkSplit,
@@ -22,6 +26,8 @@ import { mayHoldTscBuiltinImport, unwrapTscBuiltinImports } from "./npm-static-t
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
 import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
+import { mayReadDefine, resolveDefinedBranches } from "./define-branches.js";
+import type { Defines } from "./defines.js";
 import type { SourceFile } from "./ts7/ast-types.js";
 import type { Ladder } from "./npm-static-ladder.js";
 
@@ -174,6 +180,14 @@ export class FrontendServices {
     if (!source.includes("module.exports")) return null;
     return normalizeCjsFunctionExports(this.parse(path, source, "js"));
   }
+  /** A CommonJS module that installs an accessor as its export object,
+   * respelled as the whole-export assignment of the getter's value (null:
+   * none). */
+  cjsExportsAccessor(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!mayHoldCjsExportsAccessor(source)) return null;
+    return normalizeCjsExportsAccessor(this.parse(path, source, "js"));
+  }
   /** A package module with tsc's interop bindings of builtin modules
    * unwrapped to plain requires (null: none). */
   tscBuiltinImports(source: string, path: string): string | null {
@@ -210,6 +224,13 @@ export class FrontendServices {
     return rewriteBuiltinAliasRequires(this.parse(path, source, "js"), (specifier) =>
       builtinPackageAliasFor(path, specifier),
     );
+  }
+  /** A JavaScript module with the `if` statements `--define` decides
+   * resolved to their taken branches (null: none). */
+  definedBranches(source: string, path: string, defines: Defines): string | null {
+    this.ensureOpen();
+    if (!mayReadDefine(source, defines)) return null;
+    return resolveDefinedBranches(this.parse(path, source, "js"), defines);
   }
   /** A CommonJS module that names its export object through a variable
    * (`var ip = exports`), its member accesses respelled through `exports`

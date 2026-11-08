@@ -24,6 +24,7 @@ import {
 } from "./input-tracker.js";
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
 import { packageSourceText, typePatchSuppliesTypes } from "./type-patches/layer.js";
+import type { Defines } from "./defines.js";
 import { isFrontendIsland } from "../node-islands/boundary.js";
 
 let activePackages: ReadonlySet<string> = new Set();
@@ -46,6 +47,16 @@ const liveExportFiles = new Set<string>();
 
 export function npmStaticLiveExportTable(path: string): boolean {
   return liveExportFiles.has(path.split("\\").join("/"));
+}
+
+/** Rewritten files whose whole export stands for an accessor installed as
+ * `module.exports` (npm-static-cjs-exports-accessor.ts): Node runs the
+ * getter for every `require()` of the module, so the rewrite is exact only
+ * for a module whose export the program evaluates once. */
+const accessorExportFiles = new Set<string>();
+
+export function npmStaticAccessorExport(path: string): boolean {
+  return accessorExportFiles.has(path.split("\\").join("/"));
 }
 
 /** Names Node's lexer detects in a rewritten file's original text that
@@ -99,6 +110,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   fileDegrades.clear();
   rewriteCache.clear();
   liveExportFiles.clear();
+  accessorExportFiles.clear();
   lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
@@ -539,6 +551,8 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // (unrewritten files fall through to the host, which serves the
           // patched text too).
           let original = packageSourceText(path);
+          const defined = original === null ? null : withDefinedBranches(services, path, original);
+          if (defined !== null) original = defined;
           // A bundle's CommonJS chunks move to their own modules first, so
           // every later pass (and this shadow, for each chunk) sees plain
           // CommonJS module text.
@@ -572,6 +586,13 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // through that function.
           const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
           if (fnExports !== null) original = fnExports;
+          // A module that installs an accessor as its export object exports
+          // the getter's value.
+          const accessor = original === null ? null : services.cjsExportsAccessor(original, path);
+          if (accessor !== null) {
+            original = accessor;
+            accessorExportFiles.add(path.split("\\").join("/"));
+          }
           // TypeScript's enum IIFEs with literal members become the object
           // literals they build.
           const enums = original === null ? null : services.enumIifes(original, path);
@@ -585,12 +606,14 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           const exportsVar = original === null ? null : services.cjsExportsVar(original, path);
           if (exportsVar !== null) original = exportsVar;
           const respelled =
+            defined !== null ||
             split !== null ||
             umd !== null ||
             tscHelpers !== null ||
             esm !== null ||
             aliased !== null ||
             fnExports !== null ||
+            accessor !== null ||
             enums !== null ||
             namespaces !== null ||
             exportsVar !== null;
@@ -641,7 +664,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
       }
       // Other runtime entries (`.mjs`) keep their text and gain only the
       // typedefs.
-      return withTypeExportTypedefs(path, null) ?? undefined;
+      return withTypeExportTypedefs(path, definedSource(services, path)) ?? undefined;
     },
     hideFile: (path) => {
       // The copies of the package's declaration files the typedefs name.
@@ -672,7 +695,10 @@ export function programBuiltinAliasSource(
   let rewritten: string | null = null;
   try {
     const source = trackedReadFile(path);
-    if (source !== null) rewritten = services.builtinAliasRequires(source, path);
+    if (source !== null) {
+      const defined = withDefinedBranches(services, path, source);
+      rewritten = services.builtinAliasRequires(defined ?? source, path) ?? defined;
+    }
   } catch {
     rewritten = null;
   }
@@ -683,6 +709,40 @@ export function programBuiltinAliasSource(
 /** Resets the program-file alias cache (once per program load). */
 export function clearProgramBuiltinAliasCache(): void {
   programAliasCache.clear();
+}
+
+let activeDefines: Defines | undefined;
+const definedSourceCache = new Map<string, string | null>();
+
+/** The load's `--define` values (once per program load). */
+export function setProgramDefines(defines: Defines | undefined): void {
+  activeDefines = defines;
+  definedSourceCache.clear();
+}
+
+/** A JavaScript file's `source` with the `if` statements `--define` decides
+ * resolved (define-branches.ts), the text every other rewrite of the file
+ * starts from. Null when it has none. The answer is cached for
+ * definedSource, so the file is read and resolved once per load. */
+function withDefinedBranches(
+  services: FrontendServices,
+  path: string,
+  source: string,
+): string | null {
+  if (activeDefines === undefined) return null;
+  const resolved = services.definedBranches(source, path, activeDefines);
+  definedSourceCache.set(path, resolved);
+  return resolved;
+}
+
+/** withDefinedBranches over the JavaScript file at `path`, for the files no
+ * other rewrite serves. */
+export function definedSource(services: FrontendServices, path: string): string | null {
+  if (activeDefines === undefined || !/\.[cm]?jsx?$/.test(path)) return null;
+  const hit = definedSourceCache.get(path);
+  if (hit !== undefined) return hit;
+  const source = packageSourceText(path);
+  return source === null ? null : withDefinedBranches(services, path, source);
 }
 
 /* Only a bundler RUNTIME disqualifies now: webpack's module registry has

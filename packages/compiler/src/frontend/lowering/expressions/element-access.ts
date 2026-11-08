@@ -136,6 +136,7 @@ import {
   lowerIndexedUnionWrite,
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { refuseDefinedEnvWrite } from "../builtins/environment.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 
 /** The per-arm answer for a presence probe of an element read through an
@@ -2688,6 +2689,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         "indexing process.env with non-string keys",
       );
     }
+    refuseDefinedEnvWrite(lowerer, key, target);
     const value = lowerer.lowerExpr(expr.right);
     if (value.type.kind !== "string") {
       lowerer.unsupported(

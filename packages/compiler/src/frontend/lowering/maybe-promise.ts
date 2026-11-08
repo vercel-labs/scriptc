@@ -65,7 +65,7 @@ function unionTagTest(mp: MaybePromiseUnion, value: IrExpr, tag: number, loc: Sr
 /** The value of `ref` (a repeatable read of the maybe-promise union) as
  * `target`, given that it does not hold the promise arm: each remaining
  * arm extracts and converts. Null when some arm cannot convert. */
-function nonPromiseArmsAs(
+export function nonPromiseArmsAs(
   lowerer: Lowerer,
   mp: MaybePromiseUnion,
   ref: IrExpr,

@@ -154,6 +154,7 @@ import {
   findIntegerClones,
   NO_INTEGER_CLONES,
   type CloneReferences,
+  type IntegerCloneHost,
   type IntegerClones,
 } from "./integer-clones.js";
 import { writeRepresentationReport } from "./repr-report.js";
@@ -172,6 +173,7 @@ import {
   type FfiCallbackAdapter,
 } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../may-throw.js";
+import { deferClosedInitializers, initializerTrace } from "../lazy-initializers.js";
 import {
   UNWIND_PERSONALITY,
   UNWIND_RAISE,
@@ -820,7 +822,7 @@ function prepareModule(input: IrModule, options: LlvmTargetOptions): PreparedMod
   // lowered in memory or read back from its serialized form.
   // Large literals build their rows in loops first: every later pass and
   // the emitter then see the loop, not thousands of row expressions.
-  const mod = rollLiteralTables(unshareNodes(input));
+  const rolled = rollLiteralTables(unshareNodes(input));
   // Each proof selectInt32Arrays asks for analyzes a marked module; the
   // emitter of the module it returns reuses the last one. A proof that
   // revised functions analyzed the module of the functions it ended with.
@@ -857,13 +859,18 @@ function prepareModule(input: IrModule, options: LlvmTargetOptions): PreparedMod
     return { kept: keptInt32Arrays(rounds.last), functions: rounds.functions };
   };
   // Keep source storage intact for debugger inspection in dev builds.
-  if (options.debugSources !== undefined) return { mod, analysis: null, nodes: undefined };
+  if (options.debugSources !== undefined) return { mod: rolled, analysis: null, nodes: undefined };
   const timing = options.timing ?? (() => {});
+  // Module initializers that only compute run at the first use of what
+  // they make; every pass after this one sees their guards as ordinary
+  // statements.
+  const rolledNodes = new IrNodeIndex(rolled);
+  const mod = deferClosedInitializers(rolled, rolledNodes, initializerTrace(rolled));
   // One index of the module the passes start from. Each pass skips the
   // functions the index records without the node kinds it rewrites, and
   // reads its scans of whole bodies from the index; it walks the functions
   // an earlier pass rewrote, which the index does not record.
-  const nodes = new IrNodeIndex(mod);
+  const nodes = mod === rolled ? rolledNodes : new IrNodeIndex(mod, rolledNodes);
   rounds.nodes = nodes;
   const passed = versionUnionArmLoops(
     versionParameters(
@@ -2154,6 +2161,27 @@ export class LlEmitter {
 
   integerParamRange(fnName: string, localId: string): IntegerRange | null {
     return this.int32Slots.facts(fnName).params?.get(localId) ?? null;
+  }
+
+  /** What the integer clone emitter reads of this emitter while it emits
+   * the current function's clone (integer-clones.ts): a record, not the
+   * emitter. The compiler compiles itself, and an emitter handed over where
+   * the IntegerCloneHost interface is declared becomes a dynamic value
+   * there, which puts the emitter and every class its fields reach in the
+   * dynamic tier of the compiler's own build (as Lowerer.bindingScope
+   * explains for the frontend). The ranges are the current function's:
+   * nothing the clone emitter calls replaces them. */
+  integerCloneHost(): IntegerCloneHost {
+    return {
+      integerClones: this.integerClones,
+      integerParamRange: (fnName: string, localId: string) =>
+        this.integerParamRange(fnName, localId),
+      integerRanges: this.integerRanges,
+      declare: (decl: string) => this.declare(decl),
+      pendingTestLines: (dest: string) => this.pendingTestLines(dest),
+      cloneReferences: this.cloneReferences,
+      executableTls: this.executableTls,
+    };
   }
   /** Immutable module constants (contract types) whose graphs become
    * immortal once initialized: their reads need no reference counting. */
@@ -8245,6 +8273,8 @@ export class LlEmitter {
       | "newValue"
       | "instanceOfValue"
       | "promiseVoidWiden"
+      | "viewOf"
+      | "viewSource"
       | "upcast"
       | "downcast"
       | "instanceOf"

@@ -117,6 +117,10 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.sessionDestroy": "scr_http2_session_destroy",
     "http2.sessionSettingsDynCb": "scr_http2_session_settings_dyncb",
     "http2.sessionOnSettingsDyn": "scr_http2_session_on_settings_dyn",
+    "http2.sessionPingPayload": "scr_http2_session_ping",
+    "http2.sessionConnecting": "scr_http2_session_connecting",
+    "http2.getPackedSettings": "scr_http2_get_packed_settings",
+    "http2.getUnpackedSettings": "scr_http2_get_unpacked_settings",
     "http2.sessionSettingsGet": "scr_http2_session_settings_get",
     "http2.sessionPendingSettingsAck": "scr_http2_session_pending_settings_ack",
     "http2.getDefaultSettings": "scr_http2_get_default_settings",
@@ -143,6 +147,9 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.streamClosed": "scr_http2_stream_closed",
     "http2.streamAborted": "scr_http2_stream_aborted",
     "http2.streamPending": "scr_http2_stream_pending",
+    "http2.streamHeadersSent": "scr_http2_stream_headers_sent",
+    "http2.reqComplete": "scr_http2_req_complete",
+    "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
     "http2.streamUndefCall": "scr_http2_stream_undef_call",
   };
@@ -151,6 +158,10 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
   switch (e.fn) {
     case "http2.streamNoop":
       return { name: "", type: e.type };
+    case "http2.sessionPing":
+      return finishRuntimeCall(host, e, "scr_http2_session_ping", [a[0]!, ptr(), a[1]!]);
+    case "http2.getPackedSettings0":
+      return finishRuntimeCall(host, e, "scr_http2_get_packed_settings", [ptr()]);
     case "http2.createServerReq":
       return finishRuntimeCall(
         host,
@@ -273,7 +284,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     case "http2.sessionOnGoaway":
       runtime = "scr_http2_session_on_goaway";
       thunk = `scr_http2_goaway_thunk${Math.min(arity, 2)}`;
-      params = ["ptr", "double", "double"];
+      params = ["ptr", "double", "double", "ptr"];
       break;
     case "http2.sessionOnError":
       runtime = "scr_http2_session_on_error";
@@ -302,6 +313,16 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
             : type.params[0]!.kind === "string"
               ? "scr_net_data_thunk_str"
               : "scr_net_data_thunk_bytes";
+      params = ["ptr", "ptr", "ptr"];
+      break;
+    case "http2.sessionOnPing":
+      runtime = "scr_http2_session_on_ping";
+      thunk =
+        arity === 0
+          ? "scr_net_data_thunk0"
+          : type.params[0]!.kind === "dyn"
+            ? "scr_net_data_thunk_dyn"
+            : "scr_net_data_thunk_bytes";
       params = ["ptr", "ptr", "ptr"];
       break;
     case "http2.sessionOnClose":

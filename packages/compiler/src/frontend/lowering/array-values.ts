@@ -150,7 +150,7 @@ function tupleArmField(
 }
 
 /** A union of tuples and arrays read where the checker sees ONE array type
- * (`(names as readonly string[]).includes(name)`, `.length`, `[i]`, a
+ * (`(stops as readonly string[]).includes(stop)`, `.length`, `[i]`, a
  * `for…of`, over the values of an `as const` table: the assertion is
  * erased, so the value keeps its union layout). A slot of the array type
  * converts such a value arm by arm into a fresh array (widthLiftPlan's
@@ -474,7 +474,7 @@ export function unionArmsLength(lowerer: Lowerer, view: IrExpr, loc: SrcLoc): Ir
 }
 
 /** The array type a union of tuples and arrays converts to where nothing
- * names one (`for (const name of GROUPS[key])`, `names.includes(name)` over
+ * names one (`for (const stop of LINES[key])`, `stops.includes(stop)` over
  * the values of an `as const` table): every arm is an array or a tuple, at
  * least one of them a tuple, and all their elements have one type (unit
  * arms aside). A union of arrays alone has its own walk and keeps it. Null

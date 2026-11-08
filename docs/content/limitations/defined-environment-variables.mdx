@@ -1,0 +1,4 @@
+A `--define` value replaces what the executable's environment holds for the variable, so the program and its child processes see the defined value whatever the executable is started with.
+The `if` statements the value decides are resolved at build time, so assigning or deleting a defined variable is a build error, and a change made another way, such as a write through a name computed at run time or `Object.assign(process.env, ...)`, doesn't change which branch runs.
+Named imports of a CommonJS module that picks its exports this way see the names the selected module exports.
+Node.js takes those names from the module that the last such `module.exports = require()` assigns, whatever the condition, so the two differ when the modules export different names.

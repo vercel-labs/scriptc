@@ -27,15 +27,23 @@ import {
   isJsSourceFile,
   isModuleExportsAccess,
   locOf,
-  npmStaticDepSf7,
   requireBindingEarlyUse7,
   requireSpecOf,
-  resolveImport,
   splitRequireCallOf,
 } from "../program.js";
 import { createRequireCalleeFileOf } from "./builtins/module-bindings.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
-import { DYN, type IrExpr, type IrType } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  type IrExpr,
+  type IrGlobal,
+  type IrStmt,
+  type IrType,
+  type SrcLoc,
+} from "../../ir/ir.js";
+import { npmStaticAccessorExport } from "../npm-static.js";
+import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr } from "../../ir/build.js";
 import { probeNodeRequireRefusal } from "../npm.js";
 import { resolveCjsRuntime } from "../cjs-resolve.js";
@@ -400,10 +408,167 @@ export function inlineProgramRequireOf(
   if (!isCjsRequireGlobal(lowerer, e.expression)) return null;
   if (createRequireCalleeFileOf(lowerer, e.expression) !== null) return null;
   const dep =
-    resolveImport(lowerer.program, sf, spec, "require") ??
-    npmStaticDepSf7(lowerer.program, sf, spec, "require");
+    lowerer.facts.importedModule(sf, spec, "require") ??
+    lowerer.facts.npmStaticModule(sf, spec, "require");
   if (!dep || dep.isDeclarationFile || dep.fileName.endsWith(".json")) return null;
   return { call: e, spec, dep };
+}
+
+/** Where the program evaluates the export of the CommonJS module `dep`:
+ * Node reads `module.exports` at every `require()` call that names it, and
+ * once for all of its ES-module imports together. */
+export interface CjsExportEvaluations {
+  /** `require()` calls naming the module at the top level of a module. */
+  requires: number;
+  /** A `require()` call that can run more than once (inside a function or
+   * a loop), or two of them in one module. */
+  repeats: boolean;
+  /** An ES-module import, export-from or `import()` names the module. */
+  imported: boolean;
+}
+
+export function cjsExportEvaluations(lowerer: Lowerer, dep: ts.SourceFile): CjsExportEvaluations {
+  const found: CjsExportEvaluations = { requires: 0, repeats: false, imported: false };
+  const names = (from: ts.SourceFile, spec: string, kind: "import" | "require"): boolean =>
+    (lowerer.facts.importedModule(from, spec, kind) ??
+      lowerer.facts.npmStaticModule(from, spec, kind)) === dep;
+  for (const sf of lowerer.program.getSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    let here = 0;
+    ts.walkPreorder(sf, (node) => {
+      if (
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        node.moduleSpecifier !== undefined &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        if (names(sf, node.moduleSpecifier.text, "import")) found.imported = true;
+        return undefined;
+      }
+      if (!ts.isCallExpression(node)) return undefined;
+      const argument = node.arguments.nodes[0];
+      if (
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        argument !== undefined &&
+        ts.isStringLiteralLike(argument)
+      ) {
+        if (names(sf, argument.text, "import")) found.imported = true;
+        return undefined;
+      }
+      const spec = requireSpecOf(node);
+      if (spec === null || !names(sf, spec, "require")) return undefined;
+      for (let p: ts.Node | undefined = node.parent; p !== undefined; p = p.parent)
+        if (
+          ts.isFunctionLike(p) ||
+          ts.isForStatement(p) ||
+          ts.isForOfStatement(p) ||
+          ts.isForInStatement(p) ||
+          ts.isWhileStatement(p) ||
+          ts.isDoStatement(p)
+        )
+          found.repeats = true;
+      here += 1;
+      found.requires += 1;
+      return undefined;
+    });
+    if (here > 1) found.repeats = true;
+  }
+  return found;
+}
+
+/** Whether the lowering gives every evaluation of an accessor-exporting
+ * module's export (npm-static-cjs-exports-accessor.ts) the value Node
+ * gives it: `require()` calls that each run once and sit in different
+ * modules (each keeps a value of its own, accessorRequirerSlot), or
+ * ES-module imports alone (Node reads the export once for all of them). */
+export function accessorExportIsExact(evaluations: CjsExportEvaluations): boolean {
+  return !evaluations.repeats && (!evaluations.imported || evaluations.requires === 0);
+}
+
+/** The storage of what `require()` of the accessor-exporting module `dep`
+ * answered in the module `from`: Node runs the getter for every
+ * `require()`, so each requiring module holds a value of its own. Null for
+ * any other pair, and for a module the program only imports (its importers
+ * share the one read Node makes). */
+export function accessorRequirerSlot(
+  lowerer: Lowerer,
+  from: ts.SourceFile,
+  dep: ts.SourceFile,
+): IrGlobal | null {
+  if (from === dep || !npmStaticAccessorExport(dep.fileName)) return null;
+  const slots = lowerer.accessorRequirerSlots;
+  const key = `${from.fileName}\0${dep.fileName}`;
+  const known = slots.get(key);
+  if (known !== undefined) return known;
+  const whole = cjsWholeExportValueOf(dep);
+  const exported = whole === null ? undefined : lowerer.globalsByDeclNode.get(whole.assign);
+  const evaluations = cjsExportEvaluations(lowerer, dep);
+  let slot: IrGlobal | null = null;
+  if (exported !== undefined && accessorExportIsExact(evaluations) && !evaluations.imported) {
+    const id = keyedHelperName(lowerer, "%g.%required", key);
+    slot = lowerer.globalsList.find((g) => g.id === id) ?? null;
+    if (slot === null) {
+      slot = { id, name: id.slice(3), type: exported.type, mutable: true };
+      lowerer.globalsList.push(slot);
+    }
+  }
+  slots.set(key, slot);
+  return slot;
+}
+
+/** The statements that give the module `from` its own value of the
+ * accessor-exporting module `dep` at a `require()`: the value the module's
+ * load stored for its first requirer, and one more call of the getter for
+ * every later one. Empty when the pair has no slot. */
+export function accessorRequirerAssign(
+  lowerer: Lowerer,
+  from: ts.SourceFile,
+  dep: ts.SourceFile,
+  loc: SrcLoc,
+): IrStmt[] {
+  const slot = accessorRequirerSlot(lowerer, from, dep);
+  const whole = cjsWholeExportValueOf(dep);
+  const exported = whole === null ? undefined : lowerer.globalsByDeclNode.get(whole.assign);
+  if (slot === null || whole === null || exported === undefined) return [];
+  // The respelled export is the loader's decision over calls of the getter
+  // (exportReads): whichever way it goes, its value is one call of the
+  // getter, and the branch a falsy read takes is that call alone.
+  let call: ts.Expression = whole.rhs;
+  while (
+    ts.isParenthesizedExpression(call) ||
+    ts.isConditionalExpression(call) ||
+    (ts.isBinaryExpression(call) && call.operatorToken.kind === ts.SyntaxKind.CommaToken)
+  )
+    call = ts.isParenthesizedExpression(call)
+      ? call.expression
+      : ts.isConditionalExpression(call)
+        ? call.whenFalse
+        : call.right;
+  const takenId = keyedHelperName(lowerer, "%g.%requiredOnce", dep.fileName);
+  if (!lowerer.globalsList.some((g) => g.id === takenId))
+    lowerer.globalsList.push({ id: takenId, name: takenId.slice(3), type: BOOL, mutable: true });
+  const again = lowerer.coerceInto(call, lowerer.lowerExpr(call), slot.type);
+  return [
+    {
+      kind: "if",
+      cond: { kind: "varRef", localId: takenId, type: BOOL, loc },
+      then: [{ kind: "assign", localId: slot.id, value: again, loc }],
+      else_: [
+        {
+          kind: "assign",
+          localId: takenId,
+          value: { kind: "boolLit", value: true, type: BOOL, loc },
+          loc,
+        },
+        {
+          kind: "assign",
+          localId: slot.id,
+          value: { kind: "varRef", localId: exported.id, type: exported.type, loc },
+          loc,
+        },
+      ],
+      loc,
+    },
+  ];
 }
 
 /** The kept (last, not discarded) top-level `module.exports = <value>` of a
@@ -470,11 +635,20 @@ export function wholeExportValue(
   dep: ts.SourceFile,
   blame: ts.Node,
   depth = 0,
+  /** The module whose `require()` names `dep`: the reader's, or the module
+   * a re-export chain passed through. */
+  from: ts.SourceFile = ts.getSourceFileOfNode(blame),
 ): IrExpr | null {
   const whole = cjsWholeExportValueOf(dep);
   if (whole === null || depth > 32) return null;
+  // An accessor-exporting module answers every requiring module a value of
+  // its own (accessorRequirerSlot).
+  {
+    const own = accessorRequirerSlot(lowerer, from, dep);
+    if (own !== null) return { kind: "varRef", localId: own.id, type: own.type, loc: locOf(blame) };
+  }
   const inner = inlineProgramRequireOf(lowerer, whole.rhs);
-  if (inner !== null) return wholeExportValue(lowerer, inner.dep, blame, depth + 1);
+  if (inner !== null) return wholeExportValue(lowerer, inner.dep, blame, depth + 1, dep);
   if (ts.isIdentifier(whole.rhs)) {
     // A source binding that is REASSIGNED in its module stores its VALUE in
     // the snapshot global keyed by this statement (collectGlobals): Node's
@@ -493,7 +667,7 @@ export function wholeExportValue(
     // module it names; the value is that module's whole export.
     const split = splitRequireBindingOfIdent(lowerer, whole.rhs);
     if (split !== null && wholeExportSymbolOfModule(lowerer, split.dep) !== null)
-      return wholeExportValue(lowerer, split.dep, blame, depth + 1);
+      return wholeExportValue(lowerer, split.dep, blame, depth + 1, dep);
     // Otherwise the identifier names a declaration of the exporting module
     // (or a builtin global): reading it IS the export, exactly what
     // requirer bindings alias to.
@@ -598,8 +772,8 @@ export function unresolvedRequireThrow(
   const sf = ts.getSourceFileOfNode(node);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
   if (
-    resolveImport(lowerer.program, sf, spec, "require") ??
-    npmStaticDepSf7(lowerer.program, sf, spec, "require")
+    lowerer.facts.importedModule(sf, spec, "require") ??
+    lowerer.facts.npmStaticModule(sf, spec, "require")
   )
     return null;
   const resolved = resolveCjsRuntime(sf.fileName, spec);

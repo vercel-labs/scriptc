@@ -26,11 +26,10 @@ import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
-import { executorResolvesPlainly } from "./promise-resolution.js";
+import { adoptingResolveType, executorResolvesPlainly } from "./promise-resolution.js";
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import {
-  isBuiltinIdentityToken,
   isPrimitiveValueType,
   staticallyPrimitive,
   throwAfterEach,
@@ -39,6 +38,7 @@ import {
 import {
   constructedFromValue,
   constructedValue,
+  constructorForeignFlag,
   constructorPrimitiveFlag,
   superIntoResultSlot,
 } from "./constructor-returns.js";
@@ -58,7 +58,6 @@ import { InternalCompilerError } from "../../errors.js";
  * hierarchy registration. */
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
-import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
@@ -226,7 +225,9 @@ import {
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
   nsUndefRead,
+  isNodeUndefinedGlobalRoot,
 } from "./lower-namespaces.js";
+import { refusingFunctionNameOf } from "./builtin-function-fences.js";
 import { hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
 import {
@@ -415,10 +416,12 @@ function initializerReachingInstance(decl: ts.ClassLikeDeclaration): ts.Property
 }
 
 /** Whether the constructor body of `decl` can run code of a subclass or
- * hand the instance out: any call, construction or tagged template besides
- * its own `super(...)` call (whose arguments count), and any use of `this`
- * or `super` other than a member access `this.name` of a name that is not
- * an accessor (an accessor is a call a subclass can override). */
+ * hand the instance out, in its body or in a parameter's default value: any
+ * call, construction or tagged template besides its own `super(...)` call
+ * (whose arguments count), and any use of `this` or `super` other than a
+ * member access `this.name` of a name `isAccessor` does not answer for (an
+ * accessor is a call a subclass can override; the caller's second question
+ * is a field without a slot, which an assignment creates). */
 function constructorReachesInstance(
   decl: ts.ClassLikeDeclaration,
   isAccessor: (name: string) => boolean,
@@ -452,7 +455,13 @@ function constructorReachesInstance(
     });
     return reaches;
   };
-  return visit(ctor.body);
+  // A default value of a parameter, and a default or a computed name inside
+  // a destructured one, is evaluated when the constructor is entered: it
+  // reaches the instance the way a statement of the body does.
+  const parameterReaches = (parameter: ts.ParameterDeclaration): boolean =>
+    (parameter.initializer !== undefined && visit(parameter.initializer)) ||
+    (!ts.isIdentifier(parameter.name) && visit(parameter.name));
+  return ctor.parameters.nodes.some(parameterReaches) || visit(ctor.body);
 }
 
 /** Whether an instance index signature is `[key: string]: any` or
@@ -2792,6 +2801,10 @@ export function collectClassShapeInner(
     // IrFunction like any other (lowerGenericInstance), calls enter
     // through the instance's own spawn wrapper, and no vtable slot is
     // ever involved — generic members always dispatch statically.
+    // GENERATOR methods collect too, sync and async: a generic generator
+    // instance is a generator IrFunction like a generic generator
+    // function's, entered through its own spawn wrapper. A field holding a
+    // generic generator function expression keeps its refusal.
     const collectGenericMember = (
       member: ts.MethodDeclaration | ts.PropertyDeclaration,
       isStatic: boolean,
@@ -2803,7 +2816,8 @@ export function collectClassShapeInner(
       if (!ts.isIdentifier(member.name) && !ts.isPrivateIdentifier(member.name)) {
         lowerer.unsupported("SC1090", member, "computed generic method names");
       }
-      if (fnNode.asteriskToken) lowerer.unsupported("SC1071", member);
+      if (fnNode.asteriskToken && ts.isPropertyDeclaration(member))
+        lowerer.unsupported("SC1071", member);
       const mName = (member.name as ts.Identifier | ts.PrivateIdentifier).text;
       const typeParams: ts.Symbol[] = [];
       for (const tp of fnNode.typeParameters!.nodes) {
@@ -4486,11 +4500,28 @@ export function collectClassShapeInner(
         const accessorOf = (name: string): boolean =>
           lowerer.findMethodOn(ancestor, `get:${name}`) !== null ||
           lowerer.findMethodOn(ancestor, `set:${name}`) !== null;
+        const erasedNames = ancestor.erasedFields;
+        const slotNames = ancestor.fields;
         if (fieldsBelow && constructorReachesInstance(ancestor.decl, accessorOf)) {
           lowerer.unsupported(
             "SC1090",
             decl.name ?? decl,
             `an index signature in a class with instance fields below '${ancestorName}', whose constructor calls a function or hands the instance out (${order})`,
+          );
+        } else if (
+          fieldsBelow &&
+          // A field declared with `declare` has no slot: assigning it in
+          // the constructor creates the property then, before the fields
+          // below exist, exactly like a write through the signature.
+          constructorReachesInstance(
+            ancestor.decl,
+            (name) => erasedNames?.has(name) === true && !slotNames.has(name),
+          )
+        ) {
+          lowerer.unsupported(
+            "SC1090",
+            decl.name ?? decl,
+            `an index signature in a class with instance fields below '${ancestorName}', whose constructor uses a field declared with 'declare' (it exists only once it is assigned; ${order})`,
           );
         }
         if (ancestor.fieldOrder.some((field) => field.redeclared !== true)) fieldsBelow = true;
@@ -9168,6 +9199,18 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         loc: clearLoc,
       });
     }
+    // The same for a foreign result (constructor-returns.ts): the flag
+    // means "this construction's constructor returned another object".
+    const pendingForeign = constructorForeignFlag(lowerer, info);
+    if (pendingForeign !== null) {
+      const clearLoc = locOf(info.ctor ?? info.decl!);
+      body.push({
+        kind: "assign",
+        localId: pendingForeign.id,
+        value: { kind: "boolLit", value: false, type: BOOL, loc: clearLoc },
+        loc: clearLoc,
+      });
+    }
     // The construction-relevant base: generic families are transparent
     // (an instantiation of a base-less generic class IS a base class —
     // its source has no super()).
@@ -11502,11 +11545,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // --disallow-code-generation-from-strings (code-generation.ts).
   if (codeGenerationCalleeOf(lowerer, expr.expression) === "Function")
     return lowerCodeGenerationCall(lowerer, expr, "Function");
-  // `new <temporal>.X(...)`: Node 24 has no such global, so the callee's
-  // root read throws the ReferenceError before any argument evaluates.
+  // `new <temporal>.X(...)`: Node 24 has no such global (node-values.ts),
+  // so the callee's root read throws the ReferenceError before any argument
+  // evaluates.
   {
     const root = ambientUndefVarRootOf(lowerer, expr.expression);
-    if (root !== null && root.text === TEMPORAL_GLOBAL) {
+    if (
+      root !== null &&
+      isNodeUndefinedGlobalRoot(lowerer, root, lowerer.checker.getSymbolAtLocation(root))
+    ) {
       const t =
         ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
       return nsUndefRead(lowerer, root.text, expr, t);
@@ -12664,33 +12711,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           loc,
         };
       }
-      // JavaScript's identity-Set idiom: `new Set([setTimeout, atob,
-      // ...])` — the element TYPE (a union of stdlib signatures) has no
-      // mapping, but the element VALUES all lower to identity tokens
-      // (interned strings — see the JS token stance in lower-exprs), so
-      // the honest construction is a Set of those scalars.
-      if (
-        !mapped &&
-        isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-        (expr.arguments?.nodes.length ?? 0) === 1 &&
-        ts.isArrayLiteralExpression(expr.arguments!.nodes[0]!) &&
-        !(expr.arguments!.nodes[0] as ts.ArrayLiteralExpression).elements.nodes.some(
-          ts.isSpreadElement,
-        )
-      ) {
-        const lit = expr.arguments!.nodes[0] as ts.ArrayLiteralExpression;
-        const elems = lit.elements.nodes.map((el) => lowerer.lowerExpr(el));
-        const first = elems[0];
-        if (
-          first !== undefined &&
-          (first.type.kind === "string" || first.type.kind === "f64") &&
-          elems.every((e) => e.type.kind === first.type.kind)
-        ) {
-          const setT: IrType = { kind: "set", elem: first.type };
-          const seed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(first.type), loc };
-          return { kind: "setNew", seed, type: setT, loc };
-        }
-      }
       if ((expr.arguments?.nodes.length ?? 0) > 0) {
         lowerer.noLowering(
           "new Set(values)",
@@ -12775,7 +12795,23 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       // `unknown` for exactly that tier). First settle wins, exactly JS:
       // reject-after-resolve and double-reject are no-ops, and an
       // executor throw after any settle is swallowed.
-      let executor = lowerer.lowerExpr(args[0]!);
+      // A typed promise whose resolve function is given a value with a
+      // promise arm: the executor's resolve parameter reads as the function
+      // that adopts that arm at those uses (promise-resolution.ts).
+      const adopting = adoptingResolveType(lowerer, expr, type.inner);
+      let executor: IrExpr;
+      if (adopting === null) {
+        executor = lowerer.lowerExpr(args[0]!);
+      } else {
+        const outer = lowerer.adoptingResolves.get(adopting.parameter);
+        lowerer.adoptingResolves.set(adopting.parameter, adopting.resolve);
+        try {
+          executor = lowerer.lowerExpr(args[0]!);
+        } finally {
+          if (outer === undefined) lowerer.adoptingResolves.delete(adopting.parameter);
+          else lowerer.adoptingResolves.set(adopting.parameter, outer);
+        }
+      }
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       executor = adaptPromiseExecutor(lowerer, executor, type.inner, loc) ?? executor;
       if (executor.type.kind !== "func") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
@@ -12809,6 +12845,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         executor.type.params.length > 0 &&
         !executorResolvesPlainly(lowerer, args[0]!)
       )
+        return { kind: "newPromise", executor, resolves: true, type, loc };
+      // A typed promise whose resolve function adopts a promise arm: both
+      // resolving functions end with the adoption.
+      if (adopting !== null && executor.type.params.length > 0)
         return { kind: "newPromise", executor, resolves: true, type, loc };
       return { kind: "newPromise", executor, type, loc };
     }
@@ -13126,12 +13166,16 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // throws Node's TypeError, which names the constructed expression. V8
   // evaluates the callee, then every argument, and only then checks, so the
   // arguments lower for their effects ahead of the throw.
-  if (
-    callee &&
-    isPrimitiveValueType(callee.type) &&
-    !isBuiltinIdentityToken(lowerer, expr.expression, callee)
-  ) {
+  if (callee && isPrimitiveValueType(callee.type)) {
     return primitiveCalleeThrow(lowerer, expr, callee, loc);
+  }
+  // `new AsyncResource(...)` on a Node class native code has no value for:
+  // the callee reads as a function that refuses when it is used
+  // (builtin-function-fences.ts), which `new` cannot construct. Node
+  // constructs the class, so the construction is refused by name here.
+  {
+    const refused = callee ? refusingFunctionNameOf(callee) : null;
+    if (refused !== null) lowerer.noLowering(`new ${refused}`, expr);
   }
   if (callee && callee.type.kind === "union") {
     const arms = lowerer.unions.get(callee.type.unionId)?.arms ?? [];

@@ -1,6 +1,6 @@
 import { boolLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -140,7 +140,7 @@ export function lowerChildMethodCall(
         loc,
       });
     }
-    const listenerNode = withoutParenthesesAssertionsNonNull(call.arguments.nodes[1]!);
+    const listenerNode = withoutParenthesesTypeWrappers(call.arguments.nodes[1]!);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(listenerNode)) &&
       (ts.isArrowFunction(listenerNode) || ts.isFunctionExpression(listenerNode)) &&
@@ -407,8 +407,9 @@ export function lowerChildMethodCall(
  * childStreamEncodedAt), or a `Buffer | string`-union chunk (the ngrok
  * appendOutput shape — the runtime only ever fires Buffers; the
  * compiler-emitted adapter wraps the chunk at the union's Buffer arm);
- * 'end' listeners take none.
- * Statement position only (Node returns the stream for chaining; here
+ * 'end' listeners take none. pause() / resume() / isPaused() are Node's
+ * flowing state on the handle.
+ * Listener registration is statement position only (Node returns the stream for chaining; here
  * the result is void). Chained receivers (`child.stdout?.on(...)`)
  * ride the optional-chain re-dispatch (chainBlocked). Everything else
  * @types/node declares on Readable fences member-qualified. Null for
@@ -506,11 +507,29 @@ export function lowerChildStreamMethodCall(
       loc,
     };
   }
+  // pause() / resume() / isPaused(): Node's flowing state, kept on the handle
+  // (the runtime's scr_child_flow.h), so a program that only pauses and
+  // resumes a child's output stays on the handle. pause() and resume()
+  // answer the receiver, as setEncoding does.
+  if ((name === "pause" || name === "resume") && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, CHILDSTREAM_T);
+    return {
+      kind: "libCall",
+      fn: name === "pause" ? "stream.childPause" : "stream.childResume",
+      args: [receiver],
+      type: CHILDSTREAM_T,
+      loc,
+    };
+  }
+  if (name === "isPaused" && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, CHILDSTREAM_T);
+    return { kind: "libCall", fn: "stream.childIsPaused", args: [receiver], type: BOOL, loc };
+  }
   requestGeneralStreamSurface(lowerer, access.expression);
   lowerer.noLowering(
     `ReadableStream.${name}`,
     call,
-    'setEncoding(encoding) and on/once("data" | "end", cb) are the supported child-stream members',
+    'setEncoding(encoding), pause(), resume(), isPaused(), readableFlowing and on/once("data" | "end", cb) are the supported child-stream members',
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

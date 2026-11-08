@@ -18077,7 +18077,11 @@ static ScrDyn *scr_sc_clone_error(const ScrDyn *v, const ScrDyn *bag, ScrError *
     scr_sc_errors.capacity = capacity;
   }
   scr_sc_errors.items[scr_sc_errors.count++] = (ScrScErrorCopy){scr_error_retain(e), scr_dyn_retain(out)};
-  if (!domex && e->error_cause) {
+  /* Only an own data `cause` is copied, as with the message: when the
+   * program made `cause` an accessor the slot holds that entry's
+   * placeholder, not a value, and the copy has no own cause. */
+  const ScrDynEntry *own_cause = domex ? NULL : scr_dyn_find_entry(bag, "cause", 5);
+  if (!domex && e->error_cause && !(own_cause && own_cause->accessor)) {
     /* The copy is entered above, so a cause that leads back to the error
      * answers the copy; one that leads back to a plain container is the
      * cycle the tree cannot hold. */

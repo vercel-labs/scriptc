@@ -79,6 +79,19 @@ class Named extends Error {
 }
 attempt("js-class-name-getter", () => new Named("named"));
 
+// An own `cause` that is an accessor is not a data property: the copy has
+// no own cause, whether or not the error was made with one.
+attempt("cause-getter", () => {
+  const e = new Error("getter cause");
+  Object.defineProperty(e, "cause", { get() { return 7; }, configurable: true });
+  return e;
+});
+attempt("cause-getter-over-data", () => {
+  const e = new Error("getter over data", { cause: 1 });
+  Object.defineProperty(e, "cause", { get() { return 7; }, configurable: true });
+  return e;
+});
+
 // Not errors: an object that looks like one, and an instance of a function
 // that inherits Error.prototype, clone as plain objects.
 function Legacy(message) {

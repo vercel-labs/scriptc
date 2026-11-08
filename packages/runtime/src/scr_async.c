@@ -277,6 +277,22 @@ _Static_assert(offsetof(ScrPromise, rc) == offsetof(ScrPromiseHead, rc) &&
                    offsetof(ScrPromise, identity) == offsetof(ScrPromiseHead, identity),
                "weak collections read a promise's identity cell through ScrPromiseHead");
 
+/* Whether a reaction handled the rejection of `p`: one attached to `p`, or
+ * to another promise of its identity cell (a view of it, or the promise it
+ * is a view of). */
+static inline bool scr_prom_observed(const ScrPromise *p) {
+  return p->rejection_observed || (p->identity != NULL && p->identity->observed);
+}
+
+/* After `p` was delivered as an unhandled rejection: it is not reported
+ * again, and neither is another promise of its identity cell (a second view
+ * of the same promise). */
+static inline void scr_prom_reported(ScrPromise *p) {
+  p->rejection_observed = true;
+  p->reported_unhandled = true;
+  if (p->identity != NULL) p->identity->observed = true;
+}
+
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_live_promises = 0;
 long scr_promise_live_count(void) { return scr_live_promises; }
@@ -364,7 +380,7 @@ static void scr_promise_free_side(ScrPromise *p) {
  * is not an observation: the fiber observes when it resumes, in the
  * checkpoint the rejection belongs to, and a conversion handles nothing. */
 bool scr_promise_tracked_by_node(ScrPromise *p) {
-  bool handled = p->rejection_observed;
+  bool handled = scr_prom_observed(p);
   p->rejection_observed = true;
   p->reported_unhandled = !handled;
   return handled;
@@ -465,13 +481,27 @@ ScrPromise *scr_promise_new(void) {
   return p;
 }
 
+/* Makes `dst` a view of `src`: the same promise to the program, at another
+ * inner type. The view copies the source's settlement and, for a rejection,
+ * becomes the promise that is tracked as unhandled (scr_promise_settle_from).
+ * A reaction on either one handles the promise for both: the cell they share
+ * carries the answer (ScrPromiseIdentity.observed), and a reaction the
+ * source already had when its first view is made counts too. So a rejection
+ * the program handled on the promise is not reported because the promise was
+ * also passed through an untyped position, and one nobody handled is
+ * reported once. */
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
   if (dst == src) return;
   if (!src->identity) {
     src->identity = malloc(sizeof *src->identity);
     if (!src->identity) scr_oom();
     src->identity->rc = 1;
+    src->identity->observed = false;
+    src->identity->transferred = false;
   }
+  /* Until a view has taken the tracking over, the source's own mark is a
+   * reaction's (or says that it was reported, or that Node tracks it). */
+  if (!src->identity->transferred && src->rejection_observed) src->identity->observed = true;
   if (dst->identity == src->identity) return;
   if (dst->identity && --dst->identity->rc == 0) free(dst->identity);
   dst->identity = src->identity;
@@ -487,6 +517,8 @@ void *scr_promise_map_identity(void *promise) {
     p->identity = malloc(sizeof *p->identity);
     if (!p->identity) scr_oom();
     p->identity->rc = 1;
+    p->identity->observed = false;
+    p->identity->transferred = false;
   }
   return p->identity;
 }
@@ -525,6 +557,7 @@ SCR_TL void (*scr_urj_node_fn)(ScrPromise *p) = NULL;
  * one report fires at most one 'rejectionHandled' — Node's pairing. */
 static void scr_prom_observe(ScrPromise *p) {
   p->rejection_observed = true;
+  if (p->identity != NULL) p->identity->observed = true;
   if (p->reported_unhandled) {
     p->reported_unhandled = false;
     if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
@@ -2149,7 +2182,18 @@ static void scr_promise_settle_from(ScrPromise *dst, ScrPromise *src) {
     }
     scr_promise_settle_wake(dst);
   }
-  if (src->state == SCR_PROM_REJECTED) scr_prom_observe(src);
+  if (src->state != SCR_PROM_REJECTED) return;
+  if (dst->identity != NULL && dst->identity == src->identity) {
+    /* A view takes the tracking over from its source without handling
+     * anything: the source is marked, and the cell does not count that mark
+     * as a reaction (scr_promise_share_identity). */
+    src->rejection_observed = true;
+    src->identity->transferred = true;
+    return;
+  }
+  /* Any other destination that takes the rejection over handles it for the
+   * source. */
+  scr_prom_observe(src);
 }
 
 /* The emitted same-type Promise.race adapter (see raceAdapterFor). */
@@ -6013,7 +6057,7 @@ static bool scr_hosted_unobserved_rejections(void) {
   size_t kept = 0;
   for (size_t i = 0; i < scr_nunhandled; i++) {
     ScrPromise *p = scr_maybe_unhandled[i];
-    if (p->state == SCR_PROM_REJECTED && !p->rejection_observed) scr_maybe_unhandled[kept++] = p;
+    if (p->state == SCR_PROM_REJECTED && !scr_prom_observed(p)) scr_maybe_unhandled[kept++] = p;
     else scr_promise_release(p);
   }
   scr_nunhandled = kept;
@@ -6069,7 +6113,7 @@ void scr_loop_hosted_microtasks_done(void) {
   if (scr_nunhandled == 0 || scr_hosted_deciding) return;
   if (!scr_hosted_unobserved_rejections()) return;
   const ScrPromise *root = scr_loop_root;
-  if (root != NULL && root->state == SCR_PROM_REJECTED && !root->rejection_observed &&
+  if (root != NULL && root->state == SCR_PROM_REJECTED && !scr_prom_observed(root) &&
       !root->top_level_handled) {
     /* Also when Node holds the listeners (below): the report raises the
      * rejection through Node's process._fatalException
@@ -6095,10 +6139,9 @@ void scr_loop_hosted_microtasks_done(void) {
     scr_nunhandled = 0;
     for (size_t i = 0; i < count; i++) {
       ScrPromise *p = reported[i];
-      if (p->state == SCR_PROM_REJECTED && !p->rejection_observed) {
+      if (p->state == SCR_PROM_REJECTED && !scr_prom_observed(p)) {
         scr_urj_node_fn(p);
-        p->rejection_observed = true;
-        p->reported_unhandled = true;
+        scr_prom_reported(p);
       }
       scr_promise_release(p);
     }
@@ -7058,7 +7101,7 @@ bool scr_report_unhandled_rejections(void) {
   size_t report_count = scr_nunhandled;
   for (size_t i = 0; i < report_count; i++) {
     ScrPromise *p = scr_maybe_unhandled[i];
-    if (p->state == SCR_PROM_REJECTED && !p->rejection_observed && !crashed) {
+    if (p->state == SCR_PROM_REJECTED && !scr_prom_observed(p) && !crashed) {
       if (scr_urj_deliver_fn != NULL) {
         /* Listener dispatch (scr_async_dyn.c installed the hook at
          * registration): the event handles it, like Node — per entry,
@@ -7066,14 +7109,12 @@ bool scr_report_unhandled_rejections(void) {
          * reported_unhandled arms the 'rejectionHandled' window: a
          * handler the listener itself attaches fires the sibling event
          * (scr_prom_observe). */
-        p->rejection_observed = true;
-        p->reported_unhandled = true;
+        scr_prom_reported(p);
         if (!scr_urj_deliver_fn(p) && !scr_exc_handle_uncaught(false)) crashed = true;
       } else if (scr_uncaught_exception_hook != NULL) {
         scr_promise_rethrow(p);
         if (scr_exc_handle_uncaught(true)) {
-          p->rejection_observed = true;
-          p->reported_unhandled = true;
+          scr_prom_reported(p);
         } else {
           crashed = true;
         }

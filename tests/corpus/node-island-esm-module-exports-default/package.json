@@ -1,0 +1,6 @@
+{
+  "name": "node-island-esm-module-exports-default",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "esm-pkg": "node" } }
+}

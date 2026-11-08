@@ -1343,6 +1343,59 @@ test("a program module that runs in an island is never a deferral candidate", as
   }
 }, 300_000);
 
+// A static import of an island ES module binds the module's namespace, not
+// what require() answers — and require() of an ES module whose exports
+// include 'module.exports' answers that export, not the namespace (yargs
+// exports `module.exports` by name). require()'s own loads keep require()
+// semantics. IR output needs no libnode pack.
+test("a 'module.exports' export does not shadow an ES module's namespace", async () => {
+  const dir = join(outDir, "esm-module-exports");
+  rmSync(dir, { recursive: true, force: true });
+  const at = join(dir, "node_modules", "esm-pkg");
+  mkdirSync(at, { recursive: true });
+  writeFileSync(
+    join(at, "package.json"),
+    '{"name":"esm-pkg","version":"1.0.0","main":"index.mjs","type":"module"}\n',
+  );
+  writeFileSync(
+    join(at, "index.mjs"),
+    [
+      "function shout(s) {",
+      "  return s.toUpperCase();",
+      "}",
+      "export default shout;",
+      'export { shout as "module.exports" };',
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(at, "index.d.ts"),
+    "declare function shout(s: string): string;\nexport default shout;\n",
+  );
+  writeFileSync(join(dir, "main.mts"), 'import shout from "esm-pkg";\nconsole.log(shout("hi"));\n');
+  writeFileSync(
+    join(dir, "required.cjs"),
+    'const shout = require("esm-pkg");\nconsole.log(shout("hi"));\n',
+  );
+  const irOf = async (entry: string): Promise<string> => {
+    const outPath = join(dir, `${entry}.ir.json`);
+    const result = await compile(join(dir, entry), {
+      outPath,
+      outDir: dir,
+      outputKind: "ir",
+      nodeIslands: { islands: ["esm-pkg"] },
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    return JSON.stringify(deserializeModule(readFileSync(outPath, "utf8")));
+  };
+  const imported = await irOf("main.mts");
+  expect(imported).toContain("nodeIsland.requireEsm");
+  const required = await irOf("required.cjs");
+  expect(required).not.toContain("nodeIsland.requireEsm");
+  expect(required).toContain("nodeIsland.require");
+}, 300_000);
+
 // A use of a Node 24 global native code does not provide is the one runtime
 // refusal JavaScript defers honestly: the statement throws where it is
 // reached (SC2020, host-global), so a package that keeps such a path inside

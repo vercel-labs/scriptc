@@ -688,15 +688,65 @@ function load(path, esm) {
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);
   if (sharedModules === null) sharedModules = scriptcSharedModules(nativeHost);
-  if (esm) return import(pathToFileURL(path).href);
+  if (esm === 1) return import(pathToFileURL(path).href);
   // No CommonJS parent, as when Node's ES-module loader imports CommonJS
   // (the program's entry is an ES module): `module.parent` is undefined
   // and MODULE_NOT_FOUND require stacks start at the island module. A
   // module the program shares loads through its entry first (NI-6).
   return sharedModules.entry(path, (entry) => {
     if (entry !== null) createRequire(path)(entry);
-    return Module._load(path, undefined, false);
+    const loaded = Module._load(path, undefined, false);
+    // A static import of an ES module (esm 2) binds the module's namespace,
+    // but require() of one whose exports include 'module.exports' answers
+    // that export (yargs exports `module.exports` by name). The generated
+    // module's `import * as` binding answers the namespace itself.
+    if (esm === 2 && !isModuleNamespace(loaded)) return moduleNamespace(path);
+    return loaded;
   });
+}
+
+// require() of an ES module answers the module namespace (or the facade of
+// it that adds __esModule); both tag themselves "Module".
+function isModuleNamespace(value) {
+  return value !== null && typeof value === "object" && value[Symbol.toStringTag] === "Module";
+}
+
+// Generated ES modules that re-export an island module's namespace through
+// `import * as` (synchronous, like the entry modules of sharedModules):
+// file URLs beside the module, never on disk, so the hooks answer them.
+let namespaceUrls = null;
+let namespaceSeq = 0;
+
+function namespaceHooks() {
+  const urls = new Map();
+  const { dirname, join } = require("node:path");
+  const { fileURLToPath } = require("node:url");
+  registerHooks({
+    resolve(specifier, context, nextResolve) {
+      const asUrl = specifier.startsWith("/") ? pathToFileURL(specifier).href : specifier;
+      if (urls.has(asUrl)) return { url: asUrl, shortCircuit: true };
+      return nextResolve(specifier, context);
+    },
+    load(url, context, nextLoad) {
+      const target = urls.get(url);
+      if (target !== undefined)
+        return {
+          format: "module",
+          source: `import * as __ns from ${JSON.stringify(target)};\nexport default __ns;\n`,
+          shortCircuit: true,
+        };
+      return nextLoad(url, context);
+    },
+  });
+  return { urls, dirname, join, fileURLToPath };
+}
+
+function moduleNamespace(path) {
+  if (namespaceUrls === null) namespaceUrls = namespaceHooks();
+  const { urls, dirname, join, fileURLToPath } = namespaceUrls;
+  const url = pathToFileURL(join(dirname(path), `__scriptc_ns_${++namespaceSeq}.mjs`)).href;
+  urls.set(url, pathToFileURL(path).href);
+  return createRequire(path)(fileURLToPath(url)).default;
 }
 
 function sharedPush(mod, slot, value) {

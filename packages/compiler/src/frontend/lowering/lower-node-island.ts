@@ -404,10 +404,14 @@ export function islandSharedPath(lowerer: Lowerer, path: string, loc: SrcLoc): I
   return literal;
 }
 
-function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
+function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc, esm: boolean): IrExpr {
   return {
     kind: "libCall",
-    fn: "nodeIsland.require",
+    // An ES module's static import binds its namespace: require() would
+    // answer the module's 'module.exports' export when it has one (yargs
+    // exports `module.exports` by name), which is what the require()
+    // contexts below want instead.
+    fn: esm ? "nodeIsland.requireEsm" : "nodeIsland.require",
     args: [islandLoadPath(lowerer, path, loc)],
     type: DYN,
     loc,
@@ -423,13 +427,14 @@ function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
  * (`nodeIsland.require`): deciding a deferral means evaluating the module
  * in the build-time probe, and the build never runs the program's own
  * source. */
-function deferIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
+function deferIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc, esm: boolean): IrExpr {
   const islands = lowerer.nodeIslands;
   if (islands !== null && isIslandProgramModule(islands, path))
-    return loadIslandModule(lowerer, path, loc);
+    return loadIslandModule(lowerer, path, loc, esm);
   return {
     kind: "libCall",
-    fn: "nodeIsland.defer",
+    // As in loadIslandModule: an ES module's import binds the namespace.
+    fn: esm ? "nodeIsland.deferEsm" : "nodeIsland.defer",
     args: [islandLoadPath(lowerer, path, loc), { kind: "strLit", value: "", type: STRING, loc }],
     type: DYN,
     loc,
@@ -496,7 +501,7 @@ export function collectIslandImport(
     initActions.push({
       kind: "assign",
       localId: exported.global.id,
-      value: deferIslandModule(lowerer, path, exportLoc),
+      value: deferIslandModule(lowerer, path, exportLoc, exported.esm),
       loc: exportLoc,
     });
     for (const el of clause.elements.nodes) {
@@ -523,7 +528,7 @@ export function collectIslandImport(
   actions.push({
     kind: "assign",
     localId: binding.global.id,
-    value: deferIslandModule(lowerer, path, loc),
+    value: deferIslandModule(lowerer, path, loc, binding.esm),
     loc,
   });
   // CommonJS named imports: Node's namespace snapshots them once the
@@ -2677,8 +2682,8 @@ function lowerIslandLoadCall(
   // deferred the same way (scope-B NI-7d), so a native package's top-level
   // `const x = require("<island>")` does not start Node at boot.
   const load = runsAtModuleEvaluation(expr)
-    ? deferIslandModule(lowerer, path, loc)
-    : loadIslandModule(lowerer, path, loc);
+    ? deferIslandModule(lowerer, path, loc, false)
+    : loadIslandModule(lowerer, path, loc, false);
   return fromIsland(lowerer, load, expr);
 }
 
@@ -3057,8 +3062,8 @@ export function lowerIslandRequireAtStatement(
   if (path === null || module === undefined) return null;
   const loc = locOf(decl);
   const load = runsAtModuleEvaluation(decl)
-    ? deferIslandModule(lowerer, path, loc)
-    : loadIslandModule(lowerer, path, loc);
+    ? deferIslandModule(lowerer, path, loc, false)
+    : loadIslandModule(lowerer, path, loc, false);
   return { kind: "assign", localId: module.global.id, value: load, loc };
 }
 
@@ -3122,7 +3127,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       actions.push({
         kind: "assign",
         localId: binding.global.id,
-        value: deferIslandModule(lowerer, path, loc),
+        value: deferIslandModule(lowerer, path, loc, false),
         loc,
       });
     }

@@ -211,11 +211,16 @@ function buildLibFnSignatures() {
      * writes and calls on island values, argument lists as one dyn array.
      * requireModule(specifier) of @scriptc/node lowers to require too. */
     "nodeIsland.require": { argTypes: [STRING], result: DYN },
+    /** The ES module's namespace, synchronously: require() would answer its
+     * 'module.exports' export when the module has one. */
+    "nodeIsland.requireEsm": { argTypes: [STRING], result: DYN },
     /** process.report, answered by the island (the same process): the
      * diagnostic report object of the running binary. */
     "nodeIsland.processReport": { argTypes: [], result: DYN },
     /** NI-7: a deferred island module (path, boot guards + interface snapshot). */
     "nodeIsland.defer": { argTypes: [STRING, STRING], result: DYN },
+    /** defer for an ES module: the deferred value is its namespace. */
+    "nodeIsland.deferEsm": { argTypes: [STRING, STRING], result: DYN },
     "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
     "nodeIsland.get": { argTypes: [DYN, STRING], result: DYN },
     "nodeIsland.getKey": { argTypes: [DYN, DYN], result: DYN },

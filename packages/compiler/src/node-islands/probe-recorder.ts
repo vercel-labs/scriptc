@@ -572,6 +572,11 @@ exports.probe = function probe(input) {
       files: [...files],
     };
     if (threw !== undefined) { record.throws = threw; results.push(record); continue; }
+    // require() of an ES module whose exports include 'module.exports'
+    // answers that export, not the namespace: an import of the module
+    // binds the namespace (snapshot.ts decides a deferEsm load eager).
+    record.namespace = exportsValue !== null && typeof exportsValue === "object" &&
+      exportsValue[Symbol.toStringTag] === "Module";
     if (!("o" in root)) { record.reason = "its value is not an object"; results.push(record); continue; }
     record.root = root.o;
     // This load changed what an earlier module exports: neither defers (the

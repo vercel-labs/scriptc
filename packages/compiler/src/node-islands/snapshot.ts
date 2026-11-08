@@ -70,7 +70,11 @@ function deferCalls(mod: IrModule): DeferCall[] {
       return;
     }
     const o = v as Record<string, unknown>;
-    if (o["kind"] === "libCall" && o["fn"] === "nodeIsland.defer") found.push(o as DeferCall);
+    if (
+      o["kind"] === "libCall" &&
+      (o["fn"] === "nodeIsland.defer" || o["fn"] === "nodeIsland.deferEsm")
+    )
+      found.push(o as DeferCall);
     for (const k in o) if (k !== "loc" && k !== "type") walk(o[k]);
   };
   walk(mod.functions);
@@ -91,7 +95,8 @@ function fileOf(mod: IrModule, path: string): string {
 }
 
 function makeEager(call: DeferCall): void {
-  (call as { fn: string }).fn = "nodeIsland.require";
+  (call as { fn: string }).fn =
+    call.fn === "nodeIsland.deferEsm" ? "nodeIsland.requireEsm" : "nodeIsland.require";
   call.args.length = 1;
 }
 
@@ -156,7 +161,13 @@ export function finalizeDeferredIslands(
   }
   const config = readProjectConfig(entryPath);
   const publicEnv = new Set(config.nodeIslands.publicEnv);
-  const candidates: { call: DeferCall; path: string; lazy: boolean; gate: string }[] = [];
+  const candidates: {
+    call: DeferCall;
+    path: string;
+    lazy: boolean;
+    gate: string;
+    esmNs: boolean;
+  }[] = [];
   for (const call of calls) {
     const path = fileOf(mod, pathOf(call));
     const pkg = packageDirOf(path);
@@ -171,6 +182,7 @@ export function finalizeDeferredIslands(
       path,
       lazy: evaluate === "lazy",
       gate: gate.ok ? "" : `${gate.reason} in ${gate.file}`,
+      esmNs: call.fn === "nodeIsland.deferEsm",
     });
   }
   let allDeferred = candidates.length === calls.length;
@@ -192,6 +204,8 @@ export function finalizeDeferredIslands(
       if (result === undefined) return "the probe did not load it";
       if (result.throws !== undefined) return `its evaluation throws: ${result.throws}`;
       if (result.root === undefined) return result.reason ?? "the probe did not load it";
+      if (c.esmNs && result.namespace !== true)
+        return "its require() answers a 'module.exports' export, not the ES module namespace the import binds";
       if (
         tree !== undefined &&
         tree.root.length > 1 &&
@@ -323,6 +337,10 @@ export interface ProbeObject {
 export interface ProbeResult {
   path: string;
   root?: number;
+  /** What require() answered is the module namespace (an ES module the
+   * program's import binds). False for CommonJS and for an ES module whose
+   * exports include 'module.exports': require() answers that export. */
+  namespace?: boolean;
   inputs: string[];
   volatile: string[];
   effects: string[];

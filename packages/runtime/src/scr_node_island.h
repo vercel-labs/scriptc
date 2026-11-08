@@ -93,6 +93,7 @@ void scr_process_off_exit_island(uint32_t listener);
  * -1 for the int forms) with the exception pending. The first call loads
  * Node. See scriptc-perf/results/ni-4/ABI.md. */
 ScrDyn *scr_ni_require(ScrStr *path);     /* require(absolute path): the exports */
+ScrDyn *scr_ni_require_esm(ScrStr *path); /* an ES module's namespace, synchronously */
 ScrPromise *scr_ni_import(ScrStr *path);  /* import(absolute path): the namespace */
 /* process.report, answered by the island — which is this same process, so
  * the report's sharedObjects lists the binary's real libraries. Compiler
@@ -405,6 +406,9 @@ bool scr_ni_weak_set(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
  * identity holds for the rest of the program). +1, NULL with an exception
  * pending (an eager load that threw). */
 ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot);
+/* The same for an ES module: the deferred value is its namespace, which
+ * require() does not answer for a module with a 'module.exports' export. */
+ScrDyn *scr_node_island_defer_esm(ScrStr *path, ScrStr *snapshot);
 /* Between the boot and handle units. */
 ScrDyn *scr_ni_stub_new(uint32_t flags, void *stub); /* +1 box over a fresh stub ref */
 void *scr_ni_stub_of(const ScrDyn *value); /* the stub entry of an unmaterialized stub, or NULL */

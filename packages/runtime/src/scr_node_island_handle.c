@@ -987,6 +987,11 @@ static ScrDyn *nh_load(ScrStr *path, int esm) {
 
 ScrDyn *scr_ni_require(ScrStr *path) { return nh_load(path, 0); }
 
+/* An ES module's namespace, synchronously (a static import's load): as
+ * require() answers it, except require() would give the module's
+ * 'module.exports' export for a module that has one. */
+ScrDyn *scr_ni_require_esm(ScrStr *path) { return nh_load(path, 2); }
+
 ScrDyn *scr_ni_process_report(void) {
   ScrStr *specifier = scr_str_new("process", 7);
   ScrDyn *process = nh_load(specifier, 0);

@@ -2685,7 +2685,9 @@ struct Op {
 
 int Load(const char *path, int esm, ScrNodeValue *out) {
   Op op;
-  Local<Value> argv[] = {Utf8(op.e.isolate, path), v8::Boolean::New(op.e.isolate, esm != 0)};
+  /* 0: require() semantics; 1: import() (a promise of the namespace);
+   * 2: the ES module's namespace, synchronously. */
+  Local<Value> argv[] = {Utf8(op.e.isolate, path), v8::Int32::New(op.e.isolate, esm)};
   Local<Value> result;
   bool ok = g_load.Get(op.e.isolate)
                 ->Call(op.e.context, v8::Undefined(op.e.isolate), 2, argv)

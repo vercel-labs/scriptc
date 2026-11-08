@@ -89,6 +89,7 @@ typedef struct {
 typedef struct NbModule {
   char *path;
   uint32_t component; /* per-module mode: modules evaluated together */
+  bool esm;         /* the deferred value is the ES module's namespace */
   bool done;
   NbEnv *env;
   size_t nenv;
@@ -268,7 +269,7 @@ static void nb_materialize(NbModule *m) {
   if (m->nenv > 0 && saved == NULL) nb_oom();
   nb_env_swap(m, saved, false);
   ScrStr *path = scr_str_new(m->path, strlen(m->path));
-  ScrDyn *real = scr_ni_require(path);
+  ScrDyn *real = m->esm ? scr_ni_require_esm(path) : scr_ni_require(path);
   scr_str_release(path);
   nb_env_swap(m, saved, true);
   free(saved);
@@ -419,10 +420,10 @@ static void nb_install(void) {
   scr_atexit(nb_cleanup);
 }
 
-static ScrDyn *nb_eager(ScrStr *path, const char *why) {
+static ScrDyn *nb_eager(ScrStr *path, const char *why, bool esm) {
   if (nb_tracing())
     fprintf(stderr, "[node-islands] evaluating %.*s eagerly: %s\n", (int)path->len, path->data, why);
-  return scr_ni_require(path);
+  return esm ? scr_ni_require_esm(path) : scr_ni_require(path);
 }
 
 static NbStub *nb_new_stub(uint32_t oid, uint32_t flags, bool plain, NbModule *m) {
@@ -446,7 +447,7 @@ static NbStub *nb_new_stub(uint32_t oid, uint32_t flags, bool plain, NbModule *m
   return s;
 }
 
-ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
+static ScrDyn *nb_defer(ScrStr *path, ScrStr *snapshot, bool esm) {
   /* Pass 1: the guards, and the mode. */
   NbCursor c = {snapshot->data, snapshot->data + snapshot->len, false};
   bool lazy = false;
@@ -456,7 +457,8 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
     nb_line_end(&c);
   }
   /* In per-module mode a module can stay deferred while Node runs. */
-  if (!lazy && scr_ni_bridge_loaded() != NULL) return nb_eager(path, "Node is already running");
+  if (!lazy && scr_ni_bridge_loaded() != NULL)
+    return nb_eager(path, "Node is already running", esm);
   nb_install();
   c = (NbCursor){snapshot->data, snapshot->data + snapshot->len, false};
   while (c.p < c.end && !c.bad) {
@@ -470,7 +472,7 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       if (!nb_env_matches(&e)) {
         if (nb_tracing())
           fprintf(stderr, "[node-islands] boot guard failed: env %.*s\n", (int)e.key_len, e.key);
-        return nb_eager(path, "a boot guard failed");
+        return nb_eager(path, "a boot guard failed", esm);
       }
     } else if (tag == 'T') {
       int fd = (int)nb_uint(&c);
@@ -478,7 +480,7 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       if (c.bad) break;
       if ((isatty(fd) == 1) != was) {
         if (nb_tracing()) fprintf(stderr, "[node-islands] boot guard failed: isatty(%d)\n", fd);
-        return nb_eager(path, "a boot guard failed");
+        return nb_eager(path, "a boot guard failed", esm);
       }
     } else if (tag == 'G') {
       size_t len;
@@ -486,15 +488,16 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       uint64_t size = nb_uint(&c);
       uint64_t mtime = nb_uint(&c);
       if (c.bad) break;
-      if (!nb_guard(file, len, size, mtime)) return nb_eager(path, "a boot guard failed");
+      if (!nb_guard(file, len, size, mtime)) return nb_eager(path, "a boot guard failed", esm);
     }
     nb_line_end(&c);
   }
-  if (c.bad) return nb_eager(path, "malformed snapshot");
+  if (c.bad) return nb_eager(path, "malformed snapshot", esm);
   /* Pass 2: the stubs. The module owns a copy of the snapshot text, which
    * the members' keys and strings point into. */
   NbModule *m = calloc(1, sizeof *m);
   if (m == NULL) nb_oom();
+  m->esm = esm;
   m->path = malloc(path->len + 1);
   m->snapshot = malloc(snapshot->len + 1);
   if (m->path == NULL || m->snapshot == NULL) nb_oom();
@@ -566,7 +569,7 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
     free(m->snapshot);
     free(m->path);
     free(m);
-    return nb_eager(path, "malformed snapshot");
+    return nb_eager(path, "malformed snapshot", esm);
   }
   /* Reconciliation order: breadth first from the module's value, so each
    * stub's parent is real before the stub's own member read. */
@@ -607,11 +610,27 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
   return scr_dyn_retain(root->box);
 }
 
+ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
+  return nb_defer(path, snapshot, false);
+}
+
+/* The ES module's deferred namespace (nodeIsland.deferEsm): require() of a
+ * module whose exports include 'module.exports' would answer that export,
+ * so the deferred value loads as the namespace. */
+ScrDyn *scr_node_island_defer_esm(ScrStr *path, ScrStr *snapshot) {
+  return nb_defer(path, snapshot, true);
+}
+
 #else
 
 ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
   (void)snapshot;
   return scr_ni_require(path);
+}
+
+ScrDyn *scr_node_island_defer_esm(ScrStr *path, ScrStr *snapshot) {
+  (void)snapshot;
+  return scr_ni_require_esm(path);
 }
 
 #endif /* !_WIN32 && !__wasi__ */

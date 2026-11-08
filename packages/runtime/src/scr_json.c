@@ -21612,6 +21612,8 @@ struct ScrWeakMap {
 #define SCR_WEAK_HELD UINT32_C(0x80000000)
 /* ...and has not decided yet that the entry is alive. */
 #define SCR_WEAK_PENDING UINT32_C(0x20000000)
+/* Noted, while one analysis runs, as an entry the next look should include. */
+#define SCR_WEAK_CHOSEN UINT32_C(0x08000000)
 /* Weak observers borrow key identities. Values are traced strong edges of
  * their collection; an entry whose value keeps its own key alive is ended by
  * scr_weak_judge ("entries whose value keeps their key alive").
@@ -22032,6 +22034,16 @@ static SCR_TL ScrWeakVec scr_weak_grayed, scr_weak_work;
 static SCR_TL bool scr_weak_judging;
 static SCR_TL size_t scr_weak_judged_live;
 static SCR_TL unsigned char scr_weak_judge_shift;
+/* The last look at every entry did not pay (scr_weak_judge_due), and where
+ * the next sample starts in the index. */
+static SCR_TL bool scr_weak_judge_idle;
+static SCR_TL size_t scr_weak_probe_at;
+/* A sample is 1/SCR_WEAK_PROBE_PART of the index and at least
+ * SCR_WEAK_PROBE_MIN slots; it is looked at up to SCR_WEAK_PROBE_ROUNDS
+ * times, with the entries its values lead to. */
+#define SCR_WEAK_PROBE_PART 128
+#define SCR_WEAK_PROBE_MIN 64
+#define SCR_WEAK_PROBE_ROUNDS 3
 
 static void scr_weak_vec_push(ScrWeakVec *vec, void *item) {
   if (vec->n == vec->cap) {
@@ -22073,6 +22085,20 @@ static ScrWeakEntry *scr_weak_promise_hold_of(void *obj) {
 
 static inline bool scr_weak_black(void *obj) {
   return scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_BLACK;
+}
+
+/* The references the walk follows out of `obj`: the ones the collector
+ * traces, and the promise of a boxed promise. The collector leaves that
+ * edge alone (scr_dyn_trace_v: the box releases its promise itself), but a
+ * promise that reaches a collection as `object` is held through exactly
+ * such a box, and so is the promise a value names through a wide field:
+ * without the edge the walk never reaches a promise key from its value.
+ * The box holds one count of its promise for as long as it is a box, so
+ * every walk of the analysis sees the same edge. */
+static inline void scr_weak_trace(void *obj, const ScrCycType *type, ScrTraceVisit visit) {
+  type->trace(obj, visit, NULL);
+  if (type->kind == SCR_CYC_KIND_DYN && ((ScrDyn *)obj)->kind == SCR_DYN_PROMISE)
+    visit(((ScrDyn *)obj)->v.promise, NULL);
 }
 
 static bool scr_weak_key_alive(const ScrWeakEntry *entry) {
@@ -22151,44 +22177,63 @@ static void scr_weak_restore_all(bool judge) {
   while (scr_weak_work.n) {
     void *obj = scr_weak_work.v[--scr_weak_work.n];
     const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
-    type->trace(obj, scr_weak_black_visit, NULL);
+    scr_weak_trace(obj, type, scr_weak_black_visit);
     if (judge) scr_weak_reached(obj, type);
   }
 }
 
 /* Ends the entries whose key or collection only their values keep alive;
  * returns how many. */
-static size_t scr_weak_judge(void) {
-  if (!scr_weak_index) return 0;
-  size_t slots = scr_weak_index_mask + 1, pending = 0;
+/* An entry the analysis can end: not a hold of this unit's own, and with a
+ * value that has a count to suspend. */
+static inline bool scr_weak_judgeable(const ScrWeakEntry *entry) {
+  return entry && entry->owner != scr_weak_promise_cells &&
+         SCR_RC_COUNT(entry->value) != SCR_RC_IMMORTAL;
+}
+
+/* The entries keyed by `key` that are not being judged join `more`. */
+static void scr_weak_more_keyed(const void *key, ScrWeakVec *more) {
+  ScrWeakKeySlot *slot = scr_weak_key_slot(key);
+  for (ScrWeakEntry *entry = slot ? slot->head : NULL; entry; entry = entry->key_next)
+    if (!(entry->mark & (SCR_WEAK_PENDING | SCR_WEAK_CHOSEN)) && scr_weak_judgeable(entry)) {
+      entry->mark |= SCR_WEAK_CHOSEN;
+      scr_weak_vec_push(more, entry);
+    }
+}
+
+/* Judges the entries of `pend` (each of them judgeable, none twice): the
+ * steps above with "every entry" read as "every entry of `pend`". An entry
+ * outside `pend` holds its value as before, so whatever it reaches counts
+ * as referenced from outside: judging a part of the entries can keep an
+ * entry that judging all of them would end, never the reverse. With
+ * `more`, the entries outside `pend` whose key the walk reached are added
+ * to it, up to `room` of them: an entry of `pend` can depend on those (a
+ * ring of entries, each value holding the next key), so a second look
+ * should include them. `more` is of no use once anything was ended. */
+static size_t scr_weak_judge(const ScrWeakVec *pend, ScrWeakVec *more, size_t room) {
   /* Colors are the collector's, and between its passes every object is
    * black. Nothing runs this during a pass; should that ever change, a
    * collection or a value in the collector's hands is a reason to leave
    * everything alone: the dead set is freed by the pass, not by counts. */
-  for (size_t i = 0; i < slots; i++) {
-    ScrWeakEntry *entry = scr_weak_index[i];
-    if (!entry || SCR_RC_COUNT(entry->value) == SCR_RC_IMMORTAL) continue;
+  for (size_t i = 0; i < pend->n; i++) {
+    ScrWeakEntry *entry = pend->v[i];
     if (!scr_weak_black(entry->owner) || !scr_weak_black(entry->value)) return 0;
   }
-  for (size_t i = 0; i < slots; i++) {
-    ScrWeakEntry *entry = scr_weak_index[i];
-    if (!entry || entry->owner == scr_weak_promise_cells ||
-        SCR_RC_COUNT(entry->value) == SCR_RC_IMMORTAL)
-      continue;
+  for (size_t i = 0; i < pend->n; i++) {
+    ScrWeakEntry *entry = pend->v[i];
     entry->mark |= SCR_WEAK_HELD | SCR_WEAK_PENDING;
     SCR_RC_COUNT(entry->value) -= 1;
-    pending++;
   }
-  if (!pending) return 0;
-  for (size_t i = 0; i < slots; i++) {
-    ScrWeakEntry *entry = scr_weak_index[i];
-    if (!entry || !(entry->mark & SCR_WEAK_PENDING) || !scr_weak_black(entry->value)) continue;
+  if (!pend->n) return 0;
+  for (size_t i = 0; i < pend->n; i++) {
+    ScrWeakEntry *entry = pend->v[i];
+    if (!scr_weak_black(entry->value)) continue;
     scr_cyc_set_color(scr_cyc_hdr(entry->value), SCR_CYC_GRAY);
     scr_weak_vec_push(&scr_weak_grayed, entry->value);
     scr_weak_vec_push(&scr_weak_work, entry->value);
     while (scr_weak_work.n) {
       void *obj = scr_weak_work.v[--scr_weak_work.n];
-      scr_cyc_type(scr_cyc_hdr(obj))->trace(obj, scr_weak_gray_visit, NULL);
+      scr_weak_trace(obj, scr_cyc_type(scr_cyc_hdr(obj)), scr_weak_gray_visit);
     }
   }
   if (scr_weak_promise_cells && scr_weak_promise_cells->entries)
@@ -22198,15 +22243,27 @@ static size_t scr_weak_judge(void) {
       ScrWeakEntry *hold = scr_weak_promise_hold_of(obj);
       if (hold) hold->mark++;
     }
+  if (more) {
+    size_t first = more->n;
+    for (size_t i = 0; i < scr_weak_grayed.n && more->n - first < room; i++) {
+      void *obj = scr_weak_grayed.v[i];
+      if (scr_cyc_type(scr_cyc_hdr(obj))->kind == SCR_CYC_KIND_PROMISE) {
+        ScrWeakEntry *hold = scr_weak_promise_hold_of(obj);
+        if (hold) scr_weak_more_keyed(hold->key, more);
+      }
+      if (scr_weak_maybe_key(obj)) scr_weak_more_keyed(obj, more);
+    }
+    for (size_t i = first; i < more->n; i++) ((ScrWeakEntry *)more->v[i])->mark &= ~SCR_WEAK_CHOSEN;
+  }
   for (size_t i = 0; i < scr_weak_grayed.n; i++) {
     void *obj = scr_weak_grayed.v[i];
     if (scr_weak_black(obj) || SCR_RC_REFS(obj) == 0) continue;
     scr_weak_restore(obj);
     scr_weak_restore_all(true);
   }
-  for (size_t i = 0; i < slots; i++) {
-    ScrWeakEntry *entry = scr_weak_index[i];
-    if (!entry || !(entry->mark & SCR_WEAK_PENDING) || !scr_weak_black(entry->owner) ||
+  for (size_t i = 0; i < pend->n; i++) {
+    ScrWeakEntry *entry = pend->v[i];
+    if (!(entry->mark & SCR_WEAK_PENDING) || !scr_weak_black(entry->owner) ||
         !scr_weak_key_alive(entry))
       continue;
     scr_weak_keep(entry);
@@ -22222,14 +22279,17 @@ static size_t scr_weak_judge(void) {
     scr_weak_restore(obj);
     scr_weak_restore_all(false);
   }
-  ScrWeakVec dead = {0};
-  for (size_t i = 0; i < slots; i++) {
-    ScrWeakEntry *entry = scr_weak_index[i];
-    if (!entry) continue;
-    if (entry->owner == scr_weak_promise_cells) {
-      entry->mark = 0;
-      continue;
+  /* The counts the holds of the promise cells kept. */
+  if (scr_weak_promise_cells && scr_weak_promise_cells->entries)
+    for (size_t i = 0; i < scr_weak_grayed.n; i++) {
+      void *obj = scr_weak_grayed.v[i];
+      if (scr_cyc_type(scr_cyc_hdr(obj))->kind != SCR_CYC_KIND_PROMISE) continue;
+      ScrWeakEntry *hold = scr_weak_promise_hold_of(obj);
+      if (hold) hold->mark = 0;
     }
+  ScrWeakVec dead = {0};
+  for (size_t i = 0; i < pend->n; i++) {
+    ScrWeakEntry *entry = pend->v[i];
     if (entry->mark & SCR_WEAK_PENDING) {
       SCR_RC_COUNT(entry->value) += 1;
       scr_weak_vec_push(&dead, entry);
@@ -22252,9 +22312,45 @@ static size_t scr_weak_judge(void) {
 }
 
 size_t scr_weak_collect_entries(void) {
-  if (scr_weak_judging) return 0;
+  if (scr_weak_judging || !scr_weak_index) return 0;
   scr_weak_judging = true;
-  size_t ended = scr_weak_judge();
+  ScrWeakVec pend = {0};
+  for (size_t i = 0; i <= scr_weak_index_mask; i++)
+    if (scr_weak_judgeable(scr_weak_index[i])) scr_weak_vec_push(&pend, scr_weak_index[i]);
+  size_t ended = scr_weak_judge(&pend, NULL, 0);
+  scr_weak_vec_free(&pend);
+  scr_weak_judging = false;
+  return ended;
+}
+
+/* Judges a part of the entries: the next 1/SCR_WEAK_PROBE_PART of the index
+ * (hashed, so any run of slots is a fair sample of every collection), and,
+ * while nothing was ended, the entries whose keys the walk reached, up to
+ * as many again. Returns how many entries it ended; `*sampled` is how many
+ * it judged. */
+static size_t scr_weak_probe(size_t *sampled) {
+  *sampled = 0;
+  if (scr_weak_judging || !scr_weak_index) return 0;
+  scr_weak_judging = true;
+  size_t slots = scr_weak_index_mask + 1, span = slots / SCR_WEAK_PROBE_PART;
+  if (span < SCR_WEAK_PROBE_MIN) span = slots < SCR_WEAK_PROBE_MIN ? slots : SCR_WEAK_PROBE_MIN;
+  ScrWeakVec pend = {0}, more = {0};
+  for (size_t n = 0; n < span; n++) {
+    ScrWeakEntry *entry = scr_weak_index[scr_weak_probe_at++ & scr_weak_index_mask];
+    if (scr_weak_judgeable(entry)) scr_weak_vec_push(&pend, entry);
+  }
+  size_t ended = 0, room = pend.n;
+  for (unsigned round = 0; pend.n; round++) {
+    bool last = round + 1 == SCR_WEAK_PROBE_ROUNDS || room == 0;
+    more.n = 0;
+    ended = scr_weak_judge(&pend, last ? NULL : &more, room);
+    *sampled = pend.n;
+    if (ended || last || !more.n) break;
+    room = more.n < room ? room - more.n : 0;
+    for (size_t i = 0; i < more.n; i++) scr_weak_vec_push(&pend, more.v[i]);
+  }
+  scr_weak_vec_free(&pend);
+  scr_weak_vec_free(&more);
   scr_weak_judging = false;
   return ended;
 }
@@ -22282,9 +22378,25 @@ static void scr_weak_judge_due(void) {
   scr_typed_ref_flush_parked(); /* a parked capsule holds its referent */
 #endif
   size_t before = scr_weak_heap(), grown = before > base ? before - base : 0;
-  size_t ended = scr_weak_collect_entries();
-  size_t reclaimed = before > scr_weak_heap() ? before - scr_weak_heap() : 0;
-  if (reclaimed < ended) reclaimed = ended;
+  size_t ended = 0, reclaimed = 0;
+  bool all = !scr_weak_judge_idle;
+  if (!all) {
+    /* The last look at every entry ended too little to pay for itself, so
+     * a sample is judged first, and every entry only when the sample says
+     * that would give back a quarter of the growth: entries that stay cost
+     * a walk of the sample, however many they are. */
+    size_t entries = scr_weak_index_used, sampled = 0;
+    ended = scr_weak_probe(&sampled);
+    reclaimed = before > scr_weak_heap() ? before - scr_weak_heap() : 0;
+    if (reclaimed < ended) reclaimed = ended;
+    all = sampled && reclaimed && (reclaimed >= grown || reclaimed * (entries / sampled + 1) * 4 >= grown);
+  }
+  if (all) {
+    ended += scr_weak_collect_entries();
+    reclaimed = before > scr_weak_heap() ? before - scr_weak_heap() : 0;
+    if (reclaimed < ended) reclaimed = ended;
+    scr_weak_judge_idle = reclaimed * 4 < grown;
+  }
   unsigned want = 0;
   while (want < SCR_WEAK_JUDGE_MAX_SHIFT && reclaimed * 4 < (grown >> want)) want++;
   scr_weak_judge_shift = (unsigned char)(want <= scr_weak_judge_shift ? want : scr_weak_judge_shift + 1);

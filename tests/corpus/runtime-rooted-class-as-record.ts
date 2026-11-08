@@ -30,6 +30,7 @@ class Kiln extends EventEmitter {
 
 class LoadedKiln extends Kiln {
   pieces = 12;
+  lid?: string;
 }
 
 class Misfire extends Error {

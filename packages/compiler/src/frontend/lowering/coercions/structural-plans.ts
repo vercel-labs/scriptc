@@ -767,7 +767,10 @@ export function describeRecordWidthBlocker(
  * class rooted in a runtime-provided class (an emitter, an error, a stream)
  * projects the fields its program classes declare, which follow the runtime
  * prefix in the emitted struct, and declines a member the runtime class
- * itself holds. */
+ * itself holds. Such a class projects no absent optional field either: the
+ * runtime class holds members outside its declared field list (an error's
+ * stack, a stream's state), so a name no program class declares is not known
+ * to be absent on the instance. */
 export function objToRecordPlan(
   lowerer: Lowerer,
   className: string,
@@ -779,12 +782,12 @@ export function objToRecordPlan(
   // Reserved slots (%call hybrids, %get:/%set: accessor closures) are
   // not projectable storage.
   if (to.fields.some((f) => f.name.startsWith("%"))) return null;
+  let runtimeRooted = false;
   for (let c: ClassInfo | null = info; c; c = c.base) {
-    if (
-      (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime) &&
-      (c === info || to.fields.some((f) => c.fields.has(f.name)))
-    )
-      return null;
+    if (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime) {
+      if (c === info || to.fields.some((f) => c.fields.has(f.name))) return null;
+      runtimeRooted = true;
+    }
   }
   const key = `obj:${className}:${toId}`;
   if (lowerer.coercions.planning.has(key)) return new Map();
@@ -803,7 +806,7 @@ export function objToRecordPlan(
       }
       const ft = info.fields.get(tf.name);
       if (ft === undefined) {
-        if (tf.type.kind !== "union") return null;
+        if (runtimeRooted || tf.type.kind !== "union") return null;
         const def = lowerer.unions.get(tf.type.unionId);
         const utag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
         if (utag < 0) return null;

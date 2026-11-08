@@ -740,6 +740,9 @@ static void nh_young_flush(void) {
 static pthread_mutex_t nh_freed_lock = PTHREAD_MUTEX_INITIALIZER;
 static void **nh_freed = NULL;
 static size_t nh_nfreed = 0, nh_freed_cap = 0;
+/* How many are queued, for the island thread's test at every entry, which
+ * takes no lock: V8 frees a store on a thread of its own. */
+static atomic_size_t nh_freed_len;
 
 void scr_ni_bytes_free(void *owner) {
   pthread_mutex_lock(&nh_freed_lock);
@@ -751,6 +754,7 @@ void scr_ni_bytes_free(void *owner) {
     nh_freed_cap = cap;
   }
   nh_freed[nh_nfreed++] = owner;
+  atomic_fetch_add_explicit(&nh_freed_len, 1, memory_order_release);
   pthread_mutex_unlock(&nh_freed_lock);
 }
 
@@ -759,6 +763,7 @@ static void nh_drain_freed(void) {
   for (;;) {
     pthread_mutex_lock(&nh_freed_lock);
     void *owner = nh_nfreed > 0 ? nh_freed[--nh_nfreed] : NULL;
+    if (owner != NULL) atomic_fetch_sub_explicit(&nh_freed_len, 1, memory_order_relaxed);
     pthread_mutex_unlock(&nh_freed_lock);
     if (owner == NULL) return;
     /* The store is gone: its reference no longer counts as V8's. */
@@ -789,7 +794,7 @@ static void nh_enter(void) {
   }
   if (nh_nyoung_views > 0) nh_young_flush();
   if (nh_shared()) nh_drop_drain();
-  if (nh_nfreed > 0) nh_drain_freed();
+  if (atomic_load_explicit(&nh_freed_len, memory_order_acquire) > 0) nh_drain_freed();
   if (nh_mine() >= nh_sweep_at) nh_sweep();
   else if (nh_any_young() || nh_idle_storage != NULL) nh_sweep_pins(NH_SWEEP_YOUNG);
 }

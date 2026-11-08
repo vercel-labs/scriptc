@@ -115,6 +115,10 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
  * liveness test, `sweep` runs at every net sweep top. */
 void scr_net_set_proto_sweep(bool (*pending)(void), void (*sweep)(void));
 void scr_net_fire_err(ScrNetLs *l, ScrStr *msg); /* unhandled => exit(1) */
+/* Node's system error (errno, code, syscall and the address, port or
+ * hostname) for a failure message of this unit's shape; NULL for any other
+ * message, +1 otherwise. */
+ScrError *scr_net_system_error(ScrStr *msg);
 
 ScrNetServer *scr_net_server_retain(ScrNetServer *s);
 void scr_net_server_release(ScrNetServer *s);

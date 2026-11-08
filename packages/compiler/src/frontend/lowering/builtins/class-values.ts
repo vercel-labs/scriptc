@@ -1,5 +1,5 @@
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { type ClassInfo } from "../lower-classes.js";
 import { isJsSourceFile } from "../../program.js";
@@ -25,7 +25,7 @@ export type BuiltinClassRef =
  * an imported alias), through parentheses and type assertions. Null for
  * anything else. */
 export function builtinClassRefOf(lowerer: Lowerer, expr: ts.Expression): BuiltinClassRef | null {
-  const e = withoutParenthesesAssertionsNonNull(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   // Checker lookups only: answering must not run the fences and deferred
   // diagnostics of a lowered reference (resolveValueSymbol).
   let symbol: ts.Symbol | undefined;
@@ -85,7 +85,7 @@ export function builtinClassAliasOf(lowerer: Lowerer, symbol: ts.Symbol): Builti
  * runtime slot: new, instanceof, typeof, .name and === lower at each use,
  * and other uses report SC1090. In JavaScript files, a binding whose
  * initializer has a value (`const E = EventEmitter`, `const M =
- * globalThis.Map`, both identity tokens) keeps its slot; only builtin
+ * globalThis.Map`, both function values) keeps its slot; only builtin
  * module members (`zlib.Gzip`) and copies of slotless aliases own none.
  * The `require("events").EventEmitter` and `stream.Writable` spellings
  * keep their own declaration handling. */

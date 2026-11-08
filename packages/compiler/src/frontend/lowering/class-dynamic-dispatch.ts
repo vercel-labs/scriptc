@@ -40,7 +40,11 @@ import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { isSloppyAt } from "./frozen-records.js";
-import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
+import {
+  erasedGenericInstance,
+  implicitDefaultInstance,
+  type GenericFnInfo,
+} from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
@@ -93,7 +97,12 @@ import {
   lowerDynamicEmitterOn,
 } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
-import { STREAM_OPERATORS, operatorSignalOptions, reduceSignalSetup } from "./lower-stream.js";
+import {
+  STREAM_OPERATORS,
+  STREAM_STATE_GETTERS,
+  operatorSignalOptions,
+  reduceSignalSetup,
+} from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
 /** The receiver local of a call rewritten for a getter-only name. */
@@ -162,7 +171,25 @@ const STREAM_NUM_PROPERTIES = new Set([
   "writableCorked",
 ]);
 const streamProperty = (name: string): boolean =>
-  STREAM_BOOL_PROPERTIES.has(name) || STREAM_NUM_PROPERTIES.has(name);
+  STREAM_BOOL_PROPERTIES.has(name) ||
+  STREAM_NUM_PROPERTIES.has(name) ||
+  STREAM_STATE_GETTERS.has(name);
+/** Whether a stream class of these sides has the stream property in Node
+ * (`name in stream`): the readable ones on Readable and the classes that
+ * extend it, the writable ones on Writable and the Duplex kinds,
+ * writableAborted on Writable alone (Duplex copies a fixed list of
+ * Writable's getters), allowHalfOpen on the Duplex kinds, and destroyed
+ * and closed everywhere. */
+const streamClassHasProperty = (sides: "r" | "w" | "rw", name: string): boolean =>
+  name === "writableAborted"
+    ? sides === "w"
+    : name === "allowHalfOpen"
+      ? sides === "rw"
+      : name.startsWith("readable")
+        ? sides !== "w"
+        : name.startsWith("writable")
+          ? sides !== "r"
+          : true;
 
 /** `(instance) => string`, the string a class's inherited
  * Symbol.toStringTag getter answers, which the runtime reads for
@@ -4280,6 +4307,20 @@ export class ClassDynamicDispatch {
                 loc,
               },
             ];
+          if (info.builtinStream !== undefined && streamProperty(name) && dispatch.probe)
+            return [
+              {
+                kind: "return",
+                value: {
+                  kind: "boolLit",
+                  value:
+                    dispatch.probe === "in" && streamClassHasProperty(info.builtinStream, name),
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ];
           if (
             ((info.builtinStream !== undefined && streamProperty(name)) ||
               eventTargetInheritedMember(info, name) ||
@@ -4529,7 +4570,12 @@ export class ClassDynamicDispatch {
         const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
         if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
         if (info.builtinStream)
-          for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
+          for (const name of [
+            ...STREAM_BOOL_PROPERTIES,
+            ...STREAM_NUM_PROPERTIES,
+            ...STREAM_STATE_GETTERS.keys(),
+          ])
+            names.add(name);
         const inherited = eventTargetApiMembers(info);
         if (inherited) for (const name of inherited) names.add(name);
         if (dateRootOf(info))
@@ -6673,6 +6719,23 @@ export class ClassDynamicDispatch {
             loc,
           },
         ];
+      const getter = STREAM_STATE_GETTERS.get(name);
+      // The runtime answers by the stream's class: undefined where Node's
+      // prototype does not define the getter.
+      if (getter !== undefined)
+        return [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "stream.stateDyn",
+              args: [receiver, numLit(getter, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
       return [
         {
           kind: "return",
@@ -7523,6 +7586,11 @@ export class ClassDynamicDispatch {
       !generic.info.implicitParams &&
       generic.info.typeParams.length > 0 &&
       generic.declarer.decl &&
+      // An async generator has no checked-dynamic form: one that leaves
+      // through an untyped value can neither be iterated there nor checked
+      // back into its type. A generic async generator method called by
+      // name keeps the fence instead of answering such a value.
+      !isAsyncGenerator(generic.info.decl) &&
       !lowerer.overrideBelow(info, method)
     ) {
       // A generic method called by name runs its erased instance; a
@@ -7545,7 +7613,13 @@ export class ClassDynamicDispatch {
         collect(info);
         for (const sub of subclasses) {
           const own = sub.genericMethods!.get(method)!;
-          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          if (
+            !sub.decl ||
+            own.implicitParams ||
+            own.typeParams.length === 0 ||
+            isAsyncGenerator(own.decl)
+          )
+            return fence();
           const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
           if (
             subInstance.params.length !== params.length ||
@@ -7712,4 +7786,14 @@ function hasRuntimeHeritage(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base)
     if (current.callableBase) return true;
   return false;
+}
+
+/** `async *f()`: a declaration whose calls answer an async generator. */
+function isAsyncGenerator(decl: GenericFnInfo["decl"]): boolean {
+  return (
+    !ts.isArrowFunction(decl) &&
+    !ts.isAccessor(decl) &&
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true
+  );
 }

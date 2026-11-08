@@ -841,6 +841,22 @@ test("node-types: exec's numeric ExecException.code remains a named fence", asyn
   }
 });
 
+test("node-types: subprocess.stdio is a named fence, also under .length", async () => {
+  // The declared 5-tuple's arity must not answer for Node's array, which
+  // has one entry per configured stdio slot.
+  const dir = outDirFor("node-child-stdio-fences");
+  const entry = join(nodeTypesDir, "child-stdio-fences.ts");
+  const result = await compile(entry, {
+    outPath: join(dir, "child-stdio-fences"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC2020"]);
+  expect(result.diagnostics[0]!.message).toContain("ChildProcess.stdio");
+});
+
 test("node-types: fs functions take URL paths under @types/node's PathLike", async () => {
   const dir = outDirFor("node-fs-url-paths");
   const result = await compile(join(nodeTypesDir, "fs-url-paths.ts"), {

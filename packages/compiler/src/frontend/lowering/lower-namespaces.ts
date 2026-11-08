@@ -44,9 +44,11 @@ import { boundIdentifiersOf } from "./lowerer.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { isIslandImportBinding } from "./lower-node-island.js";
 import type { FileParts } from "./lower-modules.js";
-import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
+import { isCjsJsFile, isJsSourceFile, locOf } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
-import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
+import { nodeGlobalKind } from "./node-values.js";
+import { stdlibGlobalNameOf } from "./surfaces.js";
 
 /** True when this module declaration produces NO runtime construct at all:
  * ambient (`declare namespace/module`, `declare global`, string-named
@@ -287,8 +289,7 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
         stmt.moduleSpecifier !== undefined &&
         ts.isStringLiteral(stmt.moduleSpecifier)
       ) {
-        const dep = resolveImport(
-          lowerer.program,
+        const dep = lowerer.facts.importedModule(
           ts.getSourceFileOfNode(d),
           stmt.moduleSpecifier.text,
         );
@@ -307,7 +308,7 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
       continue;
     const from = ts.getSourceFileOfNode(d);
     if (packageShimFor(from.fileName, stmt.moduleSpecifier.text) === null) continue;
-    const dep = resolveImport(lowerer.program, from, stmt.moduleSpecifier.text);
+    const dep = lowerer.facts.importedModule(from, stmt.moduleSpecifier.text);
     if (dep && !dep.isDeclarationFile && lowerer.fileTag.has(dep)) return dep;
   }
   return null;
@@ -328,7 +329,7 @@ export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.So
     return null;
   const from = ts.getSourceFileOfNode(decl);
   if (!isJsSourceFile(from)) return null;
-  const dep = resolveImport(lowerer.program, from, stmt.moduleSpecifier.text);
+  const dep = lowerer.facts.importedModule(from, stmt.moduleSpecifier.text);
   return dep !== null &&
     !dep.isDeclarationFile &&
     lowerer.fileTag.has(dep) &&
@@ -500,7 +501,8 @@ export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Id
     const sym = lowerer.resolveValueSymbol(root);
     if (!sym) return null;
     if (lowerer.trapBindings.has(sym)) return root;
-    if (lowerer.isStdlibSymbol(sym)) return isTemporalGlobalRoot(lowerer, root, sym) ? root : null;
+    if (lowerer.isStdlibSymbol(sym))
+      return isNodeUndefinedGlobalRoot(lowerer, root, sym) ? root : null;
     if (ambientUndefinedFnSymbolOf(lowerer, root) !== null) return root;
     const decls = sym.declarations;
     if (decls.length === 0) return null;
@@ -515,23 +517,98 @@ export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Id
   }
 }
 
-/** True when `ident` reads the ESNext temporal global, which the program
- * type-checks against TS 7's lib slice (program.ts adds it only to programs
- * that name it) but Node 24 does not define: Node's read throws the
- * catchable ReferenceError "<name> is not defined", so every chain rooted
- * here lowers to that throw (typeof answers "undefined" in lower-exprs). */
-export function isTemporalGlobalRoot(
+/** True when `ident` reads a global the program type-checks against the
+ * library declarations and Node 24 does not define by default: the ESNext
+ * temporal global (TS 7's lib slice, which program.ts adds only to programs
+ * that name it), `localStorage` and `sessionStorage` (behind a flag in Node
+ * 24), a global of a host other than Node that the project's declarations
+ * name. Node's read throws the catchable ReferenceError "<name> is not
+ * defined", so every chain rooted here lowers to that throw, `typeof`
+ * answers "undefined" (typeof.ts) and the global object has no such
+ * property. Which names those are comes from the census of the pinned Node
+ * (node-values.ts), not from a list. */
+export function isNodeUndefinedGlobalRoot(
   lowerer: Lowerer,
   ident: ts.Identifier,
   sym: ts.Symbol | undefined | null,
 ): boolean {
+  // The name is the global's own: a binding that resolves to a global under
+  // another name (`const processAlias = require("node:process")`, a default
+  // import of node:process) reads that global, which Node defines.
   return (
-    ident.text === TEMPORAL_GLOBAL &&
     sym !== undefined &&
     sym !== null &&
-    lowerer.isStdlibSymbol(sym)
+    ts.symbolName(sym) === ident.text &&
+    nodeUndefinedGlobalName(ident.text) &&
+    lowerer.isStdlibSymbol(sym) &&
+    declaresGlobal(sym)
   );
 }
+
+/** Whether `sym` is a binding of the global scope: declared at the top of a
+ * script declaration file or inside `declare global`. An import binding
+ * and an export of an ambient module (`declare module "node:fs"`) are
+ * library symbols too, and are not globals. */
+function declaresGlobal(sym: ts.Symbol): boolean {
+  if ((sym.flags & ts.SymbolFlags.Alias) !== 0) return false;
+  const declarations = sym.declarations.filter(
+    (decl) => !ts.isInterfaceDeclaration(decl) && !ts.isTypeAliasDeclaration(decl),
+  );
+  return declarations.length > 0 && declarations.every(inGlobalScope);
+}
+
+function inGlobalScope(decl: ts.Node): boolean {
+  // The scope a binding declaration introduces its name in: a variable's is
+  // three levels up (declaration list, statement), the others' one. A
+  // property of a declared object type (`execArgv` in `declare var process:
+  // { … }`) is a member, not a binding.
+  let scope: ts.Node | undefined;
+  if (ts.isVariableDeclaration(decl)) scope = decl.parent?.parent?.parent;
+  else if (ts.isFunctionDeclaration(decl) || ts.isClassDeclaration(decl)) scope = decl.parent;
+  // An ambient module (`declare module "node:http"`) is what a default or
+  // namespace import resolves to: a module, not a global.
+  else if (ts.isModuleDeclaration(decl) && ts.isIdentifier(decl.name)) scope = decl.parent;
+  if (scope === undefined) return false;
+  if (ts.isSourceFile(scope)) return scope.externalModuleIndicator === undefined;
+  // `declare global { … }`
+  const owner = ts.isModuleBlock(scope) ? scope.parent : undefined;
+  return (
+    owner !== undefined &&
+    ts.isModuleDeclaration(owner) &&
+    ts.isIdentifier(owner.name) &&
+    owner.name.text === "global"
+  );
+}
+
+/** True when `access` is `globalThis.<name>` (through any spelling of the
+ * global object) for such a global: the property read answers undefined. */
+export function nodeUndefinedGlobalProperty(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): boolean {
+  const name = stdlibGlobalNameOf(lowerer, access);
+  return name !== null && name !== "globalThis" && nodeUndefinedGlobalName(name);
+}
+
+/** Whether the library declarations' global `name` is one Node 24 does not
+ * define by default. The CommonJS wrapper bindings are not properties of the
+ * global object either, but a CommonJS module has them, so they are not
+ * undefined names; scriptc's own primitives are declared for the compiler
+ * and are not Node's. */
+export function nodeUndefinedGlobalName(name: string): boolean {
+  return (
+    nodeGlobalKind(name) === null &&
+    !COMMONJS_MODULE_BINDINGS.has(name) &&
+    !SCRIPTC_PRIMITIVE_GLOBALS.has(name)
+  );
+}
+
+/** The globals ambient/scriptc.d.ts and ambient/scriptc-overrides.d.ts
+ * declare for the compiler itself. */
+const SCRIPTC_PRIMITIVE_GLOBALS: ReadonlySet<string> = new Set([
+  "comptime",
+  "__scriptcInferredCollections",
+]);
 
 /** The declaration-classification form of ambientUndefVarRootOf: the root
  * that makes `decl` a TRAP BINDING — its initializer provably throws the

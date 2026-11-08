@@ -57,6 +57,8 @@ export interface NativeLinkFeatures {
   /** existsSync over a path value that is not statically a string:
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -75,6 +77,9 @@ export interface NativeLinkFeatures {
    * scr_node_island.c, which join the island's process.stdout.write and
    * process.stderr.write to the program's write slots. */
   stdioObject?: boolean;
+  /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
+   * which installs Node's pipe lifecycle into the stream unit. */
+  streamPipeEvents?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
@@ -115,6 +120,9 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** process.features read as a value links scr_process_features.c (the
+   * stable flags object); absent (false) otherwise. */
+  processFeatures?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */
@@ -126,6 +134,10 @@ export interface NativeLinkFeatures {
    * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
    * (false) otherwise. */
   childErrorFields?: boolean;
+  /** pause(), resume(), isPaused() or readableFlowing on a child's output
+   * stream selects scr_child.c's SCR_CHILD_STREAM_FLOW build; absent (false)
+   * otherwise. */
+  childStreamFlow?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** The executable carries debug sources (`--optimization dev` without

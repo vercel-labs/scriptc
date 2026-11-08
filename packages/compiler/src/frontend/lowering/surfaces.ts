@@ -2233,6 +2233,36 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     v8: {
       getHeapStatistics: { fn: "process.memoryUsageTake", params: [], result: VOID },
     },
+    // node:module's compile cache family (lowerCompileCacheCall in
+    // builtins/module-resolution.ts completes a call; these rows carry the
+    // function values). A compiled program loads no JavaScript to cache:
+    // enableCompileCache validates its argument as Node does and answers the
+    // DISABLED status, getCompileCacheDir answers undefined and
+    // flushCompileCache writes nothing. The module's other members keep
+    // their own lowerings (createRequire, isBuiltin, builtinModules,
+    // syncBuiltinESMExports).
+    module: {
+      enableCompileCache: {
+        fn: "module.compileCacheEnable",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+      },
+      getCompileCacheDir: {
+        fn: "module.compileCacheDir",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      flushCompileCache: {
+        fn: "module.compileCacheFlush",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 0,
+      },
+    },
     // node:stream/web re-exports the web stream globals (the same objects);
     // its members lower through the globals' own paths.
     "stream/web": {},
@@ -3008,6 +3038,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the compatibility target's release metadata as one stable read-only object",
     },
     {
+      id: "node-builtin.process.features",
+      kind: "node-builtin",
+      name: "process.features",
+      fns: ["process.features"],
+      note: "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node",
+    },
+    {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",
@@ -3229,6 +3266,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "os.constants",
       fns: ["os.constants"],
       note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
+    },
+    // module.constants is a VALUE read too: the frozen null-prototype object
+    // that holds compileCacheStatus.
+    {
+      id: "node-builtin.module.constants",
+      kind: "node-builtin",
+      name: "module.constants",
+      fns: ["module.compileCacheConstants"],
+      note: "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED",
     },
     // fs.constants as a value, and its members beyond the baked access-mode
     // bits: the target libc's null-prototype constants object.
@@ -3587,7 +3633,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   child_process: {
     execFile:
       "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; " +
-      "maxBuffer is not enforced by the growing native capture; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
+      "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
     ...Object.fromEntries(

@@ -138,7 +138,7 @@ Read a row's verification basis before acting:
 - `test-backed` — mapped to implementation and relevant tests. Audit the exact overload or behavior before broadening a `partial` claim.
 - `island-test-backed` — mapped to an island-specific implementation path and differential tests that run under the pinned Node and as a compiled island binary; the evidence names the tests, and a build without islands keeps the refusal.
 - `explicit-refusal` — source-verified refusal boundary.
-- `verified-absence` — a runtime presence test confirms absence.
+- `verified-absence` — a test confirms absence: an implementation-owned manifest entry names the diagnostics snapshot (or runtime presence test) that pins the refusal a use of the API gets.
 - `declared-gap` — an implementation-owned manifest explicitly declares the gap; it is ready for implementation.
 - `registry-gap` — no implementation registry entry matched. Verify the gap before implementing: it may be an incomplete manifest or symbol match.
 - `architectural-policy` — explicit intentional exclusion.

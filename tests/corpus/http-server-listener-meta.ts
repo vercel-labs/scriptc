@@ -66,6 +66,42 @@ console.log("timeout property", guard.timeout);
 console.log("timeout listeners", guard.listeners("timeout").length);
 guard.off("newListener", timeoutBoom);
 
+// listen(..., callback) adds the callback with once('listening', ...) before
+// it binds, so 'newListener' fires for it, and a handler that throws escapes
+// the call and the server does not listen. The port, host and path forms
+// each add the callback this way. A net server has no listener of its own
+// on 'listening' (an HTTP server has Node's connection tracking there).
+const listenGuard = net.createServer();
+const listenEvents: string[] = [];
+listenGuard.on("newListener", (event: string) => listenEvents.push(event));
+const listenBoom = (event: string) => {
+  if (event === "listening") throw new Error("listen boom");
+};
+listenGuard.on("newListener", listenBoom);
+try {
+  listenGuard.listen(0, () => console.log("unexpected listening"));
+  console.log("unexpected listen");
+} catch (e) {
+  console.log("aborted listen", (e as Error).message);
+}
+try {
+  listenGuard.listen(0, "127.0.0.1", () => console.log("unexpected host listening"));
+  console.log("unexpected host listen");
+} catch (e) {
+  console.log("aborted host listen", (e as Error).message);
+}
+try {
+  listenGuard.listen("listen-guard-never-bound.sock", () =>
+    console.log("unexpected path listening"),
+  );
+  console.log("unexpected path listen");
+} catch (e) {
+  console.log("aborted path listen", (e as Error).message);
+}
+console.log("listen events", listenEvents.join(","));
+console.log("listen state", listenGuard.listening, listenGuard.listeners("listening").length);
+listenGuard.off("newListener", listenBoom);
+
 // once('newListener') fires for the next add only.
 const onceSeen: string[] = [];
 server.once("newListener", (event: string) => onceSeen.push(event));

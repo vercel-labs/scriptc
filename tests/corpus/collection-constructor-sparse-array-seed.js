@@ -29,20 +29,9 @@ console.log("spread:", [...seed].join(","));
 const [first, ...rest] = seed;
 console.log("rest:", first, rest.join(","));
 
-// Map.prototype is patched only after this construction, so the map is built
-// before %Map.prototype% exists and takes the native bulk path too.
+// The map is built from a seed with a hole the same way.
 const mapSeed = sparseSeed('[["a",1],["b",2]]', () => ["b", 2]);
 const map = new Map(mapSeed);
-function patchMap() {
-  const original = Map.prototype.set;
-  Object.defineProperty(Map.prototype, "set", {
-    configurable: true,
-    get() {
-      return original;
-    },
-  });
-}
-patchMap();
 console.log("map:", map.size, map.get("a"), map.get("b"));
 
 console.log("getter calls:", calls);

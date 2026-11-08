@@ -18,6 +18,8 @@ export function buildArrayConversion(
   initial: IrExpr,
   append: (element: IrExpr, index: IrExpr, result: IrExpr) => IrExpr,
   loc: SrcLoc,
+  // Statements that run before each element is read.
+  check: (index: IrExpr) => IrStmt[] = () => [],
 ): IrFunction {
   const input = varRef("a.0", source, loc);
   const result = varRef("out.0", initial.type, loc);
@@ -40,6 +42,7 @@ export function buildArrayConversion(
         loc,
       },
       countedFor(loc, varRef("n.0", F64, loc), (index) => [
+        ...check(index),
         {
           kind: "exprStmt",
           expr: append(

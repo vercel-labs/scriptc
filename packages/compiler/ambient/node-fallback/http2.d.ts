@@ -54,11 +54,13 @@ declare module "http2" {
      * response IS this parser's response handle. */
     statusCode: number;
     statusMessage: string;
-    setHeader(name: string, value: string | number): void;
+    setHeader(name: string, value: number | string | readonly string[]): void;
     getHeader(name: string): string | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
     getHeaders(): import("http").OutgoingHttpHeaders;
+    /* the stream's idle timeout; the callback is a 'timeout' listener */
+    setTimeout(msecs: number, callback?: () => void): void;
     hasHeader(name: string): boolean;
     removeHeader(name: string): void;
     writeHead(
@@ -460,6 +462,7 @@ declare module "http2" {
     destroy(): void;
     readonly closed: boolean;
     readonly destroyed: boolean;
+    readonly connecting: boolean;
     readonly encrypted: boolean;
     readonly type: number;
     readonly alpnProtocol: string;
@@ -468,7 +471,14 @@ declare module "http2" {
     ref(): void;
     unref(): void;
     setTimeout(msecs: number, callback?: () => void): void;
-    ping(callback: (err: Error | null, duration: number, payload: Uint8Array) => void): boolean;
+    /* A cancelled ping (sent while connecting, after close(), or open when
+     * the session goes away) calls back with the error alone, as Node
+     * does: duration and payload are then undefined. */
+    ping(callback: (err: Error | null, duration?: number, payload?: Buffer) => void): boolean;
+    ping(
+      payload: Uint8Array,
+      callback: (err: Error | null, duration?: number, payload?: Buffer) => void,
+    ): boolean;
     /* The settings surface rides the checked-dynamic machinery (records
      * cross as dyn values — the suite's mustCall listeners are dyn). */
     settings(settings?: any, callback?: any): void;
@@ -807,7 +817,8 @@ declare module "http2" {
   ): ClientHttp2Session;
 
   export function getDefaultSettings(): any;
-  export function getPackedSettings(settings: Record<string, number | boolean>): Uint8Array;
+  export function getPackedSettings(settings?: any): Buffer;
+  export function getUnpackedSettings(buf: Uint8Array): any;
   export const sensitiveHeaders: unique symbol;
 }
 

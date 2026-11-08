@@ -43,13 +43,15 @@ test("a download that fails twice with 504 succeeds on the third attempt", async
   expect(run.requests()).toBe(3);
   expect(run.waits).toEqual(RETRY_DELAYS_MS.slice(0, 2));
   expect(run.messages).toEqual([
-    "download of the input failed (504 Gateway Time-out); attempt 2 of 5 in 5 s",
-    "download of the input failed (504 Gateway Time-out); attempt 3 of 5 in 15 s",
+    "download of the input failed (504 Gateway Time-out); attempt 2 of 7 in 5 s",
+    "download of the input failed (504 Gateway Time-out); attempt 3 of 7 in 15 s",
   ]);
 });
 
-test("a download that fails five times reports a transient failure with the last status", async () => {
+test("a download that fails seven times reports a transient failure with the last status", async () => {
   const run = harness([
+    gatewayTimeout,
+    gatewayTimeout,
     gatewayTimeout,
     gatewayTimeout,
     gatewayTimeout,
@@ -59,12 +61,12 @@ test("a download that fails five times reports a transient failure with the last
   await expect(
     download(url, "the input", { ...run.options, hint: "populate the cache" }),
   ).rejects.toThrow(
-    `could not download the input (${url}): transient download failure after 5 attempts, ` +
+    `could not download the input (${url}): transient download failure after 7 attempts, ` +
       "last: 503 Service Unavailable; populate the cache",
   );
-  expect(run.requests()).toBe(5);
-  expect(run.waits).toEqual(RETRY_DELAYS_MS);
-  expect(RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0)).toBe(110_000);
+  expect(run.requests()).toBe(7);
+  expect(run.waits).toEqual([5_000, 15_000, 30_000, 60_000, 120_000, 240_000]);
+  expect(RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0)).toBe(470_000);
 });
 
 test("every transient status is retried", async () => {
@@ -93,20 +95,20 @@ test("a network error is retried, and the last one is the cause of the final err
   const recovered = harness([refused, () => new Response("ok")]);
   expect((await download(url, "the input", recovered.options)).toString()).toBe("ok");
   expect(recovered.messages).toEqual([
-    "download of the input failed (fetch failed (ECONNREFUSED)); attempt 2 of 5 in 5 s",
+    "download of the input failed (fetch failed (ECONNREFUSED)); attempt 2 of 7 in 5 s",
   ]);
 
-  const run = harness([refused, refused, refused, refused, refused]);
+  const run = harness([refused, refused, refused, refused, refused, refused, refused]);
   const error = await download(url, "the input", run.options).then(
     () => undefined,
     (thrown: Error) => thrown,
   );
   expect(error?.message).toBe(
-    `could not download the input (${url}): transient download failure after 5 attempts, ` +
+    `could not download the input (${url}): transient download failure after 7 attempts, ` +
       "last: fetch failed (ECONNREFUSED)",
   );
   expect(error?.cause).toBeInstanceOf(TypeError);
-  expect(run.requests()).toBe(5);
+  expect(run.requests()).toBe(7);
 });
 
 test("a body that ends early is retried", async () => {
@@ -121,7 +123,7 @@ test("a body that ends early is retried", async () => {
   const run = harness([broken, () => new Response("ok")]);
   expect((await download(url, "the input", run.options)).toString()).toBe("ok");
   expect(run.messages).toEqual([
-    "download of the input failed (200, then terminated); attempt 2 of 5 in 5 s",
+    "download of the input failed (200, then terminated); attempt 2 of 7 in 5 s",
   ]);
 });
 

@@ -53,6 +53,7 @@ import {
 } from "./lower-timers.js";
 import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
+import { lowerOpenEnumeration } from "./open-enumerations.js";
 import { InternalCompilerError } from "../../errors.js";
 import {
   isFsStreamMember,
@@ -7446,7 +7447,7 @@ export function lowerPromiseMethodCall(
         ? {
             kind: "dynCall",
             callee: { kind: "varRef", localId: rLocal.id, type: DYN, loc },
-            calleeName: jsFuncNameOf(rejectedNode!) ?? "onRejected",
+            calleeName: jsFuncNameOf(rejectedNode!, undefined, { spelling: true }) ?? "onRejected",
             args: [
               {
                 kind: "caughtToDyn",
@@ -7516,7 +7517,8 @@ export function lowerPromiseMethodCall(
             {
               kind: "dynCall",
               callee: { kind: "varRef", localId: fLocal.id, type: DYN, loc },
-              calleeName: jsFuncNameOf(fulfilledNode!) ?? "onFulfilled",
+              calleeName:
+                jsFuncNameOf(fulfilledNode!, undefined, { spelling: true }) ?? "onFulfilled",
               args: [arg],
               type: DYN,
               loc,
@@ -7684,7 +7686,8 @@ export function lowerPromiseMethodCall(
           value: {
             kind: "dynCall",
             callee: { kind: "varRef", localId: cbLocal.id, type: DYN, loc },
-            calleeName: jsFuncNameOf(call.arguments.nodes[0]!, lowerer) ?? "onFulfilled",
+            calleeName:
+              jsFuncNameOf(call.arguments.nodes[0]!, lowerer, { spelling: true }) ?? "onFulfilled",
             args: handlerArgs,
             type: DYN,
             loc,
@@ -7999,7 +8002,8 @@ export function lowerPromiseMethodCall(
             value: {
               kind: "dynCall",
               callee: { kind: "varRef", localId: cbLocal.id, type: DYN, loc },
-              calleeName: jsFuncNameOf(call.arguments.nodes[0]!, lowerer) ?? "onRejected",
+              calleeName:
+                jsFuncNameOf(call.arguments.nodes[0]!, lowerer, { spelling: true }) ?? "onRejected",
               args: [
                 {
                   kind: "caughtToDyn",
@@ -10676,6 +10680,12 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+  }
+  // An open spread value whose pairs or values go straight to bindings
+  // that take them as they are (open-enumerations.ts).
+  if (member !== "keys") {
+    const open = lowerOpenEnumeration(lowerer, call);
+    if (open !== null) return open;
   }
   // A CHECKED-DYNAMIC argument — the checker may still spell a record
   // type (the JS file-scope object-literal identity story stores the

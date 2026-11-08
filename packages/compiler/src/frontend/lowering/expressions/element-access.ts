@@ -431,7 +431,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       ((receiver.type.kind === "map" || receiver.type.kind === "set") &&
         lowerer.dynConvertible(receiver.type))
     ) {
-      const fnName = jsFuncNameOf(expr.expression);
+      const fnName = jsFuncNameOf(expr.expression, lowerer);
       receiver = {
         kind: "dynFrom",
         value: receiver,
@@ -479,7 +479,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     }
     if (receiver?.type.kind === "func" && lowerer.dynConvertible(receiver.type)) {
       const loc = locOf(expr);
-      const fnName = jsFuncNameOf(expr.expression);
+      const fnName = jsFuncNameOf(expr.expression, lowerer);
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: receiver,

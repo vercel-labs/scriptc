@@ -769,6 +769,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the declarations that carry a configured binding's name",
   ),
+  scan(
+    "frontend/lowering/open-enumerations.ts#analyzeOpenEnumerations",
+    2,
+    "prefilter",
+    "an enumeration of an open spread value spells `...` and `Object.entries` or `Object.values`; the result types the bindings that take its values",
+  ),
   decides(
     "frontend/lowering/partial-assertions.ts#partialTargetOf",
     1,

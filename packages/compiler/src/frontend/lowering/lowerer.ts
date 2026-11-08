@@ -299,6 +299,7 @@ import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./r
 import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
+import { analyzeOpenEnumerations } from "./open-enumerations.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
@@ -2680,15 +2681,79 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
   return (ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name === undefined;
 }
 
-/** The name V8 gives a function value read from this expression: its own
- * definition, through parenthesized, rebindable and const bindings and
- * property reads (`process.cwd`), or the binding an anonymous definition
- * initializes. Null when the source does not determine it. */
-export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
-  // Typed source cannot read a function's `name` (SC2020), so the names below
-  // are unobservable there; keeping them JavaScript-only leaves every typed
-  // program's output byte-identical.
+/** How jsFuncNameOf reads its node. */
+export interface FuncNameQuery {
+  /** The source spelling of a callee for an error message: a reference
+   * the source does not tie to a definition answers its own spelling. */
+  readonly spelling?: true;
+  /** Every naming form of an anonymous definition, in TypeScript too: the
+   * JavaScript name a typed function carries beside its stack-frame name
+   * (noted where the function is lifted, for function-names.ts). */
+  readonly everyForm?: true;
+}
+
+/** Whether a declaration only describes a value that exists elsewhere (a
+ * declaration file, or `declare`): the value is named as it is declared. */
+function isAmbientDeclaration(declaration: ts.Node): boolean {
+  return (
+    ts.getSourceFileOfNode(declaration).isDeclarationFile ||
+    (ts.getCombinedModifierFlags(declaration as ts.Declaration) & ts.ModifierFlags.Ambient) !== 0
+  );
+}
+
+/** Whether the identifier's own spelling is the name of the function it
+ * holds: it names a class, or a value an ambient declaration describes. A
+ * parameter, a destructured binding, a binding assigned after its
+ * declaration and a binding without an initializer hold whichever function
+ * the program put there, which only the function itself can name. */
+function identifierNamesItsValue(lowerer: Lowerer, ident: ts.Identifier): boolean {
+  const declaration = lowerer.resolveValueSymbol(ident)?.valueDeclaration;
+  if (!declaration) return true;
+  if (ts.isVariableDeclaration(declaration)) return isAmbientDeclaration(declaration);
+  return !ts.isParameter(declaration) && !ts.isBindingElement(declaration);
+}
+
+/** Whether a property read answers a function named as the property: the
+ * property is a method the program defines, a function or class a module
+ * or namespace exports, or a member an ambient declaration describes. A
+ * field, an index-signature slot or an accessor holds whichever function
+ * the program stored, which only the function itself can name. */
+function propertyNamesItsValue(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  const declarations = lowerer.checker.getSymbolAtLocation(access.name)?.declarations ?? [];
+  return (
+    declarations.length > 0 &&
+    declarations.every(
+      (declaration) =>
+        ts.isMethodDeclaration(declaration) ||
+        ts.isFunctionDeclaration(declaration) ||
+        ts.isClassDeclaration(declaration) ||
+        isAmbientDeclaration(declaration),
+    )
+  );
+}
+
+/** The `name` of the function value this expression reads, when the source
+ * proves which definition it is: the definition itself, a declared
+ * function or class, a binding that is never assigned again and that an
+ * anonymous definition initializes (which names it, V8's SetFunctionName)
+ * or that aliases such a reference, a method read through its declaration,
+ * or a member an ambient declaration describes (`process.cwd`). Null when
+ * the source does not determine it: the value then answers with its own
+ * name at run time (the closure-name table, LlEmitter.closureNames), so a
+ * function read through a parameter, a field, an element or a binding
+ * assigned later is never named after the place it is read from. */
+export function jsFuncNameOf(
+  node: ts.Node,
+  lowerer?: Lowerer,
+  query: FuncNameQuery = {},
+): string | null {
   const js = isJsSourceFile(ts.getSourceFileOfNode(node));
+  const spelling = query.spelling === true;
+  // A typed program's stack frames are named by sourceName, so the forms
+  // below that only JavaScript's frames used keep that scope there; the
+  // JavaScript name they give a typed function is its displayName
+  // (function-names.ts), which asks for every form.
+  const everyForm = js || query.everyForm === true;
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
   const seen = new Set<ts.Symbol>();
@@ -2701,28 +2766,29 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       n = declaration;
       break;
     }
-    // A binding element or a parameter holds the default's value only when the
-    // destructured value or the argument was undefined; otherwise it holds the
-    // source's value. Which one ran is a runtime fact, so a default never
-    // answers for the binding: when it runs, the definition it created was
-    // already named after the binding, and a named definition it references
-    // keeps the name it spells. A default the source overrides must not lend
-    // its name to the supplied value (`const [x = function unused() {}] =
-    // [function supplied() {}]` is "supplied"), so this answers null and the
-    // name read takes the runtime value's own name.
-    // Without a default the spelling is wrong for every value the binding can
-    // hold, but that shape has no pattern-default signature and is a separate
-    // change; it keeps the previous answer here.
-    if (js && declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
-      if (!declaration.initializer) break;
+    // A binding element or a parameter holds the function the caller or the
+    // destructured value supplied, or its default's value when that was
+    // undefined. Which one it holds is a runtime fact, so the binding never
+    // answers: a default that runs named its definition after the binding
+    // when it created it, and a supplied function keeps its own name
+    // (`const [x = function unused() {}] = [function supplied() {}]` is
+    // "supplied").
+    if (declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
+      if (spelling && !(js && declaration.initializer)) break;
       return null;
     }
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
+    // A binding the program assigns again holds the function assigned last.
+    if (
+      !spelling &&
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 &&
+      !bindingNeverReassigned(lowerer.bindingScope(), symbol, declaration)
+    )
+      return null;
     let value: ts.Node = declaration.initializer;
     while (ts.isParenthesizedExpression(value)) value = value.expression;
     // Name inference (V8's SetFunctionName) covers an ANONYMOUS function or
-    // class definition and nothing else: the binding names it, so a
-    // rebindable binding keeps the binding's spelling below. Any other
+    // class definition and nothing else: the binding names it. Any other
     // initializer is a value that carries its own name — a named
     // definition, a builtin function (`var a = String; a.name` is
     // "String") or another binding (`var a = b` keeps b's name) — and
@@ -2737,8 +2803,12 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     n = value;
   }
-  if (ts.isIdentifier(n)) return n.text;
-  if (ts.isPropertyAccessExpression(n)) return n.name.text;
+  if (ts.isIdentifier(n)) {
+    return spelling || !lowerer || identifierNamesItsValue(lowerer, n) ? n.text : null;
+  }
+  if (ts.isPropertyAccessExpression(n)) {
+    return spelling || !lowerer || propertyNamesItsValue(lowerer, n) ? n.name.text : null;
+  }
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
   if (ts.isClassExpression(n) && n.name) return n.name.text;
   if (ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassExpression(n)) {
@@ -2760,11 +2830,11 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     // does an object-assignment shorthand (`({ a = function () {} } = o)`)
     // and a plain identifier assignment (`a = function () {}`). A member
     // target never names one: only an identifier reference does.
-    if (js && p && ts.isParameter(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
+    if (everyForm && p && ts.isParameter(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
     if (
-      js &&
+      everyForm &&
       p &&
       ts.isShorthandPropertyAssignment(p) &&
       p.objectAssignmentInitializer === outer &&
@@ -2773,7 +2843,7 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       return p.name.text;
     }
     if (
-      js &&
+      everyForm &&
       p &&
       ts.isBinaryExpression(p) &&
       p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -3438,7 +3508,9 @@ export class Lowerer {
   runtimeOptionalNarrowings: readonly RuntimeOptionalNarrowing[] = [];
   /** JavaScript bindings assigned values outside their declared type
    * (analyzeJsWidenedBindings): checked-dynamic storage, and reads keep the
-   * stored value instead of narrowing it to the checker's type. */
+   * stored value instead of narrowing it to the checker's type. Also the
+   * TypeScript bindings that take the values of an open spread value's
+   * enumeration as they are (analyzeOpenEnumerations). */
   readonly jsWidenedBindings = new Set<ts.Symbol>();
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
@@ -8888,6 +8960,27 @@ export class Lowerer {
     }
   }
 
+  /** The bindings that take the pairs or values of an open spread value's
+   * enumeration as they are, checked-dynamic, instead of the element type
+   * the checker inferred from the literal's members (open-enumerations.ts). */
+  analyzeOpenEnumerations(parts: FileParts[]): void {
+    analyzeOpenEnumerations(
+      this,
+      parts,
+      (symbol, type) => {
+        // This decides the binding's storage, whatever the optional-read
+        // analysis made of the checker's element type before.
+        this.runtimeOptionalBindingTypes.set(symbol, type);
+        // A read of the value answers what the binding holds: the
+        // checker's type at the read does not describe it.
+        if (type.kind === "dyn") this.jsWidenedBindings.add(symbol);
+      },
+      (pattern, type) => {
+        this.runtimeOptionalPatternTypes.set(pattern, type);
+      },
+    );
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = this.runtimeOptionalProvenance;
     // The site whose value the current promotion follows (debug only).
@@ -12428,6 +12521,7 @@ export class Lowerer {
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
       this.analyzeJsWidenedBindings(parts);
+      this.analyzeOpenEnumerations(parts);
     });
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
@@ -13126,6 +13220,7 @@ export class Lowerer {
         this.analyzeDateJsonResults(parts);
         this.analyzeGuardedRecordReadGlobals(parts);
         this.analyzeJsWidenedBindings(parts);
+        this.analyzeOpenEnumerations(parts);
       });
       // Decorated classes analyze post-collection here too: the %init seeds
       // lower the decoration calls, whose edges (decorator bodies, construct

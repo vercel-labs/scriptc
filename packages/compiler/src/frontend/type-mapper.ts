@@ -9874,6 +9874,24 @@ function dictSpreadSourceTs(checker: ts.TypeChecker, e: ts.Expression, depth: nu
   );
 }
 
+/** Whether `type` is the type of an object literal that spreads a value
+ * with a string index signature, or another such literal: the literals
+ * dictSpreadLiteralShape may build as open objects, judged on checker types
+ * alone. */
+export function spreadsDictSource(checker: ts.TypeChecker, type: ts.Type): boolean {
+  const symbol = type.getSymbol();
+  if (!symbol || (symbol.flags & ts.SymbolFlags.ObjectLiteral) === 0) return false;
+  const literal = symbol.declarations.find((d): d is ts.ObjectLiteralExpression =>
+    ts.isObjectLiteralExpression(d),
+  );
+  return (
+    literal !== undefined &&
+    literal.properties.nodes.some(
+      (p) => ts.isSpreadAssignment(p) && dictSpreadSourceTs(checker, p.expression, 0),
+    )
+  );
+}
+
 /** The first-seen accessor key order of a shape with accessor slots. */
 function adoptAccessorOrder(shape: IrRecordShape | undefined, order: string[] | undefined): void {
   if (shape !== undefined && order !== undefined && shape.accessorOrder === undefined)

@@ -108,6 +108,8 @@ export interface ShapeHost {
   /** Whether compact class instances live in the program-lifetime region
    * (LlEmitter.compactRegion). */
   compactRegion?(): boolean;
+  /** The program links Node islands (IrModule.nodeIsland). */
+  nodeIslands?(): boolean;
   /** Byte offset from an object pointer back to ScrCycHdr.buf. */
   readonly cycleBufOffset: number;
   declare(decl: string): void;
@@ -1246,8 +1248,17 @@ export function traceArg(host: ShapeHost, t: IrType): string {
   return traceAdapter(host, t) ?? "null";
 }
 
-/** Keep native capsule edges visible when the referent is cycle-capable. */
+/** Keep native capsule edges visible when the referent is cycle-capable.
+ * In a program that links Node islands a generator's dynamic value is the
+ * island iterator it is paired with, when it steps one
+ * (scr_node_island_iter_ref takes the capsule constructor's arguments). */
 export function typedRefConstructor(host: ShapeHost, t: IrType): string {
+  if (t.kind === "generator" && host.nodeIslands?.() === true) {
+    host.declare(
+      `declare ptr @scr_node_island_iter_ref(ptr, ptr, ptr, ptr, ${host.sizeType}, ptr, ptr)`,
+    );
+    return "@scr_node_island_iter_ref";
+  }
   const observed =
     t.kind === "record" ||
     t.kind === "array" ||

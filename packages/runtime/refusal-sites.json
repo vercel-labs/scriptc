@@ -1554,6 +1554,12 @@
   "code": "SC8010"
  },
  {
+  "file": "scr_node_island_handle.c",
+  "function": "scr_node_island_for_in_keys",
+  "message": "for-in over the namespace of an ES module that a Node island loaded with require() is not supported yet (the namespace carries the '__esModule' key Node adds, which the module's own namespace does not have)",
+  "code": "SC1090"
+ },
+ {
   "file": "scr_perf.c",
   "function": "scr_perf_get_mark",
   "message": "performance.measure with the '%.*s' Node timing milestone is not supported yet",

@@ -193,6 +193,10 @@ static const ScrNodeBridge *nh_bridge(void) { return scr_ni_bridge(); }
  * its memory (`keyed`). */
 /* NH_PIN_NATIVE_ERROR: an error native code made, pinned to the V8 error it
  * crossed as (scr_ni_error_link). The others are views of V8 values. */
+/* NH_PIN_ITER pairs an island iterator with the native generator the
+ * program holds it as (scr_node_island_iter_pair). Its object is the
+ * generator's capsule, and the index finds it by the generator. One island
+ * iterator can carry one such pin for each generator type it was given. */
 enum {
   NH_PIN_PROMISE = 1,
   NH_PIN_ERROR = 2,
@@ -200,6 +204,7 @@ enum {
   NH_PIN_BUFFER = 4,
   NH_PIN_SYMBOL = 5,
   NH_PIN_NATIVE_ERROR = 6,
+  NH_PIN_ITER = 7,
 };
 
 /* One table for every thread (K4). A runtime object has a plain reference
@@ -320,6 +325,21 @@ static uintptr_t nh_pin_key(const void *obj, int kind) {
   return (uintptr_t)obj | (kind == NH_PIN_BUFFER ? 1u : 0u);
 }
 
+/* What the index finds a pin by: its object, and for an iterator the
+ * native generator its capsule holds (the program holds the generator, and
+ * boxes it anew each time it becomes a dynamic value). */
+static const void *nh_pin_keyed(const void *obj, int kind) {
+  return kind == NH_PIN_ITER ? ((const ScrDyn *)obj)->v.typed_ref.ptr : obj;
+}
+
+/* The iterator pins of every thread. A program whose island iterators stay
+ * handles has none, and asks the table nothing when it boxes a generator. */
+#if SCR_NI_THREADS
+static _Atomic size_t nh_niters = 0;
+#else
+static size_t nh_niters = 0;
+#endif
+
 /* The key of the memory a storage owns (an allocation of its own, so the
  * second bit is free and no object's key equals it). */
 static uintptr_t nh_data_key(const void *data) { return (uintptr_t)data | 2u; }
@@ -388,6 +408,7 @@ static void nh_pin_retain_obj(void *obj, int kind) {
   case NH_PIN_BYTES:
   case NH_PIN_BUFFER: scr_bytes_retain((ScrBytes *)obj); break;
   case NH_PIN_SYMBOL: scr_sym_retain((ScrSym *)obj); break;
+  case NH_PIN_ITER: scr_dyn_retain((ScrDyn *)obj); break;
   }
 }
 
@@ -399,6 +420,7 @@ static void nh_pin_release_obj(NhPin *pin) {
   case NH_PIN_BYTES:
   case NH_PIN_BUFFER: scr_bytes_release((ScrBytes *)pin->obj); break;
   case NH_PIN_SYMBOL: scr_sym_release((ScrSym *)pin->obj); break;
+  case NH_PIN_ITER: scr_dyn_release((ScrDyn *)pin->obj); break;
   }
 }
 
@@ -416,7 +438,8 @@ static NhPin *nh_pin_add(void *obj, int kind, ScrNodeRef *ref) {
   }
   nh_pin_retain_obj(obj, kind);
   nh_rc_inc(ref);
-  nh_pin_index_put(nh_pin_key(obj, kind), (uint32_t)nh_npins + 1);
+  nh_pin_index_put(nh_pin_key(nh_pin_keyed(obj, kind), kind), (uint32_t)nh_npins + 1);
+  if (kind == NH_PIN_ITER) nh_niters++;
   if (nh_on_island()) ref->pin = (uint32_t)nh_npins + 1;
   nh_pins[nh_npins] = (NhPin){.obj = obj, .ref = ref, .kind = kind, .used = true};
 #if SCR_NI_THREADS
@@ -493,7 +516,8 @@ static void nh_pin_move(size_t to, size_t from) {
   nh_pins[to] = nh_pins[from];
   if (!SCR_NI_THREADS || nh_pins[to].ref->pin == (uint32_t)from + 1)
     nh_pins[to].ref->pin = (uint32_t)to + 1;
-  nh_pin_slot(nh_pin_key(nh_pins[to].obj, nh_pins[to].kind))->pin = (uint32_t)to + 1;
+  nh_pin_slot(nh_pin_key(nh_pin_keyed(nh_pins[to].obj, nh_pins[to].kind), nh_pins[to].kind))->pin =
+      (uint32_t)to + 1;
   if (nh_pins[to].keyed)
     nh_pin_slot(nh_data_key(((ScrBytes *)nh_pins[to].obj)->data))->pin = (uint32_t)to + 1;
 }
@@ -511,8 +535,18 @@ static void nh_unpin(size_t i) {
     if (twin != NULL) twin->stores += pin.stores;
   }
   if (pin.keyed) nh_pin_index_del(nh_data_key(((ScrBytes *)pin.obj)->data));
-  nh_pin_index_del(nh_pin_key(pin.obj, pin.kind));
+  nh_pin_index_del(nh_pin_key(nh_pin_keyed(pin.obj, pin.kind), pin.kind));
   if (!SCR_NI_THREADS || pin.ref->pin == (uint32_t)i + 1) pin.ref->pin = 0;
+  if (pin.kind == NH_PIN_ITER && --nh_niters > 0 && pin.ref->pin == 0 && nh_on_island()) {
+    /* The ref named this pin: it names another generator type's pin of the
+     * same iterator, when there is one (nh_iter_pin starts there). */
+    for (size_t j = 0; j < nh_npins; j++)
+      if (j != i && nh_pins[j].ref == pin.ref && nh_pins[j].kind == NH_PIN_ITER &&
+          nh_pin_mine(&nh_pins[j])) {
+        pin.ref->pin = (uint32_t)j + 1;
+        break;
+      }
+  }
   if (i < nh_young) {
     nh_pin_move(i, nh_young - 1);
     i = --nh_young;
@@ -548,6 +582,12 @@ static size_t nh_pin_held(const NhPin *pin) {
  * as one, the table and the cache keep each other's entry for the rest of
  * the run. */
 static bool nh_pin_dead(const NhPin *pin) {
+  if (pin->kind == NH_PIN_ITER) {
+    /* The program holds the generator, not its capsule: the pair goes when
+     * the table's capsule is the generator's last holder. */
+    const ScrDyn *box = pin->obj;
+    return SCR_RC_COUNT(box) == 1 && SCR_RC_COUNT(box->v.typed_ref.ptr) == 1;
+  }
   size_t rc = *(size_t *)pin->obj;
   if (rc == nh_pin_held(pin)) return true;
   if (pin->kind != NH_PIN_ERROR || rc != 2) return false;
@@ -2967,6 +3007,75 @@ void *scr_ni_gc_ref(const ScrDyn *box, size_t *rc, uint32_t *id) {
   return scr_ni_gc_ref_info(box->v.handle.ptr, rc, id);
 }
 
+/* ── island iterators as native generators ──────────────────────────────
+ * An island iterator that takes a generator type in the program is a
+ * native generator that steps it (the compiler's iterator adapter). The
+ * pair is kept, so that the island iterator is ONE generator for each
+ * generator type however often it crosses, and that generator is the
+ * island iterator again wherever it becomes a dynamic value: crossing back
+ * into the island, compared with a handle of the same iterator, or used as
+ * the key of a dynamic collection. */
+
+/* The pin that pairs `ref` with this thread's generator of type `key`, or
+ * NULL. Under the pins lock. */
+static NhPin *nh_iter_pin(const ScrNodeRef *ref, const char *key, size_t len) {
+  bool scan = !nh_on_island();
+  if (!scan) {
+    if (ref->pin == 0) return NULL;
+    NhPin *named = &nh_pins[ref->pin - 1];
+    if (named->kind != NH_PIN_ITER) return NULL;
+    if (scr_dyn_typed_ref_is(named->obj, key, len)) return named;
+    /* Another generator type of the same iterator. */
+    scan = nh_niters > 1;
+  }
+  if (scan)
+    for (size_t i = 0; i < nh_npins; i++)
+      if (nh_pins[i].ref == ref && nh_pins[i].kind == NH_PIN_ITER && nh_pin_mine(&nh_pins[i]) &&
+          scr_dyn_typed_ref_is(nh_pins[i].obj, key, len))
+        return &nh_pins[i];
+  return NULL;
+}
+
+/* `source` as a generator of type `key`, where the program already holds
+ * it as one: the capsule of the generator paired with the island iterator
+ * `source`. Any other value, and an island iterator without such a
+ * generator, is itself. +1. */
+ScrDyn *scr_node_island_iter_view(ScrDyn *source, const ScrStr *key) {
+  ScrNodeRef *ref = nh_ref_of(source);
+  if (ref == NULL || nh_niters == 0) return scr_dyn_retain(source);
+  bool held = nh_lock(&nh_pins_lock);
+  NhPin *pin = nh_iter_pin(ref, key->data, key->len);
+  ScrDyn *box = scr_dyn_retain(pin != NULL ? pin->obj : source);
+  nh_unlock(&nh_pins_lock, held);
+  return box;
+}
+
+/* Pairs the island iterator `source` with the generator in the capsule
+ * `box`, which the program just made over it. Anything else the generator
+ * steps (a native collection's iterator, an export) has no pair. */
+void scr_node_island_iter_pair(ScrDyn *source, ScrDyn *box) {
+  ScrNodeRef *ref = nh_ref_of(source);
+  if (ref == NULL || box == NULL || box->kind != SCR_DYN_TYPED_REF) return;
+  nh_share();
+  nh_pin(box, NH_PIN_ITER, ref);
+  if (nh_mine() >= nh_sweep_at) nh_sweep();
+}
+
+/* The dynamic value of a generator in a program with islands: the island
+ * iterator it is paired with, as its handle, and otherwise the generator's
+ * own capsule (scr_dyn_new_typed_ref's arguments). +1. */
+ScrDyn *scr_node_island_iter_ref(void *ptr, void *(*retain)(void *), void (*release)(void *),
+                                 const char *type_key, size_t type_key_len,
+                                 ScrDyn *(*materialize)(void *),
+                                 void (*commit)(void *, const ScrDyn *)) {
+  ScrNodeRef *ref = nh_niters > 0 ? nh_pinned(ptr, NH_PIN_ITER) : NULL;
+  if (ref == NULL)
+    return scr_dyn_new_typed_ref(ptr, retain, release, type_key, type_key_len, materialize, commit);
+  ScrDyn *handle = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
+  nh_ref_release(ref); /* the lookup's reference */
+  return handle;
+}
+
 /* ── island arrays as copies (results typed as arrays of copied values) ─
  * An island array whose declared native type is an array of primitives or
  * strings (or arrays of those) crosses as a copy of its elements, the
@@ -3177,6 +3286,111 @@ static ScrDyn *nh_op_iter_pack(void *h) {
   return out;
 }
 
+/* The iterator the adapter of a generator-typed slot steps: an island
+ * value's own, which stays in the island and is stepped there one value at
+ * a time, so the island and the program see one position, and a generator
+ * that never ends can be read. (scr_dyn_iterator packs an island iterable
+ * into an array first.) Any other value's is scr_dyn_iterator's. +1, or
+ * NULL with the exception pending. */
+ScrDyn *scr_node_island_iterator(const ScrDyn *source, const ScrStr *spell) {
+  ScrNodeRef *ref = nh_ref_of(source);
+  if (ref == NULL) return scr_dyn_iterator(source, spell);
+  ScrStr *name = scr_str_new("iterator", 8);
+  ScrSym *sym = scr_sym_well_known(name);
+  scr_str_release(name);
+  ScrDyn *key = scr_dyn_new_symbol(sym);
+  scr_sym_release(sym);
+  ScrDyn *method = nh_op_symbol_get(ref, key);
+  scr_dyn_release(key);
+  if (method == NULL) return NULL;
+  /* Not iterable: the error every other value gets. */
+  if (!scr_ni_is_function(method)) {
+    scr_dyn_release(method);
+    return scr_dyn_iterator(source, spell);
+  }
+  ScrDyn *iterator = scr_ni_call(method, (ScrDyn *)source, NULL, 0);
+  scr_dyn_release(method);
+  return iterator;
+}
+
+/* The host's for-in helpers (scr_node_island_host.cjs), loaded once per
+ * thread. */
+static SCR_TL ScrDyn *nh_for_in_keys_fn = NULL;
+static SCR_TL ScrDyn *nh_for_in_has_fn = NULL;
+
+/* A host helper by its module name, loaded at its first use on this thread.
+ * Borrowed, or NULL with the exception pending. */
+static ScrDyn *nh_host_helper(ScrDyn **slot, const char *name) {
+  if (*slot == NULL) {
+    ScrStr *path = scr_str_new(name, strlen(name));
+    *slot = nh_load(path, 0);
+    scr_str_release(path);
+  }
+  return *slot;
+}
+
+/* for-in's key snapshot of a dynamic value in a program with islands, as
+ * scr_dyn_for_in_keys answers it (+1: a dyn array of strings; NULL with
+ * the exception pending). An island value's keys are Node's: the
+ * enumerable string keys of the object and of its prototype chain, in
+ * Node's order, taken by the host in one call and handed back as one JSON
+ * text. Every other value's are scr_dyn_for_in_keys's. */
+ScrDyn *scr_node_island_for_in_keys(const ScrDyn *v) {
+  if (!scr_ni_is_handle(v)) return scr_dyn_for_in_keys(v);
+  ScrDyn *helper = nh_host_helper(&nh_for_in_keys_fn, "scriptc:forInKeys");
+  if (helper == NULL) return NULL;
+  ScrDyn *args[1] = {(ScrDyn *)v};
+  ScrDyn *text = scr_ni_call(helper, scr_dyn_undefined(), args, 1);
+  if (text == NULL) return NULL;
+  if (text->kind != SCR_DYN_STR) {
+    /* The host answers no list for the namespace require() gives an ES
+     * module with a default export: Node's facade of the module, with an
+     * `__esModule` key the module's own namespace does not have. */
+    scr_dyn_release(text);
+    static const char msg[] =
+        "for-in over the namespace of an ES module that a Node island loaded with require() is "
+        "not supported yet (the namespace carries the '__esModule' key Node adds, which the "
+        "module's own namespace does not have)";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC1090");
+    return NULL;
+  }
+  ScrDyn *keys = scr_json_parse(text->v.str);
+  scr_dyn_release(text);
+  return keys;
+}
+
+/* The same snapshot as a native string[] (+1), as scr_dyn_for_in_key_strs
+ * answers it. */
+ScrArr *scr_node_island_for_in_key_strs(const ScrDyn *v) {
+  if (!scr_ni_is_handle(v)) return scr_dyn_for_in_key_strs(v);
+  ScrDyn *keys = scr_node_island_for_in_keys(v);
+  if (keys == NULL) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, keys->v.arr.len);
+  for (size_t i = 0; i < keys->v.arr.len; i++)
+    scr_arr_push_ref(out, scr_str_retain(keys->v.arr.items[i]->v.str));
+  scr_dyn_release(keys);
+  return out;
+}
+
+/* for-in's test of a key when the loop reaches it: whether Node still
+ * visits `key` of an island value (the host's test: a key that is gone is
+ * skipped, and a Proxy is asked for the key's descriptor). Every other
+ * value's is scr_dyn_has_key's. False with the exception pending when the
+ * island threw. */
+bool scr_node_island_for_in_has(const ScrDyn *v, const ScrStr *key) {
+  if (!scr_ni_is_handle(v)) return scr_dyn_has_key(v, key);
+  ScrDyn *helper = nh_host_helper(&nh_for_in_has_fn, "scriptc:forInHas");
+  if (helper == NULL) return false;
+  ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+  ScrDyn *args[2] = {(ScrDyn *)v, k};
+  ScrDyn *answer = scr_ni_call(helper, scr_dyn_undefined(), args, 2);
+  scr_dyn_release(k);
+  if (answer == NULL) return false;
+  bool found = answer->kind == SCR_DYN_BOOL && answer->v.b;
+  scr_dyn_release(answer);
+  return found;
+}
+
 /* The host's structuredClone, loaded once per thread. */
 static SCR_TL ScrDyn *nh_clone_fn = NULL;
 
@@ -3261,6 +3475,14 @@ static void nh_caches_release(void) {
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
     nh_spread_fn = NULL;
+  }
+  if (nh_for_in_keys_fn != NULL) {
+    scr_dyn_release(nh_for_in_keys_fn);
+    nh_for_in_keys_fn = NULL;
+  }
+  if (nh_for_in_has_fn != NULL) {
+    scr_dyn_release(nh_for_in_has_fn);
+    nh_for_in_has_fn = NULL;
   }
 }
 

@@ -22,6 +22,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.set",
   "nodeIsland.setKey",
   "nodeIsland.invoke",
+  // Reads the island value's Symbol.iterator and calls it, as dyn.iterator
+  // does for a native value.
+  "nodeIsland.iterator",
+  // for-in over an island value: a Proxy's traps run, and the native
+  // entries behind them throw as `dyn.forInKeys` and `dyn.hasKey` do.
+  "nodeIsland.forInKeys",
+  "nodeIsland.forInKeyStrings",
+  "nodeIsland.forInHas",
   "nodeIsland.apply",
   "nodeIsland.applyTo",
   "nodeIsland.construct",

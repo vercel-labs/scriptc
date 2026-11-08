@@ -451,6 +451,88 @@ const symbolKeyFor = Symbol.keyFor;
 // object).
 const objectHasOwn = Object.hasOwn;
 const propertyIsEnumerable = Object.prototype.propertyIsEnumerable;
+
+// for-in over an island value the program holds (the runtime loads the two
+// as "scriptc:forInKeys" and "scriptc:forInHas"). Node takes the keys of the
+// object and of its prototype chain when the loop starts, and tests each
+// key again when the loop reaches it: a key that is gone by then is not
+// visited, a key added meanwhile never is. A chain of ordinary objects is
+// walked by V8's own for-in and tested by `in`. A Proxy is asked what for-in
+// asks it, when for-in asks it: `ownKeys` when the loop starts, with no look
+// at the keys' descriptors, and the descriptor of a key when the loop
+// reaches the key, so a Proxy's traps run in Node's order between the
+// loop's passes.
+const reflectOwnKeys = Reflect.ownKeys;
+const reflectGetPrototypeOf = Reflect.getPrototypeOf;
+const reflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+const { isProxy, isModuleNamespaceObject } = require("node:util").types;
+const jsonStringify = JSON.stringify;
+
+// The namespace `require` answers for an ES module with a default export
+// is Node's facade of it: the module's exports and an `__esModule` key of
+// Node's own. The program's `import * as` names the module's own
+// namespace, which has no such key and is out of reach from the facade, so
+// a walk of the facade is refused (forInKeys answers null and the runtime
+// throws by name) rather than answered with a key too many.
+function isRequiredNamespace(object) {
+  return isModuleNamespaceObject(object) && objectHasOwn(object, "__esModule");
+}
+
+// Whether a Proxy is on the chain; asks no Proxy anything.
+function chainHasProxy(object) {
+  for (let level = object; level !== null; level = reflectGetPrototypeOf(level)) {
+    if (isProxy(level)) return true;
+  }
+  return false;
+}
+
+// The keys for-in takes when the loop starts, as the JSON text of their
+// list (one answer for the runtime to read, however many keys).
+function forInKeys(value) {
+  const object = Object(value);
+  if (isRequiredNamespace(object)) return null;
+  const keys = [];
+  if (!chainHasProxy(object)) {
+    for (const key in object) keys.push(key);
+    return jsonStringify(keys);
+  }
+  // Level by level, as V8 collects them: the string keys of each level that
+  // no nearer level has, enumerable or not for a Proxy's (the visit's test
+  // decides), enumerable for an ordinary object's. V8 ends the walk of an
+  // ordinary receiver's chain behind the first Proxy on it, and follows
+  // every prototype of a receiver that is a Proxy itself.
+  const receiverIsProxy = isProxy(object);
+  const seen = new Set();
+  for (let level = object; level !== null;) {
+    const proxy = isProxy(level);
+    for (const key of reflectOwnKeys(level)) {
+      if (typeof key !== "string" || seen.has(key)) continue;
+      seen.add(key);
+      if (proxy || propertyIsEnumerable.call(level, key)) keys.push(key);
+    }
+    level = reflectGetPrototypeOf(level);
+    if (proxy && !receiverIsProxy) break;
+  }
+  return jsonStringify(keys);
+}
+
+// The test of a key when the loop reaches it: the first level that has the
+// key decides. An ordinary object's key is visited whatever its descriptor
+// says by now; a Proxy's is visited when the descriptor it answers is
+// enumerable.
+function forInHas(value, key) {
+  const object = Object(value);
+  if (!chainHasProxy(object)) return key in object;
+  for (let level = object; level !== null; level = reflectGetPrototypeOf(level)) {
+    if (isProxy(level)) {
+      const descriptor = reflectGetOwnPropertyDescriptor(level, key);
+      if (descriptor !== undefined) return descriptor.enumerable === true;
+    } else if (objectHasOwn(level, key)) {
+      return true;
+    }
+  }
+  return false;
+}
 const wellKnownNames = new Map();
 const wellKnownSymbols = new Map();
 for (const name of Object.getOwnPropertyNames(Symbol)) {
@@ -753,6 +835,8 @@ function load(path, esm) {
   if (path === "scriptc:hasOwn") return (object, key) => objectHasOwn(object, key);
   if (path === "scriptc:isEnumerable")
     return (object, key) => propertyIsEnumerable.call(object, key);
+  if (path === "scriptc:forInKeys") return forInKeys;
+  if (path === "scriptc:forInHas") return forInHas;
   if (path === "scriptc:island-helpers") return islandHelpers;
   // The runtime's process.exit(): the compile cache's new entries.
   if (path === "scriptc:flushCompileCache") return flushCompileCache();

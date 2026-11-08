@@ -25,11 +25,6 @@ import {
 import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import {
-  isUntypedArrayType,
-  typeParameterConstraint,
-  untypedArrayArgumentPlace,
-} from "./empty-array-places.js";
 import { typeKey } from "../type-mapper.js";
 import { literalValues } from "../literal-values.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
@@ -526,12 +521,11 @@ export function genericCallInstance(
 }
 
 /** The instance of a call whose type parameters take bindings other than
- * the resolved signature's. Three things choose one: a fresh empty container
- * with a destination (fillEmptyContainerBindings), an untyped empty array
- * passed for a type parameter (untypedArrayArgumentBindings) and an argument
- * that can be a missing element (widenMissingArgumentBindings). One call can
- * have several (`const out: string[] = keep([], values[20])`), so all adjust
- * the same bindings and the call names one instance. Null when no binding
+ * the resolved signature's. Two things choose one: a fresh empty container
+ * with a destination (fillEmptyContainerBindings) and an argument that can
+ * be a missing element (widenMissingArgumentBindings). One call can have
+ * both (`const out: string[] = keep([], values[20])`), so both adjust the
+ * same bindings and the call names one instance. Null when no binding
  * changes, which leaves the resolved signature's instance. */
 function chosenBindingsInstance(
   lowerer: Lowerer,
@@ -541,9 +535,7 @@ function chosenBindingsInstance(
 ): GenericInstance | null {
   const destination = emptyArgumentDestination(lowerer, expr, info);
   const missing = lowerer.runtimeOptionalGenericArguments.get(expr);
-  const untyped = untypedArrayArguments(lowerer, expr, info);
-  if ((!destination && !missing && untyped === null) || returnedLocalClass(lowerer, info))
-    return null;
+  if ((!destination && !missing) || returnedLocalClass(lowerer, info)) return null;
   const declSig = lowerer.checker.getSignatureFromDeclaration(info.decl);
   if (!declSig) return null;
   const tsBindings = new Map<ts.Symbol, ts.Type>();
@@ -551,70 +543,9 @@ function chosenBindingsInstance(
   const filled =
     destination !== null &&
     fillEmptyContainerBindings(lowerer, info, declSig, destination, bindings, tsBindings);
-  const placed =
-    untyped !== null && untypedArrayArgumentBindings(lowerer, info, untyped, bindings, tsBindings);
   const widened = missing !== undefined && widenMissingArgumentBindings(lowerer, missing, bindings);
-  if (!filled && !placed && !widened) return null;
+  if (!filled && !widened) return null;
   return instanceForBindings(lowerer, expr, info, declSig, bindings, tsBindings);
-}
-
-/** The arguments of a call that pass an array the checker leaves untyped
- * (`never[]`, or the empty tuple of `[] as const`) for a parameter declared
- * as a type parameter with a constraint (`knobs: T`, `T extends readonly
- * Knob[]`). Null when the call has none or names its type arguments. */
-function untypedArrayArguments(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  info: GenericFnInfo,
-): { argument: ts.Expression; parameter: ts.ParameterDeclaration }[] | null {
-  if ((expr.typeArguments?.nodes.length ?? 0) > 0) return null;
-  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
-  let found: ReturnType<typeof untypedArrayArguments> = null;
-  const parameters = info.decl.parameters.nodes;
-  const args = expr.arguments.nodes;
-  for (let i = 0; i < args.length && i < parameters.length; i++) {
-    const parameter = parameters[i]!;
-    const argument = args[i]!;
-    if (parameter.type === undefined || !ts.isTypeReferenceNode(parameter.type)) continue;
-    if (ts.isSpreadElement(argument)) break;
-    if (!isUntypedArrayType(lowerer.checker, lowerer.typeOf(argument))) continue;
-    if (typeParameterConstraint(lowerer.checker, parameter) === undefined) continue;
-    (found ??= []).push({ argument, parameter });
-  }
-  return found;
-}
-
-/** Binds a type parameter that the checker bound to an untyped array
- * (`plan(quiet.knobs)` over `{ knobs: [] }` binds T to `readonly []`) to the
- * array type that array was given where it was written
- * (empty-array-places.ts): the parameter then holds the array the caller
- * passes, where the checker's binding names an array that can hold nothing
- * and so has no element representation. The checker accepts the same call
- * with that type argument written out. False when no binding changes: the
- * array is undecided, or the type parameter is bound by something else. */
-function untypedArrayArgumentBindings(
-  lowerer: Lowerer,
-  info: GenericFnInfo,
-  untyped: NonNullable<ReturnType<typeof untypedArrayArguments>>,
-  bindings: Map<ts.Symbol, IrType>,
-  tsBindings: Map<ts.Symbol, ts.Type>,
-): boolean {
-  const checker = lowerer.checker;
-  let changed = false;
-  for (const { argument, parameter } of untyped) {
-    const tp = checker.getTypeFromTypeNode(parameter.type!).getSymbol();
-    if (tp === undefined || !info.typeParams.includes(tp)) continue;
-    const inferred = tsBindings.get(tp);
-    if (inferred === undefined || !isUntypedArrayType(checker, inferred)) continue;
-    const place = untypedArrayArgumentPlace(lowerer, argument);
-    if (place === null) continue;
-    const current = bindings.get(tp);
-    if (current && typeEquals(current, place.type)) continue;
-    bindings.set(tp, place.type);
-    tsBindings.set(tp, place.named);
-    changed = true;
-  }
-  return changed;
 }
 
 /** The destination of a call that passes a FRESH EMPTY container (`[]`,

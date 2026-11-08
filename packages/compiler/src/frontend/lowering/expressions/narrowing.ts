@@ -7,7 +7,6 @@ import {
 } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, dynFallbackType } from "../lowerer.js";
-import { untypedArrayUnionType } from "../empty-array-places.js";
 import {
   BOOL,
   CAUGHT,
@@ -192,12 +191,7 @@ export function lowerTernary(
     // Inferred signature tables often join a populated argument array
     // with nested empty-array branches. Carry the whole record layout
     // through those branches before constructing their fresh fields.
-    // An arm that reads an untyped empty array (`wide ? full.knobs :
-    // quiet.knobs`) is that array at the type decided where it was written
-    // (empty-array-places.ts), so the join holds it at that type.
-    const ownJoin =
-      untypedArrayUnionType(lowerer, expr, lowerer.typeOf(expr)) ??
-      lowerer.mapTypeOf(lowerer.typeOf(expr));
+    const ownJoin = lowerer.mapTypeOf(lowerer.typeOf(expr));
     const ownUnion = ownJoin?.kind === "union" ? ownJoin : null;
     const recordJoin =
       ctxMapped?.kind === "record" ? ctxMapped : ownJoin?.kind === "record" ? ownJoin : undefined;
@@ -269,7 +263,10 @@ export function lowerTernary(
     // covariant array types into one — `c ? ['sh', []] : ['cmd', ['/d']]`
     // joins as (string | string[])[] whichever arm nests the empty
     // literal), so neither arm's uninhabited never[] reading decides.
-    const ownArrayJoin = ownJoin?.kind === "array" ? ownJoin : null;
+    const ownArrayJoin = (() => {
+      const m = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      return m?.kind === "array" ? m : null;
+    })();
     let thenRaw: IrExpr;
     let elseRaw: IrExpr;
     const runtimeTrueIds = runtimeOptionalTrueIds(lowerer, expr.condition);
@@ -315,7 +312,7 @@ export function lowerTernary(
     // stays f64-typed). Arms that AGREE on an array type decide it
     // themselves (a context- or sibling-built literal arm can carry a
     // tagged element type the checker's own type doesn't spell).
-    const own = ownJoin;
+    const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
     const useCtx =
       (ctxMapped?.kind === "record" ||
         ctxMapped?.kind === "union" ||

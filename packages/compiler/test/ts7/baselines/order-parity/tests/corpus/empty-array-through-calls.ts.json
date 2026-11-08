@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/empty-array-through-calls.ts"
- ],
- "diags": []
-}

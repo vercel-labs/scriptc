@@ -107,6 +107,22 @@ const steps = drain();
 churn();
 console.log(steps, seats(done));
 
+// A ticket written into a list that goes away: inserted by splice or by
+// fill, into a local list or into the list where it is made. The list's
+// group holds the ticket, which is released with it.
+function insertLocal(): number {
+  const queue = tickets(400);
+  const out = queue.splice(1, 2, { seat: 499 });
+  queue.fill({ seat: 498 }, 0, 1);
+  return queue.length * 10 + out.length + queue[0]!.seat;
+}
+function insertInPlace(): number {
+  const out = tickets(410).splice(1, 2, { seat: 419 });
+  const size = tickets(420).push({ seat: 429 });
+  return seats(out) + size;
+}
+console.log(insertLocal(), insertInPlace());
+
 // Removed elements that stay in their function keep working.
 function local(): number {
   const queue = tickets(300);

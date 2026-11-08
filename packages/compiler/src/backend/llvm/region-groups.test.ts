@@ -431,3 +431,31 @@ console.log(popped(), shifted(), spliced(), copied(), counted(), last.n, removed
   expect(rootIn("copied")).toBe(false);
   expect(rootIn("counted")).toBe(true);
 });
+
+test("a list that takes a reference where it is made is no root, and one a splice inserts into is not closed", async () => {
+  const mod = await moduleFor(`${ROWS}
+function pushed(): number {
+  return rows(1).push({ n: 9 });
+}
+function spliced(): number {
+  return rows(2).splice(1, 2, { n: 9 }).length;
+}
+function local(): number {
+  const list = rows(3);
+  const cut = list.splice(1, 2, { n: 9 });
+  return list.length + cut.length;
+}
+console.log(pushed(), spliced(), local());
+`);
+  const groups = analyzeRegionGroups(mod);
+  const rootsIn = (name: string): IrExpr[] => {
+    const fn = mod.functions.find((f) => f.name === name)!;
+    return [...groups.roots].filter((root) => groups.rootFunction.get(root) === fn) as IrExpr[];
+  };
+  expect(rootsIn("pushed")).toHaveLength(0);
+  expect(rootsIn("spliced")).toHaveLength(0);
+  const closed = analyzeClosedGroups(mod, groups, everyObject);
+  const roots = rootsIn("local");
+  expect(roots.length).toBeGreaterThan(0);
+  for (const root of roots) expect(closed.has(root)).toBe(false);
+});

@@ -1116,6 +1116,27 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     visit(node);
     return ok;
   };
+  /** Whether the value of `node` is, where it is made (or handed back by a
+   * call that keeps it in its result), the array or collection a method
+   * stores a reference into. */
+  const storesInPlace = (node: Node, parents: readonly Node[]): boolean => {
+    let value: Node = node;
+    for (let at = parents.length - 1; at >= 0; at--) {
+      const p = parents[at]!;
+      if (
+        (p.kind === "arrIntrinsic" || p.kind === "mapIntrinsic" || p.kind === "setIntrinsic") &&
+        same(p.receiver, value) &&
+        (ADDING_METHODS.has(p.method) || p.method === "spliceInsert" || p.method === "fill") &&
+        p.args.some((arg) => refType(arg.type))
+      )
+        return true;
+      const handedBack =
+        p.kind === "call" && internal.get(p.callee)?.has(indexOfNode(p.args, value)) === true;
+      if (!transparent(value, p) && !handedBack) return false;
+      value = p;
+    }
+    return false;
+  };
   const drops = new Map<Node, string | null>();
   const rootLocals = new Map<Node, Set<string>>();
   const rootFunction = new Map<Node, IrFunction>();
@@ -1198,6 +1219,10 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
           if (read === "internal") read = resultUse(reads.at!, parents, true, reads);
           if (read !== "kept") use = "escapes";
         }
+        // A reference stored into the value where it is made
+        // (`rows().push(row)`, `rows().splice(1, 2, row)`) is held by a
+        // group no local names: nothing would release it with the arena.
+        if (storesInPlace(node, parents)) use = "escapes";
         rootFunction.set(node, fn);
         if (use === "kept" && statementSync(parents)) {
           roots.add(node);
@@ -1468,7 +1493,17 @@ export function analyzeClosedGroups(
     siteMemo.set(fn.name, out);
     const walk = (node: Node, parent: Node | undefined): void => {
       if (parent !== undefined && isExpr(node)) {
-        const target = storeOf(node, parent);
+        // An item a splice inserts and the value a fill writes go into their
+        // array too. Elsewhere they count as leaving the frame; here the
+        // array's group holds a reference to them that its arena must release.
+        const target =
+          storeOf(node, parent) ??
+          (parent.kind === "arrIntrinsic" &&
+          (parent.method === "spliceInsert" || parent.method === "fill") &&
+          refType(node.type) &&
+          indexOfNode(parent.args, node) >= 0
+            ? parent.receiver
+            : undefined);
         if (target !== undefined) out.push({ value: node, target: storeTarget(target) });
         else if (contentOf(node, parent) && parent.kind !== "new")
           out.push({ value: node, target: null });

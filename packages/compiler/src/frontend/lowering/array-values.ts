@@ -1,6 +1,6 @@
 import { keyedHelperName } from "./stable-names.js";
 import { InternalCompilerError } from "../../errors.js";
-import { dynUndefinedExpr, helperLoc, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, helperLoc, numLit, varRef } from "../../ir/build.js";
 import {
   BOOL,
   DYN,
@@ -10,6 +10,7 @@ import {
   type IrStmt,
   type IrType,
   isIntegerBytesElem,
+  isUnitType,
   type SrcLoc,
   STRING,
   UNDEFINED_T,
@@ -147,13 +148,47 @@ function tupleArmField(
 }
 
 /** A union of tuples and arrays read where the checker sees ONE array type
- * (`(names as readonly string[]).includes(name)`, `.length`, `[0]`, a
- * `for…of`, a spread, over the values of an `as const` table: the assertion
- * is erased, so the value keeps its union layout). A slot of the array type
- * converts such a value arm by arm (widthLiftPlan's unionArr); these
- * consumers are no slot, so they ask for the same conversion here. The
- * result is a fresh array for a tuple arm, which a consumer that only reads
- * cannot tell from the original. Null when the value is no such union. */
+ * (`(names as readonly string[]).includes(name)`, `.length`, `[i]`, a
+ * `for…of`, over the values of an `as const` table: the assertion is
+ * erased, so the value keeps its union layout). A slot of the array type
+ * converts such a value arm by arm into a fresh array (widthLiftPlan's
+ * unionArr). These consumers are no slot and must read the value itself: a
+ * callback, a loop body or an index expression can write a tuple the value
+ * holds, and a copy made when the receiver was evaluated would not show
+ * the write. They get the value with its unit arms taken off by the
+ * checked narrowing (the checker excluded those arms; a value that still
+ * holds one throws there) and read each arm in place: an array arm as any
+ * array, a tuple arm position by position. Null when the value is no such
+ * union. */
+export function unionArmsView(
+  lowerer: Lowerer,
+  node: ts.Node,
+  value: IrExpr,
+  read: IrType | null,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "union" || read?.kind !== "array") return null;
+  if (lowerer.widthLiftPlan(value.type, read)?.how !== "unionArr") return null;
+  const unionId = value.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  const present = arms.filter((arm) => !isUnitType(arm));
+  if (present.length === arms.length) return value;
+  if (present.length === 1) {
+    const helper = lowerer.narrowedArmHelper(unionId, present[0]!, loc);
+    return helper ? lowerer.checkedNarrowCall(helper, value, present[0]!, loc) : null;
+  }
+  const toId = lowerer.unions.intern(present);
+  const helper = lowerer.narrowedRetagHelper(node, unionId, toId, loc);
+  return helper
+    ? { kind: "call", callee: helper, args: [value], type: { kind: "union", unionId: toId }, loc }
+    : null;
+}
+
+/** The same union where every element is read at once, with no code of
+ * the program between the receiver's evaluation and the last read (a
+ * spread): the array a slot's conversion builds is then what the value
+ * holds at that moment, and nothing can tell it from the original. Null
+ * when the value is no such union. */
 export function unionReadAsArray(
   lowerer: Lowerer,
   value: IrExpr,
@@ -163,6 +198,174 @@ export function unionReadAsArray(
   if (value.type.kind !== "union" || read?.kind !== "array") return null;
   const lift = lowerer.widthLiftPlan(value.type, read);
   return lift?.how === "unionArr" ? lowerer.applyWidthLift(lift, value, read, loc) : null;
+}
+
+/** A tuple's fields in position order. */
+function tupleFields(
+  lowerer: Lowerer,
+  tuple: IrType,
+): { shapeId: string; fields: { name: string; type: IrType }[] } | null {
+  if (tuple.kind !== "record") return null;
+  const shape = lowerer.shapes.get(tuple.shapeId);
+  if (!shape?.tuple) return null;
+  return {
+    shapeId: tuple.shapeId,
+    fields: [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name)),
+  };
+}
+
+/** One position of a tuple at an index known only when the program runs:
+ * the field the index names, read when the index is known, or the missing
+ * value past its end. `tuple` and `index` are read several times and must
+ * be stable. */
+function tupleMovingRead(
+  lowerer: Lowerer,
+  tuple: IrExpr,
+  index: IrExpr,
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const layout = tupleFields(lowerer, tuple.type);
+  if (layout === null) return null;
+  let read = lowerer.wrappedUndefined(type, loc);
+  if (!read) return null;
+  for (let i = layout.fields.length - 1; i >= 0; i--) {
+    const field = layout.fields[i]!;
+    read = {
+      kind: "ternary",
+      cond: {
+        kind: "bin",
+        op: "===",
+        left: index,
+        right: numLit(Number(field.name), loc),
+        type: BOOL,
+        loc,
+      },
+      then: lowerer.coerceToExpected(
+        {
+          kind: "recordGet",
+          obj: tuple,
+          shapeId: layout.shapeId,
+          field: field.name,
+          type: field.type,
+          loc,
+        },
+        type,
+      ),
+      else_: read,
+      type,
+      loc,
+    };
+  }
+  return read;
+}
+
+/** The type a position of a tuple reads as when the index is known only
+ * when the program runs: every field's type and undefined past its end.
+ * Null when they have no common native representation. */
+function tupleMovingType(lowerer: Lowerer, tuple: IrType): IrType | null {
+  const layout = tupleFields(lowerer, tuple);
+  if (layout === null) return null;
+  const answers = new Map<string, IrType>([[typeKey(UNDEFINED_T), UNDEFINED_T]]);
+  for (const field of layout.fields) {
+    const parts =
+      field.type.kind === "union" ? lowerer.unions.get(field.type.unionId)!.arms : [field.type];
+    for (const part of parts) answers.set(typeKey(part), part);
+  }
+  const joined = sortArms([...answers.values()]);
+  if (
+    joined.length < 2 ||
+    !unionContainerArmsOk(joined) ||
+    joined.some((arm) => arm.kind === "dyn" || arm.kind === "generator" || arm.kind === "caught")
+  )
+    return null;
+  return { kind: "union", unionId: lowerer.unions.intern(joined) };
+}
+
+/** `view[key]` over what unionArmsView answers: the position is read in
+ * place after the receiver and the key have been evaluated, in that order,
+ * each once. Null when the arms' elements have no common representation. */
+export function unionArmsIndexRead(
+  lowerer: Lowerer,
+  view: IrExpr,
+  key: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  const type =
+    view.type.kind === "union"
+      ? unionArrayValueType(lowerer, view.type, null, false, true)
+      : tupleMovingType(lowerer, view.type);
+  if (type === null) return null;
+  const stmts: IrStmt[] = [];
+  const stable = (e: IrExpr, name: string, keep: boolean): IrExpr => {
+    if (keep) return e;
+    const local = lowerer.declareHiddenLocal(name, e.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: e, loc });
+    return varRef(local.id, e.type, loc);
+  };
+  // A receiver local stays a direct read only when the key cannot assign it.
+  const plainKey = key.kind === "varRef" || key.kind === "numLit";
+  const receiver = stable(view, "%indexReceiver", view.kind === "varRef" && plainKey);
+  const index = stable(key, "%indexKey", plainKey);
+  const read =
+    receiver.type.kind === "union"
+      ? unionArrayValueRead(lowerer, receiver, index, loc, undefined, true)
+      : tupleMovingRead(lowerer, receiver, index, type, loc);
+  if (read === null) return null;
+  return stmts.length === 0 ? read : { kind: "seqExpr", stmts, result: read, type: read.type, loc };
+}
+
+/** `view.length` over what unionArmsView answers: an array arm's length,
+ * a tuple arm's number of positions. The receiver is evaluated once. */
+export function unionArmsLength(lowerer: Lowerer, view: IrExpr, loc: SrcLoc): IrExpr {
+  const armLength = (arm: IrType, value: IrExpr): IrExpr => {
+    const layout = tupleFields(lowerer, arm);
+    return layout === null
+      ? { kind: "arrIntrinsic", method: "length", receiver: value, args: [], type: F64, loc }
+      : numLit(layout.fields.length, loc);
+  };
+  const stmts: IrStmt[] = [];
+  let receiver = view;
+  if (view.kind !== "varRef") {
+    const local = lowerer.declareHiddenLocal("%lengthReceiver", view.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: view, loc });
+    receiver = varRef(local.id, view.type, loc);
+  }
+  let length: IrExpr;
+  if (receiver.type.kind !== "union") {
+    length = armLength(receiver.type, receiver);
+  } else {
+    const unionId = receiver.type.unionId;
+    const arms = lowerer.unions.get(unionId)!.arms;
+    const narrowed = (tag: number): IrExpr => ({
+      kind: "unionNarrow",
+      unionId,
+      tag,
+      value: receiver,
+      type: arms[tag]!,
+      loc,
+    });
+    length = armLength(arms[arms.length - 1]!, narrowed(arms.length - 1));
+    for (let tag = arms.length - 2; tag >= 0; tag--) {
+      length = {
+        kind: "ternary",
+        cond: {
+          kind: "unionIsTag",
+          unionId,
+          tag,
+          negated: false,
+          value: receiver,
+          type: BOOL,
+          loc,
+        },
+        then: armLength(arms[tag]!, narrowed(tag)),
+        else_: length,
+        type: F64,
+        loc,
+      };
+    }
+  }
+  return stmts.length === 0 ? length : { kind: "seqExpr", stmts, result: length, type: F64, loc };
 }
 
 /** The array type a union of tuples and arrays converts to where nothing
@@ -214,6 +417,7 @@ export function unionArrayValueType(
   union: IrType,
   position: string | null = null,
   strings = false,
+  moving = false,
 ): IrType | null {
   if (union.kind !== "union") return null;
   const arms = lowerer.unions.get(union.unionId)?.arms;
@@ -221,21 +425,35 @@ export function unionArrayValueType(
   // Keep the collection's IrType union layout and narrow each element at
   // its use; an inferred array predicate changes the collection's ABI.
   const stringArm = (arm: IrType): boolean => arm.kind === "string" && strings;
+  // With `moving`, a tuple arm answers a position known only when the
+  // program runs: any of its fields, or undefined past its end.
+  const movingArm = (arm: IrType): IrType | null =>
+    moving && position === null ? tupleMovingType(lowerer, arm) : null;
   for (const arm of arms)
-    if (arm.kind !== "array" && !stringArm(arm) && tupleArmField(lowerer, arm, position) === null)
+    if (
+      arm.kind !== "array" &&
+      !stringArm(arm) &&
+      movingArm(arm) === null &&
+      tupleArmField(lowerer, arm, position) === null
+    )
       return null;
   const answers = new Map<string, IrType>();
   for (const arm of arms) {
+    const anyField = arm.kind === "array" || stringArm(arm) ? null : movingArm(arm);
     const field =
-      arm.kind === "array" || stringArm(arm) ? null : tupleArmField(lowerer, arm, position);
+      arm.kind === "array" || stringArm(arm) || anyField !== null
+        ? null
+        : tupleArmField(lowerer, arm, position);
     const answer =
       arm.kind === "array"
         ? arrayValueType(lowerer, arm.elem)
         : stringArm(arm)
           ? arrayValueType(lowerer, STRING)
-          : field === "past"
-            ? UNDEFINED_T
-            : field!.type;
+          : anyField !== null
+            ? anyField
+            : field === "past"
+              ? UNDEFINED_T
+              : field!.type;
     const parts = answer.kind === "union" ? lowerer.unions.get(answer.unionId)!.arms : [answer];
     for (const part of parts) answers.set(typeKey(part), part);
   }
@@ -256,7 +474,9 @@ export function unionArrayValueType(
  * (`const [a, b] = re.exec(s) || ["", ""]`) without copying the receiver
  * or its elements. Every array arm contributes its missing-value case; a
  * tuple arm answers its field, or undefined past its end. Tuple arms need
- * a constant position. With `stringChars` (the string iterator's code
+ * a constant position, or `moving` (the field the index names when the
+ * program runs; `value` and `index` must then be stable: they are read
+ * once per field). With `stringChars` (the string iterator's code
  * points as a fresh string[]), a string arm (`re.exec(s) || ""`) answers
  * its code point at the position, or undefined past its end. */
 export function unionArrayValueRead(
@@ -265,16 +485,23 @@ export function unionArrayValueRead(
   index: IrExpr,
   loc: SrcLoc,
   stringChars?: (text: IrExpr) => IrExpr,
+  moving = false,
 ): IrExpr | null {
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
   if (!arms?.length) return null;
-  const position = index.kind === "numLit" ? String(index.value) : null;
+  const position = !moving && index.kind === "numLit" ? String(index.value) : null;
   const tupleField = (arm: IrType): { name: string; type: IrType } | "past" | null =>
     tupleArmField(lowerer, arm, position);
   const stringArm = (arm: IrType): boolean => arm.kind === "string" && stringChars !== undefined;
-  const type = unionArrayValueType(lowerer, value.type, position, stringChars !== undefined);
+  const type = unionArrayValueType(
+    lowerer,
+    value.type,
+    position,
+    stringChars !== undefined,
+    moving,
+  );
   if (type === null) return null;
   let result: IrExpr | null = null;
   for (let tag = arms.length - 1; tag >= 0; tag--) {
@@ -291,6 +518,11 @@ export function unionArrayValueRead(
         arrayValueRead(lowerer, stringChars!(receiver), index, STRING, loc),
         type,
       );
+    } else if (moving && position === null) {
+      // `value` and `index` are stable here: the caller holds both.
+      const moved = tupleMovingRead(lowerer, receiver, index, type, loc);
+      if (moved === null) return null;
+      read = moved;
     } else {
       const field = tupleField(arm);
       if (field === null) return null;

@@ -98,7 +98,8 @@ import {
   lowerSafeIndexRead,
   primitiveElement,
   unionArrayValueRead,
-  unionReadAsArray,
+  unionArmsIndexRead,
+  unionArmsView,
   unaffectedByIndex,
 } from "../array-values.js";
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index.js";
@@ -1093,11 +1094,9 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
 
   // A union of tuples and arrays the checker reads as one array: the
-  // element of the array the value converts to (unionReadAsArray).
-  {
-    const array = unionReadAsArray(lowerer, arr, receiverIr, locOf(expr.expression));
-    if (array) arr = array;
-  }
+  // position is read in the value itself once the index is known
+  // (unionArmsView), below.
+  const armsView = unionArmsView(lowerer, expr.expression, arr, receiverIr, locOf(expr.expression));
 
   // An alias or container of an evolving array whose reads disagree
   // (`rows[0]` after `const rows = [xs]`) holds elements the checker's type
@@ -1163,6 +1162,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   if (index.type.kind !== "f64") {
     lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
+  }
+  if (armsView) {
+    // Like every array read, the answer keeps its undefined: an index past
+    // the arm's end reads it whatever the checker's type says.
+    const read = unionArmsIndexRead(lowerer, armsView, index, locOf(expr));
+    if (read) return read;
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `indexing a union of tuples and arrays read as '${lowerer.fmt(receiverIr)}' whose elements have no common representation (narrow it to one arm first)`,
+    );
   }
   // The LOWERED receiver's element type wins over the checker's when
   // both are arrays: a spoke result can be more precise than the

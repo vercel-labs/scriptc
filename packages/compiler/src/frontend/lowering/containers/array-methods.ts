@@ -37,7 +37,7 @@ import {
   insertedValues,
   optionalElementValue,
   primitiveElement,
-  unionReadAsArray,
+  unionArmsView,
   unionTupleJoin,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
@@ -617,20 +617,24 @@ export function lowerArrayMethodCall(
         );
       }
       // A union of tuples and arrays that the checker reads as ONE array
-      // (unionReadAsArray): the receiver of a method is no slot, so it
-      // takes the slot's conversion here. A method that writes its receiver
-      // would change the copy and refuses.
-      const array = unionReadAsArray(lowerer, receiver, receiverIr, locOf(access.expression));
-      if (array) {
+      // (unionArmsView): the method runs on the arm the value holds, in
+      // place. A method that writes its receiver has no single array to
+      // write and refuses.
+      const view = unionArmsView(
+        lowerer,
+        access.expression,
+        receiver,
+        receiverIr,
+        locOf(access.expression),
+      );
+      if (view) {
         if (RECEIVER_WRITING_METHODS.has(name))
           lowerer.unsupported(
             "SC1090",
             call,
             `'.${name}()' on a union of tuples and arrays read as '${lowerer.fmt(receiverIr)}' (the call writes its receiver, and the value has no single array to write: narrow it to one arm first)`,
           );
-        return lowerer.withExpressionOverride(access.expression, array, () =>
-          lowerArrayMethodCall(lowerer, call, access),
-        );
+        return lowerUnionArmsMethodCall(lowerer, call, access, view, receiverIr);
       }
     }
     if (receiver.type.kind === "record" && lowerer.shapes.get(receiver.type.shapeId)?.tuple) {
@@ -2234,6 +2238,82 @@ function arraySearchHelper(
     loc,
   });
   return name;
+}
+
+/** A method called on a union of tuples and arrays read as one array
+ * (unionArmsView): each arm runs its own lowering on the value itself, an
+ * array arm the array's method and a tuple arm the tuple's
+ * (lowerTupleReadMethodCall), which reads a position only when the call
+ * reaches it. So the call sees what its callback or its arguments write,
+ * as it does on one array or one tuple, and an array arm keeps its
+ * identity. The receiver is evaluated once, before the arguments; the
+ * arguments are lowered for each arm and evaluated in the arm the value
+ * holds. A method a tuple has no in-place lowering for refuses: reading a
+ * copy of the tuple instead would not show those writes. */
+function lowerUnionArmsMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  view: IrExpr,
+  read: IrType & { kind: "array" },
+): IrExpr {
+  const loc = locOf(call);
+  const method = access.name.text;
+  const onArm = (arm: IrExpr): IrExpr => {
+    const lowered =
+      arm.type.kind === "array"
+        ? lowerer.withExpressionOverride(access.expression, arm, () =>
+            lowerArrayMethodCall(lowerer, call, access),
+          )
+        : lowerTupleReadMethodCall(lowerer, call, access, arm);
+    if (lowered) return lowered;
+    return lowerer.unsupported(
+      "SC1090",
+      call,
+      `'.${method}()' on a union of tuples and arrays read as '${lowerer.fmt(read)}' (a tuple has no '.${method}()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of)`,
+    );
+  };
+  if (view.type.kind !== "union") return onArm(view);
+  const unionId = view.type.unionId;
+  const arms = lowerer.unions.get(unionId)!.arms;
+  const stmts: IrStmt[] = [];
+  let held = view;
+  if (view.kind !== "varRef") {
+    const local = lowerer.declareHiddenLocal("%unionArmsReceiver", view.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: view, loc });
+    held = varRef(local.id, view.type, loc);
+  }
+  const answers = arms.map((arm, tag) =>
+    onArm({ kind: "unionNarrow", unionId, tag, value: held, type: arm, loc }),
+  );
+  // One type for every arm's answer: the checker's result where the arms
+  // disagree (a tuple's `.find()` and an array's spell the same union).
+  let type = answers[0]!.type;
+  if (!answers.every((answer) => typeEquals(answer.type, type))) {
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!declared || declared.kind === "void")
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `'.${method}()' on a union of tuples and arrays read as '${lowerer.fmt(read)}' (its arms answer values of different representations: narrow the value to one arm first)`,
+      );
+    type = declared;
+  }
+  const coerced = answers.map((answer) =>
+    typeEquals(answer.type, type) ? answer : lowerer.coerceInto(call, answer, type),
+  );
+  let result = coerced[coerced.length - 1]!;
+  for (let tag = coerced.length - 2; tag >= 0; tag--) {
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: held, type: BOOL, loc },
+      then: coerced[tag]!,
+      else_: result,
+      type,
+      loc,
+    };
+  }
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type, loc };
 }
 
 /** Tuple methods keep the original receiver alive through argument evaluation.

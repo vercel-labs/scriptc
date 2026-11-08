@@ -2699,49 +2699,6 @@ function tdzStorage(global: IrGlobal, type: IrType): IrType {
     : type;
 }
 
-/** A union of tuples into a slot of a MUTABLE array type (`const list =
- * names as unknown as string[]`, an argument for a `string[]` parameter).
- * The slot's conversion builds a new array for the tuple the value holds
- * (unionArrayWidthHelper), so a write through the slot, or to the tuple
- * afterwards, would be lost for the other where Node has one array. A
- * union of tuples is read in place without a slot (unionArmsView), and
- * that makes programs with such a slot reachable which stopped at their
- * reads before; until tuples that reach an array slot are arrays, the
- * flow is refused. A `readonly` array slot takes the copy as before, and
- * so does a union that has the slot's own array type as an arm. */
-function refuseTupleUnionIntoMutableArray(
-  lowerer: Lowerer,
-  node: ts.Node,
-  from: IrType,
-  expected: IrType,
-): void {
-  if (from.kind !== "union" || expected.kind !== "array") return;
-  const arms = (lowerer.unions.get(from.unionId)?.arms ?? []).filter((arm) => !isUnitType(arm));
-  const tuples =
-    arms.length > 1 &&
-    arms.every((arm) => arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.tuple === true);
-  if (!tuples || lowerer.widthLiftPlan(from, expected)?.how !== "unionArr") return;
-  // The slot's own type where the site has one (a parameter, a declared
-  // binding), else the value's (`x as unknown as string[]`).
-  const slot = panicSafe(
-    () => (ts.isExpression(node) ? lowerer.checker.getContextualType(node) : undefined),
-    undefined,
-  );
-  const type = slot ?? panicSafe(() => lowerer.typeOf(node), null);
-  if (!type) return;
-  const members = type.isUnionType() ? ts.constituentTypes(type) : [type];
-  const mutable = members.some((member) => {
-    const symbol = member.getSymbol();
-    return symbol !== undefined && ts.symbolName(symbol) === "Array";
-  });
-  if (!mutable) return;
-  lowerer.unsupported(
-    "SC1090",
-    node,
-    `a union of tuples handed to a '${lowerer.fmt(expected)}' slot (the slot holds a copy of the tuple, so a later write through it, or to the tuple, would be lost for the other: declare the slot 'readonly', or narrow the value to one tuple first)`,
-  );
-}
-
 function panicSafe<T>(query: () => T, fallback: T): T {
   try {
     return query();
@@ -4680,6 +4637,9 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
+  /** array-values.ts's answer per binding: where its value is handed to a
+   * slot of a mutable array type (mutableArraySlotUseOf), or null. */
+  readonly mutableArraySlotUses = new Map<ts.Symbol, ts.Node | null>();
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
@@ -5438,6 +5398,7 @@ export class Lowerer {
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
+    "mutableArraySlotUses",
     "sloppyThisGlobalReads",
     "globalLookupNames",
     "namesWebStreamClass",
@@ -15893,7 +15854,6 @@ export class Lowerer {
     payloadSite?: IrType,
   ): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
-    refuseTupleUnionIntoMutableArray(this, node, expr.type, expected);
     // A binding the checker types as the console object (`const c =
     // console`, a `Console` parameter) into a record of its members: the
     // same member-by-name copy the direct `console` spelling takes

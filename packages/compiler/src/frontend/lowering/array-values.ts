@@ -21,7 +21,9 @@ import {
 } from "../../ir/ir.js";
 import { everyExpr } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
-import type * as ts from "../ts7/adapter.js";
+import * as ts from "../ts7/adapter.js";
+import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 /** Test whether one array index contains a value rather than a hole. */
 export function arrayIndexPresent(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
@@ -169,6 +171,7 @@ export function unionArmsView(
 ): IrExpr | null {
   if (value.type.kind !== "union" || read?.kind !== "array") return null;
   if (lowerer.widthLiftPlan(value.type, read)?.how !== "unionArr") return null;
+  refuseReadBesideMutableSlot(lowerer, node);
   const unionId = value.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms ?? [];
   const present = arms.filter((arm) => !isUnitType(arm));
@@ -184,6 +187,105 @@ export function unionArmsView(
     : null;
 }
 
+/** Reading a union of tuples in place makes programs build that stopped
+ * at those reads before. One kind of them must keep stopping: a program
+ * that also hands the same binding to a slot of a MUTABLE array type
+ * (`const alias = names as unknown as string[]`, an argument for a
+ * `string[]` parameter). That slot holds a copy of the tuple
+ * (unionArrayWidthHelper), so a write through it is lost for the tuple,
+ * and the read here would answer the unwritten elements without an error.
+ * The read is refused, naming the slot, until tuples that reach an array
+ * slot are arrays. A `readonly` array slot cannot be written through and
+ * does not count. Only a binding named by the read is followed: the same
+ * tuple reached through another expression is not seen. */
+function refuseReadBesideMutableSlot(lowerer: Lowerer, node: ts.Node): void {
+  if (!ts.isExpression(node)) return;
+  const read = withoutParenthesesTypeWrappers(node);
+  if (!ts.isIdentifier(read)) return;
+  const symbol = lowerer.checker.getSymbolAtLocation(read);
+  if (!symbol) return;
+  const slot = mutableArraySlotUseOf(lowerer, symbol, read.text);
+  if (slot === null) return;
+  const line =
+    ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(slot), ts.tokenStartOfNode(slot)).line +
+    1;
+  lowerer.unsupported(
+    "SC1090",
+    node,
+    `reading a union of tuples in place while '${read.text}' is also handed to a mutable array slot (line ${line}: that slot holds a copy of the tuple, so a write through it would not be seen here; declare the slot 'readonly', or narrow the value to one tuple first)`,
+  );
+}
+
+/** Where the binding `symbol` is handed to a slot of a mutable array type
+ * in the source that declares it: an initializer, an argument, a returned
+ * or assigned value, a property or element of a literal, behind any
+ * assertion. Null when it never is. */
+function mutableArraySlotUseOf(lowerer: Lowerer, symbol: ts.Symbol, name: string): ts.Node | null {
+  const known = lowerer.mutableArraySlotUses.get(symbol);
+  if (known !== undefined) return known;
+  let found: ts.Node | null = null;
+  const declaration = symbol.declarations[0];
+  if (declaration !== undefined) {
+    ts.walkPreorder(ts.getSourceFileOfNode(declaration), (node) => {
+      if (
+        !ts.isIdentifier(node) ||
+        node.text !== name ||
+        lowerer.checker.getSymbolAtLocation(node) !== symbol
+      )
+        return undefined;
+      // The reference with every assertion around it: the value a slot gets.
+      let value: ts.Expression = node;
+      while (
+        value.parent !== undefined &&
+        (ts.isParenthesizedExpression(value.parent) ||
+          ts.isAsExpression(value.parent) ||
+          ts.isTypeAssertion(value.parent) ||
+          ts.isSatisfiesExpression(value.parent) ||
+          ts.isNonNullExpression(value.parent)) &&
+        value.parent.expression === value
+      )
+        value = value.parent;
+      if (handedToMutableArraySlot(lowerer, value)) {
+        found = value;
+        return "stop";
+      }
+      return undefined;
+    });
+  }
+  lowerer.mutableArraySlotUses.set(symbol, found);
+  return found;
+}
+
+/** Whether `value` sits where a slot takes it and that slot's type is a
+ * mutable array: the slot's own type where the checker has one (a
+ * parameter, a declared binding, a return type), else the value's own type
+ * as the initializer of an undeclared binding. A receiver, an iterable or
+ * a spread operand is no slot. */
+function handedToMutableArraySlot(lowerer: Lowerer, value: ts.Expression): boolean {
+  const parent = value.parent;
+  if (parent === undefined || ts.isSpreadElement(parent)) return false;
+  let type: ts.Type | null | undefined;
+  try {
+    type = lowerer.checker.getContextualType(value);
+    if (
+      !type &&
+      ts.isVariableDeclaration(parent) &&
+      parent.initializer === value &&
+      parent.type === undefined
+    )
+      type = lowerer.typeOf(value);
+  } catch (e) {
+    if (isCheckerPanic(e)) return false;
+    throw e;
+  }
+  if (!type) return false;
+  const members = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  return members.some((member) => {
+    const symbol = member.getSymbol();
+    return symbol !== undefined && ts.symbolName(symbol) === "Array";
+  });
+}
+
 /** The same union where every element is read at once, with no code of
  * the program between the receiver's evaluation and the last read (a
  * spread): the array a slot's conversion builds is then what the value
@@ -191,13 +293,16 @@ export function unionArmsView(
  * when the value is no such union. */
 export function unionReadAsArray(
   lowerer: Lowerer,
+  node: ts.Node,
   value: IrExpr,
   read: IrType | null,
   loc: SrcLoc,
 ): IrExpr | null {
   if (value.type.kind !== "union" || read?.kind !== "array") return null;
   const lift = lowerer.widthLiftPlan(value.type, read);
-  return lift?.how === "unionArr" ? lowerer.applyWidthLift(lift, value, read, loc) : null;
+  if (lift?.how !== "unionArr") return null;
+  refuseReadBesideMutableSlot(lowerer, node);
+  return lowerer.applyWidthLift(lift, value, read, loc);
 }
 
 /** A tuple's fields in position order. */

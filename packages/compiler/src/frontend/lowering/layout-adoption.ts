@@ -33,11 +33,15 @@
  *     such flow names the SAME structural type, or a type that takes any
  *     value. A generic callee that holds the table as its type parameter
  *     counts by the parameter's constraint, as long as the call does not
- *     answer the table's own type. A use this scan does not understand (an
- *     alias binding, a spread, a destructuring, a type query, a module
- *     imported as a whole) leaves the table as it is, and so does a table
- *     held by another table that keeps its own layout: a value typed by the
- *     literal could then reach a type this scan never saw;
+ *     answer the table's own type. A member read through the table's own
+ *     type is a primitive, or a nested literal or another table, whose uses
+ *     are followed the same way: a nested literal may only flow into the
+ *     type its slot has. A use this scan does not understand (an alias
+ *     binding, a spread, a destructuring, a type query, a list read through
+ *     the table's own type, a module imported as a whole) leaves the table
+ *     as it is, and so does a table held by another table that keeps its
+ *     own layout: a value typed by the literal could then reach a type this
+ *     scan never saw;
  *   - the structural type declares every member the table has, and a member
  *     that is a nested literal, a list or another table has a structural
  *     type or an array of one there: the nested literals take those layouts
@@ -73,8 +77,24 @@ interface Table {
   readonly within: { container: Table; mention: ts.Identifier }[];
   /** The identifiers the literal names as members: each must be a table. */
   readonly members: ts.Identifier[];
+  /** The nested literals that flow somewhere by themselves, read as members
+   * through the table's own type: the member names from the table to the
+   * literal, and the structural type the read flows into. */
+  readonly memberFlows: { path: readonly string[]; target: ts.Type }[];
   /** A use the scan does not understand: the table keeps its layout. */
   escaped: boolean;
+}
+
+/** What a use is a use of: a table, or a nested literal of one reached by
+ * member reads through the table's own type. */
+interface Subject {
+  readonly table: Table;
+  readonly literal: ts.ObjectLiteralExpression;
+  /** The literal's own type and its symbol. */
+  readonly type: ts.Type;
+  readonly own: ts.Symbol;
+  /** The member names from the table to the literal; empty for the table. */
+  readonly path: readonly string[];
 }
 
 /** What a table's literal becomes in a structural type's layout. */
@@ -101,12 +121,15 @@ const KEYED_COLLECTIONS = new Set(["Map", "Set", "WeakMap", "WeakSet"]);
 export class LayoutAdoptions {
   /** The literal type's symbol, and the type whose layout its values take. */
   private readonly layouts = new Map<ts.Symbol, ts.Type>();
+  /** The tables of the program, by binding. */
+  private readonly found: Map<ts.Symbol, Table>;
 
   constructor(
     private readonly checker: ts.TypeChecker,
     sources: readonly ts.SourceFile[],
   ) {
     const tables = this.tables(sources);
+    this.found = tables;
     if (tables.size === 0) return;
     const names = new Set<string>();
     const literals = new Map<ts.Node, Table>();
@@ -199,6 +222,7 @@ export class LayoutAdoptions {
       const fit: Fit = { nested: new Map(), slots: new Map() };
       try {
         if (!this.fits(table.literal, target, fit)) return null;
+        if (!this.membersFlowAs(table, target)) return null;
       } catch {
         return null;
       }
@@ -208,6 +232,23 @@ export class LayoutAdoptions {
       decided.set(table, answer);
       return answer;
     };
+    // A table named in another is one object in one layout: the slot's,
+    // when the container takes a layout. A container whose member keeps its
+    // own layout would hold a copy of it (and a read of the member through
+    // the container's own type would be typed by a literal of another
+    // layout), so that container keeps its own layout too.
+    for (let settled = false; !settled;) {
+      settled = true;
+      decided.clear();
+      for (const table of tables.values()) {
+        if (decide(table) !== null) continue;
+        for (const { container } of table.within) {
+          if (container.escaped || decide(container) === null) continue;
+          container.escaped = true;
+          settled = false;
+        }
+      }
+    }
     for (const table of tables.values()) {
       const answer = decide(table);
       if (answer === null) continue;
@@ -260,6 +301,7 @@ export class LayoutAdoptions {
                 ) === true,
               within: [],
               members,
+              memberFlows: [],
               escaped: false,
             });
           } catch {
@@ -307,6 +349,19 @@ export class LayoutAdoptions {
       table.escaped = true;
       return;
     }
+    this.useValue(value, {
+      table,
+      literal: table.literal,
+      type: table.type,
+      own: table.own,
+      path: [],
+    });
+  }
+
+  /** Records what the program does with `start`, a value of `subject`. */
+  private useValue(start: ts.Expression, subject: Subject): void {
+    const { table } = subject;
+    let value = start;
     // Parentheses, `!` and `satisfies` hand the value on unchanged.
     let outer = value.parent;
     while (
@@ -322,12 +377,12 @@ export class LayoutAdoptions {
       table.escaped = true;
       return;
     }
-    // A member read by name: the member's own value, a primitive. A nested
-    // table or a list read through the table's own type is typed as the
-    // literal wrote it (a tuple, a narrower record), which the adopted
-    // layout does not hold: such a table keeps its own layout.
+    // A member read by name: a primitive is the member's own value; any
+    // other member is followed (readMember).
     if (ts.isPropertyAccessExpression(outer) && outer.expression === value) {
-      if (!this.primitiveMember(table, outer.name.text) || isWritten(outer)) table.escaped = true;
+      if (isWritten(outer)) table.escaped = true;
+      else if (!this.primitiveMember(subject.type, outer.name.text))
+        this.readMember(outer, subject);
       return;
     }
     if (ts.isBinaryExpression(outer)) {
@@ -336,7 +391,7 @@ export class LayoutAdoptions {
       // `"name" in table` asks the object which members it has.
       if (operator === ts.SyntaxKind.InKeyword && outer.right === value) return;
       if (operator === ts.SyntaxKind.EqualsToken && outer.right === value) {
-        if (this.flow(table, this.checker.getTypeAtLocation(outer.left))) table.escaped = true;
+        if (this.flow(subject, this.checker.getTypeAtLocation(outer.left))) table.escaped = true;
         return;
       }
       table.escaped = true;
@@ -346,7 +401,7 @@ export class LayoutAdoptions {
     if (ts.isCaseClause(outer) || (ts.isSwitchStatement(outer) && outer.expression === value))
       return;
     if (ts.isAsExpression(outer) || ts.isTypeAssertion(outer)) {
-      if (this.flow(table, this.checker.getTypeFromTypeNode(outer.type))) table.escaped = true;
+      if (this.flow(subject, this.checker.getTypeFromTypeNode(outer.type))) table.escaped = true;
       return;
     }
     if (
@@ -362,10 +417,10 @@ export class LayoutAdoptions {
       // A context typed by the table's own type holds the table under an
       // inferred type: only a generic callee's type parameter is followed.
       if (
-        this.flow(table, this.checker.getContextualType(value)) &&
+        this.flow(subject, this.checker.getContextualType(value)) &&
         !(
           (ts.isCallExpression(outer) || ts.isNewExpression(outer)) &&
-          this.genericFlow(table, outer, value)
+          this.genericFlow(subject, outer, value)
         )
       )
         table.escaped = true;
@@ -374,11 +429,70 @@ export class LayoutAdoptions {
     table.escaped = true;
   }
 
+  /** A member that is not a primitive, read through the type its literal
+   * has. A nested literal is followed as a part of its table, and another
+   * table named there as that table: each takes the layout of the slot that
+   * holds it, so the read is typed by a literal that has that layout. A list
+   * is typed as the tuple the literal wrote, which the adopted layout does
+   * not hold (its slot is the structural type's array), and any other
+   * object keeps the layout it was made in: a table read that way keeps its
+   * own layout. */
+  private readMember(access: ts.PropertyAccessExpression, subject: Subject): void {
+    const member = memberOf(subject.literal, access.name.text);
+    if (member !== undefined && ts.isObjectLiteralExpression(member)) {
+      const type = this.checker.getTypeAtLocation(member);
+      const own = type.getSymbol();
+      if (own !== undefined) {
+        const path = [...subject.path, access.name.text];
+        this.useValue(access, { table: subject.table, literal: member, type, own, path });
+        return;
+      }
+    }
+    const named =
+      member !== undefined && ts.isIdentifier(member)
+        ? this.tableOf(member, this.found)
+        : undefined;
+    if (named === undefined) {
+      subject.table.escaped = true;
+      return;
+    }
+    if (named.escaped) return;
+    try {
+      this.useValue(access, {
+        table: named,
+        literal: named.literal,
+        type: named.type,
+        own: named.own,
+        path: [],
+      });
+    } catch {
+      named.escaped = true;
+    }
+  }
+
+  /** Whether each nested literal that flows somewhere by itself flows into
+   * the type its slot has in `target`: the literal has that layout and no
+   * other. */
+  private membersFlowAs(table: Table, target: ts.Type): boolean {
+    for (const flow of table.memberFlows) {
+      let slot: ts.Type | undefined = target;
+      for (const name of flow.path) {
+        const member: ts.Symbol | undefined = this.checker.getPropertyOfType(slot, name);
+        if (member === undefined) return false;
+        slot = presentPart(this.checker.getTypeOfSymbol(member));
+        if (slot === undefined) return false;
+      }
+      if (slot !== flow.target) return false;
+    }
+    return true;
+  }
+
   /** One flow of a table into `target`, the type its context names.
    * Answers whether the context is typed by the table's own type (or by a
    * type parameter): then nothing converts there, and the value goes on
    * under a type the context inferred. */
-  private flow(table: Table, target: ts.Type | undefined): boolean {
+  private flow(subject: Subject, target: ts.Type | undefined): boolean {
+    const { table } = subject;
     if (target === undefined) {
       table.escaped = true;
       return false;
@@ -388,7 +502,7 @@ export class LayoutAdoptions {
     for (const part of target.isUnionType() ? ts.constituentTypes(target) : [target]) {
       if ((part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0)
         continue;
-      if (part.getSymbol() === table.own || (part.flags & ts.TypeFlags.TypeParameter) !== 0) {
+      if (part.getSymbol() === subject.own || (part.flags & ts.TypeFlags.TypeParameter) !== 0) {
         own = true;
         continue;
       }
@@ -399,7 +513,7 @@ export class LayoutAdoptions {
       }
       structural = part;
     }
-    if (structural !== undefined) table.targets.add(structural);
+    if (structural !== undefined) flowsInto(subject, structural);
     return own;
   }
 
@@ -410,7 +524,7 @@ export class LayoutAdoptions {
    * its constraint is no structural type, or the call answers a value
    * typed by the table's own type. */
   private genericFlow(
-    table: Table,
+    subject: Subject,
     call: ts.CallExpression | ts.NewExpression,
     argument: ts.Expression,
   ): boolean {
@@ -420,11 +534,11 @@ export class LayoutAdoptions {
     if (parameter?.type === undefined || parameter.dotDotDotToken !== undefined) return false;
     const declared = this.checker.getTypeFromTypeNode(parameter.type);
     if ((declared.flags & ts.TypeFlags.TypeParameter) === 0) return false;
-    if (this.mentions(this.checker.getTypeAtLocation(call), table.own, 0)) return false;
+    if (this.mentions(this.checker.getTypeAtLocation(call), subject.own, 0)) return false;
     const constraint = this.constraintOf(declared);
     if (constraint === undefined || this.takesAnyValue(constraint)) return true;
     if (!this.structural(constraint)) return false;
-    table.targets.add(constraint);
+    flowsInto(subject, constraint);
     return true;
   }
 
@@ -516,9 +630,9 @@ export class LayoutAdoptions {
     }
   }
 
-  /** Whether the member `name` of a table's own type is a primitive. */
-  private primitiveMember(table: Table, name: string): boolean {
-    const member = this.checker.getPropertyOfType(table.type, name);
+  /** Whether the member `name` of a literal's own type is a primitive. */
+  private primitiveMember(type: ts.Type, name: string): boolean {
+    const member = this.checker.getPropertyOfType(type, name);
     return member !== undefined && primitive(this.checker.getTypeOfSymbol(member));
   }
 
@@ -549,13 +663,7 @@ export class LayoutAdoptions {
     // A primitive, however it is computed, is held by value in every
     // layout that has a primitive slot for it.
     if (!literal && primitive(this.checker.getTypeAtLocation(value))) return primitive(declared);
-    // The slot's one type besides `undefined` and `null`.
-    let slot: ts.Type | undefined;
-    for (const part of declared.isUnionType() ? ts.constituentTypes(declared) : [declared]) {
-      if ((part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0) continue;
-      if (slot !== undefined) return false;
-      slot = part;
-    }
+    const slot = presentPart(declared);
     if (slot === undefined) return false;
     // Another table by name (the scan checked that it is one).
     if (ts.isIdentifier(value)) {
@@ -634,6 +742,33 @@ export class LayoutAdoptions {
       return false;
     };
   }
+}
+
+/** One flow of `subject` into the structural type `target`. */
+function flowsInto(subject: Subject, target: ts.Type): void {
+  if (subject.path.length === 0) subject.table.targets.add(target);
+  else subject.table.memberFlows.push({ path: subject.path, target });
+}
+
+/** A slot's one type besides `undefined` and `null`. */
+function presentPart(declared: ts.Type): ts.Type | undefined {
+  let slot: ts.Type | undefined;
+  for (const part of declared.isUnionType() ? ts.constituentTypes(declared) : [declared]) {
+    if ((part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0) continue;
+    if (slot !== undefined) return undefined;
+    slot = part;
+  }
+  return slot;
+}
+
+/** The value a literal gives its member `name`. */
+function memberOf(literal: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
+  for (const property of literal.properties.nodes) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    if (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name)) continue;
+    if (property.name.text === name) return withoutParentheses(property.initializer);
+  }
+  return undefined;
 }
 
 /** The operands the program compares by identity (`compared`) and the

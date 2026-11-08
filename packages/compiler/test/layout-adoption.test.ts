@@ -57,6 +57,14 @@ test.each([
      console.log(held === (awl as Tool), rack[0] === held);`,
   ],
   [
+    "a nested literal and another table read through the table's own type",
+    `const blade = { label: "blade" } as const;
+     const plane = { label: "plane", best: blade, spare: { label: "wedge", grams: 90 } } as const;
+     interface Kit { readonly label: string; readonly best?: Tool; readonly spare?: Tool }
+     function whole(kit: Kit): boolean { return same(kit.best!, kit.spare!); }
+     console.log(whole(plane), same(plane.best, plane.spare), plane.spare.grams + 1, plane.best === blade);`,
+  ],
+  [
     "a type parameter constrained to the type",
     `const awl = { label: "awl" } as const;
      function keep<Kind extends Tool>(tool: Kind): Tool { return tool; }
@@ -103,6 +111,37 @@ test.each([
     `${TOOL}
      const plane = { label: "plane", parts: [{ label: "wedge" }] } as const;
      console.log(same(plane, plane), plane.parts.length);`,
+  ],
+  [
+    "a nested literal that flows into a second type",
+    `${TOOL}
+     interface Kit { readonly label: string; readonly spare?: Tool }
+     interface Weighed { readonly label: string; readonly grams: number }
+     function heavy(tool: Weighed): boolean { return tool.grams > 50; }
+     function kept(kit: Kit): boolean { return kit.spare === kit.spare; }
+     const plane = { label: "plane", spare: { label: "wedge", grams: 90 } } as const;
+     console.log(kept(plane), heavy(plane.spare));`,
+  ],
+  [
+    "a table that names a table bound to a second name",
+    `${TOOL}
+     interface Kit { readonly label: string; readonly best?: Tool }
+     function kept(kit: Kit): boolean { return kit.best === kit.best; }
+     const blade = { label: "blade" } as const;
+     const other = blade;
+     const plane = { label: "plane", best: blade } as const;
+     console.log(kept(plane), other.label);`,
+  ],
+  [
+    "a table whose member table keeps its own layout, read through the table",
+    `${TOOL}
+     interface Kit { readonly label: string; readonly best?: Tool }
+     interface Named { readonly label: string }
+     function named(tool: Named): string { return tool.label; }
+     function kept(kit: Kit): boolean { return kit.best === kit.best; }
+     const blade = { label: "blade" } as const;
+     const plane = { label: "plane", best: blade } as const;
+     console.log(kept(plane), named(blade), same(blade, plane.best));`,
   ],
   [
     "a generic callee that answers the table's own type",

@@ -229,11 +229,15 @@ function unionIdOf(type: IrType): string {
 }
 
 /** Whether a value of this type can lead to an instance of `name`: directly,
- * through a union arm, or through a container, closure or generator slot. */
+ * through a union arm, or through a container, closure or generator slot.
+ * A union can hold itself through one of those (a JSON value is a union
+ * with an array of the same union): `walked` holds the unions already
+ * entered, and one met again adds nothing its first visit does not find. */
 export function mentions(
   type: IrType,
   name: string,
   unions: ReadonlyMap<string, IrUnionDef>,
+  walked?: Set<string>,
 ): boolean {
   switch (type.kind) {
     case "object":
@@ -241,26 +245,29 @@ export function mentions(
       return type.className === name;
     case "union": {
       const arms = unions.get(type.unionId)?.arms;
-      return arms !== undefined && arms.some((arm) => mentions(arm, name, unions));
+      if (arms === undefined || walked?.has(type.unionId)) return false;
+      const entered = walked ?? new Set<string>();
+      entered.add(type.unionId);
+      return arms.some((arm) => mentions(arm, name, unions, entered));
     }
     case "array":
-      return mentions(type.elem, name, unions);
+      return mentions(type.elem, name, unions, walked);
     case "map":
-      return mentions(type.key, name, unions) || mentions(type.value, name, unions);
+      return mentions(type.key, name, unions, walked) || mentions(type.value, name, unions, walked);
     case "set":
-      return mentions(type.elem, name, unions);
+      return mentions(type.elem, name, unions, walked);
     case "promise":
-      return mentions(type.inner, name, unions);
+      return mentions(type.inner, name, unions, walked);
     case "func":
       return (
-        type.params.some((param) => mentions(param, name, unions)) ||
-        mentions(type.ret, name, unions)
+        type.params.some((param) => mentions(param, name, unions, walked)) ||
+        mentions(type.ret, name, unions, walked)
       );
     case "generator":
       return (
-        mentions(type.yieldT, name, unions) ||
-        mentions(type.retT, name, unions) ||
-        mentions(type.nextT, name, unions)
+        mentions(type.yieldT, name, unions, walked) ||
+        mentions(type.retT, name, unions, walked) ||
+        mentions(type.nextT, name, unions, walked)
       );
     case "record":
       return false;

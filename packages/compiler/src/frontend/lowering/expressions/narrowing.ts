@@ -46,6 +46,7 @@ import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
+import { isSafeToRepeat } from "./evaluation-safety.js";
 import {
   assertedOptionalExtension,
   hostedStorageView,
@@ -880,6 +881,8 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     return expr;
   const narrowedTs = lowerer.typeOf(node);
   const narrowed = lowerer.mapTypeOf(narrowedTs);
+  const unnarrowed = instanceSlotUnnarrowed(lowerer, node, expr, narrowedTs, narrowed);
+  if (unnarrowed) return unnarrowed;
   // `Array.isArray(u)` on a union with one readonly array/tuple arm: the
   // lib predicate narrows to `any[]`, possibly intersected with another
   // type. That mapping may be a checked value or a synthetic record, but
@@ -1027,6 +1030,84 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     type: narrowed,
     loc: expr.loc,
   };
+}
+
+/** A binding of a generic instance read where the checker narrowed nothing:
+ * the type of the read is the binding's own declared type, and the slot
+ * holds a union with that type as one arm among several value arms.
+ *
+ * The checker types a generic body against its constraints: the variable of
+ * `for (const column of columns)` over `columns: T extends
+ * ReadonlyArray<Column>` is a `Column`. The instance's slot holds what the
+ * instance binds, and a T bound to the elements of constant tables beside
+ * `Column` itself holds each table's own layout as an arm. `Column` there
+ * is the view every arm satisfies, not the arm a control-flow test chose,
+ * so extracting its arm would misread every other one. The value keeps its
+ * arms and its consumer reads it as a union (a member every arm stores, or
+ * the keyed read where they differ).
+ *
+ * A null or undefined arm the declared type does not have is still excluded
+ * as before: it throws Node's TypeError for the operation consuming the
+ * read. Null for every other read, which keeps the checker's narrowing. */
+function instanceSlotUnnarrowed(
+  lowerer: Lowerer,
+  node: ts.Node,
+  value: IrExpr,
+  siteTs: ts.Type,
+  site: IrType | null,
+): IrExpr | null {
+  if (lowerer.typeParamBindings === null || value.type.kind !== "union" || site === null)
+    return null;
+  if (site.kind === "union" || site.kind === "void" || isUnitType(site)) return null;
+  if (!ts.isIdentifier(node)) return null;
+  const unionId = value.type.unionId;
+  const from = lowerer.unions.get(unionId);
+  if (!from || lowerer.armTag(unionId, site) < 0) return null;
+  const values = from.arms.filter((arm) => !isUnitType(arm));
+  if (values.length < 2) return null;
+  const symbol = lowerer.resolveValueSymbol(node);
+  if (!symbol) return null;
+  const declared = lowerer.checker.getTypeOfSymbol(symbol);
+  // The declared type itself, or a type variable (`T[number]`) read through
+  // its constraint: the whole declared type is assignable to the read's
+  // type exactly when that type is no narrower than the constraint.
+  // A test that only excluded null or undefined (`part === null ? … :
+  // part.id`) chose no value arm either: the comparison is with the
+  // declared type's values.
+  const variable = (declared.flags & ts.TypeFlags.Instantiable) !== 0;
+  const declaredValues = variable ? declared : lowerer.checker.getNonNullableType(declared);
+  if (
+    declaredValues !== siteTs &&
+    !(
+      lowerer.checker.isTypeAssignableTo(declaredValues, siteTs) &&
+      (variable || lowerer.checker.isTypeAssignableTo(siteTs, declaredValues))
+    )
+  )
+    return null;
+  if (values.length === from.arms.length) return value;
+  if (!isSafeToRepeat(value)) return null;
+  const subId = lowerer.unions.transform(from, values);
+  const units = new Set<number>();
+  from.arms.forEach((arm, tag) => {
+    if (isUnitType(arm)) units.add(tag);
+  });
+  const helper = lowerer.unionRetagHelper(unionId, subId, value.loc, units);
+  if (!helper) return null;
+  const type: IrType = { kind: "union", unionId: subId };
+  let result: IrExpr = { kind: "call", callee: helper, args: [value], type, loc: value.loc };
+  for (const tag of units) {
+    const message = staleReadMessage(node, from.arms[tag]!);
+    if (message === null) continue;
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value, type: BOOL, loc: value.loc },
+      then: nodeThrowExpr(1, "", message, type, value.loc),
+      else_: result,
+      type,
+      loc: value.loc,
+    };
+  }
+  return result;
 }
 
 /** A getter read whose runtime result can be undefined (an unchecked

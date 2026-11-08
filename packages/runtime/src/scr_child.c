@@ -8906,7 +8906,9 @@ static ScrDyn *scr_child_dyn_invoke(
   ScrChild *child = h;
   if (!strcmp(method, "ref") || !strcmp(method, "unref")) {
     if (!strcmp(method, "ref")) scr_child_ref(child); else scr_child_unref(child);
-    return scr_dyn_retain(self);
+    /* Node's ChildProcess answers undefined here (a socket, a server and
+     * a timer answer themselves). */
+    return scr_dyn_retain(scr_dyn_undefined());
   }
   if (!strcmp(method, "kill")) {
     const ScrDyn *signal = argc ? args[0] : scr_dyn_undefined();

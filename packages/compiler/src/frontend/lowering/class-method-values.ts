@@ -15,7 +15,7 @@ import {
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { newFnCtx, type Lowerer } from "./lowerer.js";
+import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
 import {
   classMemberNameOf,
   findGenericMethodOn,
@@ -23,6 +23,7 @@ import {
   genericOverrideBelow,
   type ClassInfo,
 } from "./lower-classes.js";
+import { checkRefusedMemberUse, reportRefusedMemberUse } from "./class-member-refusals.js";
 import { declaredLength, funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
@@ -146,21 +147,7 @@ export function refreshClassMethodValueSelections(lowerer: Lowerer): boolean {
         candidate.methods.get(selection.method)?.abstract
       )
         continue;
-      let value = methodValue(lowerer, selection.expression, candidate);
-      if (value && selection.checked) value = lowerer.coerceToExpected(value, DYN);
-      if (value && !typeEquals(value.type, selection.fallback.type)) {
-        const widened = lowerer.coerceCovariantFunction(value, selection.fallback.type);
-        // Only a representation-preserving view can keep extraction's
-        // identity contract across differently typed base/derived views.
-        if (widened) value = widened;
-      }
-      if (!value || !typeEquals(value.type, selection.fallback.type))
-        lowerer.unsupported(
-          "SC1090",
-          selection.expression,
-          "method values with incompatible override signatures",
-        );
-      selection.values.set(candidate.def.name, value);
+      selection.values.set(candidate.def.name, selectedMethodValue(lowerer, selection, candidate));
       added = true;
     }
     if (!added) continue;
@@ -187,11 +174,58 @@ export function refreshClassMethodValueSelections(lowerer: Lowerer): boolean {
   return changed;
 }
 
+/** The value a selector answers for instances of `candidate`.
+ *
+ * The selector grows in a pass that has no statement to poison, so a
+ * candidate whose value is refused (its class refused the member, or the
+ * override has no view as the selector's type) must not throw out of the
+ * pass: the refusal has reported at the read that made the selector, which
+ * fails the build, and the candidate's arm throws. The arm is never the
+ * inherited method: a read through a base-typed receiver would answer the
+ * wrong function for the class. A poison nothing reported stays a crash. */
+function selectedMethodValue(
+  lowerer: Lowerer,
+  selection: ClassMethodValueSelection,
+  candidate: ClassInfo,
+): IrExpr {
+  try {
+    let value = methodValue(lowerer, selection.expression, candidate);
+    if (value && selection.checked) value = lowerer.coerceToExpected(value, DYN);
+    if (value && !typeEquals(value.type, selection.fallback.type)) {
+      const widened = lowerer.coerceCovariantFunction(value, selection.fallback.type);
+      // Only a representation-preserving view can keep extraction's
+      // identity contract across differently typed base/derived views.
+      if (widened) value = widened;
+    }
+    if (!value || !typeEquals(value.type, selection.fallback.type))
+      lowerer.unsupported(
+        "SC1090",
+        selection.expression,
+        "method values with incompatible override signatures",
+      );
+    return value;
+  } catch (e) {
+    if (!(e instanceof PoisonError) || lowerer.diags.length === 0) throw e;
+    return nodeThrowExpr(
+      1,
+      "",
+      `The value of method '${selection.method}' of class '${candidate.def.name}' did not compile`,
+      selection.fallback.type,
+      selection.fn.loc,
+    );
+  }
+}
+
 function methodValue(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
   info: ClassInfo,
 ): IrExpr | null {
+  // A method read as a value in source: a refused member reports here.
+  const declared = findMethodOn(lowerer, info, expr.name.text);
+  if (declared) checkRefusedMemberUse(lowerer, declared.declarer, expr.name.text, expr.name);
+  const generic = declared ? null : findGenericMethodOn(lowerer, info, expr.name.text);
+  if (generic?.info.refused) reportRefusedMemberUse(lowerer, generic.info.refused, expr.name);
   return classMethodValue(lowerer, expr, info, expr.name.text, locOf(expr));
 }
 

@@ -1,3 +1,4 @@
 {
-  "type": "module"
+  "type": "module",
+  "scriptc": { "packages": { "thenable-pkg": "node" } }
 }

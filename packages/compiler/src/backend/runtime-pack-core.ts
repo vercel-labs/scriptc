@@ -111,6 +111,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   recordViewFrozen: boolean;
   genBind: boolean;
   genReceiver: boolean;
+  recordSourceGet: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -161,6 +162,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   stdioObject: boolean;
   /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
   streamPipeEvents: boolean;
+  /** An fs stream's options can hold a `signal`: the SCR_FS_STREAM_SIGNAL
+   * build of the fs stream unit. */
+  fsStreamSignal: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -394,6 +398,7 @@ export function effectiveRuntimeFeatures(
     recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
     genReceiver: features.genReceiver === true,
+    recordSourceGet: features.recordSourceGet === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
@@ -420,6 +425,7 @@ export function effectiveRuntimeFeatures(
     streamWriteErrors: features.streamWriteErrors === true,
     stdioObject: features.stdioObject === true,
     streamPipeEvents: features.streamPipeEvents === true,
+    fsStreamSignal: features.fsStreamSignal === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,

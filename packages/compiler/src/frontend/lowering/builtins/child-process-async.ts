@@ -1,6 +1,11 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { type ChildEvalStep, lowerChildArgsArg, withChildArgsCheck } from "./child-process.js";
+import {
+  type ChildEvalStep,
+  lowerChildArgsArg,
+  windowsOnlyOption,
+  withChildArgsCheck,
+} from "./child-process.js";
 import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -177,7 +182,9 @@ export function lowerExecFileAsyncCall(
           optionSteps.push(5);
           break;
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+          // Node reads it on Windows only; a value that must be evaluated
+          // is refused by name instead of dropped.
+          windowsOnlyOption(lowerer, what, m.name, p, m.value, null);
           break;
         case "killSignal": {
           const t = lowerer.typeOf(m.value);

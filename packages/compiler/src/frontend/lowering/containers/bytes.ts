@@ -2866,8 +2866,19 @@ function lowerBufferStaticValue(
           loc,
         }));
       } else {
-        const srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+        const checkerIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
         const value = lowerer.lowerExpr(argNode);
+        // A value the checker calls `any` or `unknown` (or gives a type
+        // with no mapping) that lowers to a typed value is read as the kind
+        // it has: a string, a u8 view or a number[] takes its typed form.
+        const srcIr =
+          checkerIr === null || checkerIr.kind === "dyn"
+            ? value.type.kind === "string" ||
+              (value.type.kind === "bytes" && value.type.elem === "u8") ||
+              (value.type.kind === "array" && value.type.elem.kind === "f64")
+              ? value.type
+              : checkerIr
+            : checkerIr;
         // JS callback storage can be native DYN even when the checker
         // reports any (or a narrowed Buffer). Dispatch on its actual ABI.
         if (value.type.kind === "dyn") {
@@ -2963,6 +2974,26 @@ function lowerBufferStaticValue(
             type: BYTES_U8,
             loc,
           };
+        }
+        // Any other value the checker calls `any` or `unknown`: the run-time
+        // form reads the kind the value has, with Node's TypeError for one
+        // that is no Buffer source.
+        if (
+          args.length === 1 &&
+          checkerIr?.kind === "dyn" &&
+          value.type.kind !== "void" &&
+          lowerer.dynConvertible(value.type)
+        ) {
+          const boxed = lowerer.coerceToExpected(value, DYN);
+          if (boxed.type.kind === "dyn") {
+            return {
+              kind: "libCall",
+              fn: "buffer.poolFromDyn",
+              args: [boxed, { kind: "strLit", value: "utf8", type: STRING, loc }],
+              type: BYTES_U8,
+              loc,
+            };
+          }
         }
       }
     }

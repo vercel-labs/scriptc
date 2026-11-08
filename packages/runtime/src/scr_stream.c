@@ -778,7 +778,19 @@ static void scr_stream_emit_error(ScrStream *s, ScrError *err) {
   /* The error is also the checked-dynamic argument a listener registered
    * through an untyped value reads. */
   ScrDyn *boxed = scr_dyn_from_error(err);
-  scr_emitter_emit_error_mixed((ScrEmitter *)s, n, err, &boxed, 1);
+  ScrError *own = scr_errdyn_err_of(boxed);
+  if (own) {
+    scr_error_release(own);
+    scr_emitter_emit_error_mixed((ScrEmitter *)s, n, err, &boxed, 1);
+  } else {
+    /* The reason is not an Error (the error only stands for it in here):
+     * it is emitted as the value it is. A listener whose parameter admits
+     * the value receives it, one that declares an Error fails its checked
+     * conversion by name, and with no listener the emitter throws
+     * ERR_UNHANDLED_ERROR; no listener of the program's is handed an Error
+     * it never made. */
+    scr_emitter_emit_error_carried((ScrEmitter *)s, n, err, &boxed, 1);
+  }
   scr_dyn_release(boxed);
   scr_str_release(n);
 }

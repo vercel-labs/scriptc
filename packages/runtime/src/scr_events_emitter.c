@@ -1384,10 +1384,20 @@ struct ScrEeMessage {
   ScrDyn *decoded;
 };
 
-static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
-                             ScrDyn *const *flex_args, size_t flex_argc, ScrEeMessage *message) {
+static bool scr_ee_emit_carried_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                                     ScrDyn *const *flex_args, size_t flex_argc);
+
+/* The dispatch pass, compiled once per value of `checked_first` (the two
+ * functions below). `checked_first` is the emit of a value that the typed
+ * tuple only stands for (scr_emitter_emit_error_carried): a typed listener
+ * with a checked-dynamic call is called through it with the value, and the
+ * typed tuple reaches only listeners that have no such call. */
+static inline __attribute__((always_inline)) bool scr_ee_emit_pass(
+    ScrEmitter *em, ScrStr *name, va_list *ap_template, ScrDyn *const *flex_args, size_t flex_argc,
+    ScrEeMessage *message, const bool checked_first) {
   if (name->len == 5 && memcmp(name->data, "error", 5) == 0) {
-    scr_ee_emit_error_monitor(em, ap_template, flex_args, flex_argc);
+    if (checked_first) scr_ee_emit_carried_core(em, SCR_EE_ERROR_MONITOR, ap_template, flex_args, flex_argc);
+    else scr_ee_emit_error_monitor(em, ap_template, flex_args, flex_argc);
     if (scr_exc_pending()) return true;
   }
   ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
@@ -1452,7 +1462,7 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
     if (flex_args && e->flex_invoke) {
       ScrDyn *answer = e->flex_invoke(e->flex_cb, flex_args, flex_argc);
       scr_dyn_release(answer); /* EventEmitter ignores callback results. */
-    } else if (ap_template && e->inv) {
+    } else if (ap_template && e->inv && !(checked_first && e->fallback_invoke)) {
       va_list ap;
       va_copy(ap, *ap_template);
       e->inv(e->cb, ap);
@@ -1472,6 +1482,16 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
   }
   if (snap != small) free(snap);
   return true;
+}
+
+static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                             ScrDyn *const *flex_args, size_t flex_argc, ScrEeMessage *message) {
+  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, message, false);
+}
+
+static bool scr_ee_emit_carried_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                                     ScrDyn *const *flex_args, size_t flex_argc) {
+  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, NULL, true);
 }
 
 static bool scr_ee_emit_va(ScrEmitter *em, ScrStr *name, ...) {
@@ -1735,6 +1755,33 @@ bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
     return false;
   }
   return scr_ee_emit_mixed_va(em, name, args, argc, 1, err);
+}
+
+static bool scr_ee_emit_carried_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc, ...) {
+  va_list ap;
+  va_start(ap, argc);
+  bool had = scr_ee_emit_carried_core(em, name, &ap, args, argc);
+  va_end(ap);
+  return had;
+}
+
+/* emit('error') of a reason that is not an Error, from a unit that holds
+ * it as one (a stream): `err` only stands for the value `args[0]` inside
+ * the runtime. Listeners registered through untyped values and typed
+ * listeners receive the value, a typed listener through its checked-dynamic
+ * call (a parameter that does not admit the value fails its conversion by
+ * name; no listener is handed an Error the program never made). The
+ * runtime's own listeners, which have no such call, receive `err`. With no
+ * 'error' listener the value is unhandled as in any untyped emit. Borrows
+ * err and args. */
+bool scr_emitter_emit_error_carried(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                    ScrDyn *const *args, size_t argc) {
+  if (!scr_ee_has(em->reg, "error")) {
+    scr_ee_emit_carried_va(em, SCR_EE_ERROR_MONITOR, args, argc, err);
+    if (!scr_exc_pending()) scr_ee_unhandled_error(args[0]);
+    return false;
+  }
+  return scr_ee_emit_carried_va(em, name, args, argc, err);
 }
 
 /* ── introspection ────────────────────────────────────────────────────── */

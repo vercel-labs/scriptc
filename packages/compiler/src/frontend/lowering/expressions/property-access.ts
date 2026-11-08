@@ -1427,7 +1427,12 @@ export function lowerPropertyAccessExpr(
       expr.name.text === "length" ||
       expr.name.text === "constructor")
   ) {
-    const probed = tryLowerExpression(lowerer, expr.expression);
+    const probed = presentFunctionEntry(
+      lowerer,
+      tryLowerExpression(lowerer, expr.expression),
+      expr.name.text,
+      locOf(expr),
+    );
     // A builtin function value's own name and length are fixed when the
     // adapter is built: answer them without boxing the closure. Node's
     // wrapper names (`process.cwd` is `wrappedCwd`) and lengths that
@@ -2064,6 +2069,59 @@ export function lowerPropertyAccessExpr(
     expr,
     `reading '${expr.name.text}' from a value of type '${lowerer.checker.typeToString(lowerer.typeOf(expr.expression))}'`,
   );
+}
+
+/** The receiver of a `name` or `length` read that is a record entry read in
+ * place (`columns[key].name`, `columns.id.length` over a record whose
+ * values are functions): the read answers the entry or undefined, so its
+ * type is the function beside an undefined arm. The member read is of the
+ * entry: a present one is that function, and a missing one throws Node's
+ * TypeError for a property read of undefined. Any other receiver is
+ * answered as it is. */
+function presentFunctionEntry(
+  lowerer: Lowerer,
+  receiver: IrExpr | null,
+  member: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (receiver === null || receiver.type.kind !== "union") return receiver;
+  if (member !== "name" && member !== "length") return receiver;
+  const unionId = receiver.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  const functionTag = arms.findIndex((arm) => arm.kind === "func");
+  const undefinedTag = arms.findIndex((arm) => arm.kind === "undefinedT");
+  if (arms.length !== 2 || functionTag < 0 || undefinedTag < 0) return receiver;
+  const entry = arms[functionTag]!;
+  const held = lowerer.declareHiddenLocal("%entry", receiver.type);
+  const value: IrExpr = { kind: "varRef", localId: held.id, type: receiver.type, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: held.id, init: receiver, loc }],
+    result: {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId,
+        tag: undefinedTag,
+        negated: false,
+        value,
+        type: BOOL,
+        loc,
+      },
+      then: nodeThrowExpr(
+        1,
+        "",
+        `Cannot read properties of undefined (reading '${member}')`,
+        entry,
+        loc,
+      ),
+      else_: { kind: "unionNarrow", unionId, tag: functionTag, value, type: entry, loc },
+      type: entry,
+      loc,
+    },
+    type: entry,
+    loc,
+  };
 }
 
 /** `result` after evaluating `receiver` for its effects (none to keep when

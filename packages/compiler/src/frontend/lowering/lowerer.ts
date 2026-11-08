@@ -2733,7 +2733,14 @@ export function jsFuncNameOf(
 function spellingNamesValue(lowerer: Lowerer, name: ts.Node): boolean {
   const symbol = lowerer.checker.getSymbolAtLocation(name);
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
-  if (!declaration) return true;
+  // A member no declaration names is an entry of an index signature
+  // (`readers.width` of a `Record<string, F>`): a slot like any data member.
+  if (!declaration)
+    return !(
+      name.parent !== undefined &&
+      ts.isPropertyAccessExpression(name.parent) &&
+      name.parent.name === name
+    );
   if (ts.getSourceFileOfNode(declaration).isDeclarationFile) return true;
   if (
     ts.isClassDeclaration(declaration) ||

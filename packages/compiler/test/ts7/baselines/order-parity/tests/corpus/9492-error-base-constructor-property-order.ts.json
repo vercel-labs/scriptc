@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9492-error-base-constructor-property-order.ts"
+ ],
+ "diags": []
+}

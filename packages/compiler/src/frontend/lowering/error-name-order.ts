@@ -6,6 +6,16 @@ type ErrorClassLink = Pick<ClassInfo, "decl" | "ctor" | "paramProps"> & {
   base: ErrorClassLink | null;
 };
 
+/** Whether a class of `info`'s chain declares `cause` again as a field
+ * (`cause?: unknown`): Node defines it with the class's fields. */
+export function classDeclaresCause(
+  info: (Pick<ClassInfo, "fieldOrder" | "def"> & { base: ClassInfo | null }) | null,
+): boolean {
+  for (let c = info; c && !c.def.runtime; c = c.base)
+    if (c.fieldOrder.some((field) => field.errorCause === true)) return true;
+  return false;
+}
+
 /** The property key a member or element-access name spells statically:
  * an identifier, a quoted string, a number in its canonical spelling, or a
  * computed string literal. Null for other keys. */
@@ -82,6 +92,51 @@ export function errorNameAfterField(
       return undefined;
     });
     if (found) return last;
+  }
+  return undefined;
+}
+
+/** Where an Error subclass instance's `cause` sits among its fields when a
+ * class of its chain declares it again as a field: the field it follows,
+ * null when it precedes every field, undefined when no class declares it.
+ * The first declaration creates the property (Node defines a class's
+ * fields in declaration order, parameter properties first); a later one
+ * redefines it in place. An instance whose constructor options already
+ * created the cause keeps it in the constructor's place instead
+ * (ERROR_CAUSE_HEADER). `fields` are the instance's own enumerable
+ * fields. */
+export function errorCauseAfterField(
+  info: ErrorClassLink,
+  fields: ReadonlySet<string>,
+): string | null | undefined {
+  const chain: ErrorClassLink[] = [];
+  for (let current: ErrorClassLink | null | undefined = info; current; current = current.base)
+    if (current.decl) chain.unshift(current);
+  let last: string | null = null;
+  const created = new Set<string>();
+  const create = (name: string): void => {
+    if (!fields.has(name) || created.has(name)) return;
+    created.add(name);
+    last = name;
+  };
+  for (const link of chain) {
+    for (const property of link.paramProps ?? []) create(property.name);
+    for (const member of link.decl!.members.nodes) {
+      if (!ts.isPropertyDeclaration(member)) continue;
+      const key = staticKeyText(member.name);
+      if (key === null) continue;
+      if (
+        member.modifiers?.nodes.some(
+          (m) =>
+            m.kind === ts.SyntaxKind.StaticKeyword ||
+            m.kind === ts.SyntaxKind.DeclareKeyword ||
+            m.kind === ts.SyntaxKind.AbstractKeyword,
+        )
+      )
+        continue;
+      if (key === "cause") return last;
+      create(key);
+    }
   }
   return undefined;
 }

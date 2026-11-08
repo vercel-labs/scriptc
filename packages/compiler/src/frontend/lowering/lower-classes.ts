@@ -73,6 +73,7 @@ import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inli
 import {
   BIGINT_BYTES_NAMES,
   BOOL,
+  ERROR_CAUSE_HEADER,
   BYTES_U8,
   canDynCheckTo,
   DATE_T,
@@ -118,7 +119,12 @@ import {
 } from "./instantiation-path.js";
 import { appendImplicitUndefinedReturn, hasExplicitJsDocReturn } from "./function-returns.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
-import { errorNameAfterField, errorViewFields } from "./error-name-order.js";
+import {
+  classDeclaresCause,
+  errorCauseAfterField,
+  errorNameAfterField,
+  errorViewFields,
+} from "./error-name-order.js";
 import {
   checkedJsDocumentedParameter,
   documentedParameter,
@@ -3083,6 +3089,17 @@ export function collectClassShapeInner(
                 "redeclaring Error.cause with a type other than 'unknown' or 'object' (declare it 'cause?: unknown' and narrow at the read)",
               );
           }
+          // The first declaration in the chain creates the property: its
+          // instance remembers whether the constructor's options had
+          // created it already (ERROR_CAUSE_HEADER).
+          if (
+            !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
+            !classDeclaresCause(base) &&
+            !fields.has(ERROR_CAUSE_HEADER)
+          ) {
+            fields.set(ERROR_CAUSE_HEADER, BOOL);
+            fieldOrder.push({ name: ERROR_CAUSE_HEADER, type: BOOL, initializer: undefined });
+          }
           fieldOrder.push({
             name: "cause",
             type: DYN,
@@ -5132,6 +5149,10 @@ export function collectClassShapeInner(
     if (root !== info && root?.def.name === "%Error") {
       const after = errorNameAfterField(info, errorViewFields(info.def.fields));
       if (after !== undefined) info.def.errorNameAfter = after;
+      if (info.fields.has(ERROR_CAUSE_HEADER)) {
+        const causeAfter = errorCauseAfterField(info, errorViewFields(info.def.fields));
+        if (causeAfter !== undefined) info.def.errorCauseAfter = causeAfter;
+      }
     }
     // GENERIC members get their declaring-class backlink now that the
     // info exists (instance lowering reads it for `this` typing and the
@@ -10107,6 +10128,36 @@ export function fieldInitStmts(lowerer: Lowerer, info: ClassInfo, thisLocal: IrL
       const value = f.initializer
         ? lowerer.lowerExprExpecting(f.initializer, DYN)
         : dynUndefinedExpr(loc);
+      const self = (): IrExpr => ({ kind: "varRef", localId: thisLocal.id, type: thisType, loc });
+      // The first declaration of the chain creates the property where the
+      // class declares it, unless the constructor's options created it
+      // already: Node then redefines it in place. The instance remembers
+      // which (ERROR_CAUSE_HEADER); either way the value is stored where
+      // the cause is, and the property is enumerable from here on.
+      if (info.fieldOrder.some((field) => field.name === ERROR_CAUSE_HEADER)) {
+        out.push({
+          kind: "fieldSet",
+          obj: self(),
+          className: info.def.name,
+          field: ERROR_CAUSE_HEADER,
+          value: { kind: "libCall", fn: "error.hasCause", args: [self()], type: BOOL, loc },
+          loc,
+        });
+        out.push({
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn: "error.setCause", args: [self(), value], type: VOID, loc },
+          loc,
+        });
+        out.push({
+          kind: "fieldSet",
+          obj: lowerer.upcastTo(self(), "%Error"),
+          className: "%Error",
+          field: "%causeEnumerable",
+          value: { kind: "boolLit", value: true, type: BOOL, loc },
+          loc,
+        });
+        continue;
+      }
       out.push({
         kind: "exprStmt",
         expr: {

@@ -299,6 +299,14 @@ void scr_error_set_code_value(ScrError *e, ScrStr *code);
  * error's checked-dynamic node, as a dynamic property write would.
  * Borrows both (scr_json.c). */
 void scr_error_set_code_dyn(ScrError *e, struct ScrDyn *value);
+/* The program's assignments of `cause` and `code` to an error of a runtime
+ * class: scr_error_set_cause and the two above, after recording the order
+ * of creation when the slots' fixed order cannot express it (scr_json.c). */
+void scr_error_assign_cause(ScrError *e, struct ScrDyn *value);
+void scr_error_assign_code_value(ScrError *e, ScrStr *code);
+void scr_error_assign_code_dyn(ScrError *e, struct ScrDyn *value);
+void scr_error_note_name(ScrError *e, ScrStr *name);
+void scr_error_store_cause(ScrError *e, struct ScrDyn *value);
 /* Object.assign(err, ...sources): the copy onto the error's checked-dynamic
  * node, then the typed slots re-read from it. Borrows both (scr_json.c). */
 void scr_error_assign_dyn(ScrError *e, const struct ScrDyn *sources);

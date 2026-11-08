@@ -271,7 +271,12 @@ import { isCompiledPrototypeMember } from "./class-prototypes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
-import { classesHoldingOwnCode, classHoldsOwnCode } from "./builtins/errors.js";
+import { errorSlotAssign } from "./error-methods.js";
+import {
+  classHoldsOwnCode,
+  lowerErrorMemberWrite,
+  programErrorClasses,
+} from "./builtins/errors.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import {
   classHasIndexSignature,
@@ -10633,8 +10638,13 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           // which it reads from the instance's checked-dynamic view) takes
           // the write there too (the fallback below), whatever view of the
           // instance spells it.
+          // An instance of any other program Error class takes it there as
+          // well: the property dispatch stores the slot and records the
+          // code among the instance's own properties, in creation order.
           const instanceOwnsCode =
-            recv?.type.kind === "object" && classHoldsOwnCode(lowerer, recv.type.className);
+            recv?.type.kind === "object" &&
+            (classHoldsOwnCode(lowerer, recv.type.className) ||
+              programErrorClasses(lowerer, recv.type.className).includes(recv.type.className));
           if (
             !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
             recv?.type.kind === "object" &&
@@ -10647,92 +10657,53 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             // class that keeps `code` itself (a field, or an own property
             // of the instance): that instance takes the write through its
             // checked-dynamic view, every other error through the slot.
-            const holders = classesHoldingOwnCode(lowerer, recv.type.className);
-            if (holders.length > 0) {
-              const target = lowerer.declareHiddenLocal("%codeTarget", recv.type);
-              const written = lowerer.declareHiddenLocal("%codeValue", DYN);
-              const targetRef = (): IrExpr => varRef(target.id, recv.type, loc);
-              const writtenRef = (): IrExpr => varRef(written.id, DYN, loc);
-              const isHolder = holders
-                .map((className): IrExpr => ({
-                  kind: "instanceOf",
-                  value: targetRef(),
-                  className,
-                  type: BOOL,
-                  loc,
-                }))
-                .reduce((acc, test) => ({
-                  kind: "logical",
-                  op: "||",
-                  left: acc,
-                  right: test,
-                  type: BOOL,
-                  loc,
-                }));
-              const viaInstance: IrStmt = {
-                kind: "exprStmt",
-                expr: {
-                  kind: "libCall",
-                  fn: "dyn.keySet",
-                  args: [
-                    lowerer.coerceToExpected(targetRef(), DYN),
-                    { kind: "strLit", value: "code", type: STRING, loc },
-                    writtenRef(),
-                  ],
-                  type: VOID,
-                  loc,
-                },
-                loc,
-              };
-              const viaSlot: IrStmt = {
-                kind: "exprStmt",
-                expr: {
-                  kind: "libCall",
-                  fn: "error.setCodeDyn",
-                  args: [targetRef(), writtenRef()],
-                  type: VOID,
-                  loc,
-                },
-                loc,
-              };
-              // One expression holds both locals for as long as the write
-              // needs them.
-              return {
-                kind: "exprStmt",
-                expr: {
-                  kind: "seqExpr",
-                  stmts: [
-                    { kind: "varDecl", localId: target.id, init: recv, loc },
-                    {
-                      kind: "varDecl",
-                      localId: written.id,
-                      init: lowerer.lowerExprExpecting(expr.right, DYN),
-                      loc,
-                    },
-                    { kind: "if", cond: isHolder, then: [viaInstance], else_: [viaSlot], loc },
-                  ],
-                  result: { kind: "boolLit", value: true, type: BOOL, loc },
-                  type: BOOL,
-                  loc,
-                },
-                loc,
-              };
-            }
-            const stringValue = isStringTyped(lowerer.typeOf(expr.right));
-            return {
-              kind: "exprStmt",
-              expr: {
-                kind: "libCall",
-                fn: stringValue ? "error.setCode" : "error.setCodeDyn",
-                args: [recv, lowerer.lowerExprExpecting(expr.right, stringValue ? STRING : DYN)],
-                type: VOID,
-                loc,
-              },
+            const routed = lowerErrorMemberWrite(
+              lowerer,
+              recv,
+              "code",
+              lowerer.lowerExprExpecting(expr.right, DYN),
+              (error, written) => errorSlotAssign(lowerer, "codeDyn", error, written),
               loc,
-            };
+            );
+            if (routed) return routed;
+            const stringValue = isStringTyped(lowerer.typeOf(expr.right));
+            return errorSlotAssign(
+              lowerer,
+              stringValue ? "code" : "codeDyn",
+              recv,
+              lowerer.lowerExprExpecting(expr.right, stringValue ? STRING : DYN),
+            );
           }
           if (recv?.type.kind === "object" && recv.type.className === "%Error") {
             const loc = locOf(expr);
+            // An instance of a program Error class takes the write at its
+            // own class, which then has a property list to keep it in.
+            const member = expr.left.name.text;
+            const routed = isJsSourceFile(ts.getSourceFileOfNode(expr))
+              ? null
+              : lowerErrorMemberWrite(
+                  lowerer,
+                  recv,
+                  member,
+                  lowerer.lowerExprExpecting(expr.right, DYN),
+                  (error, written) => ({
+                    kind: "exprStmt",
+                    expr: {
+                      kind: "libCall",
+                      fn: "dyn.keySet",
+                      args: [
+                        lowerer.coerceToExpected(error, DYN),
+                        { kind: "strLit", value: member, type: STRING, loc },
+                        written,
+                      ],
+                      type: VOID,
+                      loc,
+                    },
+                    loc,
+                  }),
+                  loc,
+                );
+            if (routed) return routed;
             return {
               kind: "exprStmt",
               expr: {

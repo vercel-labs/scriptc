@@ -165,6 +165,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].genericOf": "other",
   "classes[].baseValueGlobal": "other",
   "classes[].errorNameAfter": "other",
+  "classes[].errorCauseAfter": "other",
   "classes[].prototypeDataHelper": "reference",
   "classes[].instancePrototypeHelper": "reference",
   "classes[].arrayFields": "reference",

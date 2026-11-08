@@ -4223,6 +4223,22 @@ function buildLibFnSignatures() {
      * take the code slot, anything else clears it and sets the dynamic own
      * property. Borrows both; never throws. */
     "error.setCodeDyn": { argTypes: [null, DYN], result: VOID },
+    /** The program's `err.cause = v`, `err.code = s` and `err.code = v` on an
+     * error that is not an instance of a program class: setCause, setCode
+     * and setCodeDyn, after the runtime records the order of creation when
+     * the slots' fixed order (`code`, `cause`, `name`) cannot express it. */
+    "error.assignCause": { argTypes: [null, DYN], result: VOID },
+    "error.assignCode": { argTypes: [null, STRING], result: VOID },
+    "error.assignCodeDyn": { argTypes: [null, DYN], result: VOID },
+    /** The program's `err.name = s`, after the slot write: an error that has
+     * its own-property object takes the name there too (created after the
+     * properties the object already lists). */
+    "error.noteName": { argTypes: [null, STRING], result: VOID },
+    /** The cause slot's store for an instance of a program class, whose
+     * property list records the member's place: retains the new cause,
+     * releases the old one, and makes a cause the store creates enumerable.
+     * It does not consult the instance's checked-dynamic view. */
+    "error.storeCause": { argTypes: [null, DYN], result: VOID },
     /** `Object.assign(err, ...sources)` onto an error-hierarchy receiver
      * (args: the error, a dyn array of the sources): the own-member copy
      * onto its checked-dynamic node, then the typed slots (name, message,

@@ -199,7 +199,11 @@ import {
   lowerCryptoHashMethodCall,
   lowerPromisifiedCryptoCall,
 } from "./builtins/crypto.js";
-import { lowerErrorCaptureStackTraceCall, lowerErrorIsErrorCall } from "./builtins/errors.js";
+import {
+  lowerErrorCaptureStackTraceCall,
+  lowerErrorIsErrorCall,
+  programErrorClasses,
+} from "./builtins/errors.js";
 import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
@@ -13590,6 +13594,7 @@ function lowerObjectAssignOntoError(lowerer: Lowerer, call: ts.CallExpression): 
   if (probe?.type.kind !== "object" || !lowerer.isErrorRootedClass(probe.type.className))
     return null;
   const loc = locOf(call);
+  const targetClass = probe.type.className;
   const target = lowerer.lowerExpr(argNodes[0]!);
   const slot = lowerer.declareHiddenLocal("%assignErr", target.type);
   const sources: IrExpr[] = [];
@@ -13611,6 +13616,30 @@ function lowerObjectAssignOntoError(lowerer: Lowerer, call: ts.CallExpression): 
     kind: "seqExpr",
     stmts: [
       { kind: "varDecl", localId: slot.id, init: target, loc },
+      // A target that is an instance of a program Error class is boxed at
+      // its own class: the class then has a property list for what the
+      // sources add, which the runtime's copy commits into.
+      ...programErrorClasses(lowerer, targetClass).map((className): IrStmt => {
+        const boxed: IrStmt = {
+          kind: "exprStmt",
+          expr: lowerer.coerceToExpected(
+            className === targetClass
+              ? ref()
+              : { kind: "downcast", value: ref(), type: { kind: "object", className }, loc },
+            DYN,
+          ),
+          loc,
+        };
+        return className === targetClass
+          ? boxed
+          : {
+              kind: "if",
+              cond: { kind: "instanceOf", value: ref(), className, type: BOOL, loc },
+              then: [boxed],
+              else_: null,
+              loc,
+            };
+      }),
       {
         kind: "exprStmt",
         expr: {

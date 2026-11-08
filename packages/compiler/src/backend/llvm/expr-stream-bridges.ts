@@ -7,6 +7,7 @@ import {
   type IrType,
   CLASS_ATTRIBUTES,
   DYN_CLASS_PROPERTIES,
+  ERROR_CAUSE_HEADER,
   RUNTIME_STREAM_CLASSES,
   SYMBOL_T,
   classDynViewSupported,
@@ -458,7 +459,10 @@ export function streamTypedRefCommitAdapter(
       // non-configurable entries, which the bag copies.
       const withAttributes = meta.def.fields.some((field) => field.name === CLASS_ATTRIBUTES);
       const placeholderSet = withAttributes ? "scr_dyn_obj_set_field" : "scr_dyn_obj_set";
-      if (meta.def.tracksOwnFields) {
+      // A class whose property list keeps its own order holds a place for
+      // each field where the committed view has it.
+      const keepsFieldPlaces = meta.def.tracksOwnFields || meta.def.errorOwnOrder === true;
+      if (keepsFieldPlaces) {
         host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
         host.declare(`declare void @${placeholderSet}(ptr, ptr, ${host.sizeType}, ptr)`);
       } else if (withAttributes) host.declare(`declare void @scr_dyn_obj_delete_field(ptr, ptr)`);
@@ -490,7 +494,7 @@ export function streamTypedRefCommitAdapter(
       fields
         .filter((field) => !symbols.has(field.name))
         .forEach((field, index) => {
-          if (meta.def.tracksOwnFields)
+          if (keepsFieldPlaces)
             lines.push(
               `  %bag_field${index} = call ptr @scr_dyn_obj_get(ptr %bag, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")})`,
               `  %bag_present${index} = icmp ne ptr %bag_field${index}, null`,
@@ -1116,14 +1120,74 @@ export function streamTypedRefMaterializeAdapter(
         `${slot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${index}`,
       );
       B.line(`${bag} = load ptr, ptr ${slot}`);
-      B.line(`${copied} = call ptr @scr_dyn_copy_property_descriptors(ptr ${out}, ptr ${bag})`);
-      B.line(`call void @scr_dyn_release_v(ptr ${copied})`);
+      if (meta.def.errorOwnOrder === true) {
+        // The list's order is the order of everything it names: a late
+        // `cause` or `code` and a field created after the list's first entry
+        // take their place in it.
+        host.declare(`declare ${host.sizeType} @scr_dyn_view_count(ptr)`);
+        host.declare(`declare void @scr_error_view_follow_list(ptr, ptr, ${host.sizeType})`);
+        const native = B.tmp();
+        B.line(`${native} = call ${host.sizeType} @scr_dyn_view_count(ptr ${out})`);
+        B.line(
+          `call void @scr_error_view_follow_list(ptr ${out}, ptr ${bag}, ${host.sizeType} ${native})`,
+        );
+      } else {
+        B.line(`${copied} = call ptr @scr_dyn_copy_property_descriptors(ptr ${out}, ptr ${bag})`);
+        B.line(`call void @scr_dyn_release_v(ptr ${copied})`);
+      }
+    }
+    // A `cause` the class declares again as a field sits where the class
+    // declares it, unless the constructor's options had created it first.
+    const causeAfter = meta.def.errorCauseAfter;
+    if (
+      typeof causeAfter === "string" &&
+      meta.root.def.name === "%Error" &&
+      meta.def.fields.some((field) => field.name === ERROR_CAUSE_HEADER)
+    ) {
+      host.declare(
+        `declare void @scr_error_dyn_place_key(ptr, ptr, ${host.sizeType}, ptr, ${host.sizeType})`,
+      );
+      const slot = B.tmp(),
+        header = B.tmp(),
+        declared = B.tmp(),
+        place = B.newLabel("cause.place"),
+        placed = B.newLabel("cause.placed");
+      B.line(
+        `${slot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${classFieldIndex(meta, ERROR_CAUSE_HEADER).index}`,
+      );
+      B.line(`${header} = load i8, ptr ${slot}`);
+      B.line(`${declared} = icmp eq i8 ${header}, 0`);
+      B.condBr(declared, place, placed);
+      B.startBlock(place);
+      B.line(
+        `call void @scr_error_dyn_place_key(ptr ${out}, ptr ${host.cstr("cause")}, ${host.sizeType} 5, ptr ${host.cstr(causeAfter)}, ${host.sizeType} ${Buffer.byteLength(causeAfter, "utf8")})`,
+      );
+      B.br(placed);
+      B.startBlock(placed);
     }
     // An Error subclass instance's own `name` sits where its class's
     // construction creates it: after a field, or after every other
     // property when no constructor sets it.
     const nameAfter = meta.def.errorNameAfter;
-    if (meta.root.def.name === "%Error" && !meta.def.runtime && nameAfter !== null) {
+    if (
+      meta.root.def.name === "%Error" &&
+      !meta.def.runtime &&
+      nameAfter === undefined &&
+      meta.def.errorOwnOrder === true &&
+      meta.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES)
+    ) {
+      // A `name` assigned after construction that the instance's property
+      // list names sits where the list has it; one it does not name follows
+      // every other property, as before.
+      host.declare(`declare void @scr_error_view_place_name(ptr, ptr)`);
+      const slot = B.tmp(),
+        bag = B.tmp();
+      B.line(
+        `${slot} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${classFieldIndex(meta, DYN_CLASS_PROPERTIES).index}`,
+      );
+      B.line(`${bag} = load ptr, ptr ${slot}`);
+      B.line(`call void @scr_error_view_place_name(ptr ${out}, ptr ${bag})`);
+    } else if (meta.root.def.name === "%Error" && !meta.def.runtime && nameAfter !== null) {
       host.declare(`declare void @scr_error_dyn_place_name(ptr, ptr, ${host.sizeType})`);
       B.line(
         nameAfter === undefined

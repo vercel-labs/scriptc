@@ -2095,6 +2095,12 @@ void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len)
  * from the slots (scr_json.c). `name_placed`: the class's construction sets
  * `name`, and the view already has it in place. */
 void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e, bool name_placed);
+/* The view of an Error subclass instance in its property list's order
+ * (scr_json.c). */
+void scr_error_view_follow_list(ScrDyn *view, const ScrDyn *bag, size_t native);
+size_t scr_dyn_view_count(const ScrDyn *view);
+void scr_error_view_place_name(ScrDyn *view, const ScrDyn *bag);
+void scr_error_dyn_place_key(ScrDyn *view, const char *key, size_t key_len, const char *after, size_t after_len);
 /* An accessor property of a fresh object: enumerable and configurable,
  * with the given getter and setter (either may be NULL). Moves both. */
 void scr_dyn_obj_set_accessor(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *getter, ScrDyn *setter);

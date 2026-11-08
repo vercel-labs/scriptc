@@ -13,8 +13,11 @@ import {
   programDeclaresDateClass,
 } from "./builtins/date-classes.js";
 import { dateValueMethod } from "./builtins/dates.js";
+import { classHoldsOwnCode } from "./builtins/errors.js";
+import { classDeclaresCause } from "./error-name-order.js";
 import {
   BOOL,
+  CLASS_ATTRIBUTES,
   DATE_T,
   DYN,
   F64,
@@ -1590,6 +1593,454 @@ function computedTableOperation(shape: {
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
  * continue through their existing runtime implementation. */
+/** Whether `name` on an instance of the program class `info` is a member
+ * the runtime error has a slot for and the class does not keep itself:
+ * `cause`, and a `code` on a class that holds no `code` of its own
+ * (classHoldsOwnCode). */
+export function errorSlotMember(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
+  if (name !== "cause" && name !== "code") return false;
+  if (info.def.runtime || info.builtinError || !lowerer.isSubclassOf(info.def.name, "%Error"))
+    return false;
+  if (info.fields.has(name)) return false;
+  if (findMethodOn(lowerer, info, `get:${name}`) || findMethodOn(lowerer, info, `set:${name}`))
+    return false;
+  return name === "cause" || !classHoldsOwnCode(lowerer, info.def.name);
+}
+
+/** The name of the helper through which a write by name of `cause` or
+ * `code` reaches an instance of the program Error class `className`
+ * (`%error.<name>.assign:<class>`), or null when the class keeps the member
+ * itself. While bodies lower, the helper writes through the instance's
+ * checked-dynamic view, which makes the class one the property dispatch
+ * gives a property list; assignErrorSlotMembers replaces that body with
+ * the direct stores once the class has its list. */
+export function errorSlotAssignHelper(
+  lowerer: Lowerer,
+  className: string,
+  name: string,
+  loc: SrcLoc,
+): string | null {
+  const info = lowerer.classes.get(className);
+  if (!info || !errorSlotMember(lowerer, info, name)) return null;
+  const helperName = `%error.${name}.assign:${className}`;
+  lowerer.shareHelper(helperName);
+  if (lowerer.liftedFnNamed(helperName) === undefined) {
+    const type: IrType = { kind: "object", className };
+    lowerer.liftedFns.push({
+      name: helperName,
+      params: [
+        { localId: "this", name: "this", type },
+        { localId: "value", name: "value", type: DYN },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "this", name: "this", type, mutable: false },
+        { id: "value", name: "value", type: DYN, mutable: false },
+        { id: "bag", name: "bag", type: DYN, mutable: true },
+      ],
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [
+              lowerer.coerceToExpected(varRef("this", type, loc), DYN),
+              { kind: "strLit", value: name, type: STRING, loc },
+              varRef("value", DYN, loc),
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    });
+  }
+  return helperName;
+}
+
+/** Gives each `%error.<name>.assign:<class>` helper of a class that has a
+ * property list its direct body: a write that creates the member keeps a
+ * place for it in the instance's list (creating the list for the first
+ * late member), then stores the error's slot. No value is boxed and no
+ * class table is consulted, so a `this.cause = reason` in a constructor
+ * costs a few stores and, once per instance, the list. A `cause` the
+ * constructor's options created, or one the class declares, is stored in
+ * place. */
+function assignErrorSlotMembers(lowerer: Lowerer, functions: readonly IrFunction[]): void {
+  for (const fn of functions) {
+    const match = /^%error\.(cause|code)\.assign:(.+)$/.exec(fn.name);
+    if (!match) continue;
+    const name = match[1]!;
+    const className = match[2]!;
+    const info = lowerer.classes.get(className);
+    if (!info || !info.fields.has(PROPERTY_BAG) || info.def.tracksOwnFields) continue;
+    const loc = fn.loc;
+    const type: IrType = { kind: "object", className };
+    const self = (): IrExpr => varRef("this", type, loc);
+    const error = (): IrExpr => lowerer.upcastTo(self(), "%Error");
+    const value = varRef("value", DYN, loc);
+    const bag = varRef("bag", DYN, loc);
+    // The list is read once on entry (a declared local, released on every
+    // path); a write that creates the member creates the list when the
+    // instance has none yet.
+    const load: IrStmt = {
+      kind: "varDecl",
+      localId: "bag",
+      init: { kind: "fieldGet", obj: self(), className, field: PROPERTY_BAG, type: DYN, loc },
+      loc,
+    };
+    const place: IrStmt[] = [
+      {
+        kind: "if",
+        cond: { kind: "dynTest", test: "undefined", value: bag, type: BOOL, loc },
+        then: initializeBag(lowerer, className, self(), loc),
+        else_: null,
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.bagCreateField",
+          args: [bag, { kind: "strLit", value: name, type: STRING, loc }],
+          type: BOOL,
+          loc,
+        },
+        loc,
+      },
+    ];
+    if (name === "code") {
+      fn.body = [
+        load,
+        ...place,
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "error.setCodeDyn",
+            args: [error(), value],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ];
+      continue;
+    }
+    // The store makes a cause it creates enumerable and sees to the slot's
+    // release (error.storeCause).
+    const store: IrStmt = {
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn: "error.storeCause", args: [error(), value], type: VOID, loc },
+      loc,
+    };
+    fn.body = classDeclaresCause(info)
+      ? [store, { kind: "return", value: null, loc }]
+      : [
+          load,
+          {
+            kind: "if",
+            cond: {
+              kind: "unary",
+              op: "!",
+              operand: { kind: "libCall", fn: "error.hasCause", args: [error()], type: BOOL, loc },
+              type: BOOL,
+              loc,
+            },
+            then: place,
+            else_: null,
+            loc,
+          },
+          store,
+          { kind: "return", value: null, loc },
+        ];
+  }
+}
+
+/** The library calls that can create an own property of a value under a
+ * name the program computes or copies: a compiled error class instance they
+ * reach gains whatever name the source holds, `cause` and `code` included. */
+const REFLECTIVE_WRITES: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "error.assign",
+  "error.storeCause",
+  "error.setCodeDyn",
+  "dyn.assign",
+  "dyn.assignAll",
+  "dyn.defineProperty",
+  "dyn.defineProps",
+  "dyn.definePropertyShapes",
+  "dyn.definePropsShapes",
+  "dyn.reflectDefine",
+  "dyn.reflectSet",
+  "dyn.keySetComputed",
+]);
+
+/** Whether the constructor of `info` can give `this` a property before it
+ * returns: its body uses `this` for anything besides its own field reads
+ * and writes and the base constructor's call (an untyped write, a method
+ * call, `this` handed to other code). A class without a constructor body
+ * cannot. */
+function constructorCanAddProperties(
+  info: ClassInfo,
+  functions: ReadonlyMap<string, IrFunction>,
+): boolean {
+  const fn = functions.get(`%${info.def.name}.constructor`);
+  const self = fn?.params[0]?.localId;
+  if (!fn || self === undefined) return false;
+  const isSelf = (expr: IrExpr | undefined): boolean =>
+    expr !== undefined &&
+    ((expr.kind === "varRef" && expr.localId === self) ||
+      (expr.kind === "upcast" && isSelf(expr.value)));
+  let uses = 0;
+  let plain = 0;
+  everyStmtList(fn.body, {
+    expr: (expr: IrExpr): boolean => {
+      if (expr.kind === "varRef" && expr.localId === self) uses++;
+      if (expr.kind === "fieldGet" && isSelf(expr.obj)) plain++;
+      if (expr.kind === "call" && expr.callee.endsWith(".constructor") && isSelf(expr.args[0]))
+        plain++;
+      if (expr.kind === "libCall" && expr.fn.startsWith("error.ctor") && isSelf(expr.args[0]))
+        plain++;
+      return true;
+    },
+    stmt: (stmt: IrStmt): boolean => {
+      if (stmt.kind === "fieldSet" && isSelf(stmt.obj)) plain++;
+      return true;
+    },
+  });
+  return uses > plain;
+}
+
+/** Marks the program Error classes whose property list keeps its own order
+ * (IrClassDef.errorOwnOrder), in the programs that need it. Programs
+ * without one of the two cases keep every class as it was.
+ *
+ * 1. A class whose fields can be created after the list's first entry: a
+ *    constructor above it can add a property before the class's own fields
+ *    exist. Its constructor records a place for each of its fields in the
+ *    list when the list exists by then, and the class and its subclasses
+ *    are marked.
+ * 2. Every class with a list, in a program that can give an instance a
+ *    `cause` or a `code` after its fields exist: a store to the error's
+ *    cause slot outside the runtime (the property dispatch's branch), one
+ *    of the reflective writes, or a write under a computed key. */
+export function orderErrorOwnMembers(lowerer: Lowerer, functions: readonly IrFunction[]): void {
+  const candidates = [...lowerer.classes.values()].filter(
+    (info) =>
+      !info.def.runtime &&
+      !info.builtinError &&
+      !info.def.tracksOwnFields &&
+      info.def.errorOwnOrder !== true &&
+      info.fields.has(PROPERTY_BAG) &&
+      !info.fields.has(CLASS_ATTRIBUTES) &&
+      lowerer.isSubclassOf(info.def.name, "%Error"),
+  );
+  if (candidates.length === 0) return;
+  assignErrorSlotMembers(lowerer, functions);
+  const byName = new Map(functions.map((fn) => [fn.name, fn] as const));
+  const adds = new Map<ClassInfo, boolean>();
+  const canAdd = (info: ClassInfo): boolean => {
+    let known = adds.get(info);
+    if (known === undefined) {
+      known = constructorCanAddProperties(info, byName);
+      adds.set(info, known);
+    }
+    return known;
+  };
+  const placed = new Set<ClassInfo>();
+  for (const info of candidates) {
+    let above = false;
+    for (let base = info.base; base && !base.def.runtime && !above; base = base.base)
+      above = canAdd(base);
+    if (!above) continue;
+    const own = info.fieldOrder
+      .map((field) => field.name)
+      .filter((name) => isClassOwnEnumerableFieldName(name) && info.fields.has(name));
+    const fn = byName.get(`%${info.def.name}.constructor`);
+    const self = fn?.params[0];
+    if (!fn || !self || own.length === 0) continue;
+    // The class's field definitions follow its super() call: at the top of
+    // a synthesized constructor, inside the call's own sequence in a
+    // written one.
+    const defines = (stmt: IrStmt): boolean =>
+      stmt.kind === "fieldSet" &&
+      stmt.className === info.def.name &&
+      own.includes(stmt.field) &&
+      stmt.obj.kind === "varRef" &&
+      stmt.obj.localId === self.localId;
+    const places = (loc: SrcLoc): IrStmt => {
+      const bag = (): IrExpr => ({
+        kind: "fieldGet",
+        obj: varRef(self.localId, self.type, loc),
+        className: info.def.name,
+        field: PROPERTY_BAG,
+        type: DYN,
+        loc,
+      });
+      return {
+        kind: "if",
+        cond: { kind: "dynTest", test: "undefined", negated: true, value: bag(), type: BOOL, loc },
+        then: own.map((name): IrStmt => ({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.bagCreateField",
+            args: [bag(), { kind: "strLit", value: name, type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          loc,
+        })),
+        else_: null,
+        loc,
+      };
+    };
+    const insert = (list: IrStmt[]): IrStmt[] | null => {
+      const at = list.findIndex(defines);
+      if (at === -1) return null;
+      return [...list.slice(0, at), places(list[at]!.loc), ...list.slice(at)];
+    };
+    let inserted = insert(fn.body);
+    if (inserted) fn.body = inserted;
+    else {
+      let done = false;
+      fn.body = transformStmtList(fn.body, {
+        expr: (expr: IrExpr): IrExpr => {
+          if (done || expr.kind !== "seqExpr") return expr;
+          inserted = insert(expr.stmts);
+          if (!inserted) return expr;
+          done = true;
+          return { ...expr, stmts: inserted };
+        },
+        stmt: (stmt: IrStmt): IrStmt => stmt,
+      });
+      if (!done) continue;
+    }
+    placed.add(info);
+  }
+  for (const info of candidates) {
+    for (let c: ClassInfo | null = info; c && !c.def.runtime; c = c.base)
+      if (placed.has(c)) info.def.errorOwnOrder = true;
+  }
+  let late = false;
+  const visitor = {
+    expr: (expr: IrExpr): boolean => {
+      if (expr.kind === "libCall")
+        late =
+          REFLECTIVE_WRITES.has(expr.fn) ||
+          (expr.fn === "dyn.keySet" && expr.args[1]?.kind !== "strLit");
+      return !late;
+    },
+    stmt: (): boolean => !late,
+  };
+  for (const fn of functions) {
+    if (/^%error\.(cause|code)\.assign:/.test(fn.name)) late = true;
+    if (late || !everyStmtList(fn.body, visitor)) break;
+  }
+  if (late) for (const info of candidates) info.def.errorOwnOrder = true;
+  // 3. A class whose construction does not set `name`, in a program that
+  //    assigns an error's `name` by name: the assignment creates a property
+  //    after whatever the list already holds.
+  else if (byName.has("%error.name.write"))
+    for (const info of candidates)
+      if (info.def.errorNameAfter === undefined) info.def.errorOwnOrder = true;
+  recordLateErrorNames(lowerer, candidates, byName);
+}
+
+/** An own `name` assigned to an instance of a marked class after its
+ * construction is one more property created late: the write that creates
+ * it records it in the instance's property list, so the view lists it
+ * where it was created among the others. Classes whose construction sets
+ * `name` keep the class's own placement (IrClassDef.errorNameAfter). The
+ * shared name write (`%error.name.write`) gains one branch for the
+ * instances of the marked classes. */
+function recordLateErrorNames(
+  lowerer: Lowerer,
+  candidates: readonly ClassInfo[],
+  functions: ReadonlyMap<string, IrFunction>,
+): void {
+  const write = functions.get("%error.name.write");
+  const properties = functions.get("%dyn.class.properties");
+  const marked = candidates.filter(
+    (info) => info.def.errorOwnOrder === true && info.def.errorNameAfter === undefined,
+  );
+  if (!write || !properties || marked.length === 0) return;
+  const outermost = marked.filter(
+    (info) =>
+      !marked.some(
+        (other) => other !== info && lowerer.isSubclassOf(info.def.name, other.def.name),
+      ),
+  );
+  const loc = write.loc;
+  const error = varRef("error.0", { kind: "object", className: "%Error" }, loc);
+  const boxed = (): IrExpr => lowerer.coerceToExpected(error, DYN);
+  const isMarked = outermost
+    .map((info): IrExpr => ({
+      kind: "instanceOf",
+      value: error,
+      className: info.def.name,
+      type: BOOL,
+      loc,
+    }))
+    .reduce((acc, test) => ({
+      kind: "logical",
+      op: "||",
+      left: acc,
+      right: test,
+      type: BOOL,
+      loc,
+    }));
+  write.body.unshift({
+    kind: "if",
+    cond: {
+      kind: "logical",
+      op: "&&",
+      left: {
+        kind: "unary",
+        op: "!",
+        operand: {
+          kind: "fieldGet",
+          obj: error,
+          className: "%Error",
+          field: "%namePresent",
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      right: isMarked,
+      type: BOOL,
+      loc,
+    },
+    then: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.bagSet",
+          args: [
+            { kind: "call", callee: properties.name, args: [boxed()], type: DYN, loc },
+            { kind: "strLit", value: "name", type: STRING, loc },
+            lowerer.coerceToExpected(varRef("value", STRING, loc), DYN),
+            boxed(),
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    else_: null,
+    loc,
+  });
+}
+
 export class ClassDynamicDispatch {
   constructor(private readonly asyncFree = false) {}
 
@@ -4145,7 +4596,9 @@ export class ClassDynamicDispatch {
       const anyReceiver =
         !isClassOwnEnumerableFieldName(dispatch.name) ||
         dispatch.name === "constructor" ||
-        dispatch.name === "stack";
+        dispatch.name === "stack" ||
+        dispatch.name === "cause" ||
+        dispatch.name === "code";
       const skips = (plan: PropertyReceiver): boolean =>
         !isClassOwnEnumerableFieldName(dispatch.name) ||
         (!(plan.info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
@@ -4156,6 +4609,7 @@ export class ClassDynamicDispatch {
           dispatch.name !== "constructor" &&
           !plan.info.fields.has(dispatch.name) &&
           !(dispatch.name === "stack" && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
+          !errorSlotMember(lowerer, plan.info, dispatch.name) &&
           !findMethodOn(lowerer, plan.info, `get:${dispatch.name}`) &&
           !findMethodOn(lowerer, plan.info, `set:${dispatch.name}`));
       const selected = anyReceiver ? plans : receiversFor(plans, dispatch.name, "members");
@@ -4528,6 +4982,11 @@ export class ClassDynamicDispatch {
         // by-name dispatch does.
         const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
         if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
+        // `cause` and `code` are read and written through their slots too,
+        // and a write records the member in the instance's property list.
+        if (!dispatch.probe && !dispatch.reflect)
+          for (const slot of ["cause", "code"])
+            if (errorSlotMember(lowerer, info, slot)) names.add(slot);
         if (info.builtinStream)
           for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
         const inherited = eventTargetApiMembers(info);
@@ -6012,7 +6471,16 @@ export class ClassDynamicDispatch {
   private recordBagInitializers(lowerer: Lowerer): void {
     for (const [className, initializers] of this.bagInitializers) {
       const init = initializers[0];
-      if (!init || !lowerer.classes.get(className)?.def.tracksOwnFields) continue;
+      // An Error class's list is also created by the direct `cause` and
+      // `code` assignments (assignErrorSlotMembers).
+      if (
+        !init ||
+        !(
+          lowerer.classes.get(className)?.def.tracksOwnFields ||
+          lowerer.isSubclassOf(className, "%Error")
+        )
+      )
+        continue;
       const self = varRef("this", { kind: "object", className }, init.loc);
       const value = withTypedReceiver(structuredClone(init.value), self);
       if (mentionsLocal(value, "p.0")) continue;
@@ -6792,6 +7260,164 @@ export class ClassDynamicDispatch {
           },
           loc,
         },
+      ];
+    }
+    // `cause` and `code` on an instance of a program Error class: the runtime
+    // error's slot holds the value, which typed reads and the runtime share,
+    // and a member the Error constructor did not create is also an entry of
+    // the instance's property list, which records where it was created
+    // among the properties added later. A `cause` the constructor's options
+    // created, or one the class declares as a field, keeps its place: a
+    // write to it updates the slot alone.
+    if (errorSlotMember(lowerer, info, name)) {
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      const error = lowerer.upcastTo(receiver, "%Error");
+      const bagRead = (): IrExpr => this.branchPropertyBag(lowerer, info, receiver, false, loc);
+      if (!write) {
+        if (name === "cause")
+          return [
+            {
+              kind: "return",
+              value: {
+                kind: "ternary",
+                cond: { kind: "libCall", fn: "error.hasCause", args: [error], type: BOOL, loc },
+                then: {
+                  kind: "fieldGet",
+                  obj: error,
+                  className: "%Error",
+                  field: "%cause",
+                  type: DYN,
+                  loc,
+                },
+                else_: dynUndefinedExpr(loc),
+                type: DYN,
+                loc,
+              },
+              loc,
+            },
+          ];
+        // The slot holds a string code; a code that is not a string is kept
+        // by the list alone (its entry for a string code only keeps the
+        // place).
+        const slot = (): IrExpr =>
+          lowerer.coerceToExpected(
+            { kind: "libCall", fn: "error.code", args: [error], type: lowerer.envValueType(), loc },
+            DYN,
+          );
+        return [
+          {
+            kind: "return",
+            value: {
+              kind: "ternary",
+              cond: {
+                kind: "dynTest",
+                test: "undefined",
+                negated: true,
+                value: slot(),
+                type: BOOL,
+                loc,
+              },
+              then: slot(),
+              else_: {
+                kind: "ternary",
+                cond: this.readBagHas(lowerer, "dyn.hasKey", bagRead(), key, loc),
+                then: {
+                  kind: "libCall",
+                  fn: "dyn.bagGet",
+                  args: [bagRead(), key, lowerer.coerceToExpected(receiver, DYN)],
+                  type: DYN,
+                  loc,
+                },
+                else_: dynUndefinedExpr(loc),
+                type: DYN,
+                loc,
+              },
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      }
+      const helper = classPropertiesHelper(lowerer, loc);
+      this.generated.add(helper);
+      const record: IrStmt = {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.bagSet",
+          args: [
+            {
+              kind: "call",
+              callee: helper.name,
+              args: [lowerer.coerceToExpected(receiver, DYN)],
+              type: DYN,
+              loc,
+            },
+            key,
+            varRef("p.1", DYN, loc),
+            lowerer.coerceToExpected(receiver, DYN),
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      };
+      if (name === "code")
+        return [
+          record,
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "error.setCodeDyn",
+              args: [error, varRef("p.1", DYN, loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+          { kind: "return", value: null, loc },
+        ];
+      const held: IrExpr = {
+        kind: "libCall",
+        fn: "error.hasCause",
+        args: [error],
+        type: BOOL,
+        loc,
+      };
+      // The store makes a cause it creates enumerable and sees to the
+      // slot's release (error.storeCause).
+      const store: IrStmt = {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "error.storeCause",
+          args: [error, varRef("p.1", DYN, loc)],
+          type: VOID,
+          loc,
+        },
+        loc,
+      };
+      if (classDeclaresCause(info)) return [store, { kind: "return", value: null, loc }];
+      return [
+        {
+          kind: "if",
+          cond: { kind: "unary", op: "!", operand: held, type: BOOL, loc },
+          then: [record],
+          else_: [
+            {
+              kind: "if",
+              cond: this.readBagHas(lowerer, "dyn.hasKey", bagRead(), key, loc),
+              then: [record],
+              else_: null,
+              loc,
+            },
+          ],
+          loc,
+        },
+        store,
+        { kind: "return", value: null, loc },
       ];
     }
     if ((name === "message" || name === "name") && lowerer.isSubclassOf(info.def.name, "%Error"))
